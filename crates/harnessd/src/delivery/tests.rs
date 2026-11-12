@@ -258,3 +258,44 @@ fn the_turn_end_heading_and_the_rule_words() {
     assert_eq!(Rule::Batch.word(), "batch");
     assert_eq!(Rule::Starvation.word(), "starvation");
 }
+
+/// The one queue's order: what a session is owed is sorted by when it arrived, and the room's lines
+/// keep the order the room's reader queued them in among themselves. A result at the same instant as
+/// a line cannot reorder the lines around it.
+#[test]
+fn everything_held_is_in_arrival_order() {
+    let t = |ms| SystemTime::UNIX_EPOCH + Duration::from_millis(ms);
+    let line = |seq: u64, ms: u64| RoomLine {
+        seq,
+        stands_for: Vec::new(),
+        line: format!("#{seq}"),
+        arrived: t(ms),
+        passing: true,
+    };
+    let all = in_arrival_order(
+        vec![line(2, 300), line(3, 500)],
+        vec![done("j1", BackgroundKind::Job, "exited 0")],
+    );
+    // The fixture's result is stamped at the epoch, so it sorts first; what this pins is that the
+    // room's two lines keep their own order around it.
+    let room: Vec<u64> = all.iter().filter_map(|h| h.room().map(|r| r.seq)).collect();
+    assert_eq!(room, vec![2, 3]);
+    assert_eq!(all.iter().filter(|h| h.room().is_none()).count(), 1);
+    // And a line that arrived first is first.
+    let mut earlier = done("j2", BackgroundKind::Job, "exited 0");
+    earlier.arrived = t(100);
+    let all = in_arrival_order(vec![line(1, 200)], vec![earlier]);
+    assert!(matches!(all[0], Held::Result(_)), "{all:?}");
+    assert_eq!(all[1].room().map(|r| r.seq), Some(1));
+    // A room line and a room queue event together keep the queue's order, which is arrival's.
+    let event = RoomLine {
+        seq: 0,
+        stands_for: Vec::new(),
+        line: "[room] an event".into(),
+        arrived: t(150),
+        passing: false,
+    };
+    let all = in_arrival_order(vec![event, line(4, 160)], Vec::new());
+    assert_eq!(all.len(), 2);
+    assert!(matches!(all[0], Held::Room(_)) && matches!(all[1], Held::Room(_)));
+}

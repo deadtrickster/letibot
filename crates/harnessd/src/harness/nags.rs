@@ -320,10 +320,13 @@ impl Harness {
         };
         // A plan-check is a turn the model takes anyway, so it carries the held batch, which is
         // what reaches a session that has a plan and nobody typing.
-        let (riding, told) = self.batch_riding_in();
-        if let Some(meanwhile) = riding {
-            text.push_str("\n\n");
-            text.push_str(&meanwhile);
+        let riding = self.batch_riding_in();
+        if let Some(now) = &riding {
+            let batch = now.text();
+            if !batch.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&batch);
+            }
         }
         // The choice is remembered HERE, where the check is delivered: see `nag_notice` for why
         // reading the notice must not. And the check the operator's own row earned has now been
@@ -350,7 +353,7 @@ impl Harness {
             }],
             |_| opened = true,
         );
-        self.the_batch_arrived(told, opened);
+        self.the_batch_arrived(riding, opened);
         out.map(Some)
     }
 

@@ -244,8 +244,13 @@ fn the_end_of_a_turn_with_results_held_wakes_the_session_for_them() {
     assert!(woken(&registry), "the turn ended with a result held");
 
     let b = d.between_turns(|_| false, crate::delivery::Rule::TurnEnd);
-    assert!(b.now.is_empty(), "nothing arrived while idle: {:?}", b.now);
-    let batch = b.batch.expect("the held result is delivered");
+    assert_eq!(
+        b.parts.len(),
+        2,
+        "the heading and the one held result, and nothing said at once: {:?}",
+        b.parts
+    );
+    let batch = b.batch().expect("the held result is delivered");
     assert!(
         batch.starts_with("[meanwhile] Finished while you were working:")
             && batch.contains("`j1` exited 0"),
@@ -275,14 +280,9 @@ fn an_idle_arrival_is_an_ordinary_notice_and_the_held_ones_are_one_batch() {
     w.queue_for_test(settled("j3", "exited 0", SystemTime::now()));
 
     let b = d.between_turns(|_| false, crate::delivery::Rule::TurnEnd);
-    assert_eq!(b.now.len(), 1, "{:?}", b.now);
-    assert!(
-        b.now[0].starts_with("[job] ") && b.now[0].contains("`j3`"),
-        "{}",
-        b.now[0]
-    );
-    assert!(!b.now[0].contains("`j1`") && !b.now[0].contains("[meanwhile]"));
-    let batch = b.batch.expect("the two held");
+    // The two held results arrived first, so they are said first - under the one heading - and the
+    // idle arrival is the ordinary notice after them.
+    let batch = b.batch().expect("the two held");
     assert!(
         batch.starts_with("[meanwhile] Finished while you were working:")
             && batch.contains("`j1`")
@@ -290,6 +290,12 @@ fn an_idle_arrival_is_an_ordinary_notice_and_the_held_ones_are_one_batch() {
             && !batch.contains("`j3`"),
         "{batch}"
     );
+    let idle = b.parts.last().expect("the idle arrival is said").text();
+    assert!(
+        idle.starts_with("[job] ") && idle.contains("`j3`"),
+        "{idle}"
+    );
+    assert!(!idle.contains("`j1`") && !idle.contains("[meanwhile]"));
     let rules: Vec<(String, String, u64)> = dir
         .records()
         .iter()
@@ -357,7 +363,7 @@ fn the_held_counts_are_said_on_the_hub_when_they_change() {
 
     w.turn_ended(TurnEnd::Done);
     let b = d.between_turns(|_| false, crate::delivery::Rule::TurnEnd);
-    assert!(b.batch.is_some());
+    assert!(b.batch().is_some());
     assert_eq!(held_said(&hub), [(1, 1, 1), (0, 0, 0)]);
 }
 
@@ -880,9 +886,11 @@ fn a_want_is_forgotten_when_its_result_is_delivered_in_a_batch_or_already_was() 
     w.queue_for_test(settled("j1", "exited 0", SystemTime::now()));
     assert!(boundary(&mut s).is_none(), "a routine completion is held");
     assert_eq!(w.held_count(), 1);
-    // Wanted only now, while it is held - and then handed over with the batch.
+    // Wanted only now, while it is held - and then handed over at once, because a want recorded
+    // against a held result promotes it.
     w.want_now("j1", WantedNow::Awaited);
-    assert!(d.batch(crate::delivery::Rule::Batch).is_some());
+    let now = d.between_turns(|_| false, crate::delivery::Rule::Batch);
+    assert!(now.text().contains("`j1`"), "{:?}", now.parts);
     assert_eq!(
         w.wanted("j1"),
         None,
@@ -920,7 +928,16 @@ fn a_batch_put_back_rings_the_session_that_owes_it() {
         "s-r79",
     );
 
-    d.put_back(vec![settled("j1", "exited 0", SystemTime::now())]);
+    d.put_back(crate::harness::deliveries::HeldNow {
+        parts: Vec::new(),
+        told: vec![crate::delivery::Held::Result(settled(
+            "j1",
+            "exited 0",
+            SystemTime::now(),
+        ))],
+        ack: 0,
+        cheap: false,
+    });
     assert_eq!(w.held_count(), 1, "the result was not held again");
     // And the door's turn ends as the refused one did: a stopped turn takes back a SETTLEMENT's
     // wake, and this is not one - nothing queues a second copy of what is held.
@@ -933,4 +950,178 @@ fn a_batch_put_back_rings_the_session_that_owes_it() {
         ),
         "nothing rings for the results this session still owes"
     );
+}
+
+/// The room's half of the same rule: a door that took a room line and could not open a turn hands it
+/// back UNACKED and rings. The bell the line arrived with was spent by that turn, so nothing else
+/// would ever start the one that says it - which is the live defect, a head reading
+/// `waiting on: delivery` on a session that is idle and stays idle.
+#[test]
+fn a_room_line_put_back_rings_the_session_that_owes_it() {
+    use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
+
+    let dir = Scratch::new("r187-room-put-back");
+    let registry = Registry::new();
+    let hub = registry
+        .create("s-r187-idle", "", SessionWiring::default())
+        .expect("the session is in the registry");
+    // The create rang an Open; the next ring is the one this test is about.
+    assert!(matches!(registry.next_work(), Some(Work::Open(_))));
+    let w = JobWatchers::watching_tasks(&hub, Some(Arc::clone(registry.bell())));
+    let d = Deliveries::new(
+        Arc::clone(&w),
+        None,
+        DeliveryLog::under(&dir.0, "s-r187-idle"),
+        Duration::from_secs(600),
+        "s-r187-idle",
+    );
+    // The pen a take would have emptied: the hand-back is the only line in it.
+    crate::room::wake::forget("s-r187-idle");
+
+    d.put_back(crate::harness::deliveries::HeldNow {
+        parts: Vec::new(),
+        told: vec![crate::delivery::Held::Room(crate::delivery::RoomLine {
+            seq: 7,
+            stands_for: Vec::new(),
+            line: "#7 a line no turn has read".into(),
+            arrived: SystemTime::now(),
+            passing: false,
+        })],
+        ack: 7,
+        cheap: false,
+    });
+    assert_eq!(
+        crate::room::wake::waiting("s-r187-idle"),
+        1,
+        "the line did not go back in the pen"
+    );
+    assert_eq!(w.held_count(), 0, "no result was invented from a room line");
+    // The refused turn ends as one does; a stopped turn takes back a SETTLEMENT's wake.
+    w.turn_ended(TurnEnd::Interrupted);
+
+    assert!(
+        matches!(
+            registry.next_work_until(Some(std::time::Instant::now())),
+            WorkOrIdle::Work(Work::Woken(id)) if id == "s-r187-idle"
+        ),
+        "nothing rings for the room line this session still owes"
+    );
+    // And it is still unseen: a hand-back acks nothing, so the turn that says it moves the mark.
+    let took = crate::room::wake::hold("s-r187-idle");
+    assert_eq!(took.text().len(), 1);
+    assert_eq!(took.seqs, vec![7]);
+    crate::room::wake::forget("s-r187-idle");
+}
+
+/// R187's own case: #1307 is a peer's passing-by line, queued and ringing nothing, and #1309 mentions
+/// the session. ONE door takes both, in the order they arrived, so the trigger never arrives before
+/// the line it follows.
+#[test]
+fn a_passing_line_then_a_mention_is_one_delivery_in_seq_order() {
+    use letibot_room::chat::Reach;
+    let dir = Scratch::new("r187-order");
+    let hub = Hub::new("s-r79");
+    let w = watchers(&hub, false);
+    let d = deliveries(&w, Vec::new(), &dir, Duration::from_secs(600));
+    let mut s = steering(&hub, d.clone());
+
+    crate::room::wake::push_chat(
+        "s-r79",
+        1307,
+        Reach::Passing,
+        "#1307 [project] from s-peer (session) to all, passing by\n> the gate is red".into(),
+    );
+    crate::room::wake::push_chat(
+        "s-r79",
+        1309,
+        Reach::Addressed,
+        "#1309 [project] from s-peer (session) to @you\n> look at this".into(),
+    );
+    assert_eq!(crate::room::wake::waiting("s-r79"), 2);
+
+    let got = boundary(&mut s).expect("the mention rings, and the door says both");
+    let first = got.text.find("#1307").expect("#1307 is said");
+    let second = got.text.find("#1309").expect("#1309 is said");
+    assert!(
+        first < second,
+        "the trigger arrived before the line it follows: {}",
+        got.text
+    );
+    assert_eq!(crate::room::wake::waiting("s-r79"), 0, "one door, one take");
+    assert!(!got.urgent && !got.from_operator, "a room line is neither");
+}
+
+/// A job that ended between two room lines is said between them. The two used to be two queues with
+/// the room always read first, so the order was the door's and not the arrivals'.
+#[test]
+fn a_job_that_ended_between_two_room_lines_is_said_between_them() {
+    use letibot_room::chat::Reach;
+    let dir = Scratch::new("r187-between");
+    let hub = Hub::new("s-r79");
+    let w = watchers(&hub, false);
+    let d = deliveries(&w, Vec::new(), &dir, Duration::from_secs(600));
+    let mut s = steering(&hub, d.clone());
+
+    crate::room::wake::push_chat("s-r79", 1, Reach::Passing, "#1 the first line".into());
+    std::thread::sleep(Duration::from_millis(5));
+    // `wake: "now"` so the door has an immediate to say at this boundary, not one to hold.
+    w.want_now("j1", WantedNow::WakeNow);
+    w.queue_for_test(settled("j1", "exited 0", SystemTime::now()));
+    std::thread::sleep(Duration::from_millis(5));
+    crate::room::wake::push_chat("s-r79", 2, Reach::Passing, "#2 the second line".into());
+
+    let got = boundary(&mut s).expect("the boundary says all three");
+    let text = &got.text;
+    let a = text.find("#1 the first line").expect("the first line");
+    let b = text.find("`j1`").expect("the job");
+    let c = text.find("#2 the second line").expect("the second line");
+    assert!(a < b && b < c, "not in arrival order: {text}");
+}
+
+/// A room line that arrives while a turn runs is said at the turn's next poll, and a held result the
+/// starvation cap releases at that same poll is said with it - in arrival order, under the one
+/// `[meanwhile]` heading.
+#[test]
+fn a_room_line_arriving_after_a_held_result_is_said_after_it_when_the_cap_releases_it() {
+    use letibot_room::chat::Reach;
+    let dir = Scratch::new("r187-cap");
+    let hub = Hub::new("s-r79");
+    let w = watchers(&hub, false);
+    let cap = Duration::from_millis(300);
+    let d = deliveries(&w, Vec::new(), &dir, cap);
+    let mut s = steering(&hub, d.clone());
+
+    w.queue_for_test(settled("j7", "exited 0", SystemTime::now()));
+    assert!(
+        boundary(&mut s).is_none(),
+        "inside the cap, nothing comes in"
+    );
+    std::thread::sleep(cap + Duration::from_millis(50));
+    crate::room::wake::push_chat("s-r79", 9, Reach::Passing, "#9 line after the job".into());
+
+    let got = boundary(&mut s).expect("past the cap, the batch is released");
+    let text = &got.text;
+    let heading = text.find("[meanwhile]").expect("the heading");
+    let job = text.find("`j7`").expect("the job");
+    let room = text.find("#9 line after the job").expect("the room's line");
+    assert!(heading < job && job < room, "not in arrival order: {text}");
+    assert_eq!(crate::room::wake::waiting("s-r79"), 0);
+}
+
+/// The room's lines are not held by the boundary: one that arrives with no result to say is said at
+/// the next poll of a running turn, which is what keeps a long turn hearing its room.
+#[test]
+fn a_room_line_alone_reaches_a_running_turn_without_waiting_for_a_boundary() {
+    use letibot_room::chat::Reach;
+    let dir = Scratch::new("r187-poll");
+    let hub = Hub::new("s-r79");
+    let w = watchers(&hub, false);
+    let d = deliveries(&w, Vec::new(), &dir, Duration::from_secs(600));
+    let mut s = steering(&hub, d.clone());
+
+    crate::room::wake::push_chat("s-r79", 4, Reach::Addressed, "#4 for you".into());
+    let got = s
+        .try_next()
+        .expect("a poll that is not a boundary still says the room");
+    assert!(got.text.contains("#4 for you"), "{}", got.text);
 }

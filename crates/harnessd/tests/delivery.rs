@@ -310,8 +310,9 @@ fn a_prompt_before_the_turn_end_wake_carries_the_batch_and_the_wake_runs_nothing
     assert_eq!(rec[0]["handle"], "j21");
 }
 
-/// A completion the plan `needs` is said first, and the batch held during the last turn rides in
-/// after it - under the turn-end heading, since the wake that runs is the one the turn's end owes.
+/// A completion the plan `needs` is a turn of its own, and the batch held during the last turn rides
+/// in with it - under the turn-end heading, in the order the two arrived: the held one first, since
+/// it happened first (R187 - a trigger is never said ahead of a line that arrived before it).
 #[test]
 fn a_needed_completion_wakes_a_root_and_the_held_batch_rides_along() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -349,7 +350,10 @@ fn a_needed_completion_wakes_a_root_and_the_held_batch_rides_along() {
     let batch = text
         .find("[meanwhile] Finished while you were working:")
         .expect("the batch rides along");
-    assert!(needed < batch, "what the plan waits on first: {text}");
+    assert!(
+        batch < needed,
+        "the result held through the last turn arrived first, so it is said first: {text}"
+    );
     assert!(text[batch..].contains("`j31`"), "{text}");
     let rules: Vec<(String, String)> = records(&dir)
         .iter()

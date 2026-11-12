@@ -310,10 +310,13 @@ impl Harness {
     /// A re-seat is a worker command, so it never runs inside a turn, and this is the next boundary.
     pub fn run_after_reseat(&mut self, text: &str) -> Result<Reply, HarnessError> {
         let mut text = text.to_string();
-        let (riding, told) = self.batch_riding_in();
-        if let Some(meanwhile) = riding {
-            text.push_str("\n\n");
-            text.push_str(&meanwhile);
+        let riding = self.batch_riding_in();
+        if let Some(now) = &riding {
+            let batch = now.text();
+            if !batch.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&batch);
+            }
         }
         self.compact_if_at_the_wall();
         self.trail.begin_turn();
@@ -326,7 +329,7 @@ impl Harness {
             }],
             |_| opened = true,
         );
-        self.the_batch_arrived(told, opened);
+        self.the_batch_arrived(riding, opened);
         out
     }
 
@@ -340,10 +343,13 @@ impl Harness {
         let mut text =
             "Continue from the summary above; don't redo what it records as done.".to_string();
         // A continuation is a turn the model takes anyway, so the held batch rides in.
-        let (riding, told) = self.batch_riding_in();
-        if let Some(meanwhile) = riding {
-            text.push_str("\n\n");
-            text.push_str(&meanwhile);
+        let riding = self.batch_riding_in();
+        if let Some(now) = &riding {
+            let batch = now.text();
+            if !batch.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&batch);
+            }
         }
         self.trail.begin_turn();
         self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
@@ -355,7 +361,7 @@ impl Harness {
             }],
             |_| opened = true,
         );
-        self.the_batch_arrived(told, opened);
+        self.the_batch_arrived(riding, opened);
         out
     }
 

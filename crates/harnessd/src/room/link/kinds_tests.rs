@@ -103,7 +103,7 @@ fn an_fyi_is_noted_and_never_rung_and_a_blocker_is_a_full_turn() {
     );
     let noted = wake::take_wake(me_id);
     assert!(
-        noted.lines.iter().any(|l| l.contains("the port moved")),
+        noted.text().iter().any(|l| l.contains("the port moved")),
         "the fyi was not noted at all: {noted:?}"
     );
     assert!(noted.cheap, "an fyi woke a full turn: {noted:?}");
@@ -124,8 +124,8 @@ fn an_fyi_is_noted_and_never_rung_and_a_blocker_is_a_full_turn() {
     }
     let taken = wake::take_wake(me_id);
     let line = taken
-        .lines
-        .iter()
+        .text()
+        .into_iter()
         .find(|l| l.contains("the disk is full"))
         .unwrap_or_else(|| panic!("the blocker was not noted: {taken:?}"));
     assert!(!taken.cheap, "a blocker woke a cheap turn: {taken:?}");
@@ -184,8 +184,8 @@ fn an_ordinary_line_still_wakes_the_room_it_is_said_in() {
     }
     let taken = wake::take_wake(me_id);
     let line = taken
-        .lines
-        .iter()
+        .text()
+        .into_iter()
         .find(|l| l.contains("the build is green"))
         .unwrap_or_else(|| panic!("the line was never noted: {taken:?}"));
     assert!(line.contains("passing by"), "{line}");

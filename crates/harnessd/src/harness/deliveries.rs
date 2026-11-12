@@ -3,6 +3,7 @@
 //! The decision is `crate::delivery`'s, pure and tested there. This file reads the session's facts and words them.
 
 use super::*;
+use crate::delivery::{Held, RoomLine};
 use letibot_plugin::notice::Facts;
 use letibot_tools::exec::monitor::{Fired, Firing};
 
@@ -601,6 +602,7 @@ pub const WAITING_ON_THESE: &str = "Waiting on these: ";
 /// The held batch, as one note: the `[meanwhile]` line, then the settlements in
 /// [`completion_notices`]' own words - unchanged, so the head's compact job rows read the groups
 /// under the heading exactly as they read a wake's.
+#[cfg(test)]
 pub(crate) fn meanwhile_notice(
     batch: Vec<JobCompletion>,
     me: &str,
@@ -626,12 +628,97 @@ pub(crate) struct Deliveries {
     me: String,
 }
 
-/// What a between-turns read hands a turn's start: the notices said now (immediates and idle
-/// arrivals, in `completion_notices`' words) and the `[meanwhile]` batch, apart so a wake can
-/// keep the batch last.
-pub(crate) struct BetweenTurns {
-    pub(crate) now: Vec<String>,
-    pub(crate) batch: Option<String>,
+/// One sentence the door owes the model, with the source it came from: the notice hook is asked
+/// with that source's facts, and a room line brings the `seq`s an ack has to name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Said {
+    Room {
+        seqs: Vec<u64>,
+        text: String,
+    },
+    Result {
+        jobs: Vec<String>,
+        /// Released from a batch held for a turn that was running, so it is said under the one
+        /// `[meanwhile]` heading and read apart from what arrived while the session was idle.
+        held: bool,
+        text: String,
+    },
+}
+
+impl Said {
+    pub(crate) fn text(&self) -> &str {
+        match self {
+            Said::Room { text, .. } | Said::Result { text, .. } => text,
+        }
+    }
+}
+
+/// One item the door owes, and the rule it is released under when it was HELD for a turn that was
+/// running (`None` for what had not been held, which is said without the `[meanwhile]` heading).
+struct Owed(Held, Option<crate::delivery::Rule>);
+
+/// Everything one door took, in arrival order: the sentences to say, what was taken so the caller
+/// can mark it read or hand it back, and the newest chat `seq` among it - acked only when a turn
+/// carries it.
+pub(crate) struct HeldNow {
+    pub(crate) parts: Vec<Said>,
+    pub(crate) told: Vec<Held>,
+    pub(crate) ack: u64,
+    /// Nothing here directs the session: it is entry for a turn that may run cheap.
+    pub(crate) cheap: bool,
+}
+
+/// The results among what a door took, in the order they were taken.
+fn results_of(told: &[Held]) -> Vec<JobCompletion> {
+    told.iter()
+        .filter_map(|h| match h {
+            Held::Result(c) => Some(c.clone()),
+            Held::Room(_) => None,
+        })
+        .collect()
+}
+
+impl HeldNow {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.parts.is_empty()
+    }
+
+    /// The sentences as one text, in the order the door says them.
+    pub(crate) fn text(&self) -> String {
+        self.parts
+            .iter()
+            .map(|p| p.text())
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
+
+    /// The same with one sentence in front - a restart's notice, which opens the turn it makes.
+    pub(crate) fn text_after(&self, first: &str) -> String {
+        let rest = self.text();
+        if rest.is_empty() {
+            first.to_string()
+        } else {
+            format!("{first}\n\n{rest}")
+        }
+    }
+
+    /// The `[meanwhile]` release on its own, heading and settlements - what the tests read apart from
+    /// what was said at once.
+    #[cfg(test)]
+    pub(crate) fn batch(&self) -> Option<String> {
+        let at = self
+            .parts
+            .iter()
+            .position(|p| p.text().starts_with(crate::delivery::MEANWHILE))?;
+        Some(
+            self.parts[at..]
+                .iter()
+                .filter(|p| matches!(p, Said::Result { held: true, .. }))
+                .map(|p| p.text())
+                .collect::<Vec<_>>()
+                .join("\n\n"),
+        )
+    }
 }
 
 impl Deliveries {
@@ -651,24 +738,15 @@ impl Deliveries {
         }
     }
 
-    /// What must be said now: the sort, its immediates recorded and worded. Everything else
-    /// is left held.
-    pub(crate) fn immediates(&self, skip: impl Fn(&JobCompletion) -> bool) -> Vec<String> {
-        let rows = self
-            .todos
-            .as_ref()
-            .map(|t| t.snapshot())
-            .unwrap_or_default();
-        let now = crate::delivery::sort(&self.watch, &rows, skip);
-        if now.is_empty() {
-            return Vec::new();
-        }
-        self.log.immediates(&now, std::time::SystemTime::now());
-        let done: Vec<JobCompletion> = now.into_iter().map(|(c, _)| c).collect();
-        // Delivered, and recorded as such - the fact the plan check's grace reads
-        // (`JobWatchers::grace_left`).
-        self.watch.read_now(&done);
-        completion_notices(done, &self.me, &rows)
+    /// The room's lines for this session, and the newest `seq` a turn carrying them would ack. The
+    /// take does not ack: a line the turn never says is handed back and stays unseen.
+    fn take_room(&self, cheap: bool) -> (Vec<RoomLine>, u64) {
+        let taken = if cheap {
+            crate::room::wake::take_if_cheap(&self.me)
+        } else {
+            crate::room::wake::hold(&self.me)
+        };
+        (taken.lines, taken.ack)
     }
 
     /// The board the notices name rows from - empty in a test with no board.
@@ -679,81 +757,201 @@ impl Deliveries {
             .unwrap_or_default()
     }
 
-    /// The held batch, taken and recorded, as one `[meanwhile]` note - or `None` when nothing
-    /// is held.
-    pub(crate) fn batch(&self, rule: crate::delivery::Rule) -> Option<String> {
-        let held = self.watch.take_held();
-        if held.is_empty() {
-            return None;
+    /// Everything one door took, in arrival order - the room's lines and every result it is saying -
+    /// with the `[meanwhile]` heading opening the first result that was held.
+    fn owe(
+        &self,
+        room: Vec<RoomLine>,
+        ack: u64,
+        at_once: Vec<JobCompletion>,
+        released: Vec<JobCompletion>,
+        rule: crate::delivery::Rule,
+        room_cheap: bool,
+    ) -> HeldNow {
+        let rows = self.rows();
+        let mut owed: Vec<Owed> = at_once
+            .into_iter()
+            .map(|c| Owed(Held::Result(c), None))
+            .collect();
+        owed.extend(
+            released
+                .iter()
+                .cloned()
+                .map(|c| Owed(Held::Result(c), Some(rule))),
+        );
+        owed.extend(room.iter().cloned().map(|r| Owed(Held::Room(r), None)));
+        let owed = crate::delivery::arrivals(owed, |o| o.0.arrived());
+        // Only passing-by room talk leaves the turn cheap: one result, or one addressed line, and
+        // the turn is a full one.
+        let cheap = room_cheap && owed.iter().all(|o| matches!(o.0, Held::Room(_)));
+        let told: Vec<Held> = owed.iter().map(|o| o.0.clone()).collect();
+        HeldNow {
+            parts: self.render(owed, &rows),
+            told,
+            ack,
+            cheap,
         }
-        self.log
-            .completions(&held, rule, std::time::SystemTime::now());
-        self.watch.read_now(&held);
-        Some(meanwhile_notice(
-            held,
-            &self.me,
-            rule,
-            self.cap,
-            &self.rows(),
-        ))
     }
 
-    /// A round boundary inside a running turn: the immediates, and the batch only when the
-    /// longest-held result has waited past the cap.
-    pub(crate) fn at_round_boundary(&self) -> Option<String> {
-        let mut parts = self.immediates(|_| false);
-        if crate::delivery::starved(&self.watch, self.cap, std::time::SystemTime::now())
-            && let Some(b) = self.batch(crate::delivery::Rule::Starvation)
-        {
-            parts.push(b);
+    /// The sentences, in the order the items arrived: a run of results keeps
+    /// `completion_notices`' grouping, and a room line is its own sentence.
+    fn render(&self, owed: Vec<Owed>, rows: &[TodoItem]) -> Vec<Said> {
+        let mut out: Vec<Said> = Vec::new();
+        let mut headed = false;
+        let mut i = 0;
+        while i < owed.len() {
+            if let Held::Room(r) = &owed[i].0 {
+                out.push(Said::Room {
+                    // A digest stands for every line it folded, so the facts count those.
+                    seqs: r.seqs(),
+                    text: r.line.clone(),
+                });
+                i += 1;
+                continue;
+            }
+            let start = i;
+            // A run is results of one kind: what was held for a turn that was running is one
+            // `[meanwhile]` group, and what arrived while the session was idle is an ordinary notice
+            // of its own - so a result that arrived between them cannot be folded into the wrong one.
+            let held_here = owed[i].1.is_some();
+            while i < owed.len()
+                && matches!(owed[i].0, Held::Result(_))
+                && owed[i].1.is_some() == held_here
+            {
+                i += 1;
+            }
+            let run = &owed[start..i];
+            let held = run.iter().find_map(|o| o.1);
+            let jobs: Vec<String> = run
+                .iter()
+                .filter_map(|o| match &o.0 {
+                    Held::Result(c) => Some(c.job.clone()),
+                    Held::Room(_) => None,
+                })
+                .collect();
+            let done: Vec<JobCompletion> = run
+                .iter()
+                .filter_map(|o| match &o.0 {
+                    Held::Result(c) => Some(c.clone()),
+                    Held::Room(_) => None,
+                })
+                .collect();
+            let parts = completion_notices(done, &self.me, rows);
+            if let Some(rule) = held
+                && !headed
+            {
+                headed = true;
+                let heading = crate::delivery::meanwhile_heading(run.len(), rule, self.cap);
+                out.push(Said::Result {
+                    jobs: Vec::new(),
+                    held: true,
+                    text: heading,
+                });
+            }
+            out.extend(parts.into_iter().map(|text| Said::Result {
+                jobs: jobs.clone(),
+                held: held_here,
+                text,
+            }));
         }
-        (!parts.is_empty()).then(|| parts.join("\n\n"))
+        out
     }
 
-    /// A turn the model is taking anyway: immediate items, what arrived while idle, and the batch held during the last turn (`Rule::Batch` rides this turn).
+    /// A poll inside a running turn: the room's lines are taken at every one (nothing else holds
+    /// them), the results only at a step boundary - and, when the turn is cheap, only room lines
+    /// that are passing by.
+    pub(crate) fn at_round_boundary(&self, boundary: bool, cheap: bool) -> HeldNow {
+        let (room, ack) = self.take_room(cheap);
+        if cheap || !boundary {
+            return self.owe(
+                room,
+                ack,
+                Vec::new(),
+                Vec::new(),
+                crate::delivery::Rule::Starvation,
+                true,
+            );
+        }
+        let rows = self.rows();
+        let immediate = crate::delivery::sort(&self.watch, &rows, |_| false);
+        let at_once: Vec<JobCompletion> = if immediate.is_empty() {
+            Vec::new()
+        } else {
+            self.log
+                .immediates(&immediate, std::time::SystemTime::now());
+            let done: Vec<JobCompletion> = immediate.into_iter().map(|(c, _)| c).collect();
+            // Delivered, and recorded as such - the fact the plan check's grace reads
+            // (`JobWatchers::grace_left`).
+            self.watch.read_now(&done);
+            done
+        };
+        let released =
+            if crate::delivery::starved(&self.watch, self.cap, std::time::SystemTime::now()) {
+                let held = self.watch.take_held();
+                if !held.is_empty() {
+                    self.log.completions(
+                        &held,
+                        crate::delivery::Rule::Starvation,
+                        std::time::SystemTime::now(),
+                    );
+                    self.watch.read_now(&held);
+                }
+                held
+            } else {
+                Vec::new()
+            };
+        self.owe(
+            room,
+            ack,
+            at_once,
+            released,
+            crate::delivery::Rule::Starvation,
+            false,
+        )
+    }
+
+    /// A turn the model is taking anyway: immediate items, what arrived while idle, the batch held
+    /// during the last turn (`held_rule` rides this turn) and the room's lines - all in arrival order.
     /// Test-only: doors use [`Deliveries::at_turn_start_unread`] because a door's row can still fail.
     #[cfg(test)]
     pub(crate) fn at_turn_start(&self) -> Option<String> {
-        let b = self.between_turns(|_| false, crate::delivery::Rule::Batch);
-        let mut parts = b.now;
-        parts.extend(b.batch);
-        (!parts.is_empty()).then(|| parts.join("\n\n"))
+        let now = self.between_turns_unread(|_| false, crate::delivery::Rule::Batch);
+        let text = now.text();
+        self.read(&now);
+        (!text.is_empty()).then_some(text)
     }
 
-    /// [`Deliveries::at_turn_start`] for a door whose submit can still fail: the words, and the
-    /// results they say, for a caller that marks them only once its row is in.
-    pub(crate) fn at_turn_start_unread(&self) -> (Option<String>, Vec<JobCompletion>) {
-        let (b, told) = self.between_turns_unread(|_| false, crate::delivery::Rule::Batch);
-        let mut parts = b.now;
-        parts.extend(b.batch);
-        ((!parts.is_empty()).then(|| parts.join("\n\n")), told)
+    /// [`Deliveries::at_turn_start`] for a door whose submit can still fail: everything taken, for
+    /// a caller that marks it only once its row is in.
+    pub(crate) fn at_turn_start_unread(&self) -> HeldNow {
+        self.between_turns_unread(|_| false, crate::delivery::Rule::Batch)
     }
 
-    /// Everything owed between turns: holding exists only so a running turn is not interrupted, so nothing stays held.
-    /// Arrivals during work are the batch under `held_rule`, arrivals while idle an ordinary `Rule::Idle` completion.
-    /// Test-only, for [`Deliveries::at_turn_start`]'s reason.
+    /// [`Deliveries::between_turns_unread`], then marked read - the shape the tests that assert a
+    /// between-turns read use.
     #[cfg(test)]
     pub(crate) fn between_turns(
         &self,
         skip: impl Fn(&JobCompletion) -> bool,
         held_rule: crate::delivery::Rule,
-    ) -> BetweenTurns {
-        let (out, told) = self.between_turns_unread(skip, held_rule);
-        self.read(&told);
-        out
+    ) -> HeldNow {
+        let now = self.between_turns_unread(skip, held_rule);
+        self.read(&now);
+        now
     }
 
-    /// `between_turns` without marking anything read: the sentences and the results they say,
-    /// for a caller that has not yet put them in front of the model. It marks them with `read` once it
-    /// has, or hands them back with `put_back` when the turn never opened.
+    /// Everything owed between turns: holding exists only so a running turn is not interrupted, so
+    /// nothing stays held. Arrivals during work are the batch under `held_rule`, arrivals while idle
+    /// an ordinary `Rule::Idle` completion.
     pub(crate) fn between_turns_unread(
         &self,
         skip: impl Fn(&JobCompletion) -> bool,
         held_rule: crate::delivery::Rule,
-    ) -> (BetweenTurns, Vec<JobCompletion>) {
+    ) -> HeldNow {
         // Taken means owed until the turn that says it begins - marked before the take,
         // because `pending` and `held` are what a reader waits on and the take is what clears
         // them. Without it the activity read quiet between the drain and the clock.
+        let room = crate::room::wake::hold(&self.me);
         if self.watch.pending() || self.watch.held_count() > 0 {
             self.watch.took_a_settlement();
         }
@@ -771,48 +969,57 @@ impl Deliveries {
         if !idle.is_empty() {
             self.log.completions(&idle, crate::delivery::Rule::Idle, at);
         }
-        let mut told: Vec<JobCompletion> = immediate.into_iter().map(|(c, _)| c).collect();
-        told.extend(idle);
-        let mut said = told.clone();
-        let now = if told.is_empty() {
-            Vec::new()
-        } else {
-            completion_notices(told, &self.me, &rows)
-        };
-        said.extend(busy.iter().cloned());
-        let batch = (!busy.is_empty()).then(|| {
+        if !busy.is_empty() {
             self.log.completions(&busy, held_rule, at);
-            meanwhile_notice(busy, &self.me, held_rule, self.cap, &rows)
-        });
-        if said.is_empty() {
+        }
+        let mut at_once: Vec<JobCompletion> = immediate.into_iter().map(|(c, _)| c).collect();
+        at_once.extend(idle);
+        let told = at_once.len() + busy.len() + room.lines.len();
+        if told == 0 {
             // Nothing was said after all (a gatekeeper's settlement is nobody's news here), so
             // there is no turn owed and nothing for a reader to wait on.
             self.watch.turn_began();
         }
-        (BetweenTurns { now, batch }, said)
+        self.owe(room.lines, room.ack, at_once, busy, held_rule, room.cheap)
     }
 
-    /// These results are in front of the model now - the read record the plan check's grace
-    /// reads, and a subagent's `delivered` in the store.
-    pub(crate) fn read(&self, told: &[JobCompletion]) {
-        if !told.is_empty() {
-            self.watch.read_now(told);
+    /// What was taken is in front of the model now - the read record the plan check's grace reads, a
+    /// subagent's `delivered` in the store, and the room's seen mark for the lines it carries.
+    pub(crate) fn read(&self, now: &HeldNow) {
+        let results = results_of(&now.told);
+        if !results.is_empty() {
+            self.watch.read_now(&results);
             // Every caller has the notice's row in the transcript already, so the store may say
-            // delivered now. The steering path (`immediates`, `batch`) cannot, and waits.
+            // delivered now. The steering path cannot, and waits.
             self.watch.mark_delivered();
         }
+        crate::room::wake::ack_through(&self.me, now.ack);
     }
 
-    /// These results were never told - the turn that was to carry them did not open - so
-    /// they are held again, for the next break to say.
-    pub(crate) fn put_back(&self, untold: Vec<JobCompletion>) {
-        if untold.is_empty() {
-            return;
+    /// Nothing was told - the turn that was to carry it did not open - so it is held again for the
+    /// next break to say: the results in the watcher set, the room's lines back in their pen, unacked.
+    pub(crate) fn put_back(&self, now: HeldNow) {
+        let results = results_of(&now.told);
+        let room: Vec<RoomLine> = now
+            .told
+            .into_iter()
+            .filter_map(|h| match h {
+                Held::Room(r) => Some(r),
+                Held::Result(_) => None,
+            })
+            .collect();
+        let (owed_results, owed_room) = (!results.is_empty(), !room.is_empty());
+        if owed_results {
+            self.watch.hold(results);
         }
-        self.watch.hold(untold);
-        // The ring these arrived with was spent by the turn that could not say them, so the wake
-        // that makes the next break happen has to be rung here or the session waits for ever.
-        self.watch.a_batch_is_owed();
+        if owed_room {
+            crate::room::wake::put_back(&self.me, room);
+        }
+        if owed_results || owed_room {
+            // The ring these arrived with was spent by the turn that could not say them, so the
+            // wake that makes the next break happen has to be rung here or the session waits for ever.
+            self.watch.a_batch_is_owed();
+        }
     }
 
     pub(crate) fn log_firings(&self, fired: &[letibot_tools::exec::monitor::Firing]) {

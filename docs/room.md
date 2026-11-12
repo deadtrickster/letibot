@@ -759,6 +759,31 @@ by a mention of somebody else - and never by another project's room. The host ro
 messages and the broadcasts, which is what makes it a place to announce rather than a place to work; a
 session's own room is its project's.
 
+**How a message is delivered, and in what order.** A line a session is due becomes an entry in the same
+held-notice queue as a finished job, a child's answer and a monitor firing (`delivery::RoomLine`,
+`Held::Room`), and ONE door says them all: at the next step boundary of a running turn, or as the
+opening of a turn between turns. Whatever triggered the door - a mention, a dm, the operator, a round
+boundary, a turn's start, a job ending - it says everything held for that session in ARRIVAL order. The
+room's lines keep their `seq` order among themselves, a result takes its place by when it settled, and a
+trigger is never said ahead of a line that arrived before it: #1307 is read before #1309, the
+mention that rang the turn.
+
+Nothing is dropped. A session's pen keeps its newest 64 lines (`wake::HELD_ROOM_MAX`); past that the
+OLDEST are folded into one digest line that names every `seq` it stands for and points at `room read`,
+which has the text. The room's seen mark moves only when a turn has the lines in front of the model,
+never when they are taken: a turn that never opens hands everything back, unacked, for the next one.
+A cheap turn still takes only passing-by lines, and anything addressed waits for the full turn after it.
+What rings is unchanged: an `fyi` never rings, a `blocker` always does, and a passing-by line rings only
+when it touches the seat's work.
+
+**A delivery starts a turn; it is not left for one nobody will begin.** A door whose turn never opens
+hands its lines back and rings the wake it came with (`delivery::Deliveries::put_back` →
+`JobWatchers::a_batch_is_owed`), because the ring the line arrived with was spent by that turn: without
+it an idle session would sit on `waiting on: delivery`, with a room it has not read, for ever. That is
+the choice, and the other one - hold it until the next turn - would make the head's word `delivery` a
+promise about a turn nothing causes. A line that rang nothing in the first place stays quiet until the
+next turn, and there the head says idle because the session is.
+
 **The coordinator's own sessions** (the arbiter, the tag agents) have no project, so the host room is
 theirs and they create no project room. A review queue is not one of them: `s-gatekeeper-<key>` is a
 session of that project's daemon, and it sits in `project/<key>`.

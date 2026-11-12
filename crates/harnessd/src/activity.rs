@@ -207,12 +207,12 @@ mod tests {
             HELD_RESULTS_CAP,
             "s-gap",
         );
-        let (out, said) = deliveries.between_turns_unread(|_| false, Rule::TurnEnd);
+        let out = deliveries.between_turns_unread(|_| false, Rule::TurnEnd);
         assert!(
-            !out.now.is_empty() || out.batch.is_some(),
+            !out.is_empty(),
             "there is a sentence to say: the take is not empty"
         );
-        assert!(!said.is_empty(), "and it says the settlement");
+        assert!(!out.told.is_empty(), "and it says the settlement");
         assert!(!watch.pending(), "the queue is empty now");
         assert_eq!(watch.held_count(), 0, "and nothing is held");
         hub.refresh_activity();

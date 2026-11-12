@@ -587,6 +587,12 @@ What landed:
   continuation, offered where it is ARMED (`fall_back_from`) because that is where the two models it
   names are in hand. A sentence for a running turn goes through the door at its **push**
   (`queue_mid_turn`), so a dropped `steer`, `stall` or `context_claim` never reaches the turn.
+- **The room rides this door too** (R187): `wake`'s room bullet is not a source of its own any more.
+  A room line is held in the same queue as a result (`delivery::Held::Room`, whose `RoomLine` keeps
+  the chat `seq`) and the two are said in arrival order by `Deliveries::between_turns_unread` and
+  `Deliveries::at_round_boundary` - the take is one, so the door's order is the arrivals' and not
+  the sources'. The room's own ring rules (`room/link.rs`) are untouched. See `docs/room.md`, *How a
+  message is delivered, and in what order*.
 - **`note_to_model` stays outside**, on purpose: a layer's own failure must not be handed to the
   layer that failed (§4.3).
 - **The page follows the code**: `plugin_hooks`' notice page now names the droppable kinds from

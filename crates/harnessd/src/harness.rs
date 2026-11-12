@@ -1202,29 +1202,27 @@ impl Harness {
         self.hub.warn(code, detail);
     }
 
-    /// The batch a turn about to open carries, taken and NOT yet called delivered: the
-    /// door marks it once its row is in the transcript, or hands it back with
-    /// [`Harness::the_batch_arrived`].
-    pub(crate) fn batch_riding_in(&self) -> (Option<String>, Vec<JobCompletion>) {
-        match self.deliveries() {
-            Some(d) => d.at_turn_start_unread(),
-            None => (None, Vec::new()),
-        }
+    /// Everything a turn about to open carries - the room's lines and the results, in arrival order -
+    /// taken and NOT yet called delivered: the door marks it once its row is in the transcript, or
+    /// hands it back with [`Harness::the_batch_arrived`].
+    pub(crate) fn batch_riding_in(&self) -> Option<HeldNow> {
+        self.deliveries().map(|d| d.at_turn_start_unread())
     }
 
     /// That batch reached the model, or it did not: `opened` is whether the door's row went in.
-    /// A row that never went in leaves the results owed, so the next break says them.
-    pub(crate) fn the_batch_arrived(&self, told: Vec<JobCompletion>, opened: bool) {
-        if told.is_empty() {
+    /// A row that never went in leaves what it carried owed, so the next break says it.
+    pub(crate) fn the_batch_arrived(&self, now: Option<HeldNow>, opened: bool) {
+        let Some(now) = now else { return };
+        if now.told.is_empty() {
             return;
         }
         let Some(d) = self.deliveries() else {
             return;
         };
         if opened {
-            d.read(&told);
+            d.read(&now);
         } else {
-            d.put_back(told);
+            d.put_back(now);
         }
     }
 
@@ -1659,8 +1657,8 @@ pub(crate) use children::{
     steer_for_turn_over, stop_children_first, visible_text,
 };
 pub(crate) use deliveries::{
-    Deliveries, OPERATOR_RETIRE, graced_endings, human_secs, monitor_entries_of, monitor_facts,
-    monitor_notice, notice_row,
+    Deliveries, HeldNow, OPERATOR_RETIRE, Said, graced_endings, human_secs, monitor_entries_of,
+    monitor_facts, monitor_notice, notice_row,
 };
 pub use deliveries::{JOB_CLOSING, MONITORS_ENDED_SHOWN};
 #[cfg(test)]

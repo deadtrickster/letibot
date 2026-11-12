@@ -186,10 +186,13 @@ impl Harness {
     /// model has to be told why it is being asked again.
     pub fn resume_after_limit(&mut self, notice: String) -> Result<Reply, HarnessError> {
         let mut text = notice;
-        let (riding, told) = self.batch_riding_in();
-        if let Some(meanwhile) = riding {
-            text.push_str("\n\n");
-            text.push_str(&meanwhile);
+        let riding = self.batch_riding_in();
+        if let Some(now) = &riding {
+            let batch = now.text();
+            if !batch.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&batch);
+            }
         }
         // The wall is checked BEFORE the send, like every other door: a resumed turn is not more
         // likely to fit, and a first round refused for LENGTH would read as a limit again.
@@ -204,7 +207,7 @@ impl Harness {
             }],
             |_| opened = true,
         );
-        self.the_batch_arrived(told, opened);
+        self.the_batch_arrived(riding, opened);
         out
     }
 

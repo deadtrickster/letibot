@@ -240,14 +240,16 @@ impl Harness {
         // own row, BEFORE the words that started the turn, so what the operator (or a parent)
         // said is still the last thing the model reads.
         let mut items = Vec::new();
-        let (riding, told) = self.batch_riding_in();
-        if let Some(meanwhile) = riding {
-            self.trail
-                .say(Speaker::Agent, &meanwhile, Some(Instant::now()));
-            items.push(TranscriptItem::User {
-                speaker: letibot_transcript::Speaker::Agent,
-                parts: vec![UserPart::Text { text: meanwhile }],
-            });
+        let riding = self.batch_riding_in();
+        if let Some(now) = &riding {
+            let batch = now.text();
+            if !batch.is_empty() {
+                self.trail.say(Speaker::Agent, &batch, Some(Instant::now()));
+                items.push(TranscriptItem::User {
+                    speaker: letibot_transcript::Speaker::Agent,
+                    parts: vec![UserPart::Text { text: batch }],
+                });
+            }
         }
         self.trail.say(speaker, text, Some(Instant::now()));
         items.push(TranscriptItem::User {
@@ -271,7 +273,7 @@ impl Harness {
         // about whether it was read.
         let mut opened = false;
         let out = self.submit_items_then(items, |_| opened = true);
-        self.the_batch_arrived(told, opened);
+        self.the_batch_arrived(riding, opened);
         out
     }
 
@@ -369,16 +371,8 @@ impl Harness {
         // the joined text, so the facts a layer is handed are the ones its sentence was composed from.
         let queue = self.queue_notices();
         let mut notices = self.say_all(&Facts::MergeQueue { rows: queue.len() }, queue);
-        // The room's bells: a room event about this session became a sentence on the connection's own thread,
-        // because the thread that hears a bell is not the thread that runs a turn. One notice per event, through
-        // the same hook, so a layer may reword it and may not delete it: the model is owed that fact.
-        let room = crate::room::wake::take_wake(&self.cfg.session_id);
-        let room_cheap = room.cheap;
-        let room_seqs = room.seqs.clone();
-        let before_room = notices.len();
-        let room_items = room.lines.len();
-        notices.extend(self.say_all(&Facts::Room { items: room_items }, room.lines));
-        let room_n = notices.len() - before_room;
+        // The room's lines are NOT said here: they are one queue with the results now, and the door
+        // below says them in arrival order - see [`Deliveries::between_turns_unread`].
         // And the children a restart brought back, one line each, saying which came back and which could not.
         // Counted with the queue's notices, since both are facts the daemon found in the store rather than
         // settlements that arrived.
@@ -447,23 +441,57 @@ impl Harness {
         // the queue's row above, so telling the model here would be a turn about work already
         // recorded and already gone from the board.
         let gatekeepers = &self.gatekeepers;
-        // The sentences, and which kind gets which, come from `completion_notices` so they can be asserted
-        // without a live session. Nothing stays held between turns; they are marked read only once the turn has
-        // opened, or a turn that failed to open would lose them.
-        let between = deliveries.as_ref().map(|d| {
+        // ONE DOOR. The room's lines and the results the session is due come out of one take in the
+        // order they arrived, so a room line is never said ahead of something that happened before it
+        // and a trigger never arrives before the line it follows.
+        let mut door = deliveries.as_ref().map(|d| {
             d.between_turns_unread(
                 |c| gatekeepers.contains(&c.job),
                 crate::delivery::Rule::TurnEnd,
             )
         });
-        let mut held_batch = None;
-        let mut said: Vec<JobCompletion> = Vec::new();
-        if let Some((b, told)) = between {
-            let jobs = told.iter().map(|c| c.job.clone()).collect::<Vec<_>>();
-            let now = self.say_all(&Facts::Job { jobs }, b.now);
-            notices.extend(now);
-            held_batch = b.batch;
-            said = told;
+        let mut room_seqs: Vec<u64> = Vec::new();
+        let mut parts: Vec<Said> = Vec::new();
+        let room_cheap;
+        match &door {
+            Some(now) => {
+                room_seqs.extend(
+                    now.told
+                        .iter()
+                        .filter_map(|h| h.room())
+                        .flat_map(|r| r.seqs()),
+                );
+                room_cheap = now.cheap;
+                parts.extend(now.parts.iter().cloned());
+            }
+            // Nothing to hold a result in: the room's lines are taken and said here, as they were
+            // before the door existed, so a session with no watcher set still hears its room.
+            None => {
+                let took = crate::room::wake::take_wake(&self.cfg.session_id);
+                room_cheap = took.cheap;
+                room_seqs.extend(took.seqs.iter().copied());
+                crate::room::wake::ack_through(&self.cfg.session_id, took.ack);
+                parts.extend(took.lines.into_iter().map(|r| Said::Room {
+                    seqs: r.seqs(),
+                    text: r.line,
+                }));
+            }
+        }
+        // Said per source, through the same hook, so a layer may reword and may not delete: the
+        // model is owed both facts.
+        for part in &parts {
+            let (facts, text) = match part {
+                Said::Room { seqs, text } => (
+                    Facts::Room {
+                        items: seqs.len().max(1),
+                    },
+                    text.clone(),
+                ),
+                Said::Result { jobs, text, .. } => {
+                    (Facts::Job { jobs: jobs.clone() }, text.clone())
+                }
+            };
+            notices.extend(self.say_all(&facts, vec![text]));
         }
         // And the rows whose condition just became met: a firing is the same kind of fact as a job
         // ending, and the line carries both halves, because an intent with no fate is a sentence the
@@ -482,17 +510,10 @@ impl Harness {
             monitor_n,
             result_n,
             due.len(),
-            usize::from(held_batch.is_some()),
+            door.as_ref().map_or(0, |now| {
+                now.told.iter().filter(|h| h.room().is_some()).count()
+            }),
         ];
-        // The held batch last, after everything said now.
-        let held: Vec<String> = match held_batch.as_deref() {
-            Some(text) => self
-                .say(&Facts::Job { jobs: Vec::new() }, text)
-                .into_iter()
-                .collect(),
-            None => Vec::new(),
-        };
-        notices.extend(held);
         let anything = !notices.is_empty() || firing_row.is_some();
         // A wake with nothing to say runs no turn, so nothing is owed for what the take
         // removed - and this has to be cleared BEFORE the publish below, or the value a reader
@@ -518,7 +539,8 @@ impl Harness {
             }
         }
         // Cheap only when passing-by room talk is ALL this wake carries: anything else directs it.
-        let cheap = room_cheap && room_n > 0 && notices.len() == room_n && firing_row.is_none();
+        let cheap =
+            room_cheap && !parts.is_empty() && notices.len() == parts.len() && firing_row.is_none();
         // Two rows sometimes, and one turn: the settlements in the session's own voice as it
         // has always said them, and a firing as a delivery with a kind of its own - never a `User`
         // row, whose `speaker` default is what would read as the operator's words.
@@ -571,14 +593,19 @@ impl Harness {
         }
         // Told only once the turn has opened: opened means the notice is in the transcript and in the store, so
         // the model reads it whatever its rounds come to. A turn that never opened put nothing in front of
-        // anybody, so the results, the restart notices and the monitor cursor all go back and the next wake says it.
+        // anybody, so everything the door took - the results and the room's lines, unacked - goes back and the
+        // next wake says it.
         if opened {
-            if let Some(d) = &deliveries {
-                d.read(&said);
+            if let Some(d) = &deliveries
+                && let Some(now) = door.take()
+            {
+                d.read(&now);
             }
         } else {
-            if let Some(d) = &deliveries {
-                d.put_back(said);
+            if let Some(d) = &deliveries
+                && let Some(now) = door.take()
+            {
+                d.put_back(now);
             }
             let mut back = restart_taken;
             back.append(&mut self.restart_notices);
@@ -619,11 +646,11 @@ impl Harness {
     pub fn continue_after_restart(&mut self, notice: &str) -> Result<Reply, HarnessError> {
         let mut parts = vec![notice.to_string()];
         parts.append(&mut self.restart_notices);
-        let (riding, told) = self.batch_riding_in();
-        if let Some(meanwhile) = riding {
-            parts.push(meanwhile);
-        }
-        let text = parts.join("\n\n");
+        let riding = self.batch_riding_in();
+        let text = match &riding {
+            Some(now) => now.text_after(&parts.join("\n\n")),
+            None => parts.join("\n\n"),
+        };
         // A restart is a fact the model is owed, so the door may reword it and cannot drop it.
         let text = self.say_kept(&Facts::Restart { lines: parts.len() }, text);
         self.trail.begin_turn();
@@ -638,7 +665,7 @@ impl Harness {
             }],
             |_| opened = true,
         );
-        self.the_batch_arrived(told, opened);
+        self.the_batch_arrived(riding, opened);
         out
     }
 
@@ -1265,10 +1292,13 @@ impl Harness {
     /// model that took over. The held batch rides in, since this is a turn the model takes anyway.
     pub fn continue_after_fallback(&mut self, notice: String) -> Result<Reply, HarnessError> {
         let mut text = notice;
-        let (riding, told) = self.batch_riding_in();
-        if let Some(meanwhile) = riding {
-            text.push_str("\n\n");
-            text.push_str(&meanwhile);
+        let riding = self.batch_riding_in();
+        if let Some(now) = &riding {
+            let batch = now.text();
+            if !batch.is_empty() {
+                text.push_str("\n\n");
+                text.push_str(&batch);
+            }
         }
         // The wall is checked BEFORE the send, like every other door: a session that inherited a
         // refusal is not more likely to fit, and a first round refused for LENGTH would be read as
@@ -1286,7 +1316,7 @@ impl Harness {
             }],
             |_| opened = true,
         );
-        self.the_batch_arrived(told, opened);
+        self.the_batch_arrived(riding, opened);
         out
     }
 

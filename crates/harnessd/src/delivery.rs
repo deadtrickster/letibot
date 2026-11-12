@@ -19,7 +19,9 @@ pub const HELD_RESULTS_CAP: Duration = Duration::from_secs(10 * 60);
 /// Never the workspace: a `.letibot/` there would make every child's worktree look dirty.
 pub const LOG: &str = "delivery-log.jsonl";
 
-/// What finished.
+/// What finished. The three come out of the watcher set and are decided by [`decide`]; a room line
+/// is not one of them - the room's own ring decides it, and it only rides the same queue
+/// (`Held::Room`) so one door can put everything in arrival order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResultKind {
     /// A background job (`bash` background, or a foreground call promoted).
@@ -45,6 +47,78 @@ impl ResultKind {
             BackgroundKind::Subagent => ResultKind::Child,
         }
     }
+}
+
+/// A room line a session is owed, as the room's reader composed it: the sentence, the chat `seq`
+/// behind it (`0` for a queue event or a gap), when it was queued, and whether it only passed by.
+/// The `seq` rides on the entry so an ack can be made from what was actually delivered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomLine {
+    pub seq: u64,
+    /// Every chat `seq` this line stands for. Empty for a line that is one message - `seq` is the
+    /// whole of it - and the folded ones for a digest, so the door's facts and the wake's report
+    /// count the lines the digest took the place of rather than the one line it is.
+    pub stands_for: Vec<u64>,
+    pub line: String,
+    pub arrived: SystemTime,
+    /// Only passing-by talk: a turn carrying nothing but these may run cheap.
+    pub passing: bool,
+}
+
+impl RoomLine {
+    /// The chat messages this line carries: its own `seq`, or every `seq` of a digest.
+    pub fn seqs(&self) -> Vec<u64> {
+        match self.stands_for.is_empty() {
+            true => match self.seq {
+                0 => Vec::new(),
+                seq => vec![seq],
+            },
+            false => self.stands_for.clone(),
+        }
+    }
+}
+
+/// One thing a session is owed, whatever produced it - the same queue for a finished job, a child,
+/// a monitor and a room line, so one door says them in the order they happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Held {
+    Result(JobCompletion),
+    Room(RoomLine),
+}
+
+impl Held {
+    /// When it reached the session - what the door sorts by.
+    pub fn arrived(&self) -> SystemTime {
+        match self {
+            Held::Result(c) => c.arrived,
+            Held::Room(r) => r.arrived,
+        }
+    }
+
+    pub fn room(&self) -> Option<&RoomLine> {
+        match self {
+            Held::Room(r) => Some(r),
+            Held::Result(_) => None,
+        }
+    }
+}
+
+/// Everything a session is owed, in arrival order: the room's lines keep the order the room's
+/// reader queued them in among themselves (which is `seq` order), and a result takes its own place
+/// by when it settled. The sort is stable, so two things held at the same instant keep the order
+/// they were held in.
+pub fn in_arrival_order(room: Vec<RoomLine>, results: Vec<JobCompletion>) -> Vec<Held> {
+    let mut all: Vec<Held> = results.into_iter().map(Held::Result).collect();
+    all.extend(room.into_iter().map(Held::Room));
+    arrivals(all, Held::arrived)
+}
+
+/// Sort anything by when it arrived, keeping the order it was given in when two arrived at the same
+/// instant - the one shape every door's batch is built with.
+pub fn arrivals<T>(items: Vec<T>, at: impl Fn(&T) -> SystemTime) -> Vec<T> {
+    let mut items = items;
+    items.sort_by_key(|i| at(i));
+    items
 }
 
 /// Why a result is delivered at once: the rule that applied, recorded with the delivery.
@@ -278,8 +352,12 @@ impl Rule {
 /// `completion_notices`' own, so the head's compact job rows read them as they always did.
 /// It says what the results are and not which rule delivered them
 pub fn meanwhile_heading(_n: usize, _rule: Rule, _cap: Duration) -> String {
-    "[meanwhile] Finished while you were working:".to_string()
+    MEANWHILE.to_string()
 }
+
+/// The opening word of a held batch - what the head's fold and every test that reads the batch
+/// apart from the rest of a delivery looks for.
+pub const MEANWHILE: &str = "[meanwhile] Finished while you were working:";
 
 /// The append-only delivery record: one JSON line per delivered result, under the session's logs.
 ///

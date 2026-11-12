@@ -293,38 +293,59 @@ impl SteeringSource for HubSteering {
             }
             return Some(SteeringMessage::normal(text));
         }
-        // Then the room, at the boundary a running turn actually reaches. A room event becomes a
-        // sentence on the connection's thread and `wake` reads it between turns, which is the wrong door
-        // for a long turn: the note arrives after the work it would have changed. One queue, so once.
-        let room = if self.cheap {
-            crate::room::wake::take_if_cheap(&self.hub.session_id())
-        } else {
-            crate::room::wake::take(&self.hub.session_id())
-        };
-        if !room.is_empty() {
-            let facts = Facts::Room { items: room.len() };
-            let text = self.said(&facts, &room.join("\n\n"));
-            if let Some(t) = &self.trail {
-                t.say(Speaker::Agent, &text, Some(Instant::now()));
+        // Then the one door: the room's lines and the results, taken together and said in the order
+        // they arrived, so nothing jumps the queue and no ring arrives before the line it follows.
+        // The room's lines are taken at every boundary (nothing else holds them); the results only at
+        // a step boundary, and never into a cheap turn, which leaves them for the full one after it.
+        let boundary = std::mem::take(&mut self.at_boundary);
+        if let Some(d) = &self.deliveries {
+            let now = d.at_round_boundary(boundary, self.cheap);
+            if !now.is_empty() {
+                d.read(&now);
+                let mut said: Vec<String> = Vec::new();
+                for part in &now.parts {
+                    let line = match part {
+                        Said::Room { seqs, text } => self.said(
+                            &Facts::Room {
+                                items: seqs.len().max(1),
+                            },
+                            text,
+                        ),
+                        Said::Result { jobs, text, .. } => {
+                            self.said(&Facts::Job { jobs: jobs.clone() }, text)
+                        }
+                    };
+                    said.push(line);
+                }
+                let text = said.join("\n\n");
+                if let Some(t) = &self.trail {
+                    t.say(Speaker::Agent, &text, Some(Instant::now()));
+                }
+                return Some(SteeringMessage::normal(text));
             }
-            return Some(SteeringMessage::normal(text));
+        } else {
+            // A session with no watcher set has nowhere to hold a result: the room's lines are
+            // taken on their own, as they were before the door existed.
+            let room = if self.cheap {
+                crate::room::wake::take_if_cheap(&self.hub.session_id())
+            } else {
+                crate::room::wake::hold(&self.hub.session_id())
+            };
+            crate::room::wake::ack_through(&self.hub.session_id(), room.ack);
+            if !room.is_empty() {
+                let facts = Facts::Room {
+                    items: room.lines.len(),
+                };
+                let text = self.said(&facts, &room.text().join("\n\n"));
+                if let Some(t) = &self.trail {
+                    t.say(Speaker::Agent, &text, Some(Instant::now()));
+                }
+                return Some(SteeringMessage::normal(text));
+            }
         }
         // A cheap turn leaves results and firings for the wake after it, which is a full turn.
         if self.cheap {
             return None;
-        }
-        // Then a background job or subagent of THIS session's own that has ended, above the
-        // monitors because that block returns early with no registry. Only at a step boundary:
-        // saying it reads the whole board and takes the held set.
-        if let Some(d) = &self.deliveries
-            && std::mem::take(&mut self.at_boundary)
-            && let Some(text) = d.at_round_boundary()
-        {
-            let text = self.said(&Facts::Job { jobs: Vec::new() }, &text);
-            if let Some(t) = &self.trail {
-                t.say(Speaker::Agent, &text, Some(Instant::now()));
-            }
-            return Some(SteeringMessage::normal(text));
         }
         // Then a monitor that fired while this turn was running. Between turns the
         // same firing arrives through `Harness::wake`; the shared cursor is what

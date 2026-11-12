@@ -1,31 +1,52 @@
-//! The queue between the room's reader thread and the turn that answers it. The event arrives on
-//! the thread blocked on the socket and the turn runs on the daemon's worker, so it becomes a
-//! sentence that outlives its hearer - process-wide, keyed by the session id, unique in a daemon.
+//! The room's side of the delivery door: the reader thread composes a sentence per event, and it
+//! waits here - process-wide, keyed by the session id - until the door that says the session's held
+//! notices takes it. Nothing here decides when a line is said, and nothing here drops one.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 
-/// How many notes one session's queue holds. A note is a sentence of a few hundred bytes, so sixty
-/// four of them is the memory one session's listener may hold when nothing is taking them.
-pub const MAX_NOTES: usize = 64;
+use crate::delivery::RoomLine;
+
+/// How many room lines one session's pen keeps as lines. Past it the OLDEST are folded into one
+/// digest that names every `seq` and points at the room's own read, so a session that fell far
+/// behind loses nothing and can still fetch the text.
+pub const HELD_ROOM_MAX: usize = 64;
 
 /// How many sessions have a queue at once. A daemon's sessions are tens, and a closed one gives its
 /// entry back; the bound is here so a name that is never closed again cannot grow the map.
 pub const MAX_SESSIONS: usize = 256;
 
-/// One session's notes, and the order in which they were pushed - what an eviction needs, without a
+/// The lines the bound folded away, oldest first - what the digest line is made of.
+#[derive(Debug, Default)]
+struct Folded {
+    seqs: Vec<u64>,
+    /// How many lines were folded, chat or queue event.
+    count: usize,
+    /// When the oldest of them was queued, so the digest takes that line's place in arrival order.
+    first: Option<SystemTime>,
+}
+
+impl Folded {
+    fn add(&mut self, line: &RoomLine) {
+        self.first.get_or_insert(line.arrived);
+        self.count += 1;
+        if line.seq > 0 {
+            self.seqs.push(line.seq);
+        }
+    }
+}
+
+/// One session's lines, and the order in which they were pushed - what the fold needs, without a
 /// clock two pushes in the same millisecond would share.
 #[derive(Debug, Default)]
 struct Queue {
-    lines: VecDeque<String>,
+    lines: VecDeque<RoomLine>,
+    folded: Folded,
     pushed: u64,
-    /// Notes the bound took: said on the log rather than cut in silence.
-    dropped: u64,
-    /// The newest chat `seq` behind a queued note, acked to the room when a turn takes it.
+    /// The newest chat `seq` behind a line here, acked once a turn carries it.
     chat_seq: u64,
-    /// Every chat `seq` behind a queued note, reported to the room when the turn they woke ends.
-    seqs: Vec<u64>,
-    /// A note other than a passing-by chat line is queued, so the wake is a full turn.
+    /// A line other than a passing-by chat line is queued, so the wake is a full turn.
     full: bool,
 }
 
@@ -41,36 +62,44 @@ fn queues() -> &'static Mutex<Queues> {
     QUEUES.get_or_init(Default::default)
 }
 
-/// Put a sentence in front of a session's next turn.
+/// Put a sentence in front of a session's next turn - a queue event, a gap, a restart note.
 pub fn push(session: &str, line: String) {
     let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
-    enqueue(&mut q, session, line);
+    enqueue(&mut q, session, note(&line, 0, false));
     if let Some(entry) = q.map.get_mut(session) {
         entry.full = true;
     }
 }
 
-/// A chat message's note, remembered by its `seq` so the turn that takes it can tell the room.
-/// Only a `Passing` note leaves the wake cheap.
+/// A chat message's line, remembered by its `seq` so the turn that carries it can tell the room.
+/// Only a `Passing` line leaves the wake cheap.
 pub fn push_chat(session: &str, seq: u64, reach: letibot_room::chat::Reach, line: String) {
+    let passing = reach == letibot_room::chat::Reach::Passing;
     let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
-    enqueue(&mut q, session, line);
+    enqueue(&mut q, session, note(&line, seq, passing));
     if let Some(entry) = q.map.get_mut(session) {
         entry.chat_seq = entry.chat_seq.max(seq);
-        if seq > 0 && !entry.seqs.contains(&seq) && entry.seqs.len() < MAX_NOTES {
-            entry.seqs.push(seq);
-        }
-        entry.full |= reach != letibot_room::chat::Reach::Passing;
+        entry.full |= !passing;
     }
 }
 
-/// Note that chat up to `seq` was seen by a session that is not woken for it. With notes still
-/// queued the seq rides on them, acked when a turn takes them; `false` when nothing is queued and
-/// the caller acks now. Acked now, it would mark seen past a note no turn has taken.
+fn note(line: &str, seq: u64, passing: bool) -> RoomLine {
+    RoomLine {
+        seq,
+        stands_for: Vec::new(),
+        line: line.to_string(),
+        arrived: SystemTime::now(),
+        passing,
+    }
+}
+
+/// Note that chat up to `seq` was seen by a session that is not woken for it. With lines still
+/// queued the seq rides on them, acked when a turn carries them; `false` when nothing is queued and
+/// the caller acks now. Acked now, it would mark seen past a line no turn has taken.
 pub fn seen_meanwhile(session: &str, seq: u64) -> bool {
     let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
     match q.map.get_mut(session) {
-        Some(entry) if !entry.lines.is_empty() => {
+        Some(entry) if !entry.lines.is_empty() || entry.folded.first.is_some() => {
             entry.chat_seq = entry.chat_seq.max(seq);
             true
         }
@@ -78,9 +107,9 @@ pub fn seen_meanwhile(session: &str, seq: u64) -> bool {
     }
 }
 
-/// The push, given the queues it goes into - so a test can prove the bounds without filling the
+/// The push, given the queues it goes into - so a test can prove the bound without filling the
 /// process's own map.
-fn enqueue(queues: &mut Queues, session: &str, line: String) {
+fn enqueue(queues: &mut Queues, session: &str, line: RoomLine) {
     queues.next += 1;
     let pushed = queues.next;
     if !queues.map.contains_key(session)
@@ -100,104 +129,186 @@ fn enqueue(queues: &mut Queues, session: &str, line: String) {
     let entry = queues.map.entry(session.to_string()).or_default();
     entry.pushed = pushed;
     entry.lines.push_back(line);
-    while entry.lines.len() > MAX_NOTES {
-        entry.lines.pop_front();
-        entry.dropped += 1;
-        if entry.dropped == 1 {
-            eprintln!(
-                "harnessd: `{session}` already has {MAX_NOTES} untaken room note(s); the oldest \
-                 are dropped - the room's reads have the state"
-            );
+    fold(entry);
+}
+
+/// Keep at most [`HELD_ROOM_MAX`] lines: the overflow is summarised, never dropped. The digest
+/// names every `seq` it folded, because the session can always fetch the text with the room's read.
+fn fold(entry: &mut Queue) {
+    while entry.lines.len() > HELD_ROOM_MAX {
+        if let Some(gone) = entry.lines.pop_front() {
+            entry.folded.add(&gone);
         }
     }
 }
 
-/// Take everything waiting for this session - what `Harness::wake` composes into its notices.
-pub fn take(session: &str) -> Vec<String> {
-    let (lines, seq) = take_with_seq(session);
+/// What the bound folded, as the one line that stands in for it - `None` when nothing was folded.
+fn digest(entry: &Queue) -> Option<RoomLine> {
+    let first = entry.folded.first?;
+    let seqs: Vec<String> = entry.folded.seqs.iter().map(|s| format!("#{s}")).collect();
+    let which = match seqs.is_empty() {
+        true => String::new(),
+        false => format!(": {}", seqs.join(", ")),
+    };
+    let text = format!(
+        "[room] {} earlier room line(s) are held for you{which}. None were dropped: read them all \
+         with `room read` (`room_read` from Claude Code), and this turn goes on with the ones below.",
+        entry.folded.count,
+    );
+    Some(RoomLine {
+        seq: entry.folded.seqs.first().copied().unwrap_or(0),
+        stands_for: entry.folded.seqs.clone(),
+        line: text,
+        arrived: first,
+        passing: true,
+    })
+}
+
+/// Everything waiting for this session, in the order it arrives - the door's take. It does not ack:
+/// a line is acknowledged when a turn has it in front of the model, see [`ack_through`].
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Taken {
+    /// The digest first when something was folded, then the lines themselves.
+    pub lines: Vec<RoomLine>,
+    /// Nothing here directs the session, so the turn runs cheap and silence is its expected end.
+    pub cheap: bool,
+    /// The chat messages these lines carry.
+    pub seqs: Vec<u64>,
+    /// The newest chat `seq` behind them, for the turn that carries them to ack.
+    pub ack: u64,
+}
+
+impl Taken {
+    /// The sentences, for a caller that only wants to say them.
+    pub fn text(&self) -> Vec<String> {
+        self.lines.iter().map(|l| l.line.clone()).collect()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+}
+
+/// Take everything waiting, without acking it.
+pub fn hold(session: &str) -> Taken {
+    let taken = {
+        let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
+        q.map.remove(session)
+    };
+    match taken {
+        Some(entry) => collect(entry),
+        None => Taken::default(),
+    }
+}
+
+/// A queue taken, as the door hands it over: the digest first when something was folded, then the
+/// lines, and every chat `seq` any of them carries - so nothing a line names is left unreported.
+fn collect(entry: Queue) -> Taken {
+    let digest = digest(&entry);
+    let mut seqs = entry.folded.seqs.clone();
+    seqs.extend(entry.lines.iter().filter(|l| l.seq > 0).map(|l| l.seq));
+    // A message can be queued twice by two rooms' readers; the report is of messages, not lines.
+    let mut unique: Vec<u64> = Vec::new();
+    for seq in seqs {
+        if !unique.contains(&seq) {
+            unique.push(seq);
+        }
+    }
+    let mut lines: Vec<RoomLine> = digest.into_iter().collect();
+    let cheap = !entry.full && !(lines.is_empty() && entry.lines.is_empty());
+    lines.extend(entry.lines);
+    Taken {
+        // A digest is passing-by talk too, so it does not make the turn a full one.
+        cheap,
+        lines,
+        seqs: unique,
+        ack: entry.chat_seq,
+    }
+}
+
+/// Tell the room that a session has seen chat up to `seq` - the one ack, from the door that has a
+/// turn carrying those lines, or a session that took none.
+pub fn ack_through(session: &str, seq: u64) {
     if seq > 0 {
         super::link::ack_taken(session, seq);
     }
+}
+
+/// Hand back lines a turn never opened: they go in front, in the order they were taken, and the
+/// bound folds them again if they overflow it. Nothing is acked, so the room still has them unseen.
+pub fn put_back(session: &str, lines: Vec<RoomLine>) {
+    if lines.is_empty() {
+        return;
+    }
+    let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
+    let entry = q.map.entry(session.to_string()).or_default();
+    for line in lines.into_iter().rev() {
+        // What the take would have said about the batch is restored with it: the newest seq an ack
+        // names, and whether a line other than passing-by talk is in it.
+        entry.chat_seq = entry.chat_seq.max(line.seq);
+        entry.full |= !line.passing;
+        entry.lines.push_front(line);
+    }
+    fold(entry);
+}
+
+/// Take everything waiting and tell the room it was taken - the pre-door callers' take, kept for
+/// the tests that assert a take is a take. The harness's own doors use [`hold`] and then ack.
+pub fn take(session: &str) -> Vec<String> {
+    let (lines, seq) = take_with_seq(session);
+    ack_through(session, seq);
     lines
 }
 
-/// What a between-turns wake takes: the notes, and whether every one was passing by.
-#[derive(Debug, Default, PartialEq, Eq)]
-pub struct Taken {
-    pub lines: Vec<String>,
-    /// Nothing here directs the session, so the turn runs cheap and silence is its expected end.
-    pub cheap: bool,
-    /// The chat messages these notes carry.
-    pub seqs: Vec<u64>,
+/// [`take`] without the ack split out: the sentences and the newest chat `seq` among them.
+pub fn take_with_seq(session: &str) -> (Vec<String>, u64) {
+    let taken = hold(session);
+    (taken.text(), taken.ack)
 }
 
-/// [`take`] for `Harness::wake`, which also needs to know if the turn may run cheap.
+/// [`take`] for a caller that also needs to know if the turn may run cheap.
 pub fn take_wake(session: &str) -> Taken {
-    let (taken, seq) = take_full(session);
-    if seq > 0 {
-        super::link::ack_taken(session, seq);
-    }
+    let taken = hold(session);
+    ack_through(session, taken.ack);
     taken
 }
 
-/// [`take`] only when every queued note is passing by, for a cheap turn already running: an
-/// addressed note stays queued, and the wake it rang runs a full turn after this one.
-pub fn take_if_cheap(session: &str) -> Vec<String> {
+/// [`hold`] only when every queued line is passing by, for a cheap turn already running: an
+/// addressed line stays queued, and the wake it rang runs a full turn after this one.
+pub fn take_if_cheap(session: &str) -> Taken {
     let taken = {
         let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
-        if q.map.get(session).is_none_or(|e| e.full) {
-            return Vec::new();
+        let Some(entry) = q.map.get(session) else {
+            return Taken::default();
+        };
+        if entry.full {
+            return Taken::default();
         }
         q.map.remove(session)
     };
-    let Some(queue) = taken else {
-        return Vec::new();
+    let Some(entry) = taken else {
+        return Taken::default();
     };
-    if queue.chat_seq > 0 {
-        super::link::ack_taken(session, queue.chat_seq);
-    }
-    queue.lines.into_iter().collect()
+    collect(entry)
 }
 
-/// [`take`] without the ack: the notes, and the newest chat `seq` among them (0 for none).
-pub fn take_with_seq(session: &str) -> (Vec<String>, u64) {
-    let (taken, seq) = take_full(session);
-    (taken.lines, seq)
-}
-
-fn take_full(session: &str) -> (Taken, u64) {
-    let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
-    match q.map.remove(session) {
-        Some(queue) => {
-            if queue.dropped > 0 {
-                eprintln!(
-                    "harnessd: {} room note(s) for `{session}` were dropped while they waited",
-                    queue.dropped
-                );
-            }
-            let cheap = !queue.full && !queue.lines.is_empty();
-            let lines = queue.lines.into_iter().collect();
-            let seqs = queue.seqs;
-            (Taken { lines, cheap, seqs }, queue.chat_seq)
-        }
-        None => (Taken::default(), 0),
-    }
-}
-
-/// Forget a session's queue. A session that has closed will take no turn, so its notes are for
+/// Forget a session's queue. A session that has closed will take no turn, so its lines are for
 /// nobody - and an entry nothing removes is the memory of every session a daemon ever held.
 pub fn forget(session: &str) -> usize {
     let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
     q.map
         .remove(session)
-        .map(|queue| queue.lines.len())
+        .map(|entry| entry.lines.len() + entry.folded.count)
         .unwrap_or(0)
 }
 
 /// How many sentences are waiting for a session - the assertion a test makes instead of sleeping.
 pub fn waiting(session: &str) -> usize {
     let q = queues().lock().unwrap_or_else(|e| e.into_inner());
-    q.map.get(session).map(|v| v.lines.len()).unwrap_or(0)
+    q.map
+        .get(session)
+        .map(|v| v.lines.len() + usize::from(v.folded.first.is_some()))
+        .unwrap_or(0)
 }
 
 /// Why a message woke this session. A digest summarises peers' talk, so it is passing by.
@@ -402,7 +513,7 @@ mod tests {
         }
     }
 
-    /// A wake is cheap only when every note it takes was passing by: one addressed note, one
+    /// A wake is cheap only when every line it takes was passing by: one addressed line, one
     /// operator line or one queue event makes it a full turn.
     #[test]
     fn a_wake_is_cheap_only_when_every_note_was_passing_by() {
@@ -410,9 +521,9 @@ mod tests {
         let s = "s-cheap-wake";
         push_chat(s, 3, Reach::Passing, "a".into());
         push_chat(s, 4, Reach::Passing, "b".into());
-        let (taken, seq) = take_full(s);
+        let taken = hold(s);
         assert!(taken.cheap, "{taken:?}");
-        assert_eq!((taken.lines.len(), seq), (2, 4));
+        assert_eq!((taken.lines.len(), taken.ack), (2, 4));
         assert_eq!(
             taken.seqs,
             vec![3, 4],
@@ -421,15 +532,15 @@ mod tests {
         for reach in [Reach::Operator, Reach::Dm, Reach::Addressed] {
             push_chat(s, 5, Reach::Passing, "a".into());
             push_chat(s, 6, reach, "b".into());
-            assert!(!take_full(s).0.cheap, "{reach:?} is a full turn");
+            assert!(!hold(s).cheap, "{reach:?} is a full turn");
         }
         push_chat(s, 7, Reach::Passing, "a".into());
         push(s, "[room] an event".into());
-        assert!(!take_full(s).0.cheap, "a queue event is a full turn");
-        assert!(!take_full(s).0.cheap, "nothing queued is no turn at all");
-        // A cheap turn already running takes passing-by notes and leaves an addressed one.
+        assert!(!hold(s).cheap, "a queue event is a full turn");
+        assert!(hold(s).is_empty(), "nothing queued is no take at all");
+        // A cheap turn already running takes passing-by lines and leaves an addressed one.
         push_chat(s, 0, Reach::Passing, "a".into());
-        assert_eq!(take_if_cheap(s), vec!["a".to_string()]);
+        assert_eq!(take_if_cheap(s).text(), vec!["a".to_string()]);
         push_chat(s, 0, Reach::Addressed, "b".into());
         assert!(take_if_cheap(s).is_empty());
         assert_eq!(waiting(s), 1, "it waits for the full turn after");
@@ -498,25 +609,79 @@ mod tests {
         assert_eq!(take(a), Vec::<String>::new(), "taken is taken");
     }
 
-    /// One session's queue is bounded, and what the bound takes is the OLDEST note: the newest is
-    /// what the next turn needs, and every read the room answers is still current.
+    /// The old bound dropped the oldest sixty-four; the room's lines are never dropped now: past
+    /// [`HELD_ROOM_MAX`] they are folded into ONE digest that names every `seq`, oldest first, and
+    /// points at the read that has the text. Two hundred lines in, two hundred `seq`s out.
     #[test]
-    fn one_sessions_queue_is_bounded_from_the_front() {
-        let mut queues = Queues::default();
-        for i in 0..(MAX_NOTES * 2) {
-            enqueue(&mut queues, "s-a", format!("note {i}"));
+    fn two_hundred_queued_room_lines_lose_none_and_the_digest_names_every_seq() {
+        let s = "s-room-digest";
+        for seq in 1..=200u64 {
+            push_chat(
+                s,
+                seq,
+                letibot_room::chat::Reach::Passing,
+                format!("line {seq}"),
+            );
         }
-        let q = queues.map.get("s-a").expect("a queue");
-        assert_eq!(q.lines.len(), MAX_NOTES);
-        assert_eq!(q.dropped as usize, MAX_NOTES, "the rest were dropped");
-        assert_eq!(q.lines.front().map(String::as_str), Some("note 64"));
+        let taken = hold(s);
         assert_eq!(
-            q.lines.back().map(String::as_str),
-            Some("note 127"),
-            "the newest is kept"
+            taken.lines.len(),
+            HELD_ROOM_MAX + 1,
+            "the digest and the newest {HELD_ROOM_MAX} lines"
         );
-        // And another session's queue is nobody else's business.
-        assert_eq!(queues.map.get("s-b").map(|q| q.lines.len()), None);
+        let digest = &taken.lines[0];
+        for seq in 1..=136u64 {
+            assert!(digest.line.contains(&format!("#{seq}")), "{}", digest.line);
+        }
+        assert!(
+            digest.line.contains("`room read`"),
+            "the digest says where the text is: {}",
+            digest.line
+        );
+        assert!(
+            !digest.line.contains("#137"),
+            "the lines kept are not also called folded: {}",
+            digest.line
+        );
+        assert_eq!(
+            taken.lines.last().map(|l| l.line.as_str()),
+            Some("line 200"),
+            "the newest line is the last of the take"
+        );
+        // Nothing is lost: every seq rides out, in order, and the ack is past all of them.
+        assert_eq!(taken.seqs, (1..=200).collect::<Vec<u64>>());
+        // The digest carries the seqs it stands for, so the door's facts and the wake's report count
+        // the 136 lines it took the place of rather than the one line it is.
+        assert_eq!(digest.seqs(), (1..=136).collect::<Vec<u64>>());
+        assert_eq!(taken.lines[1].seqs(), vec![137]);
+        assert_eq!(taken.ack, 200);
+        assert!(
+            taken.cheap,
+            "a folded digest is peers' talk, not instructions"
+        );
+        assert_eq!(waiting(s), 0);
+        assert_eq!(forget(s), 0);
+    }
+
+    /// A turn that never opened hands its lines back, in order, and nothing was acked: the room
+    /// still has them unseen and the next door takes them again.
+    #[test]
+    fn a_failed_turn_hands_its_lines_back_unacked() {
+        let s = "s-room-put-back";
+        push_chat(s, 1, letibot_room::chat::Reach::Passing, "one".into());
+        push_chat(s, 2, letibot_room::chat::Reach::Addressed, "two".into());
+        let taken = hold(s);
+        assert_eq!(taken.text(), vec!["one".to_string(), "two".to_string()]);
+        put_back(s, taken.lines.clone());
+        assert_eq!(waiting(s), 2);
+        let again = hold(s);
+        assert_eq!(
+            again.text(),
+            vec!["one".to_string(), "two".to_string()],
+            "the order they were taken in"
+        );
+        assert_eq!(again.ack, 2);
+        forget(s);
     }
 
     /// The map is bounded too, and the session evicted is the one pushed longest ago - which is the
@@ -525,12 +690,16 @@ mod tests {
     fn the_number_of_sessions_queued_is_bounded() {
         let mut queues = Queues::default();
         for i in 0..MAX_SESSIONS {
-            enqueue(&mut queues, &format!("s-{i}"), format!("note {i}"));
+            enqueue(
+                &mut queues,
+                &format!("s-{i}"),
+                note(&format!("note {i}"), 0, false),
+            );
         }
         assert_eq!(queues.map.len(), MAX_SESSIONS);
         // A push to an existing session refreshes it, so the next eviction picks another.
-        enqueue(&mut queues, "s-0", "again".into());
-        enqueue(&mut queues, "s-past-the-bound", "new".into());
+        enqueue(&mut queues, "s-0", note("again", 0, false));
+        enqueue(&mut queues, "s-past-the-bound", note("new", 0, false));
         assert_eq!(queues.map.len(), MAX_SESSIONS, "the map did not grow");
         assert!(
             queues.map.contains_key("s-0"),
