@@ -445,14 +445,26 @@ pub enum Ended {
 /// on their own threads, because a child that fills a pipe blocks for ever, and the process group is
 /// killed rather than the child, or a grandchild holds the inherited pipes open.
 pub fn run_bounded(program: &Path, args: &[String], within: Duration) -> Ended {
-    run_with_input(program, args, within, None, None)
+    run_with_input(program, args, within, None, None, &[])
+}
+
+/// [`run_bounded`] with pairs set in the child's OWN environment: a client whose knob is an
+/// environment variable and not a flag, where setting it in this process would change every
+/// other caller's answer too.
+pub fn run_bounded_env(
+    program: &Path,
+    args: &[String],
+    within: Duration,
+    env: &[(String, String)],
+) -> Ended {
+    run_with_input(program, args, within, None, None, env)
 }
 
 /// The same runner with bytes fed to the child's stdin, so a large write leaves this box without being
 /// spliced into an argv. A child that exits early is not a write failure: `EPIPE` closes the writer and
 /// the exit status is the answer.
 pub fn run_bounded_fed(program: &Path, args: &[String], within: Duration, fed: &[u8]) -> Ended {
-    run_with_input(program, args, within, Some(fed), None)
+    run_with_input(program, args, within, Some(fed), None, &[])
 }
 
 /// A call that has run longer than `after`: `notify` is called once, from the waiting thread, while the
@@ -471,7 +483,7 @@ pub fn run_bounded_watched(
     fed: Option<&[u8]>,
     slow: Option<Slow<'_>>,
 ) -> Ended {
-    run_with_input(program, args, within, fed, slow)
+    run_with_input(program, args, within, fed, slow, &[])
 }
 
 /// The most a finished child's pipes may take to reach end of file once it has exited. A mux master
@@ -485,9 +497,11 @@ fn run_with_input(
     within: Duration,
     fed: Option<&[u8]>,
     slow: Option<Slow<'_>>,
+    env: &[(String, String)],
 ) -> Ended {
     let mut child = match std::process::Command::new(program)
         .args(args)
+        .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(match fed {
             Some(_) => std::process::Stdio::piped(),
             None => std::process::Stdio::null(),

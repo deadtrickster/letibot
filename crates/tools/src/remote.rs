@@ -4365,13 +4365,15 @@ fn vm_up(plain: &Ssh, host: &str, project: &str, found: VmHost) -> Result<Remote
         firecode: found.firecode,
         project: project.to_string(),
     };
+    // The same layer a VM booted here gets: firecode reads its size from the environment, and a
+    // debug build of this workspace's test binaries fills the image's own 16 GiB.
+    let boot = format!(
+        "FIRECODE_LAYER_SIZE={} {}",
+        crate::firecode::LAYER_SIZE_BYTES,
+        vm.host_command("up", &["--project", project])
+    );
     plain
-        .must_within(
-            "booting the firecode VM",
-            &vm.host_command("up", &["--project", project]),
-            Retry::Never,
-            VM_BOUND,
-        )
+        .must_within("booting the firecode VM", &boot, Retry::Never, VM_BOUND)
         .map_err(|e| BackendError::Io(format!("booting a firecode VM on {host}: {e}")))?;
     remember_guest(plain, &vm);
     Ok(vm)

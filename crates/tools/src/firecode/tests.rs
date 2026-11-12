@@ -1027,3 +1027,98 @@ fn a_file_that_is_there_and_cannot_be_read_is_not_a_missing_one() {
     std::fs::set_permissions(&locked, perms).unwrap();
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The `in` arm a test needs when the point is a command the guest never answers on its own: the
+/// client blocks until the VM is gone, exactly as the real one does when its guest stops, and
+/// `down` leaves the marker that tells it.
+const BLOCKS_UNTIL_DOWN: &str = "in) shift
+    cmd=
+    while [ $# -gt 0 ]; do
+      case \"$1\" in
+        --project|--cwd) shift 2 ;;
+        *) cmd=\"$*\"; break ;;
+      esac
+    done
+    sh -c \"$cmd\" ;;
+down) touch \"$ROOT/up-down\"; mkdir -p \"$ROOT/runs/r1\"; printf 'none\\n' > \"$ROOT/runs/r1/copy_out\" ;;";
+
+/// A package VM boots 32 GiB of layer, not the image's own 16: a debug build of this workspace's
+/// test binaries fills that, and `ld` dies of a bus error when it does.
+#[test]
+fn a_boot_names_the_layer_size_a_debug_build_needs() {
+    let root = tmp("layer-env");
+    let src = root.join("src");
+    file(&src.join("a.txt"), 10);
+    let arms = "up) printf '%s\\n' \"${FIRECODE_LAYER_SIZE-}\" > \"$ROOT/up.layer\"; exit 0 ;;\n\
+                info) echo '{\"run\":\"r1\"}' ;;\n\
+                layer) [ \"$2\" = inherit ] && exit 0; \
+                       echo 'usage: firecode layer [add <image>|ls|rm <image>|inherit <source-dir>]' >&2; \
+                       exit 1 ;;";
+    let bin = stub_firecode(&root.join("fc"), arms);
+    let mut spec = spec_with(&src, &root.join("cache"), &bin);
+    // Mounted, not copied: `copy_tree` wants `rsync`, which a guest without one does not have, and
+    // the copy is not what this test is about.
+    spec.mount_rw = true;
+    let vm = FirecodeBackend::up(&spec).expect("the VM is placed");
+    let named = std::fs::read_to_string(root.join("fc").join("up.layer")).unwrap_or_default();
+    assert_eq!(
+        named.trim(),
+        LAYER_SIZE_BYTES.to_string(),
+        "`firecode up` was given no layer size: {named:?}"
+    );
+    assert_eq!(LAYER_SIZE_BYTES, 32 * 1024 * 1024 * 1024, "32 GiB");
+    drop(vm);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// The door a session's close uses when its worker is inside a tool call: the VM is found by the
+/// session in the process's own record, brought down, and the client blocked in the guest comes
+/// back - which is what frees the worker to serve the sessions queued behind it.
+#[test]
+fn a_close_brings_down_the_vm_its_session_holds_from_any_thread() {
+    let _alone = DOWN_ALL.lock().unwrap_or_else(|e| e.into_inner());
+    let root = tmp("close-down");
+    let src = root.join("src");
+    file(&src.join("a.txt"), 10);
+    let arms = format!("{HAPPY}\n{BLOCKS_UNTIL_DOWN}");
+    let bin = stub_firecode(&root.join("fc"), &arms);
+    let downed = root.join("fc").join("up-down");
+    let mut spec = spec_with(&src, &root.join("cache"), &bin);
+    spec.name = "s-close".to_string();
+    // Mounted, not copied: `copy_tree` wants `rsync`, and the copy is not what this is about.
+    spec.mount_rw = true;
+    let vm = FirecodeBackend::up(&spec).expect("the VM is placed");
+    assert!(held_for("s-close"), "the boot was not recorded");
+    assert!(!held_for("s-other"), "a session it never booted for");
+
+    std::thread::scope(|s| {
+        let blocked = s.spawn(|| {
+            // A command that ends only when the VM does, which is what a real `firecode in` in a
+            // killed guest looks like from here.
+            vm.guest_within(
+                vm.project(),
+                &format!("while [ ! -e '{}' ]; do sleep 0.05; done", downed.display()),
+                std::time::Duration::from_secs(120),
+            )
+        });
+        // The client is in the guest: nothing here answers it but the VM going away.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        assert!(!downed.exists(), "the VM was already gone");
+        assert!(
+            down_session("s-close"),
+            "nothing here held a VM for the session a close names"
+        );
+        assert!(downed.exists(), "the VM was not brought down");
+        let (_, code) = blocked
+            .join()
+            .expect("the client thread")
+            .expect("the client came back when the VM went");
+        assert_eq!(code, 0, "the blocked command answered {code}");
+    });
+    assert!(!held_for("s-close"), "the record outlived the VM");
+    assert!(
+        !down_session("s-close"),
+        "a second close claimed a VM that was gone"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

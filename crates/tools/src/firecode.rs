@@ -68,9 +68,21 @@ pub fn installed() -> Option<Installed> {
     Some(Installed { path, inherit })
 }
 
-/// The VMs this process's live backends hold, as `(firecode, copy)`. A backend registers when
-/// its VM is up and leaves when it is brought down.
-static LIVE: std::sync::Mutex<Vec<(PathBuf, PathBuf)>> = std::sync::Mutex::new(Vec::new());
+/// One VM this process holds: what a close needs to find it from a thread that does not hold the
+/// session's harness - the client, the copy, the run whose copy-out record says where the work went,
+/// and whether the copy is somebody's own mounted folder (which is never removed).
+#[derive(Debug, Clone)]
+struct Live {
+    session: String,
+    bin: PathBuf,
+    project: PathBuf,
+    run: String,
+    mounted: bool,
+}
+
+/// The VMs this process's live backends hold. A backend registers when its VM is up and leaves when
+/// it is brought down.
+static LIVE: std::sync::Mutex<Vec<Live>> = std::sync::Mutex::new(Vec::new());
 
 /// Bring down every VM a live backend in this process still holds, the daemon's last act: a
 /// subagent's backend lives on a thread `process::exit` does not unwind, so its `Drop` never runs.
@@ -79,17 +91,17 @@ pub fn down_all() {
     let live = std::mem::take(&mut *LIVE.lock().unwrap_or_else(|e| e.into_inner()));
     let downs: Vec<_> = live
         .into_iter()
-        .map(|(bin, project)| {
+        .map(|vm| {
             std::thread::spawn(move || {
                 // Bounded: this runs at the daemon's last act, and a `down` whose client never
                 // answers would hold the stop for ever - which is the whole reason they are run
                 // at once.
                 let _ = crate::rpc::run_bounded(
-                    &bin,
+                    &vm.bin,
                     &[
                         "down".to_string(),
                         "--project".to_string(),
-                        project.display().to_string(),
+                        vm.project.display().to_string(),
                     ],
                     CLIENT_TIMEOUT,
                 );
@@ -99,6 +111,33 @@ pub fn down_all() {
     for d in downs {
         let _ = d.join();
     }
+}
+
+/// Whether a VM this process booted for `session` is still up.
+pub fn held_for(session: &str) -> bool {
+    LIVE.lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .any(|vm| vm.session == session)
+}
+
+/// Bring down the VM this process booted for `session`, from any thread, and wait for its copy-out
+/// the way the backend's own `down` does. `false` when nothing here holds one for that session, so a
+/// caller can tell the two silences apart and does not claim a VM it never had.
+pub fn down_session(session: &str) -> bool {
+    let held = LIVE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .iter()
+        .find(|vm| vm.session == session)
+        .cloned();
+    let Some(vm) = held else {
+        return false;
+    };
+    // The backend's own `down`, over a record of that VM: one body, so the copy-out wait and the
+    // copy's removal cannot differ between a close that reached the worker and one that did not.
+    FirecodeBackend::from_record(vm).down();
+    true
 }
 
 /// What the installed firecode can do, asked once.
@@ -417,6 +456,19 @@ impl FirecodeSpec {
 /// that is the shape the ceiling exists to refuse. `LETIBOT_FIRECODE_COPY_MAX` is the override.
 pub const DEFAULT_COPY_MAX: u64 = 8 * 1024 * 1024 * 1024;
 
+/// The layer a package VM boots, in bytes: 32 GiB, because the image's own is 16 and a debug build
+/// of this workspace's test binaries fills that (`ld` dies of a bus error, not of a compile).
+pub const LAYER_SIZE_BYTES: u64 = 32 * 1024 * 1024 * 1024;
+
+/// The pairs `firecode up` is given: firecode reads the layer's size from its environment and not
+/// from a flag, so it goes on the boot client alone rather than in this process's own environment.
+fn layer_env() -> Vec<(String, String)> {
+    vec![(
+        "FIRECODE_LAYER_SIZE".to_string(),
+        LAYER_SIZE_BYTES.to_string(),
+    )]
+}
+
 impl FirecodeBackend {
     /// Copy the workspace, boot a VM on the copy, and wait until it takes
     /// commands. Every failure names the door: the copy, the boot, or the first
@@ -527,7 +579,7 @@ impl FirecodeBackend {
             args.push("--verify".to_string());
             args.push(check.clone());
         }
-        let up = match crate::rpc::run_bounded(&bin, &args, UP_TIMEOUT) {
+        let up = match crate::rpc::run_bounded_env(&bin, &args, UP_TIMEOUT, &layer_env()) {
             crate::rpc::Ended::Answered(out) => out,
             crate::rpc::Ended::TimedOut => {
                 // A boot nobody can see the end of is not a VM to hand to a session. The run
@@ -569,9 +621,13 @@ impl FirecodeBackend {
         };
         unwind.armed = false;
         drop(unwind);
-        LIVE.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push((bin.clone(), project.clone()));
+        LIVE.lock().unwrap_or_else(|e| e.into_inner()).push(Live {
+            session: spec.name.clone(),
+            bin: bin.clone(),
+            project: project.clone(),
+            run: run.clone(),
+            mounted,
+        });
         let b = FirecodeBackend {
             bin,
             project,
@@ -652,6 +708,29 @@ impl FirecodeBackend {
             ))
         })?;
         Ok(b)
+    }
+
+    /// A backend standing for a VM this process already booted, built from its record rather than
+    /// from a boot: the door a close uses when the thread that owns the harness cannot be reached.
+    fn from_record(live: Live) -> FirecodeBackend {
+        FirecodeBackend {
+            bin: live.bin,
+            source: live.project.clone(),
+            project: live.project,
+            processes: None,
+            writable: false,
+            landed: std::sync::Mutex::new(None),
+            run: live.run,
+            layers: None,
+            verify: None,
+            owns: true,
+            mounted: live.mounted,
+            mount_rw: false,
+            joined: None,
+            guest_timeout: GUEST_TIMEOUT,
+            env: Vec::new(),
+            env_secrets: Vec::new(),
+        }
     }
 
     /// Where a session's own VM's copy lives - the project `up` names after it.
@@ -843,7 +922,7 @@ impl FirecodeBackend {
         }
         LIVE.lock()
             .unwrap_or_else(|e| e.into_inner())
-            .retain(|(_, p)| *p != self.project);
+            .retain(|vm| vm.project != self.project);
         let before = siblings(&self.project);
         // Bounded: `down` is a client waiting on a reply, and a teardown that never returns holds
         // the daemon's worker. A `down` killed at its deadline changes nothing about the answer
