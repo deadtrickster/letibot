@@ -1744,6 +1744,38 @@ fn a_v20_store_gains_the_prefix_fingerprint_column() {
 /// column has no `IF NOT EXISTS`, so the arm asks first; a prompt queued before it must read as one
 /// that carried no context rather than as a lost prompt.
 #[test]
+fn a_v45_file_with_no_prompt_journal_still_opens() {
+    // A split set's `shared.db` at v45: the journal table lives in the project file.
+    let path = std::env::temp_dir().join(format!(
+        "letibot-migrate-v45-shared-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_file(&path);
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE session (id TEXT PRIMARY KEY, title TEXT, role TEXT,
+                                   archived_ms INTEGER, archived_reason TEXT);
+             CREATE TABLE schema_version (version INTEGER);
+             INSERT INTO schema_version (version) VALUES (45);",
+        )
+        .unwrap();
+    }
+    let opened = Store::open(&path);
+    let v: Option<i64> = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+        .ok();
+    let _ = std::fs::remove_file(&path);
+    assert!(opened.is_ok(), "{:?}", opened.err());
+    assert_eq!(v, Some(SCHEMA_VERSION));
+}
+
+#[test]
 fn a_v44_store_gains_the_prompt_context_column() {
     let path = std::env::temp_dir().join(format!(
         "letibot-migrate-v44-{}-{}-{}.db",

@@ -2443,14 +2443,20 @@ impl Store {
             // v46: what the operator pointed at in an editor, on the prompt journal beside its
             // attachments. A defaulted column, so a prompt queued before it reads as one with no
             // context - which is what it had.
-            let has: bool = self
-                .conn()
-                .prepare(
+            // A split store's `shared.db` holds no `queued_prompt`: that file has nothing to add.
+            let has = |sql: &str| -> bool {
+                self.conn()
+                    .prepare(sql)
+                    .and_then(|mut st| st.exists([]))
+                    .unwrap_or(false)
+            };
+            let table =
+                has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'queued_prompt'");
+            if table
+                && !has(
                     "SELECT 1 FROM pragma_table_info('queued_prompt') WHERE name = 'context_json'",
                 )
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            {
                 self.conn().execute_batch(
                     "ALTER TABLE queued_prompt ADD COLUMN context_json TEXT NOT NULL DEFAULT ''",
                 )?;
