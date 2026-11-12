@@ -653,9 +653,7 @@ Fix: make the build script's freshness depend on the tree it is built from - e.g
 
 ## R197 - Workspace clippy is red on rustc 1.98
 
-**Status:** filed, 2026-11-12.
-
-`cargo clippy --workspace --all-targets -- -D warnings` stops on lints new in 1.98 in code nobody touched: `crates/plugins-rano/src/lib.rs:125` (type_complexity), `crates/room/src/server.rs:4514` (large_enum_variant), `crates/tools/src/builtins/screen/web.rs:63`, `crates/tools/src/exec/perimeter.rs:334`, `crates/tools/src/firecode_route.rs:260`, `crates/harnessd/src/mergequeue/gate.rs:1162`, `crates/harnessd/src/cli/tests.rs:40`, `crates/harnessd/src/harness/tests/cheap_wake.rs:12`, `crates/letibot/src/rooms.rs:279` (needless_borrows_for_generic_args). Every package this session reported it could not get a clean `-D warnings` run because of them. Fix them (not `allow`), and put clippy in the landing gate so it cannot drift again. Done when: the workspace clippy is clean and the gate runs it.
+**Status:** built, 2026-11-12. `cargo clippy --workspace --all-targets -- -D warnings` is clean on rustc 1.99.1, and the gate line exempts nothing: `sh scripts/clippy-gate.sh --workspace --all-targets -- -D warnings` is what `AGENTS.md` says, what `docs/gate.md` says to type, and what `scripts/rrun --gate` runs (it ran `clippy-gate.sh --offline --all-targets`, with no `-- -D warnings` at all, so a warning could never fail that gate). The thirteen lints are refactored: type aliases for the module cache, the browser listing's cache, a routed VM's maker, the cli tests' row and the cheap-wake recorder; a struct for a perimeter's env pairs and for a gate run's shared context (`run_step` took eight arguments); `ReadFrame::Frame` boxes its `Request` and `screen`'s `run` boxes its `Invocation`; two `vec!`s that were arrays, and one `&ago`. left: this box's clippy is 1.99.1 and the host's is 1.98, so a lint new in 1.99 is fixed here and will not show there.
 
 ## R198 - Tests that touch the operator's real config and runtime dir
 
