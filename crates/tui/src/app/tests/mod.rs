@@ -1225,6 +1225,8 @@ fn daemon_job(id: &str, command: &str, running: bool) -> letibot_sessionlog::pro
         never_ran: false,
         redirect: None,
         produced: 155,
+        // A job with no cgroup says nothing rather than guessing: the pane draws what it is told.
+        cgroup: String::new(),
         elapsed_ms: 14_600,
     }
 }

@@ -258,6 +258,7 @@ fn the_jobs_pane_names_the_file_a_redirected_job_writes_to() {
             never_ran: false,
             redirect: Some("/tmp/build.log".into()),
             produced: 0,
+            cgroup: String::new(),
             elapsed_ms: 4_000,
         }],
     ));
@@ -307,6 +308,7 @@ fn the_top_edge_counts_running_jobs_and_says_which_cannot_be_watched() {
             never_ran: false,
             redirect: redirect.map(str::to_string),
             produced: 0,
+            cgroup: String::new(),
             elapsed_ms: 10,
         };
     // Zero jobs is no line at all - a count that is always there is furniture.

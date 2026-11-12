@@ -235,6 +235,7 @@ fn jobs_reply(seq: u64, running: &[&str]) -> ServerFrame {
                 never_ran: false,
                 redirect: None,
                 produced: 0,
+                cgroup: String::new(),
                 elapsed_ms: 0,
             })
             .collect(),

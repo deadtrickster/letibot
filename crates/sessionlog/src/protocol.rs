@@ -358,6 +358,12 @@ pub struct JobEntry {
     #[serde(default)]
     pub redirect: Option<String>,
     pub produced: u64,
+    /// What the job's cgroup holds right now, in the daemon's words: `75 processes, 17.0 GiB now of
+    /// a 32.0 GiB cap, 591 OOM kills`. Empty for an older daemon, for a host with no cgroup, and for
+    /// a job whose scope is gone. It is the answer `ps` cannot give a seat in another PID namespace,
+    /// so a caller reading this never has to guess whether a job is alive.
+    #[serde(default)]
+    pub cgroup: String,
     pub elapsed_ms: u64,
 }
 

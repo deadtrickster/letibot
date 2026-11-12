@@ -42,6 +42,8 @@ fn running(id: &str) -> JobEntry {
         never_ran: false,
         redirect: None,
         produced: 0,
+        // The kernel's own count for the job's cgroup: empty is a host with no cgroup.
+        cgroup: String::new(),
         elapsed_ms: 0,
     }
 }

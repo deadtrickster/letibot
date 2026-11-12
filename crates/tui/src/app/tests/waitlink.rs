@@ -18,6 +18,7 @@ fn job(id: &str, slug: &str) -> letibot_sessionlog::protocol::JobEntry {
         never_ran: false,
         redirect: None,
         produced: 0,
+        cgroup: String::new(),
         elapsed_ms: 10,
     }
 }

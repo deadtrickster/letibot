@@ -60,6 +60,11 @@ impl Harness {
             // pane, rather than by finding an empty window and guessing why.
             redirect: letibot_tools::builtins::output_redirect_path(&j.command),
             produced: j.produced,
+            // What the job's cgroup holds, from the kernel: a seat in a sandbox cannot see host
+            // pids, so a job with 75 processes and 17 GiB must not read as "a stale handle".
+            cgroup: letibot_tools::exec::scope::use_at(&j.scope.path)
+                .map(|u| u.clause())
+                .unwrap_or_default(),
             elapsed_ms: j
                 .ran_for
                 .unwrap_or(j.elapsed)

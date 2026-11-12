@@ -705,6 +705,7 @@ fn a_jobs_frame_carries_the_name_and_a_row_without_one_still_reads() {
             never_ran: false,
             redirect: None,
             produced: 12_288,
+            cgroup: "3 processes, 1.2 GiB now of a 2.0 GiB cap".into(),
             elapsed_ms: 2_000,
         }],
     };
