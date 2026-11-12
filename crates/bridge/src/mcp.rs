@@ -321,7 +321,7 @@ mod tests {
     fn tools_list_lists_every_tool_with_a_schema() {
         let answers = run(&[r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#]);
         let tools = answers[0]["result"]["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 34, "{:?}", answers[0]);
+        assert_eq!(tools.len(), 36, "{:?}", answers[0]);
         for t in tools {
             assert!(t["name"].is_string(), "{t}");
             assert!(t["description"].is_string(), "{t}");

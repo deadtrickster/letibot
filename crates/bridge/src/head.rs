@@ -501,6 +501,11 @@ pub struct State {
     /// `JobSettled` that names it - `leticode_status`' own list, and nothing else: whether a job
     /// holds the work open is the daemon's [`Activity`] (`waiting_on`), not this set.
     pub jobs_open: std::collections::BTreeSet<String>,
+    /// What each open job's cgroup holds, from the daemon's own frame: `75 processes, 17.0 GiB now
+    /// of a 32.0 GiB cap, 591 OOM kills`. The daemon reads it from the kernel because a seat in a
+    /// sandbox cannot see host pids at all, so `jobs_open` alone answers *is it running* with an
+    /// empty pid. Empty for an older daemon or a host with no cgroup.
+    pub jobs_cgroup: std::collections::BTreeMap<String, String>,
     /// Seq of the newest job event folded: a job list stamped older than it is discarded.
     jobs_event_seq: u64,
     /// One `ListJobs` in flight at most, one more owed when an event lands meanwhile.
@@ -855,11 +860,23 @@ impl State {
                 if std::mem::take(&mut self.jobs_again) {
                     self.jobs_wanted = true;
                 }
-                self.jobs_open = jobs
-                    .into_iter()
-                    .filter(|j| j.running)
-                    .map(|j| j.id)
-                    .collect();
+                // One pass: a running job is open, and a running job whose cgroup has something to
+                // say carries it. `jobs` moves once, so both are built here rather than twice.
+                let (open, cgroups) = jobs.into_iter().filter(|j| j.running).fold(
+                    (
+                        std::collections::BTreeSet::new(),
+                        std::collections::BTreeMap::new(),
+                    ),
+                    |(mut open, mut cg), j| {
+                        if !j.cgroup.is_empty() {
+                            cg.insert(j.id.clone(), j.cgroup);
+                        }
+                        open.insert(j.id);
+                        (open, cg)
+                    },
+                );
+                self.jobs_open = open;
+                self.jobs_cgroup = cgroups;
             }
             ServerFrame::Rejected {
                 client_request_id,
@@ -1726,6 +1743,7 @@ impl Head {
             calls: g.calls.clone(),
             children: g.children.clone(),
             jobs_open: g.jobs_open.clone(),
+            jobs_cgroup: g.jobs_cgroup.clone(),
             jobs_event_seq: g.jobs_event_seq,
             jobs_in_flight: g.jobs_in_flight,
             jobs_again: g.jobs_again,

@@ -22,6 +22,7 @@ pub mod daemon;
 pub mod diff;
 pub mod fleet;
 pub mod head;
+pub mod holds;
 pub mod mcp;
 pub mod names;
 pub mod plugins;

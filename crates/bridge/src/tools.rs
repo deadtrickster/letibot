@@ -121,6 +121,12 @@ impl Bridge {
         self
     }
 
+    /// The store and folder this bridge resolves names from, when a caller named them: what
+    /// `holds` reads its folder's owners from without a daemon on the socket.
+    pub fn names_source(&self) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+        self.names_from.clone()
+    }
+
     /// The session a tool's `session` argument means: an id as given, else the conversation of
     /// that name (title or slug) in the bridge's folder, the folders of the sessions it holds and
     /// `folder` when the call names one. A name that fits several is refused with them listed.
@@ -657,6 +663,17 @@ impl Bridge {
             // idle session holding one is waiting rather than done, unless the model parked it with
             // `wake: "later"`; the daemon's `activity` answers that and this list does not.
             "jobs_open": s.jobs_open.iter().collect::<Vec<_>>(),
+            // And the same jobs with what their cgroups hold, from the kernel: a job whose host pid
+            // is invisible from a sandboxed seat still has 75 processes and 17 GiB, and a model that
+            // reads only `jobs_open` has to guess. An empty clause is a host with no cgroup.
+            "jobs": s
+                .jobs_open
+                .iter()
+                .map(|h| json!({
+                    "handle": h,
+                    "cgroup": s.jobs_cgroup.get(h).cloned().unwrap_or_default(),
+                }))
+                .collect::<Vec<_>>(),
             // What the DAEMON says the session is waiting on (`PROTOCOL_VERSION` 52), instead of
             // timed settle windows. `waiting_on` is the list
             // in a reader's words and `activity` is the value itself, so a caller can branch on it.
@@ -679,6 +696,10 @@ impl Bridge {
             // What keeps the daemon from its idle exit, `nothing holds it`, or null for a daemon
             // that never idles out or did not answer in time.
             "idle_exit": h.idle_exit_within(IDLE_EXIT_PATIENCE),
+            // What this session holds on disk, for the operator and for the agent that made the
+            // leftovers: `holds: scope 3 processes, 1.2 GiB now of a 32.0 GiB cap · idle 12m`.
+            // Null for a session this build never recorded an owner row for.
+            "holds": crate::holds::status_line(self, session),
         });
         // What the last ending measured, which is the question: `prefix_check` says whether
         // zero reuse was a slot that did not hold the history or a prompt that diverged, and the
@@ -1391,6 +1412,36 @@ pub fn list() -> Value {
               what this process holds, not what the daemon has on disk.",
             json!({ "type": "object", "properties": {} }),
         ),
+        tool(
+            "holds",
+            "What the owners of this folder hold on disk right now - a package's VM, its cgroup \
+             scope with its process count and memory, its worktree and target sizes, its firecode \
+             copies, its daemon - each with the stamp that proves whose it is, its state and what \
+             will happen to it. The facts come from the kernel and the filesystem, so a seat in a \
+             sandbox can read its own leftovers: a job's pid it cannot see is not evidence of \
+             anything, and this never asks `ps`. Read-only, always. Omit `owner` for every owner \
+             this folder's daemon recorded, which is how a seat finds the packages it started.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "One owner: a session id, `s-…`. Omitted: every owner in this folder's store." }
+                }
+            }),
+        ),
+        tool(
+            "gc_plan",
+            "What `letibot gc` would reap for this folder, and why, and when - the read-only plan. \
+             Each holding gets a verdict (`reap now`, `reap at`, `keep`) and one sentence; a \
+             directory that looks like letibot's and names no owner the store knows is reported \
+             under `looks_like_ours` and is never reaped by pattern. Nothing here removes, stops or \
+             writes anything: this build's reaping is G2 (compute), G3 (work), G4 (caches).",
+            json!({
+                "type": "object",
+                "properties": {
+                    "owner": { "type": "string", "description": "One owner, `s-…`. Omitted: the whole folder." }
+                }
+            }),
+        ),
     ];
     tools.extend(crate::rooms::tool_list());
     tools.extend(todo_list());
@@ -1483,10 +1534,15 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
 /// `tools/call` checks against, so a name can never be in one and not the other.
 pub fn names() -> Vec<&'static str> {
     let mut all = leticode_names();
+    all.extend(LIFECYCLE_TOOLS);
     all.extend(crate::rooms::TOOLS);
     all.extend(TODO_TOOLS);
     all
 }
+
+/// The lifecycle verbs: what this folder holds, and what would be reaped. Served to every agent
+/// that loads this server, because a package's leftovers are the package's to see first.
+pub const LIFECYCLE_TOOLS: [&str; 2] = ["holds", "gc_plan"];
 
 /// The same list with this folder's `tool_` layers after it (X25): what `tools/list` publishes and
 /// `tools/call` checks, so a name a layer declares is in both or neither.
@@ -1660,6 +1716,8 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             bridge.collect(&session, &host, folder.as_deref(), vm)
         }
         "leticode_list" => Ok(bridge.list()),
+        "holds" => crate::holds::holds(bridge, arg_opt_str(args, "owner")?.as_deref()),
+        "gc_plan" => crate::holds::gc_plan(bridge, arg_opt_str(args, "owner")?.as_deref()),
         "todo_write" => bridge.seat()?.write(args),
         "todos" => Ok(bridge.seat()?.board_json()),
         "todo_answer" => bridge.seat()?.answer(args),
@@ -1895,10 +1953,10 @@ mod tests {
     /// to `tools/list` and forgotten in `call` (or the other way round) is the defect this pairs
     /// against.
     #[test]
-    fn the_thirty_four_tools_are_listed_with_schemas() {
+    fn the_thirty_six_tools_are_listed_with_schemas() {
         let listed = list();
         let tools = listed["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 34, "{listed}");
+        assert_eq!(tools.len(), 36, "{listed}");
         let mut named: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         named.sort_unstable();
         let mut want = names();
