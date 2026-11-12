@@ -1,6 +1,7 @@
-//! A restart is said even when there is nothing to restore, and it starts a turn when the session still owes something.
-//! Idle and owing nothing gets a row and no turn, idle and owing work gets a notice the ring spends a turn on, and a
-//! turn already running hears it at its step boundary.
+//! A restart is said even when there is nothing to restore, and it starts a turn only when the
+//! session owes something. Idle and owing nothing gets a row and no turn - being active before the
+//! stop is not owed work - and owed work gets one turn whose sentence names it, ends in one
+//! instruction, and defines the empty reply that ends it without a row to read.
 
 use super::*;
 use letibot_tokencore::store::{SessionRecord, Store, TodoBy, TodoItem, TodoStatus};
@@ -159,6 +160,132 @@ fn reopened(dir: &Scratch, id: &str) -> Harness {
     Harness::open(&parts, cfg, Hub::new(id)).expect("the session opens again")
 }
 
+// ---------------------------------------------------------------------------
+// The door a restart turn takes, and the one it ends on - on the BYTE vocabulary,
+// because these tests also run a turn and this box has no GGUF
+// ---------------------------------------------------------------------------
+
+/// How many completions the fake model was asked for - the fact that says whether a generation
+/// was spent, which is the whole of what a restart's door decides.
+#[derive(Clone, Default)]
+struct Asked(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Asked {
+    fn count(&self) -> usize {
+        self.0.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+/// A model that answers `text` to every request, on every round.
+struct Answers {
+    text: &'static str,
+    asked: Asked,
+}
+
+impl letibot_backend::MessagesBackend for Answers {
+    fn caps(&self) -> letibot_backend::BackendCaps {
+        letibot_backend::BackendCaps::METERED_API
+    }
+    fn name(&self) -> &str {
+        "deepseek"
+    }
+    fn model(&self) -> &str {
+        "not-called"
+    }
+    fn authority(&self) -> String {
+        "a fake provider".into()
+    }
+    fn complete(
+        &self,
+        _req: &letibot_backend::TurnRequest<'_>,
+        _on_delta: &mut dyn FnMut(&letibot_backend::Delta) -> letibot_backend::StreamFlow,
+    ) -> Result<letibot_backend::Completion, letibot_backend::BackendError> {
+        self.asked
+            .0
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(letibot_backend::Completion {
+            text: self.text.into(),
+            reasoning: String::new(),
+            tool_calls: Vec::new(),
+            finish: letibot_backend::Finish::Stop,
+            cost: letibot_backend::TurnCost {
+                meter: letibot_backend::Meter::Metered,
+                prompt_tokens: 10,
+                cached_tokens: 0,
+                generated_tokens: 1,
+                wall_ms: 1,
+                micros_usd: None,
+            },
+            raw_usage: None,
+        })
+    }
+}
+
+/// A config on the BYTE vocabulary, so nothing below needs a GGUF. The provider is injected on the
+/// open harness, so nothing here dials a server either.
+fn on_bytes(dir: &Scratch, id: &str) -> Config {
+    let mut cfg = Config::for_this_box(&dir.0);
+    cfg.dialect = crate::Dialect::Qwen;
+    cfg.store = Some(dir.store());
+    cfg.session_id = id.into();
+    cfg.vocab_gguf = None;
+    cfg
+}
+
+/// The parts, with this box's project modes replaced by none: a resumed session takes its mode from
+/// the store, and none of these tests is about this laptop.
+fn parts_of(cfg: &Config) -> Parts {
+    let parts = Parts::load(cfg).expect("the byte vocabulary loads");
+    *parts.mode_store.write().unwrap() = crate::modes::ModeStore::default();
+    parts
+}
+
+/// The store an earlier daemon left behind - a stopped life, the session's own row, whatever `seed`
+/// puts on the board, every row dated `ago_ms` before now - and this daemon opening it with a model
+/// that answers `text`.
+fn a_restart_with(
+    dir: &Scratch,
+    id: &str,
+    ago_ms: u64,
+    seed: impl FnOnce(&Store),
+    text: &'static str,
+) -> (Harness, Asked) {
+    {
+        let store = Store::open(&dir.store()).expect("a store");
+        let now = letibot_sessionlog::event::now_ms();
+        store
+            .life_started("d-the-earlier-one", now - 3_600_000)
+            .expect("the earlier daemon began");
+        store
+            .life_stopped("d-the-earlier-one", now - STOPPED_AGO_MS)
+            .expect("the earlier daemon stopped");
+        store
+            .put_session(&SessionRecord {
+                id: id.into(),
+                title: None,
+                model_id: "a model".into(),
+                dialect_sha: "a dialect".into(),
+                workspace_root: dir.0.display().to_string(),
+                owner: "dead".into(),
+                approvers: Vec::new(),
+                role: None,
+                parent_session_id: None,
+            })
+            .expect("the earlier daemon's row");
+        seed(&store);
+        age_session(&store, id, ago_ms);
+    }
+    let cfg = on_bytes(dir, id);
+    let parts = parts_of(&cfg);
+    let mut h = Harness::open(&parts, cfg, Hub::new(id)).expect("the session opens again");
+    let asked = Asked::default();
+    h.provider = Some(Box::new(Answers {
+        text,
+        asked: asked.clone(),
+    }));
+    (h, asked)
+}
+
 /// Every `[restart] …` row the session's transcript holds.
 fn restart_rows(h: &Harness) -> Vec<String> {
     h.items()
@@ -210,6 +337,11 @@ fn an_empty_restart_is_one_row_and_never_a_turn() {
     assert!(
         h.injected.lock().unwrap().is_empty(),
         "nothing was injected: a boundary would only be taken by a turn"
+    );
+    // And the wake the daemon rings at open finds nothing to say, so it spends no generation.
+    assert!(
+        h.wake().expect("the wake runs").is_none(),
+        "a restart owing nothing started a turn"
     );
     // Once per (session, restart) - the key names the daemon.
     assert!(
@@ -317,8 +449,23 @@ fn a_plan_with_rows_owed_makes_the_restart_a_turn() {
         "{text}"
     );
     assert!(
-        text.contains("2 todo rows still owed"),
-        "the two rows that are owed, and not the three that are not: {text}"
+        text.contains(
+            "2 todo rows still owed: finish the migration and report; then update the \
+                      notes"
+        ),
+        "the two rows that are owed, by their own words, and not the three that are not: {text}"
+    );
+    assert!(
+        text.contains("Carry on with that work now") && text.contains("and report it."),
+        "one instruction: {text}"
+    );
+    assert!(
+        !text.contains("If you were") && !text.contains("If nothing was waiting"),
+        "no conditional the model has to resolve: {text}"
+    );
+    assert!(
+        text.contains(crate::restart::QUIET_END),
+        "the quiet end is defined in the sentence: {text}"
     );
     // A turn is owed, and the ring at open is what spends it - `restart_notices` is the door
     // `Harness::wake` drains, and a non-empty list is a turn.
@@ -472,38 +619,131 @@ fn the_restart_row_it_filed_is_not_work_it_owes() {
     );
 }
 
-/// **A session active just before the stop is woken though it owes nothing recorded** - the model that told the
-/// operator "after you restart I will verify X" has to run again without being typed to. The notice says what to do.
+/// **A session active just before the stop is NOT woken on that alone.** It owes nothing a turn
+/// could continue, and a generation spent reading a note to conclude there is nothing to do is
+/// exactly what the operator called out: the note is a row, and the session stays asleep until
+/// somebody types to it.
 #[test]
-fn a_recently_active_session_owing_nothing_gets_a_wake_turn() {
+fn a_recently_active_session_owing_nothing_gets_the_row_and_no_turn() {
     let dir = Scratch::new("restart-recent");
     let id = "s-restart-recent";
-    let Some(h) = opened_by_a_later_daemon(&dir, id) else {
-        return;
-    };
-    stage_a_last_row(
+    let (mut h, asked) = a_restart_with(
         &dir,
         id,
-        TranscriptItem::Assistant {
-            text: "the build is done".into(),
-            tool_calls: Vec::new(),
-            truncated: false,
-        },
-    );
-    age_session(
-        &Store::open(&dir.store()).unwrap(),
-        id,
         STOPPED_AGO_MS + 600_000,
+        |_| {},
+        "nothing should have been asked of me",
     );
-    drop(h);
-    let mut h = reopened(&dir, id);
     let text = h.restore_after_restart().expect("a restart is said");
     assert!(text.contains("The daemon restarted (down "), "{text}");
-    assert!(text.contains("do that one thing now"), "{text}");
-    assert!(text.contains("a restart is not an answer"), "{text}");
-    assert!(text.contains("end this turn with no reply"), "{text}");
-    assert_eq!(h.restart_notices, vec![text], "{:?}", h.restart_notices);
-    assert!(restart_rows(&h).is_empty(), "{:?}", h.items());
+    assert!(
+        text.ends_with(". Nothing was running."),
+        "nothing was owed, so there is nothing to add: {text}"
+    );
+    assert!(h.restart_notices.is_empty(), "{:?}", h.restart_notices);
+    assert_eq!(restart_rows(&h), vec![text], "{:?}", h.items());
+    // The test's whole point: the wake the daemon rings at open finds nothing to say.
+    assert!(h.wake().expect("the wake runs").is_none(), "a turn ran");
+    assert_eq!(asked.count(), 0, "a generation was spent on nothing");
+}
+
+/// **A session that owes work spends ONE turn, and the sentence it opens with names the work by
+/// the row's own words.** A model reading *2 todo rows* has to go and look; a model reading what it
+/// wrote on the board does not, and the turn after it has nothing left to say.
+#[test]
+fn a_restart_that_owes_work_spends_one_turn_that_names_it() {
+    let dir = Scratch::new("restart-turn-names");
+    let id = "s-restart-turn-names";
+    let (mut h, asked) = a_restart_with(
+        &dir,
+        id,
+        5 * 3_600_000,
+        |store| {
+            store
+                .put_todos(
+                    id,
+                    &[a_row(
+                        "finish the migration and report",
+                        TodoStatus::Pending,
+                    )],
+                )
+                .expect("the earlier daemon's board");
+        },
+        "Done: the migration is applied and the notes are updated.",
+    );
+    let text = h.restore_after_restart().expect("a restart is said");
+    assert!(
+        text.contains("a todo row still owed: finish the migration and report"),
+        "the row is named: {text}"
+    );
+    let reply = h
+        .wake()
+        .expect("the wake runs")
+        .expect("the owed work bought a turn");
+    assert!(!reply.text.trim().is_empty(), "the model answered");
+    assert_eq!(asked.count(), 1, "one model call, for one turn");
+    // The turn opened with the restart's own sentence, so the model read what it owes.
+    assert_eq!(restart_rows(&h), vec![text], "{:?}", h.items());
+    assert!(h.restart_notices.is_empty(), "{:?}", h.restart_notices);
+    // And the next pass has nothing left: the restart was one turn, not one per wake.
+    assert!(h.wake().expect("the wake runs").is_none(), "a second turn");
+    assert_eq!(asked.count(), 1, "the restart was said twice");
+}
+
+/// **The quiet end leaves nothing to read and nothing to wait on.** A turn that finds the work
+/// already done answers with the empty reply the sentence defines: the row it leaves is an
+/// assistant row with no words and no calls, which renders no lines, and the session afterwards is
+/// idle - no pending delivery, no `waiting on:` line.
+#[test]
+fn a_quiet_end_leaves_no_drawn_row_and_an_idle_session() {
+    let dir = Scratch::new("restart-quiet-end");
+    let id = "s-restart-quiet-end";
+    let (mut h, asked) = a_restart_with(
+        &dir,
+        id,
+        5 * 3_600_000,
+        |store| {
+            store
+                .put_todos(
+                    id,
+                    &[a_row(
+                        "finish the migration and report",
+                        TodoStatus::Pending,
+                    )],
+                )
+                .expect("the earlier daemon's board");
+        },
+        "",
+    );
+    let text = h.restore_after_restart().expect("a restart is said");
+    assert!(
+        text.contains(crate::restart::QUIET_END),
+        "the model is told which reply ends it: {text}"
+    );
+    let reply = h.wake().expect("the wake runs").expect("a turn ran");
+    assert_eq!(asked.count(), 1, "one model call");
+    assert_eq!(reply.text, "", "the empty reply is the turn's whole answer");
+    // Nothing of it is drawn: the turn's own row carries no words and no calls, and a row that
+    // renders no lines is not drawn (`crates/tui/src/ui/transcript/window.rs`).
+    let spoke = h.items().iter().any(|i| match i {
+        TranscriptItem::Assistant {
+            text, tool_calls, ..
+        } => !text.trim().is_empty() || !tool_calls.is_empty(),
+        _ => false,
+    });
+    assert!(!spoke, "a row was left to read: {:?}", h.items());
+    // And the session is idle: the notice was spent, and nothing is queued behind it.
+    assert!(h.restart_notices.is_empty(), "{:?}", h.restart_notices);
+    assert!(
+        !h.hub.work_pending(),
+        "a delivery nobody will run is the `waiting on: delivery` line"
+    );
+    h.publish_activity();
+    assert!(
+        h.hub.activity().is_quiet(),
+        "the head is left with a state to draw: {:?}",
+        h.hub.activity()
+    );
 }
 
 /// **An old session is woken only when its last words wait on the restart**, and one whose last message is
@@ -529,7 +769,21 @@ fn an_old_session_that_promised_to_continue_after_a_restart_is_woken() {
     drop(h);
     let mut h = reopened(&dir, id);
     let text = h.restore_after_restart().expect("a restart is said");
-    assert_eq!(h.restart_notices, vec![text], "{:?}", h.restart_notices);
+    assert_eq!(
+        h.restart_notices,
+        vec![text.clone()],
+        "{:?}",
+        h.restart_notices
+    );
+    assert!(
+        text.contains("This turn is what you told the operator you would do once they restarted"),
+        "the sentence names the promise as the reason for the turn: {text}"
+    );
+    assert!(
+        text.contains("Do that one thing now, and report it.")
+            && text.contains(crate::restart::QUIET_END),
+        "one instruction and the quiet end: {text}"
+    );
 }
 
 /// A session idle beyond the window with nothing promised keeps today's row and no turn.
@@ -540,9 +794,11 @@ fn a_session_idle_beyond_the_window_gets_only_the_row() {
         return;
     };
     let text = h.restore_after_restart().expect("a restart is said");
-    assert!(!text.contains("do that one thing now"), "{text}");
+    assert!(!text.contains("Carry on with that work now"), "{text}");
+    assert!(!text.contains("Do that one thing now"), "{text}");
     assert!(h.restart_notices.is_empty(), "{:?}", h.restart_notices);
     assert_eq!(restart_rows(&h), vec![text], "{:?}", h.items());
+    assert!(h.wake().expect("the wake runs").is_none(), "a turn ran");
 }
 
 /// A session with history and no store cannot restore anything, and says so in one row naming the

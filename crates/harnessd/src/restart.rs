@@ -52,12 +52,22 @@
 //!
 //! The two cases take different doors. Something was running ⇒ the wake that continues it
 //! carries the notice. Nothing was ⇒ the sentence is for the clock alone, filed into the session
-//! and read at the next turn, never a turn of its own - except when the session still OWES
-//! something (*"i expected that after restart you will continue"*), where the person is waiting
-//! for it to continue and [`Owed`] sends the same sentence through the turn door
-//! ([`nothing_running_but`]). A session also gets the turn when its last turn ended within the
-//! threshold of the stop, or its last words read as waiting on a restart
-//! ([`promises_a_restart`]), so "after you restart I'll verify X" is not left to sit.
+//! and read at the next turn, NEVER a turn of its own: a generation spent working out that there
+//! is nothing to do is exactly what the operator called out. The one exception is a session that
+//! owes work - [`Owed`], which is a turn cut off, a settlement nobody was told about, or a board
+//! row still due or still owed - or whose last words promised to act once the operator restarted
+//! ([`promises_a_restart`]), so *"after you restart I'll verify X"* is not left to sit. That one
+//! gets a turn whose first line is the same clock sentence with the work NAMED, one instruction,
+//! and the quiet end below ([`nothing_running_but`]).
+//!
+//! # The quiet end
+//!
+//! A turn that finds there is nothing to do after all - the row was finished elsewhere, the
+//! settlement was read before the stop - ends with an empty reply, which is the door
+//! [`QUIET_END`] defines and says out loud in the sentence. It costs nothing and draws nothing:
+//! an `Assistant` row with no words and no calls renders no lines, so a head is left with the
+//! session idle and no `waiting on:` line, rather than a turn a person has to read to learn that
+//! it was about nothing.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -448,7 +458,16 @@ pub fn header(
 /// agent about restart? with the current time lol"*. It carries the down time and says there was
 /// nothing to bring back, which is the whole of the news.
 pub fn nothing_running(stop: &Stopped, back_ms: u64) -> String {
-    let down = match stop {
+    format!(
+        "[restart] The daemon restarted ({}). Nothing was running.",
+        down_span(stop, back_ms)
+    )
+}
+
+/// `down 1s`, `down ~1m05s`, `stop time unknown` - the bracket every restart sentence carries,
+/// so the two doors cannot date one stop differently.
+fn down_span(stop: &Stopped, back_ms: u64) -> String {
+    match stop {
         Stopped::At {
             at_ms,
             estimated_from,
@@ -460,8 +479,7 @@ pub fn nothing_running(stop: &Stopped, back_ms: u64) -> String {
         // Not "down 0s": nobody knows when it stopped, and a restart with nothing running is
         // exactly the one with no record to read it from - see the module docs.
         Stopped::Unknown { .. } => "stop time unknown".to_string(),
-    };
-    format!("[restart] The daemon restarted ({down}). Nothing was running.")
+    }
 }
 
 /// Whether a session's last row is a turn that was still going when its rows stopped - an
@@ -479,9 +497,65 @@ pub fn mid_turn(last: Option<&TranscriptItem>) -> bool {
     }
 }
 
-/// What a session still owes when its daemon comes back - the reason an empty restart is a
-/// TURN and not a row. Every arm is a fact in the store or on the board. None of them is
-/// prose
+/// How many of a board's rows one sentence names before it counts the rest.
+const NAMED_ROWS: usize = 3;
+
+/// What one row's words are cut to in a sentence: a row is the model's own paragraph, and three of
+/// them at full length is no longer a sentence.
+const NAMED_CHARS: usize = 80;
+
+/// The rows a restart turn is about, by their own words - what the model wrote on the board, so the
+/// sentence says *finish the migration* rather than *2 rows*.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Rows {
+    /// The first [`NAMED_ROWS`] of them, each cut to [`NAMED_CHARS`].
+    pub named: Vec<String>,
+    /// How many there are - longer than `named` when the board holds more than it names.
+    pub total: usize,
+}
+
+impl Rows {
+    /// `contents` as one sentence can hold them.
+    pub fn of<'a>(contents: impl Iterator<Item = &'a str>) -> Rows {
+        let mut named: Vec<String> = Vec::new();
+        let mut total = 0;
+        for content in contents {
+            total += 1;
+            if named.len() < NAMED_ROWS {
+                named.push(cut(content));
+            }
+        }
+        Rows { named, total }
+    }
+
+    /// Whether the board holds none of them - half of what decides the door.
+    pub fn is_empty(&self) -> bool {
+        self.total == 0
+    }
+
+    /// `finish the migration and report; then update the notes`, and past the cap `, and 2 more`.
+    fn said(&self) -> String {
+        let mut said = self.named.join("; ");
+        let rest = self.total.saturating_sub(self.named.len());
+        if rest > 0 {
+            said.push_str(&format!(", and {rest} more"));
+        }
+        said
+    }
+}
+
+/// One row's words as a clause: its first line, cut at [`NAMED_CHARS`] on a character boundary -
+/// a row's markdown does not belong in the middle of a sentence.
+fn cut(content: &str) -> String {
+    let line = content.lines().next().unwrap_or("").trim();
+    match line.char_indices().nth(NAMED_CHARS) {
+        Some((at, _)) => format!("{}…", line[..at].trim_end()),
+        None => line.to_string(),
+    }
+}
+
+/// What a session still owes when its daemon comes back - the reason an empty restart is a TURN
+/// and not a row. Every arm is a fact in the store or on the board. None of them is prose.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Owed {
     /// A turn was in flight when the rows stopped - [`mid_turn`].
@@ -492,24 +566,29 @@ pub struct Owed {
     pub settlements: usize,
     /// Rows whose condition the world now meets - the board says the work is due
     /// (`Harness::due_todo_rows`).
-    pub due_rows: usize,
+    pub due: Rows,
     /// Rows still owed - the plan the model wrote, `Pending` or `InProgress`. A row the
     /// operator postponed or struck off is not owed, and a completed one is not either.
-    pub plan_rows: usize,
-    /// The session was active within the threshold of the stop, or its last message promised
-    /// to continue after a restart. It is woken so it can follow through on that.
-    pub wake: bool,
+    pub plan: Rows,
+    /// The session's last message promised to carry on after a restart ([`promises_a_restart`]).
+    /// Being merely ACTIVE before the stop is not this and is not owed: the model was owed
+    /// nothing, and a turn spent finding that out is a generation nobody asked for.
+    pub promise: bool,
 }
 
 impl Owed {
     /// Whether there is anything at all - the one question the door is chosen on.
     pub fn any(&self) -> bool {
-        self.mid_turn || self.wake || self.settlements + self.due_rows + self.plan_rows > 0
+        self.mid_turn
+            || self.promise
+            || self.settlements > 0
+            || !self.due.is_empty()
+            || !self.plan.is_empty()
     }
 
     /// Why this restart is a turn, as the sentence says it - every arm that holds, in the
     /// model's own reading order: the turn it was in, then what the daemon could not deliver
-    /// then what the board says.
+    /// then what the board says, named by its own words.
     pub fn clause(&self) -> String {
         fn rows(n: usize, one: &str, many: &str) -> String {
             match n {
@@ -528,52 +607,72 @@ impl Owed {
                 "settlements nobody has been told about",
             ));
         }
-        if self.due_rows > 0 {
-            parts.push(rows(
-                self.due_rows,
-                "a todo row whose condition is met",
-                "todo rows whose condition is met",
+        if !self.due.is_empty() {
+            parts.push(format!(
+                "{}: {}",
+                rows(
+                    self.due.total,
+                    "a todo row whose condition is met",
+                    "todo rows whose condition is met"
+                ),
+                self.due.said()
             ));
         }
-        if self.plan_rows > 0 {
-            parts.push(rows(
-                self.plan_rows,
-                "a todo row still owed",
-                "todo rows still owed",
+        if !self.plan.is_empty() {
+            parts.push(format!(
+                "{}: {}",
+                rows(
+                    self.plan.total,
+                    "a todo row still owed",
+                    "todo rows still owed"
+                ),
+                self.plan.said()
             ));
         }
         parts.join(", ")
     }
 }
 
-/// A restart with nothing running that still owes work - the same sentence as
-/// [`nothing_running`], with the reason it is a TURN rather than a row: a model woken to *nothing
-/// was running* alone has no way to know why it is reading it now.
-pub fn nothing_running_but(stop: &Stopped, back_ms: u64, owed: &Owed) -> String {
-    let mut text = nothing_running(stop, back_ms);
-    let work = owed.clause();
-    if !work.is_empty() {
-        text.push_str(&format!(
-            " — but this session has work outstanding ({work}), so this turn is that work \
-             continuing and not a notice about it: read the conversation and carry on."
-        ));
-    }
-    if owed.wake {
-        text.push_str(WAKE_TAIL);
-    }
-    text
-}
+/// The quiet end of a restart turn: the one way to say there was nothing to do, said in the
+/// sentence itself so a model does not have to work out that answering nothing is allowed. An
+/// empty reply records an `Assistant` row with no words and no calls, which renders no lines, and
+/// leaves the session idle.
+pub const QUIET_END: &str = "If there is nothing left to do after all, answer with an empty reply \
+     — no words at all — and this session goes idle.";
 
-/// What a woken model is told to do about the restart it may have been waiting on.
-const WAKE_TAIL: &str = " If you told the operator you would do something once they restarted, \
-    do that one thing now and report it. If you were waiting for the operator's answer, keep waiting: \
-    a restart is not an answer, so do not decide for them or act on an open question. If nothing \
-    was waiting on it, end this turn with no reply.";
+/// A restart with nothing running that still owes work - the same clock as [`nothing_running`],
+/// with what it owes NAMED and ONE instruction after it: a model woken to *nothing was running*
+/// alone has no way to know why it is reading it now, and three conditionals to resolve is how it
+/// spends a dozen thinking lines deciding to say nothing.
+pub fn nothing_running_but(stop: &Stopped, back_ms: u64, owed: &Owed) -> String {
+    let clock = format!(
+        "[restart] The daemon restarted ({}).",
+        down_span(stop, back_ms)
+    );
+    let work = owed.clause();
+    if work.is_empty() {
+        // Nothing recorded: the promise is the whole reason, and it is the one thing to do.
+        return format!(
+            "{clock} Nothing was running. This turn is what you told the operator you would do \
+             once they restarted; a restart is not the answer to a question you asked, so an open \
+             one stays open. Do that one thing now, and report it. {QUIET_END}"
+        );
+    }
+    let promise = if owed.promise {
+        ", including what you told the operator you would do once they restarted,"
+    } else {
+        ""
+    };
+    format!(
+        "{clock} Nothing was running. This session owes work — {work}. Carry on with that work \
+         now{promise} and report it. {QUIET_END}"
+    )
+}
 
 /// The restart's own sentence, with a layer's half where one answered (X21): `lifecycle_restart` is
 /// asked with the facts, and its `say` becomes the words the model reads before the turn. A layer can
-/// reword what a restart means and CANNOT cancel the wake - the turn runs whatever it answers, which
-/// is the half of `WAKE_TAIL` no release ever let a project change.
+/// reword what a restart means and CANNOT cancel the wake - the turn runs whatever it answers, and
+/// neither it nor the layer can take back the one instruction the sentence ends with.
 ///
 /// One act, not four: a sentence is all a caller that composes text can perform. A row, a monitor or a
 /// room message belongs to a boundary that still has a harness behind it (`open`, `reseat`, `close`).
@@ -1162,6 +1261,92 @@ mod tests {
         // And the warning's detail is that one line, with no empty second line under it.
         assert_eq!(warning_detail(&text, &[]), text);
         assert_eq!(Outcome::Nothing.code(), "restart_nothing");
+    }
+
+    /// The turn's sentence, whole: the clock, the work named by its own words, ONE instruction, and
+    /// the defined quiet end. Pinned because it is what a model reads before it decides anything.
+    #[test]
+    fn a_restart_that_owes_work_names_it_and_ends_in_one_instruction() {
+        let stop = Stopped::At {
+            at_ms: AT,
+            estimated_from: None,
+        };
+        let mut owed = Owed::default();
+        assert!(!owed.any(), "nothing owed is not a turn");
+        assert_eq!(owed.clause(), "");
+        owed.plan = Rows::of(["finish the migration", "then update the notes"].into_iter());
+        assert!(owed.any());
+        assert_eq!(
+            owed.clause(),
+            "2 todo rows still owed: finish the migration; then update the notes"
+        );
+        assert_eq!(
+            nothing_running_but(&stop, AT + 1_000, &owed),
+            "[restart] The daemon restarted (down 1s). Nothing was running. This session owes work \
+             — 2 todo rows still owed: finish the migration; then update the notes. Carry on with \
+             that work now and report it. If there is nothing left to do after all, answer with an \
+             empty reply — no words at all — and this session goes idle."
+        );
+    }
+
+    /// A plan longer than the sentence names is COUNTED rather than quoted, and a row that is a
+    /// paragraph is cut - three of them is already the most one line can carry.
+    #[test]
+    fn a_long_plan_is_counted_and_a_long_row_is_cut() {
+        let rows = Rows::of(std::iter::repeat_n("a long row", 5));
+        assert_eq!(
+            rows.said(),
+            "a long row; a long row; a long row, and 2 more"
+        );
+        assert_eq!(rows.total, 5);
+        let paragraph = format!("port the picker {}\nand then the rest", "x".repeat(200));
+        let cut = Rows::of(std::iter::once(paragraph.as_str()));
+        assert_eq!(cut.named.len(), 1);
+        assert!(
+            cut.named[0].starts_with("port the picker "),
+            "{}",
+            cut.named[0]
+        );
+        assert!(cut.named[0].ends_with('…'), "{}", cut.named[0]);
+        assert!(
+            cut.named[0].chars().count() <= NAMED_CHARS + 1,
+            "{}",
+            cut.named[0]
+        );
+        // The first line, not the whole paragraph: a row's markdown does not go in a sentence.
+        assert!(
+            !cut.named[0].contains("and then the rest"),
+            "{}",
+            cut.named[0]
+        );
+    }
+
+    /// A promise with nothing recorded is its own sentence: what it said it would do, one
+    /// instruction, and the quiet end - never the work clause, which would be an empty list.
+    #[test]
+    fn a_promise_with_nothing_recorded_is_said_as_the_promise() {
+        let stop = Stopped::At {
+            at_ms: AT,
+            estimated_from: None,
+        };
+        let owed = Owed {
+            promise: true,
+            ..Owed::default()
+        };
+        assert!(owed.any(), "a promise is a turn on its own");
+        let text = nothing_running_but(&stop, AT + 1_000, &owed);
+        assert!(
+            text.contains(
+                "This turn is what you told the operator you would do once they \
+                           restarted"
+            ),
+            "{text}"
+        );
+        assert!(
+            text.contains("Do that one thing now, and report it."),
+            "{text}"
+        );
+        assert!(text.ends_with(QUIET_END), "{text}");
     }
 
     /// The case with records: what happened first, the clock in one bracket, and the list.
