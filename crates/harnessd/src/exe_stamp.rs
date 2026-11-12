@@ -67,6 +67,9 @@ mod tests {
         let bin = dir.join("bin");
         std::fs::write(&bin, "old").expect("write");
         let s = Stamp::of(bin.clone()).expect("stamped");
+        // A running daemon maps its executable, so the old inode stays allocated and a new file
+        // cannot reuse its number. Holding it open does the same here.
+        let _running = std::fs::File::open(&bin).expect("open");
         assert!(!s.replaced(), "the same file");
         std::fs::remove_file(&bin).expect("rm");
         assert!(!s.replaced(), "a build in progress");
