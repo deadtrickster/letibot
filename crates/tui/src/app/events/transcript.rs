@@ -14,8 +14,15 @@ impl App {
                 kind,
                 ledger_head,
                 item: body,
-                ..
+                body_bytes,
             } => {
+                // The turn's ledger FIRST, whatever the window does with the row: `appended` is what
+                // the live pane's hand-over counts, so a row let go below the window and fetched back
+                // later must still be named here or its live card stands under the page that draws it.
+                if let Some(t) = self.turn.as_mut() {
+                    t.appended.push(item_id.clone());
+                    t.turn_rows.push(item_id.clone());
+                }
                 // A row that arrives below the window is counted, not held: this head let the tail go (see
                 // `App::drop_rows_below`), so a spliced row would take the ordinal of one still missing. The page the
                 // reader comes down to fills that gap; until then the count is the truth.
@@ -24,32 +31,34 @@ impl App {
                     return Disposition::Rendered;
                 }
                 // A tool result's facts - duration, edit pair, decision - ride across at the
-                // announcement, positionally (a round's rows are appended in call order and the ids
-                // repeat). The CARD waits for its body in `record_item`, or the call flickers out.
+                // announcement, positionally (rows are appended in call order and the ids repeat).
+                // The row draws its own header from then on (see `App::pending_rows`).
                 let mut carried: Option<u64> = None;
                 let mut carried_edit: Option<Vec<letibot_sessionlog::event::ToolEdit>> = None;
                 let mut carried_decision: Option<letibot_sessionlog::view::SettledDecision> = None;
-                if let Some(t) = self.turn.as_mut() {
-                    t.appended.push(item_id.clone());
-                    t.turn_rows.push(item_id.clone());
-                    if kind == "tool_result" {
-                        let c = t.calls.get(t.settled_calls);
-                        carried = c
-                            .filter(|c| c.started_ms > 0 && c.ended_ms > c.started_ms)
-                            .map(|c| c.ended_ms - c.started_ms);
-                        // The pair rides across with the duration: same card, same
-                        // moment, same positional match.
-                        carried_edit = c.and_then(|c| match &c.state {
-                            CallState::Finished { edits, .. } if !edits.is_empty() => {
-                                Some(edits.clone())
-                            }
-                            _ => None,
-                        });
-                        // The approval rides across too: the decision is a fact
-                        // about this call, and the row that outlives the card is
-                        // where it has to keep being shown.
-                        carried_decision = c.and_then(|c| c.decision.clone());
-                    }
+                let mut carried_call: Option<(String, String)> = None;
+                if let Some(t) = self.turn.as_mut()
+                    && kind == "tool_result"
+                {
+                    let c = t.calls.get(t.settled_calls);
+                    carried = c
+                        .filter(|c| c.started_ms > 0 && c.ended_ms > c.started_ms)
+                        .map(|c| c.ended_ms - c.started_ms);
+                    // The pair rides across with the duration: same card, same
+                    // moment, same positional match.
+                    carried_edit = c.and_then(|c| match &c.state {
+                        CallState::Finished { edits, .. } if !edits.is_empty() => {
+                            Some(edits.clone())
+                        }
+                        _ => None,
+                    });
+                    // The approval rides across too: the decision is a fact
+                    // about this call, and the row that outlives the card is
+                    // where it has to keep being shown.
+                    carried_decision = c.and_then(|c| c.decision.clone());
+                    // And what the row says while its body is on its way: the call's
+                    // own words, which nothing else in this head holds by item id.
+                    carried_call = c.map(|c| (c.name.clone(), c.target.clone()));
                 }
                 if let Some(ms) = carried {
                     self.call_ms.insert(item_id.clone(), ms);
@@ -59,6 +68,20 @@ impl App {
                 }
                 if let Some(d) = carried_decision {
                     self.call_decisions.insert(item_id.clone(), d);
+                }
+                // A row announced without its body: what it is and how much is still coming, so the
+                // row draws one line instead of none while that body takes its second journey. The
+                // daemon is the one who decided the payload would not ride the announcement.
+                if body.is_none() && kind == "tool_result" {
+                    let (name, target) = carried_call.unwrap_or_default();
+                    self.pending_rows.insert(
+                        item_id.clone(),
+                        PendingRow {
+                            bytes: body_bytes,
+                            name,
+                            target,
+                        },
+                    );
                 }
                 // A user row is drawn from the moment it is announced: the body follows on its own
                 // channel and the reply streams meanwhile, so without this the prompt is invisible
@@ -87,6 +110,9 @@ impl App {
                 if let Some((id, body)) = drawn {
                     self.record_item(&id, body);
                 }
+                // The row is on the screen now, body or not, so the call it answers is the
+                // transcript's and the live card that drew it has stood down.
+                self.settle_rows();
                 // And the restore this head was waiting on has begun to arrive. The line that
                 // said *N rows are in the store and not here yet* was true until this row; from
                 // here the conversation draws itself, so it goes. See [`App::restoring`].

@@ -377,6 +377,9 @@ impl App {
                     self.fetch_asked = None;
                 }
                 self.apply_rows(from, rows);
+                // A page brings the tail's rows into the window, so a call whose row arrived below it is
+                // the transcript's from here: the card must not stand under the page that draws it.
+                self.settle_rows();
                 Disposition::Rendered
             }
             ServerFrame::Peeked {

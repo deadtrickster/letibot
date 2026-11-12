@@ -467,6 +467,7 @@ fn item_rendered(
     let ctx = ItemCtx {
         cards: &Cards::readers_only(),
         cfg: &cfg,
+        pending: &Default::default(),
         think: Fold::Open,
         tools: Fold::Open,
         raw: true,
@@ -1391,6 +1392,7 @@ mod pane;
 mod panes_ux;
 mod paste;
 mod payloadwindow;
+mod pendingrow;
 mod pictures;
 mod plugin_pane;
 mod plugin_trust;

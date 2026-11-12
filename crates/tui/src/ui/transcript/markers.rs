@@ -14,6 +14,13 @@ pub(crate) fn row_hidden(items: &[SnapshotItem], vis: Visibility, row: usize) ->
     row_hidden_at(vis, items.get(row))
 }
 
+/// Does a row announced without its body draw a line of its own? Only a tool result does: a payload
+/// past `ANNOUNCE_BYTES` is sent on a second journey, on purpose, and the row has a header for
+/// meanwhile. A `user` row draws from this head's echo; the rest are a fork's, by the hundred.
+pub(crate) fn carries_a_header(it: &SnapshotItem) -> bool {
+    it.kind == "tool_result"
+}
+
 /// The same question about a row rather than a list index, so it can be asked about the live tail. `None` is a row
 /// with no body yet, and it is not hidden: it is drawn from this head's echo when it has one.
 pub(crate) fn row_hidden_at(vis: Visibility, it: Option<&SnapshotItem>) -> bool {
@@ -22,7 +29,9 @@ pub(crate) fn row_hidden_at(vis: Visibility, it: Option<&SnapshotItem>) -> bool 
     }
     match it.and_then(|it| it.item.as_ref()) {
         Some(item) => !vis.keeps(item),
-        None => false,
+        // A row with no body is drawn from this head's echo, or - a tool result - as its own header.
+        // A header is the working, so the rung that hides the working hides it with the rest.
+        None => it.is_some_and(carries_a_header),
     }
 }
 
@@ -33,9 +42,9 @@ pub(crate) fn row_hidden_at(vis: Visibility, it: Option<&SnapshotItem>) -> bool 
 pub(crate) struct LiveWork {
     /// Calls proposed or running with no settled result row yet - the NUMBER the marker carries.
     pub(crate) calls: usize,
-    /// Calls still executing, the number the yellow is on: `calls` drops only when a result row's body lands, while
-    /// `running` says whether a call is executing now, so a finished call whose row is a frame away keeps the number
-    /// and loses the colour.
+    /// Calls still executing, the number the yellow is on: `calls` drops the moment a result row is
+    /// held - that row draws its own header, body or not - while `running` says whether a call is
+    /// executing now, so a call that finished a frame ago keeps its number and loses the colour.
     pub(crate) running: usize,
     /// Display lines of reasoning streamed this turn and not yet a row.
     pub(crate) think_lines: usize,
@@ -315,6 +324,32 @@ pub(crate) fn round_answered<'a>(t: &TurnPane, items: &'a [SnapshotItem]) -> Vec
                 })
         })
         .collect()
+}
+
+/// How many of this round's calls the transcript has taken over: one per held tool-result row, in the
+/// order the calls were made. A bodyless row counts - it draws its own header - while a row that HAS a
+/// body must name its call, so a row out of another round cannot hand this one's call over.
+pub(crate) fn settled_rows(t: &TurnPane, items: &[SnapshotItem]) -> usize {
+    let held: Vec<&SnapshotItem> = t
+        .appended
+        .iter()
+        .filter_map(|id| {
+            items
+                .iter()
+                .find(|it| &it.item_id == id && it.kind == "tool_result")
+        })
+        .collect();
+    let mut n = 0;
+    while let Some(call) = t.calls.get(n) {
+        let Some(row) = held.get(n) else { break };
+        if let Some(TranscriptItem::ToolResult { call_id, .. }) = &row.item
+            && call_id != &call.call_id
+        {
+            break;
+        }
+        n += 1;
+    }
+    n
 }
 
 /// How the live pane knows what is in flight: calls proposed or running with no result row yet, and reasoning

@@ -5017,21 +5017,22 @@ fn a_call_the_transcript_has_answered_is_not_drawn_executing() {
     );
 }
 
-/// A settling diff card is handed over in one frame and never leaves the screen: the card is drawn from the call
-/// and the row from its body, and a head that stood down at the announcement left the call in neither half for the
-/// frames between the two events.
+/// A settling call is on the screen in every frame: the live card while it runs, the row's own header
+/// once it is announced, the row itself when the body lands. The card retires at the announcement - the
+/// row draws from there - and the diff comes back with the body; what must never happen is a frame in
+/// which the call is in neither half.
 #[test]
-fn a_settling_diff_card_never_leaves_the_screen() {
-    settling_diff_card_never_leaves_the_screen(false);
+fn a_settling_call_is_drawn_in_every_frame_of_its_hand_over() {
+    settling_call_is_drawn_in_every_frame(false);
 }
 
 /// The tail-walk half of the report - see the test above for what a frame is asserted on.
 #[test]
-fn a_settling_diff_card_never_leaves_the_screen_on_the_tail_walk() {
-    settling_diff_card_never_leaves_the_screen(true);
+fn a_settling_call_is_drawn_in_every_frame_of_its_hand_over_on_the_tail_walk() {
+    settling_call_is_drawn_in_every_frame(true);
 }
 
-fn settling_diff_card_never_leaves_the_screen(tail: bool) {
+fn settling_call_is_drawn_in_every_frame(tail: bool) {
     let mut a = app();
     a.apply(hello(
         "s",
@@ -5097,15 +5098,17 @@ fn settling_diff_card_never_leaves_the_screen(tail: bool) {
 
     // Every frame of the settling, taken one event at a time because that is how the daemon's two events arrive: the
     // announcement and the body are separate frames, and a head that renders between them is the head the flicker was
-    // seen on.
-    let mut frame = |a: &mut App, e: SessionEvent, label: &str| {
+    // seen on. `want` is what must be on the frame: the call, in whichever half is drawing it.
+    let mut frame = |a: &mut App, e: SessionEvent, label: &str, want: &[&str]| {
         a.apply(ServerFrame::Event(next(e)));
         let f = a.screen(100, 24);
-        assert!(
-            f.iter().any(|l| l.contains("@@ -1,1 +1,3")),
-            "{label}: the diff card is not on the screen:\n{}",
-            f.join("\n")
-        );
+        for needle in want {
+            assert!(
+                f.iter().any(|l| l.contains(needle)),
+                "{label}: `{needle}` is not on the screen:\n{}",
+                f.join("\n")
+            );
+        }
         let card_rows: Vec<usize> = f
             .iter()
             .enumerate()
@@ -5132,7 +5135,7 @@ fn settling_diff_card_never_leaves_the_screen(tail: bool) {
     };
 
     // 1. The call finished: the live card, diff and all.
-    let finished = frame(
+    frame(
         &mut a,
         SessionEvent::ToolFinished {
             turn_id: turn_id.into(),
@@ -5146,20 +5149,38 @@ fn settling_diff_card_never_leaves_the_screen(tail: bool) {
             edits: vec![edit_excerpt()],
         },
         "finished",
+        &["@@ -1,1 +1,3"],
     );
-    // The result row announced with its body not yet landed: this is the frame that flickered, since the card is the
-    // only thing on screen that knows the call and the row cannot draw yet. The frame must be the same frame.
+    // 2. The result row announced with its body not yet landed. Before R183 this was the frame that flickered:
+    // the card was the only thing that knew the call and the row drew nothing, so a head that stood the card
+    // down there left the call in neither half. The row draws its own header now, once, and the pane stands
+    // down - the diff comes back with the body.
     let announced = frame(
         &mut a,
         testing::appended(result_id, "tool_result"),
         "announced",
+        &["Edited a.rs", "loading"],
+    );
+    assert!(
+        !announced.iter().any(|l| l.contains("@@ -1,1 +1,3")),
+        "the row drew a body it has not been sent:\n{}",
+        announced.join("\n")
+    );
+    assert!(
+        announced
+            .iter()
+            .filter(|l| l.contains("Edited a.rs"))
+            .count()
+            == 1,
+        "the call is drawn twice in one frame:\n{}",
+        announced.join("\n")
     );
     assert_eq!(
-        announced, finished,
-        "the announcement moved the frame, and a frame that moves is a frame that repaints"
+        a.turn.as_ref().expect("the turn").settled_calls,
+        1,
+        "the announced row did not take the call over from the pane"
     );
-    // 3. The body lands: the settled row draws itself and the pane stands down - one frame,
-    //    card on screen throughout.
+    // 3. The body lands: the settled row draws itself, diff and all.
     frame(
         &mut a,
         SessionEvent::TranscriptContent {
@@ -5175,6 +5196,7 @@ fn settling_diff_card_never_leaves_the_screen(tail: bool) {
             }),
         },
         "landed",
+        &["@@ -1,1 +1,3"],
     );
     // And the handover is complete: the pane no longer draws the call.
     assert_eq!(

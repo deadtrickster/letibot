@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::ui::render::BlockCache;
-use crate::ui::round_answered;
+use crate::ui::settled_rows;
 use letibot_sessionlog::event::SessionEvent;
 use letibot_sessionlog::protocol::ServerFrame;
 use letibot_sessionlog::view::{
@@ -121,6 +121,7 @@ impl App {
             self.call_targets.clear();
             self.call_ms.clear();
             self.call_edits.clear();
+            self.pending_rows.clear();
             // A handle is per-session too: another session's job was never spawned by this one.
             self.job_edits.clear();
             self.usage = None;
@@ -467,15 +468,8 @@ impl App {
         // The prose a snapshot's rows already hold is not ours to draw again: the daemon never trims
         // `TurnView::text` when a row lands, and the head's handover fires on a body event it was not there for.
         // The working goes through the same door, so a re-attach cannot count a row that is above it.
+        self.settle_rows();
         if let Some(t) = self.turn.as_mut() {
-            let answered = round_answered(t, &self.items);
-            while t
-                .calls
-                .get(t.settled_calls)
-                .is_some_and(|c| answered.contains(&c.call_id.as_str()))
-            {
-                t.settled_calls += 1;
-            }
             t.hand_over_prose(&self.items);
             t.hand_over_reasoning(&self.items);
         }
@@ -616,6 +610,9 @@ impl App {
         self.call_edits.retain(|id, _| held.contains(id.as_str()));
         self.call_decisions
             .retain(|id, _| held.contains(id.as_str()));
+        // And a placeholder goes with the row that drew it: a body arriving for a row the window let
+        // go leaves its entry with nothing on the screen to say it for.
+        self.pending_rows.retain(|id, _| held.contains(id.as_str()));
     }
 
     /// The rows this head holds that are numbered in a transcript the session has left: the head's half of
@@ -800,6 +797,18 @@ impl App {
             .find(|c| matches!(c.state, CallState::Running))
     }
 
+    /// Hand the round's calls over to the transcript: a call is the transcript's once its result row
+    /// is held, body or not, because the row draws its own header from that moment. Monotone - a row
+    /// that climbs out of the window does not hand the call back to the live pane.
+    pub(crate) fn settle_rows(&mut self) {
+        let Some(n) = self.turn.as_ref().map(|t| settled_rows(t, &self.items)) else {
+            return;
+        };
+        if let Some(t) = self.turn.as_mut() {
+            t.settled_calls = t.settled_calls.max(n);
+        }
+    }
+
     /// Attach content to a transcript row, from whatever route the daemon offers.
     pub fn record_item(&mut self, item_id: &str, item: TranscriptItem) {
         let prose = matches!(item, TranscriptItem::Assistant { .. });
@@ -856,30 +865,14 @@ impl App {
             return;
         };
         self.items[idx].item = Some(item);
-        // A landed tool-result body is what hands a live card over. Not the announcement: a row with no body
-        // renders zero rows, so a pane that stood down there left the call in neither half for the frames
-        // between the two events, which is the flicker the operator saw.
+        // A landed tool-result body takes the placeholder with it, and it is the row that says so:
+        // the header the row drew a moment ago is replaced by the whole one, not by a second.
         if matches!(
             self.items[idx].item,
             Some(TranscriptItem::ToolResult { .. })
-        ) && self
-            .turn
-            .as_ref()
-            .is_some_and(|t| t.appended.iter().any(|a| a == item_id))
-        {
-            let answered = self
-                .turn
-                .as_ref()
-                .map(|t| round_answered(t, &self.items))
-                .unwrap_or_default();
-            let t = self.turn.as_mut().expect("checked above");
-            while t
-                .calls
-                .get(t.settled_calls)
-                .is_some_and(|c| answered.contains(&c.call_id.as_str()))
-            {
-                t.settled_calls += 1;
-            }
+        ) {
+            self.pending_rows.remove(item_id);
+            self.settle_rows();
         }
         // A body landing is the transcript moving too: the row carried no tool calls a moment ago, so a `!`
         // candidate list built then is missing every command this row ran. See [`App::the_rows_moved`].

@@ -353,6 +353,7 @@ impl App {
                     &ItemCtx {
                         cards: &cards,
                         cfg: &row_cfg,
+                        pending: &self.pending_rows,
                         think: if open_run {
                             crate::app::runclick::run_think(self.lift, think)
                         } else {

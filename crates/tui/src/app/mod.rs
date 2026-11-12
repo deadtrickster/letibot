@@ -1015,6 +1015,10 @@ pub struct App {
     /// that has settled, which would otherwise leave with the live card.
     pub(crate) call_decisions:
         std::collections::HashMap<String, letibot_sessionlog::view::SettledDecision>,
+    /// A row announced WITHOUT its body, by item id: what it is and how much is still coming. A
+    /// payload past `ANNOUNCE_BYTES` arrives over a second journey by design, and the row draws
+    /// this while it is on its way rather than nothing at all.
+    pub(crate) pending_rows: std::collections::HashMap<String, PendingRow>,
     /// The total body length of the last frame, so `Up` can be clamped to it.
     pub(crate) body_len: usize,
     /// The protocol version the daemon last said it speaks. `None` until a daemon has answered,
@@ -1193,6 +1197,18 @@ pub struct App {
     /// The number the next retry row is keyed by. A series is ONE row whose value moves, so the
     /// row needs an identity that survives those moves and that a later outage cannot reuse.
     pub(crate) retry_series: u64,
+}
+
+/// A row announced without its body: the call it answers and how much is still on its way. Only a
+/// tool result draws from it - the other kinds have a live copy of the same words on the screen.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PendingRow {
+    /// The body's own length, as the announcement measured it; 0 when nothing said how large.
+    pub bytes: u64,
+    /// The tool's name, read off the call this row answers; empty when this head holds no call.
+    pub name: String,
+    /// The display target that call was proposed with.
+    pub target: String,
 }
 
 /// A confirmation another head asked for, as this screen holds it. Beside [`App::mode_confirm`]
@@ -1400,6 +1416,7 @@ impl App {
             call_edits: std::collections::HashMap::new(),
             job_edits: std::collections::BTreeMap::new(),
             call_decisions: std::collections::HashMap::new(),
+            pending_rows: std::collections::HashMap::new(),
             reasoning: Fold::Folded,
             tools: Fold::Folded,
             raw_calls: false,

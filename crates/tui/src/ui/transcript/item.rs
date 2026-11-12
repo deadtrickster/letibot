@@ -2,11 +2,12 @@
 //! lines, under the visibility, folds and budgets the frame was asked for.
 
 use crate::app::*;
-use crate::ui::render::{RenderConfig, trim_to};
+use crate::ui::render::{RenderConfig, trim_to, visible_width};
 use crate::ui::*;
 use letibot_sessionlog::view::SnapshotItem;
 use letibot_transcript::TranscriptItem;
 use rano::agent::card;
+use rano::agent::text::shorten_subject;
 
 /// A `card::CardConfig` from this head's own config. One place, so the width and the fold
 /// cannot drift between the live pane and the transcript (the palette is applied where the
@@ -143,6 +144,9 @@ pub(crate) struct ItemCtx<'a> {
     /// The row drawn just before this one, when it is the session's question to a person (`asked:`,
     /// `asked_card`) - what an operator's row right under it answers. `None` everywhere else.
     pub(crate) replied_to: Option<&'a str>,
+    /// A row announced WITHOUT its body, by item id: the tool whose call it answers and how many
+    /// bytes are still on their way. See `App::pending_rows`.
+    pub(crate) pending: &'a std::collections::HashMap<String, PendingRow>,
     /// The cards layer for this row: asked once per row id, and the readers where it answers nothing.
     /// On the context for the reason every other per-row reading is - `item_lines` is a free
     /// function, and the walk that holds the head apart is the only place a `Host` can be borrowed.
@@ -189,10 +193,14 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
                 queued_lines(text, cfg, echo_mark, echo_open),
             );
         }
-        // The announcement arrived and the body has not, so draw nothing: a placeholder per row was
-        // tolerable for a frame, and a fork publishes every announcement before any body follows.
-        // What is worth saying is how far the carry is, and that is one line of the status row.
-        return (RowClass::Other, Vec::new());
+        // No echo and no body yet. One line where the row's word for itself is known - a tool result
+        // past the announcement bound, which is how every payload over 8 KiB arrives - and nothing
+        // at all otherwise: a fork publishes every announcement before any body follows, and a
+        // placeholder per row was a wall of them.
+        return match pending_lines(it, ctx, ind) {
+            Some(lines) => (RowClass::Activity, lines),
+            None => (RowClass::Other, Vec::new()),
+        };
     };
     match item {
         TranscriptItem::System { text, origin } => {
@@ -232,6 +240,48 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
             )],
         ),
     }
+}
+
+/// A row announced without its body, drawn as its own header while the body is on its way: the one
+/// line a reader gets instead of a hole where the row should be. `None` for every kind but a tool
+/// result - the others are a fork's announcements, or have a live copy of the same words on screen.
+fn pending_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>, ind: usize) -> Option<Vec<String>> {
+    if !carries_a_header(it) || ctx.vis.hides_the_working() {
+        return None;
+    }
+    // Only a row this head heard announced: a bodyless result row out of a snapshot is a carry
+    // whose body the store already holds, and `loading` about it would be a claim nobody made.
+    let pending = ctx.pending.get(&it.item_id)?;
+    let name = pending.name.as_str();
+    let verb = if name.is_empty() {
+        "tool result".to_string()
+    } else {
+        card::Verb::of(name).label(false).to_string()
+    };
+    // What is still coming, then what it is: the tail is the fact and it never shrinks, so the
+    // subject is what gives way when the line does not fit - the rule the card's own header keeps.
+    let tail = match pending.bytes {
+        0 => " · loading".to_string(),
+        n => format!(" · {}, loading", crate::ui::render::bytes_human(n)),
+    };
+    let w = ctx.cfg.width.saturating_sub(ind).max(20);
+    let lead = format!("▸ {verb} ");
+    let room = w
+        .saturating_sub(visible_width(&lead) + visible_width(&tail))
+        .max(8);
+    let mut line = rano::render::Line::new(vec![
+        rano::render::Span::role("▸ ", rano::style::Role::Faint),
+        rano::render::Span::role(format!("{verb} "), rano::style::Role::Strong),
+    ]);
+    if !pending.target.is_empty() {
+        line.push(rano::render::Span::role(
+            format!("{} ", shorten_subject(&pending.target, room)),
+            rano::style::Role::Plain,
+        ));
+    }
+    line.push(rano::render::Span::role(tail, rano::style::Role::Faint));
+    let drawn = crate::ui::render::row(&line, ctx.cfg.palette());
+    Some(step_in(vec![drawn], ind))
 }
 
 /// The files a completion says changed while its job ran, drawn under the notice: the daemon took a

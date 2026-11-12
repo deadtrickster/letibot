@@ -76,6 +76,9 @@ impl App {
                 // child's stack, and a peeked child's cards are not its session's to ask.
                 cards: &Cards::readers_only(),
                 cfg: &cfg,
+                // Not this head's rows either: the maps that carry a placeholder are keyed by THIS
+                // session's item ids, so a child's bodyless row draws nothing rather than a guess.
+                pending: &Default::default(),
                 think: Fold::Folded,
                 tools: Fold::Folded,
                 raw: false,

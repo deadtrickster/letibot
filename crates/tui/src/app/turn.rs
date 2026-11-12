@@ -78,7 +78,7 @@ pub(crate) struct TurnPane {
     /// boundary with no `began_ms` is *nobody measured this one*, not *a new prompt*.
     pub(crate) turn_rows: Vec<String>,
     /// How many of `calls` the transcript has taken over: rows are appended in call order after every call was invoked, so the nth row is about `calls[n-1]` with no id matching, the ids repeating every round.
-    /// The mark advances at the row's BODY, not its announcement - a bodyless row draws nothing, so the call would be in neither half for the frames between - and the live cards, `live_work` and `round_answered` all read it.
+    /// The mark advances at the row's ANNOUNCEMENT: a row with no body still draws its own header, so the call is on the screen in its own row from that moment. The live cards, `live_work` and `settled_rows` all read it, and `App::settle_rows` is the one door that moves it.
     pub(crate) settled_calls: usize,
     /// How far down [`TurnPane::appended`] this pane's thinking has been handed over - an index, not a
     /// byte offset into [`TurnPane::reasoning`]: `IncrementalMarkdown` freezes its settled half, so a
