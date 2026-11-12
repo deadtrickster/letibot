@@ -436,6 +436,7 @@ fn the_worker_never_takes_a_command_off_a_hub_owned_by_its_own_thread() {
         CommandKind::Prompt {
             text: "what did you find?".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     let soon = Instant::now() + std::time::Duration::from_millis(50);
@@ -643,6 +644,7 @@ fn one_worker_is_woken_by_whichever_session_was_prompted() {
         CommandKind::Prompt {
             text: "for b".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     a.submit(
@@ -652,6 +654,7 @@ fn one_worker_is_woken_by_whichever_session_was_prompted() {
         CommandKind::Prompt {
             text: "for a".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
 
@@ -663,6 +666,7 @@ fn one_worker_is_woken_by_whichever_session_was_prompted() {
         CommandKind::Prompt {
             text: "for b".into(),
             attachments: Vec::new(),
+            context: None,
         }
     );
     let (id2, c2) = r.next_command().unwrap();
@@ -672,6 +676,7 @@ fn one_worker_is_woken_by_whichever_session_was_prompted() {
         CommandKind::Prompt {
             text: "for a".into(),
             attachments: Vec::new(),
+            context: None,
         }
     );
 }
@@ -693,6 +698,7 @@ fn a_take_back_drops_the_issuing_heads_queued_prompts_only() {
         CommandKind::Prompt {
             text: "alice one".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     a.submit(
@@ -702,6 +708,7 @@ fn a_take_back_drops_the_issuing_heads_queued_prompts_only() {
         CommandKind::Prompt {
             text: "bob".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     a.submit(
@@ -711,6 +718,7 @@ fn a_take_back_drops_the_issuing_heads_queued_prompts_only() {
         CommandKind::Prompt {
             text: "alice two".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     a.submit(&ha.head_id, "c4", 0, CommandKind::WithdrawPrompts);
@@ -727,6 +735,7 @@ fn a_take_back_drops_the_issuing_heads_queued_prompts_only() {
         CommandKind::Prompt {
             text: "bob".into(),
             attachments: Vec::new(),
+            context: None,
         }
     );
     // And the take-back itself is consumed: a second one finds nothing.
@@ -749,6 +758,7 @@ fn a_take_back_does_not_drop_a_prompt_sent_after_it() {
         CommandKind::Prompt {
             text: "lol, it is a bag".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     // Up - the recall itself
@@ -761,6 +771,7 @@ fn a_take_back_does_not_drop_a_prompt_sent_after_it() {
         CommandKind::Prompt {
             text: "lol, it is a bug".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
 
@@ -776,6 +787,7 @@ fn a_take_back_does_not_drop_a_prompt_sent_after_it() {
         CommandKind::Prompt {
             text: "lol, it is a bug".into(),
             attachments: Vec::new(),
+            context: None,
         },
         "the prompt typed AFTER the take-back survives it"
     );
@@ -877,6 +889,7 @@ fn a_wake_is_served_after_every_queued_command() {
         CommandKind::Prompt {
             text: "hello".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
 
@@ -961,6 +974,7 @@ fn a_due_clock_waits_behind_a_bounded_run_of_wakes_but_not_of_commands() {
         CommandKind::Prompt {
             text: "hello".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     assert!(
@@ -1000,6 +1014,7 @@ fn the_default_session_follows_whoever_was_last_used() {
         CommandKind::Prompt {
             text: "x".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     r.next_command().unwrap();

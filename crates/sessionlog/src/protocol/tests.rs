@@ -157,8 +157,13 @@ fn every_frame_is_accounted_for_at_this_version() {
     let _ = event;
     let _ = server;
     assert_eq!(
-        PROTOCOL_VERSION, 70,
-        "the match above was last reconciled with the frame list at 70. 70 gave \
+        PROTOCOL_VERSION, 71,
+        "the match above was last reconciled with the frame list at 71. 71 added \
+             `ClientFrame::Prompt.context`, an ADDED, DEFAULTED field that is still a bump, for 50's \
+             reason with attachments: what the operator pointed at in the editor is rendered into the \
+             conversation by the DAEMON (`harnessd::editor_context`), and a version-70 daemon parses \
+             the frame and DROPS it in silence, so the bump is what a head reads to refuse to promise \
+             a selection it cannot send. 70 gave \
              `SessionEvent::JobSettled` an `edits` field: what changed in the job's tree while it ran, \
              from the snapshot taken at its spawn, so a job's writes are drawn on its card (R161). \
              `serde(default)`, so a version-69 head parses the event and drops the field - which is \
@@ -585,6 +590,7 @@ fn every_frame_round_trips() {
                 bytes_len: 94_208,
                 name: "shot.png".into(),
             }],
+            context: None,
         },
         // A frame from a version-49 head has no `attachments` key at all, which is
         // asserted on the wire's own bytes in
@@ -594,6 +600,7 @@ fn every_frame_round_trips() {
             expected_seq: 12,
             text: "no attachments here".into(),
             attachments: Vec::new(),
+            context: None,
         },
         ClientFrame::WithdrawPrompts {
             client_request_id: "r1w".into(),

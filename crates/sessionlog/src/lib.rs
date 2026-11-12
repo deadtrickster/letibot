@@ -99,9 +99,10 @@ pub use origin::{
     GroupRow, MCP_IDENTITY, SessionGroup, SessionOrigin, group_of, is_operator_top_level,
 };
 pub use protocol::{
-    Ack, Attachment, AttachmentKind, Caps, ClientFrame, HEAD_RUN_KIND_PATH, HEAD_RUN_KIND_TEXT,
-    HEAD_RUN_KIND_URL, HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY, HeadRunTool, NOTE_STOPPING,
-    PROTOCOL_VERSION, PaneBrief, ServerFrame, TermLine, head_run_tool, head_run_verb,
+    Ack, AnswerMode, Attachment, AttachmentKind, Caps, ClientFrame, ContextAsk, ContextPos,
+    ContextRange, ContextRef, EditorContext, HEAD_RUN_KIND_PATH, HEAD_RUN_KIND_TEXT,
+    HEAD_RUN_KIND_URL, HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY, HeadRunTool, MarkOutcome, NOTE_STOPPING,
+    OpenBuffer, PROTOCOL_VERSION, PaneBrief, ServerFrame, TermLine, head_run_tool, head_run_verb,
     operator_line_refusal, operator_shell_command, protocol_skew, send_line, term_command,
     term_line,
 };

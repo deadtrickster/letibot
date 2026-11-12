@@ -1740,6 +1740,115 @@ fn a_v20_store_gains_the_prefix_fingerprint_column() {
     );
 }
 
+/// A v44 store gains the queued prompt's context column - v45's arm, in the v13 fixture's shape. A
+/// column has no `IF NOT EXISTS`, so the arm asks first; a prompt queued before it must read as one
+/// that carried no context rather than as a lost prompt.
+#[test]
+fn a_v44_store_gains_the_prompt_context_column() {
+    let path = std::env::temp_dir().join(format!(
+        "letibot-migrate-v44-{}-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos(),
+        {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        }
+    ));
+    let _ = std::fs::remove_file(&path);
+    struct Clean(std::path::PathBuf);
+    impl Drop for Clean {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _clean = Clean(path.clone());
+
+    {
+        let c = rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch(
+            "CREATE TABLE session (
+                     id    TEXT PRIMARY KEY,
+                     title TEXT,
+                     role  TEXT
+                 );
+                 INSERT INTO session (id, title, role) VALUES ('s-queued', 'old', 'coder');
+                 CREATE TABLE queued_prompt (
+                     session_id        TEXT NOT NULL,
+                     seq               INTEGER NOT NULL,
+                     enqueued_ms       INTEGER NOT NULL,
+                     head_id           TEXT NOT NULL,
+                     identity          TEXT NOT NULL,
+                     client_request_id TEXT NOT NULL,
+                     text              TEXT NOT NULL,
+                     attachments_json  TEXT NOT NULL,
+                     PRIMARY KEY (session_id, seq)
+                 );
+                 INSERT INTO queued_prompt VALUES
+                     ('s-queued', 0, 7, 'tui', 'dead', 'c1', 'carry on', '[]');
+                 CREATE TABLE schema_version (version INTEGER);
+                 INSERT INTO schema_version (version) VALUES (44);",
+        )
+        .unwrap();
+        // Prove the fixture really is pre-v45, or the arm below is tested by nothing.
+        assert!(
+            c.query_row("SELECT context_json FROM queued_prompt", [], |r| r
+                .get::<_, String>(0))
+                .is_err(),
+            "the fixture already has a context_json column, so it is not a v44 store"
+        );
+    }
+
+    let s = Store::open(&path).unwrap();
+    let v: i64 = rusqlite::Connection::open(&path)
+        .unwrap()
+        .query_row("SELECT version FROM schema_version", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(v, SCHEMA_VERSION, "the migration stamped the new version");
+
+    let got = s.queued_prompts("s-queued").unwrap();
+    assert_eq!(
+        got.len(),
+        1,
+        "the prompt the migration found is still there"
+    );
+    assert_eq!(got[0].text, "carry on");
+    assert_eq!(
+        got[0].context_json, "",
+        "a prompt queued before the column carried no editor context, which is what empty says"
+    );
+
+    // And what the column exists for round-trips: the journal put back after a kill keeps the
+    // context, so a restarted daemon still sends what the operator was looking at.
+    let wire = r#"{"origin":"rano","refs":[],"open":[],"ask":null,"outcomes":[]}"#;
+    s.replace_queued_prompts(
+        "s-queued",
+        &[QueuedPrompt {
+            enqueued_ms: 9,
+            head_id: "tui".into(),
+            identity: "dead".into(),
+            client_request_id: "c2".into(),
+            text: "and now this".into(),
+            attachments_json: "[]".into(),
+            context_json: wire.into(),
+        }],
+    )
+    .unwrap();
+    let got = s.queued_prompts("s-queued").unwrap();
+    assert_eq!(got[0].context_json, wire);
+
+    // Reopening is a no-op rather than a second migration: the arm must not try the ALTER twice.
+    drop(s);
+    let s = Store::open(&path).unwrap();
+    assert_eq!(
+        s.queued_prompts("s-queued").unwrap()[0].context_json,
+        wire,
+        "a store already at v45 still reads its queue"
+    );
+}
+
 /// The guard's pair survives the daemon that decided it. The old write was `auto_compact = false`
 /// in memory: it died with the process, so a restart re-armed the looping AND cleared the one fact
 /// that explained a session that would not tidy itself. Closing and reopening proves the row is on disk.
@@ -3042,6 +3151,7 @@ fn queued_prompts_are_replaced_whole_in_order_per_session() {
         client_request_id: format!("c-{t}"),
         text: t.into(),
         attachments_json: "[]".into(),
+        context_json: String::new(),
     };
     s.replace_queued_prompts("s-a", &[p("one"), p("two")])
         .unwrap();

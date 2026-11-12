@@ -644,8 +644,12 @@ impl Link {
                     // acted. The daemon decides what that means per command; the head's
                     // job is to report it honestly.
                     Action::Prompt(p) => {
-                        self.client
-                            .prompt_attached(app.seq, &p.text, p.attachments)?;
+                        self.client.prompt_with_context(
+                            app.seq,
+                            &p.text,
+                            p.attachments,
+                            p.context,
+                        )?;
                     }
                     Action::WithdrawPrompts => {
                         self.client.withdraw_prompts(app.seq)?;

@@ -353,6 +353,7 @@ fn a_message_already_waiting_joins_this_round_rather_than_costing_another() {
                    message. Reply with exactly the word: two"
                 .into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     assert!(
@@ -444,6 +445,7 @@ fn a_message_that_arrives_mid_turn_is_answered_in_the_next_round() {
             CommandKind::Prompt {
                 text: "Reply with exactly the word: two".into(),
                 attachments: Vec::new(),
+                context: None,
             },
         );
         (saw_delta, matches!(frame, ServerFrame::Accepted { .. }))

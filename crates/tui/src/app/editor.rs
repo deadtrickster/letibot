@@ -525,61 +525,11 @@ impl App {
         self.forward_editor_graphics();
     }
 
-    /// A send from rano, into the composer: the reference, then the keyboard. Inserted at the
-    /// composer's cursor so a draft keeps its words and gains the reference, and nothing is sent -
-    /// the instruction is the operator's to write.
+    /// A send from rano, into the composer: a chip naming the place, then the keyboard. Nothing is
+    /// inserted into the words - the daemon writes the block the model reads - and nothing is sent
+    /// either: the instruction is the operator's to write.
     pub(crate) fn take_send(&mut self, e: &SendEvent) {
-        let text = self.reference(e);
-        let draft = self.editor.text();
-        let joint = match draft.chars().last() {
-            Some(c) if !c.is_whitespace() => {
-                if text.contains('\n') {
-                    "\n"
-                } else {
-                    " "
-                }
-            }
-            _ => "",
-        };
-        self.editor.insert(&format!("{joint}{text}"));
-        if let Some(p) = self.edit_pane.as_mut() {
-            p.focused = false;
-            p.dirty = true;
-        }
-    }
-
-    /// How a send reads in the composer: `path:line` with no selection, or `path:start-end` and the
-    /// selection fenced. The path is the workspace's relative one where the file is inside it, and a
-    /// buffer with unsaved edits is marked, because the model reading the file will not see them.
-    pub(crate) fn reference(&self, e: &SendEvent) -> String {
-        let path = match &e.path {
-            Some(p) => self.workspace_relative(p),
-            None => "(unsaved buffer)".to_string(),
-        };
-        let unsaved = if e.modified { " (unsaved edits)" } else { "" };
-        match &e.selection {
-            None => format!("{path}:{}{unsaved} ", e.cursor.line),
-            Some(s) => {
-                let last = if s.end.column == 1 && s.end.line > s.start.line {
-                    s.end.line - 1
-                } else {
-                    s.end.line
-                };
-                let place = if last == s.start.line {
-                    format!("{path}:{}", s.start.line)
-                } else {
-                    format!("{path}:{}-{last}", s.start.line)
-                };
-                let lang = e
-                    .path
-                    .as_deref()
-                    .and_then(Path::extension)
-                    .and_then(|x| x.to_str())
-                    .unwrap_or("");
-                let body = s.text.trim_end_matches('\n');
-                format!("{place}{unsaved}\n```{lang}\n{body}\n```\n")
-            }
-        }
+        self.context_in(e);
     }
 
     /// The pane's buffers with unsaved edits, as the operator reads a path. rano keeps every buffer

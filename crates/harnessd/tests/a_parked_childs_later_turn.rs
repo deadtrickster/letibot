@@ -291,6 +291,7 @@ fn cmd_of(hub: &Hub, text: &str) -> letibot_sessionlog::hub::QueuedCommand {
             CommandKind::Prompt {
                 text: text.to_string(),
                 attachments: Vec::new(),
+                context: None,
             },
         ),
         "the hub refused the prompt"

@@ -182,12 +182,25 @@ impl HeadClient {
         text: &str,
         attachments: Vec<crate::protocol::Attachment>,
     ) -> Result<String, ClientError> {
+        self.prompt_with_context(expected_seq, text, attachments, None)
+    }
+
+    /// A prompt with what the operator pointed at in an editor beside it: the third door, and the
+    /// reason the other two are written in terms of it.
+    pub fn prompt_with_context(
+        &mut self,
+        expected_seq: u64,
+        text: &str,
+        attachments: Vec<crate::protocol::Attachment>,
+        context: Option<crate::protocol::EditorContext>,
+    ) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::Prompt {
             client_request_id: client_request_id.clone(),
             expected_seq,
             text: text.to_string(),
             attachments,
+            context,
         })?;
         Ok(client_request_id)
     }

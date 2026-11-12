@@ -713,6 +713,7 @@ mod tests {
             kind: CommandKind::Prompt {
                 text: "hi".into(),
                 attachments: Vec::new(),
+                context: None,
             },
         };
         let ((), got) = letibot_metrics::capture(|| {

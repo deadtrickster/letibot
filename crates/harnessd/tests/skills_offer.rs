@@ -284,6 +284,7 @@ fn drive<'a>(parts: &'a Parts, cfg: &Config, id: &str, prompt: &str) -> (Session
         CommandKind::Prompt {
             text: prompt.into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     let cmd = hub.try_command().expect("the prompt is queued");

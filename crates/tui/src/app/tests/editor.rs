@@ -447,10 +447,10 @@ fn an_exit_over_unsaved_edits_asks_before_the_pane_goes() {
     assert!(!disk.contains('z'), "nothing was saved");
 }
 
-/// A send lands in the composer as a reference, and is not sent: `path:line` and a space
-/// for the operator's words, with the keyboard moved there to write them.
+/// A send lands in the composer as a CHIP, and as no text at all: the words are the operator's and
+/// the block the model reads is the daemon's to write. Nothing is sent until Enter.
 #[test]
-fn a_send_lands_in_the_composer_as_a_reference_and_waits_for_enter() {
+fn alt_s_lands_as_a_chip_and_inserts_no_text() {
     let ws = workspace("send");
     let mut a = edited(&ws);
     a.key(Key::CtrlBracket);
@@ -459,19 +459,51 @@ fn a_send_lands_in_the_composer_as_a_reference_and_waits_for_enter() {
     a.take_actions();
     let (keys, _) = a.route(vec![key(KeyCode::Char('s'), Mods::ALT)]);
     assert!(keys.is_empty());
-    assert_eq!(a.editor.text(), "notes.txt:11 ");
+    assert_eq!(a.editor.text(), "", "the chip is not text in the line");
+    assert_eq!(a.contexts.len(), 1, "the place is attached");
+    assert!(
+        a.contexts[0].label.contains("notes.txt:11"),
+        "{}",
+        a.contexts[0].label
+    );
     assert!(!a.editor_focused(), "the keyboard went to the composer");
     assert!(a.editor_drawn(), "and the pane stays, to come back to");
     assert_eq!(a.take_actions(), Vec::new(), "nothing was submitted");
-    // The operator's words follow, and Enter sends the whole line as an ordinary prompt.
+    // The operator sees it: the composer's own bottom edge carries the chip, so no transcript row
+    // was spent and nothing under the caret moved.
+    let screen = a.screen(100, 30).join("\n");
+    assert!(screen.contains("[context 1"), "{screen}");
+    assert!(screen.contains("notes.txt:11"), "{screen}");
+    // The operator's words follow, and what the next message will carry is the place, not the words.
     for k in route_text(&mut a, "why?") {
         a.key(k);
     }
-    assert_eq!(a.editor.text(), "notes.txt:11 why?");
+    assert_eq!(a.editor.text(), "why?");
+    let context = a
+        .contexts_to_send()
+        .expect("the chip rides with the next message");
+    assert_eq!(context.origin, "rano");
+    assert_eq!(context.refs.len(), 1);
+    assert_eq!(
+        context.refs[0].file,
+        ws.0.join(FILE).display().to_string(),
+        "the wire carries the absolute path the daemon must read"
+    );
+    assert!(
+        context.refs[0].text.is_empty(),
+        "a bare place is no selection"
+    );
+    assert!(
+        context
+            .open
+            .iter()
+            .any(|b| b.file == ws.0.join(FILE).display().to_string()),
+        "the file open in the pane is named: {context:?}"
+    );
 }
 
-/// A selection is sent as its range and its text, fenced, and a range that ends at the
-/// start of a line does not claim that line.
+/// A selection is sent as its range and its text: the chip names the range, and the ref carries the
+/// buffer's own lines - which for an unsaved buffer is the only copy of them.
 #[test]
 fn a_send_with_a_selection_carries_the_range_and_the_text() {
     let ws = workspace("select");
@@ -485,10 +517,20 @@ fn a_send_with_a_selection_carries_the_range_and_the_text() {
         key(KeyCode::Down, Mods::NONE),
         key(KeyCode::Char('s'), Mods::ALT),
     ]);
-    assert_eq!(
-        a.editor.text(),
-        "notes.txt:11-12\n```txt\nline 11\nline 12\n```\n"
+    assert_eq!(a.editor.text(), "");
+    assert!(
+        a.contexts[0].label.contains("notes.txt:11-12"),
+        "{}",
+        a.contexts[0].label
     );
+    let r = &a.contexts[0].r;
+    // rano hands the selection's lines without a trailing newline: the reader's own text, which
+    // the daemon numbers from the range's first line.
+    assert_eq!(r.text, "line 11\nline 12");
+    let range = r.range.expect("a selection is a range");
+    assert_eq!((range.start.line, range.start.column), (11, 1));
+    assert_eq!(r.lang, "txt");
+    assert!(!r.unsaved, "nothing was typed into the buffer");
 }
 
 /// The pane takes the conversation's rectangle, and the chrome keeps its rows: the

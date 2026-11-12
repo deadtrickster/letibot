@@ -85,6 +85,10 @@ pub enum CommandKind {
         /// The chips the operator put in the composer, carried as the frame sent them. Converted
         /// at the turn's own seam, so a provider never sees a head's shape.
         attachments: Vec<crate::protocol::Attachment>,
+        /// What the operator pointed at in an editor, rendered by the daemon into one user part
+        /// after their words. It rides the command and the journal, so a prompt queued across a
+        /// daemon restart still carries what the operator was looking at.
+        context: Option<crate::protocol::EditorContext>,
     },
     /// Compact the session: one summary turn, then the history is replaced by that summary
     /// through a transcript fork. Queued like a prompt because it is a turn, and accepted on
@@ -430,6 +434,9 @@ pub struct JournaledPrompt {
     pub client_request_id: String,
     pub text: String,
     pub attachments: Vec<crate::protocol::Attachment>,
+    /// The editor context the prompt carried, kept beside its attachments for the same reason:
+    /// a daemon killed mid-queue puts the prompt back with what the operator was looking at.
+    pub context: Option<crate::protocol::EditorContext>,
 }
 
 /// Where queued prompts are kept across a daemon kill. The daemon implements it over its store, so
@@ -471,13 +478,18 @@ impl CommandQueue {
         self.q
             .iter()
             .filter_map(|c| match &c.kind {
-                CommandKind::Prompt { text, attachments } => Some(JournaledPrompt {
+                CommandKind::Prompt {
+                    text,
+                    attachments,
+                    context,
+                } => Some(JournaledPrompt {
                     enqueued_ms: c.enqueued_ms,
                     head_id: c.head_id.clone(),
                     identity: c.identity.clone(),
                     client_request_id: c.client_request_id.clone(),
                     text: text.clone(),
                     attachments: attachments.clone(),
+                    context: context.clone(),
                 }),
                 _ => None,
             })
@@ -715,6 +727,7 @@ impl Hub {
                 kind: CommandKind::Prompt {
                     text: p.text.clone(),
                     attachments: p.attachments.clone(),
+                    context: p.context.clone(),
                 },
             });
         }
@@ -2268,6 +2281,7 @@ mod mode_steering_tests {
             CommandKind::Prompt {
                 text: "do the thing".into(),
                 attachments: Vec::new(),
+                context: None,
             },
         );
         assert!(hub.journal_settled(std::time::Duration::from_secs(5)));
@@ -2333,6 +2347,7 @@ mod mode_steering_tests {
                 CommandKind::Prompt {
                     text: "tell me about it".into(),
                     attachments: Vec::new(),
+                    context: None,
                 },
             );
             let taken = matches!(
@@ -2368,6 +2383,7 @@ mod mode_steering_tests {
             CommandKind::Prompt {
                 text: "stop and look at this".into(),
                 attachments: Vec::new(),
+                context: None,
             },
         );
         assert!(hub.has_queued_prompt());
@@ -2461,6 +2477,7 @@ mod mode_steering_tests {
                 CommandKind::Prompt {
                     text: "speak as the operator".into(),
                     attachments: Vec::new(),
+                    context: None,
                 },
                 "send a prompt",
             ),

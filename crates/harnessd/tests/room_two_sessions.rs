@@ -169,6 +169,7 @@ impl One {
             CommandKind::Prompt {
                 text: text.into(),
                 attachments: Vec::new(),
+                context: None,
             },
         );
         assert!(

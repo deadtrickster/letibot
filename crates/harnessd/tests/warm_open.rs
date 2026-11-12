@@ -342,6 +342,7 @@ fn a_stored_session_asked_for_by_a_head_is_restored_before_any_turn_runs() {
         CommandKind::Prompt {
             text: "hmm, and what did you call the draft?".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     assert!(

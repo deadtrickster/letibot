@@ -20,6 +20,9 @@ pub struct Prompt {
     pub text: String,
     /// The files and pictures, in the order their chips were minted. Empty is the ordinary case.
     pub attachments: Vec<letibot_sessionlog::Attachment>,
+    /// What the operator pointed at in the editor, when `alt-s` put a chip in the composer. The
+    /// daemon renders it; the head never writes a word of it.
+    pub context: Option<letibot_sessionlog::EditorContext>,
 }
 
 impl Prompt {
@@ -28,14 +31,20 @@ impl Prompt {
         Prompt {
             text: text.into(),
             attachments: Vec::new(),
+            context: None,
         }
     }
 
-    /// A message with the chips the composer carries.
-    pub fn with(text: impl Into<String>, attachments: Vec<letibot_sessionlog::Attachment>) -> Self {
+    /// A message with the chips and the places the editor attached.
+    pub fn with_context(
+        text: impl Into<String>,
+        attachments: Vec<letibot_sessionlog::Attachment>,
+        context: Option<letibot_sessionlog::EditorContext>,
+    ) -> Self {
         Prompt {
             text: text.into(),
             attachments,
+            context,
         }
     }
 }

@@ -2262,7 +2262,7 @@ impl<'a> Sessions<'a> {
                 return out;
             }
         }
-        self.run_prompt(session_id, text, &[])
+        self.run_prompt(session_id, text, &[], None)
     }
 
     /// One turn, and everything that has to happen around one. Both ways a prompt reaches a
@@ -2273,6 +2273,7 @@ impl<'a> Sessions<'a> {
         session_id: &str,
         text: &str,
         attachments: &[letibot_sessionlog::protocol::Attachment],
+        context: Option<&letibot_sessionlog::protocol::EditorContext>,
     ) -> Result<Reply, HarnessError> {
         // Opened first, lazily - the resume a head reaches (`/resume`, a switch from the
         // picker). A session that cannot be opened ran nothing, and says so on its own log.
@@ -2288,7 +2289,7 @@ impl<'a> Sessions<'a> {
         // checked BEFORE the send, the clock, the failure, the compaction, the continuation past
         // the wall, the title, and the wake.
         self.turn(session_id, Door::Prompt, |h| {
-            h.submit_attached(text, attachments).map(Some)
+            h.submit_with_context(text, attachments, context).map(Some)
         })
         .expect("a prompt always runs a turn")
     }
@@ -3596,11 +3597,15 @@ impl<'a> Sessions<'a> {
         }
         let hub = self.registry.get(session_id);
         match &cmd.kind {
-            CommandKind::Prompt { text, attachments } => {
+            CommandKind::Prompt {
+                text,
+                attachments,
+                context,
+            } => {
                 // One line, because everything a turn needs around it - the title, the wake, the failure
                 // notice, the compaction at the wall - is in `run_prompt`, which the scripted path also
                 // calls. One copy, so the compaction is never missed.
-                match self.run_prompt(session_id, text, attachments) {
+                match self.run_prompt(session_id, text, attachments, context.as_ref()) {
                     Ok(reply) => Outcome::Replied(Box::new(reply)),
                     Err(e) => Outcome::Failed(e.to_string()),
                 }

@@ -299,6 +299,7 @@ mod tests {
             letibot_sessionlog::CommandKind::Prompt {
                 text: "what is in this picture?".into(),
                 attachments: vec![chip(AttachmentKind::Image, &p, "shot.png")],
+                context: None,
             },
         );
 
@@ -341,6 +342,7 @@ mod tests {
             letibot_sessionlog::CommandKind::Prompt {
                 text: "look".into(),
                 attachments: vec![chip(AttachmentKind::Image, &p, "never-there.png")],
+                context: None,
             },
         );
         let mut steering = crate::harness::HubSteering::new(hub.clone());

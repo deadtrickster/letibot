@@ -88,6 +88,7 @@ pub const READER_ARMS: &[(i64, Arm)] = &[
     (43, Arm::Additive), // seat_job: a new table, which an older reader never names
     (44, Arm::Additive), // claude_review: a new table, which an older reader never names
     (45, Arm::Additive), // session.archived_ms/archived_reason: NULLed columns
+    (46, Arm::Additive), // queued_prompt.context_json: a defaulted column
 ];
 
 /// The floor a store at `version` carries: the newest arm at or below it that [`Arm::Breaks`],

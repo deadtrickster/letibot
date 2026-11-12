@@ -207,12 +207,29 @@ impl Harness {
         text: &str,
         attachments: &[letibot_sessionlog::protocol::Attachment],
     ) -> Result<Reply, HarnessError> {
-        if attachments.is_empty() {
-            return self.submit(text);
+        self.submit_with_context(text, attachments, None)
+    }
+
+    /// The same, with what the operator pointed at in an editor: one more part after the chips, written
+    /// by the DAEMON ([`crate::editor_context::part`]) so every head's prompt reads the same way.
+    pub fn submit_with_context(
+        &mut self,
+        text: &str,
+        attachments: &[letibot_sessionlog::protocol::Attachment],
+        context: Option<&letibot_sessionlog::protocol::EditorContext>,
+    ) -> Result<Reply, HarnessError> {
+        let (mut extra, refused) = crate::attachments::parts(attachments);
+        // Only what an editor captured is worth a block: a context with no refs, no open buffers and no
+        // ask is a head sending a defaulted field, and a bare sentence about nothing would be noise.
+        let workspace = self.cfg.workspace.to_string_lossy().into_owned();
+        if let Some(part) = context.and_then(|c| crate::editor_context::part(c, &workspace)) {
+            extra.push(part);
         }
-        let (extra, refused) = crate::attachments::parts(attachments);
         for said in &refused {
             self.warn("attachment_refused", said.clone());
+        }
+        if extra.is_empty() {
+            return self.submit(text);
         }
         self.submit_spoken_parts(Speaker::Operator, text, extra)
     }

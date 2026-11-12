@@ -1168,14 +1168,17 @@ pub(crate) fn serve_child_with(
                 }
             }
             ChildCommand::Answer => {
-                let (text, attachments) = match &kind {
-                    letibot_sessionlog::CommandKind::Prompt { text, attachments } => {
-                        (text.clone(), attachments.clone())
-                    }
+                let (text, attachments, context) = match &kind {
+                    letibot_sessionlog::CommandKind::Prompt {
+                        text,
+                        attachments,
+                        context,
+                    } => (text.clone(), attachments.clone(), context.clone()),
                     _ => unreachable!("`child_command` answers a Prompt and nothing else"),
                 };
                 later_turn(sub, turns, Door::Prompt, |h| {
-                    h.submit_attached(&text, &attachments).map(Some)
+                    h.submit_with_context(&text, &attachments, context.as_ref())
+                        .map(Some)
                 });
             }
             // A parent's message with no turn to steer it into, so one is started. The words are recorded as

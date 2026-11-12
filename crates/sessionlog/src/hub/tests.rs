@@ -484,6 +484,7 @@ fn a_wake_handed_to_the_own_reader_is_taken_there_and_rings_nothing() {
         kind: CommandKind::Prompt {
             text: "hello".into(),
             attachments: Vec::new(),
+            context: None,
         },
     };
     assert!(
@@ -650,6 +651,7 @@ fn a_second_heads_prompt_is_queued_not_rejected_and_says_who() {
         CommandKind::Prompt {
             text: "also check the logs".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     let ServerFrame::Accepted { note, .. } = f else {

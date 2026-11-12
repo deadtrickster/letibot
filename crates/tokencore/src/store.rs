@@ -195,7 +195,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 45;
+pub const SCHEMA_VERSION: i64 = 46;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -2437,6 +2437,23 @@ impl Store {
             if !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'archived_reason'") {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN archived_reason TEXT")?;
+            }
+        }
+        if from < 46 {
+            // v46: what the operator pointed at in an editor, on the prompt journal beside its
+            // attachments. A defaulted column, so a prompt queued before it reads as one with no
+            // context - which is what it had.
+            let has: bool = self
+                .conn()
+                .prepare(
+                    "SELECT 1 FROM pragma_table_info('queued_prompt') WHERE name = 'context_json'",
+                )
+                .and_then(|mut st| st.exists([]))
+                .unwrap_or(false);
+            if !has {
+                self.conn().execute_batch(
+                    "ALTER TABLE queued_prompt ADD COLUMN context_json TEXT NOT NULL DEFAULT ''",
+                )?;
             }
         }
         Ok(())

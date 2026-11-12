@@ -12,7 +12,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 70;
+pub const PROTOCOL_VERSION: u32 = 71;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -477,6 +477,104 @@ pub enum AttachmentKind {
     File,
 }
 
+/// What the operator pointed at in an editor, carried beside the words so the model can see the code
+/// without a head having pasted it into them. The DAEMON renders this (`harnessd::editor_context`), so
+/// a head and the daemon's own spelling of the block can never disagree.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditorContext {
+    /// `rano`, `browser` or `acp`: who captured it, said on the block's first line.
+    pub origin: String,
+    /// What was pointed at, in the order it was attached.
+    #[serde(default)]
+    pub refs: Vec<ContextRef>,
+    /// The other files open in the editor, names only.
+    #[serde(default)]
+    pub open: Vec<OpenBuffer>,
+    /// Set for a quick ask: the preset and the shape of answer asked for.
+    #[serde(default)]
+    pub ask: Option<ContextAsk>,
+    /// What became of the marks an earlier reply suggested.
+    #[serde(default)]
+    pub outcomes: Vec<MarkOutcome>,
+}
+
+/// One place: a file with a range, a whole file, or a page.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextRef {
+    /// An absolute path, or the URL a browser captured.
+    pub file: String,
+    /// The lines pointed at. `None` is the whole file or page.
+    #[serde(default)]
+    pub range: Option<ContextRange>,
+    /// Where the caret was, 1-based as rano's `SendEvent` spells it.
+    #[serde(default)]
+    pub cursor: Option<ContextPos>,
+    /// The selection as the editor has it, empty for a bare place.
+    #[serde(default)]
+    pub text: String,
+    /// The buffer differs from the file on disk, so the text sent is the one the model cannot read.
+    #[serde(default)]
+    pub unsaved: bool,
+    /// The language of the fenced block, read off the path by the head that sent it.
+    #[serde(default)]
+    pub lang: String,
+    /// A browser page's title, empty for a file.
+    #[serde(default)]
+    pub title: String,
+}
+
+/// A span of a [`ContextRef`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextRange {
+    pub start: ContextPos,
+    pub end: ContextPos,
+}
+
+/// A place in a buffer: lines and columns 1-based, columns counted in CHARACTERS, as rano's
+/// `SendEvent` counts them.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextPos {
+    pub line: u32,
+    pub column: u32,
+}
+
+/// One of the editor's other buffers: a name and two facts, never its text.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenBuffer {
+    pub file: String,
+    #[serde(default)]
+    pub unsaved: bool,
+    #[serde(default)]
+    pub visible: bool,
+}
+
+/// A quick ask: the preset the operator pressed and the shape of answer wanted back.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContextAsk {
+    #[serde(default)]
+    pub preset: String,
+    #[serde(default)]
+    pub answer: AnswerMode,
+}
+
+/// What a quick ask wants: an answer in the conversation, a note to keep, or a suggested edit.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AnswerMode {
+    #[default]
+    Chat,
+    Notes,
+    Suggest,
+}
+
+/// What the operator did with a mark a reply suggested: `accepted`, `rejected` or `reverted`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MarkOutcome {
+    pub label: String,
+    #[serde(default)]
+    pub outcome: String,
+}
+
 /// Head → daemon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "frame", rename_all = "snake_case")]
@@ -509,6 +607,10 @@ pub enum ClientFrame {
         text: String,
         #[serde(default)]
         attachments: Vec<Attachment>,
+        /// What the operator pointed at in an editor, rendered by the daemon after their words. A
+        /// version-70 daemon parses the frame and drops it, which is what the version bump is for.
+        #[serde(default)]
+        context: Option<EditorContext>,
     },
     /// Take back what this head queued: every prompt from it the running turn has not consumed, plus
     /// the operator's held run.

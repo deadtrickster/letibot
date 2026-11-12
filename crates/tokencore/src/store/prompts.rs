@@ -15,6 +15,8 @@ CREATE TABLE IF NOT EXISTS queued_prompt (
     client_request_id  TEXT NOT NULL,
     text               TEXT NOT NULL,
     attachments_json   TEXT NOT NULL,
+    -- the editor context the prompt carried, empty when it carried none
+    context_json       TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (session_id, seq)
 );
 "#;
@@ -29,6 +31,9 @@ pub struct QueuedPrompt {
     pub text: String,
     /// The attachments as the wire spells them.
     pub attachments_json: String,
+    /// What the operator pointed at in an editor, as the wire spells it. Empty is none: the
+    /// common case, and the one that must not cost a JSON document per queued prompt.
+    pub context_json: String,
 }
 
 impl Store {
@@ -42,7 +47,8 @@ impl Store {
             for (seq, p) in prompts.iter().enumerate() {
                 tx.execute(
                     "INSERT INTO queued_prompt (session_id, seq, enqueued_ms, head_id, identity, \
-                     client_request_id, text, attachments_json) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                     client_request_id, text, attachments_json, context_json) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
                     params![
                         session_id,
                         seq as i64,
@@ -51,7 +57,8 @@ impl Store {
                         p.identity,
                         p.client_request_id,
                         p.text,
-                        p.attachments_json
+                        p.attachments_json,
+                        p.context_json
                     ],
                 )?;
             }
@@ -63,8 +70,8 @@ impl Store {
     pub fn queued_prompts(&self, session_id: &str) -> Result<Vec<QueuedPrompt>> {
         let conn = self.at("queued_prompt");
         let mut st = conn.prepare(
-            "SELECT enqueued_ms, head_id, identity, client_request_id, text, attachments_json \
-             FROM queued_prompt WHERE session_id = ?1 ORDER BY seq",
+            "SELECT enqueued_ms, head_id, identity, client_request_id, text, attachments_json, \
+             context_json FROM queued_prompt WHERE session_id = ?1 ORDER BY seq",
         )?;
         let rows = st.query_map(params![session_id], |r| {
             Ok(QueuedPrompt {
@@ -74,6 +81,7 @@ impl Store {
                 client_request_id: r.get(3)?,
                 text: r.get(4)?,
                 attachments_json: r.get(5)?,
+                context_json: r.get(6)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

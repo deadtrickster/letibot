@@ -101,6 +101,11 @@ impl StoreJournal {
                 client_request_id: p.client_request_id,
                 text: p.text,
                 attachments: serde_json::from_str(&p.attachments_json).unwrap_or_default(),
+                // Empty is how a prompt queued before the column says it carried no context, and a
+                // document this build cannot read is the same answer rather than a lost prompt.
+                context: (!p.context_json.is_empty())
+                    .then(|| serde_json::from_str(&p.context_json).ok())
+                    .flatten(),
             })
             .collect();
         let journal = StoreJournal {
@@ -127,6 +132,11 @@ impl letibot_sessionlog::PromptJournal for StoreJournal {
                 text: p.text.clone(),
                 attachments_json: serde_json::to_string(&p.attachments)
                     .unwrap_or_else(|_| "[]".into()),
+                context_json: p
+                    .context
+                    .as_ref()
+                    .and_then(|c| serde_json::to_string(c).ok())
+                    .unwrap_or_default(),
             })
             .collect();
         self.store
@@ -1593,6 +1603,7 @@ mod journal_tests {
             CommandKind::Prompt {
                 text: "carry on after the restart".into(),
                 attachments: Vec::new(),
+                context: None,
             },
         );
         assert!(first.journal_settled(std::time::Duration::from_secs(30)));

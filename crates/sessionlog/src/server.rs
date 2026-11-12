@@ -1676,12 +1676,17 @@ pub fn serve_conn_rooted(
                 expected_seq,
                 text,
                 attachments,
+                context,
             }) => {
                 let f = seat.hub.submit(
                     &seat.head_id,
                     client_request_id,
                     expected_seq,
-                    CommandKind::Prompt { text, attachments },
+                    CommandKind::Prompt {
+                        text,
+                        attachments,
+                        context,
+                    },
                 );
                 writer.lock().unwrap().write(&f)?;
             }

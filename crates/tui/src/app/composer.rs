@@ -209,6 +209,9 @@ impl App {
         // chip whose file has gone is not sent empty and not sent without, and the line goes back to the composer with
         // a sentence.
         let attachments = self.chips_to_send(&text)?;
+        // The places `alt-s` attached, read before the words leave: a prompt that carried them
+        // without a word being written is the whole point of the chip.
+        let context = self.contexts_to_send();
         // Sending scrolls back to the tail: the answer is about to arrive at the
         // bottom, and staying parked in the scrollback while it does looks exactly
         // like nothing happening.
@@ -227,7 +230,12 @@ impl App {
         // so a chip left in this list would be a chip with no words to be found in, and the next
         // message would carry it a second time.
         self.chips.clear();
-        Some(Action::Prompt(Prompt::with(text, attachments)))
+        self.contexts.clear();
+        Some(Action::Prompt(Prompt::with_context(
+            text,
+            attachments,
+            context,
+        )))
     }
 
     /// Columns the composer's text has, inside the box. One function, because the width the editor is drawn at and

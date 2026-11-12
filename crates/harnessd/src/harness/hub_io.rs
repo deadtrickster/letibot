@@ -204,16 +204,28 @@ impl SteeringSource for HubSteering {
         };
         if let Some(cmd) = cmd {
             return match cmd.kind {
-                CommandKind::Prompt { text, attachments } => {
+                CommandKind::Prompt {
+                    text,
+                    attachments,
+                    context,
+                } => {
                     // The operator, typing into a running turn: the one utterance that can authorise the
                     // action it is racing. The chips are read HERE and not by the engine, because a turn's
                     // library has no business opening the operator's files.
                     if let Some(t) = &self.trail {
                         t.say(Speaker::Operator, &text, Some(Instant::now()));
                     }
-                    let (extra, refused) = crate::attachments::parts(&attachments);
+                    let (mut extra, refused) = crate::attachments::parts(&attachments);
                     for said in &refused {
                         self.hub.warn("attachment_refused", said.clone());
+                    }
+                    // No workspace here, so an editor's paths ride absolute rather than relatively: a
+                    // prompt typed into a live round is the one door this struct cannot shorten.
+                    if let Some(part) = context
+                        .as_ref()
+                        .and_then(|c| crate::editor_context::part(c, ""))
+                    {
+                        extra.push(part);
                     }
                     Some(SteeringMessage::operator_with(text, extra))
                 }

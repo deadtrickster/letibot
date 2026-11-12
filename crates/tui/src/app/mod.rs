@@ -298,6 +298,10 @@ pub struct App {
     /// it was inserted as. The list is not the truth about what is sent, the chip text in the
     /// editor is; this is only what turns it back into an `Attachment` at send time.
     pub(crate) chips: Vec<crate::app::attachments::Chip>,
+    /// The places `alt-s` attached from the editor: drawn on the composer's bottom edge and sent as
+    /// the prompt's `context`. Separate from `chips` because the label is NOT the operator's text -
+    /// the daemon writes the block, so nothing of it may sit in the words.
+    pub(crate) contexts: Vec<crate::app::context::ContextChip>,
     /// Where a pasted picture is written, when it is not the default. `None` is production:
     /// `app::attachments::attachments_dir()`, resolved when the paste happens. A test sets it,
     /// because a test's directory must be its own and never the person's paste directory.
@@ -1298,6 +1302,7 @@ impl App {
             queued: Vec::new(),
             pending_prompts: Vec::new(),
             chips: Vec::new(),
+            contexts: Vec::new(),
             attachments_dir: None,
             clipboard: crate::app::attachments::default_clipboard(),
             pasted_images: 0,
@@ -1697,6 +1702,7 @@ pub(crate) mod chat_nav;
 pub(crate) mod chat_plugin;
 mod commands;
 mod composer;
+mod context;
 pub(crate) mod diff_popup;
 mod editor;
 mod events;

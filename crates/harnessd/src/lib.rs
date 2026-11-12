@@ -45,6 +45,7 @@ pub mod decision_source;
 pub mod delivery;
 pub mod dialect;
 pub mod done_offer;
+pub mod editor_context;
 /// The box's one embedder: `[embeddings]`, the model loaded once, and a tier per caller.
 pub mod embeddings;
 pub mod etalon;

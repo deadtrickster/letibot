@@ -334,8 +334,9 @@ impl App {
         let mut notice_at: Option<usize> = None;
         // Live slash-command matches, one dim row above the composer: a typing aid, not a message. It is a SLOT
         // and not an appearance, because a row that comes and goes takes its line from the transcript and hands
-        // it back, and the reader's page moves.
-        let completions = self.completions_legend(w);
+        // it back, and the reader's page moves. An editor chip shares this edge for the same reason: a
+        // chip that appeared as a row would move the page under the person who just pressed `alt-s`.
+        let completions = self.completions_legend(w).or_else(|| self.context_legend());
 
         let Fit {
             rows,

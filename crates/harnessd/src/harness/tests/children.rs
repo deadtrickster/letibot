@@ -899,6 +899,7 @@ fn a_stop_takes_the_sessions_children_before_it_takes_the_session() {
         letibot_sessionlog::CommandKind::Prompt {
             text: "carry on".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     assert!(
@@ -1012,6 +1013,7 @@ fn a_child_answers_a_prompt_and_leaves_the_machinery_its_parent_owns() {
         child_command(&K::Prompt {
             text: "do this next".into(),
             attachments: Vec::new(),
+            context: None,
         }),
         ChildCommand::Answer,
         "the operator asking a child something is a turn, not a no-op"

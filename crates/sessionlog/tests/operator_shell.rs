@@ -208,6 +208,7 @@ fn the_round_boundary_picker_takes_a_queued_bang_line() {
         CommandKind::Prompt {
             text: "a prompt ahead of it".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     hub.submit(
@@ -253,6 +254,7 @@ fn a_recall_takes_the_queued_bang_line_back_with_the_prompts() {
         CommandKind::Prompt {
             text: "and a prompt queued after it".into(),
             attachments: Vec::new(),
+            context: None,
         },
     );
     hub.submit(&head.head_id, "c3", 0, CommandKind::WithdrawPrompts);

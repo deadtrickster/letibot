@@ -318,6 +318,7 @@ fn a_prompt_to_a_live_subagent_is_served_by_its_own_thread_only() {
             CommandKind::Prompt {
                 text: format!("question {n}"),
                 attachments: Vec::new(),
+                context: None,
             },
         );
     }
