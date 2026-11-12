@@ -505,6 +505,9 @@ pub const TABLE: &[(&str, Class)] = &[
     // operator asked for it, nothing is deleted, and the row says where the live copy is now  -
     // news about where the session lives, not something that went wrong.
     ("session_closed", Class::Routine),
+    // The operator put this session out of sight (`letibot --archive`): the rows stay and it
+    // opens again by id, so the row is news, not something that went wrong.
+    ("session_archived", Class::Routine),
     // The store, in every way it can fail to do its job: the session does not open, the
     // transcript cannot be written, the corpus cannot be consulted, the title cannot be
     // recorded, a resume fails, an import stops part-way.
