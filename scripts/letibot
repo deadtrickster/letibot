@@ -331,7 +331,7 @@ SCOPE_WHY=""
 # A command that cannot outlive `SCOPE_PROBE_SECONDS`. `timeout` is coreutils and is absent on a
 # Mac, where this is not asked anyway.
 probe_bounded() {
-  if command -v timeout > /dev/null 2>&1; then
+  if command -v timeout >/dev/null 2>&1; then
     timeout "$SCOPE_PROBE_SECONDS" "$@"
     return $?
   fi
@@ -343,7 +343,7 @@ scope_ok() {
     SCOPE_WHY="macOS has no systemd user manager, and needs none"
     return 1
   fi
-  if ! command -v systemd-run > /dev/null 2>&1; then
+  if ! command -v systemd-run >/dev/null 2>&1; then
     SCOPE_WHY="there is no systemd-run on this PATH"
     return 1
   fi
