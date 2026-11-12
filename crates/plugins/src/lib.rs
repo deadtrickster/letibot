@@ -24,7 +24,9 @@ pub use gate::{BuildError, Builder, CargoBuilder, GateReport, ReplayDiff, gate};
 pub use manifest::{Capability, Manifest, Scope, ToolDecl};
 pub use recorder::Recorder;
 pub use refusals::{KEEP as REFUSALS_KEEP, Refusal, Refusals};
-pub use stack::{BrokenPin, Candidate, DeclaredTool, Failure, Layer, Resolved, Stack};
+pub use stack::{
+    BrokenPin, Candidate, DeclaredTool, Failure, Layer, PreparedBuiltin, Resolved, Stack,
+};
 pub use trust::{Pin, Rebuilt, Standing, Trust, Written};
 
 /// One plugin module, as the stack sees it.

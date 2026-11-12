@@ -271,6 +271,20 @@ struct Wired {
     seen: Fingerprint,
 }
 
+/// A built-in compiled by [`Stack::prepare_builtin`] and not yet stacked.
+pub struct PreparedBuiltin {
+    failure_layer: String,
+    layer: Layer,
+    module: Result<Arc<dyn Module>, String>,
+}
+
+impl PreparedBuiltin {
+    /// The layer id it will stand under once stacked.
+    pub fn id(&self) -> &str {
+        &self.layer.id
+    }
+}
+
 /// The four scopes resolved into one stack.
 /// Layered as the module doc says, and cloneable so the gate can fork one: the fork is the shadow,
 /// and the live stack it was cloned from is untouched.
@@ -556,20 +570,23 @@ impl Stack {
         manifest: &str,
         wasm: &[u8],
     ) -> Result<(), String> {
+        let prepared = self.prepare_builtin(name, manifest, wasm)?;
+        self.register_prepared(prepared)
+    }
+
+    /// The compile half of [`Stack::register_builtin_bytes`], on `&self`: it costs seconds, so a
+    /// host can run it outside the lock that guards its stack and register the result after.
+    pub fn prepare_builtin(
+        &self,
+        name: &str,
+        manifest: &str,
+        wasm: &[u8],
+    ) -> Result<PreparedBuiltin, String> {
         let parsed = Manifest::parse(manifest).map_err(|why| format!("plugin.toml: {why}"))?;
         let module = self
             .loader
             .load_builtin(name, wasm, &parsed.capabilities)
-            .map_err(|why| {
-                let why = format!("the module could not be loaded: {why}");
-                self.failures.push(Failure {
-                    layer: format!("{}-{name}", Scope::BuiltIn.prefix()),
-                    scope: Scope::BuiltIn,
-                    hook: None,
-                    why: why.clone(),
-                });
-                why
-            })?;
+            .map_err(|why| format!("the module could not be loaded: {why}"));
         let layer = Layer {
             // Filled in here rather than by `register_builtin`, so the failure this call may
             // record can be found by the id the caller will see in the stack view.
@@ -583,6 +600,29 @@ impl Stack {
             trusted: true,
             pin: None,
         };
+        Ok(PreparedBuiltin {
+            failure_layer: format!("{}-{name}", Scope::BuiltIn.prefix()),
+            layer,
+            module,
+        })
+    }
+
+    /// Stack a built-in [`Stack::prepare_builtin`] compiled. A failure is answered and recorded,
+    /// as discovery does.
+    pub fn register_prepared(&mut self, prepared: PreparedBuiltin) -> Result<(), String> {
+        let PreparedBuiltin {
+            failure_layer,
+            layer,
+            module,
+        } = prepared;
+        let module = module.inspect_err(|why| {
+            self.failures.push(Failure {
+                layer: failure_layer,
+                scope: Scope::BuiltIn,
+                hook: None,
+                why: why.clone(),
+            });
+        })?;
         let id = layer.id.clone();
         let before = self.failures.len();
         self.register_builtin_shared(layer, module);

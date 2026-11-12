@@ -335,8 +335,12 @@ impl PaneDriver for PluginHost {
     }
 
     fn open(&self, _session_id: &str, hub: &Arc<Hub>, pane: &str, size: (u32, u32)) {
-        // A head that asks for a pane without having been announced one still gets it.
-        self.ensure_builtin_panes();
+        // A head that asks for a pane without having been announced one still gets it. Only then:
+        // compiling every built-in first holds a pane the stack already exports behind seconds of
+        // compiles the tick's thread is doing anyway.
+        if !self.panes().iter().any(|p| p == pane) {
+            self.ensure_builtin_panes();
+        }
         self.record_size(pane, size);
         self.render(hub, pane, Req::fresh());
     }

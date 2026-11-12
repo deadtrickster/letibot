@@ -304,13 +304,28 @@ impl PluginHost {
             if !hooks.is_empty() && self.answered(&hooks) {
                 continue;
             }
-            let registered = self.lock().stack_mut().register_builtin_bytes(
-                builtin.name,
-                builtin.manifest,
-                builtin.wasm,
-            );
+            // Compiled outside the host's lock: a compile costs seconds, and every pane, hook and
+            // turn of this session takes that lock.
+            let stack = Arc::clone(&self.lock().stack);
+            let prepared = stack.prepare_builtin(builtin.name, builtin.manifest, builtin.wasm);
+            drop(stack);
+            let registered = prepared.and_then(|p| {
+                let mut inner = self.lock();
+                // Another door may have stacked it while this one compiled.
+                let stacked = inner.stack.layers().iter().any(|l| {
+                    l.id == p.id()
+                        || (!hooks.is_empty()
+                            && !l.disabled
+                            && l.manifest.hooks.iter().any(|h| hooks.contains(h)))
+                });
+                if stacked {
+                    return Ok(false);
+                }
+                inner.stack_mut().register_prepared(p).map(|()| true)
+            });
             match registered {
-                Ok(()) => installed += 1,
+                Ok(true) => installed += 1,
+                Ok(false) => {}
                 Err(why) => self.say_builtin_failed(hub, builtin.name, &why),
             }
         }
