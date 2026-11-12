@@ -5,7 +5,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use letibot_bridge::mcp;
@@ -32,12 +32,71 @@ fn request(id: &str) -> String {
     .to_string()
 }
 
+/// One accepted connection and the single writer every frame on it goes through - the shape the
+/// coordinator has (`Conn` in `crates/room/src/server.rs`), and what keeps a pushed frame from
+/// arriving before the welcome the bridge reads as the answer to its hello.
+struct Conn {
+    out: Mutex<Out>,
+    greeted: Condvar,
+}
+
+struct Out {
+    stream: UnixStream,
+    greeted: bool,
+}
+
+impl Conn {
+    fn new(stream: UnixStream) -> Arc<Conn> {
+        Arc::new(Conn {
+            out: Mutex::new(Out {
+                stream,
+                greeted: false,
+            }),
+            greeted: Condvar::new(),
+        })
+    }
+
+    fn send(&self, frame: &Value, welcome: bool) {
+        let mut out = self.out.lock().unwrap();
+        let _ = writeln!(out.stream, "{frame}");
+        if welcome {
+            out.greeted = true;
+            self.greeted.notify_all();
+        }
+    }
+
+    /// A pushed message waits for the welcome: a coordinator says nothing before it, and a chat
+    /// frame first is a line the bridge reads as its hello's answer. Bounded, so a connection
+    /// that is never greeted cannot hang a test.
+    fn deliver(&self, frame: &Value) {
+        let mut out = self.out.lock().unwrap();
+        let end = Instant::now() + Duration::from_secs(20);
+        while !out.greeted {
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            out = self.greeted.wait_timeout(out, left).unwrap().0;
+        }
+        let _ = writeln!(out.stream, "{frame}");
+    }
+
+    fn close(&self) {
+        let _ = self
+            .out
+            .lock()
+            .unwrap()
+            .stream
+            .shutdown(std::net::Shutdown::Both);
+    }
+}
+
 /// A coordinator that speaks the room's chat wire: it records every frame and pushes what a test
 /// says into the log, as the real one pushes what somebody said.
 struct Fake {
     path: PathBuf,
     frames: Arc<Mutex<Vec<Value>>>,
-    conns: Arc<Mutex<Vec<UnixStream>>>,
+    conns: Arc<Mutex<Vec<Arc<Conn>>>>,
     log: Arc<Mutex<Vec<Value>>>,
 }
 
@@ -70,9 +129,10 @@ impl Fake {
         let (frames, conns, log) = (fake.frames.clone(), fake.conns.clone(), fake.log.clone());
         std::thread::spawn(move || {
             for stream in listener.incoming().flatten() {
-                conns.lock().unwrap().push(stream.try_clone().unwrap());
+                let conn = Conn::new(stream.try_clone().unwrap());
+                conns.lock().unwrap().push(conn.clone());
                 let (frames, log) = (frames.clone(), log.clone());
-                std::thread::spawn(move || serve_one(stream, frames, log));
+                std::thread::spawn(move || serve_one(stream, conn, frames, log));
             }
         });
         fake
@@ -81,14 +141,18 @@ impl Fake {
     /// A message appears in the room and is pushed to every connection, as the coordinator pushes
     /// what somebody said.
     fn push(&self, author: &str, kind: &str, room: &str, to: Option<&str>, text: &str) {
-        let mut log = self.log.lock().unwrap();
-        let m = json!({"seq": log.len() as u64 + 1, "ts": 0, "room": room, "author": author,
-            "kind": kind, "to": to, "thread": null, "refs": [], "text": text});
-        log.push(m.clone());
+        let m = {
+            let mut log = self.log.lock().unwrap();
+            let m = json!({"seq": log.len() as u64 + 1, "ts": 0, "room": room, "author": author,
+                "kind": kind, "to": to, "thread": null, "refs": [], "text": text});
+            log.push(m.clone());
+            m
+        };
         let names = to == Some("claude-code") || text.contains("@claude-code");
         let frame = json!({"type": "chat", "message": m, "names_you": names});
-        for c in self.conns.lock().unwrap().iter_mut() {
-            let _ = writeln!(c, "{frame}");
+        let conns: Vec<Arc<Conn>> = self.conns.lock().unwrap().clone();
+        for c in &conns {
+            c.deliver(&frame);
         }
     }
 
@@ -96,7 +160,7 @@ impl Fake {
     /// redials reaches the log only.
     fn hang_up(&self) {
         for c in self.conns.lock().unwrap().drain(..) {
-            let _ = c.shutdown(std::net::Shutdown::Both);
+            c.close();
         }
     }
 
@@ -111,14 +175,19 @@ impl Fake {
     }
 }
 
-fn serve_one(stream: UnixStream, frames: Arc<Mutex<Vec<Value>>>, log: Arc<Mutex<Vec<Value>>>) {
-    let mut w = stream.try_clone().unwrap();
+fn serve_one(
+    stream: UnixStream,
+    conn: Arc<Conn>,
+    frames: Arc<Mutex<Vec<Value>>>,
+    log: Arc<Mutex<Vec<Value>>>,
+) {
     let mut name = String::new();
     let mut seat = String::from("session");
     let mut cursor: u64 = 0;
     for line in BufReader::new(stream).lines().map_while(Result::ok) {
         let f: Value = serde_json::from_str(&line).unwrap();
         frames.lock().unwrap().push(f.clone());
+        let welcome = f["type"] == "hello";
         let reply = match f["type"].as_str() {
             Some("hello") => {
                 name = f["speaker"]["session"].as_str().unwrap_or("").to_string();
@@ -160,9 +229,7 @@ fn serve_one(stream: UnixStream, frames: Arc<Mutex<Vec<Value>>>, log: Arc<Mutex<
             }
             other => json!({"type": "refused", "id": null, "why": {"refused": other}}),
         };
-        if writeln!(w, "{reply}").is_err() {
-            return;
-        }
+        conn.send(&reply, welcome);
     }
 }
 
