@@ -617,6 +617,9 @@ struct Inner {
     delivered: Mutex<u64>,
     /// The newest seq the coordinator's cursor was acked to, so a reconnect resumes after it.
     acked: AtomicU64,
+    /// The connection generation whose gap was replayed, so one gap is fetched once however the
+    /// connection was opened - a pass of the supervisor's loop, or a round trip that redialled.
+    replayed: AtomicU64,
     /// The coordinator start the last welcome named. A different one means the log restarted, so
     /// `delivered` no longer orders anything.
     instance: Mutex<Option<u64>>,
@@ -661,6 +664,7 @@ impl RoomLink {
                 ids: AtomicU64::new(0),
                 delivered: Mutex::new(0),
                 acked: AtomicU64::new(0),
+                replayed: AtomicU64::new(0),
                 instance: Mutex::new(None),
                 named: Mutex::new(false),
                 share: AtomicBool::new(false),
@@ -879,12 +883,17 @@ impl RoomLink {
             }
         };
         let got = sent.and_then(|()| {
-            rx.recv_timeout(REPLY_TIMEOUT).map_err(|_| {
-                format!(
+            rx.recv_timeout(REPLY_TIMEOUT).map_err(|e| match e {
+                // The reader ends the wait when the connection goes, rather than let a round trip
+                // spend its whole bound on a peer that has already stopped answering.
+                mpsc::RecvTimeoutError::Disconnected => {
+                    "the room connection dropped before it answered".to_string()
+                }
+                mpsc::RecvTimeoutError::Timeout => format!(
                     "the room at {} did not answer in {}s",
                     self.inner.path.display(),
                     REPLY_TIMEOUT.as_secs()
-                )
+                ),
             })
         });
         *self.inner.waiting.lock().unwrap_or_else(|e| e.into_inner()) = None;
@@ -971,16 +980,51 @@ impl RoomLink {
         self.request(&json!({ "type": "ack", "seq": seq }))
     }
 
+    /// What the cursor still holds for this seat, once per connection. Keyed to the connection
+    /// rather than to this call being the one that opened it, because `ack_delivered` and any
+    /// other round trip redial on their own retry - and a gap nobody replays is a message the
+    /// model is never told about.
+    fn replay_the_gap(&self, deliver: &Deliver) {
+        let generation = self.inner.generation.load(Ordering::SeqCst);
+        if self.inner.replayed.load(Ordering::SeqCst) == generation {
+            return;
+        }
+        let Ok(reply) = self.inbox(Attention::ToMe, 200) else {
+            return;
+        };
+        for m in reply["rows"].as_array().into_iter().flatten() {
+            self.replay(m, deliver);
+        }
+        self.inner.replayed.store(generation, Ordering::SeqCst);
+    }
+
     /// Ack the cursor to what the stream handed Claude Code. Off the reader thread: a round trip
     /// there would wait on its own reply. A failed ack is retried on the next pass.
     fn ack_delivered(&self) {
-        let upto = *self
-            .inner
-            .delivered
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if upto > self.inner.acked.load(Ordering::SeqCst) && self.ack(upto).is_ok() {
-            self.inner.acked.fetch_max(upto, Ordering::SeqCst);
+        let _one = self.inner.call.lock().unwrap_or_else(|e| e.into_inner());
+        for _ in 0..2 {
+            if self.ensure_locked().is_err() {
+                return;
+            }
+            // Read AFTER the connection: a welcome that names a new coordinator start resets this
+            // mark, because its log's seqs begin again - and the old number would tell the fresh
+            // log that messages nobody was told about were read, so `replay_the_gap` would then
+            // never fetch them.
+            let upto = *self
+                .inner
+                .delivered
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if upto == 0 || upto <= self.inner.acked.load(Ordering::SeqCst) {
+                return;
+            }
+            match self.round_trip(&json!({ "type": "ack", "seq": upto })) {
+                Ok(_) => {
+                    self.inner.acked.fetch_max(upto, Ordering::SeqCst);
+                    return;
+                }
+                Err(_) => self.drop_connection(),
+            }
         }
     }
 }
@@ -991,13 +1035,9 @@ fn supervise(weak: Weak<Inner>, deliver: Deliver) {
             return;
         };
         let link = RoomLink { inner };
-        if let Ok(true) = link.ensure() {
+        if link.ensure().is_ok() {
             // A gap or a first start: what the cursor still holds for this seat.
-            if let Ok(reply) = link.inbox(Attention::ToMe, 200) {
-                for m in reply["rows"].as_array().into_iter().flatten() {
-                    link.replay(m, &deliver);
-                }
-            }
+            link.replay_the_gap(&deliver);
         }
         link.ack_delivered();
         drop(link);
@@ -1051,11 +1091,22 @@ fn read_loop(mut reader: BufReader<UnixStream>, weak: Weak<Inner>, generation: u
             },
         };
         if closed {
-            let mut live = inner.live.lock().unwrap_or_else(|e| e.into_inner());
-            // Only this reader's own connection: a newer one must survive an old reader's end.
-            if live.as_ref().is_some_and(|l| l.generation == generation) {
-                live.take();
+            {
+                let mut live = inner.live.lock().unwrap_or_else(|e| e.into_inner());
+                // Only this reader's own connection: a newer one must survive an old reader's end.
+                if live.as_ref().is_some_and(|l| l.generation == generation) {
+                    live.take();
+                }
             }
+            // Nobody will answer a round trip parked on this connection now: end its wait here,
+            // so a redial is a retry rather than the rest of a timeout spent on a gone peer.
+            drop(
+                inner
+                    .waiting
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take(),
+            );
             return;
         }
     }
