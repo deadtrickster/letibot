@@ -188,15 +188,29 @@ fn scripted_daemon(path: PathBuf) -> std::sync::mpsc::Receiver<Attach> {
         let _ = tx.send(at);
         let mut w = FrameWriter::new(stream);
         w.write(&hello_resumed(at.since_seq, "h2")).unwrap();
-        // One event the head has not seen, at the seq just past its mark: the gap,
-        // arriving as events, which is what a resume is.
+        // One row the head has not seen, at the seqs just past its mark: the gap, arriving as
+        // events, which is what a resume is. A conversation row, because a warning is not one.
         w.write(&ServerFrame::Event(env(
             at.since_seq + 1,
-            SessionEvent::Warning {
-                code: "gap".into(),
-                detail: "this is what you missed".into(),
-
-                compaction: None,
+            SessionEvent::TranscriptAppended {
+                item_id: "s.1".into(),
+                kind: "user".into(),
+                ledger_head: "y".into(),
+                item: None,
+                body_bytes: 0,
+            },
+        )))
+        .unwrap();
+        w.write(&ServerFrame::Event(env(
+            at.since_seq + 2,
+            SessionEvent::TranscriptContent {
+                item_id: "s.1".into(),
+                item: Box::new(TranscriptItem::User {
+                    speaker: Default::default(),
+                    parts: vec![UserPart::Text {
+                        text: "this is what you missed".into(),
+                    }],
+                }),
             },
         )))
         .unwrap();
