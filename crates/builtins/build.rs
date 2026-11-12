@@ -14,6 +14,10 @@ fn main() {
         .to_path_buf();
     let root = repo.join("plugins").join("builtin");
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
+    // **One `OUT_DIR`, and worktrees sharing a `CARGO_TARGET_DIR` all get this one.** Cargo names a
+    // package's build directory without the path it was built from, so a guest or a module read back
+    // from here can be the other checkout's — `trees/<key>` is the whole of what keeps them apart.
+    let mine = out.join("trees").join(tree_key(&here));
 
     // The target, before anything is built. A box without it can build the host and not the
     // guest, and the failure a nested cargo gives for that is a wall of errors about a missing
@@ -30,7 +34,10 @@ fn main() {
     // The whole built-in tree is a dependency, not only each layer's own directory: a layer
     // may share a crate with its neighbours (`plugins/builtin/abi`), and a build script that only
     // watched `<layer>/src` would keep a stale module after a change to the shared half.
-    println!("cargo:rerun-if-changed={}", root.display());
+    watch(&here, &root);
+    // The guests' other path dependency: every layer compiles the pane and hook contracts out of
+    // `crates/plugin-sdk`, and nothing else about a change there reaches this script.
+    watch(&here, &repo.join("crates").join("plugin-sdk"));
     if guests.is_empty() {
         eprintln!(
             "error: {} holds no layer (a layer is a directory with `Cargo.toml` and \
@@ -42,21 +49,19 @@ fn main() {
 
     let mut entries = String::new();
     for (name, dir) in &guests {
-        let wasm = build(name, dir, &out);
+        let wasm = build(name, dir, &mine);
         // The manifest is read through `include_str!` from the SOURCE tree rather than copied:
         // it is what a reviewer reads, and a copy in `OUT_DIR` would be a second thing that can
         // be stale.
         let manifest = dir.join("plugin.toml");
-        println!("cargo:rerun-if-changed={}", manifest.display());
-        println!(
-            "cargo:rerun-if-changed={}",
-            dir.join("Cargo.toml").display()
-        );
-        println!(
-            "cargo:rerun-if-changed={}",
-            dir.join("Cargo.lock").display()
-        );
-        println!("cargo:rerun-if-changed={}", dir.join("src").display());
+        for watched in [
+            manifest.clone(),
+            dir.join("Cargo.toml"),
+            dir.join("Cargo.lock"),
+            dir.join("src"),
+        ] {
+            watch(&here, &watched);
+        }
         entries.push_str(&format!(
             "    Builtin {{\n        name: {name:?},\n        \
              manifest: include_str!({manifest:?}),\n        wasm: include_bytes!({wasm:?}),\n    }},\n",
@@ -113,11 +118,48 @@ fn guests(root: &Path) -> Vec<(String, PathBuf)> {
     found
 }
 
+/// Watch one path, spelled so that the tree reading the watch list next resolves it to itself: an
+/// absolute path names the checkout that wrote it, and that file's change is never this one's.
+fn watch(here: &Path, path: &Path) {
+    println!("cargo:rerun-if-changed={}", relative(here, path).display());
+}
+
+/// `path` from `here`, by way of `..`: both are inside one checkout, and cargo resolves what a
+/// build script prints against the package's own directory.
+fn relative(here: &Path, path: &Path) -> PathBuf {
+    let from: Vec<_> = here.components().collect();
+    let to: Vec<_> = path.components().collect();
+    let common = from.iter().zip(&to).take_while(|(a, b)| a == b).count();
+    if common == 0 {
+        return path.to_path_buf();
+    }
+    let mut rel = PathBuf::new();
+    for _ in common..from.len() {
+        rel.push("..");
+    }
+    for part in &to[common..] {
+        rel.push(part);
+    }
+    rel
+}
+
+/// A short, stable name for the checkout this script is running in: FNV-1a over the package's own
+/// path, which is the one thing about a unit's build that cargo leaves out of its directory name.
+fn tree_key(here: &Path) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in here.to_string_lossy().as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
 /// Build one guest and answer where the module is. The child's environment loses
 /// the four things that would make it the host's build, and its target directory is
-/// the guest's own under `OUT_DIR`, so no host build waits on it.
-fn build(name: &str, dir: &Path, out: &Path) -> PathBuf {
-    let target = out.join("target").join(name);
+/// the guest's own under this tree's `OUT_DIR`, so no host build waits on it and no
+/// other tree's build answers for it.
+fn build(name: &str, dir: &Path, mine: &Path) -> PathBuf {
+    let target = mine.join("target").join(name);
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let status = Command::new(cargo)
         .current_dir(dir)
@@ -164,7 +206,7 @@ fn build(name: &str, dir: &Path, out: &Path) -> PathBuf {
     }
     // Copied out of the target directory so the path in the table is one this crate owns: a
     // `cargo clean -p` on the guest would otherwise move what the host's `include_bytes!` reads.
-    let kept = out.join(name);
+    let kept = mine.join(name);
     std::fs::create_dir_all(&kept).expect("create the layer's directory in OUT_DIR");
     let kept = kept.join("plugin.wasm");
     std::fs::copy(&module, &kept).unwrap_or_else(|e| {
