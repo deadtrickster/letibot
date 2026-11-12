@@ -15,10 +15,11 @@ pub const HOST_ROOM: &str = "host";
 pub const DM_ROOM: &str = "dm";
 /// The operator's name, reserved: only an operator seat may author under it.
 pub const OPERATOR: &str = "operator";
-/// Messages kept per room (and for all direct messages together). The oldest is dropped first.
+/// Messages kept per room (and for all direct messages together), in memory. The oldest goes
+/// first: this is a window on the log, which keeps every message that was ever said, so a read
+/// that needs an older one pages it back out of a segment.
 pub const RING: usize = 500;
-/// Text bytes kept per room (and for all direct messages together); the oldest rows go first. The
-/// store is replayed into memory at start, so this bounds disk and the coordinator's heap.
+/// Text bytes kept per room in memory; the oldest rows go first. The log is not bounded by it.
 pub const ROOM_BYTES: usize = 256 * 1024;
 /// The longest message text, in bytes. Longer is refused, never cut.
 pub const MAX_TEXT: usize = 4_000;
@@ -26,6 +27,13 @@ pub const MAX_TEXT: usize = 4_000;
 pub const MAX_READ: usize = 200;
 /// Request ids remembered so a repeated `say` is answered, not appended twice.
 const REPLAY: usize = 256;
+/// The size a log segment grows to before the next append starts a new one. A segment is never
+/// rewritten, truncated or removed: the segments are the history and the ring is only its window.
+const SEGMENT_BYTES: u64 = 4 * 1024 * 1024;
+/// How much of the log's newest end a start replays into the rings.
+const START_BYTES: u64 = 8 * 1024 * 1024;
+/// The most of the log one page-back read walks, so a read never stalls the room for long.
+const SCAN_BYTES: u64 = 32 * 1024 * 1024;
 
 /// The id of a project's chat room: `project/<project key>`.
 pub fn project_room(key: &str) -> String {
@@ -1157,8 +1165,11 @@ impl AskState {
     }
 }
 
-/// One line of the chat store. The file is append-only and rewritten whole when it outgrows the live
-/// state, so replaying it from the top rebuilds the rings, the dedup window and the cursors.
+/// One line of the log or of the state file beside it. A segment holds messages and nothing else,
+/// is append-only and is never rewritten; the state - the cursors, the seen marks, the guests, the
+/// asks, each room's log floor and the whole text of a filed record - is `<path>.state`, rewritten
+/// whole when it outgrows what is live. Replaying both rebuilds the rings, the dedup window and
+/// the cursors.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Record {
@@ -1170,7 +1181,14 @@ enum Record {
         name: String,
         seq: u64,
     },
+    /// An old single-file store's marker that its ring dropped messages through `seq`. A split
+    /// store keeps them, so this reads as that room's floor.
     Dropped {
+        room: String,
+        seq: u64,
+    },
+    /// The oldest `seq` the log holds for a room: what a read compares a page against.
+    Floor {
         room: String,
         seq: u64,
     },
@@ -1204,21 +1222,60 @@ enum Record {
     },
 }
 
-/// The file chat is kept in, and the size it had at the last write.
+/// The log chat is kept in. The file the caller named is its first segment; the state sits beside
+/// it, and no segment is ever rewritten.
 struct Store {
+    /// Segment 0, and the stem the others and the state file are named from.
     path: PathBuf,
+    /// Which segment writes append to now, its path, and its size.
+    index: u64,
+    segment: PathBuf,
     bytes: u64,
+    /// The state file and its size.
+    state: PathBuf,
+    state_bytes: u64,
+    /// The state file is not there yet: this store predates the segments, and the first write must
+    /// snapshot the state before its one file is read as append-only.
+    migrating: bool,
+}
+
+/// Segment `n` of the log: the caller's own file first, then `<path>.1`, `.2`, ...
+fn segment_path(path: &Path, n: u64) -> PathBuf {
+    match n {
+        0 => path.to_path_buf(),
+        n => PathBuf::from(format!("{}.{n}", path.display())),
+    }
+}
+
+/// The log's segments, oldest first. A missing number ends the list: a roll is one file after
+/// another, and nothing is ever removed from the middle.
+fn segments(path: &Path) -> Vec<PathBuf> {
+    let mut out = vec![path.to_path_buf()];
+    loop {
+        let next = segment_path(path, out.len() as u64);
+        if !next.exists() {
+            return out;
+        }
+        out.push(next);
+    }
+}
+
+/// The state file beside the log.
+fn state_path(path: &Path) -> PathBuf {
+    PathBuf::from(format!("{}.state", path.display()))
 }
 
 #[derive(Default)]
 pub struct Chat {
     next: u64,
     rings: BTreeMap<String, VecDeque<Message>>,
-    dropped_to: BTreeMap<String, u64>,
     cursors: BTreeMap<String, u64>,
     seen: BTreeMap<String, u64>,
     said: VecDeque<((String, String), u64)>,
     store: Option<Store>,
+    /// The oldest `seq` the log holds per room - or the ring itself, for a chat with no store. A
+    /// read that cannot fill a page from the ring pages back to this.
+    floors: BTreeMap<String, u64>,
     /// Each project room's invited sessions, by room.
     guests: BTreeMap<String, BTreeSet<String>>,
     /// Every ask the room holds, by its id (the `seq` of the question). Settled ones stay for
@@ -1241,52 +1298,127 @@ impl Chat {
         Chat::default()
     }
 
-    /// A chat kept in `path`: what the file holds is loaded, and every change after is appended. An
-    /// unreadable line is skipped and said; a missing file is an empty chat.
+    /// A chat kept in `path`: its log is replayed into the rings, and every change after is
+    /// appended. An unreadable line is skipped and said; a missing file is an empty chat.
     pub fn open(path: &Path) -> Chat {
         let mut c = Chat::new();
-        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let state = state_path(path);
+        let segs = segments(path);
+        let kept = std::fs::metadata(&state).map(|m| m.len()).unwrap_or(0);
+        // The store is in place before the replay: a replay trims the rings, and a trim with no
+        // store raises a room's floor to what it dropped, which here would say the log had lost
+        // what it still holds.
+        let index = segs.len() as u64 - 1;
+        let bytes = std::fs::metadata(&segs[index as usize]).map_or(0, |m| m.len());
+        c.store = Some(Store {
+            path: path.to_path_buf(),
+            index,
+            segment: segment_path(path, index),
+            bytes,
+            state: state.clone(),
+            state_bytes: kept,
+            migrating: kept == 0,
+        });
+        if kept == 0 {
+            // A store from before the segments: one file holding the messages and the state
+            // together, replayed whole. The state file's absence is what makes the first write
+            // snapshot it - and a snapshot is complete, because live state holds every line.
+            for seg in &segs {
+                if let Ok(bytes) = std::fs::read(seg) {
+                    c.replay(seg, &String::from_utf8_lossy(&bytes), true);
+                }
+            }
+        } else {
+            if let Ok(bytes) = std::fs::read(&state) {
+                c.replay(&state, &String::from_utf8_lossy(&bytes), true);
+            }
+            c.replay_tail(&segs, START_BYTES);
+        }
+        c
+    }
+
+    /// Apply one piece of the store. `state` is true for the state file and for a store from
+    /// before the split, whose one file carried the cursors, the asks and the guests as well as
+    /// the messages; a segment holds messages and nothing else.
+    fn replay(&mut self, label: &Path, text: &str, state: bool) {
         for (n, line) in text.lines().enumerate() {
             match serde_json::from_str::<Record>(line) {
-                Ok(Record::Msg { request, message }) => c.restore(request, message),
-                Ok(Record::Cursor { name, seq }) => {
-                    let cur = c.cursors.entry(name).or_insert(0);
-                    *cur = (*cur).max(seq);
-                }
-                Ok(Record::Seen { name, seq }) => {
-                    let s = c.seen.entry(name).or_insert(0);
-                    *s = (*s).max(seq);
-                }
-                Ok(Record::Dropped { room, seq }) => {
-                    let d = c.dropped_to.entry(room).or_insert(0);
-                    *d = (*d).max(seq);
-                }
-                Ok(Record::Guest { room, name, on }) => c.note_guest(&room, &name, on),
-                Ok(Record::Ask { mut ask }) => {
-                    // The two fields about a connection are the SERVER's, and a restart is the
-                    // moment no connection is older than the process: they begin empty.
-                    ask.gone_since_ms = None;
-                    ask.escalated = false;
-                    c.asks.insert(ask.seq, ask);
-                }
-                Ok(Record::AskState { seq, state }) => {
-                    if let Some(ask) = c.asks.get_mut(&seq) {
-                        ask.state = state;
-                    }
-                }
-                Ok(Record::Whole { seq, text }) => c.keep_whole(seq, text),
+                Ok(Record::Msg { request, message }) => self.restore(request, message),
+                Ok(r) if state => self.apply_state(r),
+                Ok(_) => {}
                 Err(e) => eprintln!(
                     "room: chat store {} line {} is not a record ({e}); skipped",
-                    path.display(),
+                    label.display(),
                     n + 1
                 ),
             }
         }
-        c.store = Some(Store {
-            path: path.to_path_buf(),
-            bytes: text.len() as u64,
-        });
-        c
+    }
+
+    /// One line of the state: a cursor, a seen mark, a guest, an ask, a filed record's whole text
+    /// or a room's log floor.
+    fn apply_state(&mut self, r: Record) {
+        match r {
+            Record::Msg { .. } => {}
+            Record::Cursor { name, seq } => {
+                let cur = self.cursors.entry(name).or_insert(0);
+                *cur = (*cur).max(seq);
+            }
+            Record::Seen { name, seq } => {
+                let s = self.seen.entry(name).or_insert(0);
+                *s = (*s).max(seq);
+            }
+            // An old store's `Dropped` says its ring lost messages through `seq`, and the file
+            // that held them was rewritten: that seq is where the log it left begins.
+            Record::Dropped { room, seq } | Record::Floor { room, seq } => {
+                let floor = self.floors.entry(room).or_insert(0);
+                *floor = (*floor).max(seq);
+            }
+            Record::Guest { room, name, on } => self.note_guest(&room, &name, on),
+            Record::Ask { mut ask } => {
+                // The two fields about a connection are the SERVER's, and a restart is the
+                // moment no connection is older than the process: they begin empty.
+                ask.gone_since_ms = None;
+                ask.escalated = false;
+                self.asks.insert(ask.seq, ask);
+            }
+            Record::AskState { seq, state } => {
+                if let Some(ask) = self.asks.get_mut(&seq) {
+                    ask.state = state;
+                }
+            }
+            Record::Whole { seq, text } => self.keep_whole(seq, text),
+        }
+    }
+
+    /// Replay the newest `budget` bytes of the log into the rings, oldest first. A start does not
+    /// read a log that has grown for months: what it skips is a page-back, not a loss.
+    fn replay_tail(&mut self, segs: &[PathBuf], budget: u64) {
+        let mut take = budget;
+        let mut chunks: Vec<(&Path, String)> = Vec::new();
+        for seg in segs.iter().rev() {
+            let Ok(bytes) = std::fs::read(seg) else {
+                continue;
+            };
+            if bytes.len() as u64 >= take {
+                // The cut lands mid-line, and half a record is not a record: the window starts
+                // at the first whole line in it.
+                let mut start = bytes.len() - take as usize;
+                while start < bytes.len() && bytes[start] != b'\n' {
+                    start += 1;
+                }
+                chunks.push((
+                    seg.as_path(),
+                    String::from_utf8_lossy(&bytes[start..]).into_owned(),
+                ));
+                break;
+            }
+            take -= bytes.len() as u64;
+            chunks.push((seg.as_path(), String::from_utf8_lossy(&bytes).into_owned()));
+        }
+        for (seg, text) in chunks.iter().rev() {
+            self.replay(seg, text, false);
+        }
     }
 
     fn restore(&mut self, request: String, m: Message) {
@@ -1296,6 +1428,8 @@ impl Chat {
             self.said.pop_front();
         }
         let room = m.room.clone();
+        // The first message a room holds is the oldest the log can page back to.
+        self.floors.entry(room.clone()).or_insert(m.seq);
         let ring = self.rings.entry(room.clone()).or_default();
         ring.push_back(m);
         self.trim(&room);
@@ -1309,8 +1443,11 @@ impl Chat {
         while ring.len() > RING || (bytes > ROOM_BYTES && ring.len() > 1) {
             if let Some(old) = ring.pop_front() {
                 bytes -= old.text.len();
-                let d = self.dropped_to.entry(room.to_string()).or_insert(0);
-                *d = (*d).max(old.seq);
+                if self.store.is_none() {
+                    // Nothing behind the ring: what it drops is what is gone, and a read says so.
+                    let floor = self.floors.entry(room.to_string()).or_insert(0);
+                    *floor = (*floor).max(old.seq);
+                }
                 if let Some(whole) = self.whole.remove(&old.seq) {
                     self.whole_bytes -= whole.len();
                 }
@@ -1318,60 +1455,130 @@ impl Chat {
         }
     }
 
+    /// Keep what a change made: a message goes to the log, and everything else to the state file.
+    /// Live state is already updated when this is called, so a state rewrite writes it.
     fn write(&mut self, records: &[Record]) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        let migrating = store.migrating;
+        let mut log = String::new();
+        let mut state = String::new();
+        for r in records {
+            let Ok(line) = serde_json::to_string(r) else {
+                continue;
+            };
+            let buf = if matches!(r, Record::Msg { .. }) {
+                &mut log
+            } else {
+                &mut state
+            };
+            buf.push_str(&line);
+            buf.push('\n');
+        }
+        if migrating {
+            // The snapshot goes before the first message: once the state file is there, the one
+            // file this store grew from is read as the log's first segment and its state is not.
+            self.write_state();
+        } else if !state.is_empty() {
+            self.append_state(&state);
+        }
+        if !log.is_empty() {
+            self.append_log(&log);
+        }
+    }
+
+    /// Append to the newest segment, rolling to a new one when it is full. Nothing here rewrites,
+    /// truncates or removes a segment: the ring is the window and the log is the history.
+    fn append_log(&mut self, text: &str) {
         let Some(store) = self.store.as_mut() else {
             return;
         };
-        let mut buf = String::new();
-        for r in records {
-            if let Ok(line) = serde_json::to_string(r) {
-                buf.push_str(&line);
-                buf.push('\n');
-            }
+        if store.bytes > 0 && store.bytes + text.len() as u64 > SEGMENT_BYTES {
+            store.index += 1;
+            store.segment = segment_path(&store.path, store.index);
+            store.bytes = 0;
         }
         let wrote = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&store.path)
-            .and_then(|mut f| f.write_all(buf.as_bytes()));
+            .open(&store.segment)
+            .and_then(|mut f| f.write_all(text.as_bytes()));
         match wrote {
-            Ok(()) => store.bytes += buf.len() as u64,
+            Ok(()) => store.bytes += text.len() as u64,
             Err(e) => eprintln!(
-                "room: chat store {} not written ({e}); chat continues in memory only",
-                store.path.display()
+                "room: chat log {} not written ({e}); chat continues in memory only",
+                store.segment.display()
             ),
         }
-        self.compact();
     }
 
-    /// Rewrite the store from live state once it holds twice what is live, so dropped rows and
-    /// superseded cursors do not grow the file without bound.
-    fn compact(&mut self) {
+    /// Append state lines, and rewrite the file whole once it holds twice what is live. The log is
+    /// not touched: a message that left is still in its segment, and only the state is superseded.
+    fn append_state(&mut self, text: &str) {
+        let Some(store) = self.store.as_mut() else {
+            return;
+        };
+        let wrote = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&store.state)
+            .and_then(|mut f| f.write_all(text.as_bytes()));
+        match wrote {
+            Ok(()) => store.state_bytes += text.len() as u64,
+            Err(e) => eprintln!(
+                "room: chat state {} not written ({e})",
+                store.state.display()
+            ),
+        }
+        self.compact_state();
+    }
+
+    /// Rewrite the state file once it holds twice what live state is worth, so superseded cursors
+    /// and settled asks do not grow it without bound.
+    fn compact_state(&mut self) {
         let Some(store) = self.store.as_ref() else {
             return;
         };
-        let live: usize = self.rings.values().map(ring_bytes).sum();
-        if store.bytes < (2 * live as u64).max(64 * 1024) {
+        let snapshot = self.state_snapshot().len() as u64;
+        if store.state_bytes < (2 * snapshot).max(64 * 1024) {
             return;
         }
-        let request_of: BTreeMap<u64, &str> = self
-            .said
-            .iter()
-            .map(|((_, r), seq)| (*seq, r.as_str()))
-            .collect();
+        self.write_state();
+    }
+
+    /// Write the state file whole, in one rename, from live state: the first write of a store from
+    /// before the split, and every rewrite after it.
+    fn write_state(&mut self) {
+        let Some(state) = self.store.as_ref().map(|s| s.state.clone()) else {
+            return;
+        };
+        let buf = self.state_snapshot();
+        let tmp = PathBuf::from(format!("{}.tmp", state.display()));
+        let done =
+            std::fs::write(&tmp, buf.as_bytes()).and_then(|()| std::fs::rename(&tmp, &state));
+        match done {
+            Ok(()) => {
+                if let Some(s) = self.store.as_mut() {
+                    s.state_bytes = buf.len() as u64;
+                    s.migrating = false;
+                }
+                // The one moment the state is written whole, so it is when the blob store may
+                // collect what no message in the log names any more.
+                self.rewrites += 1;
+            }
+            Err(e) => eprintln!("room: chat state {} not written ({e})", state.display()),
+        }
+    }
+
+    /// The state file's whole content: each room's floor, the cursors, the seen marks, the guests,
+    /// the asks, and the whole text of each filed record.
+    fn state_snapshot(&self) -> String {
         let mut records: Vec<Record> = Vec::new();
-        for (room, seq) in &self.dropped_to {
-            records.push(Record::Dropped {
+        for (room, seq) in &self.floors {
+            records.push(Record::Floor {
                 room: room.clone(),
                 seq: *seq,
-            });
-        }
-        let mut msgs: Vec<&Message> = self.rings.values().flatten().collect();
-        msgs.sort_by_key(|m| m.seq);
-        for m in msgs {
-            records.push(Record::Msg {
-                request: request_of.get(&m.seq).copied().unwrap_or("").to_string(),
-                message: m.clone(),
             });
         }
         for (name, seq) in &self.cursors {
@@ -1418,35 +1625,42 @@ impl Chat {
                 buf.push('\n');
             }
         }
-        let path = store.path.clone();
-        let tmp = path.with_extension("tmp");
-        let done = std::fs::write(&tmp, buf.as_bytes()).and_then(|()| std::fs::rename(&tmp, &path));
-        match &done {
-            Ok(()) => {
-                if let Some(s) = self.store.as_mut() {
-                    s.bytes = buf.len() as u64;
-                }
-            }
-            Err(e) => eprintln!("room: chat store {} not compacted ({e})", path.display()),
-        }
-        if done.is_ok() {
-            self.rewrites += 1;
-        }
+        buf
     }
 
-    /// How many times the store has been rewritten from live state.
+    /// How many times the state has been written whole from live state.
     pub fn rewrites(&self) -> u64 {
         self.rewrites
     }
 
-    /// Every blob id the messages the ring still holds name. A blob absent from this set is one
-    /// no kept message references.
+    /// Every blob id any message in the log names. A message paged back out of a segment is still
+    /// readable, so the picture it carries must not be collected behind it.
     pub fn kept_attachments(&self) -> BTreeSet<String> {
-        self.rings
+        let mut ids: BTreeSet<String> = self
+            .rings
             .values()
             .flatten()
             .flat_map(|m| m.attachments.iter().map(|a| a.id.clone()))
-            .collect()
+            .collect();
+        if let Some(store) = self.store.as_ref() {
+            for seg in segments(&store.path) {
+                let Ok(bytes) = std::fs::read(&seg) else {
+                    continue;
+                };
+                let text = String::from_utf8_lossy(&bytes);
+                for line in text.lines() {
+                    // Every other line is a message with no picture: reading them all as JSON
+                    // would cost the whole log on each collection.
+                    if !line.contains("\"attachments\"") {
+                        continue;
+                    }
+                    if let Ok(Record::Msg { message, .. }) = serde_json::from_str::<Record>(line) {
+                        ids.extend(message.attachments.into_iter().map(|a| a.id));
+                    }
+                }
+            }
+        }
+        ids
     }
 
     /// The newest `seq` in the whole log.
@@ -1560,6 +1774,8 @@ impl Chat {
             .entry(room.to_string())
             .or_default()
             .push_back(m.clone());
+        // The first message a room is given is the oldest the log can page back to.
+        self.floors.entry(room.to_string()).or_insert(seq);
         self.trim(room);
         self.said.push_back((key, m.seq));
         while self.said.len() > REPLAY {
@@ -1639,6 +1855,7 @@ impl Chat {
             .entry(room.to_string())
             .or_default()
             .push_back(message.clone());
+        self.floors.entry(room.to_string()).or_insert(seq);
         self.trim(room);
         self.said
             .push_back(((asker.to_string(), request.to_string()), seq));
@@ -1834,7 +2051,9 @@ impl Chat {
     }
 
     /// Messages of `room` after `since`, oldest first. `last` keeps only the newest n; `thread`
-    /// keeps the root and its replies. A read moves no cursor. `see` filters what the reader may see.
+    /// keeps the root and its replies. A read moves no cursor. `see` filters what the reader may
+    /// see. A page the ring cannot fill is paged back out of the log, which is what lets a head
+    /// read the first message of a room the coordinator has been in for weeks.
     pub fn read(
         &self,
         room: &str,
@@ -1844,6 +2063,7 @@ impl Chat {
         before: Option<u64>,
         see: impl Fn(&Message) -> bool,
     ) -> History {
+        let keep = last.unwrap_or(MAX_READ).clamp(1, MAX_READ);
         let mut rows: Vec<Message> = self
             .rings
             .get(room)
@@ -1853,7 +2073,20 @@ impl Chat {
             .filter(|m| thread.is_none_or(|t| m.seq == t || m.thread == Some(t)))
             .cloned()
             .collect();
-        let keep = last.unwrap_or(MAX_READ).clamp(1, MAX_READ);
+        // A page-back is a walk of the log; a thread's is not, because a reply older than the ring
+        // is a thread shape the log does not carry, and a read must not invent one.
+        if rows.len() < keep && thread.is_none() && self.more_older(room) {
+            // The page goes back from the oldest row the ring could give, so the two halves meet
+            // instead of overlapping.
+            let edge = match rows.first() {
+                Some(m) => m.seq,
+                None => before.unwrap_or(u64::MAX),
+            };
+            let mut older = self.scan(room, since, edge, keep - rows.len(), &see);
+            older.reverse();
+            older.extend(rows);
+            rows = older;
+        }
         if rows.len() > keep {
             // The newest rows are the ones a reader wants when it asks for a tail.
             rows.drain(..rows.len() - keep);
@@ -1869,8 +2102,136 @@ impl Chat {
             room: room.to_string(),
             rows,
             last_seq: self.last_in(room),
-            trimmed: self.dropped_to.get(room).is_some_and(|d| *d > since),
+            // The log keeps what the ring drops, so a read is only short of a message the log
+            // itself no longer holds.
+            trimmed: self
+                .floors
+                .get(room)
+                .is_some_and(|f| *f > since.saturating_add(1)),
         }
+    }
+
+    /// Whether the log may hold messages older than the ring's front. A room with a floor and no
+    /// ring at all is a room that went quiet before the newest segment: its messages are in the
+    /// log and nowhere else, so a read has to ask it. A room with no floor recorded is a room
+    /// nobody has written in this process, and the log may still have one.
+    fn more_older(&self, room: &str) -> bool {
+        let front = self.rings.get(room).and_then(|r| r.front()).map(|m| m.seq);
+        match (self.floors.get(room), front) {
+            (Some(floor), Some(front)) => *floor < front,
+            (Some(_), None) | (None, _) => self.store.is_some(),
+        }
+    }
+
+    /// Fill a page from the log: up to `want` messages of `room` older than `before` and newer than
+    /// `since`, newest first, walking the segments backwards so the page nearest the ring is the
+    /// cheapest. `SCAN_BYTES` bounds what one page costs the room.
+    fn scan(
+        &self,
+        room: &str,
+        since: u64,
+        before: u64,
+        want: usize,
+        see: &impl Fn(&Message) -> bool,
+    ) -> Vec<Message> {
+        let Some(store) = self.store.as_ref() else {
+            return Vec::new();
+        };
+        let mut out: Vec<Message> = Vec::new();
+        let mut read = 0u64;
+        for seg in segments(&store.path).into_iter().rev() {
+            let Ok(bytes) = std::fs::read(&seg) else {
+                continue;
+            };
+            read += bytes.len() as u64;
+            let text = String::from_utf8_lossy(&bytes);
+            for line in text.lines().rev() {
+                if out.len() >= want {
+                    break;
+                }
+                if let Ok(Record::Msg { message, .. }) = serde_json::from_str::<Record>(line)
+                    && message.room == room
+                    && message.seq < before
+                    && message.seq > since
+                    && see(&message)
+                {
+                    out.push(message);
+                }
+            }
+            if out.len() >= want || read >= SCAN_BYTES {
+                break;
+            }
+        }
+        out
+    }
+
+    /// The messages of `room` whose text holds `needle`, newest first, at most `last` of them. The
+    /// whole log is searched, not the ring: a hit older than the window is the one a person means.
+    /// `see` filters what the reader may see.
+    pub fn search(
+        &self,
+        room: &str,
+        needle: &str,
+        last: usize,
+        see: impl Fn(&Message) -> bool,
+    ) -> Vec<Message> {
+        let needle = needle.trim().to_lowercase();
+        if needle.is_empty() {
+            return Vec::new();
+        }
+        let keep = last.clamp(1, MAX_READ);
+        let hits = |m: &Message| {
+            let whole = self.whole.get(&m.seq).map_or("", String::as_str);
+            m.text.to_lowercase().contains(&needle) || whole.to_lowercase().contains(&needle)
+        };
+        let mut rows: Vec<Message> = Vec::new();
+        let mut got: BTreeSet<u64> = BTreeSet::new();
+        if let Some(store) = self.store.as_ref() {
+            let mut read = 0u64;
+            'log: for seg in segments(&store.path).into_iter().rev() {
+                let Ok(bytes) = std::fs::read(&seg) else {
+                    continue;
+                };
+                read += bytes.len() as u64;
+                let text = String::from_utf8_lossy(&bytes);
+                for line in text.lines().rev() {
+                    if let Ok(Record::Msg { message, .. }) = serde_json::from_str::<Record>(line)
+                        && message.room == room
+                        && see(&message)
+                        && hits(&message)
+                        && got.insert(message.seq)
+                    {
+                        rows.push(message);
+                        if rows.len() >= keep {
+                            break 'log;
+                        }
+                    }
+                }
+                if read >= SCAN_BYTES {
+                    break;
+                }
+            }
+        }
+        for m in self
+            .rings
+            .get(room)
+            .map(|r| r.iter().rev())
+            .into_iter()
+            .flatten()
+        {
+            if rows.len() >= keep {
+                break;
+            }
+            if see(m) && hits(m) && got.insert(m.seq) {
+                rows.push(m.clone());
+            }
+        }
+        for row in &mut rows {
+            if let Some(whole) = self.whole.get(&row.seq) {
+                row.text = whole.clone();
+            }
+        }
+        rows
     }
 
     /// The message `author` already made for `request`, when the ring still holds it: a client's
@@ -2770,8 +3131,16 @@ mod store_tests {
     fn path(tag: &str) -> PathBuf {
         let p =
             std::env::temp_dir().join(format!("letibot-chat-store-{}-{tag}", std::process::id()));
-        let _ = std::fs::remove_file(&p);
+        sweep(&p);
         p
+    }
+
+    /// Remove a store: the log, every segment of it, and the state beside it.
+    fn sweep(p: &Path) {
+        for seg in segments(p) {
+            let _ = std::fs::remove_file(seg);
+        }
+        let _ = std::fs::remove_file(state_path(p));
     }
 
     fn say(c: &mut Chat, id: &str, room: &str, text: &str) -> Message {
@@ -2799,25 +3168,41 @@ mod store_tests {
         for i in 0..n {
             say(&mut c, &i.to_string(), HOST_ROOM, &big);
         }
-        let h = c.read(HOST_ROOM, 0, Some(MAX_READ), None, None, |_| true);
-        assert!(h.rows.iter().map(|m| m.text.len()).sum::<usize>() <= ROOM_BYTES);
-        assert!(h.trimmed);
+        // The window is bounded by the cap; the log behind it is not, so what the window drops
+        // comes back on the next read instead of being gone.
+        assert!(
+            c.rings[HOST_ROOM]
+                .iter()
+                .map(|m| m.text.len())
+                .sum::<usize>()
+                <= ROOM_BYTES
+        );
         let again = Chat::open(&p);
         assert_eq!(again.head(), n as u64);
         assert_eq!(again.last_in(HOST_ROOM), n as u64);
-        assert!(again.read(HOST_ROOM, 0, None, None, None, |_| true).trimmed);
-        let _ = std::fs::remove_file(&p);
+        let page = again.read(HOST_ROOM, 0, Some(MAX_READ), None, None, |_| true);
+        assert!(!page.trimmed, "the log kept what the window dropped");
+        assert_eq!(page.rows.len(), n, "every message the log holds");
+        assert_eq!(
+            page.rows.first().map(|m| m.seq),
+            Some(1),
+            "the window dropped it, the log did not"
+        );
+        let back = again.read(HOST_ROOM, 0, Some(MAX_READ), None, Some(11), |_| true);
+        assert_eq!(back.rows.first().map(|m| m.seq), Some(1));
+        assert_eq!(back.rows.last().map(|m| m.seq), Some(10));
+        sweep(&p);
     }
 
+    /// The state file is rewritten when it outgrows what is live; the log is not part of that and
+    /// is left byte for byte as it was.
     #[test]
-    fn the_store_is_rewritten_when_it_outgrows_what_is_live() {
+    fn the_state_is_rewritten_when_it_outgrows_what_is_live() {
         let p = path("compact");
         let mut c = Chat::open(&p);
         say(&mut c, "1", HOST_ROOM, "kept");
+        let log = std::fs::read(&p).expect("the log");
         c.arm("r");
-        for i in 0..4000 {
-            c.ack("r", i.min(1));
-        }
         for i in 0..4000u64 {
             c.cursors.insert("r".into(), i);
             c.write(&[Record::Cursor {
@@ -2825,12 +3210,17 @@ mod store_tests {
                 seq: i,
             }]);
         }
-        let size = std::fs::metadata(&p).expect("the store").len();
-        assert!(size < 128 * 1024, "compacted: {size}");
+        let state = std::fs::metadata(state_path(&p)).expect("the state").len();
+        assert!(state < 128 * 1024, "compacted: {state}");
+        assert_eq!(
+            std::fs::read(&p).expect("the log"),
+            log,
+            "a state rewrite does not touch the log"
+        );
         let again = Chat::open(&p);
         assert_eq!(again.head(), 1);
         assert_eq!(again.cursor("r"), 3999);
-        let _ = std::fs::remove_file(&p);
+        sweep(&p);
     }
 
     /// A long post is filed: the room carries its first line and a ref, `read` answers the whole,
@@ -2879,7 +3269,7 @@ mod store_tests {
         let again = Chat::open(&p);
         let back = again.read(HOST_ROOM, 0, None, None, None, |_| true);
         assert_eq!(back.rows[0].text, whole, "and it survives a restart");
-        let _ = std::fs::remove_file(&p);
+        sweep(&p);
     }
 
     /// A post that is not long is carried whole, whether or not the room was willing to file it.
@@ -2928,7 +3318,7 @@ mod store_tests {
         let mut c = c;
         let next = say(&mut c, "2", HOST_ROOM, "and the next one");
         assert_eq!(next.seq, 8);
-        let _ = std::fs::remove_file(&p);
+        sweep(&p);
     }
 
     /// The other half of the same promise: a message with no attachments serialises to exactly what
@@ -2948,7 +3338,7 @@ mod store_tests {
         // Through the store too: the line the file holds carries no attachments key.
         let written = std::fs::read_to_string(&p).expect("the store");
         assert!(!written.contains("attachments"), "{written}");
-        let _ = std::fs::remove_file(&p);
+        sweep(&p);
     }
 
     /// An ask is two store lines - the ask and, later, how it ended - and a replay brings both back
@@ -3000,7 +3390,7 @@ mod store_tests {
         let mut again = again;
         assert!(!again.settle_ask(settled.seq, AskState::Down { ms: 3_000 }));
         assert_eq!(again.asks_of("s-b").len(), 2, "the target's half too");
-        let _ = std::fs::remove_file(&p);
+        sweep(&p);
     }
 
     /// The keep window: a settled ask goes after it, and an open one never does - it is the whole
@@ -3038,5 +3428,223 @@ mod store_tests {
             0,
             "an open ask is never dropped, however long"
         );
+    }
+
+    /// The promise the log exists for: two thousand messages into one room, a restart, and a page
+    /// back to the first of them, byte for byte - the ring is a window and the log is the history.
+    #[test]
+    fn the_log_outlives_the_ring_and_the_first_message_reads_back_byte_for_byte() {
+        let p = path("segments");
+        let mut c = Chat::open(&p);
+        let first = say(
+            &mut c,
+            "1",
+            HOST_ROOM,
+            "the first message, and it has to come back whole",
+        );
+        for i in 2..=2000u64 {
+            say(&mut c, &i.to_string(), HOST_ROOM, &format!("message {i}"));
+        }
+        // A restart keeps all 2000, of which only the window is in memory.
+        let again = Chat::open(&p);
+        assert_eq!(again.head(), 2000);
+        assert!(again.rings[HOST_ROOM].len() <= RING);
+        let mut before = u64::MAX;
+        let mut seen: Vec<u64> = Vec::new();
+        loop {
+            let page = again.read(HOST_ROOM, 0, Some(MAX_READ), None, Some(before), |_| true);
+            if page.rows.is_empty() {
+                break;
+            }
+            before = page.rows[0].seq;
+            assert!(!page.trimmed, "the log held every one of them");
+            seen.extend(page.rows.iter().map(|m| m.seq));
+            if before == 1 {
+                break;
+            }
+        }
+        assert_eq!(seen.len(), 2000, "every message paged back");
+        let one = again.read(HOST_ROOM, 0, Some(MAX_READ), None, Some(2), |_| true);
+        assert_eq!(one.rows.len(), 1);
+        assert_eq!(one.rows[0], first, "the first message, byte for byte");
+        sweep(&p);
+    }
+
+    /// A room that went quiet before the newest segment lives only in the log: a read that finds
+    /// nothing in the ring asks the segments rather than answering "nothing was ever said".
+    #[test]
+    fn a_room_the_start_never_replayed_is_read_out_of_the_log() {
+        let p = path("quiet-room");
+        let mut c = Chat::open(&p);
+        let first = say(
+            &mut c,
+            "1",
+            "project/quiet",
+            "said before the room went quiet",
+        );
+        // Enough into another room that the start's window is all the second room's.
+        let big = "z".repeat(MAX_TEXT);
+        let n = START_BYTES / MAX_TEXT as u64 + 40;
+        for i in 0..n {
+            say(&mut c, &format!("b{i}"), HOST_ROOM, &big);
+        }
+        let again = Chat::open(&p);
+        assert!(
+            !again.rings.contains_key("project/quiet"),
+            "the quiet room is not replayed"
+        );
+        let page = again.read("project/quiet", 0, None, None, None, |_| true);
+        assert_eq!(page.rows.len(), 1, "{:?}", page.rows);
+        assert_eq!(page.rows[0], first);
+        assert!(!page.trimmed, "and the log still holds it");
+        sweep(&p);
+    }
+
+    /// Nothing rewrites, truncates or removes a segment: not a trim, not a state rewrite, not a
+    /// restart. The log rolls to a new file and the old one is left exactly as it was.
+    #[test]
+    fn no_code_path_rewrites_or_removes_a_segment() {
+        let p = path("append-only");
+        let mut c = Chat::open(&p);
+        let big = "y".repeat(MAX_TEXT);
+        let n = SEGMENT_BYTES / MAX_TEXT as u64 + 60;
+        for i in 0..n {
+            say(&mut c, &i.to_string(), HOST_ROOM, &big);
+        }
+        let rolled = segments(&p);
+        assert!(rolled.len() > 1, "the log rolled: {rolled:?}");
+        let before: Vec<Vec<u8>> = rolled
+            .iter()
+            .map(|s| std::fs::read(s).expect("a segment"))
+            .collect();
+        // More messages, a state line and a rewrite of the state, and not one byte of the log moves.
+        for i in n..n + 40 {
+            say(&mut c, &i.to_string(), HOST_ROOM, &big);
+        }
+        c.ack("s-a", 3);
+        c.write_state();
+        let after = segments(&p);
+        assert!(after.len() >= before.len(), "{after:?}");
+        for (i, was) in before.iter().enumerate() {
+            let now = std::fs::read(&after[i]).expect("a segment still there");
+            if i + 1 == before.len() {
+                // The newest segment keeps growing: appending is the only way it changes.
+                assert!(now.starts_with(was), "segment {i} was rewritten");
+            } else {
+                assert_eq!(&now, was, "segment {i} changed");
+            }
+        }
+        // And a page straddling two segments reads the same as one inside a single one.
+        let across = c.read(HOST_ROOM, 0, Some(150), None, Some(6), |_| true);
+        assert_eq!(across.rows.first().map(|m| m.seq), Some(1));
+        assert_eq!(across.rows.last().map(|m| m.seq), Some(5));
+        sweep(&p);
+    }
+
+    /// A store written before the split - one file holding the messages and the state - keeps
+    /// loading, and its first write separates them: the file stays as the log's first segment and
+    /// the state moves beside it.
+    #[test]
+    fn an_old_single_file_store_loads_and_continues_as_the_log() {
+        let p = path("split");
+        let old = concat!(
+            r#"{"msg":{"request":"op-1","message":{"seq":1,"ts":1,"room":"host","author":"s-a","#,
+            r#""kind":"session","to":null,"thread":null,"refs":[],"text":"said before the split"}}}"#,
+            "\n",
+            r#"{"cursor":{"name":"s-a","seq":1}}"#,
+            "\n",
+        );
+        std::fs::write(&p, old).expect("an old store");
+        let mut c = Chat::open(&p);
+        assert_eq!(c.head(), 1);
+        assert_eq!(c.cursor("s-a"), 1, "the old file's own state is live");
+        let next = say(
+            &mut c,
+            "2",
+            HOST_ROOM,
+            "and this one is appended to the log",
+        );
+        assert_eq!(next.seq, 2);
+        assert!(state_path(&p).exists(), "the state is beside the log now");
+        let log = std::fs::read_to_string(&p).expect("the log");
+        assert!(log.starts_with(old), "the old file is not rewritten");
+        assert!(log.contains("and this one is appended to the log"));
+        assert!(
+            !log[old.len()..].contains("cursor"),
+            "a state line is not appended to the log"
+        );
+        let again = Chat::open(&p);
+        assert_eq!(again.head(), 2);
+        assert_eq!(again.cursor("s-a"), 1, "and it comes back from the state");
+        let rows = again.read(HOST_ROOM, 0, None, None, None, |_| true).rows;
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert_eq!(rows[0].text, "said before the split");
+        sweep(&p);
+    }
+
+    /// A search asks the log, not the window: a hit the ring dropped long ago is still found.
+    #[test]
+    fn a_search_finds_a_message_the_ring_dropped() {
+        let p = path("search");
+        let mut c = Chat::open(&p);
+        say(&mut c, "1", HOST_ROOM, "the needle is in the first line");
+        for i in 2..=(RING as u64 + 50) {
+            say(&mut c, &i.to_string(), HOST_ROOM, &format!("message {i}"));
+        }
+        let again = Chat::open(&p);
+        let hits = again.search(HOST_ROOM, "NEEDLE", 20, |_| true);
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].seq, 1);
+        assert!(hits[0].text.contains("needle"));
+        assert!(
+            again
+                .search(HOST_ROOM, "a phrase nobody said", 20, |_| true)
+                .is_empty()
+        );
+        sweep(&p);
+    }
+
+    /// A picture named by a message the ring has dropped is still named: that message can be paged
+    /// back, so collecting its blob would break a read that is one call away.
+    #[test]
+    fn a_blob_a_paged_message_names_is_still_kept() {
+        let p = path("blob");
+        let mut c = Chat::open(&p);
+        let m = c
+            .append(
+                1,
+                "1",
+                HOST_ROOM,
+                "s-a",
+                Seat::Session,
+                None,
+                None,
+                Vec::new(),
+                vec![Attachment {
+                    id: "a".repeat(64),
+                    mime: "image/png".into(),
+                    name: "picture.png".into(),
+                    bytes: 3,
+                    w: None,
+                    h: None,
+                }],
+                "look at this",
+            )
+            .expect("a message");
+        for i in 0..(RING + 10) {
+            say(&mut c, &format!("x{i}"), HOST_ROOM, "and on");
+        }
+        assert!(
+            !c.rings[HOST_ROOM].iter().any(|r| r.seq == m.seq),
+            "the ring dropped it"
+        );
+        let id = m.attachments[0].id.clone();
+        assert!(c.kept_attachments().contains(&id));
+        let again = Chat::open(&p);
+        assert!(
+            again.kept_attachments().contains(&id),
+            "and after a restart"
+        );
+        sweep(&p);
     }
 }

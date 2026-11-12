@@ -120,6 +120,7 @@ impl OperatorSeat {
                 | Request::Say { .. }
                 | Request::Dm { .. }
                 | Request::Read { .. }
+                | Request::Search { .. }
                 | Request::Roster { .. }
                 | Request::Inbox { .. }
                 | Request::Ack { .. }

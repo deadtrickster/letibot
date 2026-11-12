@@ -240,6 +240,14 @@ pub enum Request {
         #[serde(default)]
         before: Option<u64>,
     },
+    /// A room's messages whose text holds `text`, newest first - `/search` over the log, so a hit
+    /// older than the ring is found too. A read: it moves nothing.
+    Search {
+        room: String,
+        text: String,
+        #[serde(default)]
+        last: Option<u32>,
+    },
     /// Who is in a room.
     Roster { room: String },
     /// What this principal missed since its cursor, through an attention filter. Moves nothing.
@@ -396,6 +404,7 @@ impl Request {
             Request::Hello { .. }
             | Request::Rooms
             | Request::Read { .. }
+            | Request::Search { .. }
             | Request::Roster { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
@@ -843,6 +852,7 @@ impl Room {
             | Request::Dm { .. }
             | Request::Notify { .. }
             | Request::Read { .. }
+            | Request::Search { .. }
             | Request::Roster { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }

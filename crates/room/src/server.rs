@@ -2467,6 +2467,35 @@ impl Server {
                     .collect();
                 Response::History(history)
             }
+            // A search is a read: it moves nothing and answers what a read answers, so a head
+            // draws its rows the same way. The log is asked, not the ring, so a hit the window has
+            // long dropped is still found.
+            Request::Search { room, text, last } => {
+                let room = match room.trim() {
+                    "" => Self::default_chat_room(seat, project),
+                    r => r.to_string(),
+                };
+                if room != chat::DM_ROOM && !self.may_see(name, seat, project, &room) {
+                    return refuse(None, Self::room_refusal(project, &room));
+                }
+                let handles = self.handles();
+                let chat = self.inner.chat.lock().expect("the chat lock");
+                let last_seq = chat.last_in(&room);
+                let rows = chat.search(
+                    &room,
+                    text,
+                    last.map_or(chat::MAX_READ, |n| n as usize),
+                    |m| self.visible(name, seat, project, m),
+                );
+                drop(chat);
+                let rows = rows.into_iter().map(|m| self.shown(m, &handles)).collect();
+                Response::History(chat::History {
+                    room,
+                    rows,
+                    last_seq,
+                    trimmed: false,
+                })
+            }
             // The blob store is the room's, not a room's: an upload is a file with an id and no
             // audience until a message names it, so it is not gated on which room this seat is in.
             Request::PutBlob {
@@ -2645,8 +2674,9 @@ impl Server {
             .collect()
     }
 
-    /// Drop the blobs no kept message names, once the chat store has been rewritten: that rewrite is
-    /// the one moment the ring's answer to *what is still referenced* is exact.
+    /// Drop the blobs no message names, once the state has been written whole: that rewrite is the
+    /// one moment the answer is taken, and it is taken from the whole log, not the ring - a message
+    /// paged back out of a segment is still readable.
     fn gc_blobs(&self, now: u64) {
         let rewrites = self.inner.chat.lock().expect("the chat lock").rewrites();
         if rewrites == self.inner.blob_rewrites.load(Ordering::SeqCst) {
@@ -4419,6 +4449,7 @@ fn is_chat_frame(frame: &Request) -> bool {
             | Request::Dm { .. }
             | Request::Notify { .. }
             | Request::Read { .. }
+            | Request::Search { .. }
             | Request::Roster { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }

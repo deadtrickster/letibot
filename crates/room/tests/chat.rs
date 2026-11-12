@@ -9,7 +9,7 @@ use std::time::Duration;
 use letibot_room::client::Client;
 use letibot_room::server::Server;
 use letibot_room::{
-    Attention, Event, HOST_ROOM, Message, OPERATOR, Refused, Request, Response, Room, Seat,
+    Attention, Event, HOST_ROOM, Message, OPERATOR, RING, Refused, Request, Response, Room, Seat,
     Speaker, project_room, room_name,
 };
 
@@ -1836,4 +1836,44 @@ fn a_dms_window_is_the_two_peoples_and_not_the_channels() {
     ));
     // Another pair's dm with the same words is not.
     said(dm(&b1, "3", "s-b2", "the port is 5433 on lab2x1"));
+}
+
+/// A search is a READ of the log, not of the window: a hit the ring dropped long ago comes back,
+/// and another project's room is refused exactly as `read` refuses it.
+#[test]
+fn a_search_reads_the_log_past_the_ring_and_only_the_rooms_the_seat_may_see() {
+    let dir = Scratch::new();
+    let server = stored(&dir);
+    server.with_budget(RING as u32 + 20);
+    let a = seat(&server, "s-a1", A, Seat::Session);
+    let first = said(a.say("r0", "", "the first line, and the needle is in it"));
+    // Past the ring, so the only place the first line still is, is the log.
+    for i in 1..=(RING + 10) {
+        said(a.say(&format!("r{i}"), "", &format!("message {i}")));
+    }
+    match a.call(Request::Search {
+        room: String::new(),
+        text: "needle".into(),
+        last: None,
+    }) {
+        Response::History(h) => {
+            assert_eq!(h.rows.len(), 1, "{:?}", h.rows);
+            assert_eq!(h.rows[0].seq, first.seq);
+            assert_eq!(h.room, project_room(A));
+        }
+        other => panic!("{other:?}"),
+    }
+    let b = seat(&server, "s-b1", B, Seat::Session);
+    assert!(matches!(
+        b.call(Request::Search {
+            room: project_room(A),
+            text: "needle".into(),
+            last: None,
+        }),
+        Response::Refused {
+            why: Refused::NotYourRoom { .. },
+            ..
+        }
+    ));
+    server.stop();
 }
