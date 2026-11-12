@@ -3623,7 +3623,7 @@ fn a_store_from_before_the_archive_columns_gains_them() {
         )
         .expect("unwind to v44");
     let s = s.remigrate().expect("the migration runs at open");
-    assert!(SCHEMA_VERSION >= 45, "the archive columns arrived at v45");
+    const { assert!(SCHEMA_VERSION >= 45, "the archive columns arrived at v45") };
     let row = s.session("sess-1").unwrap().expect("the old row survived");
     assert_eq!(
         row.archived_ms, None,
