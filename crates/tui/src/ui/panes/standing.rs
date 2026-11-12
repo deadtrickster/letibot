@@ -89,7 +89,7 @@ impl App {
                     ),
                     Role::Faint,
                 ),
-                None => Line::styled("gone — the file is not there", Role::Attention),
+                None => Line::styled("gone — the file is not there", Role::Warning),
             };
             let row = pane::split_row(left, right, w);
             out.push_stop(pane::picked(row, picked));

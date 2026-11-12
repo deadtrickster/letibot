@@ -6,7 +6,7 @@ use rano::markdown::{lex, render_bounded};
 use rano::render::{Line, Span, Style, truncate};
 use rano::style::Role as Paint;
 
-use crate::ui::chat::{Blob, Draw, colour, md_options, mention};
+use crate::ui::chat::{Blob, Draw, md_options, mention};
 
 /// A picture taller than this is most of a chat's screen, so it is drawn at this many rows and the
 /// top of it is what the reader sees.
@@ -58,7 +58,7 @@ fn fitted(l: &Line, d: &Draw<'_>) -> Line {
         spans.extend(mention::spans(sp, &marks));
     }
     let mut line = Line::new(spans);
-    line.style = Style::of(colour::role(d.e.role));
+    line.style = Style::of(crate::ui::severity::role(d.e.role));
     truncate(&line, d.cols)
 }
 

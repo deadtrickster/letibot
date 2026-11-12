@@ -293,10 +293,11 @@ pub(crate) fn owner_word(owner: &str) -> String {
 pub(crate) fn mark_of(state: &str) -> (&'static str, rano::style::Role) {
     match state {
         "waiting" | "queued" => ("[ ]", rano::style::Role::Pending),
-        "reviewing" | "gating" => ("[~]", rano::style::Role::Code),
+        // A gate in flight is work in progress, and work in progress is one role in every pane.
+        "reviewing" | "gating" => ("[~]", rano::style::Role::Pending),
         "approved" | "landed" => ("[x]", rano::style::Role::Success),
         "blocked" | "failed" | "timed_out" | "conflict" => ("[!]", rano::style::Role::Failure),
-        "landed_local" => ("[!]", rano::style::Role::Attention),
+        "landed_local" => ("[!]", rano::style::Role::Warning),
         "rejected" | "cannot_decide" => ("[!]", rano::style::Role::Attention),
         _ => ("[-]", rano::style::Role::Faint),
     }

@@ -169,12 +169,15 @@ pub(crate) fn session_card(text: &str) -> Option<Card> {
 }
 
 /// The card a hub warning is drawn as, or `None` for a code or a detail no card reads (the
-/// note is then drawn as it always was).
+/// note is then drawn as it always was). Its role is its code's class, not the reader's own: a
+/// reader that hard-coded one is a second answer to the question the log already answered.
 pub(crate) fn warning_card(code: &str, detail: &str) -> Option<Card> {
-    WARNING_KINDS
+    let mut card = WARNING_KINDS
         .iter()
         .filter(|k| k.codes.contains(&code))
-        .find_map(|k| (k.read)(detail))
+        .find_map(|k| (k.read)(detail))?;
+    card.role = crate::ui::severity::role(Some(letibot_sessionlog::warning::role(code)));
+    Some(card)
 }
 
 /// The popup's top edge for a card's text - a session row's or a warning's detail (whose

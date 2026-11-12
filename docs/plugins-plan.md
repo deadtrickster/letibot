@@ -494,8 +494,9 @@ a label too long is truncated with `…`, never clipped):
 
 `Action`: `{"key":"s","label":"start","say":"…"}` (a line to the session's model), `{"key":"r","label":
 "refresh","look":true}`, or `{"key":"x","label":"expand","event":"expand"}` (call the pane again with
-`{"item","action"}`). `role` is one of `muted`, `working`, `attention`, `success`, `failure`, `plain`,
-`strong`, `faint`, `pending`, or a hue - `hue:0` to `hue:7`, a colour by INDEX that the theme maps (`X4`).
+`{"item","action"}`). `role` is one of `muted`, `working`, `info`, `warning`, `attention`, `success`,
+`failure`, `plain`, `strong`, `faint`, `pending`, or a hue - `hue:0` to `hue:7`, a colour by INDEX that
+the theme maps (`X4`).
 A hue is refused outside that range, at the wire: `a_hue_outside_the_palette_does_not_parse`.
 
 Keys are the host's, templated: each panel's `key` toggles its view, `f` findings, `l` legend; up/down and

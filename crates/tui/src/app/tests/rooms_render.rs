@@ -5,7 +5,7 @@
 use super::rooms::{history, msg as wire_msg, reply, rooms_reply};
 use super::*;
 use crate::app::rooms::{Attach, ChatRef, Msg};
-use crate::ui::chat::colour::{paint, role};
+use crate::ui::chat::colour::paint;
 use crate::ui::chat::{Block, ChatCtx, Picture, Pictures, chat_blocks, hue};
 use crate::ui::render::{RenderConfig, row_strings, visible_width};
 use letibot_sessionlog::pane::{Cell, Divider, Mention, Role, Stream, StreamEntry};
@@ -342,7 +342,7 @@ fn a_mention_of_the_operator_marks_the_header() {
     );
     assert_eq!(
         entries(&s)[0].head[0],
-        Cell::role("!", Role::Attention),
+        Cell::role("!", Role::Warning),
         "the header carries the mark"
     );
     assert_eq!(
@@ -358,13 +358,12 @@ fn a_mention_of_the_operator_marks_the_header() {
         "the mark is on the header, not on the body: {}",
         out.join("\n")
     );
+    // The mark is `warning`: a message that names the reader is worth knowing and is not a
+    // decision they owe. (The token itself is rano's mention renderer's, which draws a mention of
+    // the reader in the attention register, and that is not this head's to move.)
     assert!(
-        painted(
-            entry_block(&drawn, "1"),
-            "@operator",
-            rano::style::Role::Attention
-        ),
-        "the mention is drawn the way this head draws a thing that needs you: {:?}",
+        painted(entry_block(&drawn, "1"), "!", rano::style::Role::Warning),
+        "the mark is news, not a demand: {:?}",
         spans(entry_block(&drawn, "1"))
     );
 }
@@ -668,6 +667,7 @@ fn a_mention_token_draws_as_its_name_in_its_hue() {
         spans(entry_block(&drawn, "1"))
     );
     // The role table itself: a pane role is a meaning the head already has a paint for.
+    let role = |r| crate::ui::severity::role(r);
     assert_eq!(role(Some(Role::Hue(3))), paint(3));
     assert_eq!(role(None), rano::style::Role::Plain);
     assert_eq!(role(Some(Role::Faint)), rano::style::Role::Faint);

@@ -112,7 +112,7 @@ impl App {
         // there is no double-tap left to learn - the card IS the second press - so its "ctrl+c
         // again to exit" would name a key that closes the card. rano drops it for `QuitCard`.
         let editor = match self.editor.hint_text(self.now_ms) {
-            Some(s) => Line::styled(s, Role::Attention),
+            Some(s) => Line::styled(s, Role::Info),
             None => Line::default(),
         };
         let p = self.cfg.palette();

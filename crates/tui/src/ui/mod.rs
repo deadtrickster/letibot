@@ -19,6 +19,7 @@ pub mod progress_row;
 pub mod render;
 pub mod rows;
 pub mod screen;
+pub mod severity;
 pub mod status;
 pub mod transcript;
 pub mod turn_status;

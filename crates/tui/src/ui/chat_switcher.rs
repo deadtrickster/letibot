@@ -54,6 +54,6 @@ fn row(r: &Row, at: bool, width: usize) -> Line {
     let role = if at { Role::Strong } else { Role::Plain };
     Line::new(vec![
         Span::role(label, role),
-        Span::role(unread, Role::Attention),
+        Span::role(unread, Role::Warning),
     ])
 }

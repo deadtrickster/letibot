@@ -1,6 +1,12 @@
 //! Which warnings are routine, and which are failures.
 //! Routine: something that worked or was asked for; deleting it leaves the reader no worse off.
-//! Failure: something that did not work. An unknown code is a `Failure`, so forgetting one is loud.
+//!
+//! The five severity roles a head has are picked here and nowhere else: [`Class::role`] is the
+//! table's own answer, and a head that hard-codes a colour for a code is a second answer.
+
+// The severity vocabulary a role is drawn from is the pane wire's, so the log, the head and a
+// layer all name one set of words rather than three.
+use crate::pane;
 
 /// A warning's register, for how it is drawn. `Refused` sits between the two ends.
 ///
@@ -46,9 +52,21 @@ impl Class {
     pub fn is_failure(self) -> bool {
         matches!(self, Class::Failure)
     }
+
+    /// The role this register is drawn in - the one place a warning's class picks a colour.
+    /// `Routine` asks nothing of the reader, so it is [`pane::Role::Info`]; `Refused` is the
+    /// reader's own line coming back, which is worth knowing and is not a fault; only a real
+    /// failure spends the red.
+    pub fn role(self) -> pane::Role {
+        match self {
+            Class::Routine => pane::Role::Info,
+            Class::Refused => pane::Role::Warning,
+            Class::Failure => pane::Role::Failure,
+        }
+    }
 }
 
-/// The split. One row per code, and a code that is not here is a [`Class::Failure`].
+/// The split. One row per code; a code that is not here is drawn quiet (`Class::Routine`).
 /// The order is the order it is read in - routine first, because that is the list whose
 /// absences caused the complaint - and each row carries the reason it is where it is.
 pub const TABLE: &[(&str, Class)] = &[
@@ -572,14 +590,22 @@ pub const TABLE: &[(&str, Class)] = &[
     ("not_run", Class::Routine),
 ];
 
-/// Which register a code is drawn in. See [`TABLE`], and the module doc for why an
-/// unknown code is a failure rather than a guess.
+/// Which register a code is drawn in. See [`TABLE`].
+///
+/// A code the table does not know is [`Class::Routine`]: an unclassified code is not evidence that
+/// something failed, and a table that answered red for every new code is exactly how a reader is
+/// taught to skim the red.
 pub fn class(code: &str) -> Class {
     let code = family(code);
     match TABLE.iter().find(|(c, _)| *c == code) {
         Some((_, class)) => *class,
-        None => Class::Failure,
+        None => Class::Routine,
     }
+}
+
+/// [`class`], as the role it is drawn in.
+pub fn role(code: &str) -> pane::Role {
+    class(code).role()
 }
 
 /// A code's FAMILY - the code without the id some of them carry. `denied:<request id>` is
@@ -723,12 +749,13 @@ mod tests {
         }
     }
 
-    /// The safe direction. A code this table has never heard of is loud, because a
-    /// quiet line nobody notices is the failure mode and a loud line
-    /// somebody asks about is not.
+    /// The safe direction. A code this table has never heard of is drawn quiet: classifying it
+    /// red would make every forgotten code look like a fault, and would teach a reader to skim
+    /// the register that is supposed to be rare.
     #[test]
-    fn a_code_nobody_has_classified_is_a_failure() {
-        assert_eq!(class("a_code_from_next_week"), Class::Failure);
+    fn a_code_nobody_has_classified_is_quiet() {
+        assert_eq!(class("a_code_from_next_week"), Class::Routine);
+        assert_eq!(class("a_code_from_next_week").role(), pane::Role::Info);
     }
 
     /// Two rows for one code are two answers to one question, and the first would win
@@ -884,17 +911,18 @@ mod the_register_census {
         }
     }
 
-    /// The predicate still answers for the quiet end, and a code
-    /// the table has never heard of is still drawn loudly - the safe direction to be wrong in.
+    /// The predicate still answers for the quiet end, and a code the table has never heard of is
+    /// drawn quiet too: an unclassified code is not evidence of a fault.
     #[test]
-    fn the_unknown_code_is_still_a_failure() {
+    fn an_unknown_code_is_drawn_quiet() {
         assert!(is_routine("compacted"));
         assert!(
             !is_routine("slash_refused"),
             "a refusal is not housekeeping"
         );
         assert!(!is_failure("slash_refused"), "and it is not red either");
-        assert_eq!(class("a_code_from_the_future"), Class::Failure);
-        assert!(is_failure("a_code_from_the_future"));
+        assert_eq!(class("a_code_from_the_future"), Class::Routine);
+        assert!(!is_failure("a_code_from_the_future"));
+        assert_eq!(class("a_code_from_the_future").role(), pane::Role::Info);
     }
 }

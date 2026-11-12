@@ -504,32 +504,11 @@ pub(crate) fn target_of_stop(view: &pv::View, screen: Screen, stop: Stop) -> Opt
     })
 }
 
-/// The palette's role, as rano's - C3's six names are these six, and a role the host does not know
-/// is drawn plain rather than guessed at.
-pub(crate) fn role(r: Option<pv::Role>) -> Role {
-    match r {
-        Some(pv::Role::Muted) => Role::Faint,
-        Some(pv::Role::Working) => Role::Pending,
-        Some(pv::Role::Attention) => Role::Attention,
-        Some(pv::Role::Success) => Role::Success,
-        Some(pv::Role::Failure) => Role::Failure,
-        // The three words a list needed and a dashboard did not: `strong` is `where I am`, `faint`
-        // is `a fact rather than good news`, `pending` is `a turn is running`. They map to the roles
-        // this head already draws those things in.
-        Some(pv::Role::Strong) => Role::Strong,
-        Some(pv::Role::Faint) => Role::Faint,
-        Some(pv::Role::Pending) => Role::Pending,
-        Some(pv::Role::Plain) | None => Role::Plain,
-        // P2 maps a hue to a theme colour that reads on dark and light; until then it is plain.
-        Some(pv::Role::Hue(_)) => Role::Plain,
-    }
-}
-
 /// The cell of a C3 row, as rano's list draws it - a cell that said nothing takes the row's role,
 /// which is the point of the untagged spelling: only a cell that means something else carries its own.
 fn tree_cell(c: &pv::Cell) -> Cell {
     match c.role {
-        Some(x) => Cell::role(clean_line(&c.text), role(Some(x))),
+        Some(x) => Cell::role(clean_line(&c.text), crate::ui::severity::role(Some(x))),
         None => Cell::new(clean_line(&c.text)),
     }
 }
@@ -545,7 +524,7 @@ fn tree_row(depth: usize, r: &pv::Row) -> TreeRow {
         depth,
         number: None,
         open: None,
-        role: Some(role(r.role)),
+        role: Some(crate::ui::severity::role(r.role)),
         cells: r.cells.iter().map(tree_cell).collect(),
         // The right-hand column, which C3 calls `facts` and the list the same: the age, the owner,
         // the one verb that would move the row. Dropping them is a pane whose rows say a third of
@@ -609,7 +588,7 @@ fn tree_lines(
 pub(crate) fn severity(s: pv::Severity) -> (&'static str, Role) {
     match s {
         pv::Severity::Tripped => ("tripped", Role::Failure),
-        pv::Severity::Missing => ("missing", Role::Attention),
+        pv::Severity::Missing => ("missing", Role::Warning),
         pv::Severity::Passed => ("passed", Role::Success),
     }
 }
@@ -618,7 +597,7 @@ pub(crate) fn severity(s: pv::Severity) -> (&'static str, Role) {
 pub(crate) fn badge(view: &pv::View) -> Option<(String, Role)> {
     let b = view.badge.as_ref()?;
     let text = clean_line(&b.text);
-    (!text.is_empty()).then(|| (text, role(b.role)))
+    (!text.is_empty()).then(|| (text, crate::ui::severity::role(b.role)))
 }
 
 /// The columns a screen's rows share, measured over every line on it. See the module note: one grid
@@ -744,7 +723,7 @@ pub(crate) fn grid(view: &pv::View, screen: Screen, w: usize) -> Grid {
 /// One `Line`, laid out in the grid - the layout function every line of every panel goes through:
 /// `label | value | glyph | tail`, left to right, cut to the pane.
 pub(crate) fn line_row(l: &pv::Line, g: &Grid, lead: &str) -> Line {
-    let r = role(l.role);
+    let r = crate::ui::severity::role(l.role);
     let mut out = Line::new(vec![Span::role(lead.to_string(), Role::Faint)]);
     out.push(Span::role(
         pad_to(&cut(&clean_line(&l.label), g.label), g.label),
@@ -802,7 +781,7 @@ fn summary_line(view: &pv::View) -> Option<Line> {
     let mut out = Line::default();
     for (n, word, r) in [
         (tripped, "tripped", Role::Failure),
-        (missing, "missing", Role::Attention),
+        (missing, "missing", Role::Warning),
         (passed, "passed", Role::Success),
     ] {
         if out.width() > 0 {
@@ -932,7 +911,7 @@ pub(crate) fn content_with(
                 if !u.why.is_empty() {
                     out.push(Line::new(vec![
                         Span::raw("   "),
-                        Span::role(clean_line(&u.why), Role::Attention),
+                        Span::role(clean_line(&u.why), Role::Warning),
                     ]));
                 }
                 if !u.fix.is_empty() {
@@ -1099,7 +1078,7 @@ pub(crate) fn content_with(
                         Span::role(lead, Role::Faint),
                         Span::role(
                             cut(&cells.join("  "), w.saturating_sub(LEAD)),
-                            role(row.role),
+                            crate::ui::severity::role(row.role),
                         ),
                     ])
                 }

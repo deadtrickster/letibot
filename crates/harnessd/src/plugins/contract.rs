@@ -348,6 +348,8 @@ fn pane_doc() -> String {
     let roles = [
         Role::Muted,
         Role::Working,
+        Role::Info,
+        Role::Warning,
         Role::Attention,
         Role::Success,
         Role::Failure,
@@ -425,7 +427,7 @@ result.
 Top level: {view_keys}.
 
 * `title` — drawn first. The pane's name is the wire's, so do not repeat it here.
-* `badge` — `{{"text": "3 running", "role": "attention"}}` or absent, in the status row.
+* `badge` — `{{"text": "3 running", "role": "pending"}}` or absent, in the status row.
 * `panels` — {panel_keys}.
   * `key` — one lowercase letter that opens the panel's `view`; needed only by a panel that HAS a
     view (a panel with no view draws its summary and takes no key).

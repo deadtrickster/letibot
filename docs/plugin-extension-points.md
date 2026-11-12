@@ -38,8 +38,12 @@ Blocks (`sessionlog/src/pane.rs:128-146`): `lines` (the grid: label, value, bar,
 `markdown` is itemized into stops and drawn as wrapped plain text, not through `rano::markdown`
 (`crates/tui/src/ui/panes/plugin.rs:862-881`): no fences, no highlighting, no inline styles.
 
-Roles: `muted`, `working`, `attention`, `success`, `failure`, `plain`. A cell is text plus one role
-(`plugin-sdk/src/pane.rs:221-260`).
+Roles: `muted`, `working`, `info`, `warning`, `attention`, `success`, `failure`, `plain`, `strong`,
+`faint`, `pending`, or a hue. The severities mean one thing each: `info` is news nobody is asked
+about, `pending` (and `working`) is work in progress, `warning` is something that went wrong and
+recovered, `attention` is something that needs a person, `failure` is something that did not work.
+A cell is text plus one role (`plugin-sdk/src/pane.rs:260-284`), and the head keeps the one table
+from those words to a colour (`crates/tui/src/ui/severity.rs`).
 
 Row acts, on Enter (`plugin-sdk/src/pane.rs:108-127`): `switch` (to a session), `fold`, `event`
 (call the pane back), `verb` (a host verb on a named entry, declared in `actions`).

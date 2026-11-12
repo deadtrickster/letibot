@@ -420,10 +420,11 @@ pub fn monitor_card(bullets: &[(String, String)]) -> Option<Lines> {
     if bullets.len() > 1 {
         parts.push(format!("{} more", bullets.len() - 1));
     }
-    // A watch firing or expiring is routine news; the yellow register is for what needs the operator.
+    // A watch firing or expiring is news and nothing is asked of the reader: `info`, which is the
+    // severity for exactly that, rather than a dim that says the line is structure.
     Some(card(
         "monitor",
-        Role::Faint,
+        Role::Info,
         parts,
         format!("monitor · {name}"),
     ))
@@ -529,8 +530,8 @@ fn overthinking(text: &str) -> Option<Lines> {
 }
 
 /// The generic line a notice no reader accounts for draws: the tag (or `notice`), and the first
-/// clause of what follows - the host's last fallback, kept here beside the readers so the two cannot
-/// disagree about what "a card" is.
+/// clause of what follows. It is `info`: a shape nobody has taught a reader is not a warning, and
+/// drawing it yellow is how an untaught tag came to look like something to act on.
 pub fn generic(text: &str) -> Lines {
     let (lead, body) = match tagged(text) {
         Some((tag, rest)) => (tag.to_string(), rest),
@@ -539,7 +540,7 @@ pub fn generic(text: &str) -> Lines {
     let said = gist(body);
     card(
         &lead,
-        Role::Attention,
+        Role::Info,
         vec![said.clone()],
         format!("{lead} · {}", short(&said, PART)),
     )

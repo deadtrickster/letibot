@@ -199,7 +199,7 @@ fn pull_row(p: &Pull, width: usize) -> Out {
         facts.push(Cell::role(p.review.clone(), review_role(&p.review)));
     }
     if p.fork {
-        facts.push(Cell::role("fork", Role::Attention));
+        facts.push(Cell::role("fork", Role::Warning));
         facts.push(Cell::role("read-only", Role::Faint));
     }
     facts.push(Cell::role(age(p.age_ms), Role::Faint));
@@ -343,7 +343,7 @@ fn legend() -> Value {
 fn state_role(state: &str) -> Role {
     match state {
         "polling" => Role::Working,
-        "rate-limited" => Role::Attention,
+        "rate-limited" => Role::Warning,
         "token missing" | "failed" => Role::Failure,
         "paused" => Role::Muted,
         _ => Role::Plain,
@@ -355,7 +355,7 @@ fn review_role(review: &str) -> Role {
     match review {
         "queued" => Role::Pending,
         "reviewing" | "answering a mention" => Role::Working,
-        "drafted" | "re-review pending" => Role::Attention,
+        "drafted" | "re-review pending" => Role::Warning,
         "posted" => Role::Success,
         _ => Role::Plain,
     }

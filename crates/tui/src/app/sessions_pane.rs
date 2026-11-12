@@ -1472,7 +1472,7 @@ fn tree_of(view: &pv::View, folds: &BTreeMap<String, bool>) -> Option<(Vec<TreeR
             depth: drawn_depth(base, row),
             number: row.number,
             open,
-            role: row.role.map(role_of),
+            role: row.role.map(|r| crate::ui::severity::role(Some(r))),
             cells: row.cells.iter().map(cell_of).collect(),
             facts: row.facts.iter().map(cell_of).collect(),
             detail: row.under.clone(),
@@ -1539,25 +1539,8 @@ fn fold_of(f: pv::Fold) -> Fold {
 
 fn cell_of(c: &pv::Cell) -> TreeCell {
     match c.role {
-        Some(r) => TreeCell::role(c.text.clone(), role_of(r)),
+        Some(r) => TreeCell::role(c.text.clone(), crate::ui::severity::role(Some(r))),
         None => TreeCell::new(c.text.clone()),
-    }
-}
-
-fn role_of(r: pv::Role) -> rano::style::Role {
-    use rano::style::Role as R;
-    match r {
-        pv::Role::Muted => R::Faint,
-        pv::Role::Working => R::Pending,
-        pv::Role::Attention => R::Attention,
-        pv::Role::Success => R::Success,
-        pv::Role::Failure => R::Failure,
-        pv::Role::Plain => R::Plain,
-        pv::Role::Strong => R::Strong,
-        pv::Role::Faint => R::Faint,
-        pv::Role::Pending => R::Pending,
-        // P2 maps a hue to a theme colour that reads on dark and light; until then it is plain.
-        pv::Role::Hue(_) => R::Plain,
     }
 }
 

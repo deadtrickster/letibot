@@ -3,12 +3,12 @@
 use super::*;
 
 /// The reader's own refused input is a third register, neither the failure nor the routine one:
-/// its own mark, the notice colour, and neither of the two things those use. All three are drawn
+/// its own mark, the warning colour, and neither of the two things those use. All three are drawn
 /// in one frame, because the defect is a comparison between notes.
 #[test]
 fn the_three_registers_are_three_marks() {
     const RED: &str = "\u{1b}[31m";
-    const YELLOW: &str = "\u{1b}[33m";
+    let warning = rano::style::Palette::Colour.open(Role::Warning);
     let mut a = App::new(RenderConfig {
         width: 100,
         color: true,
@@ -63,8 +63,8 @@ fn the_three_registers_are_three_marks() {
         "a typo in the failure colour: {refused:?}"
     );
     assert!(
-        refused.contains(YELLOW),
-        "not the notice register: {refused:?}"
+        refused.contains(&warning),
+        "not the warning register: {refused:?}"
     );
     assert!(
         failure.contains(RED),

@@ -651,8 +651,10 @@ fn fact_of(s: &Session, now: u64) -> (String, Role) {
         None => "?".to_string(),
     };
     let role = if s.running {
+        // Running is `pending` in every pane; a run that has not moved in a while is worth
+        // knowing about, and it is not a decision the reader owes.
         if age.is_some_and(|ms| ms > STALE_MS) {
-            Role::Attention
+            Role::Warning
         } else {
             Role::Pending
         }

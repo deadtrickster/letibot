@@ -295,7 +295,9 @@ fn entry(
 fn head(m: &ChatMessage, names: &BTreeMap<String, String>) -> Vec<Cell> {
     let mut out = Vec::new();
     if mentions_operator(m) {
-        out.push(Cell::role("!", Role::Attention));
+        // A message that names the reader is worth knowing, and it is not a decision they owe:
+        // `attention` is the register for what needs a person.
+        out.push(Cell::role("!", Role::Warning));
     }
     let who = if m.author == ME {
         Role::Strong

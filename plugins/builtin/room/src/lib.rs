@@ -286,8 +286,10 @@ fn badge(feed: &Feed) -> String {
 }
 
 fn badge_role(feed: &Feed) -> Role {
-    if !feed.questions.is_empty() || feed.counts.frozen > 0 {
+    if !feed.questions.is_empty() {
         Role::Attention
+    } else if feed.counts.frozen > 0 {
+        Role::Warning
     } else if feed.counts.claimed > 0 {
         Role::Pending
     } else {
@@ -470,7 +472,7 @@ fn queues(feed: &Feed) -> Value {
                     } else {
                         String::new()
                     },
-                    Role::Attention,
+                    Role::Warning,
                 ),
                 // Who owns this queue, or that nobody does. Two sentences, never a blank: a tag with
                 // an agent says who and whether it is up; a tag with none says so, because *nobody is
@@ -511,7 +513,7 @@ fn agent_cell(agent: Option<&Agent>) -> Cell {
                 if !a.up {
                     Role::Failure
                 } else if a.reseats > 0 {
-                    Role::Attention
+                    Role::Warning
                 } else {
                     Role::Faint
                 },
@@ -554,11 +556,7 @@ fn item_row(r: &Row) -> Value {
     if r.abandonments > 0 {
         facts.push(Cell::role(
             format!("{} lost", r.abandonments),
-            if r.frozen {
-                Role::Attention
-            } else {
-                Role::Faint
-            },
+            if r.frozen { Role::Warning } else { Role::Faint },
         ));
     }
     if let Some(waits) = &r.waits_on {
@@ -624,8 +622,8 @@ fn actions_of(r: &Row) -> Value {
 fn cause_role(cause: &str) -> Role {
     match cause {
         // A person pressed the key. Nothing is wrong, and what they need to know is that the
-        // queue they were looking at is gone.
-        "asked" => Role::Attention,
+        // queue they were looking at is gone - news, not a question.
+        "asked" => Role::Info,
         // The daemon restarted it and nothing was running to stop: the crash already happened, so
         // the note is a fact about the past rather than a warning.
         "daemon" => Role::Pending,

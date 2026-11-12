@@ -262,6 +262,10 @@ pub const HUES: u8 = 8;
 pub enum Role {
     Muted,
     Working,
+    /// Something happened and nothing is asked of the reader.
+    Info,
+    /// Something went wrong and recovered, or is worth knowing before it does.
+    Warning,
     Attention,
     Success,
     Failure,
@@ -286,6 +290,8 @@ impl Role {
         Ok(match word {
             "muted" => Role::Muted,
             "working" => Role::Working,
+            "info" => Role::Info,
+            "warning" => Role::Warning,
             "attention" => Role::Attention,
             "success" => Role::Success,
             "failure" => Role::Failure,
@@ -311,7 +317,8 @@ impl Role {
                 }
                 None => {
                     return Err(format!(
-                        "`{other}` is not a role: the palette is muted, working, attention, \
+                        "`{other}` is not a role: the palette is muted, working, info, warning, \
+                         attention, \
                          success, failure, plain, strong, faint, pending, and `hue:0` to `hue:{}",
                         HUES - 1
                     ));
@@ -334,6 +341,8 @@ impl serde::Serialize for Role {
         match self {
             Role::Muted => s.serialize_str("muted"),
             Role::Working => s.serialize_str("working"),
+            Role::Info => s.serialize_str("info"),
+            Role::Warning => s.serialize_str("warning"),
             Role::Attention => s.serialize_str("attention"),
             Role::Success => s.serialize_str("success"),
             Role::Failure => s.serialize_str("failure"),

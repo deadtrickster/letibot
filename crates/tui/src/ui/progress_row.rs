@@ -196,7 +196,7 @@ impl App {
                 };
                 out.push(Progress {
                     label: format!("{missing} row(s) never filled"),
-                    role: Role::Attention,
+                    role: Role::Warning,
                     bar: None,
                     counts: Some(named),
                     advice: Some("/resync clears this".to_string()),

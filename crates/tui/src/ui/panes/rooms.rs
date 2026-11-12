@@ -138,7 +138,7 @@ fn entry(v: &RoomsView, c: &Chan, picked: bool, unread: u64, lw: usize) -> Line 
     let mut l = Line::new(vec![Span::raw(name)]);
     let pad = lw.saturating_sub(l.width() + count.len());
     l.push(Span::raw(" ".repeat(pad)));
-    l.push(Span::role(count, Role::Attention));
+    l.push(Span::role(count, Role::Warning));
     pane::picked(l, picked)
 }
 
@@ -418,7 +418,7 @@ impl App {
             ]);
             let pad = lw.saturating_sub(l.width() + count.len());
             l.push(Span::raw(" ".repeat(pad)));
-            l.push(Span::role(count, Role::Attention));
+            l.push(Span::role(count, Role::Warning));
             at.push((lines.len(), ListRow::Queue(r.repo.clone())));
             let held = self.rooms.queue_sel.as_deref() == Some(r.repo.as_str());
             lines.push(if held { pane::picked(l, true) } else { l });
@@ -432,11 +432,7 @@ impl App {
             l2.push(Span::raw(" ".repeat(pad)));
             l2.push(Span::role(
                 check,
-                if r.muted {
-                    Role::Attention
-                } else {
-                    Role::Faint
-                },
+                if r.muted { Role::Warning } else { Role::Faint },
             ));
             // The row opens the queue, the checkbox mutes it: the checkbox is the later, narrower
             // hit, so it wins its three cells.
@@ -566,7 +562,7 @@ impl App {
         if dm > 0 {
             out.push(Line::new(vec![Span::role(
                 format!("  {dm} unread in the DM"),
-                Role::Attention,
+                Role::Warning,
             )]));
         }
         out.push(pane::faint("  enter switches to it · d opens the DM"));

@@ -733,13 +733,13 @@ impl Editor {
             // acts on a `\n` in a line it is given.
             let body = self.text[r.clone()].trim_end_matches(['\n', '\r']);
             // A placeholder is inverted so it reads as one object rather than as
-            // text somebody typed. opencode uses the theme's warning colour
-            // inverted for the same reason.
+            // text somebody typed. It is the warning hue, which no other role spends, so a paste
+            // cannot be read as a decision the reader owes an answer to.
             let painted = if self.pastes.iter().any(|(ph, _)| body.contains(ph.as_str())) {
                 let mut b = body.to_string();
                 for (ph, _) in &self.pastes {
                     if b.contains(ph.as_str()) {
-                        b = b.replace(ph.as_str(), &palette.painted(Role::Attention, ph));
+                        b = b.replace(ph.as_str(), &palette.painted(Role::Warning, ph));
                     }
                 }
                 b
@@ -756,7 +756,7 @@ impl Editor {
     /// tail bar, so the whole bottom line shifted sideways on every state change.
     pub fn hint(&self, now_ms: u64, palette: Palette) -> String {
         match self.hint_text(now_ms) {
-            Some(s) => palette.painted(Role::Attention, s),
+            Some(s) => palette.painted(Role::Info, s),
             None => String::new(),
         }
     }
@@ -1133,7 +1133,7 @@ mod tests {
         e.key(Key::Paste("x\n".repeat(9)), 0);
         let (lines, _) = e.render(60, Palette::Colour);
         assert!(
-            lines[0].contains(Palette::Colour.sgr(Role::Attention)),
+            lines[0].contains(Palette::Colour.sgr(Role::Warning)),
             "{:?}",
             lines[0]
         );

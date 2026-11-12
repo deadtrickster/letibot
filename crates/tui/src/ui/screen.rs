@@ -46,7 +46,7 @@ impl App {
             let gutter = Self::gutter(term_w);
             let w = term_w.saturating_sub(2 * gutter).max(1);
             let marker = row(
-                &rano::agent::text::one(trim_to(HOLD_MARKER, w), Role::Attention),
+                &rano::agent::text::one(trim_to(HOLD_MARKER, w), Role::Warning),
                 self.cfg.palette(),
             );
             let row = if gutter > 0 {
@@ -1166,7 +1166,7 @@ fn bottom_markers(
         }
     };
     if b.alarmed {
-        right.push(Span::role("⚠", Role::Attention));
+        right.push(Span::role("⚠", Role::Warning));
     }
     // What waits on you, folded away - counted where the eye already goes, in the register
     // the line it replaces was in, and with the key that brings it back.
@@ -1180,10 +1180,7 @@ fn bottom_markers(
     }
     if let Some(r) = &b.rung {
         sep(&mut right);
-        right.push(Span::role(
-            rano::agent::text::clean_line(r),
-            Role::Attention,
-        ));
+        right.push(Span::role(rano::agent::text::clean_line(r), Role::Info));
     }
     // A plugin pane's own counter, in the register the pane chose - the operator's ask for
     // an agent's turn count, one screen over (`docs/plugins-slice1.md` C3's `badge`): drawn

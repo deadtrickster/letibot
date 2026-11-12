@@ -249,7 +249,7 @@ fn card_of(lines: &plugin_card::Lines) -> Card {
         line,
         0,
         &accented,
-        crate::ui::panes::plugin::role(lines.role),
+        crate::ui::severity::role(lines.role),
         lines.title.clone(),
     )
 }

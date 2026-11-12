@@ -81,7 +81,7 @@ impl Stale {
             self.line(),
             0,
             "prompt stale",
-            Role::Attention,
+            Role::Warning,
             format!("prompt stale · {} · seated {}", self.session, self.seated),
         )
     }

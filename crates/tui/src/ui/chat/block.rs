@@ -7,7 +7,7 @@ use rano::render::{Line, Span, Style, truncate};
 use rano::style::Role as Paint;
 use rano::width::text::width;
 
-use crate::ui::chat::{Draw, body, colour};
+use crate::ui::chat::{Draw, body};
 
 /// One fact a layer put on an entry: its text, and the paint it means.
 type Fact = (String, Paint);
@@ -18,7 +18,7 @@ pub(super) fn lines(d: &Draw<'_>) -> Vec<Line> {
     let facts: Vec<Fact> =
         d.e.facts
             .iter()
-            .map(|c| (clean_line(&c.text), colour::role(c.role)))
+            .map(|c| (clean_line(&c.text), crate::ui::severity::role(c.role)))
             .collect();
     let (beside, under) = parted(d, &facts);
     let mut rows = Vec::new();
@@ -102,7 +102,7 @@ fn cells(list: &[Cell]) -> Vec<Span> {
         }
         out.push(Span::styled(
             clean_line(&c.text),
-            Style::of(colour::role(c.role)),
+            Style::of(crate::ui::severity::role(c.role)),
         ));
     }
     out

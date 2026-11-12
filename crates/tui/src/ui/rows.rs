@@ -71,7 +71,7 @@ mod tests {
 
         let mut l = Line::new(vec![
             Span::raw("╰── "),
-            Span::role("⚠", Role::Attention),
+            Span::role("⚠", Role::Warning),
             Span::raw(" · "),
             Span::role("holding", Role::Pending),
             Span::raw(" ─╯"),
@@ -79,7 +79,7 @@ mod tests {
         l.style = Style::of(Role::Faint);
         assert_eq!(
             row(&l, Palette::Colour),
-            "\x1b[2m╰── \x1b[1;33m⚠\x1b[0m\x1b[2m · \x1b[33mholding\x1b[0m\x1b[2m ─╯\x1b[0m"
+            "\x1b[2m╰── \x1b[4;33m⚠\x1b[0m\x1b[2m · \x1b[33mholding\x1b[0m\x1b[2m ─╯\x1b[0m"
         );
     }
 }

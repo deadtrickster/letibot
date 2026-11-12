@@ -108,16 +108,17 @@ pub(crate) fn note_lines(cfg: &RenderConfig, n: &Note) -> Vec<String> {
     }
 }
 
-/// The mark and the role a warning's lead is drawn in - its code's register in the census
-/// (`letibot_sessionlog::warning`), rano's three marks for the three.
+/// The mark and the role a warning's lead is drawn in, both from the log's own class: the mark is
+/// the register's glyph and the role is `Class::role`'s, through the head's one mapping.
 pub(crate) fn class_mark(code: &str) -> (&'static str, rano::style::Role) {
     use letibot_sessionlog::warning::Class;
-    use rano::style::Role;
-    match letibot_sessionlog::warning::class(code) {
-        Class::Routine => ("·", Role::Faint),
-        Class::Refused => ("×", Role::Pending),
-        Class::Failure => ("!", Role::Failure),
-    }
+    let class = letibot_sessionlog::warning::class(code);
+    let mark = match class {
+        Class::Routine => "·",
+        Class::Refused => "×",
+        Class::Failure => "!",
+    };
+    (mark, crate::ui::severity::role(Some(class.role())))
 }
 
 /// A note's card: its one line, and the text its popup shows whole - `None` for a pane's ending,
@@ -131,6 +132,8 @@ pub(crate) fn note_card(
     use rano::style::Role;
     match n {
         Note::Warned(w) => {
+            // Both halves of the register come from `warning::class`: `warning_card` sets a card's
+            // role from it, and `class_mark` the fallback line's.
             let card = warning_card(&w.code, &w.detail).unwrap_or_else(|| {
                 let (mark, role) = class_mark(&w.code);
                 warning_notice(&w.code, &w.detail, mark, role)

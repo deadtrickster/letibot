@@ -124,7 +124,9 @@ impl Restart {
     }
 
     fn card(&self) -> Card {
-        Card::new(self.line(), 0, "restarted", Role::Attention, self.head())
+        // The register is `warning::class`'s when the row came from a hub warning; this is the one
+        // a session notice falls back to, and a restart is news rather than a question.
+        Card::new(self.line(), 0, "restarted", Role::Warning, self.head())
     }
 }
 

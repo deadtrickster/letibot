@@ -126,12 +126,15 @@ pub fn line(line: &str) -> rano::render::Line {
 /// The role a pen is drawn as, or `None` for the block's own style. It is a function of the PEN
 /// rather than of the parameters, because `letibot_vt::attr` has already applied whatever the
 /// program wrote. `Attr::reverse` is not read here - see the module header.
+///
+/// A program's colour is a HUE and never a severity: red in a `cargo` log is the program's choice,
+/// not this head saying the line failed. Bold is kept only where a hue has a bold form - borrowing
+/// the severity that has one is how a foreign `[1;33m` came to mean "needs a person".
 fn role(a: Attr) -> Option<Role> {
     match (a.bold, a.hue()) {
-        (_, Some(Hue::Red)) => Some(Role::Failure),
-        (_, Some(Hue::Green)) => Some(Role::Success),
-        (true, Some(Hue::Yellow)) => Some(Role::Attention),
-        (false, Some(Hue::Yellow)) => Some(Role::Pending),
+        (_, Some(Hue::Red)) => Some(Role::DiagError),
+        (_, Some(Hue::Green)) => Some(Role::StringLit),
+        (_, Some(Hue::Yellow)) => Some(Role::NumberLit),
         (true, Some(Hue::Blue)) => Some(Role::Subheading),
         (false, Some(Hue::Blue)) => Some(Role::FuncName),
         (_, Some(Hue::Magenta)) => Some(Role::Keyword),
@@ -284,11 +287,12 @@ mod tests {
             painted(colour(), "\u{1b}[01;34msrc\u{1b}[0m"),
             span(Role::Subheading, "src")
         );
-        // Red, green, yellow, magenta and cyan at normal intensity.
+        // Red, green, yellow, magenta and cyan at normal intensity: a hue each, because the
+        // program picked a colour and this head is translating it, not judging the line.
         for (code, role) in [
-            ("31", Role::Failure),
-            ("32", Role::Success),
-            ("33", Role::Pending),
+            ("31", Role::DiagError),
+            ("32", Role::StringLit),
+            ("33", Role::NumberLit),
             ("35", Role::Keyword),
             ("36", Role::Code),
         ] {
@@ -304,16 +308,18 @@ mod tests {
         // one. A bare `m` is the `0` ECMA-48 says it is.
         assert_eq!(
             painted(colour(), "\u{1b}[91mX\u{1b}[m"),
-            span(Role::Failure, "X")
+            span(Role::DiagError, "X")
         );
         // Bold alone, and bold composed with a hue that has a bold role of its own.
         assert_eq!(
             painted(colour(), "\u{1b}[1mX\u{1b}[0m"),
             span(Role::Strong, "X")
         );
+        // A bold yellow is still a yellow: the palette has no bold yellow that is not a severity,
+        // and a program's `[1;33m` is not this head saying something needs a person.
         assert_eq!(
             painted(colour(), "\u{1b}[1;33mX\u{1b}[0m"),
-            span(Role::Attention, "X")
+            span(Role::NumberLit, "X")
         );
         // Dim alone.
         assert_eq!(
