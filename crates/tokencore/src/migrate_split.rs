@@ -1211,10 +1211,17 @@ fn primary_key(conn: &Connection, table: &str) -> Result<Vec<String>> {
     };
     keyed.retain(|(at, _)| *at > 0);
     keyed.sort();
+    // A journal with no declared key is a rowid table: its rows are counted and ordered by rowid.
     if keyed.is_empty() {
-        return Err(StoreError::Refused(format!(
-            "{table} has no primary key, so a row of it cannot be counted - nothing was renamed"
-        )));
+        let rowid = conn
+            .prepare(&format!("SELECT rowid FROM {table} LIMIT 0"))
+            .is_ok();
+        if !rowid {
+            return Err(StoreError::Refused(format!(
+                "{table} has no primary key, so a row of it cannot be counted - nothing was renamed"
+            )));
+        }
+        return Ok(vec!["rowid".to_string()]);
     }
     Ok(keyed.into_iter().map(|(_, column)| column).collect())
 }
