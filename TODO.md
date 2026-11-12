@@ -575,11 +575,33 @@ Tests. `crates/provider/src/catalogue.rs`: the card line with the window and bot
 
 ## R202 - One event draws two rows, one only the operator sees
 
-**Status:** filed, 2026-11-12.
+**Status:** built, 2026-11-13. left: the codes in the audit's third row (a daemon fact the model was never told) still draw their own row; moving those to `/notes` + `/status` is the next pass, and the operator's own exchanges (a settled decision, an answer, a program's ending) are untouched.
 
 A reseat put two rows in the conversation: the notice the model was sent ("[reseat] … you can now call …", drawn by a prose reader) and a `reseated` warning row the model never sees. They were drawn in two colours from two tables, which is how the operator noticed. The rule (now in AGENTS.md, the operator's words): "conversation is the same for me and the model. verbosity controls what i see but only hiding layer" - "single row for me and model".
 
-Fix: for every event that sends the model a notice, the transcript holds that notice and nothing else; the operator-only twin (`reseated`, `compacted` and `cleared` beside their summary rows, and any other code whose sentence restates a model-facing notice) leaves the transcript - its facts go to the status line / edge / `/notes`, or into the model's own notice if the operator needs them in the record. Daemon facts the model is not told (a restart, a provider retry) are not transcript rows at all unless the model is told them too. Verbosity stays a hiding layer over the one record. Done when: a test runs a reseat, a compaction and a `/clear` and finds exactly one transcript row per event, byte-equal to what the model received, and a table test lists every warning code that may still be drawn as a transcript row with the reason the model also sees it.
+**The audit, from code.** Every row a head can draw, and what each is:
+
+| row | where it comes from | class |
+|---|---|---|
+| `User`, `Assistant`, `Reasoning`, `ToolResult`, `System`, `Notice`, `Offer`, `SegmentMark` | the transcript items | (a) the model's own rows. A reader only reformats one - `line_cards`, `notice_card`, `job_card` - so the record stays verbatim. |
+| `reseated` | `Sessions::execute`'s `CommandKind::Reseat`, beside `harness::reseated_for_the_model` | (b) twin of the `[reseat]` notice. Filed beside; the reseat card still clears. |
+| `compacted`, `auto_compact` | `CommandKind::Compact` and the wall, beside the fork's own `TranscriptItem::System` ("Earlier conversation is replaced by this summary") | (b) twin. |
+| `cleared` | `harness::clear::publish_cleared`, beside the `[cleared]` orientation the new conversation opens with | (b) twin. |
+| `restart_restored`, `restart_reminded`, `restart_nothing` | `restart::Outcome::code`, beside `restart::notice`'s `[restart]` row - the warning's detail is composed FROM that text | (b) twin. |
+| `target_red`, `gate_setup_failed`, `gate_killed`, `target_timed_out` | the queue, beside the root session's `health` notice (`EMERGENCY - `/UNJUDGED) | (b) twin. |
+| `turn_failed` | beside the `TurnFailed` row | (b), already filtered before this change. |
+| every other code in `warning::TABLE` (~120) | a daemon fact the model was never told: `boundary_absent`, `shell_withheld`, `workspace_gone`, `plugin_layer`, `prefix_stale`, `queue_blocked`, `model_switch_*`, `slash*`, `mode_*`, `provider_*`, `daemon_stopping*`, `denied:*`, `compact_half`, `feedback`, the developer codes and the edge-bound one | (c) drawn as before. Moving them to `/notes` + `/status` is the next pass; `ALARM_ONLY` and `is_developer` already file beside. |
+| `SessionEvent::ModelRetry` | the retry ladder | a live line, not a record: the call has not returned, so there is no model row to restate, and `gone` withdraws it. Kept. |
+| `Note::Decided`, `Note::Answered`, `Note::Pane`, `Note::NotRun`, `denied:*`, and `asks.rs`'s `sudo`/`prompt`/`provider_key_refused` | the operator's own decision, answer, program or secret, and the gate's basis beside the call it refused | kept: the operator's side of an exchange, whose model-side row is the tool result or the refusal it produced. Not a second version of a model row. |
+| `log_gap`, `orphan_body`, `protocol_skew`, `daemon_replaced`, `reattached`, `anchor_lost`, `unreadable_frame` | this head's own reading of the wire and of its own window | (c) kept; these are about the head, not the session. |
+
+**Built.** `letibot_sessionlog::warning::TWIN` is the table: code -> the model-facing row it restates, with `twin(code)` the question a head asks. `App::on_warning` files a twinned code BESIDE the conversation - `note_beside`, so `/notes` lists the sentence and `/status` counts it - and says a `Refused`/`Failure` one on the status line as it lands; every state arm above it (the fork marks, the reseat card, `prefix_stale`'s card, `model_pending`, the boot steps) still moves, so the head keeps its signals without drawing a row. Nothing the model receives changed: not a byte of the wire, of the prompt or of a transcript item.
+
+**And the half-measure it replaced is gone.** `crates/tui/src/app/one_event.rs` paired a warning with the rows that said the same event and hid the ROW under the warning's card (`App::absorbed`, `is_absorbed`, `absorbed_texts`, `card_popup_text`). That was one row, but the survivor was the operator's and the model's was the casualty - the opposite of the rule. The module, its four call sites in the two drawing walks, the snapshot's `retain` and its three tests are deleted; the model's row is now the one drawn.
+
+**Tests.** `crates/sessionlog/src/warning.rs`: `a_warning_the_model_also_got_is_never_drawn` - every entry names a classified code and the row it twins, the eleven codes that used to draw twice are all in it, and a code with no model twin (`boundary_absent`, `prefix_stale`, `queue_blocked`, `plugin_layer`) is not. `crates/tui/src/app/tests/onevent.rs`: a reseat, a compaction, a `/clear` and a daemon restart are each ONE row, and it is the model's - byte for byte its own text, with the warning's sentence nowhere in `hist_lines` and the warning held `Placed::Before`; the twin table and nothing else stops a code drawing (every code in `TABLE`, one at a time); a code with no twin still draws; the reseat card still raises on `prefix_stale` and still clears on `reseated` with no row either way. The tests the change made wrong were rewritten to the new truth rather than to a weaker one: `redcard`'s and `restartcard`'s warning cards now assert that the notice's row is the one drawn and that the table still reads the warning's shape for `/notes`; `notes`' compaction line is the fork's `System` row and the daemon's figures are in `/notes` verbatim; the mute/burst/register tests moved to codes a head still draws.
+
+Done when: a test runs a reseat, a compaction and a `/clear` and finds exactly one transcript row per event, byte-equal to what the model received, and a table test lists every warning code that may still be drawn as a transcript row with the reason the model also sees it.
 
 ## R201 - Nothing letibot starts is ever torn down
 
