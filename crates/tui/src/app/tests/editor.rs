@@ -1207,11 +1207,11 @@ fn the_editor_pane_wears_the_heads_frame_not_nanos() {
         .find(|l| l.contains('╰') && l.contains("write out"))
         .expect("the bottom edge");
     assert!(
-        edge.contains("C-x exit") || edge.contains("C-x Exit"),
+        edge.contains("ctrl-x exit"),
         "the close chord on the edge: {edge:?}"
     );
     assert!(
-        !edge.contains("C-q"),
+        !edge.contains("ctrl-q") && !edge.contains("C-q"),
         "the old chord is not advertised: {edge:?}"
     );
     // The text is inside the frame, and the cursor's place is still said.
