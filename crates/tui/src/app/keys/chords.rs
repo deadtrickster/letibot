@@ -64,6 +64,9 @@ impl App {
                 self.repaint = true;
                 return ControlFlow::Break(None);
             }
+            // F1: `/help`, the key the shared table promises in both programs. rano answers it with
+            // its own help page while the pane has the keys, so this is the conversation's.
+            Key::Help => return ControlFlow::Break(self.toggle_surface(Surface::Help)),
             // The panes' chords, read from the table that advertises them (`Surface::chord`) and
             // through the one door the verbs use, as toggles of the surface stack: the pane in
             // front closes, a pane behind another comes to the front.

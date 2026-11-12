@@ -1068,6 +1068,18 @@ pub(crate) const GLOBAL_CHORDS: &[&str] = &[
     "ctrl-p", "ctrl-q", "ctrl-r", "ctrl-s", "ctrl-t", "ctrl-v", "ctrl-x",
 ];
 
+/// The head chord a key is, and what it opens. A press inside the editor pane is the one place a
+/// head chord is refused, and a refusal nobody explains reads as a key that does nothing - so the
+/// pane names the chord and where it works. Read from the tables the dispatch reads, so a hint
+/// cannot name a key nothing acts on.
+pub(crate) fn head_chord(k: &Key) -> Option<(&'static str, &'static str)> {
+    if let Some(s) = Surface::of_chord(k) {
+        return s.chord().map(|(word, _)| (word, s.short_name()));
+    }
+    let show = k.show()?;
+    show.chord().map(|(word, _)| (word, show.name()))
+}
+
 /// A key as `[keys]` spells it, when it is one the vocabulary knows and a surface may take: one
 /// character as the terminal sends it, or one of these names. The reverse of [`On::label`] where
 /// that label is a word, and the pair is one table so a name and its key cannot drift.

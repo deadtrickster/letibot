@@ -122,11 +122,16 @@ fn key_bytes(token: &str) -> Option<(Vec<u8>, bool)> {
         "<del>" => return seq("\x1b[3~"),
         _ => {}
     }
-    if let Some(n) = lower
-        .strip_prefix("<f")
+    // An F-key in either spelling the tables use: rano's `<f1>` and the shared key table's `f1`.
+    let name = lower
+        .strip_prefix('<')
         .and_then(|r| r.strip_suffix('>'))
-        .and_then(|d| d.parse::<u8>().ok())
-    {
+        .unwrap_or(&lower);
+    let fkey = name
+        .strip_prefix('f')
+        .filter(|d| !d.is_empty() && d.len() <= 2)
+        .and_then(|d| d.parse::<u8>().ok());
+    if let Some(n) = fkey {
         let s = match n {
             1 => "\x1bOP",
             2 => "\x1bOQ",

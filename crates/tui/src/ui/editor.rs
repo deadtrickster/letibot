@@ -60,7 +60,7 @@ fn editor_title(name: &str, t: &rano::editor::FrameTitle, w: usize) -> Line {
     Line::new(spans)
 }
 
-/// The pane's bottom edge: rano's keys, in the head's words - `C-o write out · C-f where
+/// The pane's bottom edge: rano's keys, in the head's words - `ctrl-o write out · ctrl-f where
 /// is · …`, faint like every other key line here, as many as the edge holds. What rano's
 /// function bar would have said, in the order it would have said it.
 fn editor_keys(keys: &[(String, String)]) -> Line {
@@ -71,12 +71,22 @@ fn editor_keys(keys: &[(String, String)]) -> Line {
     Line::new(vec![Span::role(words.join(" · "), Role::Faint)])
 }
 
+/// A drawn edge in the focus marker's register: the frame's own glyphs take the line's style, and
+/// the legends inlaid in it keep theirs.
+fn edge(mut l: Line, style: &rano::render::Style) -> Line {
+    l.style = style.clone();
+    l
+}
+
 impl App {
     /// The pane's rows for this frame, at column `x` and row `y` - where rano is told it is,
     /// so its mouse mapping and caret land in the terminal's own coordinates. A frame where
     /// nothing changed serves the last rows rather than drawing them twice.
     pub(crate) fn editor_rows(&mut self, x: usize, y: usize, w: usize, room: usize) -> Vec<String> {
         let palette = self.cfg.palette();
+        // The focus marker's register for this frame: the pane's edges are `Strong` while it has
+        // the keyboard and `Faint` while the composer does.
+        let frame = rano::render::Style::of(self.editor_frame());
         // The name the edge shows: relative to the session's workspace, as every other path this
         // head draws, keeping rano's `[i/n] ` in front of it with several buffers open.
         let name = match self.edit_pane.as_ref() {
@@ -116,12 +126,15 @@ impl App {
             // indented by the columns `editor_inner` left.
             let mut rows = Vec::with_capacity(room);
             rows.push(row(
-                &rano::agent::composer::box_edge(
-                    w,
-                    '╭',
-                    '╮',
-                    &editor_title(&name, &p.ed.frame_title(), w),
-                    &Line::default(),
+                &edge(
+                    rano::agent::composer::box_edge(
+                        w,
+                        '╭',
+                        '╮',
+                        &editor_title(&name, &p.ed.frame_title(), w),
+                        &Line::default(),
+                    ),
+                    &frame,
                 ),
                 palette,
             ));
@@ -131,12 +144,15 @@ impl App {
                 rows.push(String::new());
             }
             rows.push(row(
-                &rano::agent::composer::box_edge(
-                    w,
-                    '╰',
-                    '╯',
-                    &editor_keys(&p.ed.key_hints()),
-                    &Line::default(),
+                &edge(
+                    rano::agent::composer::box_edge(
+                        w,
+                        '╰',
+                        '╯',
+                        &editor_keys(&p.ed.key_hints()),
+                        &Line::default(),
+                    ),
+                    &frame,
                 ),
                 palette,
             ));

@@ -166,7 +166,18 @@ impl App {
                 p,
             );
         } else if self.editor_focused() {
-            Some(HintMode::Editor)
+            // rano's own sentence for this focus is a hand-written list, and a hand-written list is
+            // what drifts: the table both programs bind from is the one that cannot. The composer's
+            // half stays, since the pair's "esc again to interrupt" lives there.
+            let tail = crate::app::shared_keys::bar_tail();
+            return crate::ui::render::row(
+                &HintBar {
+                    editor,
+                    mode: HintMode::Editor,
+                }
+                .line_with_tail(&tail, w),
+                p,
+            );
         } else if !self.open.is_empty() {
             // The decision's own bar - a question's names the way to step away, and
             // a permission's says a row number marks rather than answers.
@@ -176,7 +187,17 @@ impl App {
         } else if self.detached() {
             Some(HintMode::Detached)
         } else if self.editor_drawn() {
-            Some(HintMode::EditorBehind)
+            // The composer's keys with the pane still on the screen: the composer's own key first,
+            // since the bar keeps its head, and then the same table.
+            let tail = format!("enter sends · {}", crate::app::shared_keys::bar_tail());
+            return crate::ui::render::row(
+                &HintBar {
+                    editor,
+                    mode: HintMode::EditorBehind,
+                }
+                .line_with_tail(&tail, w),
+                p,
+            );
         } else if self.pick.is_some() {
             // The card's bar is this head's, not rano's `HintMode::Pick`, whose line promises a
             // key that only moves a mark - see `SETTING_BAR`. The model card's line filters, so

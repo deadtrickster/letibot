@@ -1,5 +1,6 @@
 //! The help screen (`/help`): this head's keys and verbs, drawn by `rano::agent::help`. The rows are
-//! the head's - they are what it does - and the layout is rano's.
+//! the head's - they are what it does - except the keys both programs share, which come from rano's
+//! table, and the layout is rano's.
 
 use crate::ui::render::{RenderConfig, row_strings};
 use rano::agent::help::HelpPane;
@@ -25,10 +26,6 @@ pub(crate) fn help_lines(
         (
             "alt+enter",
             "a newline inside the prompt, without sending it",
-        ),
-        (
-            "esc esc",
-            "interrupt the running turn — twice, within five seconds",
         ),
         (
             "ctrl-c",
@@ -70,16 +67,13 @@ pub(crate) fn help_lines(
         ),
         (
             "ctrl-a ctrl-e",
-            "start and end of the line; ctrl-w and ctrl-u kill, ctrl-y yanks",
+            "start and end of the line; ctrl-w and ctrl-u kill, ctrl-y yanks, and undo is a \
+             word at a time with a kill always its own step",
         ),
         (
             "alt-g alt-b",
             "mark this turn good or bad (alt-b only on an empty prompt — word-left otherwise); \
              twice opens the note; /fb+ /fb- NOTE #tags; scrolled back, the row in view",
-        ),
-        (
-            "ctrl-z",
-            "undo — a word at a time, and a kill is always its own step",
         ),
         (
             "paste",
@@ -146,13 +140,12 @@ pub(crate) fn help_lines(
              It is one row, not a switch: `/t` unfolds every tool row at once",
         ),
         (
-            "ctrl-]",
-            "open the newest file this conversation changed in rano, on the change (a click on \
-             an edit or write row opens that one in the diff popup, and ctrl-] from there is \
-             the editor). In the editor, ctrl-] comes back to the \
-             composer (and goes again), alt-s puts your place — and the selection, fenced — \
-             in the composer for you to finish and send, alt-p shows the change again, and \
-             ctrl-q or ^X closes it, asking first about unsaved edits",
+            "the editor",
+            "the pane opens on the newest file this conversation changed, on the change — a click \
+             on an edit or write row opens that one in the diff popup first. In the pane, the \
+             keys both programs share are the table above and its own are on its bottom edge: \
+             alt-p shows the change again, and ctrl-q or ^X closes it, asking first about unsaved \
+             edits",
         ),
         (
             "ctrl-p",
@@ -244,6 +237,14 @@ pub(crate) fn help_lines(
         .iter()
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .collect();
+    // The keys both programs promise come from rano's table, in its words, so this page, the hint
+    // row and rano's own help cannot come to say different things about one chord. Placed here,
+    // before the conversation's own keys, because they are the ones a person meets first.
+    let at = rows
+        .iter()
+        .position(|(k, _)| k == "ctrl-c")
+        .unwrap_or(rows.len());
+    rows.splice(at..at, crate::app::shared_keys::rows());
     // After the composer's own keys and the shell verbs, where the old pane rows began.
     let at = rows
         .iter()

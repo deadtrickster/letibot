@@ -8,6 +8,7 @@ use rano::editor::{Area, Editor as Rano, KeyOutcome};
 use rano::keymap::Keymap;
 use rano::review::Change;
 use rano::send::SendEvent;
+use rano::style::Role;
 use rano::term::{Event, KeyEvent, MouseButton, MouseKind};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -164,6 +165,10 @@ impl EditorPane {
         // status row.
         ed.set_chrome(rano::editor::Chrome::BARE);
         ed.set_pictures(proto);
+        // One spelling per screen: rano gains a third notation beside emacs and nano - `ctrl-x`,
+        // `alt-x` - and the head sets it, so the pane's own key edge comes back in the spelling the
+        // rest of the frame uses. Standalone rano keeps whatever the operator configured.
+        ed.config.notation = rano::keymap::Notation::Words;
         let mut keys = Keymap::new("letibot");
         keys.bind(CROSS, TO_COMPOSER);
         // Bound first, so `where_is("exit")` names it on the pane's bottom edge: the two reach the
@@ -631,12 +636,16 @@ impl App {
                     Event::Key(k) if p.focused => {
                         took = true;
                         // The head's two keys cross into the pane and out of it, so they are read
-                        // before rano: rano has neither bound, and a key that reaches it is one
-                        // the operator cannot press to leave.
+                        // before rano: rano has neither bound. A key rano had no use for comes back
+                        // as the head's, in this read's order.
                         match key_of(Event::Key(*k)) {
                             Some(Key::AltI) => self.editor_focus_key(),
                             Some(Key::AltM) => self.editor_zoom_key(),
-                            _ => self.editor_key(*k),
+                            _ => {
+                                if let Some(key) = self.editor_key(*k) {
+                                    keys.push(key);
+                                }
+                            }
                         }
                         continue;
                     }
@@ -662,18 +671,35 @@ impl App {
         (keys, took)
     }
 
-    /// One key into rano, and what rano said back.
-    fn editor_key(&mut self, k: KeyEvent) {
-        let Some(p) = self.edit_pane.as_mut() else {
-            return;
-        };
-        if let KeyOutcome::Host(name) = p.ed.handle_key(k)
-            && name == TO_COMPOSER
+    /// One key into rano, and what rano said back. `Some(Key)` is a key rano had no use for and
+    /// the head does - the caller hands it to `App::key` in this read's order.
+    fn editor_key(&mut self, k: KeyEvent) -> Option<Key> {
+        let mut to_head = None;
+        let mut says = None;
         {
-            p.focused = false;
+            let p = self.edit_pane.as_mut()?;
+            match p.ed.handle_key(k) {
+                KeyOutcome::Host(name) if name == TO_COMPOSER => p.focused = false,
+                KeyOutcome::Unhandled => match refused(k) {
+                    Refused::Leave(key) => {
+                        p.focused = false;
+                        to_head = Some(key);
+                    }
+                    Refused::Pass(key) => to_head = Some(key),
+                    Refused::Hint(word, what) => {
+                        says = Some(format!("{word} is {what} — esc first"));
+                    }
+                    Refused::Drop => {}
+                },
+                _ => {}
+            }
+            p.dirty = true;
         }
-        p.dirty = true;
+        if let Some(s) = says {
+            self.say(&s);
+        }
         self.after_editor();
+        to_head
     }
 
     /// What rano decided, acted on: an exit closes the pane - and only the pane - and each
@@ -762,5 +788,57 @@ impl App {
             }
         }
         p.display().to_string()
+    }
+
+    /// The register the editor pane's own frame is drawn in - the focus marker: the side that has
+    /// the keyboard is `Strong` and the other is `Faint`, so a frame says whose keys are live
+    /// without anybody reading the hint row.
+    pub(crate) fn editor_frame(&self) -> Role {
+        if self.editor_focused() {
+            Role::Strong
+        } else {
+            Role::Faint
+        }
+    }
+
+    /// The composer's half of the same marker: `Strong` while the composer has the keys and an
+    /// open pane beside it could have them instead. With no pane on the screen there is one side
+    /// only, and a marker that alternates with nothing says nothing.
+    pub(crate) fn composer_frame(&self) -> Role {
+        if self.editor_drawn() && !self.editor_focused() {
+            Role::Strong
+        } else {
+            Role::Faint
+        }
+    }
+}
+
+/// What a key rano had no use for is to the head.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Refused {
+    /// The keyboard goes to the composer and this key with it: Esc is the head's, and the press
+    /// that leaves the pane is the first of the pair that interrupts.
+    Leave(Key),
+    /// The head's own key, which nothing on the pane's side of the crossing owns.
+    Pass(Key),
+    /// A chord that opens something the pane has not got: what to name it with.
+    Hint(&'static str, &'static str),
+    Drop,
+}
+
+/// Read a refused key, from the same tables `App::key` dispatches from. Only the keys that OPEN
+/// something earn a sentence: the rest were dropped before and are dropped still.
+fn refused(k: KeyEvent) -> Refused {
+    match key_of(Event::Key(k)) {
+        // Nothing of rano's own is left to cancel, so this is the way out, and it arms the pair.
+        Some(Key::Esc) => Refused::Leave(Key::Esc),
+        // The one pass-through: a repaint is nobody's state, and the pane's glass is as stale as
+        // the conversation's after something else wrote to the terminal.
+        Some(Key::CtrlL) => Refused::Pass(Key::CtrlL),
+        Some(k) => match super::keys::bindings::head_chord(&k) {
+            Some((word, what)) => Refused::Hint(word, what),
+            None => Refused::Drop,
+        },
+        None => Refused::Drop,
     }
 }

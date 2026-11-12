@@ -1765,6 +1765,7 @@ pub(crate) mod runclick;
 mod scroll;
 mod session;
 mod sessions_pane;
+pub(crate) mod shared_keys;
 pub(crate) mod sidebar;
 pub(crate) mod standing;
 mod surface;

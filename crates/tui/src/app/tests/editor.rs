@@ -155,6 +155,130 @@ fn is_the_file(p: &Path) -> bool {
     p.file_name().is_some_and(|n| n == FILE)
 }
 
+/// The pane open on the file itself: no change, no view, no prompt, so rano has nothing of its own
+/// for Esc to cancel and the key is the host's.
+fn idle_pane(tag: &str) -> (Workspace, App) {
+    let ws = workspace(tag);
+    let mut a = edited(&ws);
+    a.open_in_editor(&FileRef::file(FILE));
+    settle(&mut a);
+    a.screen(100, 30);
+    (ws, a)
+}
+
+/// Esc in a pane with nothing of rano's left to cancel leaves it, and the press that leaves is the
+/// composer's first of the pair - the same two-tap interrupt, one press of it typed inside rano.
+#[test]
+fn esc_in_an_idle_pane_gives_the_composer_the_keys_and_arms_the_interrupt() {
+    let (_ws, mut a) = idle_pane("esc");
+    a.clock(1_000);
+    assert!(a.editor_focused(), "the pane has the keys");
+
+    let (keys, _) = a.route(vec![key(KeyCode::Esc, Mods::NONE)]);
+    assert!(!a.editor_focused(), "esc left the pane");
+    assert_eq!(keys, vec![Key::Esc], "and the key is the head's");
+    for k in keys {
+        a.key(k);
+    }
+    let bar = a.hint_bar(200);
+    assert!(bar.contains("esc again to interrupt"), "{bar}");
+
+    // The pair fires on a running turn although only the second press was typed in the composer.
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    assert!(matches!(a.key(Key::Esc), Some(Action::Interrupt(_))));
+}
+
+/// A head chord pressed in the pane names where it works and opens nothing: a refusal that says
+/// nothing reads as a key that does nothing, and half-working chords are the foreign feeling the
+/// one table exists to end.
+#[test]
+fn a_head_chord_in_the_pane_names_its_pane_and_opens_nothing() {
+    let (_ws, mut a) = idle_pane("chord");
+    assert!(a.editor_focused());
+
+    let (keys, _) = a.route(vec![ctrl('s')]);
+    assert!(keys.is_empty(), "the chord did not reach the head");
+    assert_eq!(a.top_surface(), None, "no session picker");
+    assert!(a.editor_focused(), "and the pane keeps the keys");
+    assert_eq!(a.notice.as_deref(), Some("ctrl-s is sessions — esc first"));
+}
+
+/// Which side has the keyboard is on the frame: the side with the keys draws its edges `Strong` and
+/// the other `Faint`, so the crossing is visible without reading the hint row.
+#[test]
+fn the_frames_edges_say_which_side_has_the_keys() {
+    let (_ws, mut a) = idle_pane("focus");
+    a.cfg.color = true;
+    // The pane's top edge, found by the file it names - the composer's edges are the other frame
+    // on this screen and they carry the other half of the marker.
+    let pane_edge = |frame: &[String]| -> String {
+        frame
+            .iter()
+            .find(|r| r.contains('╭') && r.contains(FILE))
+            .cloned()
+            .unwrap_or_else(|| panic!("no pane edge in {frame:#?}"))
+    };
+    let frame = a.screen(100, 30);
+    assert!(
+        pane_edge(&frame).trim_start().starts_with("\x1b[1m╭"),
+        "the pane's frame is not the strong one: {frame:#?}"
+    );
+    let (top, _) = a.box_top(96);
+    assert!(
+        top.starts_with("\x1b[2m"),
+        "the composer's edge is the faint one while the pane has the keys: {top:?}"
+    );
+
+    // One press below the pane: the composer has the keys, and the marker swaps sides.
+    let area = a.edit_pane.as_ref().expect("just opened").area;
+    a.route(vec![press(10, area.y + area.h + 2)]);
+    let frame = a.screen(100, 30);
+    assert!(
+        pane_edge(&frame).trim_start().starts_with("\x1b[2m╭"),
+        "the pane's frame is still the strong one: {frame:#?}"
+    );
+    let (top, _) = a.box_top(96);
+    assert!(
+        top.starts_with("\x1b[1m"),
+        "the composer's edge is not the strong one: {top:?}"
+    );
+}
+
+/// The pane spells its keys the way the rest of the frame does: rano's third notation, `words`, is
+/// set on the embedded editor, so its own key edge cannot come back as `C-o` beside a `ctrl-s`.
+#[test]
+fn the_pane_spells_its_keys_in_words() {
+    let (_ws, a) = idle_pane("words");
+    let hints = a.edit_pane.as_ref().expect("just opened").ed.key_hints();
+    assert!(!hints.is_empty(), "the pane draws no keys at all");
+    for (k, _) in &hints {
+        assert!(
+            !k.contains("C-") && !k.contains("M-") && !k.contains('^'),
+            "{k} is not the words spelling"
+        );
+    }
+}
+
+/// Every key the two programs promise is a row of `/help`: the table is the promise, and a page
+/// that leaves one out is exactly the drift the table exists to prevent.
+#[test]
+fn the_help_lists_every_key_the_two_programs_share() {
+    let a = app();
+    let help = help_lines(&a.cfg, 400, &a.key_overrides);
+    for row in rano::agent::keys::SHARED {
+        let chord = crate::app::shared_keys::chord(row);
+        // The help's key column, and the table's own sentence after it: a row drawn from the table
+        // rather than a hand-written line that happens to name the same key.
+        let want = format!("  {chord:<16}");
+        assert!(
+            help.iter()
+                .any(|l| l.starts_with(&want) && l.contains(row.hint)),
+            "{chord} is not a row of /help:\n{}",
+            help.join("\n")
+        );
+    }
+}
+
 /// The map: every screen row of the edit's row - its header and its diff - is a place in
 /// `notes.txt` at the first changed line, and no other row is.
 #[test]
@@ -554,7 +678,7 @@ fn the_pane_takes_the_conversations_rectangle_and_the_composer_stays() {
         text.contains('╭') && text.contains('╰'),
         "the composer's box: {text}"
     );
-    assert!(text.contains("ctrl-] to the composer"), "{text}");
+    assert!(text.contains("ctrl-] cross focus"), "{text}");
     assert_eq!(a.cursor(), None, "no caret over the review");
 
     a.route(vec![key(KeyCode::Esc, Mods::NONE)]);
@@ -570,7 +694,8 @@ fn the_pane_takes_the_conversations_rectangle_and_the_composer_stays() {
     // Crossed to the composer: the caret is the composer's and the bar says how to go back.
     a.route(vec![ctrl(']')]);
     let text = a.screen(100, 30).join("\n");
-    assert!(text.contains("ctrl-] back to the editor"), "{text}");
+    assert!(text.contains("ctrl-] cross focus"), "{text}");
+    assert!(text.contains("enter sends"), "{text}");
     let (row, _) = a.cursor().unwrap();
     assert!(row > 20, "the composer's row, at the bottom");
 }

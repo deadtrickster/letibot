@@ -1454,9 +1454,9 @@ fn the_notes_chord_is_advertised_where_it_can_be_seen_and_reaches_nothing_else()
 
     // `/help` names it, with the rule that matters on the line.
     a.command("help");
-    // Tall enough for the whole help: it names every pane's chord now and no
-    // longer fits sixty rows.
-    let help = a.screen(120, 120).join("\n");
+    // Tall enough for the whole help: it names every pane's chord and, now, every key the two
+    // programs share, so it no longer fits sixty rows.
+    let help = a.screen(120, 200).join("\n");
     assert!(help.contains("ctrl-n"), "{help}");
     assert!(
         help.contains("Retired is not deleted"),

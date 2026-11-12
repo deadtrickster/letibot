@@ -360,6 +360,18 @@ fn a_rebound_key_is_honoured_and_a_global_chord_is_not_rebindable() {
     );
 }
 
+/// F1 is `help` in both programs: the shared key table promises it, rano answers it with its own
+/// page while the pane has the keys, and here it is `/help` - the toggle the verb opens.
+#[test]
+fn f1_opens_the_help_and_closes_it() {
+    let mut a = app();
+    assert_eq!(a.top_surface(), None);
+    a.key(Key::Help);
+    assert_eq!(a.top_surface(), Some(Surface::Help));
+    a.key(Key::Help);
+    assert_eq!(a.top_surface(), None, "and it closes again");
+}
+
 /// The refusal list is the head's own chords, and the half of it a table can prove is proved here:
 /// every chord a surface advertises and every chord a switch names is a word the rebinding refuses.
 /// The rest (esc, ctrl-c, and the chords with no table to read) are arms of `key_chords` and

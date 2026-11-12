@@ -803,7 +803,10 @@ impl App {
                 .count(),
             monitors_live: self.monitors.iter().filter(|m| m.live).count(),
         };
-        let line = top.line(w);
+        let mut line = top.line(w);
+        // The focus marker's other half: Strong while the composer has the keys and an open pane
+        // beside it could have them instead. See `App::composer_frame`.
+        line.style = rano::render::Style::of(self.composer_frame());
         let labels = BoxTopLabels {
             subagents: box_top_label(&line, "subagent"),
             jobs: box_top_label(&line, "job"),
@@ -857,19 +860,17 @@ impl App {
             );
         }
         let p = self.cfg.palette();
+        let frame = rano::render::Style::of(self.composer_frame());
+        let edge_of = |left: &rano::render::Line| {
+            let right = right.clone().unwrap_or_default();
+            let mut l = rano::agent::composer::box_edge(w, '╰', '╯', left, &right);
+            l.style = frame.clone();
+            l
+        };
         let edge = match completions.filter(|l| l.width() > 0) {
             // One builder for both paths: rano's `BoxBottom::line` composes the same right side, and using the
             // local builder keeps the edge from saying one thing with a completion open and another without.
-            None => crate::ui::rows::row(
-                &rano::agent::composer::box_edge(
-                    w,
-                    '╰',
-                    '╯',
-                    &rano::render::Line::default(),
-                    &right.unwrap_or_default(),
-                ),
-                p,
-            ),
+            None => crate::ui::rows::row(&edge_of(&rano::render::Line::default()), p),
             Some(legend) => {
                 // The completions inlaid at the left: the right side's markers keep their room, and the
                 // completions are cut to what is left, so typing `/` never hides an alarm or a standing queue.
@@ -880,16 +881,7 @@ impl App {
                     first.content = first.content.trim_start().to_string();
                 }
                 let left = rano::render::text::truncate(&left, room);
-                crate::ui::rows::row(
-                    &rano::agent::composer::box_edge(
-                        w,
-                        '╰',
-                        '╯',
-                        &left,
-                        &right.unwrap_or_default(),
-                    ),
-                    p,
-                )
+                crate::ui::rows::row(&edge_of(&left), p)
             }
         };
         // Where the standings landed, off the finished row - the target's rectangle is the

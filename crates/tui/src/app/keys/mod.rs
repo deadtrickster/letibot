@@ -957,6 +957,9 @@ pub enum Key {
     /// Ctrl+`^`: attach anyway. Held only while the head is read-only against an older daemon, and spelled only
     /// there. `^` because the C0 tail is where this head's one-purpose keys live. See [`App::attach_anyway`].
     CtrlCaret,
+    /// F1: `/help`. The shared key table promises it in both programs — rano shows its own help page
+    /// with it, and the pane takes the key first, so this is the conversation's answer to it.
+    Help,
     PageUp,
     PageDown,
     /// Mouse wheel up, decoded from the SGR mouse protocol. Scrolls the
@@ -1044,6 +1047,7 @@ impl Key {
             | Key::CtrlN
             | Key::CtrlBracket
             | Key::CtrlCaret
+            | Key::Help
             | Key::AltG
             | Key::AltB
             | Key::AltA

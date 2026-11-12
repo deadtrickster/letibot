@@ -84,6 +84,9 @@ fn key(k: KeyEvent) -> Option<Key> {
         KeyCode::PageUp => Key::PageUp,
         KeyCode::PageDown => Key::PageDown,
         KeyCode::Delete => Key::Delete,
+        // F1 is the one function key either program uses: `help`, in the shared key table. A
+        // modifier on it is not that key, exactly as every other F-key is nothing here.
+        KeyCode::F(1) if m.is_empty() => Key::Help,
         KeyCode::BackTab | KeyCode::Insert | KeyCode::F(_) => return None,
     })
 }
@@ -419,6 +422,8 @@ mod tests {
             (b"\x1b[1;3D", Key::Left),
             (b"\x1b[3;5~", Key::Delete),
             (b"\x1b[1;5H", Key::Home),
+            // F1, the one function key either program uses: the shared key table's `help`.
+            (b"\x1bOP", Key::Help),
         ] {
             assert_eq!(decode(bytes), vec![want.clone()], "{bytes:?}");
         }
@@ -433,7 +438,8 @@ mod tests {
             b"\x1b[Z",
             b"\x1b[2~",
             b"\x1b[15~",
-            b"\x1bOP",
+            // The next function key up: only f1 is a key here.
+            b"\x1bOQ",
             b"\x1b[1;5P",
             b"\x1b[9~",
             b"\x1b[X",
