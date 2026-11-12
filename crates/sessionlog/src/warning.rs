@@ -272,10 +272,6 @@ pub const TABLE: &[(&str, Class, Action)] = &[
         Class::Refused,
         Action::Do("`/mode` again from here"),
     ),
-    // The model server did not answer and the round is being taken again. The retry is
-    // the handling - and when the retries are exhausted the turn fails under
-    // `turn_failed`, which is a failure.
-    ("model_endpoint_retry", Class::Routine, Action::Nothing),
     // A usage limit the provider put a time on: the session is parked until the reset and the turn
     // is owed again there. Nothing failed and nothing was lost - the wait IS the handling.
     ("limit_park", Class::Routine, Action::Nothing),
@@ -286,10 +282,23 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // A rate limit that named no instant: the long beat before the round is taken again. Past the
     // few the config allows, the turn fails under its own name.
     ("limit_retry", Class::Routine, Action::Nothing),
-    // The endpoint that did not answer came back: the recovery is the news, and a recovery
-    // not said is how somebody believes the endpoint is still down. Said once per outage, with
-    // the count and how long it was out.
-    ("model_endpoint_answered", Class::Routine, Action::Nothing),
+    // Three of the provider's four troubles, as a type (`SessionEvent::ProviderTrouble`): the wait
+    // IS the handling and nothing is at risk. While one is being handled it is one LIVE line and no
+    // row at all, so these rows are only what a head reads when one arrives outside a ladder. The
+    // fourth, `provider_quota`, is a failure - no wait lifts a spent account.
+    ("provider_rate_limit", Class::Routine, Action::Nothing),
+    ("provider_timeout", Class::Routine, Action::Nothing),
+    ("provider_stall", Class::Routine, Action::Nothing),
+    // The ladder is out and the session moved to the first name in `[fallback]` that answers: a
+    // move, said once, with the refusal that caused it in the sentence.
+    (
+        "model_fallback",
+        Class::Routine,
+        Action::Do("`/models` moves the session back"),
+    ),
+    // A `[fallback]` name the session could not take, with the reason: the ladder is still trying,
+    // so this is why it is not going *there* rather than a fault of its own.
+    ("model_fallback_skip", Class::Routine, Action::Nothing),
     // The session store was busy and a turn is waiting to write its rows: the wait IS the
     // handling, nothing is lost (the rows are in memory), and if the store stays wedged the
     // turn fails under its own name.
@@ -670,6 +679,22 @@ pub const TABLE: &[(&str, Class, Action)] = &[
         "turn_failed",
         Class::Failure,
         Action::Do("read it, then send the turn again"),
+    ),
+    // The model endpoint did not answer and the ladder is spent: the ONE row an outage ends in,
+    // with the count and the provider's own sentence behind the click. While the ladder is still
+    // trying this is a live line and not a row, and an endpoint that came back leaves nothing -
+    // a retry that worked is not a finding.
+    (
+        "model_endpoint_retry",
+        Class::Failure,
+        Action::Do("check the provider, or `/models` to another"),
+    ),
+    // The account behind the key cannot pay: no wait lifts it, so the session cannot go on with
+    // this model whatever the ladder does.
+    (
+        "provider_quota",
+        Class::Failure,
+        Action::Do("top the account up, or `/models` to another"),
     ),
     // A written `[embeddings]` section produced no embedder (fetch failed, bad key): scores
     // are lexical until the operator fixes it.
@@ -1331,21 +1356,40 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_83_routine_15_refused_and_99_failures() {
+    fn the_table_is_86_routine_15_refused_and_101_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k, _)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 197, "the table's size");
-        assert_eq!(count(Class::Routine), 83, "the four limits are routine");
+        assert_eq!(TABLE.len(), 202, "the table's size");
+        assert_eq!(count(Class::Routine), 86, "the four limits are routine");
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 99);
+        assert_eq!(count(Class::Failure), 101);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);
         // The ratio the ruling turned on: the red register is most of the table and the middle
         // is a correction rather than a redefinition - most failures were already the right
         // kind of thing.
+    }
+
+    /// A provider's trouble is weather while the ladder is handling it and a failure only when
+    /// something is left to do: a rate limit, a timeout and a stall name a wait, a spent account
+    /// ends the session's use of that model, and the row that says the ladder gave up is red.
+    #[test]
+    fn a_providers_trouble_is_red_only_where_a_person_can_act() {
+        for kind in ["rate_limit", "timeout", "stall"] {
+            let code = format!("provider_{kind}");
+            assert_eq!(class(&code), Class::Routine, "`{code}` is a wait");
+            assert_eq!(action(&code), Action::Nothing, "`{code}` asks nothing");
+        }
+        assert_eq!(class("provider_quota"), Class::Failure);
+        assert_eq!(class("model_endpoint_retry"), Class::Failure);
+        assert_eq!(
+            class("model_fallback"),
+            Class::Routine,
+            "a move that worked is not a fault"
+        );
     }
 
     /// A check that did not run has found nothing, so it is not a failure. The skip rode the red

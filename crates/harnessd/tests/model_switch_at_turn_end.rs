@@ -409,7 +409,9 @@ fn classify(frame: ServerFrame) -> Seen {
     match frame {
         ServerFrame::Event(env) => match &env.event {
             SessionEvent::Warning { code, detail, .. } => match code.as_str() {
-                "model_endpoint_retry" => Seen::Retry(detail.clone()),
+                // The ladder's own row, and the one a move is worth: this file asks *is the round
+                // being waited for* and *did `[fallback]` move the session*, which are these two.
+                "model_endpoint_retry" | "model_fallback" => Seen::Retry(detail.clone()),
                 "model_switch_pending" => Seen::Pending(detail.clone()),
                 "model_switch_applied" => Seen::Applied(detail.clone()),
                 "model_switch_not_applied" => Seen::NotApplied(detail.clone()),

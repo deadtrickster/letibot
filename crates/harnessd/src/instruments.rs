@@ -55,6 +55,9 @@ pub struct TurnMeter {
     rounds: u32,
     tool_calls: u32,
     tool_errors: u32,
+    /// Failed attempts on model endpoints this turn - [`TurnMeter::retry`]'s sum, and the number
+    /// `turn.end` carries: a retry leaves no row, so this is where the count is.
+    retries: u32,
     ttfb_ms: Option<u64>,
     model: String,
     finish: Option<String>,
@@ -208,6 +211,32 @@ impl TurnMeter {
             .emit();
     }
 
+    /// One model endpoint's outage, once its ladder is over - `Harness::settle_outage`. The record a
+    /// recovered retry would have been, as a number: the line that counted it is withdrawn, so this
+    /// row and `turn.end`'s `retries` are where the ladder is answerable at all.
+    pub fn retry(
+        &mut self,
+        session: &str,
+        host: &str,
+        attempts: u32,
+        began_ms: u64,
+        last_ms: u64,
+        answered: bool,
+    ) {
+        self.retries += attempts;
+        if !letibot_metrics::enabled() {
+            return;
+        }
+        Event::new(kind::RETRY)
+            .session(session)
+            .name(host)
+            .outcome(if answered { "answered" } else { "gave_up" })
+            .dur(last_ms.saturating_sub(began_ms))
+            .n1(attempts as u64)
+            .attr("turn", self.turn_id())
+            .emit();
+    }
+
     /// The turn is over - `turn_tail::run_turn`, beside `end_turn_clock`. `board` reads the
     /// named row's status now, for a nag's follow-up. One `turn.start` (stamped when it began)
     /// and one `turn.end`.
@@ -287,6 +316,7 @@ impl TurnMeter {
             .attr("rounds", self.rounds)
             .attr("tool_calls", self.tool_calls)
             .attr("tool_errors", self.tool_errors)
+            .attr("retries", self.retries)
             .attr_opt("ttfb_ms", self.ttfb_ms)
             .attr_opt("cost_micros_usd", self.cost)
             .emit();

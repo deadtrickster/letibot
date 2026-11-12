@@ -18,7 +18,7 @@
 //! TranscriptContent{item_id, item}          - for a row too large to ride its announcement
 //! HeadAttached / HeadDetached{head_id, kind, identity}
 //! Warning{code, detail}
-//! ModelRetry{host, attempts, said, log, ended}   - one row's whole value; see the variant
+//! ModelRetry{host, attempts, said, log, ended, gone}   - one row's whole value; see the variant
 //! Explain{turn_id, plan}
 //! ```
 //!
@@ -1568,9 +1568,10 @@ pub enum SessionEvent {
         /// of which entries mean *this session moves on its own* and which one means *a person must*.
         activity: crate::activity::Activity,
     },
-    /// One model call being retried, as one row. The value is the row's whole content, so a head
-    /// rewrites the row rather than adding one. Ephemeral, and re-said to every head after its
-    /// snapshot (`Inner::retry_now`) so a head attaching mid-series does not draw nothing.
+    /// The model not answering, as ONE live line. The value is the line's whole content, so a head
+    /// rewrites it rather than adding one, and `gone` is how it ends. Ephemeral, and re-said to every
+    /// head after its snapshot (`Inner::retry_now`) so a head attaching mid-series is not sent a line
+    /// it will never see end.
     ModelRetry {
         /// The endpoint the call went to, as the daemon spells a host - what is being retried.
         host: String,
@@ -1582,11 +1583,15 @@ pub enum SessionEvent {
         said: String,
         /// Every failed attempt, oldest first, as the popup lists them: `<clock> · <reason>`.
         log: Vec<String>,
-        /// The line the row settles to, `None` while the series is going: `answered after 4 attempts,
-        /// 52s` or `gave up after 6 attempts: <reason>`. The durable warning beside it is the record
-        /// for a head that attaches later.
+        /// The line a series settles to, `None` while it is going. A daemon that leaves a recovered
+        /// retry on the screen sends one; this build sends `gone` instead and leaves no row.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ended: Option<String>,
+        /// The line is over and nothing replaces it: the endpoint came back, or the one row that says
+        /// the news (`model_endpoint_retry`, `model_fallback`) is filed beside it. A head DROPS the
+        /// line - a recovered retry is not a finding, so it leaves no row at all.
+        #[serde(default)]
+        gone: bool,
     },
 }
 

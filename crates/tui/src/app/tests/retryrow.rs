@@ -46,6 +46,83 @@ fn series(attempts: u32, ended: Option<&str>) -> SessionEvent {
             .map(|i| format!("10:31:{i:02} · 503 server error"))
             .collect(),
         ended: ended.map(str::to_string),
+        gone: false,
+    }
+}
+
+/// The provider's own trouble, as the daemon publishes it: the same fact as a type.
+fn trouble(kind: &str, switched_to: Option<&str>) -> SessionEvent {
+    SessionEvent::ProviderTrouble {
+        kind: kind.into(),
+        model: "deepseek/deepseek-chat".into(),
+        detail: "http 429: rate limited".into(),
+        reset_ms: None,
+        count: 1,
+        switched_to: switched_to.map(str::to_string),
+    }
+}
+
+/// The retry line's own events are the whole of a wait: a rate limit, a timeout and a stall file NO
+/// row, because the ladder drawing the line is the handling; a spent account is a failure with its
+/// action, and a move is said once by `model_fallback` rather than twice.
+#[test]
+fn a_providers_trouble_is_the_line_and_one_row_at_most() {
+    let mut a = app();
+    for kind in ["rate_limit", "timeout", "stall"] {
+        a.apply(ServerFrame::Event(env(1, trouble(kind, None))));
+    }
+    assert!(
+        !a.notes.iter().any(|(_, n)| matches!(n, Note::Warned(_))),
+        "a wait is not a row, whatever kind of wait it is: {:?}",
+        a.notes
+    );
+    // The account cannot pay: one Failure row, whose sentence says what it is and whose action the
+    // table supplies.
+    a.apply(ServerFrame::Event(env(2, trouble("quota", None))));
+    let quota: Vec<&Note> = a
+        .notes
+        .iter()
+        .map(|(_, n)| n)
+        .filter(|n| matches!(n, Note::Warned(w) if w.code == "provider_quota"))
+        .collect();
+    assert_eq!(quota.len(), 1, "a spent account is one row: {:?}", a.notes);
+    assert_eq!(
+        crate::ui::panes::notes::note_card(quota[0])
+            .expect("a warning is a card")
+            .0
+            .role,
+        Role::Failure,
+        "and it is red"
+    );
+    // And a move: the daemon's `model_fallback` row is the one that says it, so a trouble that names
+    // where the session went files nothing here.
+    let mut b = app();
+    b.apply(ServerFrame::Event(env(
+        3,
+        trouble("quota", Some("glm/glm-4.6")),
+    )));
+    assert!(
+        !b.notes.iter().any(|(_, n)| matches!(n, Note::Warned(_))),
+        "a move is one row, and it is `model_fallback`'s: {:?}",
+        b.notes
+    );
+}
+
+/// The line the daemon withdraws: the endpoint came back, or a row of its own says what happened.
+fn withdrawn(attempts: u32) -> SessionEvent {
+    let SessionEvent::ModelRetry {
+        host, said, log, ..
+    } = series(attempts, None)
+    else {
+        unreachable!("`series` answers a retry")
+    };
+    SessionEvent::ModelRetry {
+        host,
+        attempts,
+        said,
+        log,
+        ended: None,
+        gone: true,
     }
 }
 
@@ -101,7 +178,9 @@ fn one_retried_call_is_one_row_at_eighty_columns() {
         "the before half of this comparison is three rows:\n{}",
         wall.join("\n")
     );
-    let cut = "    session · model_endpoint_retry · the model endpoint… · click for details";
+    // The failure's own mark, and the count cut off behind the head of the sentence: what this
+    // comparison is about is that one attempt was one row, not the four words it gets through.
+    let cut = "    session · ! model_endpoint_retry · the model endpoi… · click for details";
     for row in &had {
         assert_eq!(
             glass(row),
@@ -206,6 +285,63 @@ fn a_second_series_is_a_second_row() {
     );
     assert!(rows[0].contains("gave up after 2 attempts"));
     assert!(rows[1].contains("retrying: 2 attempts"));
+}
+
+/// The operator's own words - *deepseek replied on the third try, why should I focus on that* - as a
+/// measurement: the line the ladder drew is TAKEN OFF the glass when the daemon withdraws it, and it
+/// leaves no row behind. `/notes` does not keep it either, because it happened and nothing came of it.
+#[test]
+fn a_withdrawn_line_leaves_nothing_on_the_glass_and_nothing_in_notes() {
+    let mut a = app();
+    a.apply(ServerFrame::Event(env_at(
+        1,
+        1_700_000_000_000,
+        series(2, None),
+    )));
+    assert_eq!(
+        retry_rows(&a.screen(80, 24)).len(),
+        1,
+        "the premise: the ladder is drawing one line\n{}",
+        a.screen(80, 24).join("\n")
+    );
+    a.apply(ServerFrame::Event(env_at(
+        2,
+        1_700_000_003_000,
+        withdrawn(2),
+    )));
+    let after = a.screen(80, 24);
+    assert!(
+        retry_rows(&after).is_empty(),
+        "the line is gone and nothing took its place:\n{}",
+        after.join("\n")
+    );
+    assert!(
+        !a.notes.iter().any(|(_, n)| matches!(n, Note::Retrying(_))),
+        "and it is not filed either: a recovery is not a row anywhere, not even in `/notes`"
+    );
+}
+
+/// The line is the Warning role, whatever the ladder ends in: something went wrong and is being
+/// handled, which is neither the red of a failure nor the quiet of a routine row.
+#[test]
+fn the_live_line_is_drawn_in_the_warning_role() {
+    let mut a = app();
+    a.apply(ServerFrame::Event(env_at(
+        1,
+        1_700_000_000_000,
+        series(3, None),
+    )));
+    let card = a
+        .notes
+        .iter()
+        .find_map(|(_, n)| {
+            matches!(n, Note::Retrying(_))
+                .then(|| crate::ui::panes::notes::note_card(n))
+                .flatten()
+        })
+        .expect("the line is a card")
+        .0;
+    assert_eq!(card.role, Role::Warning, "the live line");
 }
 
 /// The attempts are behind the row, in the popup a click opens: the row is the one line a frame

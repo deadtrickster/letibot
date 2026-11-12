@@ -37,6 +37,10 @@ pub mod kind {
     pub const NAG_FOLLOWUP: &str = "nag.followup";
     /// A compaction. n = before / after (shown unit); `attrs` carry the ledger unit.
     pub const COMPACTION: &str = "compaction";
+    /// One model endpoint's outage, once its ladder is over: `name` = the host, `outcome` =
+    /// `answered` / `gave_up`, n1 = the failed attempts, `dur_ms` = how long it was out. The line
+    /// that counts a retry is withdrawn from the screen, so this is where the count lives.
+    pub const RETRY: &str = "model.retry";
     /// A turn stopped at the context wall. n = resident / window / rounds.
     pub const WALL: &str = "wall";
     /// The "my context is full", judged. n = resident / window / score×1000.

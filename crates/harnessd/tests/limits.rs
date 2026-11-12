@@ -409,7 +409,7 @@ fn a_switch_moves_the_turn_to_the_fallback_and_back_after_the_reset() {
         home, "deepseek/deepseek-flash",
         "the session moved, and the row says where"
     );
-    let moved = said(&hub, "model_endpoint_retry");
+    let moved = said(&hub, "model_fallback");
     assert!(
         moved.iter().any(|d| d.contains("[fallback]")),
         "the operator is told the session moved: {moved:?}"
@@ -585,11 +585,11 @@ fn a_fallback_that_is_limited_too_is_skipped() {
         "and the session did not move to a model that is limited too"
     );
     assert!(
-        said(&hub, "model_endpoint_retry")
+        said(&hub, "model_fallback_skip")
             .iter()
             .any(|d| d.contains("put a time on this model's own limit")),
         "the skip is said, not silent: {:?}",
-        said(&hub, "model_endpoint_retry")
+        said(&hub, "model_fallback_skip")
     );
 
     // The wait was real: the reset resumes the turn on the model that refused it, and the way back

@@ -180,19 +180,15 @@ pub(crate) fn note_card(
             );
             Some((card, said, 0))
         }
-        // A retried call, one line, in the register the durable warning has ([`class_mark`] of
-        // [`RETRY_CODE`]): the row and the warning beside it are one outage, so they cannot be two
-        // registers. The mark is the frame's own `·` for a routine row, so the words stand alone.
+        // The model not answering, while it is still being handled: ONE line in the Warning role -
+        // something went wrong and is being retried, which is neither the red of a failure nor the
+        // quiet of a routine row. No mark, because the code is not on the line.
         Note::Retrying(r) => {
-            let (lead, role) = match class_mark(RETRY_CODE) {
-                ("·", role) => (String::new(), role),
-                (mark, role) => (format!("{mark} "), role),
-            };
             let card = Card::new(
-                format!("{lead}{} · {CLICK}", r.line()),
+                format!("{} · {CLICK}", r.line()),
                 0,
                 r.line(),
-                role,
+                Role::Warning,
                 format!("model retry · {}", r.host),
             );
             Some((card, retry_popup(r), r.ts))
@@ -248,10 +244,6 @@ fn retry_popup(r: &Retry) -> String {
     }
     text
 }
-
-/// The daemon's warning code for the same outage. The row and the durable warning it settles into
-/// are one fact, so the register comes from this code and not from the row's own kind name.
-pub(crate) const RETRY_CODE: &str = "model_endpoint_retry";
 
 /// A note as a card's one line, framed the way a session row's card is, so one card looks the same
 /// whichever way it arrived: the same fact from a warning and from a transcript row was two

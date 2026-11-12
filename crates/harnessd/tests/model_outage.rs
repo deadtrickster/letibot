@@ -1,29 +1,28 @@
-//! One row per outage of one model endpoint, with a counter in it.
+//! A retry that works leaves nothing; a ladder that gives up leaves one row.
 //!
 //! The report was three rows in three seconds, one per attempt, the same sentence with a different
-//! number in it
+//! number in it - and then two more when the endpoint came back:
 //!
 //! ```text
 //! session · model_endpoint_retry · the model endpoint at api.deepseek.com did not answer…   10:31:22
 //! session · model_endpoint_retry · the model endpoint at api.deepseek.com did not answer…   10:31:23
 //! session · model_endpoint_retry · the model endpoint at api.deepseek.com did not answer…   10:31:25
+//! session · answered after 3 attempts, 12s
+//! session · model_endpoint_answered · the model endpoint at api.deepseek.com answered again…
 //! ```
 //!
-//! The daemon keeps an [`Outage`] per endpoint, changes it on every failed attempt and publishes
-//! nothing until the round ends: the row then carries the count, when the last attempt was and
-//! that attempt's own sentence, and a recovery is said once.
+//! The operator's question is the rule: *deepseek replied on the third try - why should I focus on
+//! that fact?* A ladder in flight is ONE live line, rewritten in place and withdrawn when it ends;
+//! what a person is left with is one row if the ladder was spent, one row if the session moved, and
+//! nothing at all if the endpoint came back. The count is not lost: `metrics.db` has it per outage
+//! and on the turn's own record, which is where a question about the ladder belongs.
 //!
 //! A real daemon, a real socket, a real head and a loopback stub standing in for the provider -
 //! nothing is mocked above the wire and nothing is injected into the retry policy, because the
-//! subject is *how many rows one outage is worth*: three failed attempts give ONE row that moves -
-//! `attempts 2`, `attempts 3` - and then settles to `gave up after 3 attempts`, with the durable
-//! `model_endpoint_retry` warning beside it written once. A fourth attempt that answers settles the
-//! same row as `answered after 3 attempts` and writes one `model_endpoint_answered` row;
-//! a second outage starts its own count.
+//! subject is *how many rows one outage is worth*. The waits are the ladder's own - 1 s, 2 s, 4 s -
+//! since a fixture that shortened them would measure a retry loop this tree does not have.
 //!
-//! One test and three sessions, because `XDG_CONFIG_HOME` is process-global. The waits are the
-//! ladder's own - 1 s, 2 s, 4 s - since a fixture that shortened them would measure a retry loop
-//! this tree does not have.
+//! One test and three sessions, because `XDG_CONFIG_HOME` is process-global.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -46,7 +45,6 @@ const ANSWER: &str = "the-endpoint-came-back";
 
 /// The prompts. Nothing tool-shaped in them: this file is about the endpoint, not the work.
 const PROMPT: &str = "say hello";
-const NEXT: &str = "and once more";
 
 /// The provider's own sentence, as it arrives in a 503's body - the words the row must keep
 /// behind the click, because that is what gets pasted into a bug report.
@@ -163,25 +161,28 @@ fn read_request(s: &mut TcpStream) -> String {
 /// Everything one head was told, folded to the facts this file asserts on.
 #[derive(Default)]
 struct Rec {
-    /// Every `model_endpoint_retry` sentence, in order - the row a failing outage is worth.
+    /// Every `model_endpoint_retry` sentence, in order - the ONE row a spent ladder is worth.
     retries: Vec<String>,
-    /// Every `model_endpoint_answered` sentence, in order - the row a recovery is worth.
+    /// Every `model_endpoint_answered` sentence. This build writes none: a recovery is not a row,
+    /// and the vector is here so that a daemon that starts writing one again fails this test.
     answered: Vec<String>,
+    /// Every `model_fallback` sentence - the ONE row a session moving to another model is worth.
+    fallback: Vec<String>,
     /// Turns that ended FAILED.
     failed: usize,
-    /// Every `ModelRetry` frame, in order - the one row the series is, as the head was told it.
-    /// Three failed attempts are three frames of ONE row: two live and one settled.
+    /// Every `ModelRetry` frame, in order - the ONE live line, as the head was told it. Three
+    /// failed attempts are three frames of it: two live and one that withdraws it.
     series: Vec<Row>,
 }
 
-/// One `ModelRetry`, folded: the count, the line the row was showing, the attempts behind the
-/// popup and the line it settled to (`None` while the ladder is still trying).
+/// One `ModelRetry`, folded: the count, the line it was showing, the attempts behind the popup, and
+/// whether the frame took the line down (`gone`). No ending text: this build never settles a line.
 #[derive(Debug, Clone)]
 struct Row {
     attempts: u32,
     said: String,
     log: Vec<String>,
-    ended: Option<String>,
+    gone: bool,
 }
 
 fn classify(frame: ServerFrame) -> Option<Seen> {
@@ -191,6 +192,7 @@ fn classify(frame: ServerFrame) -> Option<Seen> {
                 match code.as_str() {
                     "model_endpoint_retry" => Some(Seen::Retry(detail.clone())),
                     "model_endpoint_answered" => Some(Seen::Answered(detail.clone())),
+                    "model_fallback" => Some(Seen::Fallback(detail.clone())),
                     _ => None,
                 }
             }
@@ -199,13 +201,13 @@ fn classify(frame: ServerFrame) -> Option<Seen> {
                 attempts,
                 said,
                 log,
-                ended,
+                gone,
                 ..
             } => Some(Seen::Series(Row {
                 attempts: *attempts,
                 said: said.clone(),
                 log: log.clone(),
-                ended: ended.clone(),
+                gone: *gone,
             })),
             _ => None,
         },
@@ -216,6 +218,7 @@ fn classify(frame: ServerFrame) -> Option<Seen> {
 enum Seen {
     Retry(String),
     Answered(String),
+    Fallback(String),
     Failed,
     Series(Row),
 }
@@ -224,6 +227,7 @@ fn fold(rec: &mut Rec, inb: Inbound) {
     match classify(Inbound::frame(inb)) {
         Some(Seen::Retry(detail)) => rec.retries.push(detail),
         Some(Seen::Answered(detail)) => rec.answered.push(detail),
+        Some(Seen::Fallback(detail)) => rec.fallback.push(detail),
         Some(Seen::Failed) => rec.failed += 1,
         Some(Seen::Series(row)) => rec.series.push(row),
         None => {}
@@ -282,8 +286,8 @@ fn config(scratch: &std::path::Path, tag: &str, retries: u32) -> Config {
     // The ladder this file measures. `letibot_http::retry` waits 1 s, 2 s, 4 s…, so a scenario's
     // cost is the policy's and not a fixture's.
     cfg.http_retries = retries;
-    // No `[fallback]` in the providers.toml this file writes, so an exhausted ladder ends the
-    // turn rather than moving the session - which is the case A is about.
+    // No `[fallback]` for the first two scenarios, so an exhausted ladder ends the turn rather than
+    // moving the session; the third sets it, and reads the one row a move is worth.
     cfg.fallback = Vec::new();
     cfg
 }
@@ -370,29 +374,37 @@ fn one_outage_is_one_row_with_a_counter() {
         format!(
             "# Written by model_outage.rs. Nothing here is the operator's file.\n\
              [deepseek]\nkey = \"sk-test\"\n\
-             url = \"http://127.0.0.1:{}/v1/chat/completions\"\n",
-            endpoint.port
+             url = \"http://127.0.0.1:{port}/v1/chat/completions\"\n\n\
+             # The name scenario C's `[fallback]` moves the session to: a fallback names another of\n\
+             # the box's models, and a name with no key is refused before it is ever tried.\n\
+             [glm]\nkey = \"sk-test\"\n\
+             url = \"http://127.0.0.1:{port}/v1/chat/completions\"\n",
+            port = endpoint.port
         ),
     )
     .expect("the config file");
 
     let first = config(&scratch, "probe", 2);
+    // `metrics.db` is where a recovered retry is answerable at all, so the writer this daemon's CLI
+    // would start is started here: beside the store, which for this test is a scratch file.
+    letibot_harnessd::instruments::start_writer(&first);
     let parts = Parts::load(&first).expect("the byte vocabulary needs no model file");
     // The operator's per-project mode is not this test's business (`wired.rs`'s rule).
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
 
-    // A. Three failed attempts, then the ladder gives up.
-    //     //
-    // One row, and it moves: the live line at 2 attempts, again at 3, then the same row settled to the give-up. The durable warning beside it is one row, with the count.
+    // A. A ladder that runs out: three failed attempts, then the single row it is worth.
+    //
+    // The line moves while the ladder tries (2 attempts, then 3) and is then WITHDRAWN, and the only
+    // row this session is left with is the failure that says what happened.
     endpoint.refuse(100);
     let before = endpoint.seen();
     let cfg = config(&scratch, "givesup", 2);
     let rec = drive(&parts, cfg, |client, rx, _hub, rec| {
         client.prompt(0, PROMPT).expect("the prompt is accepted");
-        // Waits for the SETTLED row and not only for the failed turn: without it the last frame
+        // Waits for the withdrawn line and not only for the failed turn: without it the last frame
         // could still be in the socket, and the assertions below would read a missing ending.
         watch(rx, rec, |rec| {
-            rec.failed > 0 && rec.series.last().is_some_and(|r| r.ended.is_some())
+            rec.failed > 0 && rec.series.last().is_some_and(|r| r.gone)
         });
     });
     let attempts = endpoint.seen() - before;
@@ -400,15 +412,11 @@ fn one_outage_is_one_row_with_a_counter() {
         attempts, 3,
         "the ladder did not take the round three times, so this scenario measured nothing"
     );
-    let moves: Vec<(u32, bool)> = rec
-        .series
-        .iter()
-        .map(|r| (r.attempts, r.ended.is_some()))
-        .collect();
+    let moves: Vec<(u32, bool)> = rec.series.iter().map(|r| (r.attempts, r.gone)).collect();
     assert_eq!(
         moves,
         vec![(2, false), (3, false), (3, true)],
-        "three failed attempts are ONE row that moves - 2, then 3 - and then settles: {:?}",
+        "three failed attempts are ONE line that moves - 2, then 3 - and then goes: {:?}",
         rec.series
     );
     let live = &rec.series[0];
@@ -416,24 +424,13 @@ fn one_outage_is_one_row_with_a_counter() {
         live.said
             .starts_with("retrying: 2 attempts, 503 server error, ")
             && live.log.len() == 2,
-        "the live row names the count and the last four words, and the popup holds one line per \
+        "the live line names the count and the last four words, and the popup holds one line per \
          failed attempt: {live:?}"
-    );
-    let settled = rec
-        .series
-        .last()
-        .unwrap()
-        .ended
-        .as_deref()
-        .unwrap_or_default();
-    assert_eq!(
-        settled, "gave up after 3 attempts: 503 server error",
-        "the row settles on the count the reader was watching and the failure it stopped on"
     );
     assert_eq!(
         rec.retries.len(),
         1,
-        "three failed attempts are ONE durable row, not one per attempt: {:?}",
+        "three failed attempts are ONE row, and it is the one the ladder's end is worth: {:?}",
         rec.retries
     );
     let row = &rec.retries[0];
@@ -446,23 +443,25 @@ fn one_outage_is_one_row_with_a_counter() {
         "and the provider's own sentence, which is what a bug report gets: {row}"
     );
     assert!(
-        rec.answered.is_empty(),
-        "an endpoint that never came back has nothing to say about answering: {:?}",
-        rec.answered
+        rec.answered.is_empty() && rec.fallback.is_empty(),
+        "an endpoint that never came back has nothing to say about answering, and the session did \
+         not move: {:?} / {:?}",
+        rec.answered,
+        rec.fallback
     );
 
-    // ── B. A fourth attempt that answers ──────────────────────────────────────────────── The
-    // recovery is said once, with the count - a silent one leaves a person believing the
-    // endpoint is still down - and the row the reader watched settles to the recovery.
+    // ── B. The endpoint comes back on the fourth attempt ────────────────────────────────
+    //
+    // The operator's question is this scenario: three failures, then an answer, and NOTHING is left on
+    // the screen. The count is not lost - it is in `metrics.db` and on the turn's own record, which is
+    // what the last third of this scenario reads.
     endpoint.refuse(3);
     let before = endpoint.seen();
     let cfg = config(&scratch, "comesback", 3);
     let rec = drive(&parts, cfg, |client, rx, hub, rec| {
         client.prompt(0, PROMPT).expect("the prompt is accepted");
         watch(rx, rec, |rec| {
-            answers(hub) >= 1
-                && !rec.answered.is_empty()
-                && rec.series.last().is_some_and(|r| r.ended.is_some())
+            answers(hub) >= 1 && rec.series.last().is_some_and(|r| r.gone)
         });
     });
     assert_eq!(
@@ -470,83 +469,111 @@ fn one_outage_is_one_row_with_a_counter() {
         4,
         "the stub answered on the fourth attempt, so three failed and one was taken again"
     );
-    let settled = rec
-        .series
-        .last()
-        .and_then(|r| r.ended.clone())
-        .unwrap_or_default();
-    assert!(
-        settled.starts_with("answered after 3 attempts, "),
-        "the recovered row settles on the attempts that FAILED, which is the count the reader \
-         was watching: {:?}",
+    assert_eq!(
+        rec.series.last().map(|r| r.attempts),
+        Some(3),
+        "the withdrawn line carried the three that had failed, which is the count a reader watched: \
+         {:?}",
         rec.series
     );
     assert!(
-        !settled.contains("4 "),
-        "a count that jumps by one as the row settles reads as a different series: {settled}"
-    );
-    assert!(
         rec.retries.is_empty(),
-        "a recovered outage writes no retry row: {:?}",
+        "a recovered outage writes NO retry row: {:?}",
         rec.retries
     );
-    assert_eq!(
-        rec.answered.len(),
-        1,
-        "the recovery is said exactly once: {:?}",
+    assert!(
+        rec.answered.is_empty(),
+        "and no recovery row either: `deepseek replied on the third try` is not a fact to focus on: \
+         {:?}",
         rec.answered
     );
-    let said = &rec.answered[0];
+    // What happened, kept where a question about it belongs: one `model.retry` row for the outage and
+    // the count on the turn's own record.
     assert!(
-        said.contains("answered again after 3 attempts / "),
-        "the recovery names how many attempts it took: {said}"
+        letibot_metrics::flush(Duration::from_secs(5)),
+        "the metrics writer did not take what the daemon emitted"
     );
-    assert!(
-        said.contains(REFUSAL),
-        "and keeps the last thing the endpoint said, for the click: {said}"
+    assert_eq!(
+        retried(&scratch, "model-outage-comesback", "answered"),
+        vec![3],
+        "metrics.db holds the attempts that failed, once per outage"
+    );
+    assert_eq!(
+        turn_retries(&scratch, "model-outage-comesback"),
+        Some(3),
+        "and the turn's own record carries the count"
     );
 
-    // ── C. A second outage in the same session is a NEW row ─────────────────────────────
+    // ── C. A spent ladder the session moves away from leaves ONE row ─────────────────────
     //
-    // Two outages are not one counter: the second says `after 1 attempt`, not `after 4`.
-    endpoint.refuse(1);
-    let cfg = config(&scratch, "second", 2);
-    let ep = endpoint.clone();
-    let rec = drive(&parts, cfg, move |client, rx, hub, rec| {
+    // `[fallback]` names a second model, so the ladder's end is a move rather than a failure: one row,
+    // whose sentence says where the session went, and no failure row beside it.
+    endpoint.refuse(3);
+    let mut cfg = config(&scratch, "moves", 2);
+    cfg.fallback = vec!["glm/glm-4.6".to_string()];
+    let rec = drive(&parts, cfg, |client, rx, _hub, rec| {
         client.prompt(0, PROMPT).expect("the prompt is accepted");
-        watch(rx, rec, |rec| answers(hub) >= 1 && !rec.answered.is_empty());
-        // The second outage, in the same session and against the same endpoint.
-        ep.refuse(1);
-        client
-            .prompt(0, NEXT)
-            .expect("the second prompt is accepted");
-        watch(rx, rec, |rec| answers(hub) >= 2 && rec.answered.len() >= 2);
+        watch(rx, rec, |rec| {
+            !rec.fallback.is_empty() && rec.series.last().is_some_and(|r| r.gone)
+        });
     });
     assert_eq!(
-        rec.answered.len(),
-        2,
-        "each outage earns its own row: {:?}",
-        rec.answered
+        rec.fallback.len(),
+        1,
+        "the move is said exactly once: {:?}",
+        rec.fallback
     );
     assert!(
-        rec.answered[0].contains("after 1 attempt /"),
-        "the first outage was one failed attempt: {:?}",
-        rec.answered[0]
-    );
-    assert!(
-        rec.answered[1].contains("after 1 attempt /"),
-        "and the second starts its own count rather than continuing the first: {:?}",
-        rec.answered[1]
+        rec.fallback[0].contains("the session moves to glm/glm-4.6"),
+        "and its sentence names where the session went: {}",
+        rec.fallback[0]
     );
     assert!(
         rec.retries.is_empty(),
-        "neither outage was one the ladder gave up on: {:?}",
+        "a move is not a failure and files no failure row: {:?}",
         rec.retries
     );
     assert!(
-        rec.series.is_empty(),
-        "a failure the ladder never retried is not a series, and draws no row of its own - the \
-         turn's own ending is the whole of the news: {:?}",
+        rec.series.last().is_some_and(|r| r.gone),
+        "and the line the reader was watching goes with it: {:?}",
         rec.series
     );
+}
+
+/// The failed attempts `metrics.db` recorded for one session's outages, in the order they ended - the
+/// count the live line used to hold, and half the reason a recovered retry can leave no row behind.
+fn retried(scratch: &std::path::Path, session: &str, outcome: &str) -> Vec<u64> {
+    use letibot_metrics::store::rusqlite::params;
+    let db = scratch.join("metrics.db");
+    let conn =
+        letibot_metrics::store::open(&db).expect("the metrics file this test's daemon wrote");
+    let mut stmt = conn
+        .prepare(
+            "SELECT n1 FROM event WHERE kind = 'model.retry' AND session_id = ?1 AND \
+             outcome = ?2 ORDER BY id",
+        )
+        .expect("the event table");
+    stmt.query_map(params![session, outcome], |r| r.get::<_, Option<i64>>(0))
+        .expect("the query")
+        .filter_map(Result::ok)
+        .flatten()
+        .map(|n| n as u64)
+        .collect()
+}
+
+/// The retry count on the turn's own record: `turn.end`'s `retries`, summed over every turn the
+/// session ran, which is the number a person asking *how hard did it try* reads.
+fn turn_retries(scratch: &std::path::Path, session: &str) -> Option<u64> {
+    use letibot_metrics::store::rusqlite::params;
+    let db = scratch.join("metrics.db");
+    let conn =
+        letibot_metrics::store::open(&db).expect("the metrics file this test's daemon wrote");
+    conn.query_row(
+        "SELECT SUM(CAST(json_extract(attrs, '$.retries') AS INTEGER)) FROM event \
+         WHERE kind = 'turn.end' AND session_id = ?1",
+        params![session],
+        |r| r.get::<_, Option<i64>>(0),
+    )
+    .expect("the event table")
+    .map(|n| n as u64)
 }

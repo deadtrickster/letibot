@@ -278,9 +278,9 @@ impl App {
         }
     }
 
-    /// A provider in trouble, as one row: the same sentence a warning is, with the model and the
-    /// reset time the type carries and the prose does not. The row's code is the kind, so a burst of
-    /// rate limits reads as one line rather than as a paragraph.
+    /// A provider in trouble, in the one place it belongs: a rate limit, a timeout and a stall are
+    /// the LIVE line's business (the ladder is handling them, and [`App::on_model_retry`] draws it),
+    /// so they file no row here; a spent account and a move are the two that do.
     pub(crate) fn on_provider_trouble(&mut self, e: SessionEvent, ts: u64) -> Disposition {
         let SessionEvent::ProviderTrouble {
             kind,
@@ -288,11 +288,19 @@ impl App {
             detail,
             reset_ms,
             count,
-            ..
+            switched_to,
         } = e
         else {
             unreachable!("on_provider_trouble was handed an event it does not handle")
         };
+        // A move the daemon made is said by `model_fallback`, with the refusal that caused it and
+        // where the session went: this event's `switched_to` is the same fact as a type, and a
+        // second row for it would be the two-rows-for-one-event defect this head keeps deleting.
+        if switched_to.is_some() || kind != "quota" {
+            return Disposition::Filtered;
+        }
+        // The account cannot pay: no wait lifts it, so this is the one trouble that is a row - a
+        // Failure, whose action is the table's (`provider_quota`).
         let mut said = format!("{model}: {detail}");
         if let Some(at) = reset_ms {
             let at = crate::ui::transcript::blocks::clock_time(at);
@@ -311,9 +319,10 @@ impl App {
         Disposition::Rendered
     }
 
-    /// One model call being retried, as ONE row whatever the attempt: the wire sends the row's whole value, so the row
-    /// is rewritten rather than added to. A count that goes DOWN is a second outage; a late head must not fold two
-    /// series into one row.
+    /// The model not answering, as ONE live line whatever the attempt: the wire sends the line's whole
+    /// value, so it is rewritten rather than added to. A count that goes DOWN is a second outage; a
+    /// late head must not fold two series into one line. `gone` takes the line down and leaves nothing
+    /// behind - a recovered retry is not a finding, and a spent ladder has one row of its own.
     pub(crate) fn on_model_retry(&mut self, e: SessionEvent, ts: u64) -> Disposition {
         let SessionEvent::ModelRetry {
             host,
@@ -321,6 +330,7 @@ impl App {
             said,
             log,
             ended,
+            gone,
         } = e
         else {
             unreachable!("on_model_retry was handed an event it does not handle")
@@ -328,6 +338,12 @@ impl App {
         let live = self.notes.iter().position(
             |(_, n)| matches!(n, Note::Retrying(r) if r.live() && r.attempts <= attempts),
         );
+        if gone {
+            if let Some(i) = live {
+                self.drop_note(i);
+            }
+            return Disposition::Rendered;
+        }
         match live {
             None => self.file_retry(host, attempts, said, log, ended, ts),
             Some(i) => {

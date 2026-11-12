@@ -2186,10 +2186,10 @@ impl Inner {
         if let SessionEvent::Filling { done, total, .. } = &event {
             self.filling_now = (*done < *total).then(|| event.clone());
         }
-        // And the retry series, which is `Filling`'s rule with the ending as the zero: the same
-        // event carries the row's last value, so a series that has one is no longer in flight.
-        if let SessionEvent::ModelRetry { ended, .. } = &event {
-            self.retry_now = ended.is_none().then(|| event.clone());
+        // And the retry line, which is `Filling`'s rule with the ending as the zero: a line that has
+        // settled or gone is not in flight, so a head attaching now is not sent one it cannot end.
+        if let SessionEvent::ModelRetry { ended, gone, .. } = &event {
+            self.retry_now = (ended.is_none() && !*gone).then(|| event.clone());
         }
         self.tap.observe(self.log.session_id(), &event);
         let env = self.log.append(event);

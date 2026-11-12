@@ -107,6 +107,18 @@ impl App {
         }
     }
 
+    /// Take a note out of the list altogether - the model's live line, when the daemon withdraws it:
+    /// a recovered retry leaves nothing behind and a spent ladder has a row of its own. Unlike
+    /// [`App::retire`] this leaves nothing in `/notes` either, so the walk is rebuilt rather than
+    /// patched: a mark holds an index into this list, and the list has just got shorter.
+    pub(crate) fn drop_note(&mut self, i: usize) {
+        if i >= self.notes.len() {
+            return;
+        }
+        self.notes.remove(i);
+        self.invalidate_history();
+    }
+
     /// Is this note one the reader does not see? A retired note is not rendered and nothing else changes: it stays in
     /// `notes`, [`App::notes_lines`] lists it, [`App::retired_notes`] counts it. The key set, the
     /// muted kinds and the watermark are three ways to the one question.

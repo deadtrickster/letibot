@@ -315,6 +315,7 @@ fn a_head_that_attaches_mid_series_is_told_the_series_and_a_late_one_is_not() {
         said: format!("retrying: {attempts} attempts, 429 rate limited, 41s"),
         log: vec!["10:31:22 · 429 rate limited".into()],
         ended: ended.map(str::to_string),
+        gone: false,
     };
     let rows = |b: &crate::cursor::Batch| -> Vec<u32> {
         b.events()

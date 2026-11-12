@@ -393,6 +393,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
                 "10:31:41 · timeout".into(),
             ],
             ended: Some("answered after 3 attempts, 52s".into()),
+            gone: false,
         },
     ]
 }

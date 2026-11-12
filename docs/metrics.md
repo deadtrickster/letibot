@@ -104,6 +104,7 @@ not in `n1/n2/n3` is in `attrs`.
 | `nag` | `plan-check` | `sent` | - | row, row_status, operator_row |
 | `nag.followup` | `plan-check` | `touched`, `untouched` | - | row, status_before, status_after |
 | `compaction` | `pre-wall`, `refused-door`, `operator` | `ok`, `failed` | before / after, shown unit | before_ledger, after_ledger, unit |
+| `model.retry` | the endpoint | `answered`, `gave_up` | failed attempts | turn |
 | `wall` | - | `stopped` | resident / window / rounds | unit, ledger_resident, ledger_window, continues |
 | `wall` | - | `helped`, `escalated`, `stuck`, `released` | before / measured / window | fold, next, unit |
 | `context.claim` | - | `slapped`, `repeated`, `true-report`, `at-wall`, `unmeasured` | resident / window / score x1000 | snippet |
@@ -296,6 +297,7 @@ rest are direct emits.
 | worker queue wait | `worker_cmd` with a `Clock` | `Daemon::run`, `sessions.rs` |
 | slow idle passes | `worker_pass` | the idle arm: sweep, room, todo-check, queue-census, park, review |
 | compaction and wall | `compaction`, `operator_compaction`, `wall`, `wall_change` | `Harness::meter_compaction`, `Sessions::compact`, the turn tail, `harness/wall.rs` |
+| retry ladders | `TurnMeter::retry` via `Harness::settle_outage` | `harness/turns.rs`; the count is also on `turn.end`'s `retries`, because a recovered retry leaves no row |
 | nags | `TurnMeter::nag` via `Harness::meter_nag` | `harness/nags.rs`; the follow-up by `turn_ends` |
 | context claims | `context_claim` | `harness/turns.rs` |
 | memory samples | `mem_sample` | `memwatch`, every fifth tick and at every census or bound line |
