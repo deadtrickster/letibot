@@ -19,8 +19,8 @@ pub use region::TokenRegion;
 /// type is public API here whether or not the name is.
 pub use rusqlite;
 pub use store::{
-    MergePriority, MergeRow, MergeState, ReviewRow, ReviewState, SessionRecord, StablePrefixRecord,
-    Store,
+    Archived, MergePriority, MergeRow, MergeState, ReviewRow, ReviewState, SessionRecord,
+    StablePrefixRecord, Store,
 };
 pub use vocab::{
     ATTR_CONTROL, ATTR_USER_DEFINED, BYTES_SOURCE, ResolveCause, TokenId, Vocab, VocabBackend,

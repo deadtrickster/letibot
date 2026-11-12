@@ -431,3 +431,44 @@ fn a_batch_a_wall_door_said_and_then_failed_is_not_owed_again() {
         "run_after_reseat put a said batch back"
     );
 }
+
+/// Opening a session by id is the way back from an archive: the row is cleared at the one door every
+/// opening takes, and the note names the reason it had been away. No harness and no GGUF - the seam
+/// is the store write the open makes.
+#[test]
+fn opening_an_archived_session_takes_it_back_into_the_list() {
+    let dir = Scratch::new("unarchive-on-open");
+    let store = Store::open(&dir.0.join("one.db")).expect("a store");
+    store
+        .put_session(&SessionRecord {
+            id: "s-away".into(),
+            title: Some("the one put away".into()),
+            model_id: "qwen".into(),
+            dialect_sha: "d".into(),
+            workspace_root: "/w".into(),
+            owner: "dead".into(),
+            approvers: Vec::new(),
+            role: None,
+            parent_session_id: None,
+        })
+        .expect("a session row");
+    store
+        .set_archived("s-away", true, Some("the question was answered"))
+        .expect("the archive");
+    assert!(store.list_sessions().expect("the list").is_empty());
+
+    let stored = store.session("s-away").expect("a read").expect("the row");
+    let mut notes = Vec::new();
+    crate::harness::open::unarchive_on_open(Some(&store), &stored, &mut notes);
+
+    assert_eq!(
+        store.list_sessions().expect("the list").len(),
+        1,
+        "opening it by id put it back"
+    );
+    assert_eq!(notes.len(), 1, "and the head is told why it was away");
+    assert!(
+        notes[0].contains("the question was answered"),
+        "the note carries the archiver's reason: {notes:?}"
+    );
+}

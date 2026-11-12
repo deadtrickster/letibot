@@ -2027,6 +2027,17 @@ impl Head {
         self.set_model_within(want, MODEL_PATIENCE)
     }
 
+    /// Tell the daemon to put this session out of sight - `archive` on the frame, which closes it
+    /// here and writes the row there. Nothing is deleted; the frame's answer is a `Sessions` list
+    /// the head applies like any other, so this returns as soon as the frame is written.
+    pub fn archive(&self, reason: &str) -> Result<(), String> {
+        self.may_write()?;
+        let mut c = self.said_client()?;
+        c.archive_session(self.session.as_str(), reason)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     /// [`Head::set_model`] with the wait named, so the silence it reports is testable.
     pub fn set_model_within(&self, want: &str, patience: Duration) -> Result<String, String> {
         self.may_write()?;

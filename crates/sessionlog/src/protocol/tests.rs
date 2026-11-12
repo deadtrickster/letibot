@@ -11,6 +11,7 @@ fn every_frame_is_accounted_for_at_this_version() {
             | ClientFrame::Answer { .. }
             | ClientFrame::AnswerQuestion { .. }
             | ClientFrame::AnswerTodo { .. }
+            | ClientFrame::ArchiveSession { .. }
             | ClientFrame::Askpass { .. }
             | ClientFrame::Attach { .. }
             | ClientFrame::CloseSession { .. }
@@ -63,6 +64,7 @@ fn every_frame_is_accounted_for_at_this_version() {
             | ClientFrame::TermOpen { .. }
             | ClientFrame::TermResize { .. }
             | ClientFrame::TermStatus
+            | ClientFrame::UnarchiveSession { .. }
             | ClientFrame::WithdrawPrompts { .. } => {}
         }
     }
@@ -639,6 +641,17 @@ fn every_frame_round_trips() {
             client_request_id: "r6".into(),
             session_id: "s-2".into(),
             title: "the cache question".into(),
+        },
+        // 45's pair, on the round trip like every other: the reason is the field an older head
+        // cannot send, and `default` is what makes that a frame a daemon still parses.
+        ClientFrame::ArchiveSession {
+            client_request_id: "r7".into(),
+            session_id: "s-2".into(),
+            reason: "the question was answered".into(),
+        },
+        ClientFrame::UnarchiveSession {
+            client_request_id: "r8".into(),
+            session_id: "s-2".into(),
         },
         ClientFrame::Switch {
             session_id: "s-2".into(),

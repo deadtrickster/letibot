@@ -92,6 +92,8 @@ pub fn door(frame: &ClientFrame) -> Option<&'static str> {
         ClientFrame::NewSession { .. } => "/new",
         ClientFrame::ResumeSession { .. } => "resuming a session",
         ClientFrame::RenameSession { .. } => "/rename",
+        ClientFrame::ArchiveSession { .. } => "archiving a session",
+        ClientFrame::UnarchiveSession { .. } => "unarchiving a session",
         ClientFrame::Switch { .. } => "switching sessions",
         ClientFrame::Peek { .. } => "reading another session",
         ClientFrame::FetchRow { .. } | ClientFrame::FetchRows { .. } => "reading the conversation",

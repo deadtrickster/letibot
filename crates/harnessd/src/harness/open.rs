@@ -509,6 +509,8 @@ impl Harness {
                     cfg.session_id, cfg.session_id, cfg.session_id
                 )));
             }
+            // Opening by id is the way back: an archived session is out of sight, not out of reach.
+            unarchive_on_open(store.as_ref(), st, notes);
             if !st.workspace_root.is_empty()
                 && std::path::Path::new(&st.workspace_root) != cfg.workspace
             {
@@ -4084,6 +4086,38 @@ pub(crate) fn downgraded_ruleset(
         rules.push(Rule::new(&name, "*", Action::Deny));
     }
     rules
+}
+
+/// Opening a session BY ID is the way back from an archive: it is out of sight, not out of reach.
+/// The row is cleared here, at the one door every opening takes, so a resume from the CLI and a
+/// `ResumeSession` from a head both count. A store that refuses is said, not swallowed: the next
+/// listing would otherwise put it away again with nobody told.
+pub(crate) fn unarchive_on_open(
+    store: Option<&Store>,
+    stored: &StoredSession,
+    notes: &mut Vec<String>,
+) {
+    if stored.archived_ms.is_none() {
+        return;
+    }
+    let reason = stored
+        .archived_reason
+        .as_deref()
+        .filter(|r| !r.is_empty())
+        .map(|r| format!(" ({r})"))
+        .unwrap_or_default();
+    match store.map(|s| s.set_archived(&stored.id, false, None)) {
+        Some(Ok(())) => notes.push(format!(
+            "this session was archived{reason} — opening it by id took it back into the list"
+        )),
+        Some(Err(e)) => notes.push(format!(
+            "this session was archived{reason}, and the row could not be cleared ({e}) — it stays \
+             out of the listing until an unarchive reaches it"
+        )),
+        None => notes.push(format!(
+            "this session was archived{reason} and this daemon has no store to take it back"
+        )),
+    }
 }
 
 /// Did this session inherit a whole-host standing from an ancestor? The store records only the SEAT, which is not

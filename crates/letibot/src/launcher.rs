@@ -1689,6 +1689,7 @@ pub const VALUE_FLAGS: &[&str] = &[
     "-s",
     "--rename",
     "--delete",
+    "--archive",
     "--web-search",
     "--brave-key",
     "--oracle",
@@ -1716,6 +1717,9 @@ pub const KNOWN_FLAGS: &[&str] = &[
     "--all",
     "--sessions",
     "--list",
+    "--archived",
+    "--archived-only",
+    "--unarchive",
     "--stop",
     "--status",
     "--continue",
@@ -1726,6 +1730,7 @@ pub const KNOWN_FLAGS: &[&str] = &[
     "-s",
     "--rename",
     "--delete",
+    "--archive",
     "--mode",
     "--force",
     "--vm",
@@ -1749,10 +1754,24 @@ pub enum Action {
     Help,
     /// `--sessions` / `--list`: the store's sessions, straight from the daemon binary.
     Sessions,
+    /// `--archive ID [REASON]`: out of sight and kept. `--unarchive ID` is its other half, and
+    /// the two are the only verbs here that are neither a read nor a removal.
+    Archive {
+        id: String,
+        reason: String,
+    },
+    Unarchive {
+        id: String,
+    },
     /// `--rename ID [TITLE]`, where an empty title clears the name.
-    Rename { id: String, title: String },
+    Rename {
+        id: String,
+        title: String,
+    },
     /// `--delete ID`.
-    Delete { id: String },
+    Delete {
+        id: String,
+    },
     /// `--ls` / `--list-all`: every folder's daemon, numbered, with what is live inside.
     ListAll,
     /// `--daemons`: the records, each checked against a live listener.
@@ -1766,18 +1785,28 @@ pub enum Action {
         target: String,
     },
     /// `--attach [N|DIR]`: connect only, starting nothing.
-    Attach { target: String },
+    Attach {
+        target: String,
+    },
     /// `attach github <scope>`: the reviewer seat on an org or one repository.
-    Github { scope: String },
+    Github {
+        scope: String,
+    },
     /// `--continue`: reopen the newest session in THIS workspace.
     Continue,
     /// `--session ID`.
-    Resume { id: String },
+    Resume {
+        id: String,
+    },
     /// `--new [TITLE]`.
-    New { title: String },
+    New {
+        title: String,
+    },
     /// The plain invocation. `one_shot` is non-empty when a bare prompt followed, which
     /// means no daemon is started and no head is opened.
-    Bring { one_shot: Vec<String> },
+    Bring {
+        one_shot: Vec<String>,
+    },
 }
 
 /// Whether `a` is a flag the launcher knows.
@@ -1849,6 +1878,13 @@ pub fn decide(args: &[String]) -> Result<(Seat, Action), String> {
             title: rest.get(2).cloned().unwrap_or_default(),
         },
         "--delete" => Action::Delete {
+            id: rest.get(1).cloned().unwrap_or_default(),
+        },
+        "--archive" => Action::Archive {
+            id: rest.get(1).cloned().unwrap_or_default(),
+            reason: rest.get(2).cloned().unwrap_or_default(),
+        },
+        "--unarchive" => Action::Unarchive {
             id: rest.get(1).cloned().unwrap_or_default(),
         },
         "--ls" | "--list-all" => Action::ListAll,
@@ -2068,6 +2104,30 @@ mod dispatch_tests {
                 id: "abc".into(),
                 title: "a new name".into()
             }
+        );
+    }
+
+    /// `--archive ID [REASON]` and `--unarchive ID`: the reason is optional, and the two are the
+    /// verbs a session is put away with and asked for with.
+    #[test]
+    fn archive_and_unarchive_reach_their_own_actions() {
+        assert_eq!(
+            act(&["--archive", "abc"]),
+            Action::Archive {
+                id: "abc".into(),
+                reason: String::new()
+            }
+        );
+        assert_eq!(
+            act(&["--archive", "abc", "the question was answered"]),
+            Action::Archive {
+                id: "abc".into(),
+                reason: "the question was answered".into()
+            }
+        );
+        assert_eq!(
+            act(&["--unarchive", "abc"]),
+            Action::Unarchive { id: "abc".into() }
         );
     }
 

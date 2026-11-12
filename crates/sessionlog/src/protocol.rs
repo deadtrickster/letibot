@@ -752,6 +752,24 @@ pub enum ClientFrame {
         session_id: String,
         title: String,
     },
+    /// Put a session out of sight, or bring it back. A LIVE session is closed here first: an
+    /// archived conversation is not one to keep typing into, and the row is what the next daemon's
+    /// listing reads. Nothing is deleted - the rows stay and an `--session ID` opens it again.
+    /// Answered with [`ServerFrame::Sessions`], like a rename, so every head's picker is current.
+    ArchiveSession {
+        client_request_id: String,
+        session_id: String,
+        /// Why, in the archiver's own words. Defaulted and short: a row that carries no reason is
+        /// an archive nobody explained rather than a refusal, and an older head's frame parses.
+        #[serde(default)]
+        reason: String,
+    },
+    /// The other direction: back in the list. Opening it by id does this too, and that is the
+    /// common way; this is the door for a head with a list in front of it.
+    UnarchiveSession {
+        client_request_id: String,
+        session_id: String,
+    },
     /// Move this connection to another session: the head detaches from the session it is in and
     /// attaches to the named one on the same socket.
     Switch {

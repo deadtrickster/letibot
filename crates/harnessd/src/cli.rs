@@ -475,12 +475,19 @@ fn usage() -> String {
      \x20 --list-sessions [--tsv]   what is on disk, GROUPED: mine first, then the\n\
      \x20                           harness's own work (subagents, the review queue,\n\
      \x20                           packages, one-shots) with a count each. `--tsv` is\n\
-     \x20                           the plain five-column data form, unchanged\n\
+     \x20                           the plain five-column data form, unchanged. A session put\n\
+      \x20                           out of sight is NOT in it: `--archived` lists it\n\
+      \x20                           beside the rest, `--archived-only` alone\n\
      \x20 --latest-session          the id of the newest one, scoped by --workspace\n\
      \x20 --find-session NAME      a session by name under --scope, else in any folder;\n\
      \x20                           prints `here` or `there` rows (see the launcher)\n\
      \x20 --rename ID TITLE         name a session, or clear it with an empty title\n\
      \x20 --delete ID               remove a session that has no rows\n\
+      \x20 --archive ID [REASON]     put a session out of sight and KEEP it: the rows\n\
+      \x20                           stay, `--session ID` opens it again (and puts\n\
+      \x20                           it back in the list). No delete path is added\n\
+      \x20 --unarchive ID            put it back in the list\n\
+      \n\
      \n\
      claude code, both directions (no socket, no model):\n\
      \x20 --list-claude [--tsv]     what Claude Code has on this box: the id `--session\n\
@@ -691,6 +698,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 
     let mut query: Option<Query> = None;
     let mut tsv = false;
+    // Which sessions a listing shows, by archive state: `--archived` puts the ones out of sight back
+    // in the list, `--archived-only` asks for them and nothing else. Read after the loop, because
+    // the flags may come on either side of `--list-sessions`.
+    let mut show_archived = letibot_tokencore::store::Archived::No;
     // `--workspace` defaults to the process's cwd for a daemon, and to *nothing* for a
     // listing
     let mut scope: Option<PathBuf> = None;
@@ -754,6 +765,18 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 query = Some(Query::Rename(id, title));
             }
             "--delete" => query = Some(Query::Delete(next()?)),
+            // Out of sight, and kept. The reason is the operator's own words and is optional: an
+            // archive nobody explained is a row with an empty one, which the listing says.
+            "--archive" => {
+                let id = next()?;
+                let reason = it.next().unwrap_or_default();
+                query = Some(Query::Archive { id, reason });
+            }
+            "--unarchive" => query = Some(Query::Unarchive(next()?)),
+            // Which sessions `--list-sessions` shows, by archive state. `Archived::Any` is the
+            // `--archived` reading: put that one back in the list as well as the ones in it.
+            "--archived" => show_archived = letibot_tokencore::store::Archived::Any,
+            "--archived-only" => show_archived = letibot_tokencore::store::Archived::Yes,
             // Every remaining word is `/listen`'s: `-REPO`, `+REPO`, `only REPO|this`, `all`.
             "--listen" => query = Some(Query::Listen(it.by_ref().collect())),
             // Replay the operator-answered corpus against the guard and print what it earns.
@@ -1206,7 +1229,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // Before the vocabulary, before the socket, before the model. See the module
     // header for why that ordering is load-bearing rather than tidy.
     if let Some(q) = query {
-        return run_query(&cfg, q, scope.as_deref(), tsv);
+        return run_query(&cfg, q, scope.as_deref(), tsv, show_archived);
     }
 
     // What a corpus replay measured, written beside the store by `--calibrate-write`. Read
@@ -2447,6 +2470,12 @@ enum Query {
     Find(String),
     Rename(String, String),
     Delete(String),
+    /// Put a session out of sight, or bring it back, with the reason the operator gave.
+    Archive {
+        id: String,
+        reason: String,
+    },
+    Unarchive(String),
     Listen(Vec<String>),
     Calibrate {
         write: bool,
@@ -2552,6 +2581,7 @@ fn run_query(
     q: Query,
     scope: Option<&std::path::Path>,
     tsv: bool,
+    show_archived: letibot_tokencore::store::Archived,
 ) -> Result<i32, String> {
     // The three Claude Code verbs that need no store of ours, answered before `--store` is
     // required - so `--list-claude` works on a box whose daemon has never started, and
@@ -2837,6 +2867,42 @@ fn run_query(
             }
             Err(e) => Err(e.to_string()),
         },
+        // Out of sight, and kept: the row and the history stay, so `--session ID` still opens it.
+        Query::Archive { id, reason } => {
+            store
+                .set_archived(&id, true, Some(&reason))
+                .map_err(|e| match e {
+                    letibot_tokencore::store::StoreError::NotFound(_) => {
+                        no_such_session(format!("no such session: {id}"))
+                    }
+                    e => format!("archiving {id}: {e}"),
+                })?;
+            println!(
+                "{id} archived{} — `--sessions` leaves it out now, `--sessions --archived` \
+                 lists it, and `--session {id}` opens it and puts it back",
+                match reason.trim() {
+                    "" => String::new(),
+                    words => format!(": {words}"),
+                }
+            );
+            // Said rather than papered over, for `--rename`'s reason: the row is durable and a
+            // running daemon is still holding the session it read from that row.
+            eprintln!(
+                "note: a running daemon does not read this row again. Archiving a session it \
+                 holds takes the daemon's own frame: /archive in a head, or `leticode_archive`."
+            );
+            Ok(0)
+        }
+        Query::Unarchive(id) => {
+            store.set_archived(&id, false, None).map_err(|e| match e {
+                letibot_tokencore::store::StoreError::NotFound(_) => {
+                    no_such_session(format!("no such session: {id}"))
+                }
+                e => format!("unarchiving {id}: {e}"),
+            })?;
+            println!("{id} is in the list again");
+            Ok(0)
+        }
         Query::Resolve(name) => {
             let id = resolve_session_name(&scoped(&store, scope)?, &name, scope)?;
             println!("{id}");
@@ -2912,7 +2978,9 @@ fn run_query(
         Query::List => {
             // The listing is GROUPED, and it lists everything - the operator: *"in
             // session view the automatic sessions must be grouped somehow, so my vs auto.
-            let all = scoped(&store, scope)?;
+            // What it does NOT list is a session put out of sight: `--archived` is how a person
+            // asks for those back, and `--archived-only` for them alone.
+            let all = scoped_archived(&store, scope, show_archived)?;
             let groups = grouped(&all);
             if tsv {
                 // TSV is a data format and it does not change. Five fields, tab-separated, one
@@ -2932,7 +3000,11 @@ fn run_query(
             }
             if all.is_empty() {
                 println!(
-                    "no sessions{}",
+                    "{}{}",
+                    match show_archived {
+                        letibot_tokencore::store::Archived::Yes => "no archived sessions",
+                        _ => "no sessions",
+                    },
                     scope
                         .map(|p| format!(" under {}", p.display()))
                         .unwrap_or_default()
@@ -2960,7 +3032,7 @@ fn run_query(
             // are not plain rows (a child under its parent, everything else) share it.
             let row = |s: &letibot_tokencore::store::StoredSession, indent: &str| {
                 println!(
-                    "{:<wid$}  {:>5}  {:>7}{}",
+                    "{:<wid$}  {:>5}  {:>7}{}{}",
                     format!("{indent}{}", label(s)),
                     s.items,
                     age(now - s.last_activity_ms),
@@ -2970,6 +3042,13 @@ fn run_query(
                     match &s.lives_on {
                         Some(on) => format!("  [lives on {on}]"),
                         None => String::new(),
+                    },
+                    // Out of sight, when the listing was asked for those: the word is what says why
+                    // this row is here at all, under a flag that also drew the ones still in mind.
+                    match (s.archived_ms, s.archived_reason.as_deref()) {
+                        (Some(_), Some(why)) if !why.is_empty() => format!("  [archived: {why}]"),
+                        (Some(_), _) => "  [archived]".to_string(),
+                        (None, _) => String::new(),
                     },
                 );
                 // Details: the id (the handle `--session` also takes) and the workspace.
@@ -3034,12 +3113,26 @@ fn run_query(
 
 /// Every stored session, optionally only those rooted at `scope`. The scope test is a
 /// path prefix, not equality: a session opened in `~/Projects/rano/crates` belongs to
-/// `~/Projects/rano` for the purpose of "what was I doing here".
+/// `~/Projects/rano` for the purpose of "what was I doing here". Archived sessions are left out -
+/// a listing is the one place *out of sight* means something, and the filter is
+/// [`scoped_archived`]'s.
 fn scoped(
     store: &letibot_tokencore::store::Store,
     scope: Option<&std::path::Path>,
 ) -> Result<Vec<letibot_tokencore::store::StoredSession>, String> {
-    let all = store.list_sessions().map_err(|e| e.to_string())?;
+    scoped_archived(store, scope, letibot_tokencore::store::Archived::No)
+}
+
+/// [`scoped`] with the archive filter said out loud: the listing's `--archived` and
+/// `--archived-only` reach it, and every other store query takes `scoped`.
+fn scoped_archived(
+    store: &letibot_tokencore::store::Store,
+    scope: Option<&std::path::Path>,
+    archived: letibot_tokencore::store::Archived,
+) -> Result<Vec<letibot_tokencore::store::StoredSession>, String> {
+    let all = store
+        .list_sessions_archived(archived)
+        .map_err(|e| e.to_string())?;
     let Some(root) = scope else { return Ok(all) };
     // The empty path is refused at the flag, and refused again here: `starts_with("")` is true
     // for every path, so a scope that reached this function empty would widen the query to the

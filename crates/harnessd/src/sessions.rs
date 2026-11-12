@@ -4963,6 +4963,14 @@ impl SessionSource for StoreSessions {
         let _ = g.set_session_origin(session_id, origin.as_str());
     }
 
+    /// Put a session out of sight, or bring it back, on its row. A refusal is returned rather than
+    /// swallowed: the head that asked is owed the difference between *archived* and *not there*.
+    fn set_archived(&self, session_id: &str, archived: bool, reason: &str) -> Result<(), String> {
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        g.set_archived(session_id, archived, Some(reason))
+            .map_err(|e| e.to_string())
+    }
+
     fn todos(&self, session_id: &str) -> Vec<letibot_sessionlog::event::TodoEntry> {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
         g.todos(session_id)

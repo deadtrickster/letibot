@@ -21,11 +21,15 @@
 #                               and then in every folder (asked before moving there)
 #   letibot --sessions          what is on disk, grouped: your conversations first, then the
 #                               harness's own work (subagents, the review queue, packages,
-#                               one-shots) one line each with a count
+#                               one-shots) one line each with a count. A session put out of
+#                               sight is left out: --archived lists it, --archived-only alone
 #   letibot --new [TITLE]       start a fresh session in the running daemon (with none up, the
 #                               one the plain start opened IS this fresh session)
 #   letibot --rename ID TITLE   name a stored session
 #   letibot --delete ID         remove a stored session that has no rows
+#   letibot --archive ID [REASON]  put a stored session out of sight and KEEP it: the rows
+#                               stay and --session ID opens it again
+#   letibot --unarchive ID      put it back in the list
 #   letibot --migrate ID --to HOST   move this session's whole daemon to a host, or back
 #                               with `--to local` (docs/remote-hosts.md RH4). The session's
 #                               socket is forwarded back here, so --session attaches to it
@@ -754,6 +758,10 @@ KNOWN_FLAGS='
   -n
 --rename=VALUE
 --delete=VALUE
+--archive=VALUE
+--unarchive=VALUE
+--archived
+--archived-only
 --migrate
 --reattach
 --to=VALUE
@@ -844,6 +852,10 @@ already up, then attaches the TUI head to it.
                               one the plain start opens IS this fresh session)
   letibot --rename ID TITLE   name a stored session
   letibot --delete ID         remove a stored session that has no rows
+  letibot --archive ID [REASON]   put a stored session out of sight and KEEP it: the rows stay,
+                              --sessions leaves it out, and --session ID opens it again (which
+                              puts it back in the list). No delete path is added
+  letibot --unarchive ID      put it back in the list
   letibot --migrate ID --to HOST   move this session's WHOLE DAEMON to a host — its rows, its
                               checkout and a harnessd there — leaving a marked copy here.
                               `--to local` brings it back; `--to OTHER` moves it on from
@@ -2481,8 +2493,9 @@ fi
 # box whose model server is down -- which is exactly when you want to look.
 case "${1:-}" in
   --sessions | --list)
-    # `--tsv` is the same verb's plain form, and it was dropped here: the arm took no arguments,
-    # so `--sessions --tsv` answered the grouped listing and said nothing about the flag.
+    # The flags after it are `harnessd --list-sessions`'s: `--tsv`, and `--archived` /
+    # `--archived-only` for the sessions put out of sight. A session is not filtered here: one
+    # writer of that rule, in the binary that owns the store.
     shift
     exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --list-sessions "$@"
     ;;
@@ -2525,6 +2538,16 @@ case "${1:-}" in
   --delete)
     [ $# -ge 2 ] || need "ID" --delete
     exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --delete "$2"
+    ;;
+  # Out of sight, and kept. Nothing is deleted, so the id still opens - which is the whole of the
+  # difference between this and `--delete`, and why `--session ID` is the way back.
+  --archive)
+    [ $# -ge 2 ] || need "ID [REASON]" --archive
+    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --archive "$2" "${3:-}"
+    ;;
+  --unarchive)
+    [ $# -ge 2 ] || need "ID" --unarchive
+    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --unarchive "$2"
     ;;
   --migrate)
     # **The whole daemon, on a host and back** (`docs/remote-hosts.md` RH4). A verb and not a

@@ -780,6 +780,32 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// Put a session out of sight, or bring it back. The answer is a `Sessions` frame, the same one
+    /// a rename gets, so a picker redraws from the daemon's own roster.
+    pub fn archive_session(
+        &mut self,
+        session_id: &str,
+        reason: &str,
+    ) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::ArchiveSession {
+            client_request_id: client_request_id.clone(),
+            session_id: session_id.to_string(),
+            reason: reason.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
+    /// [`Client::archive_session`]'s other direction.
+    pub fn unarchive_session(&mut self, session_id: &str) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::UnarchiveSession {
+            client_request_id: client_request_id.clone(),
+            session_id: session_id.to_string(),
+        })?;
+        Ok(client_request_id)
+    }
+
     /// Move this connection to another session. The answer is a second `Hello`, applied exactly
     /// as the first was.
     pub fn switch(&mut self, session_id: &str, since_seq: u64) -> Result<(), ClientError> {

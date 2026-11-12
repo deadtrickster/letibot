@@ -466,6 +466,16 @@ pub trait SessionSource: Send + Sync {
     /// Make it durable who this session is for. A no-op rather than a refusal, because the answer
     /// is already on the row that created it.
     fn set_origin(&self, _session_id: &str, _origin: SessionOrigin) {}
+    /// Put a session out of sight, or bring it back, on its row. The default refuses for
+    /// [`SessionSource::set_title`]'s reason: a registry with no store has nowhere to write it.
+    fn set_archived(
+        &self,
+        _session_id: &str,
+        _archived: bool,
+        _reason: &str,
+    ) -> Result<(), String> {
+        Err("this daemon has no store, so an archive would not survive it".into())
+    }
     /// One session's todo list, for a head's bootstrap read. Empty rather than an error: a source
     /// with no store has no list.
     fn todos(&self, _session_id: &str) -> Vec<crate::event::TodoEntry> {
@@ -1979,6 +1989,44 @@ impl Registry {
         src.set_title(session_id, title)?;
         self.set_title(session_id, title);
         Ok(())
+    }
+
+    /// Put a session out of sight, or bring it back, on its row - through the source, because the
+    /// registry's roster is what a head draws and the row is what the next daemon's listing reads.
+    /// Archiving CLOSES a live session first, and the warn is sent before the close so the heads
+    /// attached to it read why instead of a bare `Bye`.
+    pub fn archive(&self, session_id: &str, reason: &str) -> Result<(), String> {
+        let Some(src) = self.source() else {
+            return Err("this daemon has no store, so an archive would not survive it".into());
+        };
+        // Written before the close: a row that cannot be written leaves the session running, and
+        // there is nothing to un-close.
+        src.set_archived(session_id, true, reason)?;
+        if let Some(hub) = self.get(session_id) {
+            hub.warn(
+                "session_archived",
+                format!(
+                    "this session was put out of sight{}. Nothing is deleted: the rows stay in \
+                     the store, `letibot --sessions --archived` lists it, and `letibot --session \
+                     {session_id}` opens it again (which takes it back into the list).",
+                    match reason.trim() {
+                        "" => String::new(),
+                        words => format!(" because {words}"),
+                    }
+                ),
+            );
+            self.close_session(session_id);
+        }
+        Ok(())
+    }
+
+    /// The other direction. A session that is not live is simply back in the list; there is
+    /// nothing to reopen, because opening it is what a head does next.
+    pub fn unarchive(&self, session_id: &str) -> Result<(), String> {
+        let Some(src) = self.source() else {
+            return Err("this daemon has no store, so an archive would not survive it".into());
+        };
+        src.set_archived(session_id, false, "")
     }
 
     /// One session's todo list, from the source. Empty when there is no source or no list - see

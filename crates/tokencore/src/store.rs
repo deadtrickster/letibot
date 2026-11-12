@@ -195,7 +195,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 44;
+pub const SCHEMA_VERSION: i64 = 45;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -303,8 +303,13 @@ CREATE TABLE IF NOT EXISTS session (
                                      -- session, when it is not in this store's own box —
                                      -- `local` or a host from `hosts.toml`. NULL = the copy
                                      -- here is the live one. See `store::transfer`.
-    moved_ms       INTEGER           -- v31; when it moved there. NULL with `lives_on`.
-                                                                                                                                                                                                                                                                                                                                                                                  );
+    moved_ms       INTEGER,          -- v31; when it moved there. NULL with `lives_on`.
+    archived_ms    INTEGER,          -- v45; when this session was put out of sight. NULL = it
+                                     -- is in the list. NOT a delete: its rows stay, and
+                                     -- `--session ID` still opens it (and takes it back).
+    archived_reason TEXT             -- v45; why, in the archiver's own words. A short line,
+                                     -- and empty is an archive nobody gave a reason for.
+);
 
 CREATE TABLE IF NOT EXISTS transcript (
     id                   TEXT PRIMARY KEY,
@@ -750,6 +755,56 @@ pub fn same_name(a: &str, b: &str) -> bool {
     !slug.is_empty() && slug == slug_of(b)
 }
 
+/// Which sessions a listing shows, by archive state: the three values a `--sessions` filter takes.
+/// `No` is the default because an archived session is out of SIGHT, not out of reach - naming it
+/// by id still opens it, which is the difference between this and a delete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Archived {
+    /// Only what is in the list: the default of every listing.
+    #[default]
+    No,
+    /// Only what has been put away.
+    Yes,
+    /// Both.
+    Any,
+}
+
+impl Archived {
+    /// The word a filter takes, for the CLI and any other caller that spells one.
+    pub fn parse(word: &str) -> Option<Archived> {
+        match word.trim().to_ascii_lowercase().as_str() {
+            "no" => Some(Archived::No),
+            "yes" => Some(Archived::Yes),
+            "any" => Some(Archived::Any),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Archived::No => "no",
+            Archived::Yes => "yes",
+            Archived::Any => "any",
+        }
+    }
+}
+
+/// `where_clause` (a `" WHERE …"` fragment or empty) narrowed by `archived`, as ONE fragment:
+/// the session list is built by concatenation and two `WHERE`s is not SQL.
+pub(crate) fn archived_filter(where_clause: &str, archived: Archived) -> String {
+    let test = match archived {
+        Archived::Any => return where_clause.to_string(),
+        Archived::No => "s.archived_ms IS NULL",
+        Archived::Yes => "s.archived_ms IS NOT NULL",
+    };
+    let sep = if where_clause.is_empty() {
+        " WHERE "
+    } else {
+        " AND "
+    };
+    format!("{where_clause}{sep}{test}")
+}
+
 /// A session as the store holds it: enough to list, pick and resume. Separate from
 /// [`SessionRecord`], the write shape, and carrying three computed things (transcript id,
 /// row count, last activity) that every list would otherwise re-derive differently.
@@ -824,6 +879,11 @@ pub struct StoredSession {
     pub lives_on: Option<String>,
     /// When it moved there, unix ms. `None` with [`Self::lives_on`].
     pub moved_ms: Option<i64>,
+    /// When this session was put out of sight, unix ms, or `None` for one in the list. Archive is
+    /// a listing's fact and not a delete: the rows stay and `session(id)` still finds it.
+    pub archived_ms: Option<i64>,
+    /// Why, in the archiver's own words. `None` unless [`Self::archived_ms`] is set.
+    pub archived_reason: Option<String>,
 }
 
 /// One job's row as the store keeps it: the durable half of the process table, which dies with
@@ -1385,7 +1445,9 @@ pub(crate) fn sessions_sql(filter: &str) -> String {
                     s.nags_paused_until,
                     s.lives_on,
                     s.moved_ms,
-                    s.origin
+                    s.origin,
+                    s.archived_ms,
+                    s.archived_reason
                FROM session s{filter}"
     )
 }
@@ -1437,7 +1499,9 @@ pub(crate) fn sessions_index_sql(filter: &str) -> String {
                     s.nags_paused_until,
                     s.lives_on,
                     s.moved_ms,
-                    s.origin
+                    s.origin,
+                    s.archived_ms,
+                    s.archived_reason
                FROM session s{filter}"
     )
 }
@@ -2357,6 +2421,24 @@ impl Store {
             // throughout, so the one new table arrives with every other left as it was.
             self.conn().execute_batch(queues::QUEUES_SQL)?;
         }
+        if from < 45 {
+            // v45: a session can be put out of sight and kept. Two additive columns, NULL in every
+            // existing row, which is true: nothing was ever archived.
+            let has = |sql: &str| -> bool {
+                self.conn()
+                    .prepare(sql)
+                    .and_then(|mut st| st.exists([]))
+                    .unwrap_or(false)
+            };
+            if !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'archived_ms'") {
+                self.conn()
+                    .execute_batch("ALTER TABLE session ADD COLUMN archived_ms INTEGER")?;
+            }
+            if !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'archived_reason'") {
+                self.conn()
+                    .execute_batch("ALTER TABLE session ADD COLUMN archived_reason TEXT")?;
+            }
+        }
         Ok(())
     }
 
@@ -2966,9 +3048,16 @@ impl Store {
 
     /// Every session in the store, newest activity first: what a picker or `letibot --sessions` is
     /// drawn from. Ordered by the last row written and not `created_at`, because the question is
-    /// which one I was just in.
+    /// which one I was just in. Archived sessions are NOT here: `--archived` asks for them with
+    /// [`Store::list_sessions_archived`], and a resume names one by id ([`Store::session`]).
     pub fn list_sessions(&self) -> Result<Vec<StoredSession>> {
-        self.sessions_matching("", &[])
+        self.list_sessions_archived(Archived::No)
+    }
+
+    /// [`Store::list_sessions`] with the archive filter said out loud: `No` is what every listing
+    /// wants by default, `Yes` is `--archived-only`, and `Any` is `--archived`.
+    pub fn list_sessions_archived(&self, archived: Archived) -> Result<Vec<StoredSession>> {
+        self.sessions_matching(&archived_filter("", archived), &[])
     }
 
     /// The one query behind both [`Store::list_sessions`] and [`Store::session`], with an optional
@@ -3044,6 +3133,10 @@ impl Store {
                         // vocabulary is `letibot_sessionlog::SessionOrigin`'s and this crate does not depend
                         // on it. A value this build does not know reads as unknown.
                         origin: r.get(24)?,
+                        // Index 25 and 26, the archive. Appended for the reason every index above
+                        // was: the list is read BY POSITION.
+                        archived_ms: r.get(25)?,
+                        archived_reason: r.get(26)?,
                     })
                 })?
                 .collect::<std::result::Result<_, _>>()?;
@@ -3216,6 +3309,28 @@ impl Store {
                     && s.title.as_deref().is_some_and(|t| same_name(t, name))
             })
             .collect())
+    }
+
+    /// Put a session out of sight, or bring it back - the one write [`Archived`] filters on. The
+    /// row and its transcripts stay, so `session(id)` and `--session ID` still reach it; archiving
+    /// twice keeps the FIRST clock, because a second archive is not a second act.
+    pub fn set_archived(&self, id: &str, archived: bool, reason: Option<&str>) -> Result<()> {
+        let n = if archived {
+            self.exec(
+                "UPDATE session SET archived_ms = COALESCE(archived_ms, ?2), \
+                 archived_reason = ?3 WHERE id = ?1",
+                params![id, now_ms(), reason.unwrap_or("").trim()],
+            )?
+        } else {
+            self.exec(
+                "UPDATE session SET archived_ms = NULL, archived_reason = NULL WHERE id = ?1",
+                params![id],
+            )?
+        };
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("session {id}")));
+        }
+        Ok(())
     }
 
     /// Write down who this session is for. Set once, and the `AND origin IS NULL` is the guarantee:

@@ -827,6 +827,34 @@ impl Bridge {
         Ok(answer)
     }
 
+    /// Put a session this bridge holds out of sight - `leticode_archive`. The daemon closes it and
+    /// writes the row, so nothing of it is left running here or there; the rows stay in the store,
+    /// and opening the id is what takes it back into the list. The head goes with the session, which
+    /// is why this drops it from the map exactly as `stop` does.
+    pub fn archive(&self, session: &str, reason: &str) -> Result<Value, String> {
+        let h = self.head(session)?;
+        h.archive(reason)?;
+        let mut g = self.heads.lock().unwrap_or_else(|e| e.into_inner());
+        g.remove(session);
+        drop(g);
+        self.channels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session);
+        Ok(json!({
+            "session": session,
+            "archived": true,
+            "closed": true,
+            "reason": reason,
+            // The door back, said because it is not this tool: the session is out of SIGHT, not
+            // gone, and a caller told only `archived: true` would think it had been deleted.
+            "said": format!(
+                "{session} is out of the list now and nothing is deleted: `letibot --sessions \
+                 --archived` lists it, and opening it by id puts it back"
+            ),
+        }))
+    }
+
     /// Collect a session that is already stopped. A placement's branch comes home as its session
     /// closes, which `letibot --stop` or a dead daemon skips. Collected by the names the placement
     /// was made from: session id, host and repository.
@@ -1249,6 +1277,23 @@ pub fn list() -> Value {
             }),
         ),
         tool(
+            "leticode_archive",
+            "Put a session this bridge holds out of sight and let go of it. The daemon closes \
+             it and writes the row, so the conversation stops here either way; nothing is \
+             deleted, the rows stay in the store, and `letibot --sessions --archived` lists it. \
+             It comes back by being opened: `letibot --session <id>` takes it into the list again, \
+             and so does attaching to it. Unarchiving a session this bridge does not hold is the \
+             CLI's `--unarchive`.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The session id, or its name (the `/rename` title or its slug) in this folder." },
+                    "reason": { "type": "string", "description": "Why it is being put away, in a short line: it is stored on the row and printed beside the session in an `--archived` listing." }
+                },
+                "required": ["session"]
+            }),
+        ),
+        tool(
             "leticode_collect",
             "Fetch what a session that is already stopped committed on its host, as the branch \
             `remote/<host>/<short id>`. `leticode_stop` brings the branch home as it closes and answers `branch_home` (true, or false with `branch_said`), \
@@ -1419,6 +1464,7 @@ fn leticode_names() -> Vec<&'static str> {
         "leticode_answer",
         "leticode_diff",
         "leticode_stop",
+        "leticode_archive",
         "leticode_collect",
         "leticode_list",
     ]
@@ -1530,6 +1576,11 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             bridge.diff(&session_arg(bridge, args)?, full)
         }
         "leticode_stop" => bridge.stop(&session_arg(bridge, args)?),
+        "leticode_archive" => {
+            let session = session_arg(bridge, args)?;
+            let reason = arg_opt_str(args, "reason")?;
+            bridge.archive(&session, reason.as_deref().unwrap_or(""))
+        }
         "leticode_collect" => {
             let host = arg_str(args, "host")?;
             let folder = arg_opt_str(args, "folder")?;
@@ -1979,6 +2030,32 @@ mod tests {
         assert!(e.contains("leticode_start"), "{e}");
         // And an empty bridge lists empty, rather than failing: a listing is a question.
         assert_eq!(b.list()["sessions"].as_array().map(|v| v.len()), Some(0));
+    }
+
+    /// `leticode_archive` is published with its one required field, and a session this bridge does
+    /// not hold is refused by the same door every other verb uses - the map, not a silence.
+    #[test]
+    fn archiving_a_session_the_bridge_does_not_hold_is_refused_by_name() {
+        let tools = list();
+        let archive = tools["tools"]
+            .as_array()
+            .expect("tools")
+            .iter()
+            .find(|t| t["name"] == "leticode_archive")
+            .expect("leticode_archive is published");
+        assert_eq!(
+            archive["inputSchema"]["required"],
+            json!(["session"]),
+            "a session is the one field with no default"
+        );
+        assert!(
+            names().contains(&"leticode_archive"),
+            "a name in the schema and not in the call table is a tool that fails on every call"
+        );
+        let b = Bridge::new();
+        let e = b.archive("s-nope", "done with it").expect_err("not held");
+        assert!(e.contains("s-nope"), "{e}");
+        assert!(e.contains("leticode_start"), "{e}");
     }
 
     /// `gatekeeper` is the review queue's id, not a second spelling of it: the name

@@ -709,6 +709,57 @@ fn a_scope_finds_sessions_opened_beneath_it() {
     );
 }
 
+/// The listing's archive filter, at the one helper the flag reaches: a put-away session is out of
+/// the default listing, beside the rest under `--archived`, and alone under `--archived-only`.
+/// `scoped` is the default that every other store verb takes, so it is asserted to be the filter.
+#[test]
+fn a_put_away_session_is_listed_only_when_it_is_asked_for() {
+    use letibot_tokencore::store::Archived;
+    let (store, _d) = store_with(&[
+        ("s-here", "/home/dead/Projects/rano"),
+        ("s-away", "/home/dead/Projects/rano"),
+    ]);
+    store
+        .set_archived("s-away", true, Some("the question was answered"))
+        .expect("an archive");
+
+    let ids = |which: Archived| -> Vec<String> {
+        let mut v: Vec<String> = scoped_archived(&store, None, which)
+            .expect("a listing")
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
+        v.sort();
+        v
+    };
+    assert_eq!(
+        ids(Archived::No),
+        vec!["s-here".to_string()],
+        "the default listing leaves it out"
+    );
+    assert_eq!(
+        ids(Archived::Yes),
+        vec!["s-away".to_string()],
+        "--archived-only is them alone"
+    );
+    assert_eq!(
+        ids(Archived::Any),
+        vec!["s-away".to_string(), "s-here".to_string()],
+        "--archived puts it back beside the rest"
+    );
+    // And the row a person reads under `--archived` carries the words it was put away with.
+    let rows = scoped_archived(&store, None, Archived::Yes).expect("a listing");
+    assert_eq!(
+        rows[0].archived_reason.as_deref(),
+        Some("the question was answered")
+    );
+    assert_eq!(
+        scoped(&store, None).expect("the default").len(),
+        1,
+        "`scoped` is the filter that leaves it out"
+    );
+}
+
 /// The listing groups the store the way `group_of` says - mine first, then one entry
 /// per automatic kind, each carrying its own members. The operator's ask is one sentence
 /// and it was about both places a session is listed

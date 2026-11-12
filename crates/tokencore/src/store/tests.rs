@@ -3418,3 +3418,76 @@ fn a_current_store_missing_queue_mute_gets_it_on_open() {
     drop(s);
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// An archive is a LISTING's fact: the row and its transcripts stay, the default listing leaves it
+/// out, and naming it by id still finds it carrying the reason. The three filter values are the
+/// whole of the vocabulary a caller has.
+#[test]
+fn an_archived_session_leaves_the_list_and_still_answers_to_its_id() {
+    let s = Store::open_in_memory().unwrap();
+    let (tr, _) = seeded(&s);
+    assert_eq!(s.list_sessions().unwrap().len(), 1);
+
+    s.set_archived("sess-1", true, Some("the question was answered"))
+        .unwrap();
+    assert!(
+        s.list_sessions().unwrap().is_empty(),
+        "the default listing is the one that puts it out of sight"
+    );
+    assert_eq!(s.list_sessions_archived(Archived::Yes).unwrap().len(), 1);
+    assert_eq!(s.list_sessions_archived(Archived::Any).unwrap().len(), 1);
+
+    let row = s.session("sess-1").unwrap().expect("still reachable by id");
+    let first = row.archived_ms.expect("the stamp is on the row");
+    assert_eq!(
+        row.archived_reason.as_deref(),
+        Some("the question was answered")
+    );
+    assert_eq!(
+        row.transcript_id.as_deref(),
+        Some(tr.as_str()),
+        "an archive carries no history away"
+    );
+
+    // A second archive is not a second act: the first clock stands.
+    s.set_archived("sess-1", true, Some("again")).unwrap();
+    let again = s.session("sess-1").unwrap().unwrap();
+    assert_eq!(again.archived_ms, Some(first));
+
+    s.set_archived("sess-1", false, None).unwrap();
+    let back = s.list_sessions().unwrap();
+    assert_eq!(back.len(), 1, "and unarchiving puts it back in the list");
+    assert_eq!(back[0].archived_ms, None);
+    assert_eq!(back[0].archived_reason, None);
+
+    // A row that is not there is refused by name, not silently counted as archived.
+    assert!(matches!(
+        s.set_archived("sess-nope", true, None),
+        Err(StoreError::NotFound(_))
+    ));
+}
+
+/// A store written before the archive columns is carried forward, and the old row reads as one in
+/// the list: nothing was ever archived.
+#[test]
+fn a_store_from_before_the_archive_columns_gains_them() {
+    let s = Store::open_in_memory().unwrap();
+    seeded(&s);
+    s.connection()
+        .execute_batch(
+            "ALTER TABLE session DROP COLUMN archived_ms;
+             ALTER TABLE session DROP COLUMN archived_reason;
+             UPDATE schema_version SET version = 44;",
+        )
+        .expect("unwind to v44");
+    let s = s.remigrate().expect("the migration runs at open");
+    assert_eq!(SCHEMA_VERSION, 45);
+    let row = s.session("sess-1").unwrap().expect("the old row survived");
+    assert_eq!(
+        row.archived_ms, None,
+        "a row written before the columns is in the list, because nothing archived it"
+    );
+    s.set_archived("sess-1", true, Some("after the migration"))
+        .expect("the columns are there now");
+    assert_eq!(s.list_sessions_archived(Archived::Yes).unwrap().len(), 1);
+}

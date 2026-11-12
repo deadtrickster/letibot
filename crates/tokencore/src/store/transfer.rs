@@ -1152,6 +1152,23 @@ mod tests {
         assert!(why.contains("already in this store"), "{why}");
     }
 
+    /// The archive travels with the file. It is a column on the session row and the export describes
+    /// its own columns, so the import needs to know nothing about it - but a column dropped here is a
+    /// session that comes back in the list, which is what this asserts is not happening.
+    #[test]
+    fn the_archive_travels_with_the_file() {
+        let from = Store::open_in_memory().unwrap();
+        seeded(&from);
+        from.set_archived("sess-1", true, Some("kept for later"))
+            .unwrap();
+        let transfer = from.export_session("sess-1").unwrap();
+        let to = Store::open_in_memory().unwrap();
+        to.import_session(&transfer, &into()).unwrap();
+        let row = to.session("sess-1").unwrap().expect("imported");
+        assert!(row.archived_ms.is_some(), "the stamp came across");
+        assert_eq!(row.archived_reason.as_deref(), Some("kept for later"));
+    }
+
     /// A copy that was left behind is brought up to what the live one says: a move back lands in
     /// the store the session was last in, so the second import finds a prefix of its own rows.
     #[test]

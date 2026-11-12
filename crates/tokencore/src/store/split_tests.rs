@@ -381,3 +381,44 @@ fn a_stray_sessions_db_in_a_split_directory_does_not_stop_a_new_project() {
             .is_file()
     );
 }
+
+/// The archive columns ride the `session` row, so they are the SHARED file's - and the set's own
+/// listing reads them out of the index, because the project file holds no session row at all.
+#[test]
+fn an_archived_session_in_a_set_is_the_shared_files_row() {
+    let dir = temp("archive");
+    let set = Store::open_set(&dir, KEY).expect("a set's handle");
+    set.put_session(&super::SessionRecord {
+        id: "s1".into(),
+        title: Some("one".into()),
+        model_id: "m".into(),
+        dialect_sha: "d".into(),
+        workspace_root: "/tmp".into(),
+        owner: "op".into(),
+        approvers: Vec::new(),
+        role: None,
+        parent_session_id: None,
+    })
+    .expect("a session row");
+    set.set_archived("s1", true, Some("done"))
+        .expect("the archive is the index's write");
+
+    let shared = dir.join(split::SHARED_FILE);
+    let archived: Option<i64> = Connection::open(&shared)
+        .expect("a connection of the test's own")
+        .query_row("SELECT archived_ms FROM session WHERE id = 's1'", [], |r| {
+            r.get(0)
+        })
+        .expect("the column is in the shared file");
+    assert!(archived.is_some(), "the stamp landed in shared.db");
+
+    assert!(
+        set.list_sessions().expect("a listing").is_empty(),
+        "the set's default listing leaves it out"
+    );
+    let rows = set
+        .list_sessions_archived(super::Archived::Any)
+        .expect("any");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].archived_reason.as_deref(), Some("done"));
+}

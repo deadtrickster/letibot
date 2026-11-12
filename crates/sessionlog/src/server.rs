@@ -1239,6 +1239,48 @@ pub fn serve_conn_rooted(
                 };
                 writer.lock().unwrap().write(&f)?;
             }
+            // Out of sight, and kept. Unlike a rename this does NOT require the session to be live:
+            // the session a picker wants to put away is usually not the one the head is in, and the
+            // write is the store's. A live one is closed by `archive` as part of the act.
+            Ok(ClientFrame::ArchiveSession {
+                client_request_id,
+                session_id,
+                reason,
+            }) => {
+                let f = match registry.archive(&session_id, &reason) {
+                    Err(e) => ServerFrame::Rejected {
+                        client_request_id,
+                        reason: format!("not archived: {e}"),
+                        expected_seq: 0,
+                        actual_seq: seat.hub.head_seq(),
+                    },
+                    Ok(()) => ServerFrame::Sessions {
+                        sessions: registry.list(),
+                        current: seat.hub.session_id(),
+                        created: None,
+                    },
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
+            Ok(ClientFrame::UnarchiveSession {
+                client_request_id,
+                session_id,
+            }) => {
+                let f = match registry.unarchive(&session_id) {
+                    Err(e) => ServerFrame::Rejected {
+                        client_request_id,
+                        reason: format!("not unarchived: {e}"),
+                        expected_seq: 0,
+                        actual_seq: seat.hub.head_seq(),
+                    },
+                    Ok(()) => ServerFrame::Sessions {
+                        sessions: registry.list(),
+                        current: seat.hub.session_id(),
+                        created: None,
+                    },
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::Switch {
                 session_id,
                 since_seq,
