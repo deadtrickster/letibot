@@ -143,7 +143,7 @@ fn length_cap(text: &str) -> Option<Lines> {
     );
     Some(card(
         "length cap",
-        Role::Attention,
+        Role::Warning,
         vec![said.clone()],
         format!("length cap · {said}"),
     ))
@@ -210,7 +210,7 @@ fn todo_check(text: &str) -> Option<Lines> {
         }
     }
     let title = format!("todo · {}", parts.first().cloned().unwrap_or_default());
-    Some(card("todo", Role::Attention, parts, title))
+    Some(card("todo", Role::Info, parts, title))
 }
 
 /// `T2 · the launcher - yours` → the item, whose row it is, and whether it is in progress. The
@@ -240,7 +240,7 @@ fn from_the_parent(text: &str) -> Option<Lines> {
     let said = text.strip_prefix("[parent] ")?;
     Some(card(
         "parent",
-        Role::Pending,
+        Role::Info,
         vec![gist(said)],
         "a message from your parent session".into(),
     ))
@@ -262,7 +262,7 @@ fn message_from_a_session(text: &str) -> Option<Lines> {
     let g = gist(said);
     Some(card(
         &lead,
-        Role::Pending,
+        Role::Info,
         vec![g],
         format!("message from {lead_word} {id}"),
     ))
@@ -288,7 +288,7 @@ fn intent_check(text: &str) -> Option<Lines> {
         parts.push(format!("board {done}/{of}"));
     }
     let title = format!("intent check · {}", parts[0]);
-    Some(card("intent check", Role::Attention, parts, title))
+    Some(card("intent check", Role::Info, parts, title))
 }
 
 /// `[context check] you said "…". Your context is 54% full - 547,198 of 999,999 tokens. …`.
@@ -311,7 +311,7 @@ fn context_check(text: &str) -> Option<Lines> {
         parts.push(format!("\"{}\"", short(&flat(quote), 40)));
     }
     let title = format!("context check · {}", parts[0]);
-    Some(card("context check", Role::Attention, parts, title))
+    Some(card("context check", Role::Info, parts, title))
 }
 
 /// `The merge queue cannot …` / `is holding …` - the queue's older notices no card reads.
@@ -359,7 +359,7 @@ fn reseat(text: &str) -> Option<Lines> {
     }
     Some(card(
         "reseated",
-        Role::Pending,
+        Role::Info,
         parts,
         "reseated · what the model was told".into(),
     ))
@@ -452,7 +452,7 @@ fn progress(text: &str) -> Option<Lines> {
     };
     Some(card(
         "progress",
-        Role::Attention,
+        Role::Info,
         vec![said.clone()],
         format!("progress · {said}"),
     ))
@@ -477,7 +477,7 @@ fn deliverable(text: &str) -> Option<Lines> {
     }
     Some(card(
         "deliverable",
-        Role::Attention,
+        Role::Info,
         parts,
         "the deliverable".into(),
     ))
@@ -495,7 +495,7 @@ fn answer(text: &str) -> Option<Lines> {
     parts.push(format!("on \"{}\"", short(&flat(row), 40)));
     Some(card(
         "answer",
-        Role::Pending,
+        Role::Info,
         parts,
         "the operator's answer".into(),
     ))
@@ -507,7 +507,7 @@ fn context_wall(text: &str) -> Option<Lines> {
         .then(|| {
             card(
                 "context wall",
-                Role::Pending,
+                Role::Warning,
                 vec!["compacted, continuing from the summary".into()],
                 "context wall".into(),
             )
@@ -524,7 +524,7 @@ fn overthinking(text: &str) -> Option<Lines> {
         .unwrap_or_else(|| "reasoning only".into());
     Some(card(
         "nudge",
-        Role::Attention,
+        Role::Info,
         vec![format!("{why} turn, told to answer first")],
         "nudge · overthinking".into(),
     ))
@@ -577,7 +577,7 @@ fn room_message(text: &str) -> Option<Lines> {
     }
     Some(card(
         &lead,
-        Role::Pending,
+        Role::Info,
         parts,
         format!("chat · {room} #{seq}"),
     ))

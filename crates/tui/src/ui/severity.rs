@@ -133,6 +133,13 @@ mod tests {
         for (text, _line) in letibot_plugin::card::readers::FIXTURES {
             let card = session_notice(text);
             assert!(FIVE.contains(&card.role), "{text:?} draws {:?}", card.role);
+            // A reader draws a notice that has already happened: it is not work in progress and
+            // it asks nothing of a person, so neither register is a reader's to spend.
+            assert!(
+                !matches!(card.role, Role::Attention | Role::Pending),
+                "{text:?} draws {:?}, and a notice is neither in progress nor a person's to answer",
+                card.role
+            );
             read += 1;
         }
         assert!(read >= 8, "{read} fixtures");
