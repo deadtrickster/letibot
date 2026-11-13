@@ -4,8 +4,8 @@
 //!
 //! The wait itself is measured, not inferred: [`on_busy`] is a busy handler of the store's own
 //! that sleeps the retry and adds the sleep up, so a lock wait shows as `waited N ms` on the
-//! call's line. Counting retries alone cannot show it - a busy timeout absorbs a wait of up to
-//! 30 s inside one attempt, which is why seven stalls on lab2x1 all read `0 busy retries`.
+//! call's line. A laddered call's attempt sleeps at most [`LADDER_ATTEMPT`] there, because the
+//! handler sleeps holding the process's one connection; the rest of the wait is between attempts.
 //!
 //! The line, on a daemon's stderr:
 //!
@@ -14,8 +14,9 @@
 //! store: a call at store.rs:3150 failed after 87 ms (waited 0 ms, 2 busy retries, 3 at this site): database is locked
 //! ```
 //!
-//! The first is a call over [`SLOW_CALL`]; `waited` is how much of it SQLite's busy handler slept,
-//! so the rest is I/O. The second is a [`Flavour`] failure - a write that lost the lock or a
+//! The first is a call over [`SLOW_CALL`]; `waited` is how much of it SQLite's busy handler slept.
+//! A `queued N ms behind another thread` part, when present, is the wait for this process's
+//! connection while another thread used it; the rest is I/O. The second is a [`Flavour`] failure - a write that lost the lock or a
 //! filesystem that refused it - logged however fast it was, with how many of that kind have
 //! reached a caller at that `file:line` since the process started.
 
@@ -25,13 +26,18 @@ use std::time::{Duration, Instant};
 
 use super::{Result, Store, StoreError};
 
-/// How long a write keeps trying after the first `SQLITE_BUSY`, on top of the busy timeout each
-/// attempt already waits. A minute, so it outlasts any write this box performs.
-pub const BUSY_RETRY_TOTAL: Duration = Duration::from_secs(60);
+/// How long a write keeps trying after the first `SQLITE_BUSY`. Ninety seconds: the minute
+/// this used to be plus the 30 s one attempt used to sleep inside the handler.
+pub const BUSY_RETRY_TOTAL: Duration = Duration::from_secs(90);
 
-/// The first pause between attempts; it doubles up to [`BUSY_RETRY_MAX_STEP`].
+/// The first pause between attempts; it doubles up to [`BUSY_RETRY_MAX_STEP`]. The cap is short
+/// because the ladder now does the polling a long in-handler wait used to do.
 const BUSY_RETRY_FIRST: Duration = Duration::from_millis(50);
-const BUSY_RETRY_MAX_STEP: Duration = Duration::from_secs(2);
+const BUSY_RETRY_MAX_STEP: Duration = Duration::from_millis(250);
+
+/// How long one attempt of a laddered call sleeps in the busy handler. Short, because the handler
+/// sleeps holding this process's only connection to the file, and every other thread waits too.
+pub(super) const LADDER_ATTEMPT: Duration = Duration::from_millis(250);
 
 /// How long [`on_busy`] sleeps for the lock before one attempt gives up. It is
 /// [`Store::BUSY_TIMEOUT`] and not a number of its own, so the doc and the handler cannot drift.
@@ -56,6 +62,9 @@ struct Measure {
     waited: Duration,
     /// The same for the attempt now running, which is what [`BUSY_TIMEOUT`] caps.
     epoch: Duration,
+    /// What the outermost call spent waiting for this process's connection, which another thread
+    /// held. Not `waited`: that one is this thread's own busy sleep.
+    queued: Duration,
     /// `Some` while a test is collecting lines instead of writing them.
     lines: Option<Vec<String>>,
 }
@@ -111,20 +120,25 @@ impl Flavour for StoreError {
     }
 }
 
-/// SQLite's busy handler: sleep the backoff, count the sleep, and give up at [`BUSY_TIMEOUT`].
-/// Installed instead of `busy_timeout` because that one is a black box which reports nothing,
-/// and the wait is the number this store's log exists to show.
+/// SQLite's busy handler: sleep the backoff, count the sleep, and give up at [`BUSY_TIMEOUT`],
+/// or at [`LADDER_ATTEMPT`] inside a laddered call, which retries with the connection released.
+/// Installed instead of `busy_timeout` because that one is a black box which reports nothing.
 pub(super) fn on_busy(count: i32) -> bool {
     let step = DELAYS_MS[(count.max(0) as usize).min(DELAYS_MS.len() - 1)];
     let delay = Duration::from_millis(step);
     let go = MEASUREMENT.with(|m| {
         let mut m = m.borrow_mut();
         // SQLite resets the count at the end of every statement, so a `0` is the first call of
-        // one wait: the 30 s cap's clock starts there, for a call through the ladder or not.
+        // one wait: the cap's clock starts there.
         if count <= 0 {
             m.epoch = Duration::ZERO;
         }
-        if m.epoch + delay > BUSY_TIMEOUT {
+        let cap = if m.depth > 0 {
+            LADDER_ATTEMPT
+        } else {
+            BUSY_TIMEOUT
+        };
+        if m.epoch + delay > cap {
             return false;
         }
         m.epoch += delay;
@@ -153,23 +167,45 @@ fn enter() {
         let mut m = m.borrow_mut();
         if m.depth == 0 {
             m.waited = Duration::ZERO;
+            m.queued = Duration::ZERO;
         }
         m.depth += 1;
     });
 }
 
-/// End an instrumented call and say what the wait was: zero for a nested call, whose wait is the
-/// outer one's to report.
-fn leave() -> Duration {
+/// End an instrumented call and say what its two waits were: zero for a nested call, whose waits
+/// are the outer one's to report.
+fn leave() -> Waits {
     MEASUREMENT.with(|m| {
         let mut m = m.borrow_mut();
         m.depth = m.depth.saturating_sub(1);
         if m.depth > 0 {
-            Duration::ZERO
+            Waits::default()
         } else {
-            std::mem::take(&mut m.waited)
+            Waits {
+                lock: std::mem::take(&mut m.waited),
+                queued: std::mem::take(&mut m.queued),
+            }
         }
     })
+}
+
+/// A call's waits: on another connection's write lock, and on this process's own connection.
+#[derive(Clone, Copy, Default)]
+pub(super) struct Waits {
+    pub lock: Duration,
+    pub queued: Duration,
+}
+
+/// Count `d` spent taking this process's connection against the instrumented call running on this
+/// thread, if there is one.
+pub(super) fn queued(d: Duration) {
+    MEASUREMENT.with(|m| {
+        let mut m = m.borrow_mut();
+        if m.depth > 0 {
+            m.queued += d;
+        }
+    });
 }
 
 /// Run `f` until it is not busy, or until `budget` has passed since the first attempt. Generic
@@ -188,18 +224,14 @@ pub(super) fn retry_busy<T, E: Flavour>(
             Err(e) if busy(&e) && start.elapsed() < budget => {
                 let pause = backoff(attempt).min(budget.saturating_sub(start.elapsed()));
                 std::thread::sleep(pause);
+                // The pause is lock wait too, now that most of a long wait is spent between attempts.
+                MEASUREMENT.with(|m| m.borrow_mut().waited += pause);
                 attempt += 1;
             }
             other => {
-                let waited = leave();
+                let waits = leave();
                 let took = start.elapsed();
-                note(
-                    took,
-                    waited,
-                    attempt,
-                    &other,
-                    std::panic::Location::caller(),
-                );
+                note(took, waits, attempt, &other, std::panic::Location::caller());
                 return other;
             }
         }
@@ -215,7 +247,7 @@ pub const SLOW_CALL: Duration = Duration::from_secs(1);
 /// picture.
 fn note<T, E: Flavour>(
     took: Duration,
-    waited: Duration,
+    waits: Waits,
     retries: u32,
     out: &std::result::Result<T, E>,
     at: &'static std::panic::Location<'static>,
@@ -223,10 +255,10 @@ fn note<T, E: Flavour>(
     match out.as_ref().err().and_then(Flavour::flavour) {
         Some(what) => {
             let n = counted(at, what);
-            emit(&failure_line(took, waited, retries, at, what, n));
+            emit(&failure_line(took, waits, retries, at, what, n));
         }
         None => {
-            if let Some(line) = slow_line(took, waited, retries, at) {
+            if let Some(line) = slow_line(took, waits, retries, at) {
                 emit(&line);
             }
         }
@@ -274,19 +306,28 @@ fn emit(line: &str) {
 /// [`note`]'s line for a call over [`SLOW_CALL`], or `None` for one under it.
 pub(super) fn slow_line(
     took: Duration,
-    waited: Duration,
+    waits: Waits,
     retries: u32,
     at: &std::panic::Location<'_>,
 ) -> Option<String> {
     (took >= SLOW_CALL).then(|| {
         format!(
-            "store: a call at {}:{} took {} ms (waited {} ms, {retries} busy retries)",
+            "store: a call at {}:{} took {} ms (waited {} ms, {retries} busy retries{})",
             at.file(),
             at.line(),
             took.as_millis(),
-            waited.as_millis()
+            waits.lock.as_millis(),
+            queued_words(waits.queued)
         )
     })
+}
+
+/// The in-process wait, said only when there was one, so an uncontended line keeps its shape.
+fn queued_words(d: Duration) -> String {
+    match d.as_millis() {
+        0 => String::new(),
+        ms => format!(", queued {ms} ms behind another thread"),
+    }
 }
 
 /// [`note`]'s line for a [`Flavour`] failure: the slow-call shape plus what it was and how many
@@ -294,19 +335,20 @@ pub(super) fn slow_line(
 /// a slow one, and the count is the whole point.
 fn failure_line(
     took: Duration,
-    waited: Duration,
+    waits: Waits,
     retries: u32,
     at: &std::panic::Location<'_>,
     what: &str,
     count: u64,
 ) -> String {
     format!(
-        "store: a call at {}:{} failed after {} ms (waited {} ms, {retries} busy retries, \
+        "store: a call at {}:{} failed after {} ms (waited {} ms, {retries} busy retries{}, \
          {count} at this site): {what}",
         at.file(),
         at.line(),
         took.as_millis(),
-        waited.as_millis()
+        waits.lock.as_millis(),
+        queued_words(waits.queued)
     )
 }
 

@@ -187,12 +187,11 @@ fn a_queue_write_waiting_on_another_process_leaves_the_store_readable() {
     let db = TempDb::new("queue-wait");
     let s = Store::open(&db.0).unwrap();
     seed(&s);
-    s.connection()
-        .busy_timeout(Duration::from_millis(50))
-        .unwrap();
+    // The production busy handler, not a short `busy_timeout`: the handler is what sleeps holding
+    // the connection, so a test that swaps it out cannot see the stall.
     let (release, holder) = hold_write_lock(&db.0);
     let releaser = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(700));
+        std::thread::sleep(HELD);
         release.send(()).unwrap();
     });
 
@@ -248,10 +247,93 @@ fn a_queue_write_waiting_on_another_process_leaves_the_store_readable() {
         "queue write: {reads} reads while the claim waited on another process, worst {worst:?}"
     );
     assert!(
-        worst < Duration::from_millis(350),
+        worst < HELD / 2,
         "a read in this daemon waited {worst:?} for another process's write lock, over {reads} \
          reads: the queue's write held the process's one connection while it waited, so every \
          reader in the daemon waited with it"
+    );
+}
+
+/// How long [`hold_write_lock`] holds in the tests that measure a reader beside a waiting write:
+/// long against [`super::LADDER_ATTEMPT`], so a loaded box cannot blur the two.
+const HELD: Duration = Duration::from_secs(2);
+
+/// The daemon-start stall: `life_started` waited on another daemon's write lock with the process's
+/// connection held, so the boot thread's next store call sat behind it. An `exec` write waits with
+/// the connection released, like a `write_tx`.
+#[test]
+fn an_exec_write_waiting_on_another_process_leaves_the_store_readable() {
+    let db = TempDb::new("exec-wait");
+    let s = Store::open(&db.0).unwrap();
+    seed(&s);
+    let (release, holder) = hold_write_lock(&db.0);
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(HELD);
+        release.send(()).unwrap();
+    });
+    let (done, is_done) = mpsc::channel::<()>();
+    let mut worst = Duration::ZERO;
+    let mut reads = 0usize;
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            s.life_started("i-wait", 1)
+                .expect("the start waits out another process's commit");
+            done.send(()).unwrap();
+        });
+        let deadline = Instant::now() + Duration::from_secs(30);
+        while is_done.try_recv().is_err() && Instant::now() < deadline {
+            let t = Instant::now();
+            s.title("sess-busy")
+                .expect("a read beside the waiting write");
+            worst = worst.max(t.elapsed());
+            reads += 1;
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    });
+    releaser.join().unwrap();
+    holder.join().unwrap();
+    eprintln!("exec write: {reads} reads while it waited on another process, worst {worst:?}");
+    assert!(
+        s.life("i-wait").unwrap().is_some(),
+        "the write landed after the lock went"
+    );
+    assert!(
+        worst < HELD / 2,
+        "a read waited {worst:?} behind an `exec` write that was waiting on another process: \
+         the busy handler slept with this process's one connection held"
+    );
+}
+
+/// A call that waits for this process's connection while another thread holds it says so, rather
+/// than `waited 0 ms` on a line that then reads as a slow query.
+#[test]
+fn a_wait_for_this_process_connection_is_on_the_line_as_queued() {
+    let db = TempDb::new("queued");
+    let s = Store::open(&db.0).unwrap();
+    seed(&s);
+    let (held, is_held) = mpsc::channel::<()>();
+    let lines = std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let guard = s.connection();
+            held.send(()).unwrap();
+            std::thread::sleep(Duration::from_millis(1200));
+            drop(guard);
+        });
+        is_held.recv().unwrap();
+        let (out, lines) = super::collecting(|| s.life_started("i-queued", 1));
+        out.expect("the write ran once the connection was free");
+        lines
+    });
+    assert_eq!(lines.len(), 1, "one slow call, one line: {lines:?}");
+    let line = &lines[0];
+    assert!(
+        line.contains("(waited 0 ms, 0 busy retries, queued "),
+        "{line}"
+    );
+    let queued = number_after(line, "queued ");
+    assert!(
+        (900..=number_after(line, "took ")).contains(&queued),
+        "the 1.2 s the other thread held the connection is the queued part: {line}"
     );
 }
 
@@ -402,21 +484,30 @@ fn a_slow_store_call_is_one_line_naming_its_caller() {
     }
     let at = here();
     assert_eq!(
-        super::slow_line(Duration::from_millis(999), Duration::ZERO, 0, at),
+        super::slow_line(Duration::from_millis(999), super::Waits::default(), 0, at),
         None,
         "a call under a second is not logged"
     );
-    let line = super::slow_line(
-        Duration::from_millis(1834),
-        Duration::from_millis(1200),
-        12,
-        at,
-    )
-    .expect("a slow call");
+    let waits = super::Waits {
+        lock: Duration::from_millis(1200),
+        queued: Duration::ZERO,
+    };
+    let line = super::slow_line(Duration::from_millis(1834), waits, 12, at).expect("a slow call");
     assert!(line.contains("tests.rs:"), "{line}");
     assert!(
         line.contains("took 1834 ms (waited 1200 ms, 12 busy retries)"),
         "{line}"
+    );
+    let waits = super::Waits {
+        lock: Duration::ZERO,
+        queued: Duration::from_millis(31_900),
+    };
+    let line = super::slow_line(Duration::from_millis(32_080), waits, 0, at).expect("a slow call");
+    assert!(
+        line.contains(
+            "took 32080 ms (waited 0 ms, 0 busy retries, queued 31900 ms behind another thread)"
+        ),
+        "the in-process wait is on the line, so `waited 0` no longer reads as a slow query: {line}"
     );
 }
 
@@ -440,7 +531,7 @@ fn number_before(line: &str, label: &str) -> u64 {
 
 /// P0's done-test: a write serialised behind another connection's transaction reports the WAIT.
 /// The lock is held 300 ms and the body then spends a second of its own, so the line says which
-/// of the two the call spent its time on - and there is one attempt, so no retries to read.
+/// of the two the call spent its time on, the handler's sleep and the ladder's pauses together.
 #[test]
 fn a_lock_wait_is_on_the_line_as_waited_and_the_body_is_not() {
     let db = TempDb::new("waited");
@@ -483,10 +574,6 @@ fn a_lock_wait_is_on_the_line_as_waited_and_the_body_is_not() {
     assert!(
         took >= 1200,
         "the body's own second is in the call: took {took} ms: {line}"
-    );
-    assert!(
-        line.contains("0 busy retries"),
-        "the busy handler absorbed the wait, so no attempt failed: {line}"
     );
     assert!(
         line.contains("busy/tests.rs:"),

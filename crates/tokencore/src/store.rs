@@ -1369,7 +1369,17 @@ impl Shared {
 fn lock_shared(
     conn: &std::sync::Mutex<std::mem::ManuallyDrop<Connection>>,
 ) -> std::sync::MutexGuard<'_, std::mem::ManuallyDrop<Connection>> {
-    conn.lock().unwrap_or_else(|e| e.into_inner())
+    // Timed only when the lock is taken: the uncontended path costs one `try_lock`.
+    match conn.try_lock() {
+        Ok(g) => g,
+        Err(std::sync::TryLockError::Poisoned(e)) => e.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            let t = std::time::Instant::now();
+            let g = conn.lock().unwrap_or_else(|e| e.into_inner());
+            busy::queued(t.elapsed());
+            g
+        }
+    }
 }
 
 /// Every store file this process has open, by canonical path. A `Weak` and not an `Arc`: the
