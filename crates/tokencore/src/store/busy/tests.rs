@@ -470,12 +470,14 @@ fn a_lock_wait_is_on_the_line_as_waited_and_the_body_is_not() {
     eprintln!("lock wait: {line}");
     let took = number_after(line, "took ");
     let waited = number_after(line, "waited ");
+    // The 300 ms is counted from the releaser's spawn, so a loaded box starts the write late and
+    // sees less of it. 100 still tells the wait from nothing, 700 from the second-long body.
     assert!(
-        waited >= 250,
+        waited >= 100,
         "the 300 ms lock wait is on the line as waited {waited} ms: {line}"
     );
     assert!(
-        (250..=700).contains(&waited),
+        (100..=700).contains(&waited),
         "and it is the wait, not the whole call: waited {waited} ms of {took} ms: {line}"
     );
     assert!(
