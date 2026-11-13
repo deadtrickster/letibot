@@ -29,11 +29,13 @@ mod tests;
 #[cfg(test)]
 mod tests_disks;
 #[cfg(test)]
+mod tests_docker;
+#[cfg(test)]
 mod tests_work;
 pub mod work;
 mod worktree;
 pub use archive::{Kept, fetch_bundle, keep, namespace};
-pub use config::{Settings, SharedTarget, config_file};
+pub use config::{Settings, SharedTarget, bytes as size_bytes, config_file};
 pub use plan::{
     HoldingView, LANDED_GRACE_MS, OwnerView, Plan, Stranger, UNLANDED_GRACE_MS, Verdict, judge,
     plan, stamp_of,
@@ -135,6 +137,9 @@ pub struct Places {
     pub proc_root: PathBuf,
     /// `/sys/fs/cgroup`, or a fixture's.
     pub cgroup_fs: PathBuf,
+    /// The docker engine this box's `[docker] engine` or `$DOCKER_HOST` names, when either does and
+    /// the socket is there. `None` is a box without docker, which holds nothing of docker's.
+    pub docker_engine: Option<PathBuf>,
 }
 
 impl Places {
@@ -170,6 +175,7 @@ impl Places {
             firecode_cache: cache,
             proc_root: PathBuf::from("/proc"),
             cgroup_fs: PathBuf::from("/sys/fs/cgroup"),
+            docker_engine: crate::docker::engine_socket(),
         }
     }
 
@@ -454,7 +460,36 @@ pub fn discover(owner: &OwnerRow, places: &Places) -> Vec<Found> {
     out.extend(from_daemon(owner, places));
     out.extend(scopes_of(owner, places));
     out.extend(from_firecode(owner, places));
+    out.extend(from_docker(owner, places));
     out
+}
+
+/// The engine's own answer, through the label the proxy put on: `docs/lifecycle.md` d.4's docker
+/// stamp. A container or a network is `compute` and goes at close; a volume is `work` and waits for
+/// the work grace. An engine that did not answer contributes nothing - not being able to tell is a
+/// reason to keep, never to reap (d.4 rule 8).
+fn from_docker(owner: &OwnerRow, places: &Places) -> Vec<Found> {
+    let Some(engine) = &places.docker_engine else {
+        return Vec::new();
+    };
+    let engine = crate::docker::Socket::at(engine);
+    match crate::docker::discovered(&engine, &owner.id) {
+        Ok(found) => found
+            .into_iter()
+            .map(|d| Found {
+                owner: owner.id.clone(),
+                kind: d.kind.to_string(),
+                host: None,
+                handle: d.handle,
+                class: d.class,
+                stamp: format!("the label `{}={}`", crate::docker::LABEL_OWNER, owner.id),
+                bytes: d.bytes,
+                why: Some(d.why),
+                use_: None,
+            })
+            .collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// [`discover`], plus what a row already in the store still names.

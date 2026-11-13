@@ -43,6 +43,7 @@ impl Box_ {
             firecode_cache: Some(cache),
             proc_root: PathBuf::from("/proc"),
             cgroup_fs: PathBuf::from("/nonexistent/cgroup"),
+            docker_engine: None,
         }
     }
 
@@ -100,6 +101,7 @@ fn quick(by: &str) -> Ops {
         after_kill: Duration::from_millis(200),
         daemon_grace: Duration::from_millis(200),
         hands: std::sync::Arc::new(NoHands),
+        docker: crate::docker::Settings::default(),
     }
 }
 

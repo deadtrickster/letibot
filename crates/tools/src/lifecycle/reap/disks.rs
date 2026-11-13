@@ -32,6 +32,14 @@ pub trait Hands: Send + Sync {
     fn host_command(&self, host: &str, script: &str) -> Result<String, String>;
     /// A file's bytes from `host`, for the one thing that must come home whole: a bundle.
     fn host_read(&self, host: &str, path: &str) -> Result<Vec<u8>, String>;
+    /// One request to this box's docker engine, when it has one. The default is a box with none:
+    /// a pass that cannot see docker reaps nothing of it, which is the fail-closed direction.
+    fn docker(&self, req: &crate::docker::Request) -> Result<crate::docker::Response, String> {
+        Err(format!(
+            "no docker engine is configured here: {req:?} was not sent - set `[docker] engine` in \
+             ~/.config/letibot/leticode.toml, or $DOCKER_HOST"
+        ))
+    }
 }
 
 /// The kind words a cache may have, as the discovery walk gives them: a build target, a session's
@@ -647,6 +655,8 @@ fn journal(
 pub struct BoxHands {
     pub firecode: Option<PathBuf>,
     pub proc_locks: PathBuf,
+    /// This box's docker engine, when it has one.
+    pub docker: Option<PathBuf>,
     /// What this firecode's own `gc --help` says it can do, asked at the first verb and cached:
     /// asking a `gc --run` a CLI does not have costs a round trip and answers nothing.
     probe: std::sync::OnceLock<crate::firecode::Probe>,
@@ -664,6 +674,7 @@ impl BoxHands {
         BoxHands {
             firecode: crate::firecode::firecode_available().ok(),
             proc_locks: PathBuf::from("/proc/locks"),
+            docker: crate::docker::engine_socket(),
             probe: std::sync::OnceLock::new(),
             ssh: std::sync::Mutex::new(BTreeMap::new()),
         }
@@ -790,5 +801,16 @@ impl Hands for BoxHands {
             )),
             Err(e) => Err(e.to_string()),
         }
+    }
+
+    fn docker(&self, req: &crate::docker::Request) -> Result<crate::docker::Response, String> {
+        let Some(engine) = &self.docker else {
+            return Err(
+                "this box has no docker engine socket: set `[docker] engine` in \
+                 ~/.config/letibot/leticode.toml, or $DOCKER_HOST"
+                    .into(),
+            );
+        };
+        crate::docker::call(engine, req, crate::docker::reap::BOUND)
     }
 }

@@ -700,6 +700,7 @@ mod tests {
             firecode_cache: None,
             proc_root: "/nonexistent/proc".into(),
             cgroup_fs: "/nonexistent/cgroup".into(),
+            docker_engine: None,
         }
     }
 

@@ -128,6 +128,7 @@ impl Stub {
             firecode_cache: Some(cache.clone()),
             proc_root: fixture.at("proc"),
             cgroup_fs: fixture.at("cg"),
+            docker_engine: None,
         };
         Stub {
             fixture,

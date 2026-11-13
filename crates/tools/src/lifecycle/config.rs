@@ -137,6 +137,12 @@ struct GcTable {
     root: Option<String>,
     #[serde(default)]
     shared: Vec<SharedTable>,
+    /// `[gc.docker]`, read by [`crate::docker::config::Settings`] from this same file - the opt-in
+    /// prune policy. Accepted here and not interpreted, so a box that writes it is not a box whose
+    /// `[gc] root` this reader refuses.
+    #[serde(default)]
+    #[allow(dead_code)]
+    docker: Option<toml::Value>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]

@@ -21,6 +21,7 @@ use letibot_tokencore::store::{
     ReapAct, ReapEvent, Result as StoreResult, Store,
 };
 
+use super::plan::{HoldingView, Verdict};
 use super::{
     DAEMON, Places, SCOPE, VM, daemons_of, discover_all, human_bytes, human_millis, scope_clause,
     stamp_of,
@@ -62,6 +63,9 @@ pub struct Ops {
     pub daemon_grace: Duration,
     /// What the disk half reaches through: firecode's verbs, the build lock, remote hosts.
     pub hands: Arc<dyn Hands>,
+    /// This box's `[docker]` and `[gc.docker]` settings. They are on `Ops` rather than read inside
+    /// the pass so the one thing that removes something docker owns can be a test's value.
+    pub docker: crate::docker::Settings,
 }
 
 impl std::fmt::Debug for Ops {
@@ -87,6 +91,7 @@ impl Ops {
             after_kill: AFTER_KILL,
             daemon_grace: DAEMON_GRACE,
             hands: Arc::new(hands),
+            docker: crate::docker::Settings::load_or_default(),
         }
     }
 }
@@ -427,13 +432,16 @@ pub fn pass(
         }
         // A store error in the disk half is said and the pass goes on: the closes already made
         // are in `acts`, and the daemon acts on them only if the pass returns them.
-        if disks::past_compute(&owner)
-            && let Err(e) = disks::reap_owner(store, places, ops, &owner, now, &mut out)
-        {
-            out.kept.push(format!(
-                "{}: its disks were left, the store said {e}",
-                owner.id
-            ));
+        if disks::past_compute(&owner) {
+            // Docker's `work` class - a named volume - after the close and its caches: it waits for
+            // the work grace, and `judge` is what says when that is.
+            docker_work(store, places, ops, &owner, now, &mut out);
+            if let Err(e) = disks::reap_owner(store, places, ops, &owner, now, &mut out) {
+                out.kept.push(format!(
+                    "{}: its disks were left, the store said {e}",
+                    owner.id
+                ));
+            }
         }
     }
     disks::shared_targets(places, ops, now, &mut out);
@@ -441,7 +449,52 @@ pub fn pass(
         out.kept
             .push(format!("remote hosts were left, the store said {e}"));
     }
+    prune_docker(store, ops, now, &mut out);
     Ok(out)
+}
+
+/// The opt-in `[gc.docker]` prune: off unless the operator wrote labels into it. It is the only
+/// place a pass removes something docker owns that is not an owner's, and it is why the setting is
+/// `prune_label` and not a switch: a prune with no label is how another project's images go.
+fn prune_docker(store: &Store, ops: &Ops, at_ms: i64, out: &mut Pass) {
+    if !ops.docker.prunes() {
+        return;
+    }
+    let engine = HandsEngine(ops.hands.as_ref());
+    match crate::docker::prune(&engine, &ops.docker) {
+        Ok(said) if said.is_empty() => {}
+        Ok(said) => {
+            let sentence = format!(
+                "`[gc.docker] {}`: {}",
+                ops.docker.prune_label.join(", "),
+                said.join(", ")
+            );
+            store
+                .put_reap_event(&ReapEvent {
+                    at_ms,
+                    owner_id: "box".into(),
+                    kind: Some("docker".into()),
+                    host: None,
+                    handle: None,
+                    act: ReapAct::Remove.word().into(),
+                    said: sentence.clone(),
+                    by: ops.by.clone(),
+                })
+                .ok();
+            out.acts.push(Act {
+                owner: "box".into(),
+                kind: "docker".into(),
+                host: None,
+                handle: ops.docker.prune_label.join(","),
+                act: ReapAct::Remove,
+                said: sentence,
+                bytes: 0,
+            });
+        }
+        Err(why) => out
+            .kept
+            .push(format!("the opt-in docker prune was left: {why}")),
+    }
 }
 
 /// The compute half for one owner: judge a live one, and end the compute of one that is closing.
@@ -554,7 +607,12 @@ fn reap_compute(
             SCOPE => end_scope(Path::new(&f.handle), ops),
             VM => end_vm(places, ops, &f.handle),
             DAEMON => end_daemon(places, ops, owner, &f.handle),
-            // Containers are G6 and nothing else is compute: said, not guessed at.
+            // A container or a network the label proves: gone by `docker rm -f` / `network rm`
+            // through the engine, which is G6's half of compute.
+            crate::docker::reap::CONTAINER | crate::docker::reap::NETWORK => {
+                end_docker(ops, &f.kind, &f.handle)
+            }
+            // Nothing else is compute: said, not guessed at.
             other => Ended::Kept(format!("`{other}` is not this package's to reap")),
         };
         let (state, why) = match &said {
@@ -796,6 +854,105 @@ pub fn end_process(rec: &ProcessRecord, ops: &Ops) -> Ended {
             rec.label(),
             rec.pid
         ))
+    }
+}
+
+/// The pass's door to the engine: the same [`crate::docker::Engine`] a plan uses, reached through
+/// [`Hands`] so a test can answer the whole reap without a socket.
+struct HandsEngine<'a>(&'a dyn Hands);
+
+impl crate::docker::Engine for HandsEngine<'_> {
+    fn call(&self, req: &crate::docker::Request) -> Result<crate::docker::Response, String> {
+        self.0.docker(req)
+    }
+
+    fn name(&self) -> String {
+        "the docker engine this box's settings name".into()
+    }
+}
+
+/// End one container or network by its label (`docs/lifecycle.md` d.5): compute, so it goes at close
+/// and needs no grace - the row stays, and a reopen makes the objects again.
+fn end_docker(ops: &Ops, kind: &str, handle: &str) -> Ended {
+    let ended = crate::docker::remove(&HandsEngine(ops.hands.as_ref()), kind, handle);
+    if ended.gone {
+        Ended::Gone(ended.said)
+    } else {
+        Ended::Refused(ended.said)
+    }
+}
+
+/// A volume is `work` (`docs/lifecycle.md` d.5): it survives the close and goes at settle. The
+/// decision is the plan's own `judge`, so what `letibot gc` prints and what the pass does cannot
+/// drift - and a volume discovered with its size is a plan line with a size.
+fn docker_work(
+    store: &Store,
+    places: &Places,
+    ops: &Ops,
+    owner: &OwnerRow,
+    at_ms: i64,
+    out: &mut Pass,
+) {
+    for row in store.holdings_of(&owner.id).unwrap_or_default() {
+        if row.kind != crate::docker::reap::VOLUME
+            || row.state == HoldingState::Gone
+            || row.host.is_some()
+        {
+            continue;
+        }
+        let view = HoldingView {
+            kind: row.kind.clone(),
+            class: row.class,
+            host: row.host.clone(),
+            handle: row.handle.clone(),
+            state: HoldingState::Held,
+            stamp: row.stamp.clone(),
+            bytes: row.bytes,
+            archive: row.archive.clone(),
+            why: row.why.clone(),
+            verdict: Verdict::Keep(String::new()),
+            memory: None,
+        };
+        // Only `reap now` acts: `reap at` is the plan's sentence for a grace that has not
+        // elapsed, and a pass that acted on it would be the reap the grace exists to stop.
+        let verdict = super::plan::judge(owner, &view, places, at_ms);
+        if !matches!(verdict, Verdict::Now(_)) {
+            out.kept.push(format!(
+                "{} volume {}: {} — {}",
+                owner.id,
+                row.handle,
+                verdict.word(),
+                verdict.said()
+            ));
+            continue;
+        }
+        let ended = crate::docker::remove(
+            &HandsEngine(ops.hands.as_ref()),
+            crate::docker::reap::VOLUME,
+            &row.handle,
+        );
+        let (state, why) = if ended.gone {
+            (HoldingState::Gone, ended.said)
+        } else {
+            (HoldingState::Stuck, ended.said)
+        };
+        let state = write_holding(store, owner, &row.kind, &row.handle, state, &why, at_ms);
+        let mut act = journal(
+            store,
+            at_ms,
+            owner,
+            &row.kind,
+            &row.handle,
+            if state == HoldingState::Gone {
+                ReapAct::Remove
+            } else {
+                ReapAct::Stuck
+            },
+            &why,
+            &ops.by,
+        );
+        act.bytes = ended.bytes;
+        out.acts.push(act);
     }
 }
 
