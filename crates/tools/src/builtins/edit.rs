@@ -433,17 +433,20 @@ fn unshown_refusal(
         "call `read` with offset={first} and limit={} and edit again",
         last + 1 - first
     );
-    let shown = files.describe(path, total);
+    // What was shown, unless nothing was: the reason already says these lines were not.
+    let shown = match files.describe(path, total) {
+        none if none == "none of it" => String::new(),
+        lines => format!(" This session has been shown {lines} of `{path}`."),
+    };
     match cover {
+        // The read call is the body's, spelled with its offset and limit.
         crate::files::Cover::Never => Invocation::failed(
-            format!(
-                "this session has not been shown lines {first}-{last} of `{path}`: `read` them first"
-            ),
+            format!("this session has not been shown lines {first}-{last} of `{path}`"),
             format!(
                 "an edit may only replace lines `read` (or the `grep` tool's hits) has shown this \
                  session, so that a write never lands on text the model is remembering rather \
-                 than reading. Output of `bash` (`cat`, `grep -n`, `sed -n`) does not count. This \
-                 session has been shown {shown} of `{path}`. {read}. Nothing was written."
+                 than reading. Output of `bash` (`cat`, `grep -n`, `sed -n`) does not count.\
+                 {shown} {read}. Nothing was written."
             ),
         ),
         _ => Invocation::failed(
@@ -870,6 +873,9 @@ mod tests {
         assert!(out.contains("not been shown lines 2-2"), "{out}");
         assert!(out.contains("offset=2 and limit=1"), "{out}");
         assert!(out.contains("Nothing was written"), "{out}");
+        // The read is asked for once, and nothing shown is the reason's, not a second sentence.
+        assert_eq!(out.matches("`read`").count(), 2, "{out}");
+        assert!(!out.contains("none of it"), "{out}");
         assert!(h.read_file("src/lib.rs").contains("parse_args"));
 
         // The refusal marked nothing: the same call again is refused again.

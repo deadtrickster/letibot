@@ -349,14 +349,24 @@ impl ChangedSpan {
     pub fn describe(&self) -> String {
         let removed = (self.last_before + 1).saturating_sub(self.first);
         let added = (self.last_after + 1).saturating_sub(self.first);
+        // The file's length only where the span does not already say it: a whole-file change's
+        // counts are its lengths, and an unchanged length is one number, not a "went from".
+        let length = if removed == self.before_lines && added == self.after_lines {
+            String::new()
+        } else if self.before_lines == self.after_lines {
+            format!("; the file is {} lines", self.after_lines)
+        } else {
+            format!(
+                "; the file went from {} to {} lines",
+                self.before_lines, self.after_lines
+            )
+        };
         format!(
-            "lines {}–{} differ ({} line(s) replaced by {}); the file went from {} to {} lines",
+            "lines {}–{} differ ({} line(s) replaced by {}){length}",
             self.first,
             self.last_before.max(self.last_after),
             removed,
             added,
-            self.before_lines,
-            self.after_lines
         )
     }
 }
@@ -579,6 +589,20 @@ mod tests {
         let s = changed_span("", "x\ny\n");
         assert_eq!(s.before_lines, 0);
         assert_eq!(s.after_lines, 2, "a trailing newline is not a third line");
+    }
+
+    /// The file's length is said only where the span does not already say it.
+    #[test]
+    fn a_change_says_the_files_length_once() {
+        let one = changed_span("a\nb\nc\nd\n", "a\nB\nc\nd\n").describe();
+        assert_eq!(
+            one,
+            "lines 2–2 differ (1 line(s) replaced by 1); the file is 4 lines"
+        );
+        let whole = changed_span("a\nb\n", "x\n").describe();
+        assert_eq!(whole, "lines 1–2 differ (2 line(s) replaced by 1)");
+        let grew = changed_span("a\nb\n", "a\nb\nc\n").describe();
+        assert!(grew.ends_with("the file went from 2 to 3 lines"), "{grew}");
     }
 }
 
