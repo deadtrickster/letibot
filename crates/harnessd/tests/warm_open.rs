@@ -496,7 +496,8 @@ fn until_event(
                     return env.event;
                 }
             }
-            Err(_) => break,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     panic!("the event never arrived");
@@ -518,7 +519,9 @@ fn until(
                     return frame;
                 }
             }
-            Err(_) => break,
+            // A quiet half second under a loaded gate is not the end: only the deadline is.
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
     panic!("the frame never arrived");
