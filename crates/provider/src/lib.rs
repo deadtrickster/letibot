@@ -13,6 +13,7 @@ pub mod marks;
 pub mod messages;
 pub mod openai;
 pub mod presets;
+pub mod registry;
 pub mod responses;
 
 pub use anthropic::AnthropicProvider;

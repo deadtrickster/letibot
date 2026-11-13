@@ -220,6 +220,10 @@ pub fn resolve(
         None
     };
     let section = parsed.as_ref().and_then(|p| p.sections.get(preset.name));
+    // A door defined under `[provider.<name>]` may carry its key there.
+    let defined = parsed
+        .as_ref()
+        .and_then(|p| provider_section(&p.sections, preset.name));
     let prices = parsed
         .as_ref()
         .map(|p| p.prices.clone())
@@ -250,6 +254,14 @@ pub fn resolve(
         return Ok(Credentials {
             key: k.clone(),
             from: format!("[{}] in {}", preset.name, file.display()),
+            prices,
+            url,
+        });
+    }
+    if let Some(k) = defined.and_then(|s| s.get("key")).filter(|k| !k.is_empty()) {
+        return Ok(Credentials {
+            key: k.clone(),
+            from: format!("[provider.{}] in {}", preset.name, file.display()),
             prices,
             url,
         });
@@ -285,6 +297,62 @@ pub fn resolve(
         env: preset.key_env.into(),
         file,
     })
+}
+
+/// The `[provider.<name>]` section, with or without quotes around the name.
+pub(crate) fn provider_section<'a>(
+    sections: &'a BTreeMap<String, BTreeMap<String, String>>,
+    name: &str,
+) -> Option<&'a BTreeMap<String, String>> {
+    sections.iter().find_map(|(sec, kv)| {
+        let rest = sec.strip_prefix("provider.")?;
+        (rest.trim_matches('"') == name).then_some(kv)
+    })
+}
+
+/// One file section's `key = value` lines.
+pub(crate) type Section = BTreeMap<String, String>;
+
+/// Every `[provider.<name>]` section of the file, sorted by name, and the file read.
+/// A missing file is none; an unreadable one is the parser's sentence.
+pub(crate) fn provider_sections(
+    file: Option<&Path>,
+) -> Result<(PathBuf, Vec<(String, Section)>), String> {
+    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
+    if !file.is_file() {
+        return Ok((file, Vec::new()));
+    }
+    let parsed = parse_file(&file).map_err(|why| format!("{}: {why}", file.display()))?;
+    let out = parsed
+        .sections
+        .into_iter()
+        .filter_map(|(sec, kv)| {
+            let name = sec.strip_prefix("provider.")?.trim_matches('"').to_string();
+            Some((name, kv))
+        })
+        .collect();
+    Ok((file, out))
+}
+
+/// The operator's `[prices."<model>"]` table, empty when the file has none or cannot be read.
+pub fn prices(file: Option<&Path>) -> BTreeMap<String, Prices> {
+    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
+    parse_file(&file).map(|p| p.prices).unwrap_or_default()
+}
+
+/// A `["a", "b"]` or a bare `a` value as the hand parser hands it over.
+pub(crate) fn word_list(raw: &str) -> Vec<String> {
+    let t = raw.trim();
+    let inner = t
+        .strip_prefix('[')
+        .and_then(|s| s.strip_suffix(']'))
+        .unwrap_or(t);
+    inner
+        .split(',')
+        .map(|m| m.trim().trim_matches(['"', '\'']).trim())
+        .filter(|m| !m.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// The host part of a door's URL, for telling one region's endpoint from another's.

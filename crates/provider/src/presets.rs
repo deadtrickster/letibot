@@ -52,6 +52,34 @@ pub struct Preset {
     pub fixed_sampling: &'static [&'static str],
     /// The top-level body field that carries `--effort`, and the door's own words for it.
     pub effort: Option<EffortField>,
+    /// Where this door was defined, for the listings that mark config and env doors.
+    pub origin: Origin,
+    /// The window the operator declared, for a door no catalogue carries.
+    pub window: Option<u64>,
+}
+
+/// Where a door came from: compiled in, changed or added by providers.toml, or an env base URL.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Origin {
+    BuiltIn,
+    /// A built-in with a `[provider.<name>]` entry over it.
+    Changed,
+    /// A `[provider.<name>]` entry naming no built-in.
+    Config,
+    /// Defined by this base-URL variable.
+    Env(&'static str),
+}
+
+impl Origin {
+    /// The mark a listing draws beside the door's name.
+    pub fn label(&self) -> String {
+        match self {
+            Origin::BuiltIn => "built-in".into(),
+            Origin::Changed => "built-in, changed in providers.toml".into(),
+            Origin::Config => "providers.toml".into(),
+            Origin::Env(var) => format!("${var}"),
+        }
+    }
 }
 
 /// An effort switch as one body field: `words` maps the operator's word to the door's.
@@ -95,6 +123,8 @@ pub const DEEPSEEK: Preset = Preset {
     vendor_pick: false,
     fixed_sampling: &[],
     effort: None,
+    origin: Origin::BuiltIn,
+    window: None,
 };
 
 pub const GLM: Preset = Preset {
@@ -111,6 +141,8 @@ pub const GLM: Preset = Preset {
     vendor_pick: false,
     fixed_sampling: &[],
     effort: None,
+    origin: Origin::BuiltIn,
+    window: None,
 };
 
 /// The coding plan: same vendor, a different path (`/api/coding/paas/v4`), its own
@@ -141,6 +173,8 @@ pub const GLM_CODING: Preset = Preset {
     vendor_pick: false,
     fixed_sampling: &[],
     effort: None,
+    origin: Origin::BuiltIn,
+    window: None,
 };
 
 /// Zhipu's coding plan: the mainland host of the same product as [`GLM_CODING`].
@@ -156,6 +190,8 @@ pub const GLM_CODING_CN: Preset = Preset {
     vendor_pick: false,
     fixed_sampling: &[],
     effort: None,
+    origin: Origin::BuiltIn,
+    window: None,
 };
 
 pub const GROK: Preset = Preset {
@@ -170,6 +206,8 @@ pub const GROK: Preset = Preset {
     vendor_pick: false,
     fixed_sampling: &[],
     effort: None,
+    origin: Origin::BuiltIn,
+    window: None,
 };
 
 /// Anthropic's own API, speaking Messages. The key is the console's `x-api-key`, which is the one
@@ -193,6 +231,8 @@ pub const ANTHROPIC: Preset = Preset {
     vendor_pick: false,
     fixed_sampling: &[],
     effort: None,
+    origin: Origin::BuiltIn,
+    window: None,
 };
 
 /// DeepSeek's Anthropic-compatible door: the same models as [`DEEPSEEK`], the Messages wire, and a
@@ -215,6 +255,8 @@ pub const DEEPSEEK_ANTHROPIC: Preset = Preset {
     vendor_pick: false,
     fixed_sampling: &[],
     effort: None,
+    origin: Origin::BuiltIn,
+    window: None,
 };
 
 /// Z.ai's Anthropic-compatible door, which is the one their Claude Code instructions point at:
@@ -233,6 +275,8 @@ pub const GLM_ANTHROPIC: Preset = Preset {
     vendor_pick: false,
     fixed_sampling: &[],
     effort: None,
+    origin: Origin::BuiltIn,
+    window: None,
 };
 
 /// Moonshot's Kimi Code plan, whose Claude Code instructions give the base URL
@@ -257,6 +301,8 @@ pub const KIMI_CODING: Preset = Preset {
     vendor_pick: true,
     fixed_sampling: KIMI_FIXED_SAMPLING,
     effort: None,
+    origin: Origin::BuiltIn,
+    window: None,
 };
 
 /// OpenAI itself, on its own protocol. `gpt-6-astra` is the id the API reference's own
@@ -282,6 +328,8 @@ pub const OPENAI: Preset = Preset {
     vendor_pick: false,
     fixed_sampling: &[],
     effort: None,
+    origin: Origin::BuiltIn,
+    window: None,
 };
 
 /// Google's Gemini, whose wire is nothing like the others: `contents` of `user`/`model` parts,
@@ -304,6 +352,8 @@ pub const GEMINI: Preset = Preset {
     vendor_pick: false,
     fixed_sampling: &[],
     effort: None,
+    origin: Origin::BuiltIn,
+    window: None,
 };
 
 /// Kimi's coding plan (Moonshot): OpenAI chat completions on the plan's own host. Not the
@@ -330,6 +380,8 @@ pub const KIMI_CODE: Preset = Preset {
     vendor_pick: true,
     fixed_sampling: KIMI_FIXED_SAMPLING,
     effort: Some(KIMI_EFFORT),
+    origin: Origin::BuiltIn,
+    window: None,
 };
 
 /// The same plan on the global host. One key works on one region's host only, so this is a
@@ -346,6 +398,8 @@ pub const KIMI_CODE_GLOBAL: Preset = Preset {
     vendor_pick: true,
     fixed_sampling: KIMI_FIXED_SAMPLING,
     effort: Some(KIMI_EFFORT),
+    origin: Origin::BuiltIn,
+    window: None,
 };
 
 pub const ALL: &[&Preset] = &[
@@ -373,7 +427,34 @@ impl Preset {
             Some(m) => m.to_string(),
             None => self.default_model(cat),
         };
-        cat.model(self.catalogue_id, &model).map(|m| m.context)
+        cat.model(self.catalogue_id, &model)
+            .map(|m| m.context)
+            .or(self.window)
+    }
+
+    /// The model card's line for one model: the catalogue's facts, else what the operator
+    /// declared. Missing facts are said as missing, never as free or as some default size.
+    pub fn facts_line(
+        &self,
+        model: &str,
+        cat: &crate::catalogue::Catalogue,
+        prices: &std::collections::BTreeMap<String, Prices>,
+    ) -> String {
+        if let Some(f) = cat.model(self.catalogue_id, model) {
+            return f.card_line();
+        }
+        if self.origin == Origin::BuiltIn {
+            return crate::catalogue::ModelFacts::missing_line().to_string();
+        }
+        let window = match self.window {
+            Some(w) => format!("{} window", crate::catalogue::tokens(w)),
+            None => "window unknown".to_string(),
+        };
+        let price = match prices.get(model) {
+            Some(p) => format!("${} in / ${} out per M", p.input, p.output),
+            None => "unpriced".to_string(),
+        };
+        format!("{window} · {price} · {}", self.origin.label())
     }
 
     /// The model to use when the operator names none: the catalogue's pick by

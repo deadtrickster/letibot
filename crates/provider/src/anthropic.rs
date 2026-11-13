@@ -277,10 +277,15 @@ impl AnthropicProvider {
         let started = Instant::now();
         // A signal is not the provider failing: the same one retry the OpenAI client takes.
         let mut interrupted = false;
+        // `ANTHROPIC_AUTH_TOKEN` is a bearer token: a proxy reached by base URL reads that header.
+        let bearer = (self.creds.from == "$ANTHROPIC_AUTH_TOKEN")
+            .then(|| format!("Bearer {}", self.creds.key));
         let resp = loop {
-            match self
-                .agent
-                .post(&self.url)
+            let mut post = self.agent.post(&self.url);
+            if let Some(b) = &bearer {
+                post = post.header("Authorization", b);
+            }
+            match post
                 .header("x-api-key", &self.creds.key)
                 .header("anthropic-version", API_VERSION)
                 .header("Content-Type", "application/json")
