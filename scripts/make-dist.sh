@@ -104,7 +104,7 @@ set -eu
 #
 # It is a REPOSITORY file, not a build artifact, so it is staged from `scripts/`
 # rather than from `target/release` — see the copy loop below.
-ARCHIVE_BINARIES="harnessd letibot-tui letibot leticode letibot-mcp"
+ARCHIVE_BINARIES="harnessd letibot-tui letibot leticode letibot-mcp letibot-acp"
 ARCHIVE_LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
 # The same four for an `*-apple-darwin` triple, which install.sh's LIBRARIES_DARWIN
 # must match (`check-dist-names.sh` holds the two to each other).

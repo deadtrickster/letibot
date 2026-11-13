@@ -94,7 +94,7 @@ VERSION="${LETIBOT_VERSION:-}"
 # be. It joins `letibot` in the OPTIONAL set below: an archive published before the bridge existed
 # installs everything else and says the plugin cannot run yet, rather than dying on a file that
 # release never carried.
-BINARIES="harnessd letibot-tui letibot-askpass letibot leticode letibot-mcp"
+BINARIES="harnessd letibot-tui letibot-askpass letibot leticode letibot-mcp letibot-acp"
 # The names in BINARIES that are repository scripts, not build products.
 LAUNCHERS="letibot leticode"
 # **The one binary installed under two names.** `sudo` runs its helper by PATH, and
@@ -500,7 +500,7 @@ letibot: the daemon, the head and the Claude Code bridge, into LETIBOT_INSTALL_D
   sh install.sh           install
   sh install.sh --help    this
 
-What it installs: harnessd letibot-tui letibot leticode letibot-mcp, letibot-askpass (the
+What it installs: harnessd letibot-tui letibot leticode letibot-mcp letibot-acp, letibot-askpass (the
 same binary under the name `sudo` calls), and the four llama libraries harnessd links. It
 installs no model: the head asks for one on the first message.
 
@@ -615,9 +615,9 @@ main() {
     #
     # Every OTHER name is required, because those are the files `harnessd` needs.
     #
-    # **`letibot-mcp` is the one exception besides the launchers**, for the same reason and one
-    # more: a published archive predates it, and the Claude Code plugin is a SECOND install that a
-    # box could well skip. It lands when the archive has it and is named as absent when not.
+    # **`letibot-mcp` and `letibot-acp` are the exceptions besides the launchers**, for the same
+    # reason and one more: a published archive predates them, and each is a SECOND install a box
+    # could well skip - the bridge for Claude Code, the adapter for an editor that speaks ACP.
     have_launcher=1
     have_bridge=0
     for want in $BINARIES; do
@@ -648,6 +648,12 @@ main() {
         else
             if [ "$want" = letibot-mcp ] && [ ! -f "$src_file" ]; then
                 say "  (this release carries no $want, so the Claude Code plugin cannot run yet)"
+                continue
+            fi
+            # The same for the ACP adapter: a client launches it by PATH, so an archive that
+            # predates it installs everything else and says what is missing.
+            if [ "$want" = letibot-acp ] && [ ! -f "$src_file" ]; then
+                say "  (this release carries no $want, so Zed and Neovim cannot start it yet)"
                 continue
             fi
             [ -f "$src_file" ] || die "$src_file is missing"
