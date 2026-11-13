@@ -1055,6 +1055,9 @@ impl Harness {
         // A head's Ctrl+B reaches the `bash` wait loop through the hub's promote
         // channel, so the request is honoured while the worker is blocked inside it.
         let backend = backend.with_promote_channel(hub.promote_channel());
+        // The owner's memory share, on the cgroup this session's commands join: one throttle for
+        // everything the owner runs, chosen once at open so a job's cap is not the only bound.
+        let backend = backend.with_owner_memory_high(crate::memory_high::owner_high());
         // The session's scratch directory, where tools put working artifacts too big for the
         // transcript, and the `/tmp` a confined command gets: both under this owner's root ON DISK
         // (`docs/lifecycle.md` d.4). Not the runtime dir, which is RAM: a Go fuzz job's 54 323

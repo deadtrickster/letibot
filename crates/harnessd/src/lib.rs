@@ -66,6 +66,7 @@ pub mod leases;
 // daemon. This binding keeps every `crate::leticode_config::…` path below compiling.
 pub use leticode_config;
 pub mod m1;
+pub mod memory_high;
 pub mod memwatch;
 pub mod mergequeue;
 pub mod modes;

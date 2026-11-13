@@ -357,6 +357,16 @@ impl HostBackend {
         self
     }
 
+    /// Throttle this session's owner at `bytes` (`memory.high` on its session cgroup): the share
+    /// `docs/lifecycle.md` G5 gives the owner, not a cap - a job's cap is `memory.max` and it is
+    /// that job's alone. Ignored on a backend with no processes of its own, which runs nothing.
+    pub fn with_owner_memory_high(self, bytes: Option<u64>) -> Self {
+        if let Some(host) = &self.processes {
+            host.set_owner_memory_high(bytes);
+        }
+        self
+    }
+
     /// Set the session's scratch directory. Both halves from one call: the tools read it through
     /// [`ExecBackend::scratch_dir`] and the process host writes a promoted run's output there, so
     /// a host pointed elsewhere would be the same defect one layer down.

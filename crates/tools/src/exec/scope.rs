@@ -1041,6 +1041,7 @@ impl SiblingScope {
             if scope.path.join("memory.swap.max").exists() {
                 write("memory.swap.max", "0".into())?;
             }
+            oom_group(&scope.path);
         }
         Ok(scope)
     }
@@ -1146,6 +1147,65 @@ fn memory_use_at(dir: &Path) -> Option<MemoryUse> {
         peak: peak.trim().parse().ok()?,
         oom_kills: oom_kills_at(dir),
     })
+}
+
+/// `memory.oom.group=1`: a cgroup that hits its cap is killed WHOLE, not losing only the process
+/// that allocated last - the half of a test run that survived is the leak this is for. Absent on
+/// a kernel whose memory controller has no such file, which is no group kill to ask for.
+fn oom_group(dir: &Path) {
+    let at = dir.join("memory.oom.group");
+    if at.exists() {
+        let _ = std::fs::write(at, "1");
+    }
+}
+
+/// `memory.high` on an owner's cgroup: the share it is throttled at. Unlike `memory.max` this is
+/// pressure - the kernel reclaims under it and kills nothing - which is why the owner gets one and
+/// only the job gets a cap.
+pub fn throttle(dir: &Path, bytes: u64) -> Result<(), String> {
+    let at = dir.join("memory.high");
+    std::fs::write(&at, bytes.to_string())
+        .map_err(|e| format!("writing `{}` failed: {e}", at.display()))
+}
+
+/// Keep no core dump from this child or anything it starts. A command the harness ends for size
+/// (SIGXFSZ, a killed test) is an expected ending, and its dump is what filled the operator's
+/// desktop and the unit table (R191, G5); the rlimit is inherited, so it is the whole tree.
+#[cfg(unix)]
+pub fn keep_no_core(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    // SAFETY: `setrlimit` between fork and exec touches only the child's own limits and allocates
+    // nothing; a refusal is reported as the spawn's error instead of being swallowed.
+    unsafe {
+        cmd.pre_exec(|| {
+            let none = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            if libc::setrlimit(libc::RLIMIT_CORE, &none) != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
+#[cfg(not(unix))]
+pub fn keep_no_core(_cmd: &mut std::process::Command) {}
+
+/// Say `why` once per `tag` in this process. A bound the kernel refused is said once and then
+/// lived with: repeating it on every spawn would bury the one line the operator acts on.
+pub fn said_once(tag: &str, why: &str) {
+    use std::sync::Mutex;
+    use std::sync::OnceLock;
+    static SAID: OnceLock<Mutex<Vec<String>>> = OnceLock::new();
+    let said = SAID.get_or_init(|| Mutex::new(Vec::new()));
+    let mut said = said.lock().unwrap_or_else(|e| e.into_inner());
+    if said.iter().any(|t| t == tag) {
+        return;
+    }
+    said.push(tag.to_string());
+    eprintln!("letibot: {why}");
 }
 
 fn own_cgroup() -> Result<PathBuf, ExecError> {
@@ -1275,6 +1335,7 @@ impl ScopeTree for Cgroup2 {
         if scope.path.join("memory.swap.max").exists() {
             write("memory.swap.max", "0".into())?;
         }
+        oom_group(&scope.path);
         Ok(())
     }
 
@@ -2046,6 +2107,34 @@ mod tests {
         assert_eq!(memory_use_at(&dir).unwrap().oom_kills, 0);
         std::fs::write(dir.join("memory.max"), "max\n").unwrap();
         assert_eq!(memory_use_at(&dir).unwrap().cap, None, "`max` is uncapped");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A capped job is one group kill and its owner is only a throttle: `memory.oom.group` makes
+    /// the kernel take the whole job instead of the process that allocated last, and `memory.high`
+    /// is pressure it reclaims under with no kill at all. Both are written where the bound is.
+    #[test]
+    fn a_capped_job_is_one_group_kill_and_an_owner_is_only_throttled() {
+        let dir = std::env::temp_dir().join(format!("letibot-oomgroup-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A kernel whose controller has no such file is no group kill to ask for, and a cap must
+        // not fail over it: the job runs capped, one process at a time, as it did before.
+        oom_group(&dir);
+        assert!(!dir.join("memory.oom.group").exists());
+        std::fs::write(dir.join("memory.oom.group"), "0\n").unwrap();
+        oom_group(&dir);
+        assert_eq!(
+            std::fs::read_to_string(dir.join("memory.oom.group")).unwrap(),
+            "1"
+        );
+
+        throttle(&dir, 8 << 30).expect("memory.high");
+        assert_eq!(
+            std::fs::read_to_string(dir.join("memory.high")).unwrap(),
+            (8u64 << 30).to_string(),
+            "the owner's share is a byte count the kernel reads back"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

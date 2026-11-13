@@ -2043,3 +2043,183 @@ fn a_command_carried_into_a_vm_is_not_capped_on_the_host() {
     assert_eq!(cap, MemoryCap::NotAsked, "{cap:?}");
     let _ = std::fs::remove_dir_all(&root);
 }
+
+/// The owner's share is `memory.high` on the cgroup its own commands join, written where that
+/// cgroup is made - and only when somebody asked. A job's `memory.max` ends the job; this is the
+/// bound that makes the kernel slow an owner down instead of letting it starve the box first.
+#[test]
+fn the_owner_is_throttled_at_the_cgroup_its_commands_join() {
+    let root = std::env::temp_dir().join(format!("letibot-owner-high-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let session_dir = |tree: &std::path::Path| {
+        std::fs::read_dir(tree)
+            .expect("the tree")
+            .flatten()
+            .map(|e| e.path())
+            .find(|p| {
+                p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("session."))
+            })
+            .expect("the session scope was opened")
+    };
+    let run = |h: &HostProcesses| {
+        h.spawn(&SpawnRequest {
+            command: "true".into(),
+            slug: None,
+            cwd: "/".into(),
+            scope: ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: vec![],
+            tty: false,
+            memory: None,
+            env_trailer: false,
+        })
+        .expect("a job runs");
+    };
+
+    let share: u64 = 8 << 30;
+    let h = HostProcesses::with_tree(&root, PlainTree::over(root.join("asked")))
+        .with_owner_memory_high(Some(share));
+    run(&h);
+    assert_eq!(
+        std::fs::read_to_string(session_dir(&root.join("asked")).join("memory.high"))
+            .expect("memory.high on the owner's cgroup"),
+        share.to_string()
+    );
+
+    // A host nobody gave a share writes nothing: a missing file is *no bound*, and a file holding
+    // zero would freeze every command the session ran.
+    let plain = HostProcesses::with_tree(&root, PlainTree::over(root.join("plain")));
+    run(&plain);
+    assert!(
+        !session_dir(&root.join("plain"))
+            .join("memory.high")
+            .exists(),
+        "nobody asked, so the owner is unbounded rather than throttled at zero"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A job keeps no core dump, and neither does anything it starts: a run the harness ends for size
+/// (SIGXFSZ) is an expected ending, and its dump is what filled the operator's desktop and then
+/// the user manager's unit table (R191, G5). The rlimit is inherited, so the shell under the
+/// wrapper - where a test's own program runs - reports it.
+#[test]
+fn a_job_and_everything_under_it_keep_no_core_dump() {
+    let root = std::env::temp_dir().join(format!("letibot-no-core-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let h = HostProcesses::with_tree(&root, PlainTree::over(root.join("tree")));
+    let id = h
+        .spawn(&SpawnRequest {
+            command: "sh -c 'ulimit -c'".into(),
+            slug: None,
+            cwd: "/".into(),
+            scope: ScopeKind::Turn,
+            scope_name: None,
+            background: false,
+            env: vec![],
+            tty: false,
+            memory: None,
+            env_trailer: false,
+        })
+        .expect("a job runs");
+    let waited = h
+        .wait_job(&id, std::time::Duration::from_secs(30))
+        .expect("the job answers");
+    assert!(
+        matches!(waited, Waited::Happened { .. }),
+        "the job did not finish: {waited:?}"
+    );
+    let text = h.output(&id, 0, 4096).expect("the row stays").text();
+    assert_eq!(
+        text.trim(),
+        "0",
+        "the core limit a command reports must be 0, not the box's own: {text:?}"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A job that allocates past its cap is killed WHOLE, and the job beside it survives: the cap is the
+/// cgroup's, and `memory.oom.group` takes every process in it - the difference between one runaway
+/// test and half a test run left behind (G5, `docs/lifecycle.md` d.7). The line the session gets is
+/// the job's own memory clause, asserted where it is built
+/// (`builtins::jobs::tests::a_job_killed_at_its_cap_says_the_cap_and_not_a_finish`).
+///
+/// Skips where this box has no cgroup v2 subtree to delegate: a test cannot make one, and a cap that
+/// could not be written would be measured as a cap that never fired.
+#[test]
+fn a_job_past_its_cap_is_killed_whole_while_its_neighbour_survives() {
+    let root = std::env::temp_dir().join(format!("letibot-cap-whole-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    // The jobs run with the root as their cwd, and a spawn into a missing cwd is ENOENT.
+    std::fs::create_dir_all(&root).unwrap();
+    let h = match HostProcesses::new(&root) {
+        Ok(h) => h,
+        Err(e) => {
+            eprintln!("no cgroup v2 subtree here, so the cap cannot be measured: {e}");
+            letibot_tokencore::apparatus::absent("a cgroup v2 subtree this user may write");
+            return;
+        }
+    };
+    let cap: u64 = 48 << 20;
+    let ask = |command: &str, memory: Option<u64>| SpawnRequest {
+        command: command.into(),
+        slug: None,
+        cwd: "/".into(),
+        scope: ScopeKind::Session,
+        scope_name: None,
+        background: true,
+        env: vec![],
+        tty: false,
+        memory,
+        env_trailer: false,
+    };
+    // The backgrounded child is the point: it is in the job's cgroup, so a group kill takes it too.
+    let hog = h
+        .spawn(&ask(
+            "sh -c 'sleep 300 & echo child=$!; python3 -c \"b = bytearray(256 << 20)\"'",
+            Some(cap),
+        ))
+        .expect("the hog runs");
+    // A daemon outside a scope of its own runs every job uncapped, and there is no cap to measure.
+    if let Some(MemoryCap::Uncapped { why, .. }) = h.job(&hog).map(|j| j.memory_cap) {
+        let _ = h.kill_job(&hog);
+        let _ = std::fs::remove_dir_all(&root);
+        eprintln!("the cap could not be set here: {why}");
+        letibot_tokencore::apparatus::absent("a cgroup v2 memory controller this test may cap");
+        return;
+    }
+    let neighbour = h
+        .spawn(&ask("sleep 30", Some(cap)))
+        .expect("the neighbour runs");
+    let waited = h
+        .wait_job(&hog, std::time::Duration::from_secs(180))
+        .expect("the job answers");
+    assert!(
+        matches!(waited, Waited::Happened { .. }),
+        "the hog was not ended by its cap inside the bound: {waited:?}"
+    );
+    let out = h.output(&hog, 0, 8192).expect("the row stays").text();
+    let child: u32 = out
+        .lines()
+        .find_map(|l| l.strip_prefix("child="))
+        .and_then(|p| p.trim().parse().ok())
+        .unwrap_or_else(|| panic!("the command never named its child: {out:?}"));
+    assert!(
+        crate::exec::procs::read(child).is_none(),
+        "the dead job's child {child} is still running: the cap killed the process, not the job"
+    );
+    let ended = h.job(&hog).expect("the ended job's row");
+    let said = ended
+        .memory_clause()
+        .expect("a job ended at its cap says so");
+    assert!(said.contains("KILLED at the cap"), "{said}");
+    let beside = h.job(&neighbour).expect("the neighbour's row");
+    assert!(
+        beside.state.is_running(),
+        "a neighbour's cap must not end this job: {beside:?}"
+    );
+    let _ = h.kill_job(&neighbour);
+    let _ = std::fs::remove_dir_all(&root);
+}

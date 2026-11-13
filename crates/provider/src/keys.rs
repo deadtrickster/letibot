@@ -93,6 +93,12 @@ pub struct MemorySection {
     /// The cap each merge-gate step runs under, in a cgroup of its own beside the daemon's:
     /// a size, a fraction of what is free when the gate starts, or `uncapped`.
     pub gate: Option<String>,
+    /// `memory.high` on each owner's cgroup - a size, a fraction of the box, or `max` for no
+    /// throttle. Pressure the kernel reclaims under, never a cap: the cap belongs to a job.
+    pub owner_high: Option<String>,
+    /// `MemoryHigh` on `letibot.slice`, so letibot as a whole is throttled before it starves
+    /// another project's work: a size, a fraction of the box, or `max` for no slice bound.
+    pub slice_high: Option<String>,
 }
 
 /// Read `[memory]`. Missing file, missing section, unparseable file: all the built-in policy.
@@ -109,6 +115,8 @@ pub fn memory(file: Option<&Path>) -> MemorySection {
         ceiling: sec.get("ceiling").cloned(),
         daemon_high: sec.get("daemon_high").cloned(),
         gate: sec.get("gate").cloned(),
+        owner_high: sec.get("owner_high").cloned(),
+        slice_high: sec.get("slice_high").cloned(),
     }
 }
 

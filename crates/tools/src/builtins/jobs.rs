@@ -1616,6 +1616,37 @@ mod tests {
         }
     }
 
+    /// A job the kernel ended at its cap says what ended it and names the cap, in one clause: that
+    /// is the line the session gets for an OOM (G5), and it must not read as a finish.
+    #[test]
+    fn a_job_killed_at_its_cap_says_the_cap_and_not_a_finish() {
+        let cap = 32 << 30;
+        let mut v = view("j1", Some("fuzz"));
+        v.state = crate::exec::JobState::Exited { code: 137 };
+        v.memory_cap = crate::exec::MemoryCap::Capped(cap);
+        v.memory = Some(crate::exec::MemoryUse {
+            cap: Some(cap),
+            current: 0,
+            peak: 31 << 30,
+            oom_kills: 3,
+        });
+        let clause = v.memory_clause().expect("a killed job says why it ended");
+        assert!(clause.contains("KILLED at the cap"), "{clause}");
+        assert!(
+            clause.contains("of a 32 GiB cap"),
+            "the line names the cap, because that is the number to raise: {clause}"
+        );
+        // A run that ended well inside its cap says nothing about memory: the peak on every row
+        // would be a number the model pays for and cannot act on.
+        v.memory = Some(crate::exec::MemoryUse {
+            cap: Some(cap),
+            current: 0,
+            peak: 1 << 20,
+            oom_kills: 0,
+        });
+        assert_eq!(v.memory_clause(), None);
+    }
+
     /// A job is addressable by its id or by the name the agent stated, and the id wins.
     /// Nothing is a prefix or a guess: `release` is not a way to say `release-build`.
     #[test]

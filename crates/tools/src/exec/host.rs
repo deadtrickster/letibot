@@ -1088,6 +1088,10 @@ pub struct HostProcesses {
     /// sessions in one daemon share a cgroup root, so a fixed name would put both sessions'
     /// processes in one cgroup and ending either would reap the other's jobs.
     session_name: String,
+    /// The share every session scope is throttled at, in bytes; `0` is nobody asked. A bound on
+    /// the OWNER and not on a job (that is `memory.max`), so a runaway test is slowed by the kernel
+    /// instead of taking the box, and one session's pressure is not another's (`docs/lifecycle.md` G5).
+    owner_memory_high: std::sync::atomic::AtomicU64,
 }
 
 /// Distinguishes the scopes two sessions in one process open.
@@ -1401,9 +1405,26 @@ impl HostProcesses {
             aggregates: Mutex::new(std::collections::HashMap::new()),
             kept_scopes: Arc::new(Mutex::new(Vec::new())),
             session_name: unique("s"),
+            owner_memory_high: std::sync::atomic::AtomicU64::new(0),
         };
         h.protect_self_and_ancestors();
         h
+    }
+
+    /// The share each session scope is throttled at (`memory.high`): the owner's bound, applied
+    /// where the cgroup is opened because that is the one place it exists. `None` leaves it
+    /// unbounded, which is the default; a box that cannot write the file says so once.
+    pub fn with_owner_memory_high(self, bytes: Option<u64>) -> Self {
+        self.owner_memory_high
+            .store(bytes.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
+        self
+    }
+
+    /// [`HostProcesses::with_owner_memory_high`] on a host already built and shared: the daemon
+    /// wires this after the backend exists, as it does the scratch directory.
+    pub fn set_owner_memory_high(&self, bytes: Option<u64>) {
+        self.owner_memory_high
+            .store(bytes.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn with_confinement(mut self, confine: Box<dyn Confinement>) -> Self {
@@ -1842,6 +1863,16 @@ impl ProcessHost for HostProcesses {
                 let id = self
                     .tree
                     .open(ScopeKind::Session, &self.session_name, None)?;
+                // The owner's throttle, on the cgroup the moment it exists: a cap on a job kills
+                // the job, and this is what keeps one owner from starving the box first.
+                let high = self
+                    .owner_memory_high
+                    .load(std::sync::atomic::Ordering::Relaxed);
+                if high > 0
+                    && let Err(why) = super::scope::throttle(&id.path, high)
+                {
+                    super::scope::said_once("owner-memory-high", &why);
+                }
                 *s = Some(id.clone());
                 Ok(id)
             }
@@ -2024,6 +2055,9 @@ impl ProcessHost for HostProcesses {
             None => req.command.clone(),
         };
         let mut cmd = std::process::Command::new("/bin/sh");
+        // No core dump from this command or anything under it: a run the harness ends for size is
+        // an expected ending, and its dump is what filled the unit table (R191, G5).
+        super::scope::keep_no_core(&mut cmd);
         cmd.arg("-c")
             .arg(join_script())
             .arg("letibot-scope")
