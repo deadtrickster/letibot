@@ -113,6 +113,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | T3 | Report the minja scoping bug upstream | Needs the operator | the operator files it; the writeup is `docs/chat-templates.md` section 2 and no upstream link or issue number is recorded |
 | T6 | Workstreams not started, from `docs/workstreams.md` | Needs the operator | install `pytest` (W1/W2 are blocked on it); this entry's list is stale and needs rewriting from `docs/workstreams.md` |
 | R120 | One seat and a working automode, instead of roles | Parked | the automode half, until a model passes the etalon oracle corpus; the roles half is answered by R203 (a role is a profile that only narrows) |
+| R204 | Kimi's coding plan as a provider: two presets, and what its endpoint needs beyond OpenAI | Needs the operator | built: `kimi-code`/`kimi-code-global` with `KIMI_API_KEY`, `k3`, Kimi's `thinking` field, `""` on an assistant tool-call message that recorded no thought, `prompt_cache_key`, `letibot/<version>` in `User-Agent`, a 403 that says the client gate refused it and a quota 429 that is not retried; left: **no turn has been sent to Moonshot — the operator verifies against the real endpoint with their key** (the guest has none and no route), and with it whether that UA is admitted, whether `max_tokens` is accepted and whether `content: null` on a tool-call message is |
 | R84a | Worktrees and landing trees beside the checkout (`wt/`, `landing/`) | Parked | three behaviour changes the operator has not ruled on, then rebasing the parked branch |
 
 ---
@@ -3234,6 +3235,86 @@ segments and compaction · W14 EXPLAIN · W15 server track · W16 experiments.
 `crates/tools`, W11 to `tools/src/adjudicate`, W13 to `turn/src/compaction`, so only W1/W2 and
 the docs' own status still wait; `pytest` is genuinely absent (`python3 -m pytest` → `No module
 named pytest`).
+
+---
+
+## R204 - Kimi's coding plan as a provider: two presets, and what its endpoint needs beyond OpenAI
+
+**Status:** built, 2026-11-13. left: **no request has ever been sent to Moonshot.** The guest has no
+key and no route to it, so every test is against a loopback fake; the operator verifies against the
+real endpoint with their own key, and that check settles three things this box cannot: whether
+`letibot/<version>` is admitted at all (a 403 is what says it is not, and the refusal now says so in
+those words), whether `max_tokens` is accepted where Kimi Code itself sends `max_completion_tokens`,
+and whether `content: null` on an assistant tool-call message is accepted where Kimi's own client
+drops the key.
+
+Moonshot's Kimi Code plan (`https://www.kimi.com/code/docs/en/`, read from MoonshotAI/kimi-code at
+`1364ab47` - the package brief is not in this repository). The endpoint speaks OpenAI chat
+completions with three Kimi-flavoured things layered on, and it is not the pay-per-token Open
+Platform: the two products' keys and URLs are not interchangeable.
+
+**The two doors.** `Preset::KIMI_CODE` (`api.kimi.com/coding/v1/chat/completions`, catalogue
+`kimi-code-plan-cn`) and `KIMI_CODE_GLOBAL` (`api.kimi.ai/coding/v1/chat/completions`,
+`kimi-code-plan-global`), the same split as `glm-coding`/`glm-coding-cn` because one key answers on
+one region's host only. `key_env: KIMI_API_KEY`, `alt_envs: KIMI_CODE_API_KEY` (never
+`MOONSHOT_API_KEY`, which belongs to the other product), `fallback_model: k3`, `thinking_field:
+Some("thinking")`, and an effort rides the operator's own `sampling = {reasoning_effort = "high"}`.
+Aliases `kimi`, `kimi-coding`, `moonshot-coding`; opencode's `auth.json` ids too. The
+parse refusal now names every preset rather than a count, so the next door added cannot leave it
+claiming a number that is no longer true.
+
+**The rules, in `crates/provider/src/kimi.rs`.** Keyed on the preset's NAME so a door needs no new
+field on `Preset` and no other crate edited, which is also what keeps three other packages adding
+presets at the same time out of this diff. `USER_AGENT` is `letibot/<version>` and is sent on this
+endpoint only: Moonshot documents rewriting the `User-Agent` to pass for another agent as a
+violation, and it admits the clients it recognises by that header. `fill_absent_thoughts` puts
+`reasoning_content: ""` on an assistant tool-call message that has none - the server refuses
+"thinking is enabled but reasoning_content is missing in assistant tool call message at index N" and
+Kimi's own encoder sends the empty string there. `may_switch_thinking_off` leaves the field out on
+K3.1 Pro, which answers `{"type": "disabled"}` with a 400. `cache_key` is a `prompt_cache_key` of
+this client's own: Kimi's implicit cache is keyed by the session id its CLI sends, no session id
+reaches `TurnRequest` (18 construction sites across the workspace, three other packages in flight),
+and one provider instance is built per session open, so the instance's own name is the key.
+`explain_a_403` is the sentence a 403 from this endpoint earns, in both readings - the plan's gate by
+model or context, or the client gate by `User-Agent` - because the body may name neither.
+
+**The quota.** `429 exceeded_current_quota_error` is Kimi's spent plan, the one 429 its own client
+calls non-retryable; `crates/http/src/retry.rs`'s money list carries the code, so it reaches the
+daemon as `Trouble::Quota` and one call. The plan's 5-hour and weekly limits are 429s whose prose
+names a window and they stay retryable rate limits, with `reset_ms` from that prose - `reset.rs`
+already parsed Kimi's wording before this change.
+
+**Also read, and cheap.** A `usage` object inside `choices[0]` is now hoisted: Kimi may put it in a
+choice of its last chunk, and a reader that looked only above `choices` billed the turn as nothing.
+
+**The catalogue.** Both providers' models are in `crates/provider/data/models-snapshot.json` (from
+models.dev, prices 0 - the plan is a subscription) and both ids are in
+`scripts/refresh-models-snapshot.sh`'s `WANT`, or the next refresh would drop them. Without the rows
+a preset's window is `None` and compaction plans against nothing; with them `k3` is 1,048,576 and
+`k3-256k` 262,144. The snapshot's own `SNAPSHOT_FETCHED` date is left as it was: the rest of the
+file is still that day's, and the two new blocks are models.dev's rows of 2026-11-13.
+
+**Tests.** `crates/provider/tests/kimi_code.rs`, against a fake on 127.0.0.1 (no network): a turn's
+request carries `Authorization: Bearer`, `User-Agent: letibot/<version>` (and no agent's name in
+it), `thinking: {type: enabled}`, `prompt_cache_key`, `stream_options.include_usage`, and
+`reasoning_content: ""` on a tool-call message whose thought was never recorded - and it streams; a
+`429 exceeded_current_quota_error` is one request and the code survives into the refusal; a 403 says
+the client gate refused it and names the UA the server actually saw. `crates/provider/src/kimi.rs`:
+the empty thought is filled where it is owed and a recorded one is left alone, K3.1 refuses only
+`disabled`, the UA passes for nobody, each instance gets its own key. `crates/provider/src/openai.rs`:
+a cheap turn on `k3.1-pro` leaves the switch out while `k3` gets `disabled` and another door's body
+is untouched, and a usage inside a choice is read. `crates/provider/src/presets.rs` and
+`catalogue.rs`: the two hosts and the plan's own key and fields, and the fallbacks real on the
+snapshot floor. `crates/http/src/retry.rs`: `exceeded_current_quota_error` is `Class::Refused`,
+`Trouble::Quota` and one call with no waiting, while the 5-hour prose is a rate limit. Each was run
+red before green: without the fill the tool-call message has no `reasoning_content`, without
+`is_kimi` the UA and the 403 sentence go, and without the code in the money list the 429 is
+`RateLimit` and retried.
+
+Done when: a stub turn carries letibot's own `User-Agent`, the thinking field, `""` on a tool-call
+message that recorded no thought and a `prompt_cache_key`; a 429 naming
+`exceeded_current_quota_error` is one call and reads as a quota; a 403 says the client gate refused
+it - and a live call with the operator's key answers 200.
 
 ---
 
