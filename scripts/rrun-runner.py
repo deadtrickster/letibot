@@ -196,11 +196,12 @@ for i, cmd in enumerate(steps):
     if p.returncode != 0:
         failed = True
         break
+# The target records build-script triggers as absolute paths into this tree, and a later run in
+# another tree would see them unchanged and skip the rebuild. Gone, they rerun; and the dir goes
+# with the tree when this run was told to clean it. Before the terminal state, so a reader that
+# sees `passed` never sees the dirs still there.
+remove_run_dirs()
 status["state"] = "failed" if failed else "passed"
 status["ended"] = int(time.time())
 save()
-# The target records build-script triggers as absolute paths into this tree, and a later run in
-# another tree would see them unchanged and skip the rebuild. Gone, they rerun; and the dir goes
-# with the tree when this run was told to clean it.
-remove_run_dirs()
 sys.exit(1 if failed else 0)
