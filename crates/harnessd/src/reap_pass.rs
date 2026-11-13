@@ -110,3 +110,68 @@ pub fn spawn(store_at: Option<impl Into<StoreAt>>, registry: Arc<Registry>) {
             }
         });
 }
+
+/// The owner's lease renewed on a clock while a turn runs. A round renews it once, and one tool
+/// call can outlast the idle TTL inside a round; a turn in flight is never idle (d.3).
+pub struct LeaseBeat {
+    stop: Option<std::sync::mpsc::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl LeaseBeat {
+    /// Start beating for `owner`, a quarter of its idle TTL apart, on a connection of its own.
+    /// Nothing starts for an owner with no row or no idle TTL: there is no idle close to hold off.
+    pub fn start(at: Option<&StoreAt>, owner: &str) -> LeaseBeat {
+        let none = LeaseBeat {
+            stop: None,
+            thread: None,
+        };
+        let Some(at) = at.cloned() else {
+            return none;
+        };
+        let Some(ttl) = at
+            .open_existing()
+            .ok()
+            .and_then(|s| s.owner(owner).ok().flatten())
+            .and_then(|o| o.idle_ttl_ms)
+        else {
+            return none;
+        };
+        let every = Duration::from_millis((ttl / 4).clamp(50, 60_000) as u64);
+        let (stop, stopped) = std::sync::mpsc::channel::<()>();
+        let owner = owner.to_string();
+        let thread = std::thread::Builder::new()
+            .name("lease-beat".into())
+            .spawn(move || {
+                let Ok(store) = at.open_existing() else {
+                    return;
+                };
+                loop {
+                    let _ = store.touch_owner(&owner, letibot_metrics::now_ms() as i64);
+                    match stopped.recv_timeout(every) {
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                        _ => return,
+                    }
+                }
+            })
+            .ok();
+        LeaseBeat {
+            stop: Some(stop),
+            thread,
+        }
+    }
+
+    /// Whether a beat is running, for a test to tell an owner with no idle TTL from a failed start.
+    pub fn beating(&self) -> bool {
+        self.thread.is_some()
+    }
+}
+
+impl Drop for LeaseBeat {
+    fn drop(&mut self) {
+        drop(self.stop.take());
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
+    }
+}

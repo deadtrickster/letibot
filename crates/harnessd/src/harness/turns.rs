@@ -1830,6 +1830,9 @@ impl Harness {
 
     fn rounds(&mut self) -> Result<Reply, HarnessError> {
         self.the_turn_has_somewhere_to_go()?;
+        // Held for the whole turn: a tool call longer than the idle TTL is still a turn in flight.
+        let _beat =
+            crate::reap_pass::LeaseBeat::start(self.cfg.store_at().as_ref(), &self.cfg.session_id);
         // How many times this turn has asked again after a refused key. Bounded, so a
         // provider that refuses every key does not hold the worker in a loop of cards.
         let mut key_asks = 0usize;

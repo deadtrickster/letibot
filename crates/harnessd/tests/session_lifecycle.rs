@@ -868,6 +868,51 @@ fn a_package_daemon_with_only_its_gatekeeper_idles_out() {
     d.registry.close();
 }
 
+/// A turn whose tool call outlasts the idle TTL is not idle. `rounds` holds a `LeaseBeat` for the
+/// whole turn; here the call is a sleep longer than the TTL, with the lease stale when it starts,
+/// and the pass that runs during it keeps the owner. The same pass after the turn closes it.
+#[test]
+fn a_turn_whose_tool_call_outlasts_the_idle_ttl_is_not_reaped() {
+    let _one = serial();
+    let d = a_daemon_with_no_model("harnessd-reap-long-call");
+    let _sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
+        .expect("the daemon opens");
+    let store_path = d.cfg.store.clone().expect("a store");
+    let store = letibot_tokencore::store::Store::open(&store_path).expect("a second reader");
+    let ttl = 400;
+    let now = letibot_metrics::now_ms() as i64;
+    let mut owner = letibot_tokencore::store::OwnerRow::live(
+        ROOT,
+        letibot_tokencore::store::OwnerKind::Package,
+        Some("/tmp".into()),
+        now - 10 * ttl,
+    );
+    owner.idle_ttl_ms = Some(ttl);
+    store.put_owner(&owner).expect("the owner row");
+
+    let beat = letibot_harnessd::reap_pass::LeaseBeat::start(d.cfg.store_at().as_ref(), ROOT);
+    assert!(beat.beating(), "an owner with an idle TTL gets a beat");
+    // The tool call: longer than the TTL, with nothing else touching the lease.
+    std::thread::sleep(Duration::from_millis(3 * ttl as u64));
+    let acts = letibot_harnessd::reap_pass::pass(&store, Some(&d.registry), "daemon test");
+    assert_eq!(
+        store.owner(ROOT).unwrap().unwrap().state,
+        letibot_tokencore::store::OwnerState::Live,
+        "a turn in flight was reaped as idle: {acts:?}"
+    );
+
+    // The turn ends, the beat stops, and the idle clock runs out.
+    drop(beat);
+    std::thread::sleep(Duration::from_millis(3 * ttl as u64));
+    let acts = letibot_harnessd::reap_pass::pass(&store, Some(&d.registry), "daemon test");
+    assert_eq!(
+        store.owner(ROOT).unwrap().unwrap().state,
+        letibot_tokencore::store::OwnerState::Closed,
+        "with no turn running the idle close happens: {acts:?}"
+    );
+    d.registry.close();
+}
+
 /// **Done when** a package session left idle with a bridge head attached is `closed` after its
 /// idle TTL, its notice was written first, its daemon has let go of it, and sending to it reopens
 /// it with its transcript intact (`docs/lifecycle.md` G2).
