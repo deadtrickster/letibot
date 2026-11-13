@@ -187,7 +187,7 @@ fi
 # differently. So the five places that exec the TUI go through $LETIBOT_HEAD, and
 # the utility calls (--probe, --list-sessions, --interrupt-all) stay on letibot-tui:
 # they ask the daemon questions, they do not draw. The head is handed
-# `--socket S --identity U [--resume ID | --new-session TITLE]`, which is the
+# `--socket S [--resume ID | --new-session TITLE]`, which is the
 # contract a substitute has to speak.
 HEAD="${LETIBOT_HEAD:-$BIN/letibot-tui}"
 
@@ -3113,7 +3113,7 @@ SESSIONS_EOF
       stale="$(daemon_stale_line)"
       [ -n "$stale" ] && echo "letibot: ! $stale" >&2
       warn_swallowed_flags
-      exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}"
+      exec "$HEAD" --socket "$SOCKET"
     fi
     # **No probe here when nothing is listening, and that is still right.** This path
     # starts nothing, so there is nothing to guard: a daemon that is not there is the
@@ -3228,7 +3228,7 @@ if [ -n "$SESSION" ] && [ "$WANT_NEW" != 1 ]; then
         die "$SESSION lives on $MIGRATED_HOST and its daemon could not be reached.
          Nothing was opened. \`$ME --migrate $SESSION --to local\` brings it back here."
     fi
-    exec "$HEAD" --socket "$MIGRATED_SOCKET" --identity "${USER:-operator}" --resume "$SESSION"
+    exec "$HEAD" --socket "$MIGRATED_SOCKET" --resume "$SESSION"
   fi
 fi
 
@@ -3499,7 +3499,7 @@ if ! live; then
   # two — the empty first session, which is what the NEXT plain attach lands on, and the one
   # the operator was in. (That is the shape of the 2026-10-26 report: a `--new` head exited and
   # the folder's daemon was on a session nobody was looking at.)
-  exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}"
+  exec "$HEAD" --socket "$SOCKET"
 fi
 
 # **And ask it the protocol question BEFORE a head is handed to it.** Everything above
@@ -3560,11 +3560,11 @@ if [ "$WANT_NEW" = 1 ] && [ "$STARTED" = 0 ]; then
   # **Only when the daemon was already up.** With none, the start above opened the fresh session
   # this verb asked for and the head attaches to that one; asking here as well would open a
   # SECOND session in the same daemon and leave the first empty.
-  exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}" \
+  exec "$HEAD" --socket "$SOCKET" \
     --new-session "$NEW_TITLE"
 fi
 if [ -n "$SESSION" ]; then
-  exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}" \
+  exec "$HEAD" --socket "$SOCKET" \
     --resume "$SESSION"
 fi
-exec "$HEAD" --socket "$SOCKET" --identity "${USER:-operator}"
+exec "$HEAD" --socket "$SOCKET"

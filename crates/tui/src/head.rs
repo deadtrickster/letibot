@@ -1478,6 +1478,37 @@ mod flag_tests {
         }
     }
 
+    /// Every flag the launcher hands the head is one the head reads: a flag removed here and
+    /// left in `scripts/letibot` refuses every start.
+    #[test]
+    fn the_launcher_passes_only_flags_the_head_reads() {
+        let script = include_str!("../../../scripts/letibot");
+        let mut checked = 0;
+        let mut lines = script.lines();
+        while let Some(line) = lines.next() {
+            let Some(rest) = line.trim_start().strip_prefix("exec \"$HEAD\"") else {
+                continue;
+            };
+            let mut call = rest.to_string();
+            while call.trim_end().ends_with('\\') {
+                call = call.trim_end().trim_end_matches('\\').to_string();
+                call.push(' ');
+                call.push_str(lines.next().unwrap_or_default());
+            }
+            for word in call.split_whitespace().filter(|w| w.starts_with("--")) {
+                assert!(
+                    find(word).is_some(),
+                    "scripts/letibot passes {word}: {line}"
+                );
+                checked += 1;
+            }
+        }
+        assert!(
+            checked >= 6,
+            "found {checked} flags on the launcher's head calls"
+        );
+    }
+
     /// No spelling appears in two rows: a name that means two flags resolves by table order.
     #[test]
     fn no_flag_appears_twice() {
