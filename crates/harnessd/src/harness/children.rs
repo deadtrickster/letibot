@@ -1699,7 +1699,7 @@ pub fn subagent_model_in(
 pub(crate) fn provider_model(
     pc: crate::config::ProviderConfig,
 ) -> Result<SubagentModel, Vec<String>> {
-    let preset = letibot_provider::Preset::parse(&pc.name).map_err(|e| vec![e])?;
+    let preset = letibot_provider::registry::lookup(&pc.name, None).map_err(|e| vec![e])?;
     let cat = letibot_provider::catalogue::Catalogue::load();
     let window = preset.window(pc.model.as_deref(), &cat);
     let label = format!(

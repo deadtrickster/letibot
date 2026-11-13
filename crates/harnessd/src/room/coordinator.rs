@@ -91,7 +91,7 @@ pub fn configure(cfg: &mut Config) -> Result<(), String> {
             .clone()
             .filter(|m| !m.trim().is_empty())
             .or_else(|| {
-                letibot_provider::Preset::parse(&p.name)
+                letibot_provider::registry::lookup(&p.name, cfg.providers_file.as_deref())
                     .ok()
                     .map(|pr| pr.fallback_model.to_string())
             })

@@ -174,7 +174,7 @@ impl ProviderConfig {
     /// `Harness::retune_window` moves to on `/models`, so a session that STARTS on a provider plans
     /// against the same wall. `None` when the catalogue has no number, which is honest, not large.
     pub fn catalogue_window(&self, cat: &letibot_provider::catalogue::Catalogue) -> Option<u64> {
-        letibot_provider::Preset::parse(&self.name)
+        letibot_provider::registry::lookup(&self.name, None)
             .ok()?
             .window(self.model.as_deref(), cat)
     }
@@ -1967,7 +1967,7 @@ impl Config {
         match &self.provider {
             Some(pc) => {
                 let model = pc.model.clone().unwrap_or_else(|| {
-                    letibot_provider::Preset::parse(&pc.name)
+                    letibot_provider::registry::lookup(&pc.name, self.providers_file.as_deref())
                         .ok()
                         .map(|p| p.default_model(&letibot_provider::catalogue::Catalogue::load()))
                         .unwrap_or_default()
@@ -2100,9 +2100,11 @@ impl Config {
         // got it wrong, and this list is not even fixed at build time - it comes from the catalogue.
         // Which presets hold a key here, asked once: the card expands those and shows one row for
         // the rest, and the `models.keys` row below publishes this same answer rather than a second.
-        let keyed: Vec<&str> = letibot_provider::presets::ALL
+        let file = self.providers_file.as_deref();
+        let doors = letibot_provider::registry::all(file);
+        let keyed: Vec<&str> = doors
             .iter()
-            .filter(|p| letibot_provider::keys::resolve(p, None, None).is_ok())
+            .filter(|p| letibot_provider::keys::resolve(p, None, file).is_ok())
             .map(|p| p.name)
             .collect();
         {
@@ -2114,7 +2116,7 @@ impl Config {
                 .into_iter()
                 .map(|m| (m.name, m.url))
                 .collect();
-            let listed = model_rows(&keyed, &cat, &fleet);
+            let listed = model_rows(&doors, &keyed, &cat, &fleet, file);
             let mut names: Vec<String> = listed.iter().map(|(n, _)| n.clone()).collect();
             let mut facts: Vec<String> = listed.iter().map(|(_, f)| f.clone()).collect();
             let now = match &self.provider {
@@ -2131,7 +2133,7 @@ impl Config {
                     Some(m) => format!("{} ({} at {})", m.name, m.model, m.url),
                     None => format!("local ({})", self.model),
                 },
-                Some(pc) => match letibot_provider::Preset::parse(&pc.name) {
+                Some(pc) => match letibot_provider::registry::lookup(&pc.name, file) {
                     Ok(preset) => format!(
                         "{}/{}",
                         preset.name,
@@ -2147,7 +2149,7 @@ impl Config {
             // silently absent from a menu that claims to show what answers now.
             if !names.contains(&now) {
                 names.insert(1, now.clone());
-                facts.insert(1, named_model_facts(&self.provider, &cat));
+                facts.insert(1, named_model_facts(&self.provider, &cat, file));
             }
             let source = if self.provider.is_none() {
                 "--model"
@@ -2174,9 +2176,13 @@ impl Config {
             // every model of `deepseek` again under `deepseek-anthropic`, since both carry the
             // `deepseek` catalogue: the pairing is the daemon's to publish, because a preset's
             // catalogue id is a fact of the preset table and not of a name.
-            let doors: Vec<String> = letibot_provider::presets::ALL
+            // A door with no catalogue is a group of its own, never merged with another such door.
+            let doors: Vec<String> = doors
                 .iter()
-                .map(|p| format!("{} {}", p.name, p.catalogue_id))
+                .map(|p| match p.catalogue_id {
+                    "" => format!("{} own:{}", p.name, p.name),
+                    c => format!("{} {c}", p.name),
+                })
                 .collect();
             out.push(choices(
                 row(
@@ -3459,31 +3465,38 @@ const LOCAL_FACTS: &str = "this daemon's own server — no key, no meter";
 /// provider - every catalogue model for a keyed one, its single default for the rest, since that
 /// row's job is to ask for the key. Each row is its switch name and the facts drawn under it.
 fn model_rows(
+    doors: &[&'static letibot_provider::Preset],
     keyed: &[&str],
     cat: &letibot_provider::catalogue::Catalogue,
     fleet: &[(String, String)],
+    file: Option<&Path>,
 ) -> Vec<(String, String)> {
     let mut out = vec![("local".to_string(), LOCAL_FACTS.to_string())];
     for (name, url) in fleet {
         out.push((name.clone(), format!("at {url}")));
     }
-    for p in letibot_provider::presets::ALL {
-        let listed = cat.models(p.catalogue_id);
+    let prices = letibot_provider::keys::prices(file);
+    for p in doors {
+        let mut names: Vec<String> = cat
+            .models(p.catalogue_id)
+            .into_iter()
+            .map(|(m, _)| m)
+            .collect();
+        // A door no catalogue carries lists what its endpoint lists, fetched in the background.
+        if names.is_empty()
+            && p.origin != letibot_provider::presets::Origin::BuiltIn
+            && keyed.contains(&p.name)
+            && let Ok(creds) = letibot_provider::keys::resolve(p, None, file)
+        {
+            names = letibot_provider::registry::listed_models(p, &creds).unwrap_or_default();
+        }
         // A key with no catalogue behind it still gets its row: the card losing a provider the
         // operator holds a key for would be worse than a row that says it knows no window.
-        let names: Vec<String> = if keyed.contains(&p.name) && !listed.is_empty() {
-            listed.into_iter().map(|(m, _)| m).collect()
-        } else {
-            vec![p.default_model(cat)]
-        };
+        if !keyed.contains(&p.name) || names.is_empty() {
+            names = vec![p.default_model(cat)];
+        }
         for m in names {
-            out.push((
-                format!("{}/{}", p.name, m),
-                match cat.model(p.catalogue_id, &m) {
-                    Some(f) => f.card_line(),
-                    None => letibot_provider::catalogue::ModelFacts::missing_line().to_string(),
-                },
-            ));
+            out.push((format!("{}/{}", p.name, m), p.facts_line(&m, cat, &prices)));
         }
     }
     out
@@ -3494,22 +3507,20 @@ fn model_rows(
 fn named_model_facts(
     provider: &Option<ProviderConfig>,
     cat: &letibot_provider::catalogue::Catalogue,
+    file: Option<&Path>,
 ) -> String {
     let unknown = letibot_provider::catalogue::ModelFacts::missing_line().to_string();
     let Some(pc) = provider else {
         return LOCAL_FACTS.to_string();
     };
-    let Ok(preset) = letibot_provider::Preset::parse(&pc.name) else {
+    let Ok(preset) = letibot_provider::registry::lookup(&pc.name, file) else {
         return unknown;
     };
     let model = match &pc.model {
         Some(m) => m.clone(),
         None => preset.default_model(cat),
     };
-    match cat.model(preset.catalogue_id, &model) {
-        Some(f) => f.card_line(),
-        None => unknown,
-    }
+    preset.facts_line(&model, cat, &letibot_provider::keys::prices(file))
 }
 
 #[cfg(test)]

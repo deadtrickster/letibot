@@ -451,6 +451,12 @@ pub(super) const FLAGS: &[Flag] = &[
         None,
     ),
     flag(
+        &["--providers"],
+        None,
+        "every provider: built-ins, `[provider.NAME]` entries and env base URLs, marked",
+        None,
+    ),
+    flag(
         &["--handover"],
         Some("SESSION DIR"),
         "write a session out as a `claude --resume` transcript",

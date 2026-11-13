@@ -187,8 +187,8 @@ fn placement_from_flags(
 /// provider must be one this build knows, and a key for it must resolve here.
 pub(crate) fn unreachable_provider(model: &str) -> Option<String> {
     let (provider, m) = model.split_once('/')?;
-    let Ok(preset) = letibot_provider::Preset::parse(provider) else {
-        let known: Vec<&str> = letibot_provider::presets::ALL
+    let Ok(preset) = letibot_provider::registry::lookup(provider, None) else {
+        let known: Vec<&str> = letibot_provider::registry::all(None)
             .iter()
             .map(|p| p.name)
             .collect();
@@ -552,6 +552,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // What Claude Code has on this box (Package H) - the ids `--session cc-<id>` takes
             // with the model, the directory and the first thing that was said.
             "--list-claude" => query = Some(Query::ListClaude),
+            "--providers" => query = Some(Query::Providers),
             // The return trip: this session's conversation as a transcript
             // `claude --resume <path>` opens, plus a Markdown copy a person can read.
             "--handover" => {
@@ -1046,7 +1047,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     if let Some(p) = cfg.provider.as_mut() {
         if p.name.is_empty() {
             // Read off the preset table, so a door added there is named here too.
-            let names: Vec<&str> = letibot_provider::presets::ALL
+            let names: Vec<&str> = letibot_provider::registry::all(None)
                 .iter()
                 .map(|p| p.name)
                 .collect();
@@ -1062,6 +1063,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // header for why that ordering is load-bearing rather than tidy.
     if let Some(q) = query {
         return run_query(&cfg, q, scope.as_deref(), tsv, show_archived);
+    }
+
+    // A bad `[provider.NAME]` entry refuses the daemon by name, before a turn finds it.
+    let faults = letibot_provider::registry::Registry::read(cfg.providers_file.as_deref()).faults();
+    if !faults.is_empty() {
+        return Err(faults.join("\n"));
     }
 
     // A fresh box gets the preapproved list to edit on the first daemon that serves. It is here
@@ -2040,6 +2047,27 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 /// What Claude Code has on this box, one line per transcript - the id `--session
 /// cc-<id>` takes, when it was last written, how big it is, the model that answered, and
 /// the first thing that was said.
+/// `--providers`: every door with its protocol, URL, key variable and where it was defined. A bad
+/// `[provider.NAME]` entry is printed with its reason and makes the exit status 1.
+fn list_providers(file: Option<&std::path::Path>) -> Result<i32, String> {
+    let reg = letibot_provider::registry::Registry::read(file);
+    for p in reg.doors() {
+        println!(
+            "{:<18} {:<19} {:<52} ${:<20} {}",
+            p.name,
+            format!("{:?}", p.protocol),
+            p.url,
+            p.key_env,
+            p.origin.label()
+        );
+    }
+    let faults = reg.faults();
+    for f in &faults {
+        println!("REFUSED {f}");
+    }
+    Ok(if faults.is_empty() { 0 } else { 1 })
+}
+
 fn list_claude(tsv: bool) -> Result<i32, String> {
     let Some(dir) = letibot_claude::default_projects_dir() else {
         return Err("no $HOME, so no Claude Code transcript directory to list".into());
@@ -2319,6 +2347,8 @@ fn resume_disclosure(n: u64, store: Option<&std::path::Path>) -> Disclosure {
 /// What a store query was asked for.
 enum Query {
     List,
+    /// Every door this box knows, built-in or not.
+    Providers,
     Latest,
     Resolve(String),
     Find(String),
@@ -2442,6 +2472,7 @@ fn run_query(
     // `--note`/`--revert` act on a file rather than on a session. Package H.
     match &q {
         Query::ListClaude => return list_claude(tsv),
+        Query::Providers => return list_providers(cfg.providers_file.as_deref()),
         Query::Note { transcript, text } => return append_note(transcript, text),
         Query::Revert { transcript, backup } => return revert_transcript(transcript, backup),
         _ => {}
@@ -2471,7 +2502,7 @@ fn run_query(
     match q {
         // Answered above, before the store was asked for. Here only because a `match` must be
         // exhaustive
-        Query::ListClaude | Query::Note { .. } | Query::Revert { .. } => Ok(0),
+        Query::ListClaude | Query::Providers | Query::Note { .. } | Query::Revert { .. } => Ok(0),
         // This session's conversation, as a transcript Claude Code can resume, plus a
         // Markdown copy (Package H). The rows come from the store, which is the only place
         // a finished conversation exists whole.

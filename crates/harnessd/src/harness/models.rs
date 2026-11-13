@@ -414,7 +414,9 @@ impl Harness {
         let Some(pc) = self.key_wanted.clone() else {
             return Ok(());
         };
-        let preset = letibot_provider::Preset::parse(&pc.name).map_err(HarnessError::Setup)?;
+        let preset =
+            letibot_provider::registry::lookup(&pc.name, self.cfg.providers_file.as_deref())
+                .map_err(HarnessError::Setup)?;
         let file = letibot_provider::keys::config_file();
         if self.hub.deciding_heads().is_empty() {
             return Err(HarnessError::Setup(format!(
@@ -880,7 +882,9 @@ impl Harness {
                 *g = self.local_window;
             }
         }
-        let Ok(preset) = letibot_provider::Preset::parse(&pc.name) else {
+        let Ok(preset) =
+            letibot_provider::registry::lookup(&pc.name, self.cfg.providers_file.as_deref())
+        else {
             return String::new();
         };
         let cat = letibot_provider::catalogue::Catalogue::load();
@@ -956,7 +960,10 @@ impl Harness {
                 // `preset/` names no model; the card would draw a switch the daemon refuses.
                 Some(_) => continue,
                 None if choice == "local" => choice.clone(),
-                None => match letibot_provider::Preset::parse(&choice) {
+                None => match letibot_provider::registry::lookup(
+                    &choice,
+                    self.cfg.providers_file.as_deref(),
+                ) {
                     Ok(p) => {
                         let cat = catalogue
                             .get_or_insert_with(letibot_provider::catalogue::Catalogue::load);
@@ -1399,7 +1406,7 @@ pub(crate) fn told_once(
 
 /// Does `pc`'s key fail to resolve: the one failure a pasted key fixes?
 pub(crate) fn key_is_missing(pc: &crate::config::ProviderConfig) -> bool {
-    let Ok(preset) = letibot_provider::Preset::parse(&pc.name) else {
+    let Ok(preset) = letibot_provider::registry::lookup(&pc.name, None) else {
         return false;
     };
     matches!(
@@ -1415,7 +1422,7 @@ pub(crate) fn key_is_replaceable(pc: &crate::config::ProviderConfig) -> bool {
     if pc.api_key.is_some() {
         return false;
     }
-    let Ok(preset) = letibot_provider::Preset::parse(&pc.name) else {
+    let Ok(preset) = letibot_provider::registry::lookup(&pc.name, None) else {
         return false;
     };
     match letibot_provider::keys::resolve(preset, None, None) {

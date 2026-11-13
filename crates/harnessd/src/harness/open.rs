@@ -4182,7 +4182,7 @@ pub fn build_provider(
     deadlines: crate::leticode_config::Deadlines,
     effort: Option<&str>,
 ) -> Result<Box<dyn letibot_backend::MessagesBackend>, String> {
-    let preset = letibot_provider::Preset::parse(&pc.name)?;
+    let preset = letibot_provider::registry::lookup(&pc.name, profiles)?;
     let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), profiles)
         .map_err(|e| format!("provider {}: {e}", pc.name))?;
     let sampling = cloud_sampling(preset, pc, profiles, &notes);

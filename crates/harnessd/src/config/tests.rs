@@ -229,7 +229,13 @@ fn the_model_row_offers_every_declared_local_model() {
 fn a_keyed_provider_lists_every_model_it_answers_with_and_the_others_list_one() {
     let cat = letibot_provider::catalogue::Catalogue::snapshot();
     assert!(!cat.is_empty(), "the vendored snapshot parses");
-    let rows = model_rows(&["deepseek"], &cat, &[]);
+    let rows = model_rows(
+        letibot_provider::presets::ALL,
+        &["deepseek"],
+        &cat,
+        &[],
+        Some(Path::new("/nonexistent/providers.toml")),
+    );
     assert_eq!(rows[0].0, "local", "the box's own server comes first");
     let deepseek: Vec<&(String, String)> = rows
         .iter()
@@ -268,7 +274,13 @@ fn a_keyed_provider_lists_every_model_it_answers_with_and_the_others_list_one() 
 #[test]
 fn a_keyed_provider_with_no_catalogue_still_gets_its_row() {
     let empty = letibot_provider::catalogue::Catalogue::default();
-    let rows = model_rows(&["glm"], &empty, &[]);
+    let rows = model_rows(
+        letibot_provider::presets::ALL,
+        &["glm"],
+        &empty,
+        &[],
+        Some(Path::new("/nonexistent/providers.toml")),
+    );
     let glm: Vec<&(String, String)> = rows.iter().filter(|(n, _)| n.starts_with("glm/")).collect();
     assert_eq!(glm.len(), 1, "the provider vanished: {rows:?}");
     assert_eq!(
@@ -285,7 +297,13 @@ fn a_keyed_provider_with_no_catalogue_still_gets_its_row() {
 fn the_declared_local_models_come_before_every_provider() {
     let cat = letibot_provider::catalogue::Catalogue::snapshot();
     let fleet = vec![("dense78".to_string(), "http://192.168.1.9:8080".to_string())];
-    let rows = model_rows(&["deepseek"], &cat, &fleet);
+    let rows = model_rows(
+        letibot_provider::presets::ALL,
+        &["deepseek"],
+        &cat,
+        &fleet,
+        Some(Path::new("/nonexistent/providers.toml")),
+    );
     assert_eq!(rows[0].0, "local");
     assert_eq!(rows[1].0, "dense78");
     assert!(rows[1].1.contains("192.168.1.9"), "{:?}", rows[1]);
@@ -320,7 +338,8 @@ fn the_facts_row_is_one_line_per_model_choice() {
 /// `deepseek-anthropic` still gets `deepseek`'s models listed once.
 #[test]
 fn the_doors_row_pairs_every_preset_with_the_catalogue_it_serves() {
-    let cfg = Config::for_this_box("/tmp");
+    let mut cfg = Config::for_this_box("/tmp");
+    cfg.providers_file = Some(providers_file("doors-row", ""));
     let rows = cfg.settings("", false, &[]);
     let doors = rows
         .iter()
@@ -328,7 +347,7 @@ fn the_doors_row_pairs_every_preset_with_the_catalogue_it_serves() {
         .expect("the doors row is published beside the choices");
     assert_eq!(
         doors.choices.len(),
-        letibot_provider::presets::ALL.len(),
+        letibot_provider::registry::all(cfg.providers_file.as_deref()).len(),
         "one door per preset: {:?}",
         doors.choices
     );
@@ -2254,4 +2273,53 @@ fn a_folder_projects_repositories_are_listen_rows() {
     assert!(by("listen.c").editable.is_empty(), "locked");
     assert!(by("listen.c").source.contains("leticode.toml"));
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A scratch providers.toml, so a test never reads the operator's.
+fn providers_file(tag: &str, body: &str) -> PathBuf {
+    let d = letibot_sessionlog::testing::scratch_root()
+        .join(format!("providers-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&d).unwrap();
+    let f = d.join("providers.toml");
+    std::fs::write(&f, body).unwrap();
+    f
+}
+
+/// A door no catalogue carries is on the card, marked, unpriced and with no window: never free
+/// and never some default size.
+#[test]
+fn a_door_with_no_catalogue_is_unpriced_with_its_window_unknown_on_the_model_card() {
+    let mut cfg = Config::for_this_box("/tmp");
+    cfg.providers_file = Some(providers_file(
+        "no-catalogue",
+        "[provider.myproxy]\nprotocol = \"chat-completions\"\nurl = \"http://127.0.0.1:9/v1/chat/completions\"\n\
+         key_env = \"LETIBOT_TEST_NO_SUCH_KEY\"\nmodel = \"proxy-model\"\n",
+    ));
+    let rows = cfg.settings("", false, &[]);
+    let model = rows
+        .iter()
+        .find(|r| r.key == "model")
+        .expect("the model row");
+    let facts = rows
+        .iter()
+        .find(|r| r.key == letibot_sessionlog::protocol::MODEL_FACTS_KEY)
+        .expect("the facts row");
+    let at = model
+        .choices
+        .iter()
+        .position(|c| c == "myproxy/proxy-model")
+        .unwrap_or_else(|| panic!("the config door is on the card: {:?}", model.choices));
+    let line = &facts.choices[at];
+    assert!(line.contains("unpriced"), "{line}");
+    assert!(line.contains("window unknown"), "{line}");
+    assert!(line.contains("providers.toml"), "marked as config: {line}");
+    let doors = rows
+        .iter()
+        .find(|r| r.key == letibot_sessionlog::protocol::MODEL_DOORS_KEY)
+        .expect("the doors row");
+    assert!(
+        doors.choices.iter().any(|c| c == "myproxy own:myproxy"),
+        "{:?}",
+        doors.choices
+    );
 }

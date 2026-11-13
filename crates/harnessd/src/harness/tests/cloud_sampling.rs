@@ -3,11 +3,16 @@
 use super::*;
 use std::io::{BufRead, BufReader, Read, Write};
 
+type Seen<T> = std::sync::Arc<std::sync::Mutex<Vec<T>>>;
+
 /// A chat-completions server on loopback that answers one word and records every body.
-fn stub() -> (
-    String,
-    std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
-) {
+fn stub() -> (String, Seen<serde_json::Value>) {
+    let (url, seen, _) = stub_with_auth();
+    (url, seen)
+}
+
+/// [`stub`], also recording each request's `authorization` header.
+fn stub_with_auth() -> (String, Seen<serde_json::Value>, Seen<String>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
         "http://{}/v1/chat/completions",
@@ -15,6 +20,8 @@ fn stub() -> (
     );
     let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let recorded = seen.clone();
+    let auths = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let authed = auths.clone();
     std::thread::spawn(move || {
         for conn in listener.incoming() {
             let Ok(mut conn) = conn else { continue };
@@ -22,6 +29,7 @@ fn stub() -> (
             let mut line = String::new();
             reader.read_line(&mut line).unwrap();
             let mut length = 0usize;
+            let mut auth = String::new();
             loop {
                 let mut h = String::new();
                 if reader.read_line(&mut h).unwrap_or(0) == 0 {
@@ -34,7 +42,11 @@ fn stub() -> (
                 if let Some(v) = h.strip_prefix("content-length:") {
                     length = v.trim().parse().unwrap_or(0);
                 }
+                if let Some(v) = h.strip_prefix("authorization:") {
+                    auth = v.trim().to_string();
+                }
             }
+            authed.lock().unwrap().push(auth);
             let mut body = vec![0u8; length];
             reader.read_exact(&mut body).unwrap();
             recorded
@@ -52,7 +64,7 @@ fn stub() -> (
             );
         }
     });
-    (url, seen)
+    (url, seen, auths)
 }
 
 fn one_turn(h: &Harness) {
@@ -155,11 +167,72 @@ fn a_fixed_key_in_a_kimi_profile_is_dropped_and_named() {
         api_key: Some("k".into()),
         thinking: false,
     };
-    let preset = letibot_provider::Preset::parse(&pc.name).unwrap();
+    let preset = letibot_provider::registry::lookup(&pc.name, Some(&file)).unwrap();
     let s = crate::harness::open::cloud_sampling(preset, &pc, Some(&file), &notes);
     assert_eq!(s, serde_json::json!({"max_tokens": 4000}));
     let said = said.lock().unwrap();
     assert_eq!(said.len(), 1, "{said:?}");
     assert!(said[0].contains("temperature=0.7"), "{}", said[0]);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A session on a door defined only in providers.toml, with the key read from the variable the
+/// entry names. `HOME` because every process has it, so the test sets no variable.
+fn proxy_session(tag: &str, extra: &str) -> (Harness, Seen<serde_json::Value>, Seen<String>) {
+    let dir = letibot_sessionlog::testing::scratch_root()
+        .join(format!("cloud-{tag}-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("the scratch directory");
+    let (url, seen, auths) = stub_with_auth();
+    let file = dir.join("providers.toml");
+    std::fs::write(
+        &file,
+        format!(
+            "[provider.myproxy]\nprotocol = \"chat-completions\"\nurl = \"{url}\"\n\
+             key_env = \"HOME\"\nmodel = \"proxy-model\"\n{extra}"
+        ),
+    )
+    .unwrap();
+    let mut cfg = Config::for_this_box(&dir);
+    cfg.session_id = format!("s-{tag}");
+    cfg.providers_file = Some(file);
+    let parts = Parts::load(&cfg).expect("the byte vocabulary needs no file");
+    let mut h =
+        Harness::open(&parts, cfg, Hub::new(format!("s-{tag}"))).expect("the session opens");
+    h.set_provider(Some(crate::config::ProviderConfig {
+        name: "myproxy".into(),
+        model: None,
+        api_key: None,
+        thinking: false,
+    }))
+    .expect("the switch to a config door");
+    (h, seen, auths)
+}
+
+#[test]
+fn a_config_door_answers_a_turn_with_the_key_from_its_named_variable() {
+    let (h, seen, auths) = proxy_session("config-door", "");
+    one_turn(&h);
+    let body = seen.lock().unwrap().last().cloned().expect("a request");
+    assert_eq!(body["model"], "proxy-model", "{body}");
+    let home = std::env::var("HOME").expect("HOME");
+    let auth = auths.lock().unwrap().last().cloned().unwrap_or_default();
+    assert!(
+        auth == format!("bearer {}", home.to_ascii_lowercase()),
+        "the key is not the one `key_env` names"
+    );
+}
+
+#[test]
+fn a_fixed_key_on_a_config_door_is_never_sent_even_when_a_profile_sets_it() {
+    let (h, seen, _) = proxy_session(
+        "config-fixed",
+        "fixed = [\"temperature\"]\n\n[model.\"proxy-model\"]\ntemperature = 0.7\nmax_tokens = 900\n",
+    );
+    one_turn(&h);
+    let body = seen.lock().unwrap().last().cloned().expect("a request");
+    assert!(body.get("temperature").is_none(), "{body}");
+    assert_eq!(
+        body["max_tokens"], 900,
+        "the rest of the profile still goes: {body}"
+    );
 }

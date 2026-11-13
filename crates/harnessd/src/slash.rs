@@ -743,7 +743,7 @@ pub fn models_listing(current: &str) -> Vec<String> {
             m.name, m.model, m.url, m.name
         ));
     }
-    for p in letibot_provider::presets::ALL {
+    for p in letibot_provider::registry::all(None) {
         let auth = match letibot_provider::keys::resolve(p, None, None) {
             Ok(c) => format!("key from {}", c.from),
             Err(_) => format!(
@@ -751,8 +751,12 @@ pub fn models_listing(current: &str) -> Vec<String> {
                 p.name, p.key_env
             ),
         };
+        let origin = match p.origin {
+            letibot_provider::presets::Origin::BuiltIn => String::new(),
+            o => format!("   ({})", o.label()),
+        };
         lines.push(format!(
-            "  {:<16} default model {:<18} {auth}   /models {}/MODEL",
+            "  {:<16} default model {:<18} {auth}   /models {}/MODEL{origin}",
             p.name,
             p.default_model(&cat),
             p.name
@@ -806,7 +810,7 @@ pub fn models_choice(
         }
         return Ok((ModelChoice::Local(m), notes));
     }
-    let preset = letibot_provider::Preset::parse(provider).map_err(|e| {
+    let preset = letibot_provider::registry::lookup(provider, file).map_err(|e| {
         let fleet = letibot_provider::keys::local_models(file);
         if fleet.is_empty() {
             vec![e]
@@ -937,7 +941,7 @@ pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> Slas
         Some((p, m)) => (p, Some(m)),
         None => (want, None),
     };
-    let preset = match letibot_provider::Preset::parse(provider) {
+    let preset = match letibot_provider::registry::lookup(provider, file) {
         Ok(p) => p,
         Err(e) => {
             return SlashReply {

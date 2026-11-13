@@ -852,6 +852,7 @@ flags_table() {
 --sessions --list      |more  |       |what is on disk, grouped: yours first, then the harness's own work
 --tsv                  |more  |       |a listing in its plain form, one line each with no grouping
 --list-claude --claude-sessions |more |  |what Claude Code has on this box, and the id `--session cc-<id>` takes
+--providers            |more  |       |every provider: built-ins, `[provider.NAME]` entries, env base URLs
 --handover             |more  |SESSION DIR |write a session out as a `claude --resume` transcript, plus Markdown
 --note                 |more  |TRANSCRIPT TEXT |append one line to a Claude Code transcript, after a backup
 --note-continued       |more  |SESSION FILE |the same line, composed, plus the Markdown handover
@@ -1022,6 +1023,10 @@ Env overrides: LETIBOT_BIN LETIBOT_SOCKET LETIBOT_WORKSPACE LETIBOT_STORE
 LETIBOT_LOG LETIBOT_PROVIDERS LETIBOT_DIALECT LETIBOT_MODEL LETIBOT_VOCAB
 LETIBOT_ROLE LETIBOT_ADJUDICATOR LETIBOT_MODE LETIBOT_BASH LETIBOT_WEB_FETCH
 LETIBOT_GRANTS_RO LETIBOT_ORACLE LETIBOT_ORACLE_BUDGET_MS LETIBOT_ENDPOINT
+
+Providers by env: ANTHROPIC_BASE_URL (+ ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN,
+ANTHROPIC_MODEL) is `--provider env-anthropic`; OPENAI_BASE_URL (+ OPENAI_API_KEY,
+OPENAI_MODEL, LETIBOT_OPENAI_PROTOCOL=responses) is `--provider env-openai`.
 
 `letibot --help removed` lists the flags this release deleted, and what replaced each.
 EOF
@@ -2606,6 +2611,11 @@ case "${1:-}" in
   --list-claude | --claude-sessions)
     shift
     exec "${NOGPU[@]}" "$BIN/harnessd" --list-claude "$@"
+    ;;
+  # Every door this box knows, and a bad `[provider.NAME]` entry with its reason.
+  --providers)
+    shift
+    exec "${NOGPU[@]}" "$BIN/harnessd" --providers "$@"
     ;;
   # **The return trip**, and the one write this launcher offers into a file another program
   # owns. `--handover SESSION DIR` writes a transcript `claude --resume <path>` opens;

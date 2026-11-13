@@ -388,7 +388,7 @@ for verb in --continue --session --sessions --new --rename --delete --migrate --
   --handover --note --note-continued --revert --list-claude --stop --restart --room --status \
   --ls --attach --glm --provider --host --vm --tsv \
   --web-fetch --no-web-fetch --effort --vm-copy --listen --where \
-  --list --list-all --claude-sessions --no-bash; do
+  --list --list-all --claude-sessions --no-bash --providers; do
   if printf '%s\n' "$out" | grep -q -- "$verb"; then
                                                      echo "ok   --help all names $verb"
   else
