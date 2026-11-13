@@ -448,10 +448,10 @@ fn a_feed_the_host_cut_says_how_many_are_not_shown() {
         "the number is the feed's, and the cap is the SDK's"
     );
     // And a feed that was not cut says nothing about it - not a row with a zero on it.
-    assert_eq!(words(&draw(&feed(vec![session("s-a", "one")], "s-a"), &[])), vec![
-        "[letibot (1)]",
-        "s-a"
-    ]);
+    assert_eq!(
+        words(&draw(&feed(vec![session("s-a", "one")], "s-a"), &[])),
+        vec!["[letibot (1)]", "s-a"]
+    );
 }
 
 /// The synthetic first frame a daemon asks every built-in pane at a session's door

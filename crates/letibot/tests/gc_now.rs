@@ -64,7 +64,7 @@ impl Fixture {
     }
 
     /// A live package whose daemon is gone, with a job running and a VM up.
-    fn a_dead_daemons_session(&self) -> std::process::Child {
+    fn a_dead_daemons_session(&self) -> Reaped {
         let now = letibot_metrics::now_ms() as i64;
         let store = self.store();
         let mut owner = OwnerRow::live(OWNER, OwnerKind::Package, Some(REPO.into()), now);
@@ -107,7 +107,7 @@ impl Fixture {
         std::fs::write(run.join("project"), cache.join(OWNER).display().to_string())
             .expect("the run's project");
         std::fs::write(run.join("owner"), format!("{OWNER}\n")).expect("the run's owner stamp");
-        job
+        Reaped(job)
     }
 
     /// Where letibot boots a copy: `$XDG_CACHE_HOME/letibot/firecode`.
@@ -329,7 +329,7 @@ fn the_plan_removes_nothing_and_the_verb_says_so() {
 #[test]
 fn a_hold_is_a_clock_and_an_unknown_owner_is_refused() {
     let f = Fixture::new("clock");
-    f.a_dead_daemons_session();
+    let _job = f.a_dead_daemons_session();
     let (ok, out, err) = f.run(&["hold", OWNER, "--for", "2d"]);
     assert!(ok, "`letibot hold --for 2d` failed:\n{err}");
     assert!(out.contains("held for 2d"), "{out}");
@@ -346,4 +346,28 @@ fn a_hold_is_a_clock_and_an_unknown_owner_is_refused() {
         "a hold on an owner the store never wrote answered success"
     );
     assert!(err.contains("no owner `s-nobody`"), "{err}");
+}
+
+/// A test's stand-in job: killed and reaped when the test is done with it, whether or not the
+/// reaper under test got to it first, so no test leaves a zombie behind.
+struct Reaped(std::process::Child);
+
+impl std::ops::Deref for Reaped {
+    type Target = std::process::Child;
+    fn deref(&self) -> &std::process::Child {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for Reaped {
+    fn deref_mut(&mut self) -> &mut std::process::Child {
+        &mut self.0
+    }
+}
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
 }
