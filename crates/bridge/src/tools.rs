@@ -341,6 +341,8 @@ impl Bridge {
     /// Start leticode on a worktree. A daemon this call started already holds its first
     /// session, so that is the session the brief runs in: one brief is one conversation. A daemon
     /// already up belongs to somebody else, so a new session is created and attached by id.
+    // The package argument made this eight; each is one of `leticode_start`'s own schema fields.
+    #[allow(clippy::too_many_arguments)]
     pub fn start(
         &self,
         worktree: &str,

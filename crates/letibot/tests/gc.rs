@@ -266,6 +266,7 @@ fn git(dir: &Path, args: &[&str]) -> String {
 fn adopting_worktrees_nothing_recorded_plans_them_and_removes_nothing() {
     let f = Fixture::new("adopt");
     let repo = f.at("proj");
+    std::fs::create_dir_all(&repo).expect("the fixture's repository directory");
     git(&repo, &["init", "-q", "-b", "main"]);
     std::fs::write(repo.join("one"), "one\n").expect("a file");
     git(&repo, &["add", "-A"]);
@@ -280,8 +281,11 @@ fn adopting_worktrees_nothing_recorded_plans_them_and_removes_nothing() {
         );
         made.push(wt);
     }
-    // A store of its own, as a file: `--adopt` records an owner, so the verb opens for writing.
+    // A store of its own, as a file: `--adopt` records an owner, so the verb opens for writing, and
+    // a store file has to exist for it to open ("nothing has been recorded to hold anything" is
+    // the family's refusal for a box with no store at all).
     let store = f.root.join("data.db");
+    drop(Store::open(&store).expect("a store"));
     let run = |args: &[&str]| -> (bool, String, String) {
         let out = std::process::Command::new(env!("CARGO_BIN_EXE_letibot"))
             .args(args)
@@ -352,4 +356,47 @@ fn adopting_worktrees_nothing_recorded_plans_them_and_removes_nothing() {
         );
         assert!(wt.exists(), "planning removes nothing");
     }
+    let owner: String = plan
+        .lines()
+        .find_map(|l| {
+            l.find("legacy-")
+                .map(|at| l[at..].chars().take(17).collect())
+        })
+        .unwrap_or_default();
+    assert!(
+        !owner.is_empty(),
+        "the plan names the adopted owner:\n{plan}"
+    );
+
+    // Settling them: `--now` alone waits out the design's grace (an adopted owner is `closed` and
+    // unlanded, so 24 h), and `--settle` is the door that skips it. Both end in the archive, and
+    // the target branch is not touched.
+    let (ok, out, err) = run(&["gc", "--settle", &owner]);
+    assert!(
+        out.contains("refs/letibot/archive/"),
+        "the pass says where the work went:\n{out}"
+    );
+    assert!(ok, "`gc --settle {owner}` failed. stderr:\n{err}");
+    let ns = format!("refs/letibot/archive/{owner}/wt");
+    let refs = git(&repo, &["for-each-ref", "--format=%(refname)", &ns]);
+    for wt in &made {
+        assert!(!wt.exists(), "settled: {} is gone", wt.display());
+        let branch = wt
+            .file_name()
+            .expect("a name")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            refs.contains(&format!("{ns}/heads/{branch}")),
+            "the branch `{branch}` is in {ns}:\n{refs}"
+        );
+        assert!(
+            !git(&repo, &["branch", "--list", &branch]).contains(&branch),
+            "the branch `{branch}` is gone from the branch list"
+        );
+    }
+    assert!(
+        git(&repo, &["rev-parse", "--verify", "refs/heads/main"]).len() > 8,
+        "the target branch is not touched"
+    );
 }

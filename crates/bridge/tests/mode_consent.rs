@@ -285,7 +285,7 @@ fn a_mode_that_needs_nobody_applies_and_allow_all_waits_for_a_person() {
     let worktree = world.worktree.display().to_string();
     let start = |brief: &str| {
         bridge
-            .start(&worktree, brief, None, "writes-allowed", None, false)
+            .start(&worktree, brief, None, "writes-allowed", None, false, None)
             .expect("the bridge starts a session")["session"]
             .as_str()
             .expect("a session id")

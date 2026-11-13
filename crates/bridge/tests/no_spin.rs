@@ -339,6 +339,7 @@ impl World {
                 // (`crates/bridge/tests/end_to_end.rs`'s fixture writes one the same way).
                 None,
                 false,
+                None,
             )
             .expect("the bridge starts a session");
         let session = started["session"]

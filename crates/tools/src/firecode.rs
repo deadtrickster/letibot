@@ -2134,16 +2134,17 @@ fn own_git(copy: &Path, source: &Path) -> Result<(), BackendError> {
         )));
     }
     let done = (|| -> Result<(), String> {
+        // A bare clone keeps `core.bare = true`, and a repository with a worktree in front of it
+        // refuses every index command (`mixed reset is not allowed in a bare repository`). Saying
+        // it is not bare is what makes the enclosing directory its worktree.
+        git_out(Some(&copy.to_path_buf()), &["config", "core.bare", "false"])?;
         match &branch {
             Some(b) => {
+                // SYMBOLIC, not a direct value: `update-ref HEAD refs/heads/x` writes the sha into
+                // HEAD and leaves the copy detached, which is not the tree the source was on.
                 git_out(
                     Some(&copy.to_path_buf()),
-                    &[
-                        "update-ref",
-                        "--no-deref",
-                        "HEAD",
-                        &format!("refs/heads/{b}"),
-                    ],
+                    &["symbolic-ref", "HEAD", &format!("refs/heads/{b}")],
                 )?;
             }
             None => {

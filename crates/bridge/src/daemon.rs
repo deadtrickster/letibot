@@ -761,7 +761,7 @@ mod tests {
             placement: None,
             started: false,
         };
-        let pid = spawn(&script, &d, None, "writes-allowed", &Placement::Host)
+        let pid = spawn(&script, &d, None, "writes-allowed", &Placement::Host, None)
             .expect("the script starts");
         let pid = pid as libc::pid_t;
 
@@ -810,7 +810,7 @@ mod tests {
     fn every_daemon_the_bridge_starts_serves_no_queue() {
         let d = a_daemon();
         for model in [None, Some("deepseek"), Some("qwen-3.8-27b")] {
-            let args = daemon_args(&d, model, "writes-allowed", &Placement::Host);
+            let args = daemon_args(&d, model, "writes-allowed", &Placement::Host, None);
             assert!(
                 args.iter().any(|a| a == "--no-queue"),
                 "a daemon started without --no-queue claims the repository's lease: {args:?}"
@@ -823,7 +823,7 @@ mod tests {
     #[test]
     fn every_daemon_the_bridge_starts_names_its_parent_seat() {
         let d = a_daemon();
-        let args = daemon_args(&d, None, "writes-allowed", &Placement::Host);
+        let args = daemon_args(&d, None, "writes-allowed", &Placement::Host, None);
         let at = args
             .iter()
             .position(|a| a == "--parent-seat")
@@ -839,13 +839,25 @@ mod tests {
     #[test]
     fn a_provider_is_a_provider_and_a_model_is_a_binding() {
         let d = a_daemon();
-        let args = daemon_args(&d, Some("deepseek"), "writes-allowed", &Placement::Host);
+        let args = daemon_args(
+            &d,
+            Some("deepseek"),
+            "writes-allowed",
+            &Placement::Host,
+            None,
+        );
         assert!(
             args.windows(2).any(|w| w == ["--provider", "deepseek"]),
             "{args:?}"
         );
         assert!(!args.iter().any(|a| a == "--model"), "{args:?}");
-        let args = daemon_args(&d, Some("qwen-3.8-27b"), "writes-allowed", &Placement::Host);
+        let args = daemon_args(
+            &d,
+            Some("qwen-3.8-27b"),
+            "writes-allowed",
+            &Placement::Host,
+            None,
+        );
         assert!(
             args.windows(2).any(|w| w == ["--model", "qwen-3.8-27b"]),
             "{args:?}"
@@ -856,6 +868,7 @@ mod tests {
             Some("deepseek/deepseek-chat"),
             "writes-allowed",
             &Placement::Host,
+            None,
         );
         assert!(
             args.windows(2).any(|w| w == ["--provider", "deepseek"]),
@@ -866,7 +879,7 @@ mod tests {
             "{args:?}"
         );
         // No model named at all: neither flag, and the daemon's own choice stands.
-        let args = daemon_args(&d, None, "writes-allowed", &Placement::Host);
+        let args = daemon_args(&d, None, "writes-allowed", &Placement::Host, None);
         assert!(
             !args.iter().any(|a| a == "--provider" || a == "--model"),
             "{args:?}"
@@ -884,6 +897,7 @@ mod tests {
             None,
             "writes-allowed",
             &Placement::Remote("lab2x1".into()),
+            None,
         );
         assert!(
             args.windows(2).any(|w| w == ["--host", "lab2x1"]),
@@ -895,7 +909,7 @@ mod tests {
             1,
             "{args:?}"
         );
-        let args = daemon_args(&d, None, "writes-allowed", &Placement::Host);
+        let args = daemon_args(&d, None, "writes-allowed", &Placement::Host, None);
         assert!(
             !args.iter().any(|a| a == "--host"),
             "a session on this box must not be started with a host: {args:?}"
@@ -913,6 +927,7 @@ mod tests {
             None,
             "writes-allowed",
             &Placement::RemoteVm("lab2x1".into()),
+            None,
         );
         assert!(
             args.windows(2).any(|w| w == ["--host", "lab2x1"]),
@@ -923,7 +938,7 @@ mod tests {
             "{args:?}"
         );
         // And a VM here is `--where firecode` alone: a host nobody named must not be invented.
-        let args = daemon_args(&d, None, "writes-allowed", &Placement::Firecode);
+        let args = daemon_args(&d, None, "writes-allowed", &Placement::Firecode, None);
         assert!(
             args.windows(2).any(|w| w == ["--where", "firecode"]),
             "{args:?}"

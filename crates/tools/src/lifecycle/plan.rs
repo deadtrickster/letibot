@@ -80,9 +80,17 @@ impl HoldingView {
         self.bytes.map(human_bytes).unwrap_or_else(|| "?".into())
     }
 
-    /// One line: `work `wt/` 38G — keep: …`.
+    /// One line: `worktree <path> 38G keep — …`.
     pub fn line(&self) -> String {
-        let mut out = format!("{} {} {}", self.kind, self.size(), self.verdict.word());
+        // The HANDLE is in the line: a plan row about a worktree that does not say which worktree
+        // cannot be acted on (`docs/lifecycle.md` d.9's line names the thing, `wt/pk/r193`).
+        let mut out = format!(
+            "{} {} {} {}",
+            self.kind,
+            self.handle,
+            self.size(),
+            self.verdict.word()
+        );
         if let Verdict::At(at, _) = &self.verdict {
             out.push_str(&format!(" (at {})", stamp_of(*at)));
         }
@@ -158,6 +166,17 @@ impl OwnerView {
                 "scope" => format!("scope {}", h.why.clone().unwrap_or_default()),
                 "vm" => format!("vm {} ({})", h.handle, h.size()),
                 "daemon" => format!("daemon {}", h.handle),
+                // d.9's line names the thing - `wt pk/r193`, not a bare size - because the reader
+                // of a `holds:` row is deciding what to settle.
+                "worktree" => format!(
+                    "wt {} ({})",
+                    std::path::Path::new(&h.handle)
+                        .file_name()
+                        .map(|n| n.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| h.handle.clone()),
+                    h.size()
+                ),
+                "branch" => format!("branch {} ({})", h.handle, h.size()),
                 other => format!("{other} {}", h.size()),
             });
         }

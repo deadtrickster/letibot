@@ -175,9 +175,7 @@ pub fn proved(repo: &Path, wt: &Path, branch: Option<&str>, owner: &str) -> Opti
     }
     // d.4's last proof: the branch's creating entry is in THIS worktree's own HEAD log, written
     // after the stamp. A branch somebody else made never appears in this tree's log.
-    let Some(branch) = branch else {
-        return None;
-    };
+    let branch = branch?;
     let stamped = stamp_stamp_ms(wt)?;
     let log = std::fs::read_to_string(git_admin_dir(wt).ok()?.join("logs").join("HEAD")).ok()?;
     let created = log.lines().any(|l| {

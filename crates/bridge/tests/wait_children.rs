@@ -401,7 +401,7 @@ fn a_wait_holds_on_a_running_child_and_returns_after_the_turn_it_wakes() {
     let bridge = Bridge::new();
     let tree = world.worktree.display().to_string();
     let started = bridge
-        .start(&tree, BRIEF, None, "writes-allowed", None, false)
+        .start(&tree, BRIEF, None, "writes-allowed", None, false, None)
         .expect("the bridge starts a session");
     let session = started["session"]
         .as_str()

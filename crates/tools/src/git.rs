@@ -412,7 +412,8 @@ mod tests {
         git(&dir, &["add", "-A"]).unwrap();
         git(&dir, &["commit", "-q", "-m", "two"]).unwrap();
         let ahead = head_of(&dir).unwrap();
-        git(&dir, &["branch", "-f", "main", &head]).unwrap();
+        // `git branch -f` refuses while that branch is checked out; the ref is what the proof reads.
+        git(&dir, &["update-ref", "refs/heads/main", &head]).unwrap();
         match commit_proof(&dir, &ahead, "main", "`HEAD`") {
             Proof::Unproven(kind, why) => {
                 assert_eq!(kind, "carries");
@@ -425,7 +426,9 @@ mod tests {
     #[test]
     fn a_ref_git_cannot_read_is_not_a_ref_that_is_gone() {
         let dir = repo("unreadable");
-        // A `.git` git refuses to read: the ref is neither there nor provably absent.
+        // A `.git` git refuses to read: the ref is neither there nor provably absent. The real one
+        // is moved aside, because a directory is what a repository's `.git` is.
+        std::fs::rename(dir.join(".git"), dir.join("git-real")).unwrap();
         std::fs::write(dir.join(".git"), "gitdir: /nonexistent/gitdir\n").unwrap();
         match ref_proof(&dir, "main", "main", "`main`") {
             Proof::Unproven(_, why) => assert!(why.contains("could not be told"), "{why}"),

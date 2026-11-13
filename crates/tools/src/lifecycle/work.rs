@@ -15,7 +15,7 @@ use letibot_tokencore::store::{
 
 use super::plan::{LANDED_GRACE_MS, UNLANDED_GRACE_MS, stamp_of};
 use super::reap::{ATTEMPTS_BEFORE_STUCK, Ops, Pass};
-use super::{Found, Places, WORKTREE, discover, human_millis, worktree};
+use super::{Found, Places, WORKTREE, discover_all, human_millis, worktree};
 use crate::git;
 
 /// The kind word a settled BRANCH holding carries: a branch whose worktree is already gone.
@@ -108,7 +108,9 @@ pub(super) fn settle(
     let rows = store.holdings_of(&owner.id)?;
     let mut left = 0usize;
     let mut failed = 0usize;
-    for found in discover(owner, places) {
+    // `discover_all`, not `discover`: an adopted worktree sits outside the owner root and only
+    // its row can find it.
+    for found in discover_all(store, owner, places) {
         if found.class != HoldingClass::Work || found.host.is_some() {
             continue;
         }
@@ -137,7 +139,9 @@ pub(super) fn settle(
             }
         }
     }
-    if left == 0 && failed == 0 && owner.state != OwnerState::Settled {
+    // `Settled` is the state a previous pass reached: it said its one line then, and a pass that
+    // said it again every minute would fill the journal with the same sentence.
+    if left == 0 && failed == 0 && owner.state == OwnerState::Settling {
         settled(store, ops, owner, now, report)?;
     }
     Ok(())
@@ -145,6 +149,9 @@ pub(super) fn settle(
 
 /// One worktree: prove it is the owner's, archive it, and only then remove it. `Ok(false)` is
 /// *kept*; `Err` is *tried and it did not work*.
+// Every argument is one of the pass's own (store, places, hands, owner, what was found, the row,
+// the clock, the report): a struct for them would be a second spelling of `Pass`.
+#[allow(clippy::too_many_arguments)]
 fn settle_worktree(
     store: &Store,
     places: &Places,
@@ -214,6 +221,7 @@ fn settle_worktree(
 }
 
 /// One branch whose worktree is already gone: its commits go to the archive, then the ref.
+#[allow(clippy::too_many_arguments)]
 fn settle_branch(
     store: &Store,
     ops: &Ops,
@@ -285,6 +293,7 @@ fn write_gone(
 
 /// A step that failed: the holding counts the attempt, and the second one is `stuck` - said in the
 /// journal and once in the plan, and nothing further removed for it.
+#[allow(clippy::too_many_arguments)]
 fn stuck(
     store: &Store,
     ops: &Ops,
@@ -295,6 +304,7 @@ fn stuck(
     now: i64,
     report: &mut Pass,
 ) -> StoreResult<()> {
+    let already = row.as_ref().is_some_and(|r| r.state == HoldingState::Stuck);
     let mut wrote = row.clone().unwrap_or_else(|| found.row(now));
     wrote.attempts += 1;
     wrote.state = if wrote.attempts >= ATTEMPTS_BEFORE_STUCK {
@@ -310,6 +320,11 @@ fn stuck(
         found.handle, wrote.attempts
     );
     report.kept.push(format!("{} {said}", owner.id));
+    // One line when the holding becomes stuck, and no more: the plan keeps saying it, and a pass
+    // that journalled the same failure every minute is a journal nobody can read.
+    if already {
+        return Ok(());
+    }
     let what = if wrote.state == HoldingState::Stuck {
         ReapAct::Stuck
     } else {
@@ -385,6 +400,7 @@ fn worktrees_under(wt: &std::path::Path) -> Vec<PathBuf> {
 
 /// One journal line. A removal nobody can read back afterwards is one nobody can argue with, so
 /// every act goes through here.
+#[allow(clippy::too_many_arguments)]
 fn journal(
     store: &Store,
     ops: &Ops,

@@ -298,7 +298,7 @@ fn holds(args: &[String]) -> Result<(), String> {
             bytes(o.bytes())
         );
         for h in &o.holds {
-            println!("    {} — {}", h.handle, h.line());
+            println!("    {}", h.line());
         }
     }
     Ok(())
@@ -632,7 +632,7 @@ fn gc_adopt(pattern: &str, folder: Option<&Path>, act: bool) -> Result<(), Strin
                 class: HoldingClass::Work,
                 state: HoldingState::Held,
                 stamp: said.clone(),
-                bytes: None,
+                bytes: lifecycle::size_of(wt).0,
                 archive: None,
                 why: Some("nothing recorded it, and it was taken by hand".into()),
                 created_ms: now,

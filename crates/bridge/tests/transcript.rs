@@ -355,6 +355,7 @@ fn a_sessions_conversation_comes_back_as_rows_from_a_cursor_with_the_long_text_w
             "writes-allowed",
             None,
             false,
+            None,
         )
         .expect("the bridge starts a session");
     let session = started["session"]

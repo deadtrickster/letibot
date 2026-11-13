@@ -455,22 +455,55 @@ pub fn discover(owner: &OwnerRow, places: &Places) -> Vec<Found> {
     out
 }
 
-/// [`discover`], plus the cgroup subtrees a row already in the store still names.
+/// [`discover`], plus what a row already in the store still names.
 ///
-/// The scope walk starts from the DAEMON's `/proc` entry, so a daemon that died takes the
-/// evidence with it while the cgroup it delegated can still hold every process the owner
-/// started - the case R201 was filed on. A row written while the daemon was alive is the second
-/// witness, and it is re-checked against the kernel before it is believed.
+/// Two witnesses matter here. The scope walk starts from the DAEMON's `/proc` entry, so a daemon
+/// that died takes the evidence with it while the cgroup it delegated can still hold every process
+/// the owner started - the case R201 was filed on. And a WORK holding may sit outside the owner root
+/// altogether: an adopted worktree (`letibot gc --adopt`), which the root walk cannot see, is found
+/// by its row - checked against the disk and the repository before it is believed, and re-proved by
+/// the settle step itself.
+///
+/// A `stuck` holding is carried, so the plan keeps saying it and nothing re-tries it in the dark.
 pub fn discover_all(store: &Store, owner: &OwnerRow, places: &Places) -> Vec<Found> {
     let mut out = discover(owner, places);
     for row in store.holdings_of(&owner.id).unwrap_or_default() {
-        if row.kind != SCOPE || row.state == HoldingState::Gone {
+        if row.state == HoldingState::Gone {
             continue;
         }
         if out
             .iter()
             .any(|f| f.kind == row.kind && f.handle == row.handle)
         {
+            continue;
+        }
+        if row.kind == WORKTREE || row.kind == work::BRANCH {
+            // Only while the thing is still there: a row whose tree or branch is gone is the
+            // refresh walk's `gone`, not a resource a second step could act on.
+            let there = if row.kind == WORKTREE {
+                Path::new(&row.handle).exists()
+            } else {
+                owner
+                    .repo
+                    .as_deref()
+                    .is_some_and(|r| crate::git::branch_head(Path::new(r), &row.handle).is_some())
+            };
+            if there {
+                out.push(Found {
+                    owner: owner.id.clone(),
+                    kind: row.kind.clone(),
+                    host: row.host.clone(),
+                    handle: row.handle.clone(),
+                    class: HoldingClass::Work,
+                    stamp: row.stamp.clone(),
+                    bytes: row.bytes,
+                    why: row.why.clone(),
+                    use_: None,
+                });
+            }
+            continue;
+        }
+        if row.kind != SCOPE {
             continue;
         }
         let path = PathBuf::from(&row.handle);

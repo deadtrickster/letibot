@@ -545,6 +545,7 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
             // an already-running daemon is joined only where the call asked to be.
             Some("lab2x1"),
             false,
+            None,
         )
         .expect("the bridge starts a session");
     let session = started["session"]

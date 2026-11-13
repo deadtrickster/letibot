@@ -289,6 +289,7 @@ fn a_session_that_joins_a_daemon_runs_its_own_model() {
             "writes-allowed",
             None,
             false,
+            None,
         )
         .expect("the bridge starts a session on the model it was asked for");
     let session = started["session"]
@@ -348,6 +349,7 @@ fn a_session_that_joins_a_daemon_runs_its_own_model() {
             "writes-allowed",
             None,
             false,
+            None,
         )
         .expect_err("a provider this build does not know is refused");
     assert!(
