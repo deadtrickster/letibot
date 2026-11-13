@@ -453,7 +453,7 @@ pub(super) const FLAGS: &[Flag] = &[
     flag(
         &["--providers"],
         None,
-        "every provider: built-ins, `[provider.NAME]` entries and env base URLs, marked",
+        "every provider: built-in, `[provider.NAME]` and env, marked",
         None,
     ),
     flag(
