@@ -989,7 +989,7 @@ fn a_room_line_put_back_rings_the_session_that_owes_it() {
         "s-r187-idle",
     );
     // The pen a take would have emptied: the hand-back is the only line in it.
-    crate::room::wake::forget("s-r187-idle");
+    let _ = crate::room::wake::hold("s-r187-idle");
 
     d.put_back(crate::harness::deliveries::HeldNow {
         parts: Vec::new(),
@@ -1023,7 +1023,6 @@ fn a_room_line_put_back_rings_the_session_that_owes_it() {
     let took = crate::room::wake::hold("s-r187-idle");
     assert_eq!(took.text().len(), 1);
     assert_eq!(took.seqs, vec![7]);
-    crate::room::wake::forget("s-r187-idle");
 }
 
 /// R187's own case: #1307 is a peer's passing-by line, queued and ringing nothing, and #1309 mentions

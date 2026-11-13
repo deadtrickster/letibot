@@ -2089,6 +2089,11 @@ fn the_daemons_logs_go_under_the_logs_root_one_directory_per_session() {
     assert_eq!(cfg.daemon_logs(), PathBuf::from("/tmp/ws/.letibot"));
     cfg.logs_root = Some(PathBuf::from("/data/letibot/logs"));
     assert_eq!(cfg.daemon_logs(), PathBuf::from("/data/letibot/logs/s-7"));
+    // Another session's is its own directory, which is what keeps a closed session's room notes
+    // from landing in the daemon's file or in a sibling's.
+    assert_eq!(cfg.logs_for("s-9"), PathBuf::from("/data/letibot/logs/s-9"));
+    cfg.logs_root = None;
+    assert_eq!(cfg.logs_for("s-9"), PathBuf::from("/tmp/ws/.letibot/s-9"));
 }
 
 /// Only the session `--vm` placed mounts its workspace - not a child attached to an ancestor's

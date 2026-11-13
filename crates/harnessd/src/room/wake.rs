@@ -3,6 +3,7 @@
 //! notices takes it. Nothing here decides when a line is said, and nothing here drops one.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::io::Write;
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
@@ -292,14 +293,80 @@ pub fn take_if_cheap(session: &str) -> Taken {
     collect(entry)
 }
 
-/// Forget a session's queue. A session that has closed will take no turn, so its lines are for
-/// nobody - and an entry nothing removes is the memory of every session a daemon ever held.
-pub fn forget(session: &str) -> usize {
-    let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
-    q.map
-        .remove(session)
-        .map(|entry| entry.lines.len() + entry.folded.count)
-        .unwrap_or(0)
+/// The file a closing session's untaken notes are kept in, under the directory its other logs are
+/// in.
+pub const KEPT: &str = "room-notes.jsonl";
+
+/// One note as the file holds it: the sentence, the chat message it was - every one of them, since
+/// a folded note stands for many - and when it arrived.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Kept {
+    seq: u64,
+    seqs: Vec<u64>,
+    arrived_ms: u64,
+    line: String,
+}
+
+/// Empty a closing session's queue into `dir`, keeping every line it never took. The queue is
+/// memory and a closed session takes no turn, so without this the lines go with the memory; they
+/// are that session's record, so they are filed under its own logs instead.
+pub fn keep(session: &str, dir: &std::path::Path) -> usize {
+    let taken = hold(session);
+    if taken.is_empty() {
+        return 0;
+    }
+    let mut buf = String::new();
+    for line in &taken.lines {
+        let kept = Kept {
+            seq: line.seq,
+            seqs: line.seqs(),
+            arrived_ms: line
+                .arrived
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
+            line: line.line.clone(),
+        };
+        match serde_json::to_string(&kept) {
+            Ok(text) => {
+                buf.push_str(&text);
+                buf.push('\n');
+            }
+            Err(e) => eprintln!("room: a note of {session} not kept ({e})"),
+        }
+    }
+    let path = dir.join(KEPT);
+    let wrote = std::fs::create_dir_all(dir).and_then(|()| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .and_then(|mut f| f.write_all(buf.as_bytes()))
+    });
+    match wrote {
+        Ok(()) => taken.lines.len(),
+        Err(e) => {
+            // Said, and the memory is already gone: a note nobody can read is worth the line.
+            eprintln!(
+                "  {session} · closed; {} untaken room note(s) could not be kept ({}: {e})",
+                taken.lines.len(),
+                path.display()
+            );
+            0
+        }
+    }
+}
+
+/// The notes a closed session kept under `dir`, oldest first - what a person reads after it went.
+pub fn kept(dir: &std::path::Path) -> Vec<String> {
+    let Ok(bytes) = std::fs::read(dir.join(KEPT)) else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&bytes)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Kept>(line).ok())
+        .map(|kept| kept.line)
+        .collect()
 }
 
 /// How many sentences are waiting for a session - the assertion a test makes instead of sleeping.
@@ -427,6 +494,16 @@ pub fn missed_line(count: u64, since_ms: u64, now: u64) -> String {
 mod tests {
     use super::*;
 
+    /// A session's queue taken and dropped, for a test that wants it gone and not said: a CLOSED
+    /// session's notes are kept, see [`keep`], so nothing in the daemon reaches for this.
+    fn discard(session: &str) -> usize {
+        let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
+        q.map
+            .remove(session)
+            .map(|entry| entry.lines.len() + entry.folded.count)
+            .unwrap_or(0)
+    }
+
     /// An unwoken message that arrives while a note waits is not acked past that note: its seq
     /// rides on the queue, and the turn that takes the note acks both.
     #[test]
@@ -544,7 +621,7 @@ mod tests {
         push_chat(s, 0, Reach::Addressed, "b".into());
         assert!(take_if_cheap(s).is_empty());
         assert_eq!(waiting(s), 1, "it waits for the full turn after");
-        forget(s);
+        discard(s);
     }
 
     #[test]
@@ -659,8 +736,7 @@ mod tests {
             taken.cheap,
             "a folded digest is peers' talk, not instructions"
         );
-        assert_eq!(waiting(s), 0);
-        assert_eq!(forget(s), 0);
+        assert_eq!(waiting(s), 0, "nothing is left queued");
     }
 
     /// A turn that never opened hands its lines back, in order, and nothing was acked: the room
@@ -681,7 +757,7 @@ mod tests {
             "the order they were taken in"
         );
         assert_eq!(again.ack, 2);
-        forget(s);
+        discard(s);
     }
 
     /// The map is bounded too, and the session evicted is the one pushed longest ago - which is the
@@ -712,18 +788,43 @@ mod tests {
         assert!(queues.map.contains_key("s-past-the-bound"));
     }
 
-    /// A closed session takes no turn, so its queue goes: an entry nothing removes is the memory of
-    /// every session the daemon ever held.
+    /// A session's queue goes when it is dropped, and one session's going leaves another's alone:
+    /// the broom a test has, not a rule the daemon keeps.
     #[test]
-    fn forgetting_a_session_drops_what_it_never_took() {
-        let (gone, kept) = ("s-room-forget-a", "s-room-forget-b");
+    fn a_discarded_queue_is_gone_and_another_sessions_is_untouched() {
+        let (gone, kept) = ("s-room-discard-a", "s-room-discard-b");
         push(gone, "one".into());
         push(gone, "two".into());
         push(kept, "three".into());
-        assert_eq!(forget(gone), 2, "the notes nobody will take");
+        assert_eq!(discard(gone), 2, "both of its notes");
         assert_eq!(waiting(gone), 0);
         assert_eq!(take(gone), Vec::<String>::new());
         assert_eq!(waiting(kept), 1, "somebody else's queue is untouched");
-        assert_eq!(forget(kept), 1);
+        assert_eq!(discard(kept), 1);
+    }
+
+    /// The bar: a session closes with two notes it never took, and they are readable under its own
+    /// logs afterwards - the queue is memory, the file is the record.
+    #[test]
+    fn a_closing_session_keeps_the_notes_it_never_took() {
+        let s = "s-room-keep";
+        let dir = std::env::temp_dir().join(format!("letibot-room-kept-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        push(s, "one".into());
+        push_chat(s, 12, letibot_room::chat::Reach::Addressed, "two".into());
+        assert_eq!(keep(s, &dir), 2, "both notes are filed");
+        assert_eq!(waiting(s), 0, "and the queue is empty");
+        assert_eq!(
+            kept(&dir),
+            vec!["one".to_string(), "two".to_string()],
+            "readable, in the order they arrived"
+        );
+        // A session that took its notes keeps nothing, and a closed one's file is appended to, not
+        // rewritten: the second closing leaves the first record in place.
+        assert_eq!(keep("s-room-keep-none", &dir), 0);
+        push(s, "three".into());
+        assert_eq!(keep(s, &dir), 1);
+        assert_eq!(kept(&dir).len(), 3);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1874,6 +1874,16 @@ impl Config {
         }
     }
 
+    /// Another session's logs directory, for a record that must outlive it - the room notes it
+    /// never took. A fixture with no logs root gets one directory per session here, because two
+    /// closed sessions' records must not land in one file.
+    pub fn logs_for(&self, session_id: &str) -> PathBuf {
+        match &self.logs_root {
+            Some(root) => root.join(session_id),
+            None => self.workspace.join(".letibot").join(session_id),
+        }
+    }
+
     /// Arm this session's review-queue reviewers for a VM - the one named way the value behind
     /// [`Config::reviewers`] becomes [`Reviewers::Vm`]. Two callers, and both mean it: `cli::run` for
     /// `--reviewers vm`, and a test that MEANS to exercise a VM placement.
