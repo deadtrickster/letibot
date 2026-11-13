@@ -309,9 +309,8 @@ pub fn carries_pictures<'a>(items: impl IntoIterator<Item = &'a TranscriptItem>)
 /// What one picture becomes: sent, or the reason it is not. The order of the three reasons is
 /// their scope: the model, then the bytes, then what a provider said about this picture.
 ///
-/// `pub(crate)` because the Messages protocol asks the same question of the same picture and
-/// must answer it the same way: two answers would be one model sent an image by one door and a
-/// placeholder by another.
+/// `pub(crate)` because every protocol in this crate sends pictures and must answer the same way:
+/// two answers would be one model sent an image by one door and a placeholder by another.
 pub(crate) fn picture_fate(
     data_ref: &str,
     eyes: Eyes<'_>,

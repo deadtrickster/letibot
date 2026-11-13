@@ -1,15 +1,16 @@
 //! The providers, as facts about their doors.
 
-/// Which protocol a door speaks: the shape of the request body and of the stream. Two protocols
-/// are spoken here, and which one a preset is decides which client builds the session's backend -
-/// one match arm in `harness::open::build_provider`, so a third can arrive without touching either
-/// client.
+/// Which protocol a door speaks: the shape of the request body and of the stream. A preset says
+/// which, and that decides which client builds the session's backend - one match arm in
+/// `harness::open::build_provider`, so another can arrive without touching any client.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Protocol {
     /// OpenAI chat completions: `POST …/chat/completions`, `data:` chunks, `[DONE]`.
     ChatCompletions,
     /// Anthropic Messages: `POST …/v1/messages`, `anthropic-version`, named SSE events.
     AnthropicMessages,
+    /// OpenAI Responses: `POST …/responses`, input items, and a reasoning item per thought.
+    Responses,
 }
 
 /// One provider's shape: where it is, which header carries the key, and which
@@ -189,6 +190,28 @@ pub const KIMI_CODING: Preset = Preset {
     catalogue_id: "moonshotai",
 };
 
+/// OpenAI itself, on its own protocol. `gpt-6-astra` is the id the API reference's own
+/// examples use, and the fallback for the same reason the others carry one: the catalogue
+/// has no `openai` row here, so a box with no operator file has only this to go on.
+///
+/// ```text
+/// POST https://api.openai.com/v1/responses
+/// {"model": "gpt-6-astra", "store": false,
+///  "include": ["reasoning.encrypted_content"], "stream": true}
+/// ```
+pub const OPENAI: Preset = Preset {
+    name: "openai",
+    url: "https://api.openai.com/v1/responses",
+    key_env: "OPENAI_API_KEY",
+    protocol: Protocol::Responses,
+    alt_envs: &[],
+    fallback_model: "gpt-6-astra",
+    // The Responses API switches thinking with `reasoning.effort`, not a field of this
+    // table's shape: `openai::thinking_field` is the chat-completions spelling.
+    thinking_field: None,
+    catalogue_id: "openai",
+};
+
 pub const ALL: &[&Preset] = &[
     &DEEPSEEK,
     &GLM,
@@ -199,6 +222,7 @@ pub const ALL: &[&Preset] = &[
     &DEEPSEEK_ANTHROPIC,
     &GLM_ANTHROPIC,
     &KIMI_CODING,
+    &OPENAI,
 ];
 
 impl Preset {
@@ -231,15 +255,13 @@ impl Preset {
             "glm-coding" | "zai-coding" | "coding-plan" => Ok(&GLM_CODING),
             "glm-coding-cn" | "zhipu-coding" | "bigmodel-coding" => Ok(&GLM_CODING_CN),
             "grok" | "xai" | "x.ai" => Ok(&GROK),
-            // The same vendors over the Messages wire. Their own names, because a base URL moved
-            // onto another protocol is a different door: one answers `tool_result` and the other
-            // `tool` messages, and a preset is what that choice is written down as.
-            "anthropic" | "claude" => Ok(&ANTHROPIC),
-            "deepseek-anthropic" | "deepseek-messages" => Ok(&DEEPSEEK_ANTHROPIC),
-            "glm-anthropic" | "zai-anthropic" | "glm-messages" => Ok(&GLM_ANTHROPIC),
             "kimi-coding" | "kimi" | "moonshot" => Ok(&KIMI_CODING),
+            "openai" => Ok(&OPENAI),
+            // Read from `ALL` rather than typed again: a provider added to one list and not
+            // the other is exactly the drift this sentence exists to prevent.
             other => Err(format!(
-                "`{other}` is not a provider this build knows; there are nine: {}",
+                "`{other}` is not a provider this build knows; there are {}: {}",
+                ALL.len(),
                 ALL.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")
             )),
         }
@@ -280,25 +302,32 @@ mod tests {
         // 1000 prompt of which 600 cached, 100 out: 400*1 + 600*0.1 + 100*2 = 660 micro-USD.
         assert_eq!(p.micros(1000, 600, 100), 660);
         assert_eq!(Preset::parse("Zhipu").unwrap().name, "glm");
-        let unknown = Preset::parse("openai").unwrap_err();
-        assert!(
-            unknown.contains("not a provider this build knows"),
-            "{unknown}"
-        );
+        assert_eq!(Preset::parse("openai").unwrap().name, "openai");
+        // An unknown name names every provider this build knows, which is how a reader
+        // discovers a door they did not know was there.
+        let why = Preset::parse("nonesuch").unwrap_err();
+        for p in ALL {
+            assert!(why.contains(p.name), "{why}");
+        }
         // Every door has to be reachable by its own name, or `ALL` and `parse` disagree about what
         // this build knows and a picker offers a name the flag refuses.
         for preset in ALL {
             assert_eq!(Preset::parse(preset.name).map(|p| p.name), Ok(preset.name));
         }
-        // The Messages doors are the ones a head may not assume: a door's protocol is what decides
-        // which client answers for it.
+        // A door's protocol is what decides which client answers for it.
         assert_eq!(ANTHROPIC.protocol, Protocol::AnthropicMessages);
         assert_eq!(DEEPSEEK.protocol, Protocol::ChatCompletions);
+        assert_eq!(OPENAI.protocol, Protocol::Responses);
     }
 
     /// Every `fallback_model` must be a name the catalogue carries in its shortest form,
     /// because a longer alias for the same window and price makes a box with a catalogue
     /// choose differently from one without. The account's own list is what a script sees.
+    ///
+    /// `openai` is absent on purpose: the vendored snapshot has no `openai` section, so the
+    /// check could only pass by inventing a window and a price for a model nobody measured.
+    /// Its fallback is the id the API reference's own examples send, which is citable; a
+    /// made-up catalogue row would not be.
     #[test]
     fn every_fallback_names_a_real_model_and_its_shortest_form() {
         let cat = crate::catalogue::Catalogue::snapshot();
