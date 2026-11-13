@@ -132,6 +132,8 @@ impl App {
                 if let Some(idx) = self.items.iter().position(|r| r.item_id == item_id) {
                     self.items[idx].citations = citations;
                     self.invalidate_history_from(idx);
+                    // And the same range as a mark, so the pane's gutter and `alt-d` reach it.
+                    self.marks_of_row(idx);
                 }
                 Disposition::Rendered
             }

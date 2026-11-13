@@ -119,6 +119,13 @@ impl App {
             self.call_targets.clear();
             self.call_ms.clear();
             self.call_edits.clear();
+            // The marks belong to the rows that went, and to the file buffers still open from
+            // them: another conversation's citations are not a remark about this one's files.
+            self.file_marks.clear();
+            if let Some(p) = self.edit_pane.as_mut() {
+                p.ed.clear_marks(None);
+                p.marked = None;
+            }
             self.pending_rows.clear();
             // A handle is per-session too: another session's job was never spawned by this one.
             self.job_edits.clear();
@@ -296,6 +303,9 @@ impl App {
                 }
             }
         }
+        // The marks those rows carry, re-derived from the rows themselves: rano is not in a
+        // snapshot, so a re-attached head's gutter and hunks come from what the daemon replays.
+        self.marks_from_rows();
         self.invalidate_history();
         // The cards the person put away stay away across a snapshot: a model's question still open is refreshed
         // and kept off the screen, one the snapshot no longer holds was settled meanwhile and goes, and a todo
@@ -890,6 +900,8 @@ impl App {
         if reasoning && let Some(t) = self.turn.as_mut() {
             t.hand_over_reasoning(&self.items);
         }
+        // What the row marks beside the text: a reply's cited lines and a call's changed ones.
+        self.marks_of_row(idx);
     }
 }
 

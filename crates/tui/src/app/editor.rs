@@ -58,12 +58,7 @@ pub(crate) struct FileRef {
 impl FileRef {
     /// The place an edit's excerpt is about.
     pub(crate) fn of(e: &letibot_sessionlog::event::ToolEdit) -> FileRef {
-        let change = Change {
-            before: e.before.clone(),
-            after: e.after.clone(),
-            before_start: e.before_start,
-            after_start: e.after_start,
-        };
+        let change = super::marks::change_of(e);
         FileRef {
             path: e.path.clone(),
             line: change.first_changed_line(),
@@ -130,6 +125,9 @@ pub struct EditorPane {
     pub(crate) dirty: bool,
     /// The palette `rows` were emitted under.
     pub(crate) palette: Option<rano::style::Palette>,
+    /// The file whose marks the pane has been handed, by canonical name: a switch to another file
+    /// is what makes the conversation's marks arrive in the gutter. See [`App::mark_the_shown_file`].
+    pub(crate) marked: Option<PathBuf>,
     /// Image ids the terminal holds for this pane, read off the bytes rano emitted: rano offers
     /// no way to free a markdown view's pictures, and the pane's end must not leak them.
     held: std::collections::BTreeSet<u32>,
@@ -193,6 +191,7 @@ impl EditorPane {
             caret: None,
             dirty: true,
             palette: None,
+            marked: None,
             held: Default::default(),
         }
     }
@@ -216,6 +215,15 @@ impl EditorPane {
                 .map(rano::term::graphics::image_delete),
         );
         out
+    }
+
+    /// The file rano has current, as rano names it: what a mark is about when the operator opens
+    /// something, and `None` for a scratch buffer that names no file.
+    pub(crate) fn shown(&self) -> Option<PathBuf> {
+        self.ed
+            .buffers
+            .get(self.ed.cur)
+            .and_then(|b| b.buf.name.clone())
     }
 
     /// Give rano its rectangle; true when it changed.
@@ -709,12 +717,20 @@ impl App {
             return;
         };
         let sends: Vec<SendEvent> = p.sends.borrow_mut().drain(..).collect();
+        // What the operator decided about a hunk: rano has dropped it, so the head's copy of it
+        // goes too rather than waiting to be put back on the next open.
+        let decided = p.ed.take_mark_outcomes();
         if p.ed.wants_quit() {
             self.close_editor();
         }
         for s in sends {
             self.take_send(&s);
         }
+        if !decided.is_empty() {
+            self.forget_decided_marks(&decided);
+        }
+        // And the file the pane has moved to carries the marks the conversation set on it.
+        self.mark_the_shown_file();
         self.forward_editor_graphics();
     }
 

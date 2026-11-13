@@ -1021,6 +1021,9 @@ pub struct App {
     /// the turn it carries, which then show the tool's own text.
     pub(crate) call_edits:
         std::collections::HashMap<String, Vec<letibot_sessionlog::event::ToolEdit>>,
+    /// The marks the conversation set on a file, by path and by the reply or call that set them:
+    /// rano holds a mark only while its buffer is open, so the rest wait here. See [`marks`].
+    pub(crate) file_marks: marks::FileMarks,
     /// The files a settled JOB changed while it ran, by handle: the daemon snapshots the tree at the
     /// spawn and reads it back here, and the completion's row is where they are drawn (R161).
     /// A `BTreeMap` so the oldest can be dropped when a session settles more jobs than a reader will
@@ -1434,6 +1437,7 @@ impl App {
             call_targets: std::collections::HashMap::new(),
             call_ms: std::collections::HashMap::new(),
             call_edits: std::collections::HashMap::new(),
+            file_marks: marks::FileMarks::default(),
             job_edits: std::collections::BTreeMap::new(),
             call_decisions: std::collections::HashMap::new(),
             pending_rows: std::collections::HashMap::new(),
@@ -1748,6 +1752,7 @@ mod hits;
 pub(crate) mod keyhints;
 mod keys;
 pub(crate) mod links;
+pub(crate) mod marks;
 mod notes;
 mod panes;
 mod pick;

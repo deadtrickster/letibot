@@ -95,6 +95,9 @@ fn edited(ws: &Workspace) -> App {
     a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
     a.tools = Fold::Open;
     a.wiring.workspace = ws.0.display().to_string();
+    // A `Hello` carries the session's wiring, and this fixture's has no workspace - but a row's
+    // path is resolved against it, so the marks are derived once more now that it is set.
+    a.marks_from_rows();
     a
 }
 
@@ -2049,4 +2052,126 @@ fn a_clean_quit_card_names_no_file_and_leaves_on_the_first_enter() {
     assert!(!card.contains("unsaved edits"), "{card}");
     assert!(!card.contains(FILE), "{card}");
     assert_eq!(a.key(Key::Enter), Some(Action::Quit));
+}
+
+/// The buffer rano has current, its rows as text.
+fn buffer_text(a: &App) -> Vec<String> {
+    let ed = &a.edit_pane.as_ref().expect("the pane is open").ed;
+    let bs = &ed.buffers[ed.cur];
+    (0..bs.buf.row_count())
+        .map(|r| bs.buf.row(r).iter().collect())
+        .collect()
+}
+
+/// A finished edit is an `edit` mark on the lines it changed, not only a diff to read: the gutter
+/// signs them and `alt-d` reaches them. `r` in the review puts the before text back in the buffer -
+/// one undo step, unsaved - and the mark does not come back when the file is opened again.
+#[test]
+fn an_edit_call_leaves_a_mark_the_operator_can_revert() {
+    use rano::marks::MarkKind;
+    let ws = workspace("marks");
+    let mut a = edited(&ws);
+    // The operator's own door: ctrl-] from the composer opens the newest change.
+    assert_eq!(a.key(Key::CtrlBracket), None);
+    settle(&mut a);
+    let marks = a.edit_pane.as_ref().expect("the pane is open").ed.marks();
+    let edit = marks
+        .iter()
+        .find(|m| m.kind == MarkKind::Edit)
+        .unwrap_or_else(|| panic!("no edit mark: {marks:?}"));
+    assert_eq!(
+        (edit.line, edit.end_line),
+        (9, 12),
+        "the excerpt's own lines"
+    );
+    assert!(edit.covers(10), "line 11, the changed one, is inside it");
+    assert_eq!(
+        edit.before().as_deref(),
+        Some("line 9\nline 10\nold 11\nline 12"),
+        "what a revert puts back"
+    );
+
+    // rano's review keymap, from the diff the pane opened on: `r` rejects the hunk, which for an
+    // edit already on disk is putting the before text back.
+    let (keys, _) = a.route(vec![key(KeyCode::Char('r'), Mods::NONE)]);
+    assert!(keys.is_empty(), "the pane took the key");
+    let text = buffer_text(&a);
+    assert_eq!(text[8], "line 9");
+    assert_eq!(text[10], "old 11", "the before text is back: {text:?}");
+    assert_eq!(text[11], "line 12");
+    let ed = &a.edit_pane.as_ref().expect("the pane is still open").ed;
+    assert!(ed.buffers[ed.cur].buf.modified, "the revert is unsaved");
+    assert!(ed.marks().is_empty(), "the decided hunk is gone");
+
+    // And a decided hunk is not offered again.
+    a.close_editor();
+    a.open_in_editor(&FileRef::file(FILE));
+    settle(&mut a);
+    assert!(
+        a.edit_pane.as_ref().unwrap().ed.marks().is_empty(),
+        "a reopened file does not put the revert back"
+    );
+}
+
+/// A reply that cites a range marks those lines in the file the pane has open: the same range the
+/// transcript draws, in the gutter, anchored on the text the daemon read.
+#[test]
+fn a_replys_cited_lines_are_marks_in_the_pane() {
+    use letibot_sessionlog::Citation;
+    use rano::marks::MarkKind;
+    let ws = workspace("citemark");
+    let mut a = edited(&ws);
+    a.open_in_editor(&FileRef::file(FILE));
+    settle(&mut a);
+    // The premise: this file is already marked by the call that changed it, and by no reply.
+    let before = a.edit_pane.as_ref().unwrap().ed.marks().to_vec();
+    assert!(
+        before.iter().all(|m| m.kind == MarkKind::Edit),
+        "{before:?}"
+    );
+
+    a.apply(ServerFrame::Event(env(
+        7,
+        SessionEvent::Citations {
+            item_id: "s.1".into(),
+            citations: vec![Citation {
+                label: format!("{FILE}:10-11"),
+                path: FILE.into(),
+                start: 10,
+                end: 11,
+                lines: vec!["line 10".into(), "line 11".into()],
+                error: None,
+            }],
+        },
+    )));
+    let marks = a.edit_pane.as_ref().unwrap().ed.marks().to_vec();
+    let cite = marks
+        .iter()
+        .find(|m| m.kind == MarkKind::Cite)
+        .unwrap_or_else(|| panic!("no cite mark: {marks:?}"));
+    assert_eq!((cite.line, cite.end_line), (10, 11));
+    assert_eq!(cite.anchor, vec!["line 10", "line 11"]);
+    assert!(!a.edit_pane.as_ref().unwrap().ed.mark_stale(&cite.id));
+
+    // The anchor is what says whether a mark still fits: text typed where the cited lines were is
+    // a citation about lines that no longer say that, and rano drops it - while a hunk, which is
+    // work, is kept and goes stale rather than silently about other lines.
+    {
+        let p = a.edit_pane.as_mut().unwrap();
+        p.ed.buffers[p.ed.cur].cursor.row = 9;
+        p.ed.paste_text("a changed line\n");
+    }
+    let ed = &a.edit_pane.as_ref().unwrap().ed;
+    assert!(
+        ed.marks().iter().all(|m| m.id != cite.id),
+        "the citation still anchors lines it no longer says"
+    );
+    let hunk = ed
+        .marks()
+        .iter()
+        .find(|m| m.kind == MarkKind::Edit)
+        .expect("the hunk is kept")
+        .id
+        .clone();
+    assert!(ed.mark_stale(&hunk), "and it went stale");
 }

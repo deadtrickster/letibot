@@ -65,3 +65,92 @@ fn a_cited_range_shows_the_files_lines_with_its_numbers_and_a_line_clicks_to_its
     );
     let _ = screen;
 }
+
+/// The same range is a mark on the file, kept by the head for a file that is not open: rano holds a
+/// mark only while its buffer is, so the pane is handed this when the file opens.
+#[test]
+fn a_cited_range_is_a_cite_mark_on_those_lines() {
+    use rano::marks::MarkKind;
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(
+        1,
+        testing::appended("r.9", "assistant"),
+    )));
+    a.record_item(
+        "r.9",
+        TranscriptItem::Assistant {
+            text: "```flow/pgdump_schema.go:242-244\n```".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    );
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::Citations {
+            item_id: "r.9".into(),
+            citations: vec![Citation {
+                label: "flow/pgdump_schema.go:242-244".into(),
+                path: "flow/pgdump_schema.go".into(),
+                start: 242,
+                end: 244,
+                lines: vec![
+                    "func dump() error {".into(),
+                    "\treturn nil".into(),
+                    "}".into(),
+                ],
+                error: None,
+            }],
+        },
+    )));
+    let groups = a
+        .file_marks
+        .groups(std::path::Path::new("flow/pgdump_schema.go"));
+    assert_eq!(groups.len(), 1, "{groups:?}");
+    assert_eq!(groups[0].0, "reply:r.9", "owned by the reply that made it");
+    let mark = &groups[0].1[0];
+    assert_eq!(mark.kind, MarkKind::Cite);
+    assert_eq!((mark.line, mark.end_line), (242, 244));
+    assert_eq!(
+        mark.anchor,
+        vec!["func dump() error {", "\treturn nil", "}"],
+        "the lines as the file had them: what says later whether it still fits"
+    );
+}
+
+/// A citation whose range could not be read is no mark: there is no anchor to land on, and the row
+/// already carries the sentence saying why it is empty.
+#[test]
+fn an_unreadable_range_is_not_a_mark() {
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(
+        1,
+        testing::appended("r.8", "assistant"),
+    )));
+    a.record_item(
+        "r.8",
+        TranscriptItem::Assistant {
+            text: "```gone.txt:9-10\n```".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    );
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::Citations {
+            item_id: "r.8".into(),
+            citations: vec![Citation {
+                label: "gone.txt:9-10".into(),
+                path: "gone.txt".into(),
+                start: 9,
+                end: 10,
+                lines: Vec::new(),
+                error: Some("no such file".into()),
+            }],
+        },
+    )));
+    assert!(
+        a.file_marks
+            .groups(std::path::Path::new("gone.txt"))
+            .is_empty()
+    );
+}
