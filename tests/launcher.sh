@@ -105,6 +105,7 @@ run() {
   (cd "${RUN_WS:-$T/ws}" && env -i PATH="${RUN_PATH_EXTRA:-}$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
     LETIBOT_BIN="$T/bin" LETIBOT_ENDPOINT= STUB_ARGV="$T/argv.log" \
     LETIBOT_ROOM_SOCKET="${ROOM_SOCK_OVERRIDE-$ROOM_SOCK}" ROOM_ARGV="$T/room-argv.log" \
+    LETIBOT_SCOPE_RUNTIME_MAX="${LETIBOT_SCOPE_RUNTIME_MAX:-}" \
     "$(command -v bash)" "$LAUNCHER" "$@" 2>&1 < /dev/null)
 }
 expect() { # expect NAME OUTPUT PATTERN -- the output must match
