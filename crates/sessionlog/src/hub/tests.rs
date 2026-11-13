@@ -926,3 +926,32 @@ fn a_malformed_question_answer_leaves_the_question_open() {
         "the question must survive a malformed answer"
     );
 }
+
+/// A wake the session's reader has taken is no longer owed: the published activity says so,
+/// or a head shows `delivery` long after the reply ended.
+#[test]
+fn a_taken_wake_is_not_left_published_as_delivery() {
+    let hub = Hub::new("s-wake");
+    hub.set_activity_source(Arc::new(|h: &Hub| {
+        let w = if h.work_pending() {
+            vec![crate::activity::Waiting::Delivery]
+        } else {
+            Vec::new()
+        };
+        crate::activity::Activity::of(w)
+    }));
+    assert!(hub.wake_its_own_reader());
+    assert!(
+        hub.activity()
+            .waiting_on()
+            .contains(&crate::activity::Waiting::Delivery),
+        "a rung wake is owed work: {:?}",
+        hub.activity()
+    );
+    assert!(matches!(hub.take_own_work(), OwnWork::Wake));
+    assert!(
+        hub.activity().waiting_on().is_empty(),
+        "the taken wake is still published: {:?}",
+        hub.activity()
+    );
+}

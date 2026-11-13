@@ -1948,7 +1948,7 @@ impl Hub {
     /// `take_own_work` with a clock attached: give up at `deadline` and say so. The reader that
     /// needs it is a subagent's server thread, which also has to answer its parent.
     pub fn take_own_work_until(&self, deadline: Option<std::time::Instant>) -> OwnWork {
-        // No activity refresh here, deliberately: a command leaving this queue is not the work
+        // No activity refresh for a command, deliberately: a command leaving this queue is not the work
         // being over - the worker has it and the turn it makes has not started. `work_pending`
         // therefore stays true through that gap, and the turn's own `TurnStarted` ends it.
         self.pop_own_work_until(deadline)
@@ -1962,8 +1962,12 @@ impl Hub {
             if let Some(c) = g.commands.pop_front() {
                 return OwnWork::Command(c);
             }
+            // A wake carries no turn of its own (the daemon's posted jobs ring it too), so its end
+            // is said here: left published it read as `delivery` with nothing owed.
             if g.own_wake {
                 g.own_wake = false;
+                drop(g);
+                self.refresh_activity();
                 return OwnWork::Wake;
             }
             if g.closed {
