@@ -61,7 +61,7 @@ impl Mover {
         if !crate::store::exists(&self.store) {
             return Ok(Vec::new());
         }
-        let store = crate::store::open(&self.store, "queue_transition", None)
+        let store = crate::store::open_read(&self.store, "queue_transition", None)
             .map_err(|e| format!("reading the queues: {e}"))?;
         let after = self.place(&store)?;
         let moves = store

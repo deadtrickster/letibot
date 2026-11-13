@@ -85,6 +85,32 @@ pub struct Daemon {
 }
 
 /// `$HOME`, or a refusal rather than a path spelled `~`.
+/// The store a daemon is handed: `$LETIBOT_STORE`, else the data directory. A DATA DIRECTORY,
+/// not `sessions.db`: the daemon opens `shared.db` and `projects/<key>.db` under it.
+pub(crate) fn default_store() -> Result<PathBuf, String> {
+    match std::env::var_os("LETIBOT_STORE") {
+        Some(s) if !s.is_empty() => Ok(PathBuf::from(s)),
+        _ => Ok(store_in(&data_dir()?)),
+    }
+}
+
+/// The daemon's data directory, as `letibot_tools::lifecycle::data_dir` reads it:
+/// `$XDG_DATA_HOME/letibot` first, so a run with its own data home never reaches the operator's.
+fn data_dir() -> Result<PathBuf, String> {
+    data_dir_of(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+}
+
+fn data_dir_of(
+    xdg: Option<std::ffi::OsString>,
+    home: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    if let Some(d) = xdg.map(PathBuf::from).filter(|p| p.is_absolute()) {
+        return Ok(d.join("letibot"));
+    }
+    home.map(|h| PathBuf::from(h).join(".local/share/letibot"))
+        .ok_or_else(|| "no $HOME: the store has no default without one".to_string())
+}
+
 fn home() -> Result<PathBuf, String> {
     std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -198,12 +224,7 @@ pub fn resolve(workspace: &Path) -> Result<Daemon, String> {
         Some(s) if !s.is_empty() => PathBuf::from(s),
         _ => home()?.join("logs").join(format!("harnessd-{key}.log")),
     };
-    let store = match std::env::var_os("LETIBOT_STORE") {
-        Some(s) if !s.is_empty() => PathBuf::from(s),
-        // A DATA DIRECTORY, not `sessions.db`: the daemon opens `shared.db` and
-        // `projects/<key>.db` under it, and the key is this folder's own.
-        _ => store_in(&home()?.join(".local/share/letibot")),
-    };
+    let store = default_store()?;
     // The daemon's own record, with its socket's identity in it: a record left by a daemon that
     // is gone answers nothing, which the caller must treat as *unknown*.
     let placement =
@@ -642,6 +663,27 @@ mod tests {
         std::fs::write(dir.join("shared.db"), b"").expect("split store");
         assert_eq!(store_in(&dir), dir, "split: the directory");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The store follows `$XDG_DATA_HOME` before `$HOME`, as the daemon's lifecycle does: a run
+    /// with a data home of its own must never resolve the operator's store.
+    #[test]
+    fn the_data_dir_is_xdg_data_home_first() {
+        let some = |s: &str| Some(std::ffi::OsString::from(s));
+        assert_eq!(
+            data_dir_of(some("/tmp/x/data"), some("/home/op")).unwrap(),
+            Path::new("/tmp/x/data/letibot")
+        );
+        assert_eq!(
+            data_dir_of(None, some("/home/op")).unwrap(),
+            Path::new("/home/op/.local/share/letibot")
+        );
+        // A relative value is ignored, as the XDG spec says.
+        assert_eq!(
+            data_dir_of(some("rel"), some("/home/op")).unwrap(),
+            Path::new("/home/op/.local/share/letibot")
+        );
+        assert!(data_dir_of(None, None).is_err());
     }
 
     /// The key is the shell's key. These four values are the same ones

@@ -51,7 +51,7 @@ pub fn scan_in(
     now: i64,
     timeout: Duration,
 ) -> Result<Fleet, String> {
-    let store = crate::store::open(store, "session", Some(own)).map_err(|e| e.to_string())?;
+    let store = crate::store::open_read(store, "session", Some(own)).map_err(|e| e.to_string())?;
     let mut stored = store.list_sessions().map_err(|e| e.to_string())?;
     let origin_of = |s: &letibot_tokencore::store::StoredSession| {
         s.origin

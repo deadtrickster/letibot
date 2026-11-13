@@ -56,7 +56,7 @@ impl Row {
 /// an error, not an empty list: the picker would otherwise say "no sessions" for a broken box.
 pub fn list(store: &Path, rundir: &Path, timeout: Duration) -> Result<Vec<Row>, String> {
     let store_path = store;
-    let store = crate::store::open(store, "session", None)
+    let store = crate::store::open_read(store, "session", None)
         .map_err(|e| format!("the session store {}: {e}", store_path.display()))?;
     let stored = store.list_sessions().map_err(|e| e.to_string())?;
     let origins: Vec<SessionOrigin> = stored

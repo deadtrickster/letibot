@@ -1595,6 +1595,11 @@ impl Store {
         split::open_handle(dir, key, false)
     }
 
+    /// [`Store::open_set_existing`] read-only: for a reader of a store a daemon writes.
+    pub fn open_set_reader(dir: &Path, key: &str) -> Result<Self> {
+        split::open_reader_handle(dir, key)
+    }
+
     /// A connection of its own to a store file, never shared - for the tests that measure two
     /// connections to one file (WAL, `BEGIN IMMEDIATE`, the busy handler). Production code wants
     /// [`Store::open`]: a second connection here is a descriptor the process cannot give back.

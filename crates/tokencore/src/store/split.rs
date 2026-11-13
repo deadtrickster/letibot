@@ -513,6 +513,27 @@ impl StoreSet {
 /// [`place_of`] and no caller names a file. `create` is the daemon's door, which makes the files
 /// when they are not there; a reader's door leaves them alone, and a data directory whose store
 /// has not been split is [`refuse_unsplit`]'s refusal by name.
+/// [`open_handle`] for a reader that must not write: both files opened read-only, nothing created
+/// or migrated. A directory still mid-transition has no read-only door and is refused.
+pub fn open_reader_handle(dir: &Path, key: &str) -> Result<Store> {
+    check_key(key)?;
+    refuse_unsplit(dir)?;
+    let shared_path = dir.join(SHARED_FILE);
+    if !shared_path.is_file() {
+        return Err(StoreError::Refused(format!(
+            "{} holds no {SHARED_FILE}: there is no split store here to read",
+            dir.display()
+        )));
+    }
+    let project_path = dir.join(PROJECTS_DIR).join(format!("{key}.db"));
+    let shared = Store::open_reader(&shared_path)?;
+    let project = match project_path.is_file() {
+        true => Some(Store::open_reader(&project_path)?.shared.clone()),
+        false => None,
+    };
+    Ok(Store::of_set(shared.shared.clone(), project))
+}
+
 pub fn open_handle(dir: &Path, key: &str, create: bool) -> Result<Store> {
     check_key(key)?;
     let projects = dir.join(PROJECTS_DIR);

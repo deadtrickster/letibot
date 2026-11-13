@@ -561,15 +561,8 @@ pub fn run(port: u16, extension_id: &str, token_path: &Path) -> Result<(), Strin
     let (token, created) = token(token_path)?;
     let inbox = ask::default_inbox().ok_or("no $HOME: the picture inbox has no default")?;
     ask::sweep(&inbox);
-    let store = match std::env::var_os("LETIBOT_STORE") {
-        Some(s) if !s.is_empty() => PathBuf::from(s),
-        // The same rule the daemon's own resolution uses: the data directory, or its
-        // `sessions.db` while the store has not been split - never a path a picker would make.
-        _ => crate::daemon::store_in(
-            &PathBuf::from(std::env::var_os("HOME").ok_or("no $HOME")?)
-                .join(".local/share/letibot"),
-        ),
-    };
+    // The same rule the daemon's own resolution uses - never a path a picker would make.
+    let store = crate::daemon::default_store()?;
     let sock = letibot_tools::builtins::screen::browser_socket();
     let (listener, unix) = match managed {
         Some(m) => {

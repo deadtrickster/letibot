@@ -89,6 +89,21 @@ pub fn open(store: &Path, table: &str, folder: Option<&Path>) -> Result<Store, S
     Store::open_set_existing(store, &key).map_err(|e| format!("{}: {e}", store.display()))
 }
 
+/// [`open`] read-only, for a bridge that only reads: the daemon's file is never written,
+/// migrated or created from here.
+pub fn open_read(store: &Path, table: &str, folder: Option<&Path>) -> Result<Store, String> {
+    let store = &current(store);
+    let file = file_for(store, table, folder)?;
+    if !(store.is_dir() && store.join(split::SHARED_FILE).is_file()) {
+        return Store::open_reader(&file).map_err(|e| format!("{}: {e}", file.display()));
+    }
+    let key = match folder {
+        Some(folder) => project_key(&folder.to_string_lossy()),
+        None => NO_FOLDER_KEY.to_string(),
+    };
+    Store::open_set_reader(store, &key).map_err(|e| format!("{}: {e}", store.display()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,6 +225,54 @@ mod tests {
     fn a_directory_with_no_store_is_not_one() {
         let d = TempDir::new("empty");
         assert!(!exists(&d.0), "a bridge may not make a store of its own");
+    }
+
+    fn a_session(id: &str) -> letibot_tokencore::store::SessionRecord {
+        letibot_tokencore::store::SessionRecord {
+            id: id.into(),
+            title: None,
+            model_id: "m".into(),
+            dialect_sha: "d".into(),
+            workspace_root: "/w/here".into(),
+            owner: "op".into(),
+            approvers: vec![],
+            role: None,
+            parent_session_id: None,
+        }
+    }
+
+    /// A bridge read of the daemon's store reads it and cannot write it, split or not, and a
+    /// store that is not there is not made.
+    #[test]
+    fn a_read_path_opens_the_store_read_only() {
+        let d = TempDir::new("read-only");
+        let dir = split_dir(&d);
+        Store::open_set(&dir, &project_key("/w/here"))
+            .unwrap()
+            .put_session(&a_session("s-1"))
+            .expect("the daemon writes");
+        let set = open_read(&dir, "session", Some(Path::new("/w/here"))).expect("the set");
+        assert_eq!(set.list_sessions().expect("a read").len(), 1);
+        assert!(
+            set.put_session(&a_session("s-2")).is_err(),
+            "a split store opened for reading took a write"
+        );
+
+        let f = TempDir::new("read-only-file");
+        Store::open(&f.db())
+            .unwrap()
+            .put_session(&a_session("s-1"))
+            .expect("the daemon writes");
+        let one = open_read(&f.db(), "session", None).expect("the file");
+        assert_eq!(one.list_sessions().expect("a read").len(), 1);
+        assert!(
+            one.put_session(&a_session("s-2")).is_err(),
+            "a store file opened for reading took a write"
+        );
+
+        let none = TempDir::new("read-only-none");
+        assert!(open_read(&none.db(), "session", None).is_err());
+        assert!(!none.db().exists(), "a read made a store");
     }
 
     impl TempDir {

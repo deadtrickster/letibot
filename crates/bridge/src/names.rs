@@ -18,7 +18,7 @@ pub fn resolve(store: &Path, folders: &[PathBuf], raw: &str) -> Result<String, S
         return Ok(raw.to_string());
     }
     let folder = folders.first().map(|f| f.as_path());
-    let store = crate::store::open(store, "session", folder)
+    let store = crate::store::open_read(store, "session", folder)
         .map_err(|e| format!("reading session names: {e}"))?;
     let mut found: Vec<(String, String)> = Vec::new();
     for folder in folders {

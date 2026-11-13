@@ -32,7 +32,7 @@ fn plan_of(bridge: &Bridge, only: Option<&str>) -> Result<Plan, String> {
             store_path.display()
         ));
     }
-    let store = crate::store::open(&store_path, "owner", None)?;
+    let store = crate::store::open_read(&store_path, "owner", None)?;
     let places = Places::here();
     let now = letibot_tools::lifecycle::now_ms();
     lifecycle::plan(&store, &places, only, now).map_err(|e| e.to_string())
