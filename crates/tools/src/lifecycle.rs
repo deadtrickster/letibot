@@ -146,7 +146,7 @@ pub struct Places {
 impl Places {
     /// This box's own places, as every caller computes them. The owner roots are `$LETIBOT_GC_ROOT`
     /// first - a test's and a debug build's door - then `[gc] root` from the box's
-    /// `leticode.toml`, then the data directory: a box whose root disk is small writes that key.
+    /// `leticode.toml`, then the cache directory: never the store, which a command cannot write.
     pub fn here() -> Places {
         let data_dir = data_dir();
         let settings = Settings::load_or_default();
@@ -154,7 +154,7 @@ impl Places {
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .or_else(|| settings.root.clone())
-            .unwrap_or_else(|| data_dir.join("gc"));
+            .unwrap_or_else(|| cache_dir().join("gc"));
         // `[firecode] runs` first: a box that put firecode's state on a big disk put its runs
         // there too, and asking the binary where its checkout keeps them would answer the other
         // disk.
@@ -251,6 +251,17 @@ pub fn session_dirs(places: &Places, owner: &str) -> std::io::Result<(PathBuf, P
             .create(d)?;
     }
     Ok((spill, session))
+}
+
+/// `$XDG_CACHE_HOME/letibot`, else `~/.cache/letibot`: what can be rebuilt, temp files and build
+/// targets among it, outside the store a command's view hides.
+pub fn cache_dir() -> PathBuf {
+    std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .map(|d| d.join("letibot"))
+        .unwrap_or_else(|| PathBuf::from(".letibot-cache"))
 }
 
 /// `$XDG_DATA_HOME/letibot`, else `~/.local/share/letibot`: the directory the store lives in.

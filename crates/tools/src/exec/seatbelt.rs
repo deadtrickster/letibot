@@ -49,7 +49,15 @@ pub const MACH_SERVICES: &[&str] = &[
     "com.apple.distributed_notifications@Uv3",
     "com.apple.trustd",
     "com.apple.trustd.agent",
+    // `confstr(_CS_DARWIN_USER_TEMP_DIR)` asks this, and without it answers EIO: the toolchain's
+    // `xcrun` shims then cache into `/tmp`, which the profile denies.
+    "com.apple.bsd.dirhelper",
 ];
+
+/// Setuid or sandbox-refusing tools the top-level seat runs outside the profile, by exact path:
+/// the kernel refuses to exec a setuid binary inside one (`ps`, `top`), and `log` refuses to run
+/// in one. Each only reads.
+pub const UNSANDBOXED_EXEC: &[&str] = &["/bin/ps", "/usr/bin/top", "/usr/bin/log"];
 
 /// What `firecode-vz` looks up to boot a guest: the Virtualization service, and the directory
 /// service for the user name it runs the guest as. The top-level seat's alone, so a child that
@@ -266,10 +274,12 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     // starts at all; a profile that allows it and nothing else is a program that cannot run.
     s.push_str("(allow process*)\n");
     if l.wide {
-        // `/bin/ps` is setuid root and the kernel refuses to exec a setuid binary inside a profile
-        // unless the rule says `no-sandbox`. `firecode` runs `ps` before it boots a VM. Only this
-        // one path, only the top-level seat.
-        s.push_str("(allow process-exec* (literal \"/bin/ps\") (with no-sandbox))\n");
+        // Only these paths, only the top-level seat: see [`UNSANDBOXED_EXEC`].
+        for p in UNSANDBOXED_EXEC {
+            s.push_str(&format!(
+                "(allow process-exec* (literal \"{p}\") (with no-sandbox))\n"
+            ));
+        }
     }
     s.push_str("(allow sysctl-read)\n");
     // `same-sandbox`, not `self`: a test runner stops the child it started, and both are inside.
@@ -1189,6 +1199,7 @@ mod tests {
   (global-name \"com.apple.distributed_notifications@Uv3\")
   (global-name \"com.apple.trustd\")
   (global-name \"com.apple.trustd.agent\")
+  (global-name \"com.apple.bsd.dirhelper\")
 )
 
 ; --- read: the system roots, the toolchain, the session's own directories ---
@@ -1291,6 +1302,26 @@ mod tests {
         assert!(
             !tight.contains("generic-issue-extension"),
             "a tight seat issues no extension at all:\n{tight}"
+        );
+    }
+
+    /// The setuid and sandbox-refusing readers run outside the profile on the top-level seat,
+    /// each by exact path, and on no child's.
+    #[test]
+    fn ps_top_and_log_leave_the_profile_on_the_top_level_seat_alone() {
+        let view = ViewSpec::project_only("/Users/x/proj");
+        let tight = render_profile(&view, &Egress::Denied, &layout());
+        let mut wide = layout();
+        wide.wide = true;
+        let wide = render_profile(&view, &Egress::Denied, &wide);
+        for p in ["/bin/ps", "/usr/bin/top", "/usr/bin/log"] {
+            let rule = format!("(allow process-exec* (literal \"{p}\") (with no-sandbox))");
+            assert!(wide.contains(&rule), "{p} on the top-level seat:\n{wide}");
+            assert!(!tight.contains(&rule), "{p} on a child's seat:\n{tight}");
+        }
+        assert!(
+            tight.contains("com.apple.bsd.dirhelper") && wide.contains("com.apple.bsd.dirhelper"),
+            "every seat can ask where its user temp dir is"
         );
     }
 
