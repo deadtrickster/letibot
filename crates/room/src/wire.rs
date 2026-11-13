@@ -18,11 +18,15 @@ use crate::room::{
 /// room for one it cannot see.
 pub const ROOM_PROTOCOL_VERSION: u16 = 12;
 
+/// The oldest client this coordinator still serves. 12 only added frames a client must ask for, so
+/// an 11 client never meets one; a bump that changes what an old client is sent unasked raises this.
+pub const OLDEST_CLIENT: u16 = 11;
+
 /// The sentence a protocol mismatch is refused with, or `None` when the two agree. One function because
 /// two doors refuse it - a [`crate::Server`]'s and [`crate::Room::answer_traced`]'s - and two sentences
 /// about one skew would drift. It says which side is older, because a reader has to work that out.
 pub fn protocol_refusal(theirs: u16) -> Option<String> {
-    if theirs == ROOM_PROTOCOL_VERSION {
+    if (OLDEST_CLIENT..=ROOM_PROTOCOL_VERSION).contains(&theirs) {
         return None;
     }
     let (older, how) = if theirs < ROOM_PROTOCOL_VERSION {
@@ -966,7 +970,12 @@ mod tests {
             None,
             "the same build speaks to itself"
         );
-        let older = protocol_refusal(11).expect("a version-11 client is told");
+        assert_eq!(
+            protocol_refusal(11),
+            None,
+            "an 11 client sends nothing 12 changed"
+        );
+        let older = protocol_refusal(10).expect("a version-10 client is told");
         assert!(older.contains("this room speaks protocol 12"), "{older}");
         assert!(older.contains("the client is the older"), "{older}");
         assert!(older.contains(CLIENT_UPGRADE), "{older}");

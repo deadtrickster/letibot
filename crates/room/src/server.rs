@@ -5182,7 +5182,12 @@ mod tests {
     fn the_room_speaks_protocol_twelve() {
         assert_eq!(ROOM_PROTOCOL_VERSION, 12);
         // And the refusal names which side is older, in both directions.
-        let old = crate::wire::protocol_refusal(11).expect("11 is not 12");
+        assert_eq!(
+            crate::wire::protocol_refusal(11),
+            None,
+            "11 is still served"
+        );
+        let old = crate::wire::protocol_refusal(10).expect("10 is too old");
         assert!(old.contains("the client is the older"), "{old}");
         let new = crate::wire::protocol_refusal(13).expect("13 is not 12");
         assert!(new.contains("this room is the older"), "{new}");
