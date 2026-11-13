@@ -215,12 +215,12 @@ fn where_prints_the_bridges_socket_and_ensure_starts_that_daemon() {
         "a daemon that is already live is left alone, and this call started one:\n{err}"
     );
 
-    // **4. And the record a live daemon leaves is the launcher's own**, because `--daemons`,
+    // **4. And the record a live daemon leaves is the launcher's own**, because
     // `--ls` and `--stop` read it: a daemon started here must not be invisible to them.
     let record = d.socket.with_extension("json");
     let text = std::fs::read_to_string(&record).unwrap_or_else(|e| {
         panic!(
-            "no record at {} after --ensure ({e}): `letibot --daemons` would not list it",
+            "no record at {} after --ensure ({e}): `letibot --ls` would not list it",
             record.display()
         )
     });

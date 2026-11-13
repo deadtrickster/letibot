@@ -1,6 +1,6 @@
-//! A daemon the bridge started is one `letibot --daemons` can see. The launcher writes
+//! A daemon the bridge started is one `letibot --ls` can see. The launcher writes
 //! `<rundir>/<key>.json` beside the socket and the bridge must too, since the socket names only a
-//! hash. Drives `daemon::ensure` against a fake `harnessd`, then `scripts/letibot --daemons`.
+//! hash. Drives `daemon::ensure` against a fake `harnessd`, then `scripts/letibot --ls`.
 
 use std::path::{Path, PathBuf};
 
@@ -138,14 +138,14 @@ fn a_daemon_the_bridge_started_is_listed_by_the_launcher() {
     );
 
     // And the operator's own listing sees it, which is the defect: the reader is
-    // `scripts/letibot --daemons` itself, not a copy of it.
+    // `scripts/letibot --ls` itself, not a copy of it.
     let script = Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../scripts/letibot")
         .canonicalize()
         .expect("the launcher script is in this repository");
     let out = std::process::Command::new("bash")
         .arg(&script)
-        .arg("--daemons")
+        .arg("--ls")
         .current_dir(&worktree)
         .env("HOME", &home)
         .env("XDG_RUNTIME_DIR", &rundir)
@@ -153,14 +153,17 @@ fn a_daemon_the_bridge_started_is_listed_by_the_launcher() {
         .expect("the launcher runs");
     let said = String::from_utf8_lossy(&out.stdout);
     let pid = v["pid"].as_u64().unwrap();
+    let ws = d.workspace.display().to_string();
+    let line = said.lines().find(|l| l.contains(&ws));
     assert!(
-        said.contains(&d.workspace.display().to_string()),
-        "`letibot --daemons` must name the folder the bridge's daemon serves. It said:\n{said}\n\
+        line.is_some(),
+        "`letibot --ls` must name the folder the bridge's daemon serves. It said:\n{said}\n\
          (stderr: {})",
         String::from_utf8_lossy(&out.stderr)
     );
+    let words: Vec<&str> = line.unwrap().split_whitespace().collect();
     assert!(
-        said.contains(&format!("up (pid {pid})")),
+        words.windows(3).any(|w| w == ["up", "pid", pid.to_string().as_str()]),
         "and that it is up, by the pid the record names — the fake daemon is listening on that \
          socket. It said:\n{said}"
     );

@@ -516,13 +516,13 @@ pub fn ensure_here(
     for _ in 0..60 {
         if is_up(&d.socket) {
             d.started = true;
-            // The record the launcher's own verbs read: `--daemons`, `--ls`,
+            // The record the launcher's own verbs read: `--ls`,
             // `--stop N` and the attach banner all read `<key>.json` beside the socket, so a
             // daemon started here must leave one. A record that cannot be written is said.
             if let Err(e) = write_record(&d, pid, model) {
                 eprintln!(
                     "  harnessd pid {pid} came up and its record could not be written: {e}. \
-                     `letibot --daemons` will not list it until a launcher starts this folder's \
+                     `letibot --ls` will not list it until a launcher starts this folder's \
                      daemon itself."
                 );
             }
