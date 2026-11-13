@@ -55,6 +55,12 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R213 | The editor pane keeps a second key row and a second status row, and draws in the head's theme | Code work | built: the pane's bottom edge is plain and its live keys ride the head's hint row after the four shared chords, the head's status row carries `file · line:col · modified` while the pane has the keys, and the operator's rano theme is scoped to the pane's draw; left: remote hosts' screens cannot be checked from here, and the four shared chords on that row are the head's two-word names rather than the table's sentences |
 | R217 | Session rows: one line each, with a gutter mark, an age, a detail line and paging | Code work | built: the built-in `sessions` layer draws ONE row a session (a `?`/`~` gutter mark, the name, and `rows · age` on the right), the id, the path, the model and the heads moved to a faint line under the cursor's row, projects are sorted by when they last moved, every group's line says `N waiting · M generating` for what is folded inside it, `pgup/pgdn` and the wheel page the cursor (the window is drawn around it), and the title says `(i/N)`; left: no `!` permission-ask mark (the feed's wait is untyped - plan 1.32), the counter counts stops so it is a position in the list and not `session n of N`, and `home`/`end` jump nowhere |
 | R219 | Quick asks: `alt-k` sends a preset's prompt with the place, and the answer comes back as marks | Code work | built: rano's `alt-k` menu reaches the head through `on_ask`, the preset's own words and the paragraph the cursor is in leave as one `Prompt` whose `context.ask` carries the preset and the answer mode (so the daemon teaches the `suggest` or `note` fence), the asked range is tinted as a mark of its own until the turn ends, and a returned hunk's accept, reject or revert rides the next prompt's `context.outcomes`; left: `alt-k k` attaches the place through `alt-s`'s chip and sets no `ask`, so a typed question is a chat ask with no reply format; a quick ask made while a turn runs loses its tint when THAT turn ends, because the tint's clock is the turn and not its own answer |
+| R220 | firecode's host copy of a worktree is still wired to the source repo's index | Code work | the host copy (`~/.cache/letibot/firecode/<sid>`) keeps the worktree's `.git` file, `gitdir: <repo>/.git/worktrees/<name>`, so any git command run in the copy changes the real worktree's index and refs; left: all of it - the copy needs a `.git` of its own (or none) before anything runs git in it |
+| R221 | `sudo_ask` flake: a process that exits mid-read is called unreadable | Needs the operator | `exec::ask::stdin_of` answers `Unreadable` for any failed `readlink /proc/<pid>/fd/0`, so a run's process that left between the cgroup read and the `/proc` read raises the unreadable sentence; telling `ENOENT` (gone, skip it) from `EACCES` (cannot look) is the fix, but `a_process_that_could_not_be_looked_at_is_not_a_no` uses a nonexistent pid to stand in for `EACCES`; left: the design call on what stands in for an unreadable process in that test |
+| R222 | `check-dist-names.sh` fails on main: `install.sh` names `letibot-askpass`, which `make-dist.sh` no longer packages | Code work | the script exits 1 on main and is not in the gate, so nothing noticed; left: decide whether `install.sh` makes `letibot-askpass` itself (it already links it to the multicall) and teach the script that, or put it back in `ARCHIVE_*`, then put the script in the gate |
+| R223 | The daemon's minute sweep runs the reaper's disk half, remote hosts included, once a minute per daemon | Code work | `reap_pass::spawn` runs `lifecycle::pass` every `SWEEP` (60 s), and that pass now includes the disk half (`disks::reap_owner`) and remote hosts' passes over ssh; every daemon on a box does it; left: measure the cost of one sweep (wall time, ssh connections, store load) with N daemons up, and consider one sweeper per box |
+| R224 | Incident 2026-11-13: VM work written into the jail copy and lost on copy-out | Code work | done: firecode 7761c3f (jail beside the state, a copied writable drive refused, a commit alone counts as work) and letibot fix-vm-hostrun a055978d, 2fd044bd (on landing-35); left: none |
+| R225 | The idle reaper closed a live session mid tool call | Code work | done: landing-34, `reap_pass::LeaseBeat` (20d52787) renews the owner's lease on a clock while a turn runs; left: none |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -716,6 +722,52 @@ The row: L8 of the design - the head's `on_ask` submits preset prompts with cont
 
 Tests. `crates/tui/src/app/tests/quick_ask.rs` (3): `alt_k_r_sends_the_preset_with_the_asked_range` - the Done-when's first half through the router, with the preset's own words, `answer = Suggest`, the paragraph as `refs[0]` (lines 1-2, its own text, not a paste) and an empty composer; `the_asked_range_is_tinted_until_the_turn_ends` - the tint covers what was asked, a round boundary leaves it, and the prompt's end takes it out of both the buffer and the kept map; `accepting_a_returned_hunk_puts_one_outcome_on_the_next_prompt` - a `suggest` citation becomes a hunk, `M-d` then `a` writes the replacement into the buffer as an unsaved edit, the hunk is not offered again, and the composer's next Enter carries exactly `article.txt:1-2 accepted` - once. `crates/tui/tests/quick_ask.rs` (1): the Done-when at the socket - a real pane, a real recording daemon, `ctrl-e` then a path then `alt-k r`, and the `ClientFrame::Prompt` that arrives holds `context.ask.preset == "rewrite"`, `answer == Suggest` and the paragraph's own text. Both were proved able to fail: mapping the answer to `Chat` turned the first and the socket test red, and dropping `outcomes` from the context turned the third red. The whole `letibot-tui` lib suite is green (1635 passed, 6 ignored) and clippy on `-p letibot-tui --all-targets -- -D warnings` is clean.
 
+## R220 - firecode's host copy of a worktree is still wired to the source repo's index
+
+**Status:** open, 2026-11-13. left: all of it.
+
+firecode copies a package's worktree to the host (`~/.cache/letibot/firecode/<sid>`) for the guest to work on and for copy-out. A worktree's `.git` is a file, not a directory: `gitdir: /home/dead/Projects/letibot/letibot/.git/worktrees/<name>`. The copy keeps that file verbatim, so the copy is not an independent checkout - it is a second working tree attached to the source repo's `worktrees/<name>` entry. Any git command run in the host copy (`git status` refreshing the index, `git add`, `git commit`, `git checkout`) reads and writes the real worktree's index, HEAD and refs, while the files it compares against are the copy's. Seen on this box: every `~/.cache/letibot/firecode/s-*/.git` is such a file (e.g. `gitdir: .../.git/worktrees/wt-pk-l3-keys`).
+
+The fix is to give the copy a git identity of its own before anything can run git in it: rewrite `.git` to a standalone repository (a `git clone --shared` or a fresh `.git` whose objects alternate on the source), or strip `.git` from the copy and carry commits back by bundle. Done when: a test copies a worktree, runs `git add` and `git commit` in the copy, and the source worktree's `git status` and `HEAD` are unchanged.
+
+## R221 - `sudo_ask` flake: a process that exits mid-read is called unreadable
+
+**Status:** needs the operator, 2026-11-13. left: the design call below.
+
+`crates/letibot/tests/sudo_ask.rs` flakes. The cause is in `letibot_tools::exec::ask`: `waiting_for_an_answer` reads `/proc/<pid>/fd/0` for every pid of the run (`stdin_of`), and any failed `read_link` is `StdinRead::Unreadable`, which makes the whole run's answer `Waiting::Unreadable`. A pid listed by the cgroup read that has exited before the `/proc` read fails with `ENOENT`, the same way a root-owned process fails with `EACCES`, so a short-lived child of the run (a subshell, a `sed` in a pipeline) turns the verdict to `Unreadable` and `builtins/bash.rs` says `OperatorRun::Unreadable` - the card/sentence the test asserts is not raised.
+
+The obvious fix is to tell the two apart: `ENOENT`/`ESRCH` means the process is gone and is skipped, `EACCES` means it could not be looked at and stays `Unreadable`. That breaks `exec::ask::tests::a_process_that_could_not_be_looked_at_is_not_a_no`, which passes `u32::MAX - 1` - a pid that does not exist - to stand in for an `EACCES` process "without needing one". So the fix needs a decision: either the test gets a real unreadable process (a child that calls `PR_SET_DUMPABLE 0`, the way `sudo_ask.rs` already makes one), or a vanished process stays `Unreadable` and the flake is fixed elsewhere (a re-read of the pid list before deciding). Question for the operator: is a process that left during the read "not asking" (skip it) or "could not look" (keep it)?
+
+## R222 - `check-dist-names.sh` fails on main: `install.sh` names `letibot-askpass`, which `make-dist.sh` no longer packages
+
+**Status:** open, 2026-11-13. left: all of it.
+
+`sh scripts/check-dist-names.sh` on main exits 1: `install.sh copies files the packager does not build: letibot-askpass`. R211 (d98ea02b) deleted the separate askpass binary and took `letibot-askpass` out of `ARCHIVE_BINARIES` - `letibot-askpass` is now `letibot`'s multicall under the role's name, and `install.sh` makes it with `ln -f "$out/letibot" "$out/letibot-askpass"` (falling back to `cp`) - so the archive no longer carries a file of that name. `install.sh` still lists it in `BINARIES`, and the checker reads that list as files the archive must hold. The checker is not in the merge gate (`AGENTS.md`), which is why main went red on it with nothing stopping it.
+
+Fix: either drop `letibot-askpass` from the list the checker compares (it is made at install time, not shipped), or teach the checker that names `install.sh` creates itself are exempt. Then add the script to the gate's fenced block. Done when: the script exits 0 on the tree and a gate step runs it.
+
+## R223 - The daemon's minute sweep runs the reaper's disk half, remote hosts included, once a minute per daemon
+
+**Status:** open, 2026-11-13. left: the measurement, then the decision.
+
+`reap_pass::spawn` runs `pass_with` -> `lifecycle::pass` at start and every `SWEEP` (60 s). Since the disk reap (6f217ab7) that pass includes the disk half (`disks::reap_owner`: caches, records, shared targets and remote leases), and remote hosts' passes run over ssh (the `Ops` handles keep the connections from one sweep to the next). Every daemon on a box runs its own sweeper, so a box with N folder daemons runs N disk passes and N sets of ssh passes a minute over the same store and the same hosts. Nobody has measured what one sweep costs.
+
+Measure: wall time of one pass, ssh connections opened and commands run per pass, store lock time, with one and with several daemons up. If the cost is real, the disk half and the remote passes want one sweeper per box (a lease in the store naming which daemon sweeps), with the idle close staying per daemon since it acts on the daemon's own registry.
+
+## R224 - Incident 2026-11-13: VM work written into the jail copy and lost on copy-out
+
+**Status:** done, 2026-11-13. Fixed in firecode 7761c3f and letibot `fix-vm-hostrun` (a055978d, 2fd044bd). left: none.
+
+firecode's state and runs were moved to /build while the jail stayed on /. `ln` of the writable drive into the jail then failed cross-filesystem and `bin/firecode` fell back to `cp`. The guests wrote the jail's copy of the drive; copy-out read the state image, which the guests never touched. Four packages' work - D3, D4, L8 and R8 - was lost and had to be rebuilt.
+
+firecode 7761c3f: the jail lives beside the state, so the link cannot cross a filesystem; a writable drive that would have to be copied is refused instead of copied; and a commit alone counts as work, so a package whose only change is committed is not treated as empty. letibot `fix-vm-hostrun`: a VM start on a daemon that is not a VM daemon is refused and the `tools_run` wording says the tools run in a VM (a055978d); a VM job gets no host memory cap, `firecode/keep.rs` keeps a rescue bundle, and `remove_copy` keeps a booted copy that holds unsaved work (2fd044bd).
+
+## R225 - The idle reaper closed a live session mid tool call
+
+**Status:** done, 2026-11-13. Fixed in landing-34 by `reap_pass::LeaseBeat` (20d52787). left: none.
+
+The idle reaper closed live session `s-1794545823208400466` in the middle of a tool call. The owner's lease was renewed once per round, and one tool call inside a round outlasted the idle TTL, so the pass read the owner as idle. `LeaseBeat` renews the lease on a clock - a quarter of the idle TTL apart, on its own store connection - for as long as a turn runs, so a turn in flight is never idle.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.
@@ -1065,8 +1117,6 @@ the delta after it still folds.
 
 Done when: a test drives `rano::letibot::Client` against a real `Hub` through attach, prompt,
 stream, a decision's answer and an interrupt, and fails if a subset frame changes shape.
-
-## R162 - A granted directory does not cover what is under it, and every subagent asks again
 
 ## R183 - A result row can draw nothing at all
 
