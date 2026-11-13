@@ -126,6 +126,8 @@ impl App {
             // The marks belong to the rows that went, and to the file buffers still open from
             // them: another conversation's citations are not a remark about this one's files.
             self.file_marks.clear();
+            self.forget_asks();
+            self.outcomes.clear();
             if let Some(p) = self.edit_pane.as_mut() {
                 p.ed.clear_marks(None);
                 p.marked = None;

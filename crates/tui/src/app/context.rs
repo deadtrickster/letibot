@@ -37,7 +37,7 @@ impl App {
 
     /// rano's send as the wire's shape: the file, the range, the caret and whether the text is the
     /// buffer's rather than the disk's.
-    fn context_ref(&self, e: &SendEvent) -> ContextRef {
+    pub(crate) fn context_ref(&self, e: &SendEvent) -> ContextRef {
         let (file, lang) = match &e.path {
             Some(p) => (
                 p.display().to_string(),
@@ -78,10 +78,12 @@ impl App {
         }
     }
 
-    /// The context this message carries, or `None` when the composer holds no chips. `open` is read
-    /// HERE and only while the pane is open: it is a snapshot of one moment, not a watch.
+    /// The context a prompt carries, or `None` when there is nothing to say about the editor. `open`
+    /// is read HERE and only while the pane is open: it is a snapshot of one moment, not a watch.
+    /// What the operator decided about earlier marks rides along, because the next prompt is the
+    /// only door the session learns it by.
     pub(crate) fn contexts_to_send(&self) -> Option<EditorContext> {
-        if self.contexts.is_empty() {
+        if self.contexts.is_empty() && self.outcomes.is_empty() {
             return None;
         }
         Some(EditorContext {
@@ -89,12 +91,12 @@ impl App {
             refs: self.contexts.iter().map(|c| c.r.clone()).collect(),
             open: self.open_buffers(),
             ask: None,
-            outcomes: Vec::new(),
+            outcomes: self.outcomes.clone(),
         })
     }
 
     /// The editor's other buffers, names only.
-    fn open_buffers(&self) -> Vec<OpenBuffer> {
+    pub(crate) fn open_buffers(&self) -> Vec<OpenBuffer> {
         let Some(p) = self.edit_pane.as_ref() else {
             return Vec::new();
         };
@@ -136,19 +138,25 @@ pub(crate) fn chip_label(
     r: &ContextRef,
     relative: &dyn Fn(&std::path::Path) -> String,
 ) -> String {
+    let place = place_name(r, relative);
+    match r.unsaved {
+        true => format!("[context {nth} · {place} · unsaved]"),
+        false => format!("[context {nth} · {place}]"),
+    }
+}
+
+/// Where a ref points, in the words every screen here uses: `notes.txt:11-12`, or a file name, or a
+/// cursor's line. One spelling, read by the composer's chip and by the line a quick ask says.
+pub(crate) fn place_name(r: &ContextRef, relative: &dyn Fn(&std::path::Path) -> String) -> String {
     let path = if r.file.is_empty() {
         "(unsaved buffer)".to_string()
     } else {
         relative(std::path::Path::new(&r.file))
     };
-    let place = match (&r.range, r.cursor) {
+    match (&r.range, r.cursor) {
         (Some(range), _) => {
-            let last = if range.end.column == 1 && range.end.line > range.start.line {
-                range.end.line - 1
-            } else {
-                range.end.line
-            };
-            if last == range.start.line {
+            let last = last_line(range);
+            if last == range.start.line as usize {
                 format!("{path}:{}", range.start.line)
             } else {
                 format!("{path}:{}-{last}", range.start.line)
@@ -156,10 +164,16 @@ pub(crate) fn chip_label(
         }
         (None, Some(at)) => format!("{path}:{}", at.line),
         (None, None) => path,
-    };
-    match r.unsaved {
-        true => format!("[context {nth} · {place} · unsaved]"),
-        false => format!("[context {nth} · {place}]"),
+    }
+}
+
+/// The last line a range claims: a selection that ends at the start of a line does not own it, which
+/// is the same rule the daemon's context block and the citation header keep.
+pub(crate) fn last_line(range: &ContextRange) -> usize {
+    if range.end.column == 1 && range.end.line > range.start.line {
+        range.end.line as usize - 1
+    } else {
+        range.end.line as usize
     }
 }
 

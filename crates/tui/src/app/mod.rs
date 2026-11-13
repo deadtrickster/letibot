@@ -321,6 +321,12 @@ pub struct App {
     /// the prompt's `context`. Separate from `chips` because the label is NOT the operator's text -
     /// the daemon writes the block, so nothing of it may sit in the words.
     pub(crate) contexts: Vec<crate::app::context::ContextChip>,
+    /// What the operator decided about the hunks an earlier reply suggested, waiting for the next
+    /// prompt to carry it: the session learns it by no other door.
+    pub(crate) outcomes: Vec<letibot_sessionlog::MarkOutcome>,
+    /// The sources of the quick asks whose range is still tinted: one turn's worth, cleared when the
+    /// turn that was asked has ended.
+    pub(crate) ask_tints: Vec<String>,
     /// Where a pasted picture is written, when it is not the default. `None` is production:
     /// `app::attachments::attachments_dir()`, resolved when the paste happens. A test sets it,
     /// because a test's directory must be its own and never the person's paste directory.
@@ -1342,6 +1348,8 @@ impl App {
             pending_prompts: Vec::new(),
             chips: Vec::new(),
             contexts: Vec::new(),
+            outcomes: Vec::new(),
+            ask_tints: Vec::new(),
             attachments_dir: None,
             clipboard: crate::app::attachments::default_clipboard(),
             pasted_images: 0,
@@ -1763,6 +1771,7 @@ mod pointer;
 mod prefs;
 mod queue_pane;
 pub(crate) mod queue_rows;
+mod quick_ask;
 mod reach;
 pub(crate) mod reseat;
 pub(crate) mod rooms;

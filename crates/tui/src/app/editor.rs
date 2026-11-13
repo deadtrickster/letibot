@@ -114,6 +114,9 @@ pub struct EditorPane {
     /// The sends rano made since the head last looked - `on_send` pushes here, because the
     /// callback cannot reach the composer: it runs inside rano, which the head has lent out.
     sends: Rc<RefCell<Vec<SendEvent>>>,
+    /// The quick asks rano handed over, for the same reason: `alt-k` fires inside rano's own key
+    /// handling, and what a preset becomes is the head's to decide.
+    asks: Rc<RefCell<Vec<rano::ask::AskEvent>>>,
     /// The cells rano draws into, reused across frames.
     pub(crate) buf: rano::render::Buffer,
     /// The last frame's rows, served again while nothing changed.
@@ -199,12 +202,22 @@ impl EditorPane {
             queue.borrow_mut().push(e.clone());
             Ok("Sent to letibot's composer".into())
         }));
+        // `alt-k` is rano's prefix and the presets are its config; the head is what turns a picked
+        // preset into a prompt. The flash it answers with is dropped below, because the head's own
+        // status line is the only one this pane claims to keep.
+        let asks: Rc<RefCell<Vec<rano::ask::AskEvent>>> = Rc::default();
+        let queue = asks.clone();
+        ed.on_ask = Some(Box::new(move |e: &rano::ask::AskEvent| {
+            queue.borrow_mut().push(e.clone());
+            Ok(String::new())
+        }));
         let mut pane = EditorPane {
             ed,
             focused: true,
             hidden: false,
             area: Area::default(),
             sends,
+            asks,
             buf: rano::render::Buffer::empty(rano::render::Rect::new(0, 0, 0, 0)),
             rows: Vec::new(),
             caret: None,
@@ -766,14 +779,23 @@ impl App {
             return;
         };
         let sends: Vec<SendEvent> = p.sends.borrow_mut().drain(..).collect();
+        let asks: Vec<rano::ask::AskEvent> = p.asks.borrow_mut().drain(..).collect();
         // What the operator decided about a hunk: rano has dropped it, so the head's copy of it
         // goes too rather than waiting to be put back on the next open.
         let decided = p.ed.take_mark_outcomes();
+        if !asks.is_empty() {
+            // rano flashes the ask's answer in a status row of its own; this pane has one status
+            // row and the head draws it, so the flash goes before it is ever drawn.
+            p.ed.status = None;
+        }
         if p.ed.wants_quit() {
             self.close_editor();
         }
         for s in sends {
             self.take_send(&s);
+        }
+        for a in asks {
+            self.ask_in(&a);
         }
         if !decided.is_empty() {
             self.forget_decided_marks(&decided);

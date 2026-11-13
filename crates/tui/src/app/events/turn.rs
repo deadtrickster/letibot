@@ -276,6 +276,11 @@ impl App {
                 }
                 // What the live pane had lifted stays lifted on the rows this round left.
                 self.carry_live_open();
+                // A quick ask's tint is about a turn, not a file: the prompt it was asked in has
+                // had its answer, so the range stops being marked as the one that was sent.
+                if ends_turn {
+                    self.asks_answered();
+                }
                 // A terminal state hands the turn's calls back to the transcript, which does not draw
                 // them while the pane is up. The history is cached, so it is invalidated from the first
                 // row the pane owned - the only part that can render differently now.
@@ -304,6 +309,8 @@ impl App {
                 // them while the pane is up. The history is cached, so it is invalidated from the first
                 // row the pane owned - the only part that can render differently now.
                 self.carry_live_open();
+                // A failed turn answers nothing, so no reply is coming to keep a tint up for.
+                self.asks_answered();
                 self.invalidate_turn_rows();
                 Disposition::Rendered
             }

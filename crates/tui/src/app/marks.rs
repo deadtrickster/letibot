@@ -5,9 +5,10 @@
 //! the remembering is the head's, and a file that is not open is marked when it opens.
 
 use super::*;
+use letibot_sessionlog::CitationKind;
 use letibot_sessionlog::event::ToolEdit;
 use letibot_transcript::TranscriptItem;
-use rano::marks::{Mark, Outcome};
+use rano::marks::{Mark, Outcome, Severity};
 use rano::review::Change;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -92,6 +93,28 @@ impl FileMarks {
         self.by_file.retain(|_, groups| !groups.is_empty());
     }
 
+    /// The mark `id` names and the file it sits on: what a decided hunk is called back to the session
+    /// as, read before [`FileMarks::forget`] puts it out of reach.
+    pub(crate) fn find(&self, id: &str) -> Option<(PathBuf, Mark)> {
+        for (path, groups) in &self.by_file {
+            for (_, marks) in groups {
+                if let Some(m) = marks.iter().find(|m| m.id == id) {
+                    return Some((path.clone(), m.clone()));
+                }
+            }
+        }
+        None
+    }
+
+    /// Drop one source everywhere: a quick ask's tint goes on a file it may not be drawn on, and the
+    /// turn that ends it is nobody's file in particular.
+    pub(crate) fn drop_source(&mut self, source: &str) {
+        for groups in self.by_file.values_mut() {
+            groups.retain(|(s, _)| s != source);
+        }
+        self.by_file.retain(|_, groups| !groups.is_empty());
+    }
+
     /// Everything goes: the marks of a conversation this head is no longer reading.
     pub(crate) fn clear(&mut self) {
         self.by_file.clear();
@@ -126,7 +149,23 @@ impl App {
                     continue;
                 }
                 let id = format!("cite:{item_id}:{}", c.label);
-                let mark = Mark::cite(&id, c.start as usize, c.end as usize, c.lines.clone());
+                let (start, end) = (c.start as usize, c.end as usize);
+                // The fence's own kind decides what the editor draws: a bare one is a highlight, a
+                // `note` is a remark at those lines, a `suggest` a hunk the operator accepts.
+                let mark = match c.kind {
+                    CitationKind::Cite => Mark::cite(&id, start, end, c.lines.clone()),
+                    CitationKind::Note => Mark::note(
+                        &id,
+                        start,
+                        end,
+                        c.lines.clone(),
+                        note_severity(&c.body),
+                        &c.body,
+                    ),
+                    CitationKind::Suggest => {
+                        Mark::suggest(&id, start, end, c.lines.clone(), &c.body)
+                    }
+                };
                 by_file
                     .entry(self.resolve_path(&c.path))
                     .or_default()
@@ -165,7 +204,7 @@ impl App {
 
     /// Keep `source`'s marks on one file, and put them in front of the operator when that file is
     /// the one the pane is showing.
-    fn give_marks(&mut self, path: &Path, source: &str, marks: Vec<Mark>) {
+    pub(crate) fn give_marks(&mut self, path: &Path, source: &str, marks: Vec<Mark>) {
         let gone = self.file_marks.set(path, source, marks.clone());
         let Some(p) = self.edit_pane.as_mut() else {
             return;
@@ -211,10 +250,26 @@ impl App {
     }
 
     /// A decided hunk stops being offered: rano dropped it from the buffer, and the copy kept here
-    /// goes with it. What the operator decided is L8's to send on the next prompt.
+    /// goes with it. What the operator decided rides the next prompt (see [`App::record_decided`]).
     pub(crate) fn forget_decided_marks(&mut self, decided: &[(String, Outcome)]) {
+        self.record_decided(decided);
         for (id, _) in decided {
             self.file_marks.forget(id);
         }
+    }
+}
+
+/// A `note` fence's severity: the body's opening `ok:`, `warn:` or `wrong:` decides it, and the body
+/// itself is the sentence a reader is shown at those lines.
+fn note_severity(body: &str) -> Severity {
+    let head = body.trim_start();
+    if head.starts_with("ok:") {
+        Severity::Ok
+    } else if head.starts_with("warn:") {
+        Severity::Warn
+    } else if head.starts_with("wrong:") {
+        Severity::Error
+    } else {
+        Severity::Info
     }
 }

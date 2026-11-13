@@ -228,9 +228,11 @@ impl App {
         }
         // The chips went with it. The composer is empty again - the editor took its buffer -
         // so a chip left in this list would be a chip with no words to be found in, and the next
-        // message would carry it a second time.
+        // message would carry it a second time. A decision goes the same way: the session has been
+        // told, and repeating it is the same sentence twice.
         self.chips.clear();
         self.contexts.clear();
+        self.outcomes.clear();
         Some(Action::Prompt(Prompt::with_context(
             text,
             attachments,
