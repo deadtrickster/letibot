@@ -813,6 +813,8 @@ fn the_whole_list_upserts_and_a_row_left_out_stays_on_the_board() {
     );
     assert!(!r.payload.contains("read the harness"), "{}", r.payload);
     assert!(r.payload.contains("not listed: 1 done"), "{}", r.payload);
+    // No count of nothing: zero rows waiting is not a row left out.
+    assert!(!r.payload.contains("0 waiting"), "{}", r.payload);
     assert!(r.payload.contains("[~] seat the tool"), "{}", r.payload);
     // The board holds what was written, in order.
     let snap = board.snapshot();

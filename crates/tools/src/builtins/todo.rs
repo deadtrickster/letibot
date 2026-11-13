@@ -3705,10 +3705,21 @@ fn render_answer(todos: &[TodoItem], wrote: &[&str]) -> String {
         TodoStatus::Pending | TodoStatus::InProgress => !waits(t) || wrote_it(t),
         TodoStatus::Postponed | TodoStatus::Cancelled => true,
     });
-    if done + waiting > 0 {
+    // A zero is not a row left out, and the wait's explanation only matters beside a wait.
+    let mut gone = Vec::new();
+    if done > 0 {
+        gone.push(format!("{done} done"));
+    }
+    if waiting > 0 {
+        gone.push(format!(
+            "{waiting} waiting on something (each is asked about when its wait ends, or when \
+             the row moves)"
+        ));
+    }
+    if !gone.is_empty() {
         out.push_str(&format!(
-            "\nnot listed: {done} done, {waiting} waiting on something (each is asked about when \
-             its wait ends, or when the row moves). They are still on the board.\n"
+            "\nnot listed: {}. They are still on the board.\n",
+            gone.join(", ")
         ));
     }
     out
