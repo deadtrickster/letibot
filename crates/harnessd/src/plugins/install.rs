@@ -884,6 +884,11 @@ impl PluginHost {
                 },
                 if layer.disabled { "  DISABLED" } else { "" }
             ));
+            // Where its source is: a pane that already exists is EXTENDED, and this is the path a
+            // `read`/`edit` opens. A built-in has no directory, so it gets no line.
+            if !layer.dir.as_os_str().is_empty() {
+                out.push_str(&format!("  {:<10} at {}\n", "", layer.dir.display()));
+            }
         }
         let mut hooks: Vec<String> = Vec::new();
         for layer in stack.layers() {
@@ -993,25 +998,27 @@ impl PluginHost {
     /// asked through the whole stack, because that is a head's question; a layer id is asked with
     /// every other disk layer off, because that is a bisect's question.
     pub fn test(&self, what: Option<&str>, input: Option<&Value>) -> Result<String, Refused> {
-        let (hook, only, label) = {
+        let stack = {
             let inner = self.lock();
-            self.resolve_hook(&inner.stack, what)?
+            Arc::clone(&inner.stack)
         };
+        // A layer that is BUILT and not loaded is still one `test` can ask, on a copy: the loop
+        // tests before anything is applied, and "not a layer of this session" is no answer to a
+        // question about a module that is there on disk.
+        let (stack, unloaded) = self.asking_stack(&stack, what)?;
+        let (hook, only, label) = self.resolve_hook(&stack, what)?;
         // The synthetic input is of the hook's kind, not a pane's: a `condition` handed a pane's
         // first frame answers nothing and reads as a broken layer.
         let input = input
             .cloned()
             .unwrap_or_else(|| synthetic_for(&hook, &self.feeds_for(&hook)));
-        let (stack, rec) = {
-            let inner = self.lock();
-            (Arc::clone(&inner.stack), inner.rec.clone())
-        };
+        let rec = self.lock().rec.clone();
         let asked = match &only {
-            None => (*stack).clone(),
+            None => stack.clone(),
             Some(id) => {
                 // Every other disk layer off: a built-in is the floor and stays, because a layer
                 // that asks below would otherwise be told the stack is empty.
-                let mut alone = (*stack).clone();
+                let mut alone = stack.clone();
                 for layer in stack.layers() {
                     if layer.scope != Scope::BuiltIn && &layer.id != id {
                         let _ = alone.mask(&layer.id, true);
@@ -1022,6 +1029,13 @@ impl PluginHost {
         };
         let resolved = asked.call(&hook, &input);
         let mut out = format!("`{hook}` asked with {} — {label}\n", describe_input(&input));
+        if let Some(dir) = &unloaded {
+            out.push_str(&format!(
+                "\n`{}` is built but NOT loaded: it ran alone on a copy of this session's stack, \
+                 so nothing on any screen changed. `plugin load` is what puts it in force.\n",
+                dir.display()
+            ));
+        }
         for f in &resolved.failures {
             out.push_str(&format!("\nTRAP: {f}\n"));
         }
@@ -1053,6 +1067,14 @@ impl PluginHost {
                         None => String::new(),
                     }
                 ));
+                // The source it answered from, so the next step is an `edit` and not a scaffold.
+                if let Some(dir) = asked
+                    .layer(&by)
+                    .map(|l| &l.dir)
+                    .filter(|d| !d.as_os_str().is_empty())
+                {
+                    out.push_str(&format!("answered from {}\n", dir.display()));
+                }
                 match accepted(&hook, answer, &declared, &input) {
                     Ok(what) => {
                         out.push_str(&format!("\nit answers — {what}:\n"));
@@ -1091,6 +1113,48 @@ impl PluginHost {
             "\n{recorded} input(s) of this hook recorded for the shadow gate's replay.\n"
         ));
         Ok(out)
+    }
+
+    /// The stack `test` asks, and the source it had to build to ask it. A name the live stack does
+    /// not hold is looked for in this session's plugin directory: a built module there is a layer
+    /// the loop has not loaded yet, and asking it on a copy is what makes `test` a step that comes
+    /// before `load` rather than after it. A directory with no module is refused for `plugin build`.
+    fn asking_stack(
+        &self,
+        stack: &Stack,
+        what: Option<&str>,
+    ) -> Result<(Stack, Option<PathBuf>), Refused> {
+        let Some(name) = what.map(str::trim).filter(|w| !w.is_empty()) else {
+            return Ok((stack.clone(), None));
+        };
+        // A pane id names its plugin before the slash.
+        let plugin = name.split('/').next().unwrap_or(name);
+        let loaded = stack
+            .layers()
+            .iter()
+            .any(|l| l.id == name || l.manifest.name == plugin);
+        if loaded {
+            return Ok((stack.clone(), None));
+        }
+        // Not in this session: `layer_dir` names what is, and the stack's own refusal is better
+        // than a second guess about which plugin was meant.
+        let Ok(dir) = self.layer_dir(plugin) else {
+            return Ok((stack.clone(), None));
+        };
+        let cand = stack.candidate(&dir, Scope::Session).map_err(|why| {
+            Refused::new(
+                format!("`{plugin}` is not built yet, so there is nothing to ask"),
+                format!("{why} — `plugin build {plugin}` produces the module a layer loads"),
+            )
+        })?;
+        let mut shadow = stack.clone();
+        shadow.apply(cand).map_err(|why| {
+            Refused::new(
+                format!("`{plugin}` is built but cannot be asked"),
+                format!("{why} — nothing was applied; `plugin load {plugin}` is the door that applies it"),
+            )
+        })?;
+        Ok((shadow, Some(dir)))
     }
 
     /// Which hook `test` asks, and whether it is asked alone: a pane id is the whole stack's

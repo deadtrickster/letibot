@@ -10,6 +10,12 @@ use letibot_plugins::MANIFEST;
 /// so the bound is about a title that fits rather than about a filesystem.
 const MAX_NAME: usize = 48;
 
+/// The sentence every point an agent meets a plugin's source says: a session's own plugin
+/// directory is writable only through the file tools (`exec/store.rs`), so a `bash` edit of it
+/// answers ENOENT with nothing to say why.
+pub const FILE_TOOLS_ONLY: &str =
+    "Edit it with `read`/`edit`/`write` — `bash` cannot see this directory";
+
 /// The hook kinds this host runs, as `scaffold` names them: the word without the name after its prefix.
 /// `pane` is drawn by a head; the rest are the patch points a hook is called at, each wired where the
 /// host does that thing.
@@ -275,7 +281,7 @@ pub fn write(
     if dir.join(MANIFEST).is_file() {
         return Err(format!(
             "there is already a plugin at {} — open its `src/lib.rs` and edit it, or scaffold \
-             another name",
+             another name. {FILE_TOOLS_ONLY}.",
             dir.display()
         ));
     }
@@ -310,16 +316,32 @@ pub fn write(
 /// load time, so a template that did not parse would be a scaffold whose every plugin fails at
 /// discovery. The unit test below runs the real parser over it.
 fn manifest(name: &str, purpose: &str, hook: &str) -> String {
+    let caps = if reads_a_file(purpose) {
+        "[\"read\"]"
+    } else {
+        "[]"
+    };
     format!(
         "# What this layer declares: `docs/plugins-slice1.md` C2. A capability is a REQUEST the\n\
-         # host enforces (`docs/plugins-plan.md` §3), and a session plugin starts with none.\n\
+         # host enforces (`docs/plugins-plan.md` §3). A purpose that reads a file gets `read`, so\n\
+         # its first `test` is a look that works rather than a refusal to debug.\n\
          name = \"{name}\"\n\
          purpose = \"{}\"\n\
          hooks = [\"{hook}\"]\n\
-         capabilities = []\n\
+         capabilities = {caps}\n\
          contract = 1\n",
         escape(purpose)
     )
+}
+
+/// Whether the purpose says the pane reads a file: the one capability a scaffold can infer from a
+/// sentence. Both words are required, so a purpose that merely names a file grants nothing.
+fn reads_a_file(purpose: &str) -> bool {
+    let words: Vec<String> = purpose
+        .split(|c: char| !c.is_alphanumeric())
+        .map(|w| w.to_ascii_lowercase())
+        .collect();
+    words.iter().any(|w| w.starts_with("read")) && words.iter().any(|w| w.starts_with("file"))
 }
 
 fn cargo_toml(name: &str, kind: &str, sdk: &str, types: &str) -> String {
@@ -937,12 +959,50 @@ mod tests {
         assert_eq!(manifest.name, "deploy-status");
         assert_eq!(manifest.purpose, "the deploy queue, per environment");
         assert_eq!(manifest.hooks, vec!["pane_deploy_status".to_string()]);
-        assert!(manifest.capabilities.is_empty(), "no capability by default");
+        assert!(
+            manifest.capabilities.is_empty(),
+            "a purpose that names no file grants nothing"
+        );
         assert_eq!(manifest.contract, letibot_plugins::CONTRACT);
         // The hook the manifest declares is the export the template defines.
         assert_eq!(out.pane, "deploy-status/deploy_status");
         let lib = std::fs::read_to_string(out.dir.join("src/lib.rs")).expect("the source");
         assert!(lib.contains("pub extern \"C\" fn pane_deploy_status(ptr: u32, len: u32)"));
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// A purpose that says the pane reads a file declares `read`: a look runs under that
+    /// capability, so leaving it out made the loop's first `test` a refusal to debug instead of a
+    /// look that worked (the db-fuzz status pane scaffolded with `capabilities = []`).
+    #[test]
+    fn a_purpose_that_reads_a_file_asks_for_the_read_capability() {
+        let root = temp("read-cap");
+        let out = write(
+            &root,
+            "status",
+            "read the status file and show what changed",
+            "pane",
+        )
+        .expect("scaffolded");
+        let manifest = letibot_plugins::Manifest::read(&out.dir).expect("the manifest parses");
+        assert_eq!(
+            manifest.capabilities,
+            vec![letibot_plugins::Capability::Read],
+            "a pane whose purpose reads a file declares the capability that lets a look run"
+        );
+        std::fs::remove_dir_all(&root).ok();
+
+        // Naming a file is not reading it, so the sentence alone grants nothing.
+        let root = temp("read-cap-no");
+        let out = write(
+            &root,
+            "queue",
+            "the deploy queue for each environment",
+            "pane",
+        )
+        .expect("scaffolded");
+        let manifest = letibot_plugins::Manifest::read(&out.dir).expect("the manifest parses");
+        assert!(manifest.capabilities.is_empty(), "{manifest:?}");
         std::fs::remove_dir_all(&root).ok();
     }
 

@@ -122,8 +122,9 @@ impl PluginDesk for SessionPlugins {
         }
         said.push_str(&format!(
             "\n\nnext: edit `src/lib.rs`'s `{}` (the contract is the `plugin_hooks` tool), then \
-             `plugin build {name}`, `plugin test {name}`, `plugin load {name}`.",
-            if kind == "pane" { "view" } else { "answer" }
+             `plugin build {name}`, `plugin test {name}`, `plugin load {name}`.\n\n{}",
+            if kind == "pane" { "view" } else { "answer" },
+            scaffold::FILE_TOOLS_ONLY
         ));
         // Provenance, recorded at the write: `scaffold` is a model's write like any other, and a
         // layer whose bytes nobody recorded has its authorship guessed from its path. The files are

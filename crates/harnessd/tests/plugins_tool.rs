@@ -336,6 +336,13 @@ fn scaffold_writes_a_plugin_the_stack_then_lists() {
         said.contains("deploy-status/deploy_status"),
         "the pane id the loop's later calls use is named at the first step: {said}"
     );
+    // A pane's source is a file tool's, and a command cannot see it: say so where the model is
+    // about to edit it, because `cat` on this path answers ENOENT and reads as a missing file
+    // (db-fuzz spent two episodes on it, and abandonned a plugin directory to it).
+    assert!(
+        said.contains(scaffold::FILE_TOOLS_ONLY),
+        "the scaffold never says how to edit what it wrote: {said}"
+    );
     let dir = rig.tmp.plugins().join("deploy-status");
     for f in ["Cargo.toml", "plugin.toml", "src/lib.rs"] {
         assert!(dir.join(f).is_file(), "{f} was not written: {said}");
@@ -354,6 +361,12 @@ fn scaffolding_the_same_name_twice_is_refused_and_names_the_one_that_is_there() 
     rig.ok(r#"{"action":"scaffold","name":"deploy","purpose":"one"}"#);
     let refused = rig.refused(r#"{"action":"scaffold","name":"deploy","purpose":"two"}"#);
     assert!(refused.contains("already a plugin"), "{refused}");
+    // The refusal is the second place a model meets this directory, so it carries the same
+    // sentence: `bash` cannot see it, the file tools can.
+    assert!(
+        refused.contains(scaffold::FILE_TOOLS_ONLY),
+        "the already-exists refusal never says how to edit it: {refused}"
+    );
     // And a name that is not a name is refused with the one it would have to be.
     let refused = rig.refused(r#"{"action":"scaffold","name":"Deploy Status","purpose":"x"}"#);
     assert!(refused.contains("lowercase letters"), "{refused}");
@@ -536,6 +549,46 @@ fn test_names_the_view_the_layer_and_the_fuel() {
     assert!(said.contains("4242 fuel units"), "the cost: {said}");
     assert!(said.contains("the deploy queue"), "the view: {said}");
     assert!(said.contains("a view the host can drive"), "{said}");
+    // And where that layer's source is, so the next step is an `edit` and not a second scaffold.
+    let dir = rig.tmp.plugins().join("deploy");
+    assert!(
+        said.contains(&format!("answered from {}", dir.display())),
+        "the source directory the view was written in: {said}"
+    );
+    let stack = rig.ok(r#"{"action":"stack"}"#);
+    assert!(
+        stack.contains(&format!("at {}", dir.display())),
+        "the stack names each layer's directory: {stack}"
+    );
+}
+
+/// `test` comes BEFORE `load` in the loop, so it asks a layer that is built and not loaded: alone,
+/// on a copy of the stack. "Not a layer of this session" sent a model to `load` for a question that
+/// would have cost it a shadow gate and a screen (db-fuzz rebuilt a pane six times in two hours).
+#[test]
+fn test_asks_a_layer_that_is_built_and_not_loaded() {
+    let rig = Rig::new("test-unloaded");
+    rig.layer("deploy", A_VIEW);
+    let said = rig.ok(r#"{"action":"test","name":"deploy"}"#);
+    assert!(said.contains("answered by `s1`"), "{said}");
+    assert!(said.contains("the deploy queue"), "the view: {said}");
+    assert!(
+        said.contains("built but NOT loaded"),
+        "it says which it did, so nobody reads this as a pane already on a screen: {said}"
+    );
+    // Nothing was applied and nothing was drawn: the gate is `load`'s.
+    assert!(rig.panes().is_empty(), "{:?}", rig.panes());
+    let stack = rig.ok(r#"{"action":"stack"}"#);
+    assert!(stack.contains("no layers at all"), "{stack}");
+
+    // A source with no module is not something `test` can ask: the refusal names the build.
+    rig.ok(r#"{"action":"scaffold","name":"fresh","purpose":"x"}"#);
+    let refused = rig.refused(r#"{"action":"test","name":"fresh"}"#);
+    assert!(refused.contains("not built yet"), "{refused}");
+    assert!(
+        refused.contains("plugin build fresh"),
+        "the step that produces the module: {refused}"
+    );
 }
 
 /// A view the host would refuse is REPORTED as refused, not hidden: `test` is where a model

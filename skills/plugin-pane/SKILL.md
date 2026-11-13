@@ -1,8 +1,8 @@
 ---
 name: plugin-pane
 description: Write a letibot plugin pane in the session and make it answer, hot — scaffold, edit the view, build, test, load, and iterate — and draw it so every number has its denominator and every word was measured. Use when the operator asks for a dashboard or panel that letibot does not have, or when a session needs to see something letibot has no pane for.
-when_to_use: The operator asks for a dashboard, panel, live view or status display: in this head that is a pane, not a web page or a script serving HTML
-keywords: dashboard, panel, pane, live view, status, monitor, sparkline
+when_to_use: The operator asks for a dashboard, panel, live view or status display — a harness dashboard, a tui panel, an operator-facing view: in this head that is a pane, not a web page or a script serving HTML
+keywords: dashboard, panel, pane, live view, status, monitor, sparkline, harness, operator, tui
 ---
 
 # Write a pane plugin in this session
@@ -28,6 +28,16 @@ the turn"*.
 ## The loop
 
 ```sh
+# 0. what is already in force here, and where each layer's source is
+plugin {"action":"stack"}
+```
+
+**Do this first.** If a pane of yours is already in the stack (one you loaded earlier in this
+session), EXTEND it: `read` the directory it names, edit that `src/lib.rs`, build, load again. Do
+not scaffold a second one — two layers answering one job is two panes, one of them stale, and a
+directory nobody opens again.
+
+```sh
 # 1. a source, in this session's own plugin directory
 plugin {"action":"scaffold", "name":"deploy-status", "hook":"pane",
         "purpose":"the deploy queue for each environment, and what is waiting"}
@@ -35,18 +45,27 @@ plugin {"action":"scaffold", "name":"deploy-status", "hook":"pane",
 
 Read the three files it wrote. `src/lib.rs` is where the work is: `view(input: &Value) -> Value`
 is a pure function, and its native test is already there — keep it passing, and extend it as the
-view grows. `plugin.toml` declares the hook and the capabilities (none by default).
+view grows. `plugin.toml` declares the hook and the capabilities (none by default; a purpose that
+reads a file gets `read`).
 
 ```sh
 # 2. the logic — a normal Rust edit, in the session
 edit   …/sessions/<this session>/plugins/deploy-status/src/lib.rs
 ```
 
+**That directory is reached by `read`, `edit` and `write` only.** A command's view does not hold
+the store (`~/.local/share/letibot`), so `cat` and any `bash` edit of it answer *No such file or
+directory* for a file that is there. `plugin stack` prints the exact path to open — do not go
+looking for it with `find`.
+
 Three rules that are re-learned painfully every time:
 
 - **No I/O.** A plugin never opens a file. It returns `"look": {"read": "path"}` in its answer
-  and the host reads the file and calls the pane again with `look: {"exit":0,"stdout":…}`. That
-  needs `capabilities = ["read"]` in `plugin.toml`. An `exec` look is refused by this slice.
+  and the host reads the file and calls the pane again with `look: {"exit":0,"stdout":…}`. The
+  path is relative (the session's checkout, then its own tree), `~/…` from the operator's home, or
+  absolute. Reading needs `capabilities = ["read"]`; a tree outside the checkout and the session's
+  own tree needs its own entry — `capabilities = ["read:~/the/tree"]`, a directory and never `/`
+  or `~` — and nothing else is readable. An `exec` look is refused by this slice.
 - **No clock.** `SystemTime::now()` panics on wasm32 and a panic is a trap: the head draws an
   unavailable panel instead of your view. Take time from what the look read, or from `state`.
 - **The keys are the host's.** `q`, `j`, `k`, `f`, `l`, ↑/↓, PgUp/PgDn, Enter, Esc. A panel key
@@ -65,8 +84,10 @@ The compiler's errors come back verbatim — fix them and build again. `--offlin
 plugin {"action":"test", "name":"deploy-status"}
 ```
 
-`test` shows the view it answered, the layer that answered, the fuel it burned and any trap. Its
-input defaults to a synthetic first frame; to check a real frame, pass one:
+`test` shows the view it answered, the layer that answered and its source directory, the fuel it
+burned and any trap. It runs a layer that is **built but not loaded** too — alone, on a copy of the
+stack — so it comes before `load` and says which it did; nothing on a screen changes until `load`.
+Its input defaults to a synthetic first frame; to check a real frame, pass one:
 
 ```json
 {"v":1, "state":null,
@@ -97,8 +118,9 @@ plugin {"action":"enable",  "name":"s1"}
 **A session plugin reaches nothing outside this session.** The layer lives under the session's
 own data directory and is discovered at session scope; it is in no repository, it is not
 committed, and no other session sees it. A plugin's capability is the only thing that touches
-the world at all — `read` is the one this slice grants, and an `exec` look is refused with a
-sentence saying so. Promoting a pane to the project is a separate act: copy the directory into
+the world at all — `read` (the checkout and this session's tree) and `read:<path>` (one more tree,
+named and consented to) are what this slice grants, and an `exec` look is refused with a sentence
+saying so. Promoting a pane to the project is a separate act: copy the directory into
 `.letibot/plugins/` on the session's branch and let the merge queue review it like any other
 code.
 

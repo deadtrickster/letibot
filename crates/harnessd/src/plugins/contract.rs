@@ -381,8 +381,12 @@ answer has changed shape is declared too, `[contracts]` holding {shapes}: a laye
 shape for such a kind is refused by name at load. The host calls it
 with one JSON object and reads one back, and **that is the whole conversation**: a pane never opens
 a file and never runs a program. When it needs the world it asks for a *look* in its answer and the
-host runs it — `{{"read": "path"}}` under the `read` capability; an `exec` look is refused in this
-slice (`exit` 126, with the sentence in `stderr`). The pane id it is drawn under is
+host runs it — `{{"read": "path"}}` under the `read` capability, which holds the session's
+checkout and its own tree; an `exec` look is refused in this slice (`exit` 126, with the sentence in
+`stderr`). A look names its path one of three ways: relative, resolved against the checkout first
+and the session's own tree after it; `~/…`, from the operator's home; or absolute. A path outside
+those two trees is a tree the manifest declared `read:<path>` — a directory, never `/` or `~`, and
+each one a capability a person consents to. The pane id it is drawn under is
 `<plugin.toml's name>/<hook name without `pane_`>`.
 
 Why the shape is this shape: `docs/plugins-slice1.md` C3, the dashboard language the operator
@@ -437,7 +441,10 @@ Top level: {view_keys}.
 * `findings` — {finding_keys}. `severity` is REQUIRED and is `tripped`, `missing` or `passed`; a
   finding that does not say how bad it is is not counted as one that passed.
 * `legend` — `{{"<label>": "<what it means>"}}`, the `l` view and the hover text.
-* `look` — `{{"read": "<path relative to the workspace>"}}`, or absent for no look.
+* `look` — `{{"read": "<path>"}}`, or absent for no look. Relative is the session's checkout
+  first and its own tree after it; `~/…` is the operator's home; a path that starts with `/` is
+  read as written. Any of the three must land in the checkout, the session's tree, or a tree the
+  manifest declared `read:<path>`, or the look answers `exit 1` with the reason in `stderr`.
 * `every_s` — how often to ask again: `0` (never) or at least {MIN_EVERY_S}; `every_s` must be a
   number even when the answer asks for no look.
 * `state` — whatever this pane wants handed back next time, or absent.
@@ -546,6 +553,15 @@ mod tests {
             doc.contains(&moved_shapes()),
             "the document names the shapes this host requires"
         );
+        // A pane's look has three spellings and a second capability, and a model that does not
+        // know them designs around a rule that is not there (db-fuzz's "a pane cannot read my
+        // status file").
+        for spelled in ["`~/…`", "`read:<path>`", "absolute", "read as written"] {
+            assert!(
+                doc.contains(spelled),
+                "the pane document never says how a look names `{spelled}`"
+            );
+        }
     }
 
     /// Every kind has a page, every page carries its own types' fields, and a name that is not a
