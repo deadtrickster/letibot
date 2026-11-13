@@ -34,9 +34,6 @@ letibot-dialect-qwen.workspace = true
 letibot-harnessd = { workspace = true, default-features = false }
 # The `Head` role: `head::run` is that binary's body, moved into this crate's lib.
 letibot-tui.workspace = true
-# The launcher role: a workspace hashes to a socket, and the key must match the
-# shell's `sha256sum | cut -c1-12` exactly or the port names a different daemon.
-sha2 = "0.10"
 # The record beside a socket is flat JSON, written by whichever launcher started
 # the daemon; reading it must survive a stale or half-written file.
 serde_json.workspace = true
@@ -72,6 +69,9 @@ letibot-activation.workspace = true
 letibot-room.workspace = true
 
 [dev-dependencies]
+# `tests/migrate.rs` hashes a session id the way the launcher's socket key does. Nothing in the
+# binary uses this any more: the socket's key is `letibot_bridge::daemon::key`'s.
+sha2 = "0.10"
 # The apparatus machinery, for the one test that needs a machine with listening
 # daemons: absent apparatus SKIPS loudly rather than failing, and
 # LETIBOT_REQUIRE_APPARATUS=1 refuses the skip. See `letibot_tokencore::apparatus`.

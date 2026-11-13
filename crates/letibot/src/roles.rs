@@ -59,8 +59,8 @@ fn exit_code(code: i32) -> ExitCode {
     ExitCode::from(u8::try_from(code.clamp(0, 255)).unwrap_or(1))
 }
 
-// The launcher's EXECUTION is not ported: `scripts/letibot` is what ships as `letibot`, so a
-// multicall launcher would have no caller. Its decisions ARE ported and tested.
+// The launcher's TABLE is not in this crate: `scripts/letibot` is what ships as `letibot`, so a
+// second copy of its flag list is a copy with no caller - and it had drifted.
 /// `letibot` with nothing after it.
 pub fn launcher() -> ExitCode {
     eprintln!(
@@ -140,8 +140,7 @@ fn askpass_in(args: &[std::ffi::OsString], socket: &str, session: &str, command:
                 return ExitCode::SUCCESS;
             }
             Ok(ServerFrame::Secret { secret: None, why }) => {
-                // The daemon says which failure this was - see the sibling helper in
-                // `harnessd/src/bin/letibot-askpass.rs`; an older daemon sends no reason and
+                // The daemon says which failure this was; an older daemon sends no reason and
                 // the old sentence is what is left to say.
                 match why {
                     Some(why) => eprintln!("letibot-askpass: no password was given — {why}"),

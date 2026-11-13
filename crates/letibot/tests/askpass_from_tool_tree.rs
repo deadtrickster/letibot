@@ -38,7 +38,10 @@ fn the_askpass_helper_still_gets_the_password_from_inside_a_tool_tree() {
     let (tx, rx) = channel();
     let _pump = std::thread::spawn(move || pump(reader, tx));
 
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_letibot-askpass"))
+    let child = std::process::Command::new(env!("CARGO_BIN_EXE_letibot"))
+        // One binary, two ways to name the role: the word and the installed program name reach
+        // `roles::askpass` identically, which is why `letibot-askpass` is a link and not a build.
+        .arg("askpass")
         .arg("[sudo] password for dead: ")
         .env("LETIBOT_SOCKET", server.path())
         .env("LETIBOT_SESSION", "s")

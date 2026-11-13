@@ -13,13 +13,15 @@
 #
 #   harnessd          the daemon — the session, the gate, the model connection
 #   letibot-tui       the head — what a person actually looks at
-#   letibot-askpass   what `sudo` runs inside a session to ask for a password
+#   letibot           the launcher SCRIPT, and every role of the multicall binary under its
+#                     own name — `letibot-askpass` is a SYMLINK made by `install.sh`
 #   letibot-mcp       the Claude Code bridge — the MCP server the `leticode` plugin runs
 #
 # **`letibot-askpass` must sit BESIDE `harnessd`** — `crate::sudo::install()`
 # looks for it next to the running binary and installs a `sudo` shim that calls
 # it. A package that left it out would give a session with no way to answer a
-# password prompt, and `sudo` would fail with no explanation.
+# password prompt, and `sudo` would fail with no explanation. It is not a second
+# binary: `argv[0]` is how `letibot` knows which role it is playing.
 #
 # **The three left out are not runtime**: `letibot-m1` is M1's exit measurement,
 # and `letibot-render` / `letibot-render-qwen` are the seams between the Rust
@@ -102,7 +104,7 @@ set -eu
 #
 # It is a REPOSITORY file, not a build artifact, so it is staged from `scripts/`
 # rather than from `target/release` — see the copy loop below.
-ARCHIVE_BINARIES="harnessd letibot-tui letibot-askpass letibot leticode letibot-mcp"
+ARCHIVE_BINARIES="harnessd letibot-tui letibot leticode letibot-mcp"
 ARCHIVE_LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
 # The same four for an `*-apple-darwin` triple, which install.sh's LIBRARIES_DARWIN
 # must match (`check-dist-names.sh` holds the two to each other).
@@ -141,7 +143,11 @@ if [ -z "$bin" ]; then
 fi
 
 for want in $ARCHIVE_BINARIES; do
-  if [ -x "$bin/$want" ] || [ -x "$repo/scripts/$want" ]; then
+  # `letibot-askpass` is the multicall binary under the role's name, so the file it comes
+  # from is `letibot` - the role exists only in `argv[0]`.
+  src="$bin/$want"
+  [ "$want" = letibot-askpass ] && src="$bin/letibot"
+  if [ -x "$src" ] || [ -x "$repo/scripts/$want" ]; then
     continue
   fi
   echo "make-dist: no $want in $bin or $repo/scripts/" >&2
@@ -175,6 +181,10 @@ for want in $ARCHIVE_BINARIES; do
   # list, two sources, because two lists is how the two drift.
   if [ -f "$repo/scripts/$want" ]; then
     cp "$repo/scripts/$want" "$stage/$want"
+  elif [ "$want" = letibot-askpass ]; then
+    # The multicall under the role's name: `argv[0]` is the whole of the difference, and
+    # a package that carried a second implementation of that role is what this replaced.
+    cp "$bin/letibot" "$stage/letibot-askpass"
   else
     cp "$bin/$want" "$stage/$want"
   fi
@@ -270,7 +280,7 @@ if [ "$darwin" = 1 ]; then
   done
   staged_libs=""
   for so in $ARCHIVE_LIBRARIES; do staged_libs="$staged_libs $stage/$so"; done
-  for f in "$stage"/harnessd "$stage"/letibot-tui "$stage"/letibot-askpass $staged_libs; do
+  for f in "$stage"/harnessd "$stage"/letibot-tui $staged_libs; do
     for dep in $(otool -L "$f" | tail -n +2 | awk '{print $1}'); do
       case "$dep" in
         @rpath/*)

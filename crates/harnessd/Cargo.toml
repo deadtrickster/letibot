@@ -111,7 +111,3 @@ required-features = ["local"]
 letibot-tools = { workspace = true, features = ["testing"] }
 # The fixture tier: a caller's test says which texts mean the same thing, with no model.
 letibot-embeddings = { workspace = true, features = ["testing"] }
-
-[[bin]]
-name = "letibot-askpass"
-path = "src/bin/letibot-askpass.rs"

@@ -79,8 +79,6 @@ use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::server::serve_registry;
 use letibot_transcript::TranscriptItem;
 
-mod support;
-
 /// How long any wait in this file may take before it is a failure rather than a hang.
 const PATIENCE: Duration = Duration::from_secs(60);
 
@@ -117,7 +115,10 @@ fn config(session: &str, socket: &Path) -> Config {
     // `Config::for_this_box` carries no vocabulary default, so a harness built here is handed
     // one: the operator's `LETIBOT_VOCAB_GGUF` if set, else the box's own GGUF, the same path
     // this file's `vocab_gguf` gate consults.
-    cfg.vocab_gguf = support::vocab::gguf();
+    cfg.vocab_gguf = std::env::var("LETIBOT_VOCAB_GGUF")
+        .ok()
+        .map(std::path::PathBuf::from)
+        .or_else(letibot_harnessd::vocab_gguf);
     cfg
 }
 
@@ -149,7 +150,7 @@ fn write_sudo_double(dir: &Path, helper: &Path) -> PathBuf {
              # letibot test double for `sudo -A`: the helper is a child whose stdout is a\n\
              # pipe, and this process -- whose own fd 0 is the terminal the daemon holds --\n\
              # blocks reading it. That is the whole of what sudo is here.\n\
-             pw=$({helper} '[sudo] password for dead: ')\n\
+             pw=$({helper} askpass '[sudo] password for dead: ')\n\
              printf 'sudodouble: the helper said [%s]\\n' \"$pw\"\n",
             helper = helper.display()
         ),
@@ -227,7 +228,7 @@ fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    let helper = PathBuf::from(env!("CARGO_BIN_EXE_letibot-askpass"));
+    let helper = PathBuf::from(env!("CARGO_BIN_EXE_letibot"));
     assert!(helper.is_file(), "{} is not built", helper.display());
 
     let socket = socket_path("served");

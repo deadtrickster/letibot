@@ -45,9 +45,12 @@ pub fn install() -> Result<Plumbing, String> {
             .filter(|p| p.is_file())
             .ok_or_else(|| {
                 format!(
-                    "letibot-askpass is not beside {} — build it (`cargo build --release -p \
-                     letibot-harnessd`)",
-                    exe.display()
+                    "letibot-askpass is not beside {} — it is a symlink to `letibot`, so make \
+                     one: ln -s letibot {}/letibot-askpass",
+                    exe.display(),
+                    exe.parent()
+                        .map(|d| d.display().to_string())
+                        .unwrap_or_default()
                 )
             })?,
     };

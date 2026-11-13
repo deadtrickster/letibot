@@ -196,7 +196,7 @@ jobs:
         run: for m in plugins/builtin/*/Cargo.toml; do cargo fetch --manifest-path "$m"; done
 
       - name: Build
-        run: cargo build --release --bin harnessd --bin letibot-tui --bin letibot-askpass --bin letibot-mcp
+        run: cargo build --release --bin harnessd --bin letibot-tui --bin letibot-mcp --bin letibot
 
       # **The daemon has to run before it is packaged** — and this is the only proof
       # that the `$ORIGIN` runpath works, because the libraries are still where the
@@ -221,7 +221,7 @@ jobs:
           d=$(mktemp -d)
           tar -xzf dist/letibot-${{ matrix.triple }}.tar.gz -C "$d"
           n=$(ls -1 "$d" | wc -l)
-          test "$n" -eq 10 || { echo "::error::archive holds $n entries, expected 10 (6 programs: harnessd letibot-tui letibot-askpass letibot leticode letibot-mcp; 4 libraries)"; ls -la "$d"; exit 1; }
+          test "$n" -eq 10 || { echo "::error::archive holds $n entries, expected 10 (6 programs: harnessd letibot-tui letibot-askpass letibot leticode letibot-mcp; 4 libraries; letibot-askpass is letibot's binary under the role name)"; ls -la "$d"; exit 1; }
           ( cd "$d" && env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH ./harnessd --version )
           ( cd "$d" && env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH ./letibot-tui --version )
           ( cd "$d" && env -u LD_LIBRARY_PATH -u DYLD_LIBRARY_PATH ./letibot-mcp --version )

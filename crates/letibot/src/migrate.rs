@@ -75,7 +75,7 @@ use letibot_tokencore::store::{ImportInto, SessionTransfer, Store};
 use letibot_tools::remote::{Host, Hosts, Paths, Ssh};
 use letibot_tools::rpc::{Outcome, Retried};
 
-use crate::launcher;
+use letibot_bridge::daemon as bridge_daemon;
 
 /// The name `local` has in this vocabulary - it is an endpoint like any other, and the marker
 /// column spells it the way a host is spelled.
@@ -144,12 +144,14 @@ impl Endpoint {
     }
 
     /// The socket the session's daemon listens on, for either kind of endpoint. A local
-    /// daemon is the folder's - `<rundir>/<key(workspace)>.sock`, the launcher's own rule - so
+    /// daemon is the folder's - `<rundir>/<key(workspace)>.sock`, `bridge::daemon`'s rule, so
     /// the workspace is an argument here and not a lookup.
     pub fn daemon_socket_for(&self, session: &str, workspace: &str) -> String {
         if self.is_local() {
-            return launcher::locate(Path::new(workspace))
-                .socket
+            // One spelling of a socket's name: the key is the bridge's, because a second
+            // derivation here names a path no daemon ever bound.
+            return bridge_daemon::rundir()
+                .join(format!("{}.sock", bridge_daemon::key(Path::new(workspace))))
                 .display()
                 .to_string();
         }
@@ -1463,13 +1465,13 @@ fn short_commit(commit: &str) -> &str {
 
 /// `<rundir>/migrated-<session>.sock` - the local end of a moved session's forward.
 pub fn forward_socket(session: &str) -> PathBuf {
-    launcher::rundir().join(format!("migrated-{session}.sock"))
+    bridge_daemon::rundir().join(format!("migrated-{session}.sock"))
 }
 
 /// `<rundir>/migrated-<session>.json` - the record a head reads to find that socket, in the same
 /// shape as the launcher's own (`workspace`, `socket`, …) so one reader serves both.
 pub fn record_path(session: &str) -> PathBuf {
-    launcher::rundir().join(format!("migrated-{session}.json"))
+    bridge_daemon::rundir().join(format!("migrated-{session}.json"))
 }
 
 fn socket_reachable(path: &Path) -> bool {

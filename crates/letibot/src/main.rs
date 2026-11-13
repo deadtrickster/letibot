@@ -56,7 +56,6 @@ mod boundary;
 mod browser;
 mod gc;
 mod github;
-pub mod launcher;
 pub mod migrate;
 mod notes;
 mod roles;

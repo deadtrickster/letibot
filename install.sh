@@ -7,7 +7,7 @@
 #
 #   $PREFIX/harnessd           the daemon — the session, the gate, the model connection
 #   $PREFIX/letibot-tui        the head — the terminal interface you look at
-#   $PREFIX/letibot-askpass    what `sudo` runs inside a session to ask for a password
+#   $PREFIX/letibot-askpass    a SYMLINK to letibot: what `sudo` runs to ask for a password
 #   $PREFIX/letibot            the command you type: starts the daemon if needed, attaches a head
 #   $PREFIX/leticode           the same, seated as leticode (shell and web_fetch on, automode-edits)
 #   $PREFIX/letibot-mcp        the Claude Code bridge: the MCP server the `leticode` plugin runs
@@ -97,6 +97,10 @@ VERSION="${LETIBOT_VERSION:-}"
 BINARIES="harnessd letibot-tui letibot-askpass letibot leticode letibot-mcp"
 # The names in BINARIES that are repository scripts, not build products.
 LAUNCHERS="letibot leticode"
+# **The one binary installed under two names.** `sudo` runs its helper by PATH, and
+# `argv[0]` is how the multicall knows which role it is playing — so `letibot-askpass` is
+# `letibot`'s binary under the role's name (`role_copies`), one build and one implementation.
+# It used to be a second binary in `crates/harnessd`: the same question, written twice.
 is_launcher() {
     case " $LAUNCHERS " in *" $1 "*) return 0 ;; esac
     return 1
@@ -398,6 +402,18 @@ launchers_from_the_tag() {
     done
 }
 
+# **`letibot-askpass` is `letibot`'s multicall under the role's name.** `sudo` runs a PATH,
+# and `argv[0]` is how that binary knows which role it is playing; a hardlink (or a copy) is
+# the whole of it. It used to be a second binary in `crates/harnessd`, built from a second
+# copy of the same conversation with the daemon.
+role_copies() {
+    out="$1"
+    [ -f "$out/letibot" ] || return 0
+    ln -f "$out/letibot" "$out/letibot-askpass" 2>/dev/null ||
+        cp "$out/letibot" "$out/letibot-askpass" ||
+        die "cannot write $out/letibot-askpass"
+}
+
 # Build a checkout and print the directory holding what was built, or fail naming
 # what is missing.
 build_from_source() {
@@ -423,7 +439,7 @@ build_from_source() {
   re-run with both variables pointing at a built llama.cpp."
         warn "Building letibot (cloud-only) from $src — this takes a few minutes..."
         cargo build --release --manifest-path "$src/Cargo.toml" --no-default-features \
-            -p letibot-harnessd --bin harnessd --bin letibot-askpass >&2
+            -p letibot-harnessd --bin harnessd >&2
         # The launcher too: it is one of $BINARIES, and the copy below takes every name
         # there. Building it here rather than trusting a target/ left by some earlier build
         # is what makes a fresh checkout install — CI's Linux job only passed because its
@@ -433,6 +449,7 @@ build_from_source() {
         cargo build --release --manifest-path "$src/Cargo.toml" \
             -p letibot-tui --bin letibot-tui -p letibot --bin letibot -p letibot-bridge --bin letibot-mcp >&2
         out="$src/target/release"
+        role_copies "$out"
         for want in $BINARIES; do
             [ "$want" = leticode ] && continue
             [ -x "$out/$want" ] || die "the build produced no $out/$want"
@@ -450,8 +467,9 @@ build_from_source() {
 
     warn "Building letibot from $src — this takes a few minutes..."
     cargo build --release --manifest-path "$src/Cargo.toml" \
-        --bin harnessd --bin letibot-tui --bin letibot-askpass --bin letibot --bin letibot-mcp >&2
+        --bin harnessd --bin letibot-tui --bin letibot --bin letibot-mcp >&2
     out="$src/target/release"
+    role_copies "$out"
     for want in $BINARIES; do
         [ "$want" = leticode ] && continue
         [ -x "$out/$want" ] || die "the build produced no $out/$want"
@@ -482,9 +500,9 @@ letibot: the daemon, the head and the Claude Code bridge, into LETIBOT_INSTALL_D
   sh install.sh           install
   sh install.sh --help    this
 
-What it installs: harnessd letibot-tui letibot-askpass letibot leticode letibot-mcp, and the
-four llama libraries harnessd links. It installs no model: the head asks for one on the first
-message.
+What it installs: harnessd letibot-tui letibot leticode letibot-mcp, letibot-askpass (the
+same binary under the name `sudo` calls), and the four llama libraries harnessd links. It
+installs no model: the head asks for one on the first message.
 
 Environment:
   LETIBOT_INSTALL_DIR   where everything goes   (default: ~/.local/bin)
