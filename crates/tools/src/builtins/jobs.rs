@@ -327,7 +327,17 @@ fn job_list_summary(
 /// One job's row: the handle, the state, and every fact that tells a job that is working from a
 /// stale handle. Pure, so the words about a job's cgroup can be asserted against a fake cgroup
 /// tree without a host - which is the whole point of a listing.
+#[cfg(test)]
 fn job_row(j: &JobView) -> String {
+    job_row_said(j, &mut std::collections::HashSet::new())
+}
+
+/// A cgroup's pids are the host's, and the model's shell has its own PID namespace: a `ps` from
+/// inside the sandbox answers about other processes, so a pid it cannot find is not a job that ended.
+const PID_CAVEAT: &str = "\nA pid above is a host pid, which your shell cannot see (it has its own \
+     PID namespace): `ps` and `kill` prove nothing about these jobs. Use `job_kill`.\n";
+
+fn job_row_said(j: &JobView, said: &mut std::collections::HashSet<String>) -> String {
     let running = j.state.is_running();
     let mut s = format!(
         "\n{}  [{}]\n  command: {}\n  scope:   {} — {}\n",
@@ -339,16 +349,8 @@ fn job_row(j: &JobView) -> String {
         j.owner,
         j.owner.kind.reaped_when(),
     );
-    // A cgroup's pids are the host's, and the model's shell has its own PID namespace: a `ps`
-    // from inside the sandbox answers about a different set of processes, so a job whose pid it
-    // cannot find is not a job that ended.
     if running {
-        s.push_str(&format!(
-            "  pid:     {} — a host pid, which your shell cannot see (it has its own PID \
-             namespace): `ps` and `kill` prove nothing about this job. Use `job_list` and \
-             `job_kill`.\n",
-            j.pid
-        ));
+        s.push_str(&format!("  pid:     {} — a host pid\n", j.pid));
     } else {
         s.push_str(&format!("  pid:     {}\n", j.pid));
     }
@@ -367,7 +369,7 @@ fn job_row(j: &JobView) -> String {
     if let Some(f) = &j.output_file {
         s.push_str(&format!("  file:    {} (from byte {})\n", f.path, f.from));
     }
-    s.push_str(&live_lines(j));
+    s.push_str(&live_lines_said(j, said));
     s
 }
 
@@ -375,6 +377,10 @@ fn job_row(j: &JobView) -> String {
 /// listing's, `job_output`'s and `job_wait`'s alike, because the question is one question - is
 /// this job doing anything, or is it a handle whose process is gone.
 fn live_lines(j: &JobView) -> String {
+    live_lines_said(j, &mut std::collections::HashSet::new())
+}
+
+fn live_lines_said(j: &JobView, said: &mut std::collections::HashSet<String>) -> String {
     let mut s = String::new();
     if let Some(h) = &j.holding {
         s.push_str(&format!("  cgroup:  {}\n", h.processes_clause()));
@@ -383,7 +389,10 @@ fn live_lines(j: &JobView) -> String {
         s.push_str(&format!("  cpu:     {}\n", cpu.clause()));
     }
     if let Some(m) = j.memory_clause() {
-        s.push_str(&format!("  memory:  {m}\n"));
+        match said.insert(m.clone()) {
+            true => s.push_str(&format!("  memory:  {m}\n")),
+            false => s.push_str("  memory:  as the row above says\n"),
+        }
     }
     // Last, because it is about the two lines above: silence is only a warning beside a count
     // of processes and a CPU figure that say whether the work is moving.
@@ -463,8 +472,14 @@ impl Tool for JobList {
             running.len(),
         ));
 
+        // What is the same for every row is said once: the pid caveat after the rows, and a
+        // memory clause shared with an earlier row as a reference to it.
+        let mut said = std::collections::HashSet::new();
         for j in &jobs {
-            body.push_str(&job_row(j));
+            body.push_str(&job_row_said(j, &mut said));
+        }
+        if jobs.iter().any(|j| j.state.is_running()) {
+            body.push_str(PID_CAVEAT);
         }
 
         // The scopes, so a listing shows what is open and what will reap it.
@@ -678,8 +693,12 @@ impl Tool for JobOutput {
             },
             // A killed job's window is what it had written when the harness ended it, not a
             // finish: said here because this is the reader a model takes for the answer.
+            // The fact only: the rest of the sentence names this call and its siblings.
             match view.state.partial() {
-                Some(p) => format!("`{label}`: {p}\n"),
+                Some(p) => format!(
+                    "`{label}`: {}\n",
+                    p.split_once(" `job_output`").map_or(p, |(fact, _)| fact)
+                ),
                 None => String::new(),
             },
             // The window is bounded and the file is not, so the reader is told where the rest
@@ -687,9 +706,8 @@ impl Tool for JobOutput {
             // read outside its view.
             match &view.output_file {
                 Some(f) => format!(
-                    "[every byte of it is also in `{}`, from byte {} of this job's output — the \
-                     file keeps growing with the window, so the 8 MiB is the window's bound and \
-                     not the output's]\n",
+                    "[all of it is also in `{}`, from byte {} of this job's output; the window \
+                     keeps the last 8 MiB]\n",
                     f.path, f.from
                 ),
                 None => String::new(),
@@ -1359,7 +1377,9 @@ impl Tool for JobKill {
 
         // The record, verbatim, in the result. Not a "killed" boolean: the reader
         // has to be able to tell an empty scope from a reaper that did nothing.
-        let mut body = format!("{}\n\n", r.summary());
+        // The scope, then each field once: the listing's one-line summary would say the count,
+        // the mechanism and the survivors again above the lines that spell them out.
+        let mut body = format!("scope: {}\n", r.scope);
         if let Some(job) = &killed {
             body.push_str(&format!("the job was: {job}\n"));
         }
@@ -2267,6 +2287,27 @@ mod tests {
         );
     }
 
+    /// What is the same for every row of a listing is said once: the pid caveat is the
+    /// listing's, and a memory clause an earlier row spelled is referred to, not repeated.
+    #[test]
+    fn a_listing_says_what_every_row_shares_once() {
+        let uncapped = crate::exec::MemoryCap::Uncapped {
+            asked: 64 << 20,
+            why: "this daemon shares its cgroup".into(),
+        };
+        let mut said = std::collections::HashSet::new();
+        let mut rows = String::new();
+        for id in ["j1", "j2", "j3"] {
+            let mut job = view(id, None);
+            job.memory_cap = uncapped.clone();
+            rows.push_str(&job_row_said(&job, &mut said));
+        }
+        assert_eq!(rows.matches("shares its cgroup").count(), 1, "{rows}");
+        assert_eq!(rows.matches("as the row above says").count(), 2, "{rows}");
+        assert!(!rows.contains("PID namespace"), "{rows}");
+        assert_eq!(rows.matches("a host pid").count(), 3, "{rows}");
+    }
+
     /// A dead leader over a cgroup that is not empty is a job whose shell went and whose work did
     /// not: the state says both, and the count is what says the job is still running.
     #[test]
@@ -2322,9 +2363,10 @@ mod tests {
     }
 
     /// The listing's own words about pids, which is the half that stops a model reaching for
-    /// `ps`: the sentence is in the tool's description and on every running job's row.
+    /// `ps`: the sentence is in the tool's description and once in a listing with a running job,
+    /// whose rows mark the pid as the host's.
     #[test]
-    fn the_description_and_the_row_both_say_your_shell_cannot_see_these_pids() {
+    fn the_description_and_the_listing_both_say_your_shell_cannot_see_these_pids() {
         let s = JobList.schema();
         assert!(
             s.description.contains("own PID namespace"),
@@ -2336,10 +2378,11 @@ mod tests {
             "{}",
             s.description
         );
-        let row = job_row(&view("j1", None));
         assert!(
-            row.contains("which your shell cannot see (it has its own PID namespace)"),
-            "{row}"
+            PID_CAVEAT.contains("which your shell cannot see (it has its own PID namespace)"),
+            "{PID_CAVEAT}"
         );
+        let row = job_row(&view("j1", None));
+        assert!(row.contains("a host pid"), "{row}");
     }
 }

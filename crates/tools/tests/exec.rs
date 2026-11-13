@@ -404,6 +404,23 @@ fn the_reap_log_reaches_the_model_through_job_list() {
         "{}",
         killed.payload
     );
+    // Each fact of the record once, not again in a summary line above it.
+    assert_eq!(
+        killed
+            .payload
+            .matches(letibot_tools::exec::HOST_KILL)
+            .count(),
+        1,
+        "{}",
+        killed.payload
+    );
+    // Reading it back says it is partial, and does not name the call that is reading it.
+    let read = h.call("job_output", &serde_json::json!({"job": id}).to_string());
+    let body = read.render();
+    if read.outcome == ToolOutcome::Ok {
+        assert!(body.contains("its output is partial"), "{body}");
+        assert!(!body.contains("`job_output` reads"), "{body}");
+    }
 
     let after = h.call("job_list", "{}");
     // The kill ends the job's own cgroup, which is one reaping in the log: the listing has to
