@@ -1044,3 +1044,23 @@ fn a_model_without_adaptive_thinking_is_asked_again_in_the_manual_mode() {
         "budget {budget} of max {max}"
     );
 }
+
+/// No text block in a request is empty: Kimi's server of this API refuses one, and with it every
+/// later turn of the conversation. A command that printed nothing is sent as words.
+#[test]
+fn no_text_block_is_ever_empty() {
+    let items = vec![
+        user("run it"),
+        calls(&["c1"]),
+        result("c1", ToolOutcome::Ok, ""),
+        user(""),
+        user("and now?"),
+    ];
+    let body = provider().body(&request("", &items, &[])).expect("a body");
+    let text = body.to_string();
+    assert!(
+        !text.contains(r#""text":"""#),
+        "an empty text block: {text}"
+    );
+    assert!(text.contains("(no output)"), "{text}");
+}

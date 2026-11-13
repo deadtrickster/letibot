@@ -524,7 +524,12 @@ pub fn convert_with_tail(
                 }
                 // The payload already names its own outcome - `render` wraps a failure, a timeout
                 // and a backgrounding in their own envelope - so a second prefix here said it twice.
-                let content = payload.clone();
+                // An empty string is refused by some servers of this API (Kimi's): a command that
+                // printed nothing says so instead.
+                let content = match payload.trim().is_empty() {
+                    true => "(no output)".to_string(),
+                    false => payload.clone(),
+                };
                 out.push(json!({"role": "tool", "tool_call_id": call_id, "content": content}));
                 // When the call read a picture, the picture follows as its own user message, the
                 // shape every vision API accepts. A model that does not see gets the words and one

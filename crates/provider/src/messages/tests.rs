@@ -818,3 +818,38 @@ fn a_long_multibyte_schema_is_refused_without_a_panic() {
     let wide = format!("\"{}\"", "\u{3042}".repeat(60));
     assert!(tools(&[wide]).unwrap_err().contains("neither"));
 }
+
+/// A command that printed nothing is sent as words, never as an empty string: Kimi's server
+/// refuses a message whose text is empty, and the whole conversation with it.
+#[test]
+fn an_empty_tool_result_is_sent_as_no_output() {
+    let items = vec![
+        TranscriptItem::User {
+            speaker: Default::default(),
+            parts: vec![UserPart::Text {
+                text: "run it".into(),
+            }],
+        },
+        TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![ToolCall {
+                id: "c1".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            }],
+            truncated: false,
+        },
+        TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "bash".into(),
+            outcome: ToolOutcome::Ok,
+            payload: String::new(),
+            edits: Vec::new(),
+            origin: None,
+            media: None,
+        },
+    ];
+    let m = convert("", &items, false);
+    let tool = m.iter().find(|x| x["role"] == "tool").expect("the result");
+    assert_eq!(tool["content"], "(no output)");
+}

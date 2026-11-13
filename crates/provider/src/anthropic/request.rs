@@ -166,6 +166,9 @@ pub(super) fn messages(
                 );
             }
             TranscriptItem::Notice { text, .. } => {
+                if text.trim().is_empty() {
+                    continue;
+                }
                 push(
                     open(&mut out, Role::User),
                     json!({"type": "text", "text": text}),
@@ -177,6 +180,7 @@ pub(super) fn messages(
                 let mut images = 0usize;
                 for part in parts {
                     match part {
+                        UserPart::Text { text } if text.trim().is_empty() => {}
                         UserPart::Text { text } => {
                             push(m, json!({"type": "text", "text": text}), false);
                         }
@@ -261,7 +265,13 @@ pub(super) fn messages(
                     own_author.push(call_id.clone());
                 }
                 let failed = is_error(outcome);
-                let mut content: Vec<Value> = vec![json!({"type": "text", "text": payload})];
+                // An empty text block is refused by some servers of this API (Kimi's): a command
+                // that printed nothing says so instead.
+                let said = match payload.trim().is_empty() {
+                    true => "(no output)",
+                    false => payload.as_str(),
+                };
+                let mut content: Vec<Value> = vec![json!({"type": "text", "text": said})];
                 if let Some(m) = media {
                     // A picture the call read rides the result that read it: the API takes an
                     // image block inside `tool_result.content`, and a model that does not get
@@ -385,7 +395,9 @@ fn pair(out: Vec<Message>, own_author: &[String]) -> Vec<Value> {
                         .and_then(|a| a.first())
                         .and_then(|t| t["text"].as_str())
                         .unwrap_or_default();
-                    message.blocks.push(json!({"type": "text", "text": said}));
+                    if !said.is_empty() {
+                        message.blocks.push(json!({"type": "text", "text": said}));
+                    }
                 }
             }
             // 2. A call still owed is answered here, in the order it was made, among the results
