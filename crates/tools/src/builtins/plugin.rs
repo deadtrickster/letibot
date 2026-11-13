@@ -151,15 +151,16 @@ impl Tool for PluginTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             TOOL,
-            "Build and load a plugin pane in this session, at run time. `scaffold` writes a new \
-             pane plugin from a template into the session's own plugin directory; `build` \
-             compiles it for wasm32 offline and returns the compiler's own words when it fails; \
-             `test` calls its pane hook with an input and shows the view it answered, the layer \
-             that answered and the fuel it burned; `load` puts it through the shadow gate and, on \
-             a pass, makes it answer without a restart — so the head draws it; `stack` lists what \
-             is in force newest first; `disable` and `enable` switch one layer without deleting \
-             it. Read `plugin_hooks` for the pane's input and output contract before writing the \
-             view.",
+            "Build and load a plugin pane in this session, at run time — a dashboard, panel or \
+             live view the OPERATOR sees in this head (a `screen` is your own pty, not theirs). \
+             `scaffold` writes a new pane plugin from a template into the session's own plugin \
+             directory; `build` compiles it for wasm32 offline and returns the compiler's own \
+             words when it fails; `test` calls its pane hook with an input and shows the view it \
+             answered, the layer that answered and the fuel it burned; `load` puts it through the \
+             shadow gate and, on a pass, makes it answer without a restart — so the head draws \
+             it; `stack` lists what is in force newest first; `disable` and `enable` switch one \
+             layer without deleting it. Read `plugin_hooks` for the pane's input and output \
+             contract before writing the view.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
@@ -648,5 +649,25 @@ mod tests {
         let (outcome, rendered) = call(&rt, TOOL, r#"{"action":"stack"}"#);
         assert!(matches!(outcome, ToolOutcome::Failed { .. }), "{rendered}");
         assert!(rendered.contains("no plugin host"), "{rendered}");
+    }
+
+    /// A pane is the dashboard the OPERATOR sees, and the schema has to say so: a model asked for
+    /// "a dashboard" reached `screen` and built a view only it could see (db-fuzz, rows 38835-38851).
+    #[test]
+    fn the_description_says_a_pane_is_what_the_operator_sees() {
+        let s = Tool::schema(&PluginTool::new(Arc::new(Recorder::default())));
+        assert!(s.description.len() < 800, "{} bytes", s.description.len());
+        assert_eq!(
+            crate::schema::lint_description(&s.description),
+            vec![],
+            "a description is prompt bytes, and a claim about data is a claim that ages"
+        );
+        for clause in ["dashboard", "OPERATOR", "`screen`"] {
+            assert!(
+                s.description.contains(clause),
+                "the description never says `{clause}`: {}",
+                s.description
+            );
+        }
     }
 }

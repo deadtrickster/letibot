@@ -152,16 +152,16 @@ impl Tool for ScreenTool {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
             "screen",
-            "Run a program on a terminal screen in this seat, then look at it. `start` \
-             {cmd, cols, rows, cwd}: default cmd is the letibot head on a throwaway session; \
-             returns an id. `keys` {id, keys}: text is literal, `<Enter> <Esc> <Tab> <Up> \
-             <C-c> <M-x>` are keys, `<<` is `<`. `mouse` {id, x, y, button, move, scroll}: \
-             cells from 0. `read` {id, idle_ms}: rows plus a style map. `shot` {id}: a PNG. \
-             `web` {url, width, height, full_page, wait_ms}: a page in headless Chrome as a \
-             PNG; `dom` {url}: its text. `list`, `stop` {id}. `tab` {act}: the operator's \
-             Chrome tab, once allowed for this session (the tab a question came from: grants, \
-             shot, read only): grants, shot, read (text and numbered elements), click {n|selector|x,y}, type {text, n|selector}, key {keys}, navigate \
-             {url}, scroll {dy}.",
+            "Run a program on a terminal screen in this seat, then look at it. The screen is \
+             private to you: the operator does not see it, and a view they should keep is a \
+             `plugin` pane. `start` {cmd, cols, rows, cwd} returns an id (no cmd starts a \
+             throwaway head). `keys` {id, keys}: text is literal, `<Enter> <Esc> <Tab> <Up> \
+             <C-c> <M-x>` are keys, `<<` is `<`. `mouse` {id, x, y, button, move, scroll}: cells \
+             from 0. `read` {id, idle_ms}: rows plus a style map. `shot` {id}: a PNG. `web` {url, \
+             width, height, full_page, wait_ms} renders a page in headless Chrome; `dom` {url} \
+             its text. `list`, `stop` {id}. `tab` {act} drives the operator's Chrome tab once they \
+             allow it: grants, shot, read, click {n|selector|x,y}, type {text, n|selector}, key \
+             {keys}, navigate {url}, scroll {dy}.",
             serde_json::json!({
                 "type": "object",
                 "properties": {

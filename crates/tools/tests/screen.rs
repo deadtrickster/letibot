@@ -144,6 +144,19 @@ fn the_description_is_inside_the_budget_and_lints_clean() {
         letibot_tools::schema::lint_description(&s.description),
         vec![]
     );
+    // The screen is the agent's own pty: a model that read it as the operator's view built a
+    // dashboard nobody else could see (db-fuzz, row 38835).
+    for clause in [
+        "private to you",
+        "operator does not see it",
+        "`plugin` pane",
+    ] {
+        assert!(
+            s.description.contains(clause),
+            "the description never says `{clause}`: {}",
+            s.description
+        );
+    }
 }
 
 #[test]

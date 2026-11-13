@@ -1319,9 +1319,34 @@ mod tests {
             "load",
             "disable",
             "plugin_hooks",
+            "stack",
         ] {
             assert!(pane.body.contains(step), "the skill never names `{step}`");
         }
+        // The three sentences a session re-learns when they are missing: check the stack BEFORE
+        // scaffolding, the source is a file tool's and not a command's, and a look has a second
+        // capability (findings 1, 5, 8).
+        for said in [
+            "Do this first",
+            "EXTEND it",
+            "`read`, `edit` and `write` only",
+            "read:<path>",
+        ] {
+            assert!(pane.body.contains(said), "the skill never says `{said}`");
+        }
+        // The step order that matters: the stack is read before the first scaffold.
+        let stack_at = pane
+            .body
+            .find("{\"action\":\"stack\"}")
+            .expect("the skill asks for the stack");
+        let scaffold_at = pane
+            .body
+            .find("{\"action\":\"scaffold\"")
+            .expect("the skill scaffolds");
+        assert!(
+            stack_at < scaffold_at,
+            "the stack is read before the first scaffold: a second pane is the failure it prevents"
+        );
         // And the frontmatter is not in the body: a skill whose instructions open with `---`
         // teaches a model to paste YAML into a pane.
         assert!(!pane.body.trim_start().starts_with("---"));
@@ -1508,6 +1533,47 @@ mod tests {
         // name and one line would never have reached.
         let ranked = r.ranked("make me a latex presentation for the offsite", 3);
         assert_eq!(ranked[0].0, "slides", "{ranked:?}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A "pane" request reaches the pane skill and not an HTML one: db-fuzz's "add it as a pane"
+    /// had no offer, and the dashboard request that followed went to an instrument-dashboard skill
+    /// and became an HTTP server (findings 3 and 4). The words a session types are the frontmatter's
+    /// job; whether the ranking then wins a LONGER prose request is the scorer's, which is another
+    /// package's work — `build me a harness dashboard` is scored here and reported, not asserted.
+    #[test]
+    fn a_pane_request_reaches_the_pane_skill_and_not_an_html_one() {
+        let root = std::env::temp_dir().join(format!("letibot-skill-html-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let html = root.join("instrument-dashboard");
+        std::fs::create_dir_all(&html).expect("a skill dir");
+        std::fs::write(
+            html.join("SKILL.md"),
+            "---\nname: instrument-dashboard\ndescription: Build an operations dashboard or \
+             status page served as HTML\nwhen_to_use: the operator asks for a dashboard or a \
+             status page\nkeywords: dashboard, status, page, html\n---\n\nwrite html and serve it\n",
+        )
+        .expect("a skill");
+        let r = SkillRegistry::load_onto(SkillRegistry::built_in(), std::slice::from_ref(&root));
+        let pane = r
+            .skills
+            .iter()
+            .find(|s| s.name == "plugin-pane")
+            .expect("the pane skill this build carries");
+        // The words a session types when it wants a pane, in the frontmatter a ranker reads.
+        for word in ["dashboard", "harness", "operator", "tui"] {
+            assert!(
+                pane.keywords.iter().any(|k| k == word),
+                "`{word}` is not a keyword of the pane skill: {:?}",
+                pane.keywords
+            );
+        }
+        let ranked = r.ranked("add it as a pane", 3);
+        assert_eq!(ranked[0].0, "plugin-pane", "{ranked:?}");
+        println!(
+            "a harness dashboard: {:?}",
+            r.ranked("build me a harness dashboard", 3)
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
