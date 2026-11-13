@@ -43,6 +43,11 @@ letibot gc [OWNER] [--folder DIR] [--json] [--log | --now [--json]]
   --folder DIR   only the owners working against DIR
   --json         the plan (or the pass) as one object
   --log          the journal of what was done to these owners (`reap_event`), oldest first
+  --docker-report
+                 other projects' docker images and volumes, grouped by compose project and age,
+                 with the commands that would remove them. It removes nothing: letibot cannot
+                 prove another project's objects are its own. The `[gc.docker]` table is the only
+                 policy that ever prunes, and it is off unless it names labels.
   --now          ACT, in one pass. Compute first: an owner idle, past a TTL or under a gone
                  daemon is closed, and its cgroups, VMs and daemons are ended. Then its WORK: a
                  worktree and its branch are kept in refs/letibot/archive/OWNER/ (the uncommitted
@@ -142,6 +147,8 @@ struct Args {
     log: bool,
     /// `gc --now`: act, for compute.
     now: bool,
+    /// `gc --docker-report`: other people's docker objects, sized and aged, and removed nothing.
+    docker_report: bool,
     /// `hold --for`: the span, in milliseconds.
     until: Option<i64>,
     /// `gc --settle`: settle this owner's work now.
@@ -167,6 +174,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         top: false,
         log: false,
         now: false,
+        docker_report: false,
         until: None,
         settle: false,
         restore: false,
@@ -203,6 +211,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
                     .ok_or("`--older` needs a span after it, e.g. `90d`")?;
                 out.older = Some(span_ms(span)?);
             }
+            "--docker-report" => out.docker_report = true,
             "--for" => {
                 let span = it
                     .next()
@@ -350,6 +359,9 @@ fn gc(args: &[String]) -> Result<(), String> {
     }
     if let Some(pattern) = &parsed.adopt {
         return gc_adopt(pattern, parsed.folder.as_deref(), parsed.now);
+    }
+    if parsed.docker_report {
+        return docker_report(parsed.json);
     }
     if parsed.now {
         // Opening for a write is the one thing this verb family does not do read-only, so it is
@@ -728,6 +740,30 @@ fn gc_adopt(pattern: &str, folder: Option<&Path>, act: bool) -> Result<(), Strin
             "\nthis is a plan: `letibot gc --now {owner}` (or `--settle {owner}`) is what acts, \
              and every one of them is archived before it is removed"
         );
+    }
+    Ok(())
+}
+
+/// `letibot gc --docker-report`: other people's images and volumes, grouped by compose project and
+/// age, with the commands that would remove them. It removes nothing and it never will - letibot
+/// cannot prove another project's objects are its own (`docs/lifecycle.md` d.7).
+fn docker_report(json: bool) -> Result<(), String> {
+    let places = lifecycle::Places::here();
+    let Some(engine) = places.docker_engine else {
+        println!(
+            "no docker engine on this box: no `[docker] engine`, no $DOCKER_HOST, and nothing \
+             listening at /run/docker.sock. Nothing to report, and nothing removed."
+        );
+        return Ok(());
+    };
+    let socket = engine.clone();
+    let engine = letibot_tools::docker::Socket::at(&socket);
+    let report = letibot_tools::docker::report(&engine, lifecycle::now_ms())
+        .map_err(|e| format!("{}: {e}", socket.display()))?;
+    if json {
+        println!("{}", report.to_json());
+    } else {
+        print!("{}", report.render());
     }
     Ok(())
 }
