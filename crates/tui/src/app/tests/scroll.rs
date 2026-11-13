@@ -2131,14 +2131,25 @@ fn the_model_picker_names_which_providers_this_box_holds_a_key_for() {
         glm.contains(&sgr::GREEN.to_string()),
         "a provider this box holds a key for is not greened: {glm:?}"
     );
-    let deepseek = line("deepseek");
+    // `local` needs no key at all, which is a third state and says so.
+    assert!(line("no key needed").contains("local"), "{screen}");
+    // A provider with no key is behind the one `not connected` row.
+    assert!(!screen.contains("deepseek"), "{screen}");
+    open_not_connected(&mut a);
+    let screen = a.screen(110, 30).join("\n");
+    let line = |needle: &str| {
+        screen
+            .lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("no row with {needle:?} in:\n{screen}"))
+            .to_string()
+    };
+    let deepseek = line("deepseek  ");
     assert!(deepseek.contains("not connected"), "{deepseek:?}");
     assert!(
         !deepseek.contains(sgr::GREEN),
         "a provider with no key is greened: {deepseek:?}"
     );
-    // `local` needs no key at all, which is a third state and says so.
-    assert!(line("no key needed").contains("local"), "{screen}");
 
     // A daemon that sends no such row cannot say: the state is unknown rather than "not
     // connected", which would be the head inventing a fact about this box's files.

@@ -82,13 +82,16 @@ fn send(a: &mut App, text: &str) -> Option<Action> {
 /// cloud row is two Enters - the provider, then the model. A row with no key behind it asks on the
 /// first Enter instead, and the second is then the key card's, which is why the helper stops there.
 fn take_deepseek(a: &mut App) -> Option<Action> {
+    if !a.model_rows().1.iter().any(|t| t.name() == "deepseek") {
+        open_not_connected(a);
+    }
     let (_, takes) = a.model_rows();
     a.mode_sel = takes
         .iter()
         .position(|t| t.name() == "deepseek")
         .expect("the deepseek provider row");
     let first = a.key(Key::Enter);
-    if a.key_ask.is_some() || a.model_open.is_none() {
+    if a.key_ask.is_some() || a.model_open.as_deref() != Some("deepseek") {
         return first;
     }
     a.mode_sel = 0;

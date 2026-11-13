@@ -2131,6 +2131,7 @@ fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
         ],
     });
     assert_eq!(a.command("models"), Some(Action::Settings));
+    open_not_connected(&mut a);
     // The daemon named no provider keyed, so this row is one to ask about: the card's Enter asks
     // for the key instead of switching - the row's job is to make its models reachable.
     a.mode_sel = a
@@ -2197,10 +2198,12 @@ fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
         ],
     });
     b.command("models");
-    // The card's rows are the model in force, then the providers: `local` and `deepseek`.
+    // The card's rows are the model in force, then the providers: `local` and `not connected`,
+    // which opens onto `deepseek`.
     assert_eq!(b.mode_sel, 0);
     b.key(Key::Down);
     b.key(Key::Down);
+    b.key(Key::Enter);
     b.key(Key::Enter);
     assert!(b.key_ask.is_some());
     b.key(Key::Char('k'));

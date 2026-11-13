@@ -48,6 +48,10 @@ pub(crate) struct ModelCard {
     pub(crate) recent: Vec<String>,
 }
 
+/// The key of the one level-one row every provider this box holds no key for folds into. A door
+/// name never starts with a space, so no provider is spelled this way.
+pub(crate) const NOT_CONNECTED: &str = " not connected";
+
 /// How many models the recent group holds: the last few choices and no more, so the group never
 /// costs the providers their room on a 45-line screen.
 pub(crate) const RECENT_MODELS: usize = 5;
@@ -290,6 +294,22 @@ impl App {
             }
             return (card, lines, takes);
         }
+        let unkeyed: Vec<&Provider> = match self.keys_row_present() {
+            true => card.providers.iter().filter(|p| !p.ready).collect(),
+            false => Vec::new(),
+        };
+        if self.model_open.as_deref() == Some(NOT_CONNECTED) {
+            lines.push(Line::Group(format!(
+                "not connected · {} provider{} · enter asks for a key",
+                unkeyed.len(),
+                plural(unkeyed.len())
+            )));
+            for p in &unkeyed {
+                lines.push(Line::Provider(takes.len()));
+                takes.push(self.provider_take(p));
+            }
+            return (card, lines, takes);
+        }
         if let Some(p) = self
             .model_open
             .as_ref()
@@ -335,19 +355,33 @@ impl App {
         if !card.providers.is_empty() {
             lines.push(Line::Group("providers".to_string()));
         }
-        for p in &card.providers {
+        // Keyed first, and the unkeyed ones behind a single row: a row per provider this box cannot
+        // take is a list of keys nobody asked about.
+        for p in card.providers.iter().filter(|p| !unkeyed.contains(p)) {
+            lines.push(Line::Provider(takes.len()));
+            takes.push(self.provider_take(p));
+        }
+        if !unkeyed.is_empty() {
             lines.push(Line::Provider(takes.len()));
             takes.push(Take::Provider {
-                key: p.key.clone(),
-                label: p.label.clone(),
-                model: p
-                    .models
-                    .first()
-                    .map(|m| self.model_switch(p, m))
-                    .unwrap_or_default(),
+                key: NOT_CONNECTED.to_string(),
+                label: "not connected".to_string(),
+                model: String::new(),
             });
         }
         (card, lines, takes)
+    }
+
+    fn provider_take(&self, p: &Provider) -> Take {
+        Take::Provider {
+            key: p.key.clone(),
+            label: p.label.clone(),
+            model: p
+                .models
+                .first()
+                .map(|m| self.model_switch(p, m))
+                .unwrap_or_default(),
+        }
     }
 
     /// The card's rows and what the cursor counts, without the snapshot the drawing path wants.
@@ -366,6 +400,12 @@ impl App {
         let at = self.mode_sel.min(takes.len().saturating_sub(1));
         match takes.get(at).cloned() {
             Some(Take::Model { name, .. }) => self.take_pick(name),
+            Some(Take::Provider { key, .. }) if key == NOT_CONNECTED => {
+                self.model_open = Some(key);
+                self.mode_sel = 0;
+                self.pick_unseeded = false;
+                None
+            }
             Some(Take::Provider { key, model, .. }) => {
                 // A provider the daemon did not describe - no keys row at all - opens anyway: the
                 // head cannot tell, and taking its first model is not better than showing them.

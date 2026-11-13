@@ -51,6 +51,11 @@ impl App {
                         Some(Take::Provider { key, .. }) => key.clone(),
                         _ => String::new(),
                     };
+                    if key == crate::app::NOT_CONNECTED {
+                        let n = card.providers.iter().filter(|p| !p.ready).count();
+                        out.push(folded_row(n, *k == self.mode_sel, widths));
+                        continue;
+                    }
                     let p = card.providers.iter().find(|p| p.key == key);
                     out.push(provider_row(
                         p,
@@ -93,11 +98,15 @@ impl App {
                 ),
             };
         }
-        match takes
-            .iter()
-            .filter(|t| matches!(t, Take::Provider { .. }))
-            .count()
-        {
+        // Level one counts every provider, the folded ones too.
+        let n = match self.model_open.is_none() {
+            true => self.model_card().providers.len(),
+            false => takes
+                .iter()
+                .filter(|t| matches!(t, Take::Provider { .. }))
+                .count(),
+        };
+        match n {
             0 => String::new(),
             n => format!("{n} providers"),
         }
@@ -272,6 +281,23 @@ fn provider_row(p: Option<&Provider>, cursor: bool, w: Widths, keys: bool) -> RL
         Span::role(pad_left(&count, 9), Role::Faint),
         Span::raw("  "),
         Span::role(price_range(p), Role::Faint),
+    ])
+}
+
+/// The one row the providers this box holds no key for fold into: Enter lists them.
+fn folded_row(n: usize, cursor: bool, w: Widths) -> RLine {
+    RLine::new(vec![
+        Span::raw("  "),
+        marks(cursor, false),
+        Span::raw(" "),
+        Span::role(pad_right("not connected", w.label), Role::Faint),
+        Span::raw("  "),
+        Span::role(pad_right("", 13), Role::Faint),
+        Span::raw("  "),
+        Span::role(
+            pad_left(&format!("{n} provider{}", if n == 1 { "" } else { "s" }), 9),
+            Role::Faint,
+        ),
     ])
 }
 

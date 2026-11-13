@@ -137,6 +137,16 @@ fn typed(a: &mut App, text: &str) {
     }
 }
 
+/// Open the model card's `not connected` row, where the providers this box holds no key for are.
+fn open_not_connected(a: &mut App) {
+    let (_, takes) = a.model_rows();
+    a.mode_sel = takes
+        .iter()
+        .position(|t| t.name() == "not connected")
+        .expect("the not connected row");
+    assert_eq!(a.key(Key::Enter), None);
+}
+
 // ─────────────────────────── `!term`, the pane ───────────────────────────
 
 /// Open a pane the way the operator does, and feed it the bytes a program would draw. The submit is

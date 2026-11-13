@@ -161,16 +161,17 @@ fn the_card_opens_on_the_model_answering_now_and_a_row_per_provider() {
         recent > now,
         "the recent rows do not come after the one in force: {all}"
     );
-    for provider in ["local", "deepseek", "glm", "gemini"] {
+    for provider in ["local", "deepseek", "glm"] {
         assert!(
             all.contains(provider),
             "no {provider} row on the card: {all}"
         );
     }
-    // A provider this box can take comes before one it cannot, and the daemon's own server leads.
+    // A provider this box can take comes before one it cannot, the daemon's own server leads, and
+    // the unkeyed ones are one row.
     assert_eq!(
         provider_order(&a),
-        vec!["local", "deepseek", "zhipuai", "google"],
+        vec!["local", "deepseek", "zhipuai", NOT_CONNECTED],
         "{all}"
     );
     // Every provider row is under the heading, not above it.
@@ -187,9 +188,12 @@ fn the_card_opens_on_the_model_answering_now_and_a_row_per_provider() {
         deepseek.contains("$0.15–$0.6 /M"),
         "no price range: {deepseek}"
     );
-    let gemini = &rows[row_of(&rows, "not connected").expect("the gemini row")];
-    assert!(gemini.contains("gemini"), "{gemini}");
-    assert!(gemini.contains("1 model"), "{gemini}");
+    let folded = &rows[row_of(&rows, "not connected").expect("the folded row")];
+    assert!(folded.contains("1 provider"), "{folded}");
+    assert!(
+        !all.contains("gemini"),
+        "an unkeyed provider has a row of its own: {all}"
+    );
     // The daemon's own server has no catalogue row, so its price column says what it is.
     let local = &rows[row_of(&rows, "no key needed").expect("the local row")];
     assert!(local.contains("no meter"), "{local}");
@@ -229,15 +233,33 @@ fn the_card_without_a_query_fits_one_screen_whatever_the_model_count() {
         "the card needed more than a screen: {all}"
     );
     let card_rows = rows(&a, 150);
-    for provider in ["deepseek", "glm", "gemini", "openai", "glm-coding-cn"] {
+    let has_row = |rows: &[String], provider: &str| {
+        rows.iter()
+            .any(|l| l.split_whitespace().any(|w| w == provider))
+    };
+    for provider in ["deepseek", "glm"] {
         assert!(
-            card_rows
-                .iter()
-                .any(|l| l.split_whitespace().next().is_some_and(|w| w == provider)),
+            has_row(&card_rows, provider),
             "no {provider} row: {}",
             card_rows.join("\n")
         );
     }
+    assert!(
+        card_rows.iter().any(|l| l.contains("7 providers")),
+        "the unkeyed providers are not one row: {}",
+        card_rows.join("\n")
+    );
+    cursor_on(&mut a, "not connected");
+    assert_eq!(a.key(Key::Enter), None);
+    let folded = rows(&a, 150);
+    for provider in ["gemini", "openai", "glm-coding-cn"] {
+        assert!(
+            has_row(&folded, provider),
+            "no {provider} row under `not connected`: {}",
+            folded.join("\n")
+        );
+    }
+    a.key(Key::Esc);
     // Nothing behind a provider is drawn until it is opened: 36 models are two rows here.
     assert!(
         !all.contains("deepseek-model-7"),
@@ -311,9 +333,16 @@ fn a_provider_opens_onto_its_models_and_enter_switches_to_one() {
 #[test]
 fn an_unkeyed_provider_asks_for_its_key_instead_of_opening() {
     let mut a = card(&Wire::default());
+    cursor_on(&mut a, "not connected");
+    assert_eq!(a.key(Key::Enter), None);
+    assert_eq!(a.model_open.as_deref(), Some(NOT_CONNECTED));
     cursor_on(&mut a, "gemini");
     assert_eq!(a.key(Key::Enter), None);
-    assert!(a.model_open.is_none(), "an unkeyed provider opened");
+    assert_eq!(
+        a.model_open.as_deref(),
+        Some(NOT_CONNECTED),
+        "an unkeyed provider opened"
+    );
     let ask = a.key_ask.clone().expect("no key card");
     assert_eq!(ask.provider, "gemini");
     assert_eq!(ask.choice, "gemini/gemini-4-hydrogen");
@@ -322,6 +351,33 @@ fn an_unkeyed_provider_asks_for_its_key_instead_of_opening() {
         "{:?}",
         a.notice
     );
+}
+
+/// Whichever provider the daemon lists first, the one this box holds a key for leads at level one,
+/// and a query both match ranks its hit above the unkeyed one's.
+#[test]
+fn a_keyed_provider_sorts_above_an_unkeyed_one_unfiltered_and_in_a_search() {
+    let wire = Wire {
+        now: "zeta/coder-x",
+        models: vec![
+            ("acme/coder-x", "1M window · $1 in / $4 out per M"),
+            ("zeta/coder-x", "1M window · $1 in / $4 out per M"),
+        ],
+        keyed: vec!["zeta"],
+        keyless: Vec::new(),
+        doors: vec![("acme", "acme"), ("zeta", "zeta")],
+        recent: Vec::new(),
+    };
+    let mut a = card(&wire);
+    assert_eq!(provider_order(&a), vec!["zeta", NOT_CONNECTED]);
+    typed(&mut a, "coder");
+    let names: Vec<String> = a
+        .model_rows()
+        .1
+        .iter()
+        .map(|t| t.name().to_string())
+        .collect();
+    assert_eq!(names, vec!["zeta/coder-x", "acme/coder-x"]);
 }
 
 /// Esc and left step back one level at a time - the query, then the provider, then the card - so a
