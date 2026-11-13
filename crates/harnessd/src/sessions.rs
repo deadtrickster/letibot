@@ -545,6 +545,9 @@ fn court_main(
                 let outcome = s.dispatch(&id, &cmd);
                 crate::instruments::worker_cmd(&id, &cmd, at, &outcome);
                 s.say(&id, OutcomeSaid::Command(&cmd, &outcome));
+                // The hub leaves `delivery` up from the take until a turn starts. A command that
+                // starts none (a switch, a slash) would leave it up for good, so it is said here.
+                hub.refresh_activity();
             }
             // A wake is this session's own settlement being ready - the same door
             // `harness::serve_child` answers, and the reason a ring naming a root still means
