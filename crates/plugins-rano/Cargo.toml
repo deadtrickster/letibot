@@ -15,7 +15,7 @@ letibot-plugins.workspace = true
 sha2 = "0.10"
 
 # The one reason a binary links a JIT, and the price of running a plugin at all.
-rano = { git = "https://github.com/deadtrickster/rano", rev = "60a8e92959c621dc57f725e400cf5ccc97be7edd" }
+rano = { git = "https://github.com/deadtrickster/rano", rev = "0e429b78c725ced2ccabb99e7a970a6def15f0e0" }
 
 [dev-dependencies]
 # A test that proves the second host build compiles nothing has to install a real host's layers,

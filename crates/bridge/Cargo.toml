@@ -64,7 +64,7 @@ letibot-builtins.workspace = true
 # every host uses now lives in `letibot-plugins-rano` - a copy per binary is what made this bridge
 # and the head compile all thirteen built-ins on every host build.
 letibot-plugins-rano.workspace = true
-rano = { git = "https://github.com/deadtrickster/rano", rev = "60a8e92959c621dc57f725e400cf5ccc97be7edd" }
+rano = { git = "https://github.com/deadtrickster/rano", rev = "0e429b78c725ced2ccabb99e7a970a6def15f0e0" }
 
 [dev-dependencies]
 # **The fixture that writes an executable needs `write_stub`**, which is the one place in this tree

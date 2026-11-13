@@ -196,12 +196,14 @@ pub(crate) fn folded_rest(it: &SnapshotItem, body_lines: usize) -> usize {
     } else {
         1
     };
-    // Counted the way rano counts it: a line's envelope markers are the model's, and they are gone
-    // before either the count or the seam is worked out.
+    // Counted the way rano counts it: envelope markers and a restated reason are gone before
+    // either the count or the seam is worked out.
     payload
         .lines()
         .map(rano::agent::text::clean_line)
-        .filter(|l| !rano::agent::text::is_envelope(l))
+        .filter(|l| {
+            !rano::agent::text::is_envelope(l) && !rano::agent::tool_row::restates_reason(l, &shown)
+        })
         .count()
         .saturating_sub(kept)
 }

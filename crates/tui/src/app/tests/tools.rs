@@ -666,21 +666,16 @@ fn a_snapshot_that_carries_a_finished_call_is_seated_and_counts_as_nothing_execu
 #[test]
 fn a_settled_rows_register_comes_from_the_outcome_not_from_a_not_ok_test() {
     use letibot_transcript::ToolOutcome as O;
-    // The two the operator named that are still *something to look at*: neither is a failure.
-    for waiting in [
-        O::Denied {
-            req_id: "d1".into(),
-        },
-        O::Abstained {
-            reason: "nothing to do".into(),
-        },
-    ] {
-        assert_eq!(
-            outcome_role(&waiting),
-            Role::Attention,
-            "{waiting:?} is something to look at, not something that failed"
-        );
-    }
+    // A refusal is something to look at, not something that failed.
+    let denied = O::Denied {
+        req_id: "d1".into(),
+    };
+    assert_eq!(outcome_role(&denied), Role::Attention);
+    // An abstention needs no person: a search that matched nothing is the model's to read.
+    let abstained = O::Abstained {
+        reason: "nothing to do".into(),
+    };
+    assert_eq!(outcome_role(&abstained), Role::Info);
     // A backgrounded call is neither loud nor lit: finished work whose product is a job.
     assert_eq!(
         outcome_role(&O::Backgrounded {
@@ -1400,4 +1395,28 @@ fn ctrl_o_promotes_a_running_command_even_after_the_turn_went_terminal() {
         Some(Action::Promote),
         "the command is what gets promoted, so the command is what is asked about"
     );
+}
+
+/// A grep that matched nothing: its payload restates the reason the row already prints, and the
+/// fold's count skips that line the way the drawn row does, so a two-line rest is not called three.
+#[test]
+fn a_folded_rows_rest_skips_the_reason_the_row_already_prints() {
+    let why = "`a|b` does not occur in the 1 file(s) searched";
+    let it = letibot_sessionlog::view::SnapshotItem {
+        item_id: "t1.r1".into(),
+        kind: "tool_result".into(),
+        ledger_head: String::new(),
+        ts: 0,
+        item: Some(TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "grep".into(),
+            outcome: letibot_transcript::ToolOutcome::Abstained { reason: why.into() },
+            payload: format!("tool: grep\nreason: {why}\nsearched 1 file(s)\nrelaxations tried\n"),
+            edits: Vec::new(),
+            origin: None,
+            media: None,
+        }),
+        citations: Vec::new(),
+    };
+    assert_eq!(crate::ui::folded_rest(&it, 40), 2);
 }
