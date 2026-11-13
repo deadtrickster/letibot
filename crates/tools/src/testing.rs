@@ -2,6 +2,10 @@
 //! `pub` behind the `testing` feature because the clause tests in `tests/` need the same tree the
 //! unit tests use: two such trees is how they drift, and a miss is only meaningful if it is known.
 
+/// A stub Docker engine on a unix socket (`docs/lifecycle.md` G6): this guest has no engine, and a
+/// test may never reach a real one.
+pub mod docker;
+
 use std::sync::Arc;
 
 use letibot_transcript::ToolCall;

@@ -43,6 +43,7 @@ impl Fixture {
             firecode_cache: Some(self.at("cache")),
             proc_root: self.at("proc"),
             cgroup_fs: self.at("cg"),
+            docker_engine: None,
         }
     }
 

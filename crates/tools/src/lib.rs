@@ -31,6 +31,10 @@ pub mod console_bash;
 /// did" is a number rather than an impression.
 pub mod corpus_replay;
 pub mod detect;
+/// Docker for a seat: no engine socket by default, a labelling proxy when one is granted. A module
+/// of its own rather than part of [`lifecycle`] because a proxy is not a reaper: the reaper reads the
+/// labels the proxy puts on.
+pub mod docker;
 pub mod edit;
 pub mod events;
 pub mod exec;
