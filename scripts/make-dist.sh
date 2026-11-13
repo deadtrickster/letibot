@@ -125,6 +125,7 @@ esac
 ARCHIVE="$ARCHIVE_BINARIES $ARCHIVE_LIBRARIES"
 outdir="${2:-dist}"
 
+# shellcheck disable=SC1007 # an empty CDPATH for this cd only, so it cannot print a path
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 lib="${LETIBOT_LLAMA_LIB:-/home/dead/Projects/llama.cpp/build-glm/bin}"
 
@@ -312,6 +313,7 @@ else
     # falls through to the refusal below rather than being accepted by a bare `''`.
     rp=$(readelf -d "$stage/$so" 2>/dev/null |
       sed -n 's/.*\(RUNPATH\|RPATH\)[^[]*\[\(.*\)\].*/\2/p' | head -1)
+    # shellcheck disable=SC2016 # `$ORIGIN` is the loader's token, matched literally
     case "$rp" in
       '$ORIGIN') ;; # exactly right: finds siblings, nothing else
       *'$ORIGIN'*)
@@ -327,6 +329,7 @@ else
         ;;
       *)
         if command -v patchelf >/dev/null 2>&1; then
+          # shellcheck disable=SC2016 # `$ORIGIN` is written literally for the loader to expand
           patchelf --set-rpath '$ORIGIN' "$stage/$so" ||
             {
               echo "make-dist: patchelf failed on $so" >&2
@@ -476,7 +479,9 @@ else
     # away from an install that would have worked, with a package name for something
     # they already have. Refusing both ways is what makes the two lists impossible to
     # drift apart rather than merely unlikely to.
+    # shellcheck disable=SC2086 # the lists are split into words on purpose
     echo "make-dist: host-provided libraries: $(printf '%s ' $candidates)"
+    # shellcheck disable=SC2086 # the same
     echo "make-dist: install.sh names:          $(printf '%s ' $install_sh_host)"
     stale=''
     for named in $install_sh_host; do
@@ -511,6 +516,7 @@ COPYFILE_DISABLE=1 tar -czf "$outdir/$name" -C "$stage" .
 # file at the root, the three binaries executable, and no extra entries — a stray
 # file riding along into a release is a thing that only shows up on a user's disk.
 listing=$(tar -tzf "$outdir/$name" | sed 's|^\./||' | grep -v '^$' | sort)
+# shellcheck disable=SC2086 # one name per word of the list
 expected=$(printf '%s\n' $ARCHIVE | sort)
 if [ "$listing" != "$expected" ]; then
   echo "make-dist: $name does not hold what it should." >&2
