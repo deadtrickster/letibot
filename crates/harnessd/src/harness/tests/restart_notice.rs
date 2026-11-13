@@ -217,6 +217,7 @@ impl letibot_backend::MessagesBackend for Answers {
                 micros_usd: None,
             },
             raw_usage: None,
+            thoughts: Vec::new(),
         })
     }
 }

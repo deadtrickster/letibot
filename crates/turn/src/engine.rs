@@ -1419,14 +1419,26 @@ impl TurnEngine {
         self.salvage.cleared();
 
         // The items, in the order the local dialects produce them: the thinking
-        // first, then the answer with its calls.
+        // first, then the answer with its calls. A provider that signs its thinking
+        // hands over the blocks themselves, so each row carries what replaying it needs;
+        // a plain-text provider keeps the one row its concatenated reasoning makes.
         let mut produced = Vec::new();
-        if !done.reasoning.is_empty() {
-            produced.push(TranscriptItem::Reasoning {
-                text: done.reasoning.clone(),
-                field: letibot_transcript::ReasoningField::ReasoningContent,
-                truncated: false,
-            });
+        if done.thoughts.is_empty() {
+            if !done.reasoning.is_empty() {
+                produced.push(TranscriptItem::Reasoning {
+                    text: done.reasoning.clone(),
+                    field: letibot_transcript::ReasoningField::ReasoningContent,
+                    truncated: false,
+                });
+            }
+        } else {
+            for thought in &done.thoughts {
+                produced.push(TranscriptItem::Reasoning {
+                    text: thought.text.clone(),
+                    field: thought.field.clone(),
+                    truncated: false,
+                });
+            }
         }
         produced.push(TranscriptItem::Assistant {
             text: done.text.clone(),

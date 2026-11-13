@@ -53,6 +53,7 @@ impl letibot_backend::MessagesBackend for Recorder {
                 micros_usd: None,
             },
             raw_usage: None,
+            thoughts: Vec::new(),
         })
     }
 }

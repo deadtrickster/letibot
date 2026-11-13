@@ -2088,6 +2088,7 @@ impl letibot_backend::MessagesBackend for SaysOneThing {
                 micros_usd: None,
             },
             raw_usage: None,
+            thoughts: Vec::new(),
         })
     }
 }

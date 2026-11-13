@@ -319,13 +319,24 @@ pub enum SegmentEdge {
 /// Which wire field the model expects its own prior reasoning replayed into. Getting this
 /// wrong does not error: every prompt diverges from its cache entry at the first assistant
 /// turn, so the prefix cache never hits and the entry count grows without bound.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// The two signed variants carry the provider's opaque bytes because a block it signed cannot
+/// be replayed without them: Anthropic answers 400 to a `thinking` block whose `signature` is
+/// missing or modified, and the signature is delivered with the block rather than derivable from
+/// its text. So the bytes live on the row, where a restart, a fork and a compaction keep them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningField {
     /// GLM: replayed as `reasoning_content`.
     ReasoningContent,
     /// Qwen: replayed inside the rendered turn, gated by `preserve_thinking`.
     Inline,
+    /// Anthropic: replayed as a `thinking` block carrying this block's `signature`, exactly as
+    /// the API returned it. `text` is that block's `thinking` - a summary, when it summarizes.
+    Signed { signature: String },
+    /// Anthropic: replayed as a `redacted_thinking` block carrying its encrypted `data`, which is
+    /// the whole of the block. `text` is empty: there was nothing to show.
+    Redacted { data: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -137,6 +137,20 @@ pub struct Completion {
     /// The provider's `usage` object verbatim, for a metrics row somebody reads
     /// later without this crate's model of it.
     pub raw_usage: Option<String>,
+    /// The same thinking as `reasoning`, as the blocks that produced it, when the provider signs
+    /// them: replaying such a block needs the signature, which is opaque bytes on the block rather
+    /// than anything derivable from its text. Empty for a provider whose thinking is plain text,
+    /// and `reasoning` stays the plain concatenation either way.
+    pub thoughts: Vec<Thought>,
+}
+
+/// One thinking block a provider returned, with the field that very provider needs back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Thought {
+    /// The thinking text, exactly as the provider returned it - a summary, when it summarizes.
+    pub text: String,
+    /// How it must be replayed to the provider that produced it.
+    pub field: letibot_transcript::ReasoningField,
 }
 
 /// Whether to keep streaming.

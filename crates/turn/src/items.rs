@@ -140,7 +140,7 @@ pub fn produce(
                 items.push(ProducedItem {
                     item: TranscriptItem::Reasoning {
                         text,
-                        field: reasoning_field,
+                        field: reasoning_field.clone(),
                         // Stamped by `mark_truncated` once the engine knows how
                         // the turn ended; `produce` cannot see that from here.
                         truncated: false,

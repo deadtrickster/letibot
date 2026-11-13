@@ -677,6 +677,7 @@ fn a_summary_turn_goes_to_the_provider_when_there_is_one() {
                     micros_usd: Some(3),
                 },
                 raw_usage: None,
+                thoughts: Vec::new(),
             })
         }
     }
