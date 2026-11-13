@@ -102,7 +102,8 @@ fn the_ways_into_the_background_and_the_deadline_are_distinguishable() {
         }
         other => panic!("{other:?}: {}", asked.render()),
     };
-    assert!(asked.render().contains("you asked"), "{}", asked.render());
+    // The model knows it asked, so only a move it did not make earns a `how:` line.
+    assert!(!asked.render().contains("how:"), "{}", asked.render());
 
     // A person moves one mid-flight: the daemon-side verb behind the head's Ctrl+B, which
     // is why this drives `promote` rather than a `bash` argument.

@@ -92,26 +92,27 @@ impl ToolResult {
                 out.push_str(&self.payload);
                 out
             }
+            // No `tool:` line in any envelope: the call it answers already names the tool, and an
+            // `Ok` result never carried one.
             ToolOutcome::Abstained { reason } => Envelope::no_result(&self.call_id).wrap(&format!(
-                "tool: {}\nreason: {reason}\n{head}{}\n\
+                "reason: {reason}\n{head}{}\n\
                      This call produced no result. Nothing above is an answer to the \
                      question, and nothing above may be cited as one.",
-                self.name, self.payload
+                self.payload
             )),
             // Its own envelope: wrapped in `TOOL_ERROR` this reads as a failure and the model retries,
             // and now two of the command are running; as `Ok` with a short body it reads as a command
             // that produced nothing.
             ToolOutcome::Backgrounded {
-                handle,
+                handle: _,
                 ran_for_ms,
                 how,
                 next,
             } => Envelope::still_running(&self.call_id).wrap(&format!(
-                // A call that asked for the background ran in the foreground for 0 ms,
-                // and saying so was a line of nothing; the rest was already said.
-                "tool: {}\njob: {handle}\n{}how: {}\n{head}{}\n\n\
+                // The handle is in the payload and in `next`. `how` only when the model did not
+                // ask: it knows what it asked for, and a promotion is the fact it must not miss.
+                "{}{}{head}{}\n\n\
                  STILL RUNNING — not failed and not finished; do not start it again. {next}",
-                self.name,
                 if *ran_for_ms == 0 {
                     String::new()
                 } else {
@@ -120,12 +121,14 @@ impl ToolResult {
                         human_ms(*ran_for_ms)
                     )
                 },
-                how.phrasing(),
+                match how {
+                    letibot_transcript::Backgrounding::Asked => String::new(),
+                    how => format!("how: {}\n", how.phrasing()),
+                },
                 self.payload
             )),
             other => Envelope::error(&self.call_id).wrap(&format!(
-                "tool: {}\noutcome: {}\n{head}{}",
-                self.name,
+                "outcome: {}\n{head}{}",
                 // The reason once. A refusal's payload already names the tool, the decider, the basis
                 // and what to do, so when it says it the outcome line is the word alone.
                 outcome_word_beside(other, &self.payload),
@@ -465,6 +468,53 @@ mod tests {
         assert!(out.contains("did not ask"), "{out}");
         // It is not grounding: there is no answer yet to be grounded in.
         assert!(!r.is_grounded());
+    }
+
+    /// The call names the tool and the payload names the handle, so the envelope repeats neither;
+    /// and a model that asked for the background is not told it asked.
+    #[test]
+    fn an_envelope_does_not_restate_the_call_or_the_handle() {
+        use letibot_transcript::Backgrounding;
+        let asked = ToolResult::new(
+            "c1",
+            "bash",
+            ToolOutcome::Backgrounded {
+                handle: "j4".into(),
+                ran_for_ms: 0,
+                how: Backgrounding::Asked,
+                next: "`job_output` with job=\"j4\" reads it".into(),
+            },
+        )
+        .with_payload("started `gate · j4` (pid 1).")
+        .render();
+        for gone in ["tool:", "job:", "how:", "ran in the foreground"] {
+            assert!(!asked.contains(gone), "{gone}: {asked}");
+        }
+        assert_eq!(asked.matches("j4").count(), 2, "{asked}");
+        let promoted = ToolResult::new(
+            "c1",
+            "bash",
+            ToolOutcome::Backgrounded {
+                handle: "j4".into(),
+                ran_for_ms: 15_000,
+                how: Backgrounding::Promoted,
+                next: String::new(),
+            },
+        )
+        .render();
+        assert_eq!(promoted.matches("how:").count(), 1, "{promoted}");
+        let failed = ToolResult::new(
+            "c1",
+            "read",
+            ToolOutcome::Failed {
+                reason: "no such path".into(),
+            },
+        )
+        .render();
+        assert!(!failed.contains("tool:"), "{failed}");
+        let abstained =
+            ToolResult::new("c1", "grep", ToolOutcome::Abstained { reason: "x".into() }).render();
+        assert!(!abstained.contains("tool:"), "{abstained}");
     }
 
     #[test]
