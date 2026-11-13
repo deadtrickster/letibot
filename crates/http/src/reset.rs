@@ -71,13 +71,31 @@ fn wall_clock_ms(body: &str) -> Option<u64> {
     u64::try_from(secs).ok().map(|s| s * 1000)
 }
 
-/// `for 5 hour`, `for 30 minutes`, `for 1 day` - the width of the window the limit closed.
+/// The width of the window the limit closed: `for 5 hour`, `for 30 minutes` (GLM), `5-hour usage
+/// limit` (Kimi), or a named period (`weekly`). The first reading in the text wins.
 fn window_ms(body: &str) -> Option<u64> {
     let at = body.to_ascii_lowercase();
-    let rest = at.split_once(" for ").map(|(_, rest)| rest)?;
-    let mut words = rest.split_whitespace();
-    let n: u64 = words.next()?.parse().ok()?;
-    let unit = words.next()?.trim_end_matches(['.', ',', ';']);
+    let words: Vec<&str> = at
+        .split(|c: char| c.is_whitespace() || matches!(c, '.' | ',' | ';' | ':' | '(' | ')'))
+        .filter(|w| !w.is_empty())
+        .collect();
+    words.iter().enumerate().find_map(|(i, w)| {
+        let named = match *w {
+            "daily" => Some(86_400_000),
+            "weekly" => Some(7 * 86_400_000),
+            "monthly" => Some(30 * 86_400_000),
+            _ => None,
+        };
+        named.or_else(|| match w.split_once('-') {
+            Some((n, unit)) => width(n, unit),
+            None => width(w, words.get(i + 1)?),
+        })
+    })
+}
+
+/// `5` and `hour` as millis, `None` unless the unit is a time unit.
+fn width(n: &str, unit: &str) -> Option<u64> {
+    let n: u64 = n.parse().ok()?;
     let unit = unit.strip_suffix('s').unwrap_or(unit);
     let per = match unit {
         "second" => 1_000,
@@ -189,6 +207,25 @@ mod tests {
         let now = 1_700_000_000_000;
         let body = "Your limit will reset at 2030-01-01 00:00:00.";
         assert_eq!(from_prose(body, now), Some(now + LONGEST));
+    }
+
+    /// Kimi's refusal, verbatim: no instant, the window written as `5-hour`. Read as the window,
+    /// so the session parks instead of retrying a limit that the next call cannot lift.
+    #[test]
+    fn the_kimi_text_is_a_hyphenated_window() {
+        let kimi = "http 429: You've reached your 5-hour usage limit. Your quota will reset when \
+                    the current 5-hour window ends. To continue now, purchase extra usage or \
+                    upgrade your plan: https://www.kimi.com/settings/subscription?tab=quota";
+        let now = 1_700_000_000_000;
+        assert_eq!(window_ms(kimi), Some(5 * 3_600_000));
+        assert_eq!(from_prose(kimi, now), Some(now + 5 * 3_600_000));
+        assert_eq!(
+            window_ms("your weekly usage limit is reached"),
+            Some(7 * 86_400_000)
+        );
+        // A number beside a word that is not a unit is not a window.
+        assert_eq!(window_ms("http 429: 3 requests in flight"), None);
+        assert_eq!(window_ms("x-request-id 12-ab"), None);
     }
 
     /// RFC 9110's two forms: a delay and an HTTP-date, the second against the caller's clock.
