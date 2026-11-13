@@ -143,8 +143,10 @@ fn cursor_on(a: &mut App, name: &str) {
 /// facts a choice between providers is made on - and the query field above all of it.
 #[test]
 fn the_card_opens_on_the_model_answering_now_and_a_row_per_provider() {
-    let mut wire = Wire::default();
-    wire.recent = vec!["glm/glm-5.3"];
+    let wire = Wire {
+        recent: vec!["glm/glm-5.3"],
+        ..Wire::default()
+    };
     let a = card(&wire);
     let rows = rows(&a, 110);
     let all = rows.join("\n");
@@ -203,8 +205,10 @@ fn the_card_opens_on_the_model_answering_now_and_a_row_per_provider() {
 /// - the providers are rows, and a provider's models are drawn only once it is opened.
 #[test]
 fn the_card_without_a_query_fits_one_screen_whatever_the_model_count() {
-    let mut wire = Wire::default();
-    wire.models = vec![("local", "this daemon's own server — no key, no meter")];
+    let mut wire = Wire {
+        models: vec![("local", "this daemon's own server — no key, no meter")],
+        ..Wire::default()
+    };
     for provider in ["deepseek", "glm"] {
         for i in 0..18 {
             let name: &'static str =
@@ -477,33 +481,35 @@ fn the_ranking_is_a_table_from_exact_to_a_scattering() {
 /// whose name contains it - a scattering is a fallback and never a companion.
 #[test]
 fn pro_comes_first_and_flash_shows_only_what_contains_it() {
-    let mut wire = Wire::default();
-    wire.models = vec![
-        (
-            "gemini/lyria-3-pro-preview",
-            "1M window · $1 in / $4 out per M",
-        ),
-        (
-            "deepseek-anthropic/deepseek-flash",
-            "128k window · $0.15 in / $0.6 out per M",
-        ),
-        (
-            "deepseek/deepseek-v4-pro",
-            "1M window · $0.6 in / $2.2 out per M",
-        ),
-        (
-            "deepseek/deepseek-flash",
-            "128k window · $0.15 in / $0.6 out per M",
-        ),
-        ("glm/glm-5.3", "200k window · $0.4 in / $1.6 out per M"),
-    ];
-    wire.doors = vec![
-        ("deepseek", "deepseek"),
-        ("deepseek-anthropic", "deepseek"),
-        ("gemini", "google"),
-        ("glm", "zhipuai"),
-    ];
-    wire.now = "deepseek/deepseek-flash";
+    let wire = Wire {
+        models: vec![
+            (
+                "gemini/lyria-3-pro-preview",
+                "1M window · $1 in / $4 out per M",
+            ),
+            (
+                "deepseek-anthropic/deepseek-flash",
+                "128k window · $0.15 in / $0.6 out per M",
+            ),
+            (
+                "deepseek/deepseek-v4-pro",
+                "1M window · $0.6 in / $2.2 out per M",
+            ),
+            (
+                "deepseek/deepseek-flash",
+                "128k window · $0.15 in / $0.6 out per M",
+            ),
+            ("glm/glm-5.3", "200k window · $0.4 in / $1.6 out per M"),
+        ],
+        doors: vec![
+            ("deepseek", "deepseek"),
+            ("deepseek-anthropic", "deepseek"),
+            ("gemini", "google"),
+            ("glm", "zhipuai"),
+        ],
+        now: "deepseek/deepseek-flash",
+        ..Wire::default()
+    };
     let mut a = card(&wire);
     typed(&mut a, "pro");
     match a.key(Key::Enter) {
@@ -529,27 +535,29 @@ fn pro_comes_first_and_flash_shows_only_what_contains_it() {
 /// chosen inside the provider that serves them.
 #[test]
 fn a_model_behind_two_doors_is_one_row_and_tab_chooses_the_door() {
-    let mut wire = Wire::default();
-    wire.models = vec![
-        (
-            "deepseek/deepseek-flash",
-            "128k window · $0.15 in / $0.6 out per M",
-        ),
-        (
-            "deepseek-anthropic/deepseek-flash",
-            "128k window · $0.15 in / $0.6 out per M",
-        ),
-        (
-            "deepseek/deepseek-v4-pro",
-            "1M window · $0.6 in / $2.2 out per M",
-        ),
-        (
-            "deepseek-anthropic/deepseek-v4-pro",
-            "1M window · $0.6 in / $2.2 out per M",
-        ),
-    ];
-    wire.doors = vec![("deepseek", "deepseek"), ("deepseek-anthropic", "deepseek")];
-    wire.now = "deepseek/deepseek-flash";
+    let wire = Wire {
+        models: vec![
+            (
+                "deepseek/deepseek-flash",
+                "128k window · $0.15 in / $0.6 out per M",
+            ),
+            (
+                "deepseek-anthropic/deepseek-flash",
+                "128k window · $0.15 in / $0.6 out per M",
+            ),
+            (
+                "deepseek/deepseek-v4-pro",
+                "1M window · $0.6 in / $2.2 out per M",
+            ),
+            (
+                "deepseek-anthropic/deepseek-v4-pro",
+                "1M window · $0.6 in / $2.2 out per M",
+            ),
+        ],
+        doors: vec![("deepseek", "deepseek"), ("deepseek-anthropic", "deepseek")],
+        now: "deepseek/deepseek-flash",
+        ..Wire::default()
+    };
     let mut a = card(&wire);
     let providers = a.model_card().providers;
     assert_eq!(providers.len(), 1, "{providers:?}");
@@ -580,8 +588,10 @@ fn a_model_behind_two_doors_is_one_row_and_tab_chooses_the_door() {
 /// older daemon loses the folding and nothing else.
 #[test]
 fn without_the_doors_row_every_prefix_is_its_own_provider() {
-    let mut wire = Wire::default();
-    wire.doors = Vec::new();
+    let wire = Wire {
+        doors: Vec::new(),
+        ..Wire::default()
+    };
     let a = card(&wire);
     let providers = a.model_card().providers;
     let labels: Vec<&str> = providers.iter().map(|p| p.label.as_str()).collect();
@@ -596,15 +606,17 @@ fn without_the_doors_row_every_prefix_is_its_own_provider() {
 /// its own above), and a model the daemon no longer offers is not named at all.
 #[test]
 fn the_recent_group_holds_five_and_never_the_model_in_force() {
-    let mut wire = Wire::default();
-    wire.recent = vec![
-        "deepseek/deepseek-flash",
-        "glm/glm-5.3",
-        "gemini/gemini-4-hydrogen",
-        "local",
-        "deepseek/deepseek-v4-pro",
-        "gemini/gemini-4-hydrogen",
-    ];
+    let mut wire = Wire {
+        recent: vec![
+            "deepseek/deepseek-flash",
+            "glm/glm-5.3",
+            "gemini/gemini-4-hydrogen",
+            "local",
+            "deepseek/deepseek-v4-pro",
+            "gemini/gemini-4-hydrogen",
+        ],
+        ..Wire::default()
+    };
     let a = card(&wire);
     let first = a.model_card();
     assert_eq!(first.recent.len(), 4, "{:?}", first.recent);
