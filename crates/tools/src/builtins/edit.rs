@@ -745,9 +745,7 @@ fn missing_file(ctx: &mut InvokeCtx<'_>, path: &str) -> Invocation {
         "\n`edit` changes a file that exists. To create one, call `write` with `path` \
          and `content`.\n",
     );
-    Invocation::failed(format!("no file at `{path}`"), body).with_note(format!(
-        "`{path}` does not exist; the listing of `{dir}` is below. Nothing was written."
-    ))
+    Invocation::failed(format!("no file at `{path}`"), body).with_note("Nothing was written.")
 }
 
 /// A write the backend refused. Says which gate stopped it, because a refusal that does not is
@@ -1288,6 +1286,7 @@ mod tests {
         let out = r.render();
         assert!(out.contains("lib.rs"), "{out}");
         assert!(out.contains("call `write`"), "{out}");
+        assert_eq!(out.matches("src/libb.rs").count(), 1, "{out}");
     }
 
     #[test]

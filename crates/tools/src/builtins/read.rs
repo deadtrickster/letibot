@@ -317,10 +317,9 @@ fn missing(ctx: &mut InvokeCtx<'_>, path: &str) -> Invocation {
     }
     // Failed, not Abstained: the tool was asked for a specific file and there is no
     // file. The body is what makes the miss answer itself, not the class.
-    Invocation::failed(format!("no file at `{path}`"), body).with_note(format!(
-        "`{path}` does not exist; the listing of `{dir}` is below. Call read again \
-         with one of these paths — do not guess a second one."
-    ))
+    // The miss is the outcome's and the listing names its own directory; the note is the step.
+    Invocation::failed(format!("no file at `{path}`"), body)
+        .with_note("Call read again with one of these paths — do not guess a second one.")
 }
 
 /// A directory: hand back its listing rather than an error, which is the same move as a miss.
@@ -492,6 +491,9 @@ mod tests {
         let r = h.call("read", r#"{"path":"src/libb.rs"}"#);
         assert!(r.payload.contains("lib.rs"), "{}", r.payload);
         assert!(r.payload.contains("closest names"), "{}", r.payload);
+        // The miss once: the outcome says it, the note says only what to do.
+        let card = r.render();
+        assert_eq!(card.matches("src/libb.rs").count(), 1, "{card}");
     }
 
     #[test]
