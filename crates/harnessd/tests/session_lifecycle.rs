@@ -940,7 +940,9 @@ fn an_idle_package_with_a_head_attached_is_closed_and_lets_its_daemon_go() {
         "the close is recorded: {acts:?}"
     );
     let journal = store.reap_events_of(ROOT).expect("the journal");
-    let notice_at = journal.iter().position(|e| e.kind.as_deref() == Some("notice"));
+    let notice_at = journal
+        .iter()
+        .position(|e| e.kind.as_deref() == Some("notice"));
     let close_at = journal.iter().position(|e| e.act == "close");
     assert!(
         notice_at.is_some_and(|n| close_at.is_some_and(|c| n < c)),

@@ -312,6 +312,14 @@ pub fn reap_pass(
             OwnerState::Closing => {}
             _ => continue,
         }
+        // The row as the CLOSE left it: `closed_why` is the sentence the journal - and so
+        // `letibot gc --log` - reads back, and the copy this loop holds was read before the state
+        // moved.
+        let owner = &store
+            .owner(&owner.id)
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| owner.clone());
         reap_compute(store, places, ops, owner, at_ms, &mut out);
     }
     out
