@@ -18,9 +18,13 @@ pub const NAME_ENV: &str = "LETIBOT_ROOM_NAME";
 /// How `me` behaves in the rooms, said once in the server's instructions: it is in the host room and
 /// in its own project's room, never a third, and the standing rule is the one a letibot session
 /// reads in its `room` tool. Short, because the instructions have a byte budget a test holds.
+///
+/// The two addressing rules ride here because this seat has no `room` tool text of ours to carry
+/// them: an `fyi` wakes exactly whom it names, and a dm is answered in the dm.
 pub fn etiquette(me: &str) -> String {
     format!(
-        "As `{me}` you see `host`, your project's room, dms. {}",
+        "As `{me}` you see `host`, your project's room, dms. An `fyi` wakes only whom it names; \
+         answer a dm in the dm. {}",
         letibot_tools::builtins::room::STANDING_RULE
     )
 }
@@ -1184,7 +1188,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_read",
-            "Read a room. Moves no cursor. `since` a seq, `last` the newest N (at most 200), \
+            "Read a room. Moves no cursor. `since` a seq, `last` the newest N (max 200), \
              `thread` a root seq and its replies.",
             json!({
                 "type": "object",
@@ -1202,9 +1206,10 @@ pub fn tool_list() -> Vec<Value> {
             &format!(
                 "Say something as `{me}`. `to` is PRIVATE: the dm, no room, and it wakes them. \
                  `@name` is a public mention that wakes them here, inviting them if they cannot see \
-                 it. `cc@<name>` is one bridge, `cc@<folder>` all bridges of a folder. `thread` \
-                 answers a seq and stays in its room. `refs`: a todo or queue row. Over 4000 bytes \
-                 is refused, never cut. A refusal is the room's etiquette, not an error."
+                 it. Answer a dm in the dm. `cc@<name>` is one bridge, `cc@<folder>` all bridges of \
+                 a folder. `thread` answers a seq and stays in its room. `refs`: a todo or queue \
+                 row. Over 4000 bytes is refused, never cut. A refusal is the room's etiquette, not \
+                 an error."
             ),
             json!({
                 "type": "object",
@@ -1237,7 +1242,7 @@ pub fn tool_list() -> Vec<Value> {
                     "kind": {
                         "type": "string",
                         "enum": ["post", "fyi", "ask", "blocker", "decision", "announce"],
-                        "description": "`fyi` wakes nobody, `ask` needs `to` and is held until answered, `blocker` rings and flags the operator, `decision` ranks in the digest, `announce` is one line for the whole room."
+                        "description": "`fyi` wakes only whom it names, `ask` needs `to` and is held until answered, `blocker` rings and flags the operator, `decision` ranks in the digest, `announce` is one line for the whole room."
                     }
                 },
                 "required": ["text"]
@@ -1245,7 +1250,7 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_ask",
-            "Ask whoever owns a `path` or a `topic`: the room finds the owner and says why. `to` asks \
+            "Ask whoever owns a `path`/`topic`: the room finds the owner and says why. `to` asks \
              a session instead. Only `answer` settles it.",
             json!({
                 "type": "object",
@@ -1261,7 +1266,8 @@ pub fn tool_list() -> Vec<Value> {
         ),
         tool(
             "room_dm",
-            "A private message to one session, `operator` or a handle: `room_say` with `to`.",
+            "A private message to one session, `operator` or a handle: `room_say` with `to`. Answers a \
+             dm.",
             json!({
                 "type": "object",
                 "properties": {

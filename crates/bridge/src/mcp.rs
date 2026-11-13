@@ -161,10 +161,10 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
                 "tools": {},
                 "experimental": capabilities(bridge),
             },
-            "instructions": format!("Room messages for `{}` and your leticode sessions' turn \
-                ends, asks and failures arrive as <channel> events. Each message is a header \
-                (`#seq [room] from <author> (<seat>) to <you|@you|dm|all>`) and its text quoted. \
-                Reply with `room_say` or `room_dm`; `room_inbox` with ack marks what you handled. {}",
+            "instructions": format!("Room messages for `{}` and your leticode sessions' ends, \
+                asks and failures arrive as <channel> events. Each is a header \
+                (`#seq [room] from <author> (<seat>) to <you|@you|dm|all>`) + text. Reply with \
+                `room_say`/`room_dm`; `room_inbox` acks what you handled. {}",
                 crate::rooms::handle(), crate::rooms::etiquette(&crate::rooms::handle())),
             "serverInfo": {
                 "name": "letibot-mcp",

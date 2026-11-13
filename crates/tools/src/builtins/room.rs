@@ -75,14 +75,13 @@ impl Tool for RoomTool {
         ToolSchema::new(
             TOOL,
             format!(
-                "The rooms. A TAG is a lock (RAM, a port): one live claim, others refused; \
-                 `rule` is the arbiter's. `say`: `to` a dm, `@name` a mention; both wake. \
-                 `ask` a `path`/`topic`; the room asks its owner, `answer`/`decline` settle it. `own` \
-                 a scope so others see who has it; edits renew; `hand` waits for `accept`. `status` \
-                 is your line; it expires. `rooms` lists them, archived or not; \
-                 `archive`/`unarchive` puts a project room away or back. `cc@...` is a seat. `host` \
-                 takes `@name` or `kind: announce`; a refusal is etiquette, not an error. {beat} \
-                 {STANDING_RULE}"
+                "The rooms. A TAG is a lock (RAM, a port): one live claim; `rule` is the \
+                 arbiter's. `say`: `to` a dm, `@name` a mention; both wake; an `fyi` wakes only \
+                 whom it names. Answer a dm in the dm. `ask` a `path`/`topic`; `answer`/`decline` \
+                 settle it. `own` a scope; edits renew; `hand` waits for `accept`. `status` is your \
+                 line; it expires. `rooms` lists them; `archive`/`unarchive` puts a project room \
+                 away or back. `cc@...` is a seat. `host` takes `@name` or `kind: announce`; a \
+                 refusal is etiquette. {beat} {STANDING_RULE}"
             ),
             json!({
                 "type": "object",
@@ -164,11 +163,11 @@ impl Tool for RoomTool {
                     },
                     "todo": {
                         "type": "string",
-                        "description": "`say`: a todo row id."
+                        "description": "`say`: a todo row."
                     },
                     "queue": {
                         "type": "string",
-                        "description": "`say`: a queue row id."
+                        "description": "`say`: a queue row."
                     },
                     "evidence": {
                         "type": "string",
@@ -198,7 +197,7 @@ impl Tool for RoomTool {
                     "kind": {
                         "type": "string",
                         "enum": ["post", "fyi", "ask", "blocker", "decision", "announce"],
-                        "description": "`say`: `fyi` wakes nobody, `ask` needs `to`, `blocker` flags the operator, `decision` ranks."
+                        "description": "`say`: `fyi` wakes only whom it names; `ask` needs `to`, `blocker` flags operator, `decision` ranks"
                     }
                 },
                 "required": ["verb"]
