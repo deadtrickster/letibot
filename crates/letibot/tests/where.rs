@@ -126,6 +126,8 @@ fn where_prints_the_bridges_socket_and_ensure_starts_that_daemon() {
     // included — so nothing here can reach the operator's own store, log or runtime directory.
     unsafe {
         std::env::set_var("HOME", &home);
+        // Read before `$HOME/.config`, so an outer one would hide the fixture's.
+        std::env::remove_var("XDG_CONFIG_HOME");
         std::env::set_var("XDG_RUNTIME_DIR", &rundir);
         std::env::remove_var("LETIBOT_SOCKET");
         std::env::remove_var("LETIBOT_LOG");

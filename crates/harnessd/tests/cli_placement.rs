@@ -39,6 +39,8 @@ fn a_vm_and_a_host_are_one_placement_whichever_flag_came_first() {
     // `hosts.toml` and providers are not what this measures.
     unsafe {
         std::env::set_var("HOME", &home);
+        // Read before `$HOME/.config`, so an outer one would hide the fixture's hosts file.
+        std::env::remove_var("XDG_CONFIG_HOME");
         std::env::remove_var("LETIBOT_HOSTS");
         std::env::set_current_dir(&home).expect("a cwd that is not the repository");
     }

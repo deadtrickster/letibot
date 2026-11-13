@@ -436,8 +436,7 @@ fn the_coder_role_does_not_seat_bash_without_its_own_flag_and_grants_reach_the_v
 
     // With the flag and the toolchain granted.
     cfg.allow_bash = true;
-    cfg.grants_ro =
-        vec![std::path::PathBuf::from(std::env::var("HOME").expect("a home")).join(".cargo")];
+    cfg.grants_ro = vec![toolchain()];
     cfg.session_id = "s-coder-bash".into();
     let hub2 = Hub::new(&cfg.session_id);
     let h2 = Harness::open_with(&p, cfg, hub2, Some(Box::new(Attached)), None)
@@ -1191,4 +1190,13 @@ fn seat_facts_are_the_seated_tools() {
             assert!(!system.contains("read-only tools"), "{system}");
         }
     }
+}
+
+/// The toolchain a grant names: `$CARGO_HOME`, which need not be under `$HOME`.
+fn toolchain() -> std::path::PathBuf {
+    std::env::var_os("CARGO_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var("HOME").expect("a home")).join(".cargo")
+        })
 }

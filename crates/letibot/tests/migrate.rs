@@ -270,6 +270,11 @@ impl Fixture {
         let real = env!("CARGO_BIN_EXE_letibot");
         vec![
             ("HOME".into(), self.home.display().to_string()),
+            // Keys and known hosts are read from here before `$HOME/.config`, so an outer one would win.
+            (
+                "XDG_CONFIG_HOME".into(),
+                self.home.join(".config").display().to_string(),
+            ),
             ("XDG_RUNTIME_DIR".into(), self.run.display().to_string()),
             ("TMPDIR".into(), self.root.join("tmp").display().to_string()),
             ("LETIBOT_STORE".into(), self.store.display().to_string()),

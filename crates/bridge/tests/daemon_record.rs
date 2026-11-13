@@ -86,6 +86,8 @@ fn a_daemon_the_bridge_started_is_listed_by_the_launcher() {
     // included, so nothing here can reach the operator's own store, log or runtime directory.
     unsafe {
         std::env::set_var("HOME", &home);
+        // Read before `$HOME/.config`, so an outer one would hide the fixture's.
+        std::env::remove_var("XDG_CONFIG_HOME");
         std::env::set_var("XDG_RUNTIME_DIR", &rundir);
         std::env::set_var("LETIBOT_BIN", &bin);
         std::env::set_var("LETIBOT_ROOM_SUPERVISOR", &room);

@@ -145,6 +145,8 @@ impl Rig {
             std::env::set_var("LETIBOT_HOSTS", &hosts);
             std::env::set_var("LETIBOT_SSH", &ssh);
             std::env::set_var("HOME", &home);
+            // Read before `$HOME/.config`, so an outer one would hide the fixture's.
+            std::env::remove_var("XDG_CONFIG_HOME");
             std::env::set_var("FAKE_HOME", &home);
             std::env::set_var("FAKE_PATH", std::env::var("PATH").unwrap_or_default());
         }
