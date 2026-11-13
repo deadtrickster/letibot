@@ -34,11 +34,11 @@ pub const EMPTY: &str = "none listed yet — the daemon has not answered, or thi
 pub const BUILDING: &str =
     "building the session list — this head's plugin layers are being loaded.";
 
-/// What the pane draws when a stack is in place and no layer answered the hook, or answered a
-/// document this head will not draw. The reason is the head's to say on its notice line.
-pub const UNANSWERED: &str = "no layer answered the session list. This binary's own `sessions` \
-                             layer is part of it, so a list that is not here is a defect — the \
-                             reason is on the notice line.";
+/// What the pane draws when no layer answered the hook, or answered a document this head will not
+/// draw. The built-in `sessions` layer ships in the binary, so this is a defect. It is one pane row,
+/// cut at the frame, so it stays short and the reason goes on the head's notice line.
+pub const UNANSWERED: &str =
+    "no layer answered the session list, which is a defect; the reason is on the notice line.";
 
 /// The last line of a capped list: how many sessions the feed could not hold. A number a reader
 /// can act on is not the same fact as a list that silently stops.

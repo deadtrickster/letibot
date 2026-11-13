@@ -866,7 +866,16 @@ impl App {
             );
             return None;
         }
-        let (rows, empty) = tree_of(&view, &self.picker_folds)?;
+        // A view with no tree is valid as a document and still not a list this pane can draw.
+        let Some((rows, empty)) = tree_of(&view, &self.picker_folds) else {
+            host.complain(
+                HOOK,
+                "the session list's layer answered a view this head will not draw: it holds no \
+                 tree block"
+                    .to_string(),
+            );
+            return None;
+        };
         let width = w.max(20);
         let list = TreeList {
             title: sdk::TITLE.to_string(),
