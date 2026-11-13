@@ -103,6 +103,37 @@ pub fn secrets_within(entries: &[PathBuf]) -> Vec<(PathBuf, bool)> {
     out
 }
 
+/// The note a failed command earns when what it names is inside the letibot store. A command's
+/// view does not hold the store's session directories (`store.rs` is the rule), so an ENOENT
+/// there is the fence rather than a missing file, and the note names the tools that do see it.
+/// Two spellings are recognised: the absolute store and `~/<store>`, as an output may print either.
+pub fn fence_note(body: &str, store: &Path) -> Option<String> {
+    let absolute = store.display().to_string();
+    let home = format!("~/{STORE_REL}");
+    let at = body
+        .match_indices(absolute.as_str())
+        .map(|(i, s)| (i, s.len()))
+        .chain(body.match_indices(home.as_str()).map(|(i, s)| (i, s.len())))
+        // The store itself, not a name that merely begins with it: `letibot-copy` is not the store.
+        .find(|(i, len)| {
+            body[i + len..]
+                .chars()
+                .next()
+                .is_none_or(|c| c == '/' || !(c.is_alphanumeric() || "._-~".contains(c)))
+        })?;
+    // The path it named, cut where a message stops spelling it.
+    let named: String = body[at.0..]
+        .chars()
+        .take_while(|c| !c.is_whitespace() && !",;:'\"`)]}".contains(*c))
+        .take(200)
+        .collect();
+    Some(format!(
+        "`{named}` is inside the letibot store, which a command's view does not hold: this \
+         session's own directory there is reached with `read`, `edit` and `write`, never with \
+         `bash`. Use a file tool for it — no `[boundary]` key grants the store."
+    ))
+}
+
 fn re(s: &str) -> String {
     let mut o = String::new();
     for c in s.chars() {
@@ -197,5 +228,37 @@ mod tests {
         ] {
             assert!(!is_readable(Path::new(no)), "{no}");
         }
+    }
+
+    /// A command that failed on a path in the store is answered with the tools that do hold it:
+    /// an ENOENT under `sessions/` is the fence, and the model cannot tell that from a typo.
+    #[test]
+    fn a_failed_commands_store_path_earns_the_file_tools_sentence() {
+        let store = Path::new("/home/op/.local/share/letibot");
+        let said = "cat: /home/op/.local/share/letibot/sessions/s-1/plugins/fuzzlegs/plugin.toml: \
+                    No such file or directory";
+        let note = fence_note(said, store).expect("the note");
+        assert!(
+            note.contains(
+                "/home/op/.local/share/letibot/sessions/s-1/plugins/fuzzlegs/plugin.toml"
+            ),
+            "the path it named, cut where the message stops spelling it: {note}"
+        );
+        for tool in ["read", "edit", "write"] {
+            assert!(
+                note.contains(tool),
+                "{tool} must be named as the way in: {note}"
+            );
+        }
+        assert!(
+            note.contains("`bash`") && note.contains("does not hold"),
+            "and why a command could not: {note}"
+        );
+        // The `~/` spelling a seat's own output often prints.
+        assert!(fence_note("ls: cannot access '~/.local/share/letibot/x'", store).is_some());
+        // A body that names nothing in the store earns nothing.
+        assert!(fence_note("cat: src/lib.rs: No such file or directory", store).is_none());
+        // And a path that only looks similar is not the store.
+        assert!(fence_note("cat: /home/op/.local/share/letibot-copy/x", store).is_none());
     }
 }

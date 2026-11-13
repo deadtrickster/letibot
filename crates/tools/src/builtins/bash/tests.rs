@@ -867,3 +867,40 @@ fn the_background_arguments_say_a_job_has_no_deadline_of_its_own() {
     assert!(timeout.contains("no deadline of its own"), "{timeout}");
     assert!(timeout.contains("job_extend"), "{timeout}");
 }
+
+/// A failed command whose output names a path in the letibot store is answered with the tools that
+/// do hold it. The store's session directories are a file tool's, so an ENOENT there reads as a
+/// typo unless something says otherwise - which is how a pane's own source came to look unreachable.
+#[test]
+fn a_failed_command_that_names_a_store_path_is_answered_with_the_file_tools() {
+    let store = std::path::Path::new("/home/op/.local/share/letibot");
+    let named = "cat: /home/op/.local/share/letibot/sessions/s-1/plugins/fuzzlegs/plugin.toml: \
+                 No such file or directory";
+    let noted = store_note(Invocation::failed("`cat` exited 1", named), true, store);
+    let said = noted.notes.join(" ");
+    assert!(
+        said.contains("/sessions/s-1/plugins/fuzzlegs/plugin.toml"),
+        "the path the command named: {said}"
+    );
+    for tool in ["`read`", "`edit`", "`write`"] {
+        assert!(said.contains(tool), "{tool} is named as the way in: {said}");
+    }
+    assert!(
+        said.contains("`bash`"),
+        "and why a command could not: {said}"
+    );
+
+    // A command that did not fail is not answered with a note: it may have read the store as data.
+    let ok = store_note(Invocation::ok(named), false, store);
+    assert!(ok.notes.is_empty(), "{:?}", ok.notes);
+    // And a failure that names a path outside the store earns nothing.
+    let elsewhere = store_note(
+        Invocation::failed(
+            "`cat` exited 1",
+            "cat: src/lib.rs: No such file or directory",
+        ),
+        true,
+        store,
+    );
+    assert!(elsewhere.notes.is_empty(), "{:?}", elsewhere.notes);
+}

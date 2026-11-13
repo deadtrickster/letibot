@@ -498,6 +498,16 @@ fn slow_foreground(elapsed: Duration, operator: bool, threshold: Duration) -> Op
     ))
 }
 
+/// The note a FAILED command earns when its output names a path in the letibot store, and nothing
+/// when it did not fail: a success that mentions the store read data there, which is allowed.
+/// `store` is a parameter so a test drives it, not this box's own data dir.
+fn store_note(inv: Invocation, failed: bool, store: &std::path::Path) -> Invocation {
+    match (failed, crate::exec::store::fence_note(&inv.payload, store)) {
+        (true, Some(note)) => inv.with_note(note),
+        _ => inv,
+    }
+}
+
 impl Tool for Bash {
     fn schema(&self) -> ToolSchema {
         ToolSchema::new(
@@ -1190,6 +1200,14 @@ impl Tool for Bash {
         for n in notes {
             inv = inv.with_note(n);
         }
+        // A command's view does not hold the letibot store, so a failure that names a path in it
+        // is the fence and not a typo: say which tools do reach it, before the next `cat`.
+        let failed = !matches!(
+            inv.outcome,
+            letibot_transcript::ToolOutcome::Ok
+                | letibot_transcript::ToolOutcome::Backgrounded { .. }
+        ) || matches!(state, JobState::Exited { code } if code != 0);
+        inv = store_note(inv, failed, &crate::lifecycle::data_dir());
         // Carried to the runtime, which is the layer that holds the gate and can
         // therefore ASK about widening the view. The tool only reports what the
         // boundary told it.
