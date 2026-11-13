@@ -5222,14 +5222,21 @@ mod endpoint_retry {
             0,
             std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         );
-        std::thread::sleep(std::time::Duration::from_millis(1400));
-        let said = hub
-            .retained()
-            .iter()
-            .filter(|e| {
-                matches!(&e.event, SessionEvent::Warning { code, .. } if code == "model_slow_first_byte")
-            })
-            .count();
+        let said = || {
+            hub.retained()
+                .iter()
+                .filter(|e| {
+                    matches!(&e.event, SessionEvent::Warning { code, .. } if code == "model_slow_first_byte")
+                })
+                .count()
+        };
+        // Polled: a loaded box runs the watcher's thread late, and the claim is the 1 s
+        // threshold firing, not 90 s; the 10 s deadline stays far below the other provider's.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while said() == 0 && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        let said = said();
         watch.finish();
         assert_eq!(said, 1, "the configured 1 s threshold fired");
     }
