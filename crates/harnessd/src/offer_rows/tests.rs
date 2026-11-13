@@ -4,6 +4,7 @@ fn skill(taken: bool) -> skills_offer::Offer {
     skills_offer::Offer {
         name: "rust-skills".into(),
         score: 0.41,
+        by: skills_offer::By::Subject,
         blended: false,
         taken,
     }

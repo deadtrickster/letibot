@@ -2,7 +2,7 @@
 //! never the prefix (a prefix change re-prefills the conversation) and never a row (a row cannot be
 //! un-said). Earned by a score floor, at most two, silent when unsure, recomposed each round.
 
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::Path;
 
 use letibot_tokencore::store::{TodoBy, TodoItem};
@@ -26,6 +26,23 @@ pub const SUBJECT_CHARS: usize = 8_000;
 /// The file the take-up log is appended to, in the session's logs directory beside the notes'.
 pub const LOG: &str = "skills-offers.jsonl";
 
+/// Which of the two scores earned an offer. The log writes the word, because the ratio is what
+/// tunes the floor and a "prompt" offer is evidence the operator asked, not that the round drifted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum By {
+    Subject,
+    Prompt,
+}
+
+impl By {
+    pub fn word(self) -> &'static str {
+        match self {
+            By::Subject => "subject",
+            By::Prompt => "prompt",
+        }
+    }
+}
+
 /// One skill, offered, with the score that earned it and whether the meaning was part of that
 /// score - a line that claimed meaning over a box with no embedder would describe an arithmetic
 /// it did not use.
@@ -33,6 +50,8 @@ pub const LOG: &str = "skills-offers.jsonl";
 pub struct Offer {
     pub name: String,
     pub score: f64,
+    /// Which score this is: the blended subject, or the operator's own prompt against its keywords.
+    pub by: By,
     pub blended: bool,
     /// Set by `settle`: the round loaded it.
     pub taken: bool,
@@ -54,9 +73,11 @@ impl Offer {
                      gone from the next one; the skill, once loaded, is not.",
                     self.name,
                     self.score,
-                    match self.blended {
-                        true => "lexical over its frontmatter, and its meaning",
-                        false =>
+                    match (self.by, self.blended) {
+                        (By::Prompt, _) =>
+                            "lexical over the skill's keywords, which the operator's own prompt named",
+                        (By::Subject, true) => "lexical over its frontmatter, and its meaning",
+                        (By::Subject, false) =>
                             "lexical over its frontmatter: description, when-to-use and keywords",
                     },
                     self.name
@@ -66,12 +87,26 @@ impl Offer {
     }
 }
 
+/// One name's two scores: the subject's, and the operator's prompt's own when the prompt ranked it.
+#[derive(Debug, Clone, Copy)]
+struct Scored {
+    best: f64,
+    by: By,
+    prompt: Option<f64>,
+}
+
 /// The offers this turn has already made, and the ones the round in flight is carrying. Two facts
 /// are kept apart on purpose: [`Offers::offered`] is the session's memory (a skill is offered once),
 /// and [`Offers::open`] is the round's.
 #[derive(Debug, Default)]
 pub struct Offers {
     offered: HashSet<String>,
+    /// Names whose body this session holds - loaded, declared, or a take-up in the log. Never offered
+    /// again: a name whose text is already in the prompt is the one line that cannot help.
+    taken: HashSet<String>,
+    /// The operator's newest prompt as the last round saw it. The same words next round are the same
+    /// request, and asking twice is a nag; different words are new evidence.
+    last_prompt: Option<String>,
     open: Vec<Offer>,
     last: Vec<Offer>,
     /// The box's second tier, when it has one: this registry's vectors, and nothing of another
@@ -134,17 +169,22 @@ impl Offers {
             }
             if let Some(name) = row.get("skill").and_then(|p| p.as_str()) {
                 self.offered.insert(name.to_string());
+                // A row that says the round loaded it settles the rule for the rest of the session:
+                // only an offer nobody took may be earned a second time.
+                if row.get("taken").and_then(|t| t.as_bool()) == Some(true) {
+                    self.taken.insert(name.to_string());
+                }
             }
         }
     }
 
     /// Skip the skills whose body this session already holds, read off the transcript: a `skill` load
     /// the model made itself put the text in the conversation, and offering it again spends a line to
-    /// say nothing.
+    /// say nothing. A load is a take-up, so it is never offered again however the words move.
     pub fn skip_loaded(&mut self, items: &[TranscriptItem]) {
         for call in items.iter().filter_map(tool_calls_of).flatten() {
             if let Some(name) = loaded_of(call) {
-                self.offered.insert(name);
+                self.taken.insert(name);
             }
         }
     }
@@ -153,29 +193,79 @@ impl Offers {
     /// declared list a `task {skills}` child carries, which no row records.
     pub fn skip_names<'a>(&mut self, names: impl IntoIterator<Item = &'a String>) {
         for name in names {
-            self.offered.insert(name.clone());
+            self.taken.insert(name.clone());
         }
     }
 
-    /// Compose this round's offers, or decide to say nothing - `false` is the common case. A skill
-    /// already offered in this session is skipped: the second time is a nag, and the first time is
-    /// what the model was told to act on.
-    pub fn compose(&mut self, registry: &SkillRegistry, text: &str) -> bool {
+    /// Compose this round's offers, or decide to say nothing - `false` is the common case.
+    ///
+    /// `text` is the blended subject the round is doing; `prompt` is the operator's newest row, or
+    /// `None` when this session has not been spoken to. A skill is offered when either score passes
+    /// [`OFFER_FLOOR`], and a name the session has already been told may be said once more - and only
+    /// by a prompt whose words are NEW - because asking again is evidence the subject never is.
+    pub fn compose(&mut self, registry: &SkillRegistry, text: &str, prompt: Option<&str>) -> bool {
         self.open.clear();
-        if text.trim().is_empty() {
+        let prompt = prompt.map(str::trim).filter(|p| !p.is_empty());
+        if text.trim().is_empty() && prompt.is_none() {
             return false;
         }
-        let candidates: Vec<(String, f64)> = registry
-            .ranked_with(text, OFFERS_MAX * 4, self.tier.as_ref())
-            .into_iter()
-            .filter(|(name, score)| *score >= OFFER_FLOOR && !self.offered.contains(name))
-            .collect();
-        let live = match (&self.seat, candidates.is_empty()) {
+        // Read before it is remembered: the same words on the next round of this turn are the same
+        // request, and re-offering on them would spend a line the operator already answered.
+        let fresh = prompt.is_some_and(|p| self.last_prompt.as_deref() != Some(p));
+        if let Some(p) = prompt {
+            self.last_prompt = Some(p.to_string());
+        }
+        let mut scored: BTreeMap<String, Scored> = BTreeMap::new();
+        if !text.trim().is_empty() {
+            for (name, score) in registry.ranked_with(text, OFFERS_MAX * 4, self.tier.as_ref()) {
+                scored.insert(
+                    name,
+                    Scored {
+                        best: score,
+                        by: By::Subject,
+                        prompt: None,
+                    },
+                );
+            }
+        }
+        if let Some(words) = prompt {
+            for (name, score) in registry.ranked_by_keywords(words, OFFERS_MAX * 4) {
+                match scored.get_mut(&name) {
+                    Some(row) => {
+                        row.prompt = Some(score);
+                        if score > row.best {
+                            row.best = score;
+                            row.by = By::Prompt;
+                        }
+                    }
+                    None => {
+                        scored.insert(
+                            name,
+                            Scored {
+                                best: score,
+                                by: By::Prompt,
+                                prompt: Some(score),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        let live = match (&self.seat, scored.is_empty()) {
             (Some(_), false) => registry.live_skills(),
             _ => Vec::new(),
         };
-        let mut kept = Vec::new();
-        for (name, score) in candidates {
+        let mut kept: Vec<(String, f64, By)> = Vec::new();
+        for (name, row) in scored {
+            // A body in the conversation is never offered; a name said once is said again only when
+            // a new prompt's own score earns it, which is the untaken offer the operator asked about.
+            if self.taken.contains(&name) || row.best < OFFER_FLOOR {
+                continue;
+            }
+            let asked_again = fresh && row.prompt.is_some_and(|score| score >= OFFER_FLOOR);
+            if self.offered.contains(&name) && !asked_again {
+                continue;
+            }
             let why = if self.never.contains(&name) {
                 Some("never_offer".to_string())
             } else {
@@ -190,16 +280,23 @@ impl Offers {
                         self.skipped.push((name, why));
                     }
                 }
-                None => kept.push((name, score)),
+                None => kept.push((name, row.best, row.by)),
             }
         }
+        // Ranked by the higher of the two scores, ties by name so the same round says the same thing.
+        kept.sort_by(|(na, sa, _), (nb, sb, _)| {
+            sb.partial_cmp(sa)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| na.cmp(nb))
+        });
         self.open = kept
             .into_iter()
             .take(OFFERS_MAX)
-            .map(|(name, score)| Offer {
+            .map(|(name, score, by)| Offer {
                 name,
                 score,
-                blended: self.tier.is_some(),
+                by,
+                blended: by == By::Subject && self.tier.is_some(),
                 taken: false,
             })
             .collect();
@@ -238,12 +335,16 @@ impl Offers {
                 .any(|c| loaded_of(c).as_deref() == Some(&offer.name));
             offer.taken = taken;
             self.offered.insert(offer.name.clone());
+            if taken {
+                self.taken.insert(offer.name.clone());
+            }
             lines.push_str(&format!(
-                "{{\"at\":{},\"session\":{},\"skill\":{},\"score\":{:.3},\"taken\":{taken}}}\n",
+                "{{\"at\":{},\"session\":{},\"skill\":{},\"score\":{:.3},\"by\":{},\"taken\":{taken}}}\n",
                 now_secs(),
                 json(session),
                 json(&offer.name),
-                offer.score
+                offer.score,
+                json(offer.by.word())
             ));
         }
         let log = logs.join(LOG);

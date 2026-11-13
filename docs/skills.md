@@ -160,10 +160,18 @@ and the model's latest text and latest reasoning, read from the newest end until
 are used. The plan is taken first and outside that budget, because the work in hand is what a long
 tool result would otherwise cut away.
 
-A skill is offered when its score reaches 0.18. At most two are offered per round, each once per
-session, and a skill whose body is already in the conversation is not offered at all. The offer is a
-line at the tail of the request, never a row in the session log, so it is composed for one round
-and gone from the next. It says the score and the one verb that loads the body:
+The person's own newest row is also scored **on its own**, against each skill's `keywords` and
+nothing else: at the tail of a session somebody writes *add it as a pane*, and against a
+description of several hundred terms that line is a rounding error. One word a skill publishes as
+the thing it answers to is enough on its own.
+
+A skill is offered when either score reaches 0.18. At most two are offered per round, ranked by
+the higher of the two, and a skill whose body is already in the conversation is not offered at all.
+An offer nobody took may be earned once more by a **new** operator prompt that names it - asking
+again is evidence, the same words on the next round are not - and an offer that was loaded is
+never made again. The offer is a line at the tail of the request, never a row in the session log,
+so it is composed for one round and gone from the next. It says the score, which score it was, and
+the one verb that loads the body:
 
 ```text
 [skill offer - the harness's own line, not the operator's] `latex-presentation` looks relevant to
@@ -174,19 +182,21 @@ from the next one; the skill, once loaded, is not.
 ```
 
 Nothing has to be switched on. The score is lexical over the skill's whole frontmatter, so a subject
-reaches a skill by its description, its `when_to_use` and its keywords, not its body. With
-[embeddings](embeddings.md) on, the score is blended with meaning and the line says so.
+reaches a skill by its description, its `when_to_use` and its keywords, not its body - and a prompt
+earned offer says it was scored over the keywords alone. With [embeddings](embeddings.md) on, the
+subject's score is blended with meaning and the line says so.
 
 What was offered and whether it was taken is logged once per offer, so the floor can be tuned from
 measurement rather than by guess:
 
 ```text
 <logs root>/<session id>/skills-offers.jsonl
-{"at":1767225600,"session":"s-...","skill":"latex-presentation","score":0.421,"taken":true}
+{"at":1767225600,"session":"s-...","skill":"latex-presentation","score":0.421,"by":"subject","taken":true}
 ```
 
-`taken` is true when the round that was offered the skill loaded it. The log is also the session's
-memory of what it has been offered, so the rule survives a restart.
+`taken` is true when the round that was offered the skill loaded it. `by` is `subject` or `prompt`:
+the two scores are different measurements, and a ratio that added them would answer neither. The log
+is also the session's memory of what it has been offered, so the rule survives a restart.
 
 ## Handing a skill over
 

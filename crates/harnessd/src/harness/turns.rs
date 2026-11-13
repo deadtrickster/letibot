@@ -1956,9 +1956,13 @@ impl Harness {
                 // Score a skill against the prompt, plan and the model's latest text and reasoning, not just the note's subject.
                 // Session contents are re-read each round so an already-loaded body is not offered again.
                 skill_offers.skip_loaded(&self.session.items);
+                // The person's own newest row scores beside the subject: at the tail of a session a
+                // follow-up names the thing in one word the plan and the tool output have buried.
+                let words = crate::recall_offer::operator_text(&self.session.items);
                 skill_offers.compose(
                     &self.skills,
                     &crate::skills_offer::subject(&self.session.items, &self.todos.snapshot()),
+                    Some(&words),
                 );
                 // The box's embedder answers for every caller, so its first failure is said ONCE
                 // here - and each caller has already fallen back to its own words by then.

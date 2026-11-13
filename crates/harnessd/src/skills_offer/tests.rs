@@ -129,7 +129,7 @@ fn a_subject_in_none_of_the_skills_words_is_offered_by_the_second_tier() {
 
     let mut lexical = Offers::new();
     assert!(
-        !lexical.compose(&registry, &text),
+        !lexical.compose(&registry, &text, None),
         "the words share nothing with any frontmatter"
     );
 
@@ -142,7 +142,7 @@ fn a_subject_in_none_of_the_skills_words_is_offered_by_the_second_tier() {
         letibot_embeddings::testing::planted(&data, &[&["beamer", "keynote"], &["slides", "deck"]]);
     let mut offers = Offers::new().with_tier(Some(tier));
     assert!(
-        offers.compose(&registry, &text),
+        offers.compose(&registry, &text, None),
         "the meaning earns the offer"
     );
     let made = offers.tail();
@@ -166,6 +166,7 @@ fn a_prompt_about_slides_composes_the_offer_of_the_slides_skill() {
     assert!(offers.compose(
         &registry(),
         &subject(&prompt("make me a latex presentation for the talk"), &[]),
+        None,
     ));
     let made = offers.tail();
     assert_eq!(made.len(), 1, "{made:?}");
@@ -204,6 +205,7 @@ fn two_skills_with_one_name_are_offered_once() {
     assert!(offers.compose(
         &twice,
         &subject(&prompt("make me a latex presentation for the talk"), &[]),
+        None,
     ));
     let made = offers.tail();
     assert_eq!(made.len(), 1, "one name, one line: {made:?}");
@@ -232,7 +234,7 @@ fn the_models_reasoning_and_text_are_part_of_the_subject() {
     );
     let mut offers = Offers::new();
     assert!(
-        offers.compose(&registry(), &text),
+        offers.compose(&registry(), &text, None),
         "the reasoning's words reach the skill: {text}"
     );
 }
@@ -281,6 +283,7 @@ fn a_round_settles_its_offers_into_the_log_and_a_load_is_the_take_up() {
     assert!(offers.compose(
         &registry(),
         &subject(&prompt("a latex presentation please"), &[]),
+        None,
     ));
     let settled = offers.settle(&dir, "s-1", &[a_load("latex-presentation")]);
     assert_eq!(settled.len(), 1, "{settled:?}");
@@ -297,7 +300,8 @@ fn a_round_settles_its_offers_into_the_log_and_a_load_is_the_take_up() {
     assert!(
         !after.compose(
             &registry(),
-            &subject(&prompt("a latex presentation please"), &[])
+            &subject(&prompt("a latex presentation please"), &[]),
+            None
         ),
         "a skill already offered this session is not offered again"
     );
@@ -306,7 +310,8 @@ fn a_round_settles_its_offers_into_the_log_and_a_load_is_the_take_up() {
     other.recall(&dir, "s-2");
     assert!(other.compose(
         &registry(),
-        &subject(&prompt("a latex presentation please"), &[])
+        &subject(&prompt("a latex presentation please"), &[]),
+        None
     ));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -318,7 +323,8 @@ fn an_untaken_offer_is_logged_as_untaken() {
     let mut offers = Offers::new();
     assert!(offers.compose(
         &registry(),
-        &subject(&prompt("a latex presentation please"), &[])
+        &subject(&prompt("a latex presentation please"), &[]),
+        None
     ));
     offers.settle(&dir, "s-2", &[]);
     let logged = std::fs::read_to_string(dir.join(LOG)).expect("the log");
@@ -355,7 +361,7 @@ fn the_offer_names_at_most_two_and_says_nothing_under_the_floor() {
         },
     ]);
     let mut offers = Offers::new();
-    assert!(offers.compose(&many, "beamer slides, a latex presentation"));
+    assert!(offers.compose(&many, "beamer slides, a latex presentation", None));
     let made = offers.tail();
     assert!(
         made.len() <= OFFERS_MAX,
@@ -367,13 +373,14 @@ fn the_offer_names_at_most_two_and_says_nothing_under_the_floor() {
     assert!(
         !silent.compose(
             &registry(),
-            "how warm should the kitchen be for a sourdough starter"
+            "how warm should the kitchen be for a sourdough starter",
+            None
         ),
         "nothing above the floor, so nothing is said"
     );
     assert!(silent.tail().is_empty());
     // And an empty subject is nothing to score.
-    assert!(!Offers::new().compose(&registry(), "  \n "));
+    assert!(!Offers::new().compose(&registry(), "  \n ", None));
 }
 
 /// A body the session already holds is not offered again: a load the model made itself and a skill it
@@ -390,7 +397,8 @@ fn a_body_the_session_already_holds_is_not_offered() {
     assert!(
         !offers.compose(
             &registry(),
-            &subject(&prompt("a latex presentation please"), &[])
+            &subject(&prompt("a latex presentation please"), &[]),
+            None
         ),
         "the model loaded it, so it needs no offer"
     );
@@ -399,14 +407,16 @@ fn a_body_the_session_already_holds_is_not_offered() {
     declared.skip_names(["latex-presentation".to_string()].iter());
     assert!(!declared.compose(
         &registry(),
-        &subject(&prompt("a latex presentation please"), &[])
+        &subject(&prompt("a latex presentation please"), &[]),
+        None
     ));
     // And another skill is still offered, so the skip is a name and not the whole offer.
     let mut other = Offers::new();
     other.skip_names(["latex-presentation".to_string()].iter());
     assert!(other.compose(
         &registry(),
-        &subject(&prompt("cut a tagged release please"), &[])
+        &subject(&prompt("cut a tagged release please"), &[]),
+        None
     ));
 }
 
@@ -492,7 +502,7 @@ fn a_skill_the_seat_cannot_use_is_not_offered() {
     // Every candidate is considered: ask repeatedly as the cap is two.
     let mut seen = Vec::new();
     for _ in 0..4 {
-        if !offers.compose(&registry, &text) {
+        if !offers.compose(&registry, &text, None) {
             break;
         }
         for o in &offers.open {
@@ -607,7 +617,10 @@ fn an_offer_skips_the_skill_whose_capability_this_seat_lacks() {
 
     let without = ["read".to_string(), "bash".to_string()];
     let mut offered = Offers::new().with_seat(without.iter(), std::iter::empty::<&String>());
-    assert!(offered.compose(&registry, &text), "the pane still fits");
+    assert!(
+        offered.compose(&registry, &text, None),
+        "the pane still fits"
+    );
     let names: Vec<&str> = offered.open.iter().map(|o| o.name.as_str()).collect();
     assert_eq!(names, ["plugin-pane"], "the page is not offered: {names:?}");
 
@@ -629,11 +642,201 @@ fn an_offer_skips_the_skill_whose_capability_this_seat_lacks() {
     // nothing else.
     let with = ["read".into(), "flowy".into()];
     let mut both = Offers::new().with_seat(with.iter(), std::iter::empty::<&String>());
-    assert!(both.compose(&registry, &text));
+    assert!(both.compose(&registry, &text, None));
     assert!(
         both.open.iter().any(|o| o.name == "instrument-dashboard"),
         "a seat with the capability is offered the page: {:?}",
         both.open.iter().map(|o| &o.name).collect::<Vec<_>>()
     );
     let _ = std::fs::remove_dir_all(&logs);
+}
+
+// ---- The operator's own prompt, scored against the skills' keywords ----
+
+/// The build's own frontmatter, compiled in from `skills/`. The case this suite was filed on is
+/// `plugin-pane`, and a fixture standing in for its keywords would prove nothing about the words
+/// the skill publishes.
+fn built_in() -> SkillRegistry {
+    SkillRegistry::new(SkillRegistry::built_in())
+}
+
+/// The round the offer did not fire in: a fuzzing plan, a page of seeds and crashes, and the
+/// operator's one short line under all of it. Neither the plan nor the result says "pane".
+fn fuzzing_round() -> (String, &'static str) {
+    let words = "ok please add it as a pane";
+    let mut items = prompt(words);
+    items.push(result(
+        "seed 3181: no crash after 4000 mutations of the parser's input corpus",
+    ));
+    items.push(answer(
+        "the campaign has run 2 000 seeds; the smallest reproducer is 41 bytes",
+    ));
+    let plan = [
+        row("fuzz the parser with 4000 random seeds until it crashes"),
+        row("triage the crashes and reduce the smallest reproducer"),
+    ];
+    (subject(&items, &plan), words)
+}
+
+/// The offer the operator's line has to earn on its own: one keyword, a short prompt, and a subject
+/// that has buried it under a campaign's worth of tool output.
+#[test]
+fn a_short_prompt_about_a_pane_is_heard_over_a_fuzzing_subject() {
+    let (text, words) = fuzzing_round();
+    let mut offers = Offers::new();
+    assert!(
+        offers.compose(&built_in(), &text, Some(words)),
+        "the prompt asked for a pane and nothing was offered: {text}"
+    );
+    let names: Vec<&str> = offers.open.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(names.first(), Some(&"plugin-pane"), "{names:?}");
+    assert_eq!(
+        offers.open[0].by,
+        By::Prompt,
+        "the prompt's own score is what earned it: {:?}",
+        offers.open[0]
+    );
+    // The line says which arithmetic scored it: a tail may not claim a document it did not read.
+    let said = tail_text(&offers);
+    assert!(said.contains("keywords"), "{said}");
+}
+
+/// The measurement the rule rests on, against the real frontmatter: one word the skill publishes,
+/// scored against `keywords` alone, clears the floor the subject has to clear - and a skill that
+/// publishes none of the prompt's words scores zero rather than being dragged in with it.
+#[test]
+fn one_keyword_in_a_short_prompt_scores_over_the_floor_on_its_own() {
+    let ranked = built_in().ranked_by_keywords("ok please add it as a pane", 8);
+    let (_, scored) = ranked
+        .iter()
+        .find(|(name, _)| name == "plugin-pane")
+        .unwrap_or_else(|| panic!("the pane's own keywords were not ranked: {ranked:?}"));
+    assert!(
+        *scored >= OFFER_FLOOR,
+        "one keyword scored {scored:.3} of 1.00, under the {OFFER_FLOOR} floor"
+    );
+    assert!(
+        !ranked.iter().any(|(name, _)| name == "screen"),
+        "the screen tool publishes none of these words: {ranked:?}"
+    );
+}
+
+/// A skill offered and not taken may be offered once more - by a new prompt that names it, because
+/// asking again is evidence the subject coming back never is.
+#[test]
+fn an_untaken_offer_comes_back_on_a_new_prompt_and_not_on_the_same_one() {
+    let dir = logs("asked-again");
+    let registry = built_in();
+    let (text, words) = fuzzing_round();
+    let mut offers = Offers::new();
+    assert!(offers.compose(&registry, &text, Some(words)));
+    assert_eq!(offers.open[0].name, "plugin-pane");
+    // The round did nothing with it.
+    offers.settle(&dir, "s-1", &[]);
+    // The same words on the next round of the same turn, and a round with no prompt at all.
+    assert!(
+        !offers.compose(&registry, &text, Some(words)),
+        "the same request twice is a nag"
+    );
+    assert!(
+        !offers.compose(&registry, &text, None),
+        "a round with no new operator prompt is not new evidence"
+    );
+    // A new prompt that names it is.
+    let second = "make it a pane";
+    assert!(
+        offers.compose(&registry, &text, Some(second)),
+        "the operator asked again and was not heard: {:?}",
+        offers.open
+    );
+    assert!(
+        offers.open.iter().any(|o| o.name == "plugin-pane"),
+        "{:?}",
+        offers.open
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A body the session holds is never offered again, however the operator's words move - a load is
+/// the take-up the whole rule is about, and the two doors that notice one both count.
+#[test]
+fn a_taken_offer_is_never_offered_again_however_the_prompt_words_move() {
+    let dir = logs("taken-prompt");
+    let registry = built_in();
+    let (text, words) = fuzzing_round();
+    let mut offers = Offers::new();
+    assert!(offers.compose(&registry, &text, Some(words)));
+    offers.settle(&dir, "s-1", &[a_load("plugin-pane")]);
+    assert!(
+        !offers.compose(&registry, &text, Some("add the panel to the dashboard")),
+        "a skill the round loaded was offered again: {:?}",
+        offers.open
+    );
+    // And a session that restarts remembers it: the log line said the round loaded it.
+    let mut after = Offers::new();
+    after.recall(&dir, "s-1");
+    assert!(
+        !after.compose(&registry, &text, Some("make it a pane")),
+        "the log's take-up is the memory: {:?}",
+        after.open
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A load the transcript shows is the same fact as a settled one, and it stops a prompt from
+/// re-offering the body the model is already holding.
+#[test]
+fn a_body_the_transcript_shows_loaded_is_not_offered_by_a_prompt_either() {
+    let loaded = vec![TranscriptItem::Assistant {
+        text: String::new(),
+        tool_calls: vec![a_load("plugin-pane")],
+        truncated: false,
+    }];
+    let mut offers = Offers::new();
+    offers.skip_loaded(&loaded);
+    assert!(!offers.compose(&built_in(), &fuzzing_round().0, Some("make it a pane")));
+}
+
+/// The take-up log says which of the two scores earned the line: a ratio over both would be two
+/// different measurements added together.
+#[test]
+fn the_log_says_which_score_earned_the_offer() {
+    let dir = logs("by");
+    let (text, words) = fuzzing_round();
+    let mut offers = Offers::new();
+    assert!(offers.compose(&built_in(), &text, Some(words)));
+    offers.settle(&dir, "s-1", &[]);
+    let logged = std::fs::read_to_string(dir.join(LOG)).expect("the log");
+    assert!(
+        logged.contains("\"skill\":\"plugin-pane\"") && logged.contains("\"by\":\"prompt\""),
+        "{logged}"
+    );
+
+    // The other side, on a caller that passed no prompt: the subject's own offer says so.
+    let mut subject_only = Offers::new();
+    assert!(subject_only.compose(
+        &registry(),
+        &subject(&prompt("a latex presentation please"), &[]),
+        None
+    ));
+    subject_only.settle(&dir, "s-2", &[]);
+    let logged = std::fs::read_to_string(dir.join(LOG)).expect("the log");
+    assert!(
+        logged.contains("\"skill\":\"latex-presentation\"")
+            && logged.contains("\"by\":\"subject\""),
+        "{logged}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The one line this round's request carries, as the model reads it.
+fn tail_text(offers: &Offers) -> String {
+    let tail = offers.tail();
+    let Some(TranscriptItem::User { parts, .. }) = tail.first() else {
+        panic!("an offer is a user item: {tail:?}")
+    };
+    match &parts[0] {
+        UserPart::Text { text } => text.clone(),
+        other => panic!("a text part, not {other:?}"),
+    }
 }

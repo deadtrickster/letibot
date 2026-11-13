@@ -781,20 +781,24 @@ impl SkillRegistry {
         // Filled from THIS registry, through the door that keys it as the score reads it. A fill
         // that cannot answer leaves no vectors, so the words stand alone.
         let _ = corpus.fill(tier);
-        // One name is one skill here - a pin, a `load` and an offer all key by it - so a second
-        // document under the same name would be the same row twice in a request that carries both.
-        let mut out: Vec<(String, f64)> = Vec::with_capacity(most.min(docs.len()));
-        for (path, score) in corpus.ranked_with(query, usize::MAX, tier) {
-            if out.len() >= most {
-                break;
-            }
-            let name = path.display().to_string();
-            if out.iter().any(|(seen, _)| *seen == name) {
-                continue;
-            }
-            out.push((name, score));
-        }
-        out
+        as_names(corpus.ranked_with(query, usize::MAX, tier), most)
+    }
+
+    /// The skills a short prompt names, scored against their own `keywords` and nothing else: at the
+    /// tail of a session the person writes "add it as a pane", and one word the author listed as the
+    /// thing the skill answers to is all the evidence there is. Scored against the whole frontmatter
+    /// that prompt is a rounding error, because a description is hundreds of terms and the prompt is
+    /// three. Words only: the round's `Tier` already holds the subject's corpus, and a second fill
+    /// would key one name to two texts.
+    pub fn ranked_by_keywords(&self, query: &str, most: usize) -> Vec<(String, f64)> {
+        let docs: Vec<(PathBuf, String)> = self
+            .live_skills()
+            .iter()
+            .filter(|s| !s.keywords.is_empty())
+            .map(|s| (PathBuf::from(&s.name), s.keywords.join(" ")))
+            .collect();
+        let corpus = crate::similarity::Corpus::of_texts(&docs);
+        as_names(corpus.ranked(query, usize::MAX), most)
     }
 
     /// What this registry is scored on, in the corpus's own shape: one document per skill, and
@@ -834,6 +838,23 @@ impl SkillRegistry {
         }
         declared.then_some(out)
     }
+}
+
+/// A ranking as its names. One name is one skill here - a pin, a `load` and an offer all key by it
+/// - so a second document under the same name would be the same row twice in one request.
+fn as_names(ranked: Vec<(&std::path::Path, f64)>, most: usize) -> Vec<(String, f64)> {
+    let mut out: Vec<(String, f64)> = Vec::with_capacity(most.min(ranked.len()));
+    for (path, score) in ranked {
+        if out.len() >= most {
+            break;
+        }
+        let name = path.display().to_string();
+        if out.iter().any(|(seen, _)| *seen == name) {
+            continue;
+        }
+        out.push((name, score));
+    }
+    out
 }
 
 /// `mcp__server__tool*` or `mcp__server`: the server part, lowercased.
