@@ -27,6 +27,10 @@ mod remote;
 mod tests;
 #[cfg(test)]
 mod tests_disks;
+#[cfg(test)]
+mod tests_work;
+pub mod work;
+mod worktree;
 pub use archive::{Kept, fetch_bundle, keep, namespace};
 pub use config::{Settings, SharedTarget, config_file};
 pub use plan::{
@@ -39,6 +43,12 @@ pub use reap::{
 pub use remote::{
     Bundle, HostPass, LeaseKeeper, LeaseRenewer, RENEW_MS, RemoteLeases, RemoteOwner,
     collect_bundle, host_pass, renew_script,
+};
+pub use worktree::{
+    Archived, OWNER_FILE, Place, Restored, STAMP_KEY, WIP_MAX_BYTES, archive_and_remove, archives,
+    branch_name, drop_archive, make as make_worktree, package_dir, proved as worktree_proved,
+    refs_under, restore as restore_worktree, restore_path, stamp as stamp_worktree, stamped_owner,
+    under as worktrees_under,
 };
 /// The file an owner root carries: the owner id, this box, the kind and the lease. It is what a
 /// reaper with no store reads, and the one thing that tells letibot's root from a directory that
@@ -59,6 +69,11 @@ pub const ROOT_DIRS: [(&str, &str, HoldingClass); 5] = [
 pub const SCOPE: &str = "scope";
 pub const VM: &str = "vm";
 pub const DAEMON: &str = "daemon";
+/// One owned worktree under an owner root's `wt/`, and the branch it is on (d.4, d.5).
+pub const WORKTREE: &str = "worktree";
+/// The refs an owner's work was kept in: `refs/letibot/archive/<owner>/…`. A record, so nothing
+/// removes one on its own - `letibot gc --drop-archive` is the only door (d.8).
+pub const ARCHIVE: &str = "archive";
 /// The copy a VM was booted on, under letibot's firecode cache.
 pub const COPY: &str = "copy";
 /// A firecode state layer: the filesystem a project's guest writes, under `FIRECODE_STATE`.
@@ -360,6 +375,18 @@ pub fn owner_for_open(
     Ok(row)
 }
 
+/// The queue proved an owner's work is on its target: write the landing down, so the plan's landed
+/// grace (1h) applies instead of the unlanded one (24h). Only a row that already exists is touched -
+/// a queue entry's owner is a session id, and a landing must never invent an owner for it.
+pub fn set_landed(store: &Store, owner: &str, sha: &str) -> StoreResult<bool> {
+    let Some(mut row) = store.owner(owner)? else {
+        return Ok(false);
+    };
+    row.landed_sha = Some(sha.to_string());
+    store.put_owner(&row)?;
+    Ok(true)
+}
+
 /// Write an owner's row and its root, then the holdings the filesystem already proves. The row
 /// goes first and the root second: a row with no resource is harmless, a resource with no row is
 /// the leak this whole package exists to stop.
@@ -498,6 +525,31 @@ fn from_root(owner: &OwnerRow, places: &Places) -> Vec<Found> {
         if !path.is_dir() {
             continue;
         }
+        // `wt/` is one holding per worktree, not one for the directory: a worktree is archived and
+        // removed on its own, and a directory's size is not a thing a settle step can act on.
+        if dir == "wt" {
+            let paths = worktree::under(&root);
+            if paths.is_empty() {
+                let (bytes, complete) = size_of(&path);
+                out.push(Found {
+                    owner: owner.id.clone(),
+                    kind: kind.to_string(),
+                    host: None,
+                    handle: path.display().to_string(),
+                    class,
+                    stamp: format!("{} names this owner", root.join(OWNER_JSON).display()),
+                    bytes,
+                    why: (!complete)
+                        .then(|| "its size was not measured whole (too big to walk)".into()),
+                    use_: None,
+                });
+                continue;
+            }
+            for wt in paths {
+                out.extend(worktree_found(owner, &root, &wt));
+            }
+            continue;
+        }
         let (bytes, complete) = size_of(&path);
         out.push(Found {
             owner: owner.id.clone(),
@@ -508,6 +560,81 @@ fn from_root(owner: &OwnerRow, places: &Places) -> Vec<Found> {
             stamp: format!("{} names this owner", root.join(OWNER_JSON).display()),
             bytes,
             why: (!complete).then(|| "its size was not measured whole (too big to walk)".into()),
+            use_: None,
+        });
+    }
+    if let Some(repo) = owner.repo.as_deref()
+        && let Ok(refs) =
+            worktree::refs_under(std::path::Path::new(repo), &namespace(&owner.id, "wt"))
+        && !refs.is_empty()
+    {
+        out.push(Found {
+            owner: owner.id.clone(),
+            kind: ARCHIVE.to_string(),
+            host: None,
+            handle: namespace(&owner.id, "wt"),
+            class: HoldingClass::Record,
+            stamp: format!("{} ref(s) under refs/letibot/archive", refs.len()),
+            bytes: None,
+            why: Some(format!(
+                "{} ref(s); `letibot gc --restore {}` puts the work back",
+                refs.len(),
+                owner.id
+            )),
+            use_: None,
+        });
+    }
+    out
+}
+
+/// One worktree of an owner root, and the branch it is on, each as its own holding: the worktree is
+/// the tree, the branch is the ref, and a settle step ends both.
+fn worktree_found(owner: &OwnerRow, root: &std::path::Path, wt: &std::path::Path) -> Vec<Found> {
+    let mut out = Vec::new();
+    let repo = owner.repo.as_deref().map(std::path::PathBuf::from);
+    let branch = worktree::branch_of(wt);
+    let proved = repo
+        .as_deref()
+        .and_then(|r| worktree::proved(r, wt, branch.as_deref(), &owner.id));
+    let stamp = match (&proved, &repo) {
+        (Some(why), _) => why.clone(),
+        (None, Some(repo)) if worktree::stamped_owner(wt).is_some() => format!(
+            "{} names an owner that is not this one, and branch.{} names nobody",
+            wt.display(),
+            branch.clone().unwrap_or_default()
+        ),
+        (None, _) => format!(
+            "no stamp file in its git directory and no owner key in {}",
+            repo.as_deref()
+                .map(|r| r.display().to_string())
+                .unwrap_or_default()
+        ),
+    };
+    let (bytes, complete) = size_of(wt);
+    out.push(Found {
+        owner: owner.id.clone(),
+        kind: WORKTREE.to_string(),
+        host: None,
+        handle: wt.display().to_string(),
+        class: HoldingClass::Work,
+        stamp: stamp.clone(),
+        bytes,
+        why: (!complete).then(|| "its size was not measured whole (too big to walk)".into()),
+        use_: None,
+    });
+    if let Some(branch) = branch {
+        out.push(Found {
+            owner: owner.id.clone(),
+            kind: work::BRANCH.to_string(),
+            host: None,
+            handle: branch,
+            class: HoldingClass::Work,
+            stamp,
+            bytes: None,
+            why: Some(format!(
+                "the branch this worktree is on, under {}",
+                root.display()
+            )),
             use_: None,
         });
     }

@@ -611,6 +611,7 @@ impl FirecodeBackend {
         };
         if !mounted {
             copy_tree(&spec.source, &project, &spec.exclude, spec.copy_max)?;
+            own_git(&project, &spec.source)?;
         }
 
         // Layers are attached to a PATH, and the copy has a path of its own: the source's
@@ -2049,6 +2050,152 @@ fn copy_tree(from: &Path, to: &Path, exclude: &[String], max: u64) -> Result<(),
         )));
     }
     Ok(())
+}
+
+/// Give the copy a git identity of its own before anything can run git in it (R220).
+///
+/// A worktree's `.git` is a FILE naming the source repository's `worktrees/<name>` entry, so a copy
+/// that keeps it is not an independent checkout: any git command in the copy reads and writes the
+/// REAL worktree's index, HEAD and refs while comparing against the copy's files. The fix is a
+/// bare clone that alternates on the source's objects (read-only) and keeps its own refs, moved
+/// into the copy's `.git`; then HEAD is the branch the worktree was on and the index is rebuilt
+/// from it, so `git status` in the copy says what the source's did and a commit made there is the
+/// copy's alone.
+///
+/// A copy of the main checkout has a `.git` DIRECTORY and is already its own repository, so this
+/// does nothing there - which is also what makes it safe to call on every copy.
+fn own_git(copy: &Path, source: &Path) -> Result<(), BackendError> {
+    let dot = copy.join(".git");
+    if !dot.is_file() {
+        return Ok(());
+    }
+    let linked = std::fs::read_to_string(&dot).unwrap_or_default();
+    if !linked.trim_start().starts_with("gitdir:") {
+        return Ok(());
+    }
+    let branch = git_out(
+        Some(&copy.to_path_buf()),
+        &["symbolic-ref", "--short", "HEAD"],
+    )
+    .map(|b| b.trim().to_string())
+    .ok()
+    .filter(|b| !b.is_empty());
+    let head = git_out(Some(&copy.to_path_buf()), &["rev-parse", "HEAD"])
+        .map(|h| h.trim().to_string())
+        .ok()
+        .filter(|h| !h.is_empty());
+    let staged = copy.with_file_name(format!(
+        "{}.git-own",
+        copy.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "copy".into())
+    ));
+    let _ = std::fs::remove_dir_all(&staged);
+    // `--shared` alternates on the source's object database, so this costs no bytes and the copy's
+    // own commits land in its own objects directory.
+    if let Err(e) = git_out(
+        None,
+        &[
+            "clone",
+            "--quiet",
+            "--shared",
+            "--bare",
+            &source.to_string_lossy(),
+            &staged.to_string_lossy(),
+        ],
+    ) {
+        let _ = std::fs::remove_dir_all(&staged);
+        return Err(BackendError::Io(format!(
+            "{} is a worktree of {}, and the copy could not be given a repository of its own \
+             ({e}): without one, any git command in the copy would write into the source \
+             worktree's index and refs",
+            copy.display(),
+            source.display()
+        )));
+    }
+    // Swap it in, keeping the old link aside until the copy is proven to have a HEAD.
+    let aside = copy.with_file_name(format!(
+        ".gitlink-aside-{}",
+        copy.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "copy".into())
+    ));
+    let _ = std::fs::remove_file(&aside);
+    std::fs::rename(&dot, &aside).map_err(|e| {
+        let _ = std::fs::remove_dir_all(&staged);
+        BackendError::Io(format!("could not move {}: {e}", dot.display()))
+    })?;
+    if let Err(e) = std::fs::rename(&staged, &dot) {
+        let _ = std::fs::rename(&aside, &dot);
+        let _ = std::fs::remove_dir_all(&staged);
+        return Err(BackendError::Io(format!(
+            "could not put a repository at {}: {e}",
+            dot.display()
+        )));
+    }
+    let done = (|| -> Result<(), String> {
+        match &branch {
+            Some(b) => {
+                git_out(
+                    Some(&copy.to_path_buf()),
+                    &[
+                        "update-ref",
+                        "--no-deref",
+                        "HEAD",
+                        &format!("refs/heads/{b}"),
+                    ],
+                )?;
+            }
+            None => {
+                if let Some(h) = &head {
+                    git_out(
+                        Some(&copy.to_path_buf()),
+                        &["update-ref", "--no-deref", "HEAD", h],
+                    )?;
+                }
+            }
+        }
+        // The index the copy inherited describes the source's tree; rebuild it from this HEAD so
+        // `git status` compares the copy's files against the copy's HEAD.
+        git_out(Some(&copy.to_path_buf()), &["reset", "-q"])?;
+        Ok(())
+    })();
+    match done {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&aside);
+            Ok(())
+        }
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&dot);
+            let _ = std::fs::rename(&aside, &dot);
+            Err(BackendError::Io(format!(
+                "the copy's own repository could not be given a HEAD ({e}), so it was put back \
+                 as it came: a git command in it would have written into {}",
+                source.display()
+            )))
+        }
+    }
+}
+
+/// One `git` (with `-C dir` when there is one), its stdout - git's own words on failure.
+fn git_out(dir: Option<&PathBuf>, args: &[&str]) -> Result<String, String> {
+    let mut cmd = std::process::Command::new("git");
+    if let Some(dir) = dir {
+        cmd.arg("-C").arg(dir);
+    }
+    let out = cmd
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .output()
+        .map_err(|e| format!("git {}: {e}", args.join(" ")))?;
+    if out.status.success() {
+        return Ok(String::from_utf8_lossy(&out.stdout).into_owned());
+    }
+    Err(format!(
+        "git {}: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr).trim()
+    ))
 }
 
 /// POSIX single-quote quoting, the same policy the host backend uses.

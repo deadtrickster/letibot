@@ -4361,7 +4361,7 @@ pub fn owner_home(root: &str, session: &str) -> String {
 /// The last eight usable characters of a session id, as a branch and directory name. Alphanumerics
 /// only: a session id is a time and a random tail, the tail is what tells two apart, and a `-`
 /// among eight characters buys a branch name with a seam in it.
-fn short_branch_id(id: &str) -> String {
+pub(crate) fn short_branch_id(id: &str) -> String {
     let cleaned: String = id.chars().filter(char::is_ascii_alphanumeric).collect();
     let tail: String = cleaned
         .chars()

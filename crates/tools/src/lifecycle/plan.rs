@@ -460,6 +460,14 @@ pub fn judge(owner: &OwnerRow, h: &HoldingView, places: &Places, now_ms: i64) ->
             "its row is here and the resource is not on this box: nothing to remove".into(),
         );
     }
+    if h.state == HoldingState::Stuck {
+        return Verdict::Keep(format!(
+            "a reap step failed twice on this {kind}, so nothing further is removed for it until \
+             `letibot gc --log {owner}` is read and settled",
+            kind = h.kind,
+            owner = owner.id,
+        ));
+    }
     if let Some(host) = &h.host
         && host != &places.box_id
     {

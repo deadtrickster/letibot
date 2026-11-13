@@ -232,3 +232,124 @@ fn a_box_with_no_store_is_refused_by_name() {
     assert!(!ok, "a missing store must not answer as success:\n{out}");
     assert!(err.contains("no store"), "{err}");
 }
+
+/// One `git -C dir …`, asserted to succeed.
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .output()
+        .expect("git runs");
+    assert!(
+        out.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+/// **Done when** `letibot gc --adopt 'wt-pk-*'` on a repository with several worktrees lists them
+/// under an owner `legacy-<date>`, the plan gives each of them a verdict, and nothing is removed
+/// without `--now` (`docs/lifecycle.md` d.4 rule 4, G3).
+///
+/// The live run on lab2x1 is the operator's: this proves the verb against a throwaway repository.
+#[test]
+fn adopting_worktrees_nothing_recorded_plans_them_and_removes_nothing() {
+    let f = Fixture::new("adopt");
+    let repo = f.at("proj");
+    git(&repo, &["init", "-q", "-b", "main"]);
+    std::fs::write(repo.join("one"), "one\n").expect("a file");
+    git(&repo, &["add", "-A"]);
+    git(&repo, &["commit", "-q", "-m", "one"]);
+    let mut made: Vec<PathBuf> = Vec::new();
+    for name in ["wt-pk-one", "wt-pk-two"] {
+        let wt = repo.join("worktrees").join(name);
+        std::fs::create_dir_all(wt.parent().expect("a parent")).expect("the worktrees dir");
+        git(
+            &repo,
+            &["worktree", "add", "-q", "-b", name, &wt.to_string_lossy()],
+        );
+        made.push(wt);
+    }
+    // A store of its own, as a file: `--adopt` records an owner, so the verb opens for writing.
+    let store = f.root.join("data.db");
+    let run = |args: &[&str]| -> (bool, String, String) {
+        let out = std::process::Command::new(env!("CARGO_BIN_EXE_letibot"))
+            .args(args)
+            .current_dir(&f.root)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", f.at("home"))
+            .env("XDG_DATA_HOME", f.at("home/.local/share"))
+            .env("XDG_CACHE_HOME", f.at("cache"))
+            .env("XDG_RUNTIME_DIR", f.at("run"))
+            .env("LETIBOT_STORE", &store)
+            .env("LETIBOT_GC_ROOT", f.at("gc"))
+            .output()
+            .expect("the verb runs");
+        (
+            out.status.success(),
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    };
+
+    let folder = repo.display().to_string();
+    let (ok, out, err) = run(&["gc", "--adopt", "wt-pk-*", "--folder", &folder]);
+    assert!(ok, "`gc --adopt` failed. stderr:\n{err}");
+    assert!(
+        out.contains("legacy-"),
+        "the owner it made is named:\n{out}"
+    );
+    for wt in &made {
+        assert!(
+            out.contains(&wt.display().to_string()),
+            "{} was adopted:\n{out}",
+            wt.display()
+        );
+        assert!(wt.exists(), "adoption removes nothing");
+        // The stamp is the whole difference between *looks like ours* and *ours* (d.4).
+        let admin = std::process::Command::new("git")
+            .arg("-C")
+            .arg(wt)
+            .args(["rev-parse", "--path-format=absolute", "--git-dir"])
+            .output()
+            .expect("git runs");
+        let admin = PathBuf::from(String::from_utf8_lossy(&admin.stdout).trim());
+        let stamp = std::fs::read_to_string(admin.join("letibot-owner")).unwrap_or_default();
+        assert!(
+            stamp.contains("legacy-"),
+            "{} carries the stamp: `{stamp}`",
+            admin.join("letibot-owner").display()
+        );
+    }
+
+    // And the plan, which is what a person reads before `--now`.
+    let (ok, plan, err) = run(&["gc", "--folder", &folder]);
+    assert!(ok, "`gc --folder` failed. stderr:\n{err}");
+    assert!(
+        plan.contains("legacy-"),
+        "the plan knows the owner:\n{plan}"
+    );
+    assert!(
+        plan.contains("reap at") || plan.contains("reap now"),
+        "every adopted worktree has a verdict:\n{plan}"
+    );
+    for wt in &made {
+        assert!(
+            plan.contains(&wt.display().to_string()),
+            "{} is in the plan:\n{plan}",
+            wt.display()
+        );
+        assert!(wt.exists(), "planning removes nothing");
+    }
+}

@@ -1225,3 +1225,87 @@ fn the_guests_commits_are_carried_out_when_the_copy_out_says_none() {
     );
     assert_eq!(git_in(&src, &["rev-parse", "rescued"]), head);
 }
+
+/// R220: a copy of a WORKTREE must not keep the source's `gitdir` link. A worktree's `.git` is a
+/// file naming `<main>/.git/worktrees/<name>`, so a copy that keeps it is a second working tree
+/// attached to the same admin entry: `git add` in the copy writes the source's index and `git
+/// commit` moves the source's branch. The copy gets a repository of its own - a bare clone that
+/// alternates on the source's objects - and this asserts the source is not touched.
+#[test]
+fn a_copied_worktree_gets_a_repository_of_its_own() {
+    let root = tmp("own-git");
+    let src = root.join("src");
+    std::fs::create_dir_all(&src).unwrap();
+    git_in(&src, &["init", "-q", "-b", "main"]);
+    file(&src.join("one"), 8);
+    git_in(&src, &["add", "-A"]);
+    git_in(&src, &["commit", "-q", "-m", "one"]);
+    let wt = root.join("wt");
+    git_in(
+        &src,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "pk/topic",
+            &wt.to_string_lossy(),
+        ],
+    );
+    file(&wt.join("two"), 8);
+    git_in(&wt, &["add", "-A"]);
+    git_in(&wt, &["commit", "-q", "-m", "two"]);
+    let source_head = git_in(&wt, &["rev-parse", "HEAD"]);
+    let source_status = git_in(&wt, &["status", "--porcelain"]);
+
+    // The copy as firecode makes it today: rsync copies the directory, the link file and all.
+    let copy = root.join("copy");
+    let out = std::process::Command::new("cp")
+        .arg("-a")
+        .arg(&wt)
+        .arg(&copy)
+        .output()
+        .expect("cp runs");
+    assert!(out.status.success(), "cp: {out:?}");
+    assert!(
+        copy.join(".git").is_file(),
+        "the fixture's copy starts as the source's link, which is the defect"
+    );
+
+    own_git(&copy, &wt).expect("the copy is given a repository of its own");
+    assert!(
+        copy.join(".git").is_dir(),
+        "the copy's .git is a repository, not a link into the source's"
+    );
+    assert_eq!(
+        git_in(&copy, &["rev-parse", "--abbrev-ref", "HEAD"]),
+        "pk/topic",
+        "the copy is on the branch the worktree was on"
+    );
+
+    // A commit made in the copy is the copy's own.
+    file(&copy.join("three"), 8);
+    git_in(&copy, &["add", "-A"]);
+    git_in(&copy, &["commit", "-q", "-m", "the guest's work"]);
+    assert_ne!(
+        git_in(&copy, &["rev-parse", "HEAD"]),
+        source_head,
+        "the copy committed"
+    );
+
+    // And the source worktree is exactly as it was: same HEAD, same status.
+    assert_eq!(
+        git_in(&wt, &["rev-parse", "HEAD"]),
+        source_head,
+        "the source worktree's HEAD did not move"
+    );
+    assert_eq!(
+        git_in(&wt, &["status", "--porcelain"]),
+        source_status,
+        "the source worktree's index and files are untouched"
+    );
+    assert!(
+        copy.join(".git").join("objects").is_dir(),
+        "the copy has its own object directory for its own commits"
+    );
+}

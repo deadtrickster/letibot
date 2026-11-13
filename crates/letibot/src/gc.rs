@@ -9,8 +9,10 @@
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use letibot_tokencore::store::Store;
 use letibot_tokencore::store::split;
+use letibot_tokencore::store::{
+    HoldingClass, HoldingRow, HoldingState, OwnerKind, OwnerRow, OwnerState, Store,
+};
 use letibot_tools::lifecycle::{self, Places, Plan};
 
 const USAGE_HOLDS: &str = "\
@@ -39,18 +41,32 @@ letibot gc [OWNER] [--folder DIR] [--json] [--log | --now [--json]]
   --json         the plan (or the pass) as one object
   --log          the journal of what was done to these owners (`reap_event`), oldest first
   --now          ACT, in one pass. Compute first: an owner idle, past a TTL or under a gone
-                 daemon is closed, and its cgroups, VMs and daemons are ended. Then disk: the
-                 caches of every owner whose compute is gone (a build target, a /tmp, a confined
-                 home, the tree a VM was booted on, a firecode state layer), a copy-out after its
-                 work is in refs/letibot/archive/, the run directories of VMs that are down, the
-                 shared build targets over their quota under the lock `rrun` takes, and each
-                 remote host's own pass. Worktrees and branches stay (G3). Every act is
-                 journaled, and an act is done when the thing is ABSENT.
+                 daemon is closed, and its cgroups, VMs and daemons are ended. Then its WORK: a
+                 worktree and its branch are kept in refs/letibot/archive/OWNER/ (the uncommitted
+                 work as one `wip` commit made with a scratch index) and only then removed, and a
+                 tree holding over 512 MB of untracked content goes to <gc root>/<box>/.trash
+                 instead of being committed. Then disk: the caches of every owner whose compute is
+                 gone, a copy-out after its work is in refs/letibot/archive/, the run directories
+                 of VMs that are down, the shared build targets over their quota under the lock
+                 `rrun` takes, and each remote host's own pass. Every act is journaled, and an act
+                 is done when the thing is ABSENT.
+
+  --settle OWNER   settle an owner's work NOW, without waiting out the grace
+  --restore OWNER  put an owner's archived branches back; with `--worktree`, also a tree at the
+                   archived head with its uncommitted work checked out over it
+  --drop-archive   the archives a `--restore` could still bring back, by owner and age; with
+                   `--now`, let them go (never run by the timer)
+  --older D        with `--drop-archive`: only the archives older than this (`90d`)
+  --adopt PATTERN  take worktrees of this folder's repository whose path matches PATTERN under an
+                   owner `legacy-<date>`, stamped as letibot's; nothing is removed without `--now`
 
   example:
     letibot gc
     letibot gc s-1794509750373521593 --now
-    letibot gc --log";
+    letibot gc --log
+    letibot gc --settle s-1794509750373521593
+    letibot gc --restore s-1794509750373521593 --worktree
+    letibot gc --adopt 'wt-pk-*' --now";
 
 const USAGE_HOLD: &str = "\
 letibot hold OWNER [--for 2d]
@@ -123,6 +139,18 @@ struct Args {
     now: bool,
     /// `hold --for`: the span, in milliseconds.
     until: Option<i64>,
+    /// `gc --settle`: settle this owner's work now.
+    settle: bool,
+    /// `gc --restore`: bring an owner's archived work back.
+    restore: bool,
+    /// `gc --restore --worktree`: and a tree to put it in.
+    worktree: bool,
+    /// `gc --drop-archive`: the archives, planned; with `--now`, let them go.
+    drop_archive: bool,
+    /// `gc --adopt PATTERN`: take worktrees nothing recorded under `legacy-<date>`.
+    adopt: Option<String>,
+    /// `gc --older D`: only archives older than this, in milliseconds.
+    older: Option<i64>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -134,6 +162,12 @@ fn parse(args: &[String]) -> Result<Args, String> {
         log: false,
         now: false,
         until: None,
+        settle: false,
+        restore: false,
+        worktree: false,
+        drop_archive: false,
+        adopt: None,
+        older: None,
     };
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
@@ -146,6 +180,22 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--line" => out.line = true,
             "--log" => out.log = true,
             "--now" => out.now = true,
+            "--settle" => out.settle = true,
+            "--restore" => out.restore = true,
+            "--worktree" => out.worktree = true,
+            "--drop-archive" => out.drop_archive = true,
+            "--adopt" => {
+                let pattern = it
+                    .next()
+                    .ok_or("`--adopt` needs a pattern after it, e.g. `wt-pk-*`")?;
+                out.adopt = Some(pattern.to_string());
+            }
+            "--older" => {
+                let span = it
+                    .next()
+                    .ok_or("`--older` needs a span after it, e.g. `90d`")?;
+                out.older = Some(span_ms(span)?);
+            }
             "--for" => {
                 let span = it
                     .next()
@@ -260,6 +310,22 @@ fn gc(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
     let parsed = parse(args)?;
+    if parsed.settle {
+        return gc_settle(parsed.owner.as_deref());
+    }
+    if parsed.restore {
+        return gc_restore(
+            parsed.owner.as_deref(),
+            parsed.worktree,
+            parsed.folder.as_deref(),
+        );
+    }
+    if parsed.drop_archive {
+        return gc_drop_archive(parsed.owner.as_deref(), parsed.older, parsed.now);
+    }
+    if let Some(pattern) = &parsed.adopt {
+        return gc_adopt(pattern, parsed.folder.as_deref(), parsed.now);
+    }
     if parsed.now {
         // Opening for a write is the one thing this verb family does not do read-only, so it is
         // asked BEFORE the plan's reader is opened: one connection, and no second opinion about
@@ -359,6 +425,317 @@ fn gc_now(owner: Option<&str>, folder: Option<&Path>, json: bool) -> Result<(), 
         );
     }
     Ok(())
+}
+
+/// `letibot gc --settle OWNER`: the grace is skipped and one pass does the work now - the archive,
+/// then the removal, then the session out of sight. What `leticode_archive` asks for from a seat.
+fn gc_settle(owner: Option<&str>) -> Result<(), String> {
+    let Some(owner) = owner else {
+        return Err(
+            "`--settle` needs the owner whose work should go: `letibot gc --settle s-…`. `letibot \
+             gc` lists the owners and what each holds"
+                .into(),
+        );
+    };
+    let (store, places) = open_for_acts(Some(owner))?;
+    let now = lifecycle::now_ms();
+    let row = store
+        .owner(owner)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no owner `{owner}` in this store"))?;
+    if matches!(row.state, OwnerState::Live | OwnerState::Closing) {
+        return Err(format!(
+            "`{owner}` is `{}`: its compute is still here, and work is settled after a close - \
+             `leticode_stop` or `leticode_archive` first, then this",
+            row.state.word()
+        ));
+    }
+    lifecycle::work::set_settling(
+        &store,
+        &row,
+        now,
+        "the operator asked for it (`letibot gc --settle`)",
+    )
+    .map_err(|e| e.to_string())?;
+    let ops = lifecycle::Ops::here("letibot gc --settle");
+    let pass =
+        lifecycle::pass(&store, &places, &ops, Some(owner), now).map_err(|e| e.to_string())?;
+    print!("{}", pass.render());
+    Ok(())
+}
+
+/// `letibot gc --restore OWNER [--worktree]`: the branches an archive holds come back, and with
+/// `--worktree` a tree at the archived head with the uncommitted work over it.
+fn gc_restore(owner: Option<&str>, worktree: bool, _folder: Option<&Path>) -> Result<(), String> {
+    let Some(owner) = owner else {
+        return Err("`--restore` needs the owner to bring back: `letibot gc --restore s-…`".into());
+    };
+    let (store, places) = open()?;
+    let row = store
+        .owner(owner)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no owner `{owner}` in this store"))?;
+    let repo = row.repo.clone().ok_or_else(|| {
+        format!("`{owner}` names no repository, so there is nowhere its archive could be read from")
+    })?;
+    let ns = lifecycle::namespace(owner, "wt");
+    let place = if worktree {
+        let refs = lifecycle::refs_under(Path::new(&repo), &ns).map_err(|e| e.to_string())?;
+        let branch = refs
+            .iter()
+            .find_map(|r| r.strip_prefix(&format!("{ns}/heads/")))
+            .unwrap_or("restored");
+        Some(lifecycle::restore_path(&places, owner, branch))
+    } else {
+        None
+    };
+    let restored = lifecycle::restore_worktree(Path::new(&repo), owner, place.as_deref())
+        .map_err(|e| e.to_string())?;
+    println!("{owner}: restored {}", restored.said());
+    Ok(())
+}
+
+/// `letibot gc --drop-archive [OWNER] [--older 90d]`: the archives, planned by owner and age - and
+/// with `--now`, let go. The timer never runs this: the refs are the only copy of work that was
+/// removed, so a person asks.
+fn gc_drop_archive(owner: Option<&str>, older: Option<i64>, act: bool) -> Result<(), String> {
+    let (store, _places) = open()?;
+    let now = lifecycle::now_ms();
+    let rows: Vec<OwnerRow> = match owner {
+        Some(id) => store
+            .owner(id)
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .collect(),
+        None => store.owners().map_err(|e| e.to_string())?,
+    };
+    let mut any = false;
+    for row in rows {
+        let Some(repo) = row.repo.as_deref() else {
+            continue;
+        };
+        let ns = lifecycle::namespace(&row.id, "wt");
+        let refs = lifecycle::refs_under(Path::new(repo), &ns).unwrap_or_default();
+        if refs.is_empty() {
+            continue;
+        }
+        let at = lifecycle::archives(Path::new(repo))
+            .into_iter()
+            .find(|(id, _, _)| id == &row.id)
+            .map(|(_, at, _)| at)
+            .unwrap_or(0);
+        if let Some(span) = older
+            && now - at.saturating_mul(1000) < span
+        {
+            continue;
+        }
+        any = true;
+        println!(
+            "{}: {} ref(s) under {ns}, last commit {}",
+            row.id,
+            refs.len(),
+            lifecycle::stamp_of(at.saturating_mul(1000))
+        );
+        for r in &refs {
+            println!("  {r}");
+        }
+        if act {
+            let gone =
+                lifecycle::drop_archive(Path::new(repo), &row.id).map_err(|e| e.to_string())?;
+            println!("  dropped {}", gone.len());
+        }
+    }
+    if !any {
+        println!(
+            "no archive of this box holds a ref{}",
+            match older {
+                Some(span) => format!(" older than {}", lifecycle::human_millis(span as u64)),
+                None => String::new(),
+            }
+        );
+        return Ok(());
+    }
+    if !act {
+        println!(
+            "\nthis is a plan: `--now` is what lets them go, and `letibot gc --restore OWNER` is \
+             what puts the work back first"
+        );
+    }
+    Ok(())
+}
+
+/// `letibot gc --adopt PATTERN`: worktrees of this folder's repository that nothing recorded, taken
+/// under an owner `legacy-<date>` whose state is `closed` - so the normal plan and `--now` apply to
+/// them, and nothing is removed until `--now` says so (d.4 rule 4).
+fn gc_adopt(pattern: &str, folder: Option<&Path>, act: bool) -> Result<(), String> {
+    let folder = match folder {
+        Some(p) => p.to_path_buf(),
+        None => std::env::current_dir().map_err(|e| format!("no working directory: {e}"))?,
+    };
+    let (store, places) = open_for_acts(None)?;
+    let repo = git_line(&folder, &["rev-parse", "--show-toplevel"]).ok_or_else(|| {
+        format!(
+            "{} is not in a git checkout, and adoption is about worktrees of one",
+            folder.display()
+        )
+    })?;
+    let repo = PathBuf::from(repo.trim());
+    let mine: Vec<PathBuf> = worktrees_of(&repo)
+        .into_iter()
+        .filter(|p| glob_match(pattern, p))
+        .collect();
+    if mine.is_empty() {
+        println!(
+            "no worktree of {} matches `{pattern}` (its worktrees: {})",
+            repo.display(),
+            worktrees_of(&repo)
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        return Ok(());
+    }
+    let now = lifecycle::now_ms();
+    let day: String = lifecycle::stamp_of(now).chars().take(10).collect();
+    let owner = format!("legacy-{day}");
+    let mut row = lifecycle::owner_for_open(
+        &store,
+        &owner,
+        OwnerKind::Session,
+        Some(repo.display().to_string()),
+        now,
+    )
+    .map_err(|e| e.to_string())?;
+    row.state = OwnerState::Closed;
+    row.closed_ms = Some(now);
+    row.closed_why = Some(format!("adopted by hand from `{pattern}`"));
+    store.put_owner(&row).map_err(|e| e.to_string())?;
+    for wt in &mine {
+        let branch = git_line(wt, &["symbolic-ref", "--short", "HEAD"])
+            .map(|b| b.trim().to_string())
+            .filter(|b| !b.is_empty());
+        // The stamp is what a settle step proves it by (d.4), and adoption writes it - that is the
+        // whole difference between *looks like ours* and *ours*.
+        if let Some(branch) = &branch {
+            lifecycle::stamp_worktree(&repo, wt, branch, &owner)
+                .map_err(|e| format!("{}: {e}", wt.display()))?;
+        }
+        let said =
+            format!("adopted by `letibot gc --adopt {pattern}`; its stamp file names `{owner}`");
+        store
+            .put_holding(&HoldingRow {
+                owner_id: owner.clone(),
+                kind: lifecycle::WORKTREE.to_string(),
+                host: None,
+                handle: wt.display().to_string(),
+                class: HoldingClass::Work,
+                state: HoldingState::Held,
+                stamp: said.clone(),
+                bytes: None,
+                archive: None,
+                why: Some("nothing recorded it, and it was taken by hand".into()),
+                created_ms: now,
+                checked_ms: Some(now),
+                attempts: 0,
+            })
+            .map_err(|e| e.to_string())?;
+        if let Some(branch) = branch {
+            store
+                .put_holding(&HoldingRow {
+                    owner_id: owner.clone(),
+                    kind: lifecycle::work::BRANCH.to_string(),
+                    host: None,
+                    handle: branch,
+                    class: HoldingClass::Work,
+                    state: HoldingState::Held,
+                    stamp: said,
+                    bytes: None,
+                    archive: None,
+                    why: None,
+                    created_ms: now,
+                    checked_ms: Some(now),
+                    attempts: 0,
+                })
+                .map_err(|e| e.to_string())?;
+        }
+        println!("{owner}: adopted {}", wt.display());
+    }
+    if act {
+        let ops = lifecycle::Ops::here("letibot gc --adopt --now");
+        let pass =
+            lifecycle::pass(&store, &places, &ops, Some(&owner), now).map_err(|e| e.to_string())?;
+        print!("{}", pass.render());
+    } else {
+        println!(
+            "\nthis is a plan: `letibot gc --now {owner}` (or `--settle {owner}`) is what acts, \
+             and every one of them is archived before it is removed"
+        );
+    }
+    Ok(())
+}
+
+/// One `git -C dir …`, its trimmed stdout - `None` for anything git refuses.
+fn git_line(dir: &Path, args: &[&str]) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
+    out.status
+        .success()
+        .then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Every linked worktree of `repo` - the main checkout is not one, and is never adopted.
+fn worktrees_of(repo: &Path) -> Vec<PathBuf> {
+    let Some(list) = git_line(repo, &["worktree", "list", "--porcelain"]) else {
+        return Vec::new();
+    };
+    let main = std::fs::canonicalize(repo).unwrap_or_else(|_| repo.to_path_buf());
+    list.lines()
+        .filter_map(|l| l.strip_prefix("worktree "))
+        .map(PathBuf::from)
+        .filter(|p| std::fs::canonicalize(p).unwrap_or_else(|_| p.clone()) != main)
+        .collect()
+}
+
+/// `wt-pk-*` against a worktree path: the last segment or the whole path, with `*` and `?`.
+fn glob_match(pattern: &str, path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let full = path.display().to_string();
+    wildcard(pattern, &name) || wildcard(pattern, &full)
+}
+
+/// A `*`/`?` matcher, so `--adopt` needs no crate for one line of the design's.
+fn wildcard(pattern: &str, text: &str) -> bool {
+    let (p, t): (Vec<char>, Vec<char>) = (pattern.chars().collect(), text.chars().collect());
+    let (mut pi, mut ti) = (0usize, 0usize);
+    let (mut star, mut mark) = (None, 0usize);
+    while ti < t.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
+            pi += 1;
+            ti += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            pi += 1;
+            mark = ti;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            mark += 1;
+            ti = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
 }
 
 fn hold(args: &[String]) -> Result<(), String> {

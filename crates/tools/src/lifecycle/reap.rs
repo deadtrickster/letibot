@@ -416,6 +416,15 @@ pub fn pass(
             ));
             continue;
         }
+        // The work half: a closed owner past its grace has its worktrees and branches kept in
+        // `refs/letibot/archive/<owner>/` and then removed (G3). It runs between compute and the
+        // caches, because a process may still be writing in the tree until the compute half ends.
+        if let Err(e) = super::work::settle(store, places, ops, &owner, now, &mut out) {
+            out.kept.push(format!(
+                "{}: its work was left, the store said {e}",
+                owner.id
+            ));
+        }
         // A store error in the disk half is said and the pass goes on: the closes already made
         // are in `acts`, and the daemon acts on them only if the pass returns them.
         if disks::past_compute(&owner)
