@@ -411,11 +411,13 @@ pub const ALL: &[&Preset] = &[
     &ANTHROPIC,
     &DEEPSEEK_ANTHROPIC,
     &GLM_ANTHROPIC,
-    &KIMI_CODING,
     &OPENAI,
     &GEMINI,
     &KIMI_CODE,
     &KIMI_CODE_GLOBAL,
+    // After the vendor's own doors, as each `-anthropic` door is: the order is which door a
+    // shared catalogue's row is reached by first.
+    &KIMI_CODING,
 ];
 
 impl Preset {
@@ -606,6 +608,17 @@ mod tests {
             Preset::parse("kimi-code-global").unwrap().name,
             "kimi-code-global"
         );
+    }
+
+    /// A vendor's own door comes before its Messages door: the first door of a shared catalogue
+    /// names the model card's row and is the one its models are taken through.
+    #[test]
+    fn a_vendors_own_door_precedes_its_messages_door() {
+        let order: Vec<&str> = ALL.iter().map(|p| p.name).collect();
+        let pos = |n: &str| order.iter().position(|x| *x == n).unwrap();
+        assert!(pos("kimi-code-global") < pos("kimi-coding"), "{order:?}");
+        assert!(pos("deepseek") < pos("deepseek-anthropic"), "{order:?}");
+        assert!(pos("glm") < pos("glm-anthropic"), "{order:?}");
     }
 
     /// Every `fallback_model` must be a name the catalogue carries in its shortest form,

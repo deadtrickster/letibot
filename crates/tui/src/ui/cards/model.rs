@@ -185,7 +185,7 @@ impl App {
             }
         }
         for p in &card.providers {
-            w.label = w.label.max(p.label.chars().count());
+            w.label = w.label.max(shown_label(p).chars().count());
         }
         w
     }
@@ -271,7 +271,7 @@ fn provider_row(p: Option<&Provider>, cursor: bool, w: Widths, keys: bool) -> RL
         Span::raw("  "),
         marks(cursor, false),
         Span::raw(" "),
-        Span::role(pad_right(&p.label, w.label), Role::Strong),
+        Span::role(pad_right(&shown_label(p), w.label), Role::Strong),
         Span::raw("  "),
         Span::role(
             pad_right(state, 13),
@@ -282,6 +282,20 @@ fn provider_row(p: Option<&Provider>, cursor: bool, w: Widths, keys: bool) -> RL
         Span::raw("  "),
         Span::role(price_range(p), Role::Faint),
     ])
+}
+
+/// The row's name, with how many more doors reach the same models: one row per catalogue hid
+/// that a second protocol was a Tab away.
+fn shown_label(p: &Provider) -> String {
+    match p.doors.len() {
+        0 | 1 => p.label.clone(),
+        n => format!(
+            "{} (+{} door{})",
+            p.label,
+            n - 1,
+            if n == 2 { "" } else { "s" }
+        ),
+    }
 }
 
 /// The one row the providers this box holds no key for fold into: Enter lists them.
