@@ -2828,9 +2828,9 @@ impl Harness {
                         // A move the limit rule earned, or today's path: a failure that is not a
                         // limit, or a limit with no rounds left, where a quota or a 5xx may still
                         // earn one. The sentence and the row are the same either way.
-                        let next = match other {
-                            limit::AfterTheLadder::Moved { next } => Some(next),
-                            _ => self.fall_back_from(&e, &mut tried_fallbacks),
+                        let (next, why) = match other {
+                            limit::AfterTheLadder::Moved { next, why } => (Some(next), Some(why)),
+                            _ => (self.fall_back_from(&e, &mut tried_fallbacks), None),
                         };
                         // The provider's own trouble, as a type, here and not per attempt: a ladder of five
                         // attempts on one 429 is one fact, and an automation wakes once for it.
@@ -2850,10 +2850,13 @@ impl Harness {
                             if let Some(o) = outage.as_ref() {
                                 self.end_outage(o, false);
                             }
-                            self.hub.warn(
-                                "model_fallback",
-                                fallback_notice(&was, &next, &e, opens_a_turn, outage.as_ref()),
-                            );
+                            let notice = match why {
+                                Some(why) => limit_fallback_notice(&why, opens_a_turn),
+                                None => {
+                                    fallback_notice(&was, &next, &e, opens_a_turn, outage.as_ref())
+                                }
+                            };
+                            self.hub.warn("model_fallback", notice);
                         }
                         break Err(TurnFailure::Http(e));
                     }
@@ -4303,6 +4306,17 @@ fn fallback_notice(
          recorded by the turn that failed. `/models` moves the session back, and the list is in \
          `[fallback] models` in providers.toml."
     )
+}
+
+/// The `[fallback]` notice for a move a limit earned: the limit's own sentence, which already
+/// names both models and the reset, and what happens to the work.
+fn limit_fallback_notice(why: &str, opens_a_turn: bool) -> String {
+    let on = if opens_a_turn {
+        "The daemon opens the next turn there by itself."
+    } else {
+        "The next thing you send goes there."
+    };
+    format!("[fallback] {why}. {on}")
 }
 
 /// What the harness's own detectors saw at a turn's end, gathered for the `steer_` layer that may

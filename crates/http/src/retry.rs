@@ -192,6 +192,20 @@ impl Policy {
             .or_else(|| crate::reset::from_prose(body, now_ms))
     }
 
+    /// [`Policy::reset_ms`] without the prose's six-hour ceiling: the instant the provider really
+    /// named, so a weekly limit reads as the day it lifts and not as the park's bound.
+    pub fn reset_unbounded_ms(e: &HttpError, now_ms: u64) -> Option<u64> {
+        let HttpError::Status {
+            retry_after, body, ..
+        } = e
+        else {
+            return None;
+        };
+        retry_after
+            .map(|secs| now_ms.saturating_add(secs.saturating_mul(1000)))
+            .or_else(|| crate::reset::from_prose_unbounded(body, now_ms))
+    }
+
     /// The status, when the provider refused what was SENT - `4xx` except the two
     /// about timing. A `400`/`401`/`403`/`404` is a request a model read and said no
     /// to, so it is the one class a `switch_back_notice` may cite.

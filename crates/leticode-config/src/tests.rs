@@ -1321,6 +1321,77 @@ fn a_bad_provider_table_and_two_disagreeing_fallbacks_are_refused_by_name() {
     );
 }
 
+/// `wait_if_within` is a span next to `on_limit`: 45m when absent, `0` allowed, a bare number or
+/// a stranger refused with its file and line, and the project's span beats the user's.
+#[test]
+fn wait_if_within_is_a_span_with_a_default_and_refusals_by_line() {
+    let m = |n: u64| std::time::Duration::from_secs(n * 60);
+    assert_eq!(LeticodeConfig::default().wait_if_within(), m(45));
+    assert_eq!(DEFAULT_WAIT_IF_WITHIN, m(45));
+
+    let dir = project_dir("wait_if_within");
+    let set = write_file(
+        &sub(&dir, "set"),
+        "[provider]\non_limit = \"switch\"\nwait_if_within = \"1h30m\"\n",
+    );
+    let cfg = LeticodeConfig::load(&set).unwrap();
+    assert_eq!(cfg.wait_if_within(), m(90));
+    assert!(
+        cfg.set_models()
+            .contains(&"wait_if_within 1h30m".to_string()),
+        "{:?}",
+        cfg.set_models()
+    );
+    let zero = write_file(&sub(&dir, "zero"), "[provider]\nwait_if_within = \"0\"\n");
+    assert_eq!(
+        LeticodeConfig::load(&zero).unwrap().wait_if_within(),
+        std::time::Duration::ZERO
+    );
+
+    for (tag, body) in [
+        ("bare", "\n[provider]\nwait_if_within = \"45\"\n"),
+        ("unit", "\n[provider]\nwait_if_within = \"45 minutes\"\n"),
+        ("empty", "\n[provider]\nwait_if_within = \"\"\n"),
+        ("int", "\n[provider]\nwait_if_within = 45\n"),
+    ] {
+        let path = write_file(&sub(&dir, tag), body);
+        let err = LeticodeConfig::load(&path).expect_err(tag);
+        assert!(err.contains("leticode.toml:3:"), "{tag}: {err}");
+        assert!(err.contains("wait_if_within"), "{tag}: {err}");
+    }
+    let preset = write_file(
+        &sub(&dir, "preset"),
+        "[provider.glm]\nwait_if_within = \"5m\"\n",
+    );
+    assert!(
+        LeticodeConfig::load(&preset).is_err(),
+        "a [provider] key only"
+    );
+
+    assert_eq!(
+        parse_span("2d3h"),
+        Ok(std::time::Duration::from_secs(2 * 86_400 + 3 * 3600))
+    );
+    assert_eq!(parse_span(" 90s "), Ok(std::time::Duration::from_secs(90)));
+    assert!(parse_span("m").is_err() && parse_span("5x").is_err() && parse_span("5m3").is_err());
+    assert_eq!(span_words(m(45)), "45m");
+    assert_eq!(span_words(m(90)), "1h30m");
+    assert_eq!(span_words(std::time::Duration::ZERO), "0");
+
+    // The project's span wins over the user's, and an absent one says nothing.
+    let user = LeticodeConfig::load(&set).unwrap();
+    let project = LeticodeConfig::load(&zero).unwrap();
+    assert_eq!(
+        user.overridden_by(&project).wait_if_within(),
+        std::time::Duration::ZERO
+    );
+    assert_eq!(
+        user.overridden_by(&LeticodeConfig::default())
+            .wait_if_within(),
+        m(90)
+    );
+}
+
 /// The deadline keys parse, resolve model over preset over table over built-in, per key, and
 /// the project's key beats the user's.
 #[test]

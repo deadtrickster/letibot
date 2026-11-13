@@ -348,16 +348,18 @@ fn session_fallback(cfg: &mut Config) {
     // And what a usage limit does. The file's own word, else switch when a list exists and wait
     // without one - the operator's ruling is that a limit with a known reset never fails a session.
     cfg.on_limit = cfg.leticode.limit_policy();
+    cfg.wait_if_within = cfg.leticode.wait_if_within();
     eprintln!(
         "  on a usage limit: {} — {}",
         cfg.on_limit.as_str(),
         match cfg.on_limit {
-            crate::leticode_config::OnLimit::Switch => {
-                "the session moves to the next fallback model that is not limited and moves back \
-                 after the reset"
-            }
+            crate::leticode_config::OnLimit::Switch => format!(
+                "a reset within {} is waited for, a later one moves the session to the next \
+                 fallback model that is not limited and back at the reset",
+                crate::leticode_config::span_words(cfg.wait_if_within)
+            ),
             crate::leticode_config::OnLimit::Wait => {
-                "the session waits for the reset and resumes the turn by itself"
+                "the session waits for the reset and resumes the turn by itself".to_string()
             }
         }
     );

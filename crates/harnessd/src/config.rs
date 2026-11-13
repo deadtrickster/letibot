@@ -539,6 +539,9 @@ pub struct Config {
     /// a `leticode.toml`, else `switch` with a fallback list and `wait` without one. The operator's
     /// ruling is that a session never fails on a limit with a known reset.
     pub on_limit: crate::leticode_config::OnLimit,
+    /// Under `switch`, a reset sooner than this is waited for on the same model rather than
+    /// switched away from: `[provider] wait_if_within`. Zero never waits while a fallback is free.
+    pub wait_if_within: std::time::Duration,
     /// How long the last resort waits before trying a rate limit that named NO instant again, and
     /// how many such waits it takes before the turn fails as it used to. Five minutes, three times:
     /// a limit somebody else's clock lifts is worth three more calls, and not an afternoon.
@@ -1639,6 +1642,7 @@ impl Config {
             fallback_after_timeouts: 3,
             // A daemon with no file says `wait`: the answer that never throws a turn away.
             on_limit: crate::leticode_config::OnLimit::Wait,
+            wait_if_within: crate::leticode_config::DEFAULT_WAIT_IF_WITHIN,
             limit_retry_wait: std::time::Duration::from_secs(300),
             limit_retry_rounds: 3,
             limit_clock: LimitClock::Wall,

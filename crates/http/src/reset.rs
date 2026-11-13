@@ -27,20 +27,28 @@ pub fn from_retry_after(value: &str, now_ms: u64) -> Option<u64> {
 
 /// The instant a 429's prose names, Unix millis, reading whichever of the two facts it carries:
 /// a wall clock (`Your limit will reset at 2026-11-07 21:02:27`) and the window it closed
-/// (`Usage limit reached for 5 hour`). The earlier wins - see the module header.
+/// (`Usage limit reached for 5 hour`). The earlier wins - see the module header - and the result
+/// is bounded by [`LONGEST`], the park's bound; [`from_prose_unbounded`] is the instant itself.
 ///
 /// The wall clock names no zone. It is read as UTC, which is the reading that makes it the latest
 /// plausible instant in the world's offsets, and the window beside it is what keeps a wrong guess
 /// from parking a session for a day.
 pub fn from_prose(body: &str, now_ms: u64) -> Option<u64> {
-    let clock = wall_clock_ms(body).map(|at| at.clamp(now_ms + SHORTEST, now_ms + LONGEST));
-    let window = window_ms(body).map(|d| (now_ms + d).clamp(now_ms + SHORTEST, now_ms + LONGEST));
-    match (clock, window) {
-        (Some(a), Some(b)) => Some(a.min(b)),
-        (Some(a), None) => Some(a),
-        (None, Some(b)) => Some(b),
-        (None, None) => None,
-    }
+    from_prose_unbounded(body, now_ms).map(|at| at.min(now_ms + LONGEST))
+}
+
+/// [`from_prose`] without the ceiling: the reset a weekly or monthly limit really names, for a
+/// caller that decides by it or tells the operator. Still floored at [`SHORTEST`].
+pub fn from_prose_unbounded(body: &str, now_ms: u64) -> Option<u64> {
+    let clock = wall_clock_ms(body);
+    let window = window_ms(body).map(|d| now_ms.saturating_add(d));
+    let at = match (clock, window) {
+        (Some(a), Some(b)) => a.min(b),
+        (Some(a), None) => a,
+        (None, Some(b)) => b,
+        (None, None) => return None,
+    };
+    Some(at.max(now_ms + SHORTEST))
 }
 
 /// `2026-11-07 21:02:27` (or with a `T` and a trailing `Z`), read as UTC.
@@ -102,6 +110,7 @@ fn width(n: &str, unit: &str) -> Option<u64> {
         "minute" => 60_000,
         "hour" => 3_600_000,
         "day" => 86_400_000,
+        "week" => 7 * 86_400_000,
         _ => return None,
     };
     Some(n.saturating_mul(per))
@@ -226,6 +235,30 @@ mod tests {
         // A number beside a word that is not a unit is not a window.
         assert_eq!(window_ms("http 429: 3 requests in flight"), None);
         assert_eq!(window_ms("x-request-id 12-ab"), None);
+    }
+
+    /// The unbounded reading is the instant itself: a weekly limit says when it lifts, and a
+    /// window alone is read as the window.
+    #[test]
+    fn the_unbounded_reading_keeps_a_weekly_reset() {
+        let now = 1_700_000_000_000; // 2023-11-14 22:13:20 UTC
+        let weekly =
+            "Weekly/Monthly Limit Exhausted. Your limit will reset at 2023-11-17 22:13:20.";
+        assert_eq!(
+            from_prose_unbounded(weekly, now),
+            Some(now + 3 * 86_400_000)
+        );
+        assert_eq!(from_prose(weekly, now), Some(now + LONGEST));
+        assert_eq!(
+            from_prose_unbounded("Usage limit reached for 1 week.", now),
+            Some(now + 7 * 86_400_000)
+        );
+        assert_eq!(
+            from_prose_unbounded("Your limit will reset at 2023-11-14 22:13:20.", now),
+            Some(now + SHORTEST),
+            "a wall clock already past is still floored"
+        );
+        assert_eq!(from_prose_unbounded("rate limited", now), None);
     }
 
     /// RFC 9110's two forms: a delay and an HTTP-date, the second against the caller's clock.

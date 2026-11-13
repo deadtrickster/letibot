@@ -617,6 +617,69 @@ impl OnLimit {
     }
 }
 
+/// `wait_if_within` when no level sets it: a reset this close is waited for even with a fallback.
+pub const DEFAULT_WAIT_IF_WITHIN: std::time::Duration = std::time::Duration::from_secs(45 * 60);
+
+/// A span as the file writes it - `45m`, `1h30m`, `90s`, `2d`, or a bare `0` - or a refusal
+/// naming the shape. A bare number other than `0` is refused: minutes and seconds both read it.
+pub fn parse_span(s: &str) -> Result<std::time::Duration, String> {
+    let t = s.trim();
+    if t == "0" {
+        return Ok(std::time::Duration::ZERO);
+    }
+    let refuse = || {
+        format!(
+            "\"{t}\" is not a span: write a number and a unit - `45m`, `1h30m`, `90s`, `2d` - \
+             or `0`"
+        )
+    };
+    let (mut secs, mut digits, mut any) = (0u64, String::new(), false);
+    for c in t.chars() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+            continue;
+        }
+        let per = match c {
+            's' => 1,
+            'm' => 60,
+            'h' => 3600,
+            'd' => 86_400,
+            _ => return Err(refuse()),
+        };
+        let n: u64 = digits.parse().map_err(|_| refuse())?;
+        secs = n
+            .checked_mul(per)
+            .and_then(|x| secs.checked_add(x))
+            .ok_or_else(refuse)?;
+        digits.clear();
+        any = true;
+    }
+    if !any || !digits.is_empty() {
+        return Err(refuse());
+    }
+    Ok(std::time::Duration::from_secs(secs))
+}
+
+/// A span in the file's own spelling, for the disclosure and the limit sentences: `45m`, `1h30m`,
+/// `2d3h`, `0`. Seconds only below a minute, because a reset is not read to the second.
+pub fn span_words(d: std::time::Duration) -> String {
+    let s = d.as_secs();
+    if s == 0 {
+        return "0".into();
+    }
+    if s < 60 {
+        return format!("{s}s");
+    }
+    let (days, hours, mins) = (s / 86_400, (s % 86_400) / 3600, (s % 3600) / 60);
+    let mut out = String::new();
+    for (n, unit) in [(days, 'd'), (hours, 'h'), (mins, 'm')] {
+        if n > 0 {
+            out.push_str(&format!("{n}{unit}"));
+        }
+    }
+    out
+}
+
 /// The three model API deadlines, as the file wrote them: each is absent until some level says it.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DeadlineKeys {
@@ -658,6 +721,7 @@ pub const DEFAULT_ANSWER_SECS: u64 = 600;
 /// ```toml
 /// [provider]
 /// on_limit = "switch"                            # or "wait"
+/// wait_if_within = "45m"                         # a reset this close is waited for anyway
 /// fallback = ["deepseek", "glm-coding/glm-5.3"]  # where a switch goes, in order
 /// slow_notice_seconds = 15                       # silence before the "model slow" notice
 /// first_byte_seconds = 60                        # silence before the round fails
@@ -674,6 +738,10 @@ pub const DEFAULT_ANSWER_SECS: u64 = 600;
 /// see [`LeticodeConfig::limit_policy`]. `fallback` here is the same list as the file's top-level
 /// `fallback`, and a file that writes both to different lists is refused by name.
 ///
+/// `wait_if_within` refines `switch`: a reset sooner than it parks the session on its own model,
+/// a later one moves it to the fallback until the reset. `0` never waits while a fallback is free.
+/// Absent means [`DEFAULT_WAIT_IF_WITHIN`]; `wait` ignores it.
+///
 /// The three deadline keys resolve per key: the `provider/model` table, then the preset's table,
 /// then the keys here, then the built-in 15 / 60 / 600 - see [`LeticodeConfig::deadlines`]. A
 /// level's key wins over the same key at the other level. `0` and a `first_byte_seconds` above
@@ -681,6 +749,7 @@ pub const DEFAULT_ANSWER_SECS: u64 = 600;
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProviderKeys {
     pub on_limit: Option<OnLimit>,
+    pub wait_if_within: Option<std::time::Duration>,
     pub fallback: Vec<String>,
     /// The deadline keys written directly under `[provider]`.
     pub deadlines: DeadlineKeys,
@@ -746,7 +815,8 @@ fn provider_keys(
     text: &str,
     user: bool,
 ) -> Result<ProviderKeys, String> {
-    let keys = "the keys are `on_limit` (\"wait\" or \"switch\"), `fallback`, \
+    let keys = "the keys are `on_limit` (\"wait\" or \"switch\"), `wait_if_within` (\"45m\"), \
+                `fallback`, \
                 `slow_notice_seconds`, `first_byte_seconds`, `answer_seconds`, and `[provider.NAME]` \
                 tables (a preset or `provider/model`) holding the last three";
     let table = table_at(value, path, text, "provider", keys)?;
@@ -763,6 +833,17 @@ fn provider_keys(
                 })?;
                 out.on_limit = Some(OnLimit::parse(s).map_err(|why| format!("{from}: {why}"))?);
             }
+            "wait_if_within" => {
+                let s = v.as_str().ok_or_else(|| {
+                    format!(
+                        "{from}: [provider] wait_if_within is a string like \"45m\", not {}",
+                        kind_of(v)
+                    )
+                })?;
+                let d = parse_span(s)
+                    .map_err(|why| format!("{from}: [provider] wait_if_within = {why}"))?;
+                out.wait_if_within = Some(d);
+            }
             "fallback" => {
                 out.fallback = fallback_list(v).map_err(|why| format!("{from}: {why}"))?;
             }
@@ -772,7 +853,7 @@ fn provider_keys(
                     return Err(format!("{from}: [provider] `{name}` is not a key; {keys}"));
                 };
                 for k in sub.keys() {
-                    if k.as_str() == "on_limit" || k.as_str() == "fallback" {
+                    if matches!(k.as_str(), "on_limit" | "wait_if_within" | "fallback") {
                         return Err(format!(
                             "{}:{}: [provider.{name}] `{k}` is not a key here; a preset or model \
                              table holds `slow_notice_seconds`, `first_byte_seconds` and \
@@ -2291,6 +2372,10 @@ impl LeticodeConfig {
             provider: ProviderKeys {
                 // The project's answer wins, and an absent one says nothing.
                 on_limit: other.provider.on_limit.or(self.provider.on_limit),
+                wait_if_within: other
+                    .provider
+                    .wait_if_within
+                    .or(self.provider.wait_if_within),
                 fallback: if other.provider.fallback.is_empty() {
                     self.provider.fallback.clone()
                 } else {
@@ -2403,6 +2488,14 @@ impl LeticodeConfig {
             })
     }
 
+    /// How close a reset must be for `switch` to wait for it anyway: the file's span, else
+    /// [`DEFAULT_WAIT_IF_WITHIN`].
+    pub fn wait_if_within(&self) -> std::time::Duration {
+        self.provider
+            .wait_if_within
+            .unwrap_or(DEFAULT_WAIT_IF_WITHIN)
+    }
+
     /// The deadlines for a session on `name` (a preset) and `model`: per key, the
     /// `[provider."name/model"]` table, then `[provider.name]`, then `[provider]`, then the
     /// built-in numbers. A first byte above the answer budget (two levels disagreeing) is cut to it.
@@ -2452,6 +2545,9 @@ impl LeticodeConfig {
         // made.
         if let Some(o) = self.provider.on_limit {
             out.push(format!("on_limit {}", o.as_str()));
+        }
+        if let Some(d) = self.provider.wait_if_within {
+            out.push(format!("wait_if_within {}", span_words(d)));
         }
         for (role, r) in &self.roles {
             let mut line = role.clone();

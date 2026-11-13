@@ -52,6 +52,8 @@ enum Act {
     RefuseProse,
     /// A `429` that names nothing.
     RefuseBare,
+    /// A `429` whose body is this prose and nothing else.
+    RefuseWith(&'static str),
     /// One text answer, all at once.
     Answer,
 }
@@ -106,6 +108,14 @@ fn model(script: &'static [Act]) -> Model {
                         NO_INSTANT_BODY.len()
                     ),
                     NO_INSTANT_BODY.to_string(),
+                ),
+                Act::RefuseWith(body) => (
+                    format!(
+                        "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\n\
+                         Content-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    ),
+                    body.to_string(),
                 ),
                 Act::Answer => (
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
@@ -377,6 +387,8 @@ fn a_switch_moves_the_turn_to_the_fallback_and_back_after_the_reset() {
     let (clock, handle) = letibot_harnessd::config::LimitClock::fixed(T0);
     cfg.limit_clock = clock;
     cfg.on_limit = leticode_on_limit_switch();
+    // A five-minute reset is under the default threshold; `0` is the switch this test is about.
+    cfg.wait_if_within = Duration::ZERO;
     let parts = Parts::load(&cfg).expect("the vocabulary loads");
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     let (mut sessions, hub, id) = open(&parts, cfg);
@@ -546,6 +558,7 @@ fn a_fallback_that_is_limited_too_is_skipped() {
     let (clock, handle) = letibot_harnessd::config::LimitClock::fixed(T0);
     cfg.limit_clock = clock;
     cfg.on_limit = leticode_on_limit_switch();
+    cfg.wait_if_within = Duration::ZERO;
     let parts = Parts::load(&cfg).expect("the vocabulary loads");
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     let (mut sessions, hub, id) = open(&parts, cfg);
@@ -653,4 +666,176 @@ fn a_429_naming_a_wall_clock_and_a_window_parks_for_the_window() {
     handle.store(T0 + 6 * 3_600_000, Ordering::SeqCst);
     assert_eq!(sessions.resume_due_limits(), 1);
     assert!(answered(&hub));
+}
+
+/// A weekly limit as a provider words it: a wall clock and no window. T0 is Fri 2026-11-06
+/// 21:20:00 UTC, so the reset is three and a half days out - past the park's six-hour bound.
+const WEEKLY_BODY: &str = "{\"error\":{\"message\":\"Weekly/Monthly Limit Exhausted. Your limit \
+                           will reset at 2026-11-10 14:00:00.\"}}";
+
+/// 2026-11-10 14:00:00 UTC, in millis.
+const WEEKLY_RESET: u64 = 1_794_319_200_000;
+
+/// The limit's words on the session's activity, the status row a head draws.
+fn limit_row(hub: &letibot_sessionlog::Hub) -> Option<String> {
+    use letibot_sessionlog::activity::{Activity, Waiting};
+    match hub.activity() {
+        Activity::Busy { waiting_on } => waiting_on.into_iter().find_map(|w| match w {
+            Waiting::Limit(words) => Some(words),
+            _ => None,
+        }),
+        _ => None,
+    }
+}
+
+/// Under `switch`, a reset sooner than `wait_if_within` is waited for on the same model: a switch
+/// there and back costs more than five minutes.
+#[test]
+fn a_reset_under_wait_if_within_parks_even_with_a_fallback() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("within");
+    let glm = model(&[Act::Refuse(300), Act::Answer]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let mut cfg = config(
+        &scratch,
+        &gguf,
+        "within",
+        ("glm", "glm-5.3"),
+        vec!["deepseek/deepseek-flash".into()],
+    );
+    let (clock, handle) = letibot_harnessd::config::LimitClock::fixed(T0);
+    cfg.limit_clock = clock;
+    cfg.on_limit = leticode_on_limit_switch();
+    assert_eq!(
+        cfg.wait_if_within,
+        Duration::from_secs(45 * 60),
+        "the default threshold"
+    );
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+
+    let out = sessions
+        .submit(&id, PROMPT)
+        .expect_err("the session waits instead of moving");
+    let words = "waiting 5m for the reset at 21:25:02 UTC (under wait_if_within 45m)";
+    assert!(out.to_string().contains(words), "{out}");
+    assert_eq!(limit_row(&hub).as_deref(), Some(words));
+    assert_eq!(deepseek.count(), 0, "the fallback was not asked");
+    let h = sessions.harness_of(&id).expect("open");
+    assert_eq!(h.model_name().to_string(), "glm/glm-5.3");
+    assert_eq!(h.limit_park().expect("parked").until_ms, T0 + 302_000);
+    assert_eq!(
+        h.limit_return_at(),
+        None,
+        "no way back is owed: nothing moved"
+    );
+
+    handle.store(T0 + 400_000, Ordering::SeqCst);
+    assert_eq!(sessions.resume_due_limits(), 1);
+    assert_eq!(glm.count(), 2, "the turn resumed on the same model");
+    assert!(answered(&hub));
+}
+
+/// A reset past `wait_if_within` moves the session, and the way back is at the provider's real
+/// reset - days out - not at the six-hour bound a park is held to.
+#[test]
+fn a_reset_past_wait_if_within_switches_and_returns_at_the_real_reset() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("past");
+    let glm = model(&[Act::RefuseWith(WEEKLY_BODY)]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let mut cfg = config(
+        &scratch,
+        &gguf,
+        "past",
+        ("glm", "glm-5.3"),
+        vec!["deepseek/deepseek-flash".into()],
+    );
+    let (clock, handle) = letibot_harnessd::config::LimitClock::fixed(T0);
+    cfg.limit_clock = clock;
+    cfg.on_limit = leticode_on_limit_switch();
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+
+    let out = sessions.submit(&id, PROMPT).expect("the fallback answered");
+    assert!(out.text.contains(ANSWER), "{}", out.text);
+    let words = "glm/glm-5.3 reset Tue 14:00:02 UTC is past wait_if_within 45m - on \
+                 deepseek/deepseek-flash until then";
+    let moved = said(&hub, "model_fallback");
+    assert!(
+        moved
+            .iter()
+            .any(|d| d.starts_with(&format!("[fallback] {words}."))),
+        "{moved:?}"
+    );
+    assert_eq!(limit_row(&hub).as_deref(), Some(words));
+    let back = WEEKLY_RESET + 2_000;
+    assert_eq!(
+        sessions.harness_of(&id).expect("open").limit_return_at(),
+        Some(back),
+        "the way back is the real reset"
+    );
+    assert!(back > T0 + letibot_http::reset::LONGEST);
+
+    // Past the bound and before the reset: still on the fallback.
+    handle.store(T0 + 7 * 3_600_000, Ordering::SeqCst);
+    assert_eq!(sessions.resume_due_limits(), 0);
+    handle.store(back, Ordering::SeqCst);
+    assert_eq!(sessions.resume_due_limits(), 1);
+    assert_eq!(
+        sessions
+            .harness_of(&id)
+            .expect("open")
+            .model_name()
+            .to_string(),
+        "glm/glm-5.3"
+    );
+}
+
+/// No fallback and a weekly reset: the park is held to its bound, and every sentence names the
+/// real reset rather than the bound as if it were one.
+#[test]
+fn a_weekly_limit_with_no_fallback_parks_and_names_the_real_reset() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("weekly");
+    let glm = model(&[Act::RefuseWith(WEEKLY_BODY), Act::Answer]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let mut cfg = config(&scratch, &gguf, "weekly", ("glm", "glm-5.3"), Vec::new());
+    let (clock, handle) = letibot_harnessd::config::LimitClock::fixed(T0);
+    cfg.limit_clock = clock;
+    cfg.on_limit = leticode_on_limit_switch();
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+
+    let out = sessions.submit(&id, PROMPT).expect_err("parked");
+    let words = "limited until Tue 14:00:02 UTC, asking again at 03:20:02 UTC";
+    assert!(out.to_string().contains(words), "{out}");
+    assert_eq!(limit_row(&hub).as_deref(), Some(words));
+    let park = sessions
+        .harness_of(&id)
+        .expect("open")
+        .limit_park()
+        .expect("parked")
+        .clone();
+    assert_eq!(park.until_ms, T0 + letibot_http::reset::LONGEST + 2_000);
+    assert_eq!(park.reset_ms, WEEKLY_RESET + 2_000);
+
+    handle.store(park.until_ms, Ordering::SeqCst);
+    assert_eq!(sessions.resume_due_limits(), 1, "the bound asks again");
+    assert_eq!(glm.count(), 2);
 }

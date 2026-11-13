@@ -15,6 +15,9 @@ pub(crate) const PARK_JITTER_MS: u64 = 2_000;
 pub struct LimitPark {
     /// The instant the turn is owed again, on the clock a park is measured by.
     pub until_ms: u64,
+    /// The provider's own reset, unbounded. Later than `until_ms` when the park hit its bound
+    /// ([`letibot_http::reset::LONGEST`]) and the turn is only asked again, not lifted.
+    pub reset_ms: u64,
     /// The model that refused, in `/models` spelling.
     pub model: String,
     /// The provider's own words, one line - the operator's copy, never the model's.
@@ -39,8 +42,8 @@ pub(crate) struct LimitReturn {
 
 /// What the limit rule says to do with a failure whose ladder is spent.
 pub(crate) enum LimitAnswer {
-    /// The provider put a time on it: park the session and owe the turn at that instant.
-    Wait { until_ms: u64 },
+    /// The provider put a time on it: the reset as it named it, unbounded and without jitter.
+    Wait { reset_ms: u64 },
     /// A rate limit that named no instant at all: wait the long beat and take the round again.
     Retry,
     /// Not a limit, or one nothing here can lift: the caller fails as it always did.
@@ -49,8 +52,9 @@ pub(crate) enum LimitAnswer {
 
 /// What one exhausted ladder became - the answer [`Harness::after_the_ladder`] gives the round loop.
 pub(crate) enum AfterTheLadder {
-    /// The session moved to another model; the caller says it with the `[fallback]` notice.
-    Moved { next: String },
+    /// The session moved to another model; the caller says it with the `[fallback]` notice,
+    /// and `why` is the limit's own sentence for it.
+    Moved { next: String, why: String },
     /// The session is parked until the reset; `said` is the turn's whole ending.
     Parked { said: String },
     /// A rate limit with no instant: wait the long beat and take the round again.
@@ -110,30 +114,42 @@ impl Harness {
     }
 
     /// What the policy says about one failure, asked once the ladder is spent. The reset is the
-    /// provider's own instant when it named one, plus the jitter; a rate limit that named none is
-    /// the long retry, not a park, because there is no instant to park until.
+    /// provider's own instant, unbounded, so a weekly limit is recorded as the day it lifts; a rate
+    /// limit that named none is the long retry, not a park, because there is no instant to park until.
     pub(crate) fn limit_answer(&mut self, e: &letibot_turn::HttpError) -> LimitAnswer {
         use letibot_http::retry::{Policy, Trouble};
         if !matches!(Policy::trouble(e), Some(Trouble::RateLimit)) {
             return LimitAnswer::GiveUp;
         }
-        let Some(at) = Policy::reset_ms(e, self.limit_now_ms()) else {
+        let Some(reset_ms) = Policy::reset_unbounded_ms(e, self.limit_now_ms()) else {
             return LimitAnswer::Retry;
         };
-        let until_ms = at.saturating_add(PARK_JITTER_MS);
         let model = self.model_name();
-        self.note_limited(&model, until_ms);
-        LimitAnswer::Wait { until_ms }
+        self.note_limited(&model, reset_ms.saturating_add(PARK_JITTER_MS));
+        LimitAnswer::Wait { reset_ms }
     }
 
-    /// Park this session until `until_ms` and say it: the status row, the session's own log, and
-    /// the words the turn's ending carries. `None` is the words the resumed turn opens with.
-    pub(crate) fn park_until(&mut self, until_ms: u64, e: &letibot_turn::HttpError) -> String {
+    /// Park this session on the reset at `reset_ms` and say it with `words`: the status row, the
+    /// session's own log, and the turn's ending. The park itself is bounded by
+    /// [`letibot_http::reset::LONGEST`], so a weekly limit is asked again rather than slept through.
+    pub(crate) fn park_until(
+        &mut self,
+        reset_ms: u64,
+        words: Option<String>,
+        e: &letibot_turn::HttpError,
+    ) -> String {
         let model = self.model_name();
         let said = said_one_line(&e.to_string(), 200);
-        let words = format!("paused until {}", clock_words(until_ms));
+        let now = self.limit_now_ms();
+        let reset_ms = reset_ms.saturating_add(PARK_JITTER_MS);
+        let until_ms = reset_ms.min(
+            now.saturating_add(letibot_http::reset::LONGEST)
+                .saturating_add(PARK_JITTER_MS),
+        );
+        let words = words.unwrap_or_else(|| park_words(now, until_ms, reset_ms));
         self.limit_park = Some(LimitPark {
             until_ms,
+            reset_ms,
             model: model.clone(),
             said: said.clone(),
         });
@@ -142,11 +158,9 @@ impl Harness {
         self.hub.warn(
             "limit_park",
             format!(
-                "the provider put a time on its limit, so this session is {words} and the turn it \
-                 stopped is owed again at the reset: {model} said `{said}`. Nothing is lost and \
-                 nothing needs sending - the daemon opens the turn by itself. A prompt sent \
-                 meanwhile waits for the same instant, and `/models` moves the session somewhere \
-                 else now if waiting is not what you want."
+                "{model} said `{said}`, so this session is {words}. Nothing is lost - the daemon \
+                 opens the turn by itself, a prompt sent meanwhile waits with it, and `/models` \
+                 moves the session now if waiting is not what you want."
             ),
         );
         words
@@ -172,12 +186,24 @@ impl Harness {
                 park.model
             ),
         );
+        // A park cut short by its bound has not seen the limit lift, and must not say it did.
+        let what = if park.until_ms < park.reset_ms {
+            format!(
+                "{} is limited until {} and this turn is asked again at {}",
+                park.model,
+                clock_words_from(park.until_ms, park.reset_ms),
+                clock_words(park.until_ms)
+            )
+        } else {
+            format!(
+                "the limit on {} lifted at {}",
+                park.model,
+                clock_words(park.until_ms)
+            )
+        };
         Some(format!(
-            "[limit] the limit on {model} lifted at {at}; this turn was parked on it and nothing \
-             it did was lost. Pick the work up where it stopped and carry on; do not repeat what \
-             is already done.",
-            model = park.model,
-            at = clock_words(park.until_ms),
+            "[limit] {what}; this turn was parked on it and nothing it did was lost. Pick the work \
+             up where it stopped and carry on; do not repeat what is already done."
         ))
     }
 
@@ -302,22 +328,28 @@ impl Harness {
         // Asked first, and for every failure: it is what records `here` as limited when the provider
         // named an instant, which is the fact a fallback list is filtered by.
         match self.limit_answer(e) {
-            LimitAnswer::Wait { until_ms } => {
-                if self.cfg.on_limit == OnLimit::Switch
-                    && let Some(next) = self.fall_back_from(e, tried)
-                {
-                    // The same row `limit_answer` wrote is rewritten from the move, so the status
-                    // line says where the turns go and not only which model is out.
-                    self.note_the_way_back_from_a_limit(&here, until_ms);
-                    self.write_limit_row(Some(format!(
-                        "{here} limited until {}, on {next}",
-                        clock_words(until_ms)
-                    )));
-                    return AfterTheLadder::Moved { next };
+            LimitAnswer::Wait { reset_ms } => {
+                let now = self.limit_now_ms();
+                let within = self.cfg.wait_if_within;
+                let left = std::time::Duration::from_millis(reset_ms.saturating_sub(now));
+                if self.cfg.on_limit == OnLimit::Switch {
+                    // A reset this close costs less waited for than a switch there and back.
+                    if left < within {
+                        let words = wait_words(now, reset_ms + PARK_JITTER_MS, within);
+                        let said = self.park_until(reset_ms, Some(words), e);
+                        return AfterTheLadder::Parked { said };
+                    }
+                    if let Some(next) = self.fall_back_from(e, tried) {
+                        let back_ms = reset_ms.saturating_add(PARK_JITTER_MS);
+                        self.note_the_way_back_from_a_limit(&here, back_ms);
+                        let why = switch_words(&here, now, back_ms, within, &next);
+                        self.write_limit_row(Some(why.clone()));
+                        return AfterTheLadder::Moved { next, why };
+                    }
                 }
                 // No usable fallback - none named, or every one of them limited too - so waiting
                 // is the only answer left, and it is the one the operator ruled for anyway.
-                let said = self.park_until(until_ms, e);
+                let said = self.park_until(reset_ms, None, e);
                 AfterTheLadder::Parked { said }
             }
             LimitAnswer::Retry => AfterTheLadder::Retry,
@@ -335,9 +367,12 @@ impl Harness {
             .iter()
             .filter(|(model, at)| **at > now && **model != here)
             .min_by_key(|(_, at)| **at)?;
-        Some(format!(
-            "{model} limited until {}, on {here}",
-            clock_words(*at)
+        Some(switch_words(
+            model,
+            now,
+            *at,
+            self.cfg.wait_if_within,
+            &here,
         ))
     }
 }
@@ -352,6 +387,81 @@ fn clock_words(ms: u64) -> String {
     let secs = ms / 1000;
     let (h, m, s) = ((secs / 3600) % 24, (secs / 60) % 60, secs % 60);
     format!("{h:02}:{m:02}:{s:02} UTC")
+}
+
+/// `at` as seen from `now`: the bare clock within a day, the weekday within a week, and the date
+/// beyond, so a weekly or monthly reset is never read as today's.
+fn clock_words_from(now_ms: u64, at_ms: u64) -> String {
+    const DAY: u64 = 86_400_000;
+    let clock = clock_words(at_ms);
+    let ahead = at_ms.saturating_sub(now_ms);
+    if ahead < DAY {
+        return clock;
+    }
+    const WEEKDAYS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    let days = at_ms / DAY;
+    // 1970-01-01 was a Thursday.
+    let weekday = WEEKDAYS[((days + 4) % 7) as usize];
+    if ahead < 6 * DAY {
+        return format!("{weekday} {clock}");
+    }
+    let (y, m, d) = civil_from_days(days as i64);
+    format!("{weekday} {y:04}-{m:02}-{d:02} {clock}")
+}
+
+/// Howard Hinnant's `civil_from_days`: the date of a day count since 1970-01-01.
+fn civil_from_days(z: i64) -> (i64, i64, i64) {
+    let z = z + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// The park that waits by choice: `waiting 12m for the reset at 21:02:27 UTC (under
+/// wait_if_within 45m)`.
+fn wait_words(now_ms: u64, reset_ms: u64, within: std::time::Duration) -> String {
+    use crate::leticode_config::span_words;
+    let left = std::time::Duration::from_millis(reset_ms.saturating_sub(now_ms));
+    format!(
+        "waiting {} for the reset at {} (under wait_if_within {})",
+        span_words(left),
+        clock_words_from(now_ms, reset_ms),
+        span_words(within)
+    )
+}
+
+/// The move a limit earned: `glm reset Thu 14:00:00 UTC is past wait_if_within 45m - on deepseek
+/// until then`.
+fn switch_words(
+    model: &str,
+    now_ms: u64,
+    reset_ms: u64,
+    within: std::time::Duration,
+    next: &str,
+) -> String {
+    format!(
+        "{model} reset {} is past wait_if_within {} - on {next} until then",
+        clock_words_from(now_ms, reset_ms),
+        crate::leticode_config::span_words(within)
+    )
+}
+
+/// The park with no choice in it: `paused until 21:02:27 UTC`, or for a reset past the park's
+/// bound, `limited until Thu 14:00:00 UTC, asking again at 03:22:29 UTC`.
+fn park_words(now_ms: u64, until_ms: u64, reset_ms: u64) -> String {
+    if until_ms >= reset_ms {
+        return format!("paused until {}", clock_words_from(now_ms, until_ms));
+    }
+    format!(
+        "limited until {}, asking again at {}",
+        clock_words_from(now_ms, reset_ms),
+        clock_words_from(now_ms, until_ms)
+    )
 }
 
 /// `s` in one line, cut to `n` bytes on a char boundary: a provider's body is prose with newlines
@@ -377,6 +487,43 @@ mod tests {
         // 2026-11-07 21:02:27 UTC.
         assert_eq!(clock_words(1_794_085_347_000), "21:02:27 UTC");
         assert_eq!(clock_words(0), "00:00:00 UTC");
+    }
+
+    #[test]
+    fn a_reset_beyond_a_day_names_its_day() {
+        // 2026-11-07 21:02:27 UTC is a Saturday.
+        let at = 1_794_085_347_000;
+        assert_eq!(clock_words_from(at - 3_600_000, at), "21:02:27 UTC");
+        assert_eq!(
+            clock_words_from(at - 3 * 86_400_000, at),
+            "Sat 21:02:27 UTC"
+        );
+        assert_eq!(
+            clock_words_from(at - 20 * 86_400_000, at),
+            "Sat 2026-11-07 21:02:27 UTC"
+        );
+    }
+
+    #[test]
+    fn the_limit_sentences_say_which_answer_was_taken() {
+        let at = 1_794_085_347_000;
+        let m45 = std::time::Duration::from_secs(45 * 60);
+        assert_eq!(
+            wait_words(at - 12 * 60_000, at, m45),
+            "waiting 12m for the reset at 21:02:27 UTC (under wait_if_within 45m)"
+        );
+        assert_eq!(
+            switch_words("glm", at - 3 * 86_400_000, at, m45, "deepseek"),
+            "glm reset Sat 21:02:27 UTC is past wait_if_within 45m - on deepseek until then"
+        );
+        assert_eq!(
+            park_words(at - 3_600_000, at, at),
+            "paused until 21:02:27 UTC"
+        );
+        assert_eq!(
+            park_words(at - 3 * 86_400_000, at - 3 * 86_400_000 + 6 * 3_600_000, at),
+            "limited until Sat 21:02:27 UTC, asking again at 03:02:27 UTC"
+        );
     }
 
     #[test]
