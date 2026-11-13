@@ -1358,25 +1358,25 @@ pub fn refusal_text(notice: &DenialNotice, reached: Reach) -> String {
              only the operator can lift it. Stop and say what you were trying to do."
         ),
     };
+    // No "`tool` was not run": the call names the tool, and every remedy says nothing ran.
     format!(
         "REFUSED — not failed.\n\n\
-         `{}` was not run. This is a DECISION about what is permitted, not an error \
+         This is a DECISION about what is permitted, not an error \
          about what works, and the difference decides what to do next: a different \
          spelling of the same action reaches the same decision, and trying one is the \
          behaviour this harness treats as routing around a guard.\n\n\
          who decided: {}\n\
          basis: {}\n\
-         outcome: {} ({})\n\
-         reading: {}\n\n\
+         {}reading: {}\n\n\
          {}{}",
-        notice.tool,
         notice.by,
         notice.basis,
-        notice.outcome,
+        // A denial is the envelope's `outcome:` line already; a not-run adds what it is not.
         if notice.outcome == "not_run" {
-            "nobody decided — this is not a denial, and it is not permission either"
+            "outcome: not_run (nobody decided — this is not a denial, and it is not permission \
+             either)\n"
         } else {
-            "somebody decided"
+            ""
         },
         notice.baseline,
         telling(notice, reached),
@@ -1422,8 +1422,7 @@ fn telling(notice: &DenialNotice, reached: Reach) -> String {
         Reach::Nobody => format!(
             "Nobody has been told: no operator screen is attached to this session, so this \
              decision reached no head and the operator has not seen it. {recorded} Nothing is \
-             waiting for an answer, and the same call asked again reaches the same verdict. What \
-             would allow it: {}\n\
+             waiting for an answer. What would allow it: {}\n\
              Do not retry a variant. Say what you were trying to achieve and what would \
              allow it, so the answer is there when the operator next reads this session.",
             notice.grant

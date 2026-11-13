@@ -653,6 +653,15 @@ fn the_refusal_prose_says_forbidden_and_forbids_the_variant() {
     assert!(t.contains("Do not retry a variant"), "{t}");
     assert!(t.contains("reaches the same decision"), "{t}");
     assert!(t.contains("The operator has been told"), "{t}");
+    // A denial's outcome is the envelope's line; the prose does not say it again.
+    assert!(!t.contains("outcome:"), "{t}");
+}
+
+#[test]
+fn a_refusal_says_a_retry_reaches_the_same_decision_once() {
+    let t = refusal_text(&notice("not_run", BreakerState::Closed), Reach::Nobody);
+    assert_eq!(t.matches("reaches the same").count(), 1, "{t}");
+    assert_eq!(t.matches("outcome:").count(), 1, "{t}");
 }
 
 #[test]

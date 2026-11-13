@@ -1274,6 +1274,8 @@ mod tests {
         assert!(!out.contains("host_other"), "{out}");
         assert!(out.contains("intents [write_file]"), "{out}");
         assert!(out.contains("Nothing was executed"), "{out}");
+        // Said once: the remedy carries it, the opening does not repeat it.
+        assert!(!out.contains("was not run"), "{out}");
     }
 
     #[test]
