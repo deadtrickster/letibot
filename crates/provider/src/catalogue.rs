@@ -209,7 +209,9 @@ pub fn cached_read(path: &Path) -> Result<std::sync::Arc<Catalogue>, String> {
     {
         return Ok(c.clone());
     }
-    let c = Arc::new(Catalogue::read(path)?);
+    let mut c = Catalogue::read(path)?;
+    c.fill_from(&Catalogue::floor());
+    let c = Arc::new(c);
     let mut g = PARSED.lock().unwrap_or_else(|e| e.into_inner());
     // One entry per PATH: the version this replaces is stale by construction.
     g.retain(|(k, _)| k.0 != key.0);
@@ -229,11 +231,27 @@ impl Catalogue {
                 return c;
             }
         }
+        Catalogue::floor()
+    }
+
+    /// The snapshot, parsed once for the process.
+    fn floor() -> std::sync::Arc<Catalogue> {
         static SNAPSHOT_PARSED: std::sync::OnceLock<std::sync::Arc<Catalogue>> =
             std::sync::OnceLock::new();
         SNAPSHOT_PARSED
             .get_or_init(|| std::sync::Arc::new(Catalogue::snapshot()))
             .clone()
+    }
+
+    /// Adds what the floor has and this file lacks, keeping this file's facts where both have a
+    /// model: an older cache (opencode's, say) must not hide a model the shipped snapshot knows.
+    fn fill_from(&mut self, floor: &Catalogue) {
+        for (id, facts) in &floor.providers {
+            let mine = self.providers.entry(id.clone()).or_default();
+            for (model, f) in &facts.models {
+                mine.models.entry(model.clone()).or_insert(*f);
+            }
+        }
     }
 
     /// The floor on its own: what a box with no opencode, no cache and no override gets. A
@@ -435,6 +453,35 @@ mod tests {
         }
       }
     }"#;
+
+    /// A cache that predates a model still lists it from the snapshot, and keeps its own facts
+    /// where both carry one: opencode's month-old copy hid `k3.1-pro` from the model card.
+    #[test]
+    fn an_older_cache_is_filled_from_the_snapshot() {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-catalogue-fill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("models.json");
+        let old = r#"{"kimi-code-plan-global": {"id": "kimi-code-plan-global", "models": {
+            "k3": {"limit": {"context": 4242, "output": 1000}}}}}"#;
+        std::fs::write(&path, old).unwrap();
+
+        let c = cached_read(&path).expect("it parses");
+        let models: Vec<String> = c
+            .models("kimi-code-plan-global")
+            .into_iter()
+            .map(|(m, _)| m)
+            .collect();
+        assert!(models.iter().any(|m| m == "k3.1-pro"), "{models:?}");
+        let k3 = c
+            .models("kimi-code-plan-global")
+            .into_iter()
+            .find(|(m, _)| m == "k3")
+            .expect("k3 is listed");
+        assert_eq!(k3.1.context, 4242, "the file's own facts win");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// An unchanged file is parsed once and a changed one is parsed again: every session open read and
     /// parsed the whole catalogue otherwise.
