@@ -243,6 +243,22 @@ impl World {
                 .unwrap()
         );
     }
+    /// The not-before time is moved an hour ahead, so a pass that runs late on a loaded box is
+    /// still a pass before its time.
+    fn time_stands_still(&self) {
+        assert!(
+            self.store()
+                .move_review(
+                    ID,
+                    ReviewState::Waiting,
+                    ReviewState::Waiting,
+                    &Move::new("test", "time stands still")
+                        .set("deadline_ms", gate::now_ms() + 3_600_000),
+                    gate::now_ms(),
+                )
+                .unwrap()
+        );
+    }
     fn hand_in(&self, decision: Decision, reasons: &[&str]) {
         let child = self.placer.last();
         self.desk
@@ -312,6 +328,7 @@ fn a_reviewer_with_no_free_vm_slot_waits_uncounted_and_is_reviewed_when_a_slot_f
     );
 
     // Not claimed before its time - firecode is not asked every pass.
+    w.time_stands_still();
     w.queue_pass();
     w.queue_pass();
     assert_eq!(w.row().state, ReviewState::Waiting);
@@ -398,7 +415,7 @@ fn a_wait_past_thirty_minutes_raises_once_with_firecodes_sudo_lines() {
         )
         .unwrap()
     );
-    w.one_reviewer();
+    let minutes = minutes_during(then + 1, || w.one_reviewer());
     assert_eq!(w.row().state, ReviewState::Waiting);
     w.time_passes();
     w.one_reviewer();
@@ -407,9 +424,15 @@ fn a_wait_past_thirty_minutes_raises_once_with_firecodes_sudo_lines() {
 
     let long = w.raised("queue_vm_slots_exhausted");
     assert_eq!(long.len(), 1, "raised once: {long:?}");
+    assert!(
+        minutes
+            .clone()
+            .any(|m| long[0].contains(&format!("has waited {m} min"))),
+        "the wait in minutes ({minutes:?}) missing from: {}",
+        long[0]
+    );
     for said in [
         "VM SLOTS EXHAUSTED",
-        "has waited 31 min",
         "4 of 4 VM slots are busy",
         "`sudo ip tuntap add dev fccode5 mode tap user $(id -u)`",
         "`sudo ip addr add 172.16.5.1/30 dev fccode5 && sudo ip link set fccode5 up`",
@@ -423,10 +446,19 @@ fn a_wait_past_thirty_minutes_raises_once_with_firecodes_sudo_lines() {
     assert!(w.raised("queue_blocked").is_empty());
 }
 
+/// Runs `act` and returns the minutes a wait begun at `since` can have been said to last while it
+/// ran: the queue reads the clock itself, and a loaded box can spend a minute inside `act`.
+fn minutes_during(since: u64, act: impl FnOnce()) -> std::ops::RangeInclusive<u64> {
+    let before = gate::now_ms();
+    act();
+    let after = gate::now_ms();
+    (before - since) / 60_000..=(after - since) / 60_000
+}
+
 /// Another row of the same branch, already in a capacity wait - enqueued beside `pg`, its wait begun
 /// `ago_min` minutes ago (and raised as long when `raised`), and held back so the queue does not claim
 /// it. What a red branch looks like: one row per red tip, all for one branch.
-fn a_sibling_waiting(w: &World, ago_min: u64, raised: bool) {
+fn a_sibling_waiting(w: &World, ago_min: u64, raised: bool) -> u64 {
     let s = w.store();
     let first = w.row();
     s.enqueue_review(
@@ -483,6 +515,7 @@ fn a_sibling_waiting(w: &World, ago_min: u64, raised: bool) {
         )
         .unwrap()
     );
+    then + 1
 }
 
 /// A wait is the branch's, said once while any of its rows is in it: one row per red tip, and a new row
@@ -497,8 +530,8 @@ fn a_new_row_of_a_branch_already_waiting_does_not_say_it_again() {
          `d-404553-1-0`, which is gone — being reaped"
             .into(),
     ];
-    a_sibling_waiting(&w, 31, false);
-    w.one_reviewer();
+    let since = a_sibling_waiting(&w, 31, false);
+    let minutes = minutes_during(since, || w.one_reviewer());
     assert_eq!(w.row().state, ReviewState::Waiting, "{:?}", w.row());
     assert!(
         w.raised("queue_waiting_for_vm").is_empty(),
@@ -507,8 +540,14 @@ fn a_new_row_of_a_branch_already_waiting_does_not_say_it_again() {
     );
     let long = w.raised("queue_vm_slots_exhausted");
     assert_eq!(long.len(), 1, "the branch's wait is 31 min old: {long:?}");
+    assert!(
+        minutes
+            .clone()
+            .any(|m| long[0].contains(&format!("has waited {m} min"))),
+        "the wait in minutes ({minutes:?}) missing from: {}",
+        long[0]
+    );
     for said in [
-        "has waited 31 min",
         "What holds the slots: (1) fccode1: firecracker pid 861706",
         "under daemon `d-404553-1-0`, which is gone — being reaped",
     ] {
