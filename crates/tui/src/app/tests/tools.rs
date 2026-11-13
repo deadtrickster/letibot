@@ -769,7 +769,17 @@ fn one_call_reads_the_same_word_whatever_row_draws_it() {
                 next: "`/job j4 out` to read it".into(),
             },
             "backgrounded",
-            Some("as `j4` after 0.4s — `/job j4 out` to read it"),
+            Some("as `j4` after 0.4s"),
+        ),
+        (
+            O::Backgrounded {
+                handle: "j5".into(),
+                ran_for_ms: 0,
+                how: letibot_transcript::Backgrounding::Asked,
+                next: "`job_output` with job=\"j5\" reads it".into(),
+            },
+            "backgrounded",
+            Some("as `j5`"),
         ),
     ];
     for (outcome, word, why) in cases {

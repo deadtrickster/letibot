@@ -32,17 +32,13 @@ pub(crate) fn display_outcome(o: &letibot_transcript::ToolOutcome) -> Outcome {
         O::Timeout => Outcome::Timeout,
         O::NotRun { why } => Outcome::NotRun(why.clone()),
         // Not `Failed` (a retry offered for a command still working), not `Ok` (that reads as
-        // a finish). One sentence with both halves: how long it ran, and the call that reaches
-        // its output.
+        // a finish). The handle and how long it ran; the body under it already says how to read it.
         O::Backgrounded {
-            handle,
-            ran_for_ms,
-            next,
-            ..
-        } => Outcome::Backgrounded(format!(
-            "as `{handle}` after {:.1}s — {next}",
-            *ran_for_ms as f64 / 1000.0
-        )),
+            handle, ran_for_ms, ..
+        } => Outcome::Backgrounded(match ran_for_ms {
+            0 => format!("as `{handle}`"),
+            ms => format!("as `{handle}` after {:.1}s", *ms as f64 / 1000.0),
+        }),
     }
 }
 
