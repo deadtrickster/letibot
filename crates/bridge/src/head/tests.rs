@@ -967,3 +967,62 @@ fn a_limit_pages_from_the_cursor_it_was_given() {
     // because an answer that cannot advance a cursor is a caller that loops for ever.
     assert_eq!(ring.page(0, 0).entries.len(), 1);
 }
+
+/// A socket that ends with no `Bye` is the end of the session too: the head is over with its
+/// own reason, and a `wait` on it answers at once instead of reading the quiet as a turn end.
+#[test]
+fn eof_without_bye_marks_the_head_over() {
+    use std::io::{BufRead, BufReader, Write};
+    let socket = letibot_sessionlog::testing::scratch_root()
+        .join(format!("bridge-eof-{}.sock", std::process::id()));
+    let _ = std::fs::remove_file(&socket);
+    let listener = std::os::unix::net::UnixListener::bind(&socket).expect("bind");
+    let (hang_up, hung_up) = std::sync::mpsc::channel::<()>();
+    std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().expect("accept");
+        let mut lines = BufReader::new(stream.try_clone().expect("clone")).lines();
+        let _attach = lines.next();
+        let hello = ServerFrame::Hello {
+            protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+            session_id: "s".into(),
+            head_id: "h1".into(),
+            dropped: 0,
+            snapshot: Some(Box::new(
+                letibot_sessionlog::view::SessionView::new(
+                    "s",
+                    letibot_sessionlog::view::ViewBounds::default(),
+                )
+                .snapshot(0, 0),
+            )),
+            resumed_from: None,
+            scrubbed: letibot_sessionlog::ScrubReport::default(),
+            wiring: letibot_sessionlog::SessionWiring::default(),
+            sessions: Vec::new(),
+        };
+        let _ = writeln!(stream, "{}", serde_json::to_string(&hello).unwrap());
+        let _ = hung_up.recv();
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+    });
+    let d = crate::daemon::Daemon {
+        workspace: socket.clone(),
+        key: "k".into(),
+        socket: socket.clone(),
+        log: Default::default(),
+        store: Default::default(),
+        placement: None,
+        started: false,
+    };
+    let h = Head::attach(&d, "s").expect("attach");
+    assert!(!h.is_over(), "a live socket is not over");
+    hang_up.send(()).expect("the fake daemon is up");
+    let end = Instant::now() + Duration::from_secs(10);
+    let answer = h.wait(end);
+    assert!(
+        matches!(&answer, Attention::Failed { why } if why.contains(WENT_AWAY)),
+        "{answer:?}"
+    );
+    assert!(Instant::now() < end, "the wait sat out its deadline");
+    assert!(h.is_over());
+    assert_eq!(h.snapshot().closed.as_deref(), Some(WENT_AWAY));
+    let _ = std::fs::remove_file(&socket);
+}

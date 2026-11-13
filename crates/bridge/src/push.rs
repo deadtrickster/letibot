@@ -6,7 +6,7 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex, Weak};
+use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -21,6 +21,10 @@ use crate::refusals::refuse as refused;
 /// [`crate::head::START_GRACE`]: a `wait` that starts on a session which is already quiet answers
 /// `Timeout` until that grace is over, so a shorter tick would never report a turn end at all.
 const TICK: Duration = Duration::from_secs(4);
+
+/// How long a head that is over is kept for its watcher's last pass: a pass resting out a tick,
+/// then the one that records the end.
+pub const LAST_PASS: Duration = Duration::from_secs(12);
 
 /// How many keys the outbox remembers as said. A key is what stops the same fact being said
 /// twice; past this many the oldest fall off, and only a client away for longer than this many
@@ -64,6 +68,9 @@ pub struct Outbox {
     sink: Mutex<Option<Sender<Value>>>,
     /// Whether an unkeepable file has been said once, so it is not said every pass.
     told: AtomicBool,
+    /// Set when this outbox's watcher returns, so a head is not dropped under its last pass.
+    ended: Mutex<bool>,
+    ended_bell: Condvar,
 }
 
 impl Outbox {
@@ -76,6 +83,8 @@ impl Outbox {
             kept: Mutex::new(kept),
             sink: Mutex::new(None),
             told: AtomicBool::new(false),
+            ended: Mutex::new(false),
+            ended_bell: Condvar::new(),
         })
     }
 
@@ -126,6 +135,21 @@ impl Outbox {
             .len()
     }
 
+    /// Block until this outbox's watcher has returned, or `patience` passes; `true` when it has.
+    pub fn wait_ended(&self, patience: Duration) -> bool {
+        let g = self.ended.lock().unwrap_or_else(|e| e.into_inner());
+        let (g, _) = self
+            .ended_bell
+            .wait_timeout_while(g, patience, |ended| !*ended)
+            .unwrap_or_else(|e| e.into_inner());
+        *g
+    }
+
+    fn end(&self) {
+        *self.ended.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        self.ended_bell.notify_all();
+    }
+
     /// Hand the client every record it is owed, and stop at the first it cannot take.
     fn deliver(&self) {
         let mut sink = self.sink.lock().unwrap_or_else(|e| e.into_inner());
@@ -166,7 +190,10 @@ pub fn watch(head: &Arc<Head>, rules: Arc<Rules>) -> Arc<Outbox> {
     let recording = outbox.clone();
     let _ = std::thread::Builder::new()
         .name(format!("leticode-push-{}", head.session))
-        .spawn(move || run(weak, recording, rules));
+        .spawn(move || {
+            run(weak, recording.clone(), rules);
+            recording.end();
+        });
     outbox
 }
 

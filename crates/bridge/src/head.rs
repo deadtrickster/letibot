@@ -97,6 +97,9 @@ pub const MODEL_PATIENCE: Duration = Duration::from_secs(120);
 /// which is quick; a daemon busy past this is reported as not confirmed.
 pub const CLOSE_PATIENCE: Duration = Duration::from_secs(30);
 
+/// `closed` for a connection that ended with no `Bye`: the daemon crashed or was killed.
+pub const WENT_AWAY: &str = "the daemon went away without saying goodbye";
+
 /// How long `stop` waits, after the ack, for the goodbye of the session it closed.
 const BYE_PATIENCE: Duration = Duration::from_secs(5);
 
@@ -1555,6 +1558,9 @@ struct Shared {
     bell: Condvar,
     /// A copy of every event, for a caller that reads the stream itself (the browser bridge).
     tap: Mutex<Option<std::sync::mpsc::Sender<Envelope>>>,
+    /// Run once when the connection ends. Taken under this lock after `closed` is set, so a hook
+    /// set concurrently either is taken here or sees `closed` and runs itself.
+    on_closed: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// One attached head, and the session it holds.
@@ -1629,6 +1635,7 @@ impl Head {
             }),
             bell: Condvar::new(),
             tap: Mutex::new(tap),
+            on_closed: Mutex::new(None),
         });
         let client = Arc::new(Mutex::new(client));
         {
@@ -1847,6 +1854,24 @@ impl Head {
     pub fn is_over(&self) -> bool {
         let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
         g.closed.is_some() || g.boot_failed.is_some()
+    }
+
+    /// Run `f` once the connection has ended (`Bye` or EOF), on a thread of its own when it
+    /// already has. A failed boot is followed by the daemon closing its hubs, so by a `Bye`.
+    pub fn when_closed(&self, f: impl FnOnce() + Send + 'static) {
+        let mut hook = self
+            .shared
+            .on_closed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        if self.has_closed() {
+            drop(hook);
+            let _ = std::thread::Builder::new()
+                .name(format!("mcp-closed-{}", std::process::id()))
+                .spawn(f);
+            return;
+        }
+        *hook = Some(Box::new(f));
     }
 
     /// Whether this bridge asked the daemon to close this session (`leticode_stop`). The `Bye` that
@@ -2449,6 +2474,8 @@ fn collect(
     std::thread::Builder::new()
         .name(format!("mcp-fold-{}", std::process::id()))
         .spawn(move || {
+            // A failed ack stops the acking, not the folding: a `Bye` may still be queued.
+            let mut acking = true;
             while let Ok(inbound) = rx.recv() {
                 let ack = match inbound {
                     Inbound::Frame(frame) => {
@@ -2481,23 +2508,41 @@ fn collect(
                         None
                     }
                 };
-                if let Some(seq) = ack {
+                if let Some(seq) = ack.filter(|_| acking) {
                     let mut c = client.lock().unwrap_or_else(|e| e.into_inner());
                     // Acked after the fold, which is the head's obligation: a crash then
                     // costs a duplicate frame and never a silence.
-                    if c.ack(Ack {
-                        seq,
-                        rendered: 1,
-                        filtered: 0,
-                    })
-                    .is_err()
-                    {
-                        return;
-                    }
+                    acking = c
+                        .ack(Ack {
+                            seq,
+                            rendered: 1,
+                            filtered: 0,
+                        })
+                        .is_ok();
                 }
             }
+            // The pump ended: after a `Bye`, or at EOF, which nothing else reports.
+            {
+                let mut g = shared.state.lock().unwrap_or_else(|e| e.into_inner());
+                if g.closed.is_none() {
+                    g.closed = Some(WENT_AWAY.to_string());
+                }
+            }
+            shared.bell.notify_all();
+            run_closed_hook(&shared);
         })
         .ok();
+}
+
+fn run_closed_hook(shared: &Shared) {
+    let hook = shared
+        .on_closed
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    if let Some(f) = hook {
+        f();
+    }
 }
 
 /// The sentence a refused attach gets: the daemon's own reason when it gave one, and the

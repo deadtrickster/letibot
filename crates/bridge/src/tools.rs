@@ -50,7 +50,10 @@ pub struct Bridge {
     /// One channel per held session: the records a client has not taken yet, and the cursor it
     /// has been told up to. Kept apart from `push` because a client that connects again is
     /// handed what it missed rather than starting a second watcher that repeats the lot.
-    channels: Mutex<HashMap<String, Arc<crate::push::Outbox>>>,
+    channels: Arc<Mutex<HashMap<String, Arc<crate::push::Outbox>>>>,
+    /// Sessions whose daemon ended them, dropped from `heads`: the last state for a call that
+    /// names one, and the outbox still owed to a client.
+    gone: Arc<Mutex<HashMap<String, Gone>>>,
     /// Whether this folder's queues are already being followed: a client that initializes twice
     /// must not leave a second follower saying the same move again.
     queue: Mutex<bool>,
@@ -75,6 +78,12 @@ pub struct Bridge {
     rules: Mutex<Option<Arc<crate::push::Rules>>>,
 }
 
+/// A session dropped because its daemon ended it.
+struct Gone {
+    said: String,
+    outbox: Option<Arc<crate::push::Outbox>>,
+}
+
 impl Default for Bridge {
     fn default() -> Bridge {
         Bridge {
@@ -83,7 +92,8 @@ impl Default for Bridge {
             stream_rooms: false,
             names_from: None,
             push: Mutex::new(None),
-            channels: Mutex::new(HashMap::new()),
+            channels: Arc::default(),
+            gone: Arc::default(),
             queue: Mutex::new(false),
             seat: Mutex::new(None),
             // Written out rather than derived: a derived `Duration` is zero, and a zero window is
@@ -132,7 +142,13 @@ impl Bridge {
     /// `folder` when the call names one. A name that fits several is refused with them listed.
     pub fn resolve_session(&self, raw: &str, folder: Option<&str>) -> Result<String, String> {
         let raw = raw.trim();
-        if self.held(raw).is_some() {
+        if self.held(raw).is_some()
+            || self
+                .gone
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains_key(raw)
+        {
             return Ok(raw.to_string());
         }
         let (store, mut folders) = match &self.names_from {
@@ -565,9 +581,67 @@ impl Bridge {
         let mut g = self.heads.lock().unwrap_or_else(|e| e.into_inner());
         let new = g.insert(h.session.clone(), h.clone()).is_none();
         drop(g);
-        if new && let Some(tx) = self.push.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        if !new {
+            return;
+        }
+        // A channel left by a head of this session that ended is not this head's watcher.
+        self.gone
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&h.session);
+        self.channels
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&h.session);
+        if let Some(tx) = self.push.lock().unwrap_or_else(|e| e.into_inner()).clone() {
             self.channel(h).attach(tx);
         }
+        self.reap_when_closed(h);
+    }
+
+    /// Drop `h` once its daemon has closed the connection: after its watcher recorded the end, so
+    /// the outbox holds it for a client, and with its socket closed by the head's own drop.
+    fn reap_when_closed(&self, h: &Arc<Head>) {
+        let heads = Arc::downgrade(&self.heads);
+        let channels = Arc::downgrade(&self.channels);
+        let gone = Arc::downgrade(&self.gone);
+        let me = Arc::downgrade(h);
+        let session = h.session.clone();
+        h.when_closed(move || {
+            let (Some(heads), Some(channels), Some(gone), Some(me)) = (
+                heads.upgrade(),
+                channels.upgrade(),
+                gone.upgrade(),
+                me.upgrade(),
+            ) else {
+                return;
+            };
+            // `stop` drops its own head. Otherwise only this head: a new one may hold the id.
+            if me.stopped_by_bridge() {
+                return;
+            }
+            let mut g = heads.lock().unwrap_or_else(|e| e.into_inner());
+            if !g.get(&session).is_some_and(|held| Arc::ptr_eq(held, &me)) {
+                return;
+            }
+            g.remove(&session);
+            drop(g);
+            let outbox = channels
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&session);
+            gone.lock().unwrap_or_else(|e| e.into_inner()).insert(
+                session,
+                Gone {
+                    said: last_state(&me),
+                    outbox: outbox.clone(),
+                },
+            );
+            // `me` outlives the watcher's last pass; its drop then closes the socket.
+            if let Some(outbox) = outbox {
+                outbox.wait_ended(crate::push::LAST_PASS);
+            }
+        });
     }
 
     /// The channel a session's events are recorded in, started on first use: one per session,
@@ -596,6 +670,16 @@ impl Bridge {
             // A new client, or the first one: either way what was recorded while nobody was
             // reading goes now, and a channel that never existed starts at the state it sees.
             self.channel(&h).attach(tx.clone());
+        }
+        let ended: Vec<Arc<crate::push::Outbox>> = self
+            .gone
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter_map(|g| g.outbox.clone())
+            .collect();
+        for outbox in ended {
+            outbox.attach(tx.clone());
         }
     }
 
@@ -1129,8 +1213,16 @@ impl Bridge {
             return Ok(h.clone());
         }
         let held: Vec<String> = g.keys().cloned().collect();
+        drop(g);
+        let ended = self
+            .gone
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session)
+            .map(|g| format!(". `{session}` was dropped because {}", g.said))
+            .unwrap_or_default();
         Err(format!(
-            "no session `{session}` is held by this bridge; it holds {}",
+            "no session `{session}` is held by this bridge; it holds {}{ended}",
             if held.is_empty() {
                 "none — `leticode_start` opens one".to_string()
             } else {
@@ -1138,6 +1230,21 @@ impl Bridge {
             }
         ))
     }
+}
+
+/// A head's last known state, in the sentence a call naming its ended session is answered with.
+fn last_state(h: &Head) -> String {
+    let s = h.snapshot();
+    let why = s
+        .boot_failed
+        .clone()
+        .or(s.closed.clone())
+        .unwrap_or_default();
+    format!(
+        "its daemon ended it ({why}); it was `{}` and last said: {}",
+        s.word(),
+        first_line(s.last_message())
+    )
 }
 
 /// The session an attach names. `gatekeeper` resolves through the workspace key, because the
