@@ -3473,7 +3473,7 @@ impl Harness {
             out.push(rows::note_row(o, notes.read(&o.path).as_deref()));
         }
         for o in skills {
-            out.push(rows::skill_row(o, self.skills.load(&o.name)));
+            out.push(rows::skill_row(o, self.skills.load(&o.name).as_deref()));
         }
         out
     }

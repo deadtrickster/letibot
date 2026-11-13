@@ -562,11 +562,13 @@ impl SkillRegistry {
     }
 
     /// A skill on disk, by name.
-    pub fn load(&self, name: &str) -> Option<&str> {
-        self.skills
-            .iter()
+    /// A skill's body as the disk has it now: offers are scored against [`Self::live_skills`], so a
+    /// skill added after the daemon started must have a body here too.
+    pub fn load(&self, name: &str) -> Option<String> {
+        self.live_skills()
+            .into_iter()
             .find(|s| s.name == name)
-            .map(|s| s.body.as_str())
+            .map(|s| s.body)
     }
 
     /// A skill from either source: disk by name first, then the shelf by id or
@@ -1329,6 +1331,34 @@ mod tests {
         assert_eq!(named.len(), 1, "the built-in is replaced, not duplicated");
         assert_eq!(named[0].description, "mine");
         assert!(loaded.load("plugin-pane").unwrap().contains("my own loop"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A skill written after the registry was built is offered from the live read, so its body must
+    /// come from there too: the offer row's click opened empty for one added mid-session.
+    #[test]
+    fn a_skill_added_after_the_registry_was_built_has_a_body() {
+        let dir = std::env::temp_dir().join(format!("letibot-skill-late-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a skills dir");
+        let dirs = SkillDirs {
+            operator: vec![dir.clone()],
+            ..SkillDirs::default()
+        };
+        let reg = SkillRegistry::load_for(&dirs);
+        assert!(reg.load("late-comer").is_none(), "nothing there yet");
+        let skill = dir.join("late-comer");
+        std::fs::create_dir_all(&skill).expect("the skill's dir");
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\nname: late-comer\ndescription: added later\n---\n\nthe body a click opens\n",
+        )
+        .expect("a skill");
+        assert!(
+            reg.load("late-comer")
+                .is_some_and(|b| b.contains("the body a click opens")),
+            "the live read has it, so the offer's body does too"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
