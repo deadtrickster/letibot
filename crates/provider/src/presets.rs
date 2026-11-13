@@ -56,6 +56,9 @@ pub struct Preset {
     pub origin: Origin,
     /// The window the operator declared, for a door no catalogue carries.
     pub window: Option<u64>,
+    /// Where the plan reports its windows' resets ([`crate::usage`]): a path on the door's own
+    /// origin, or a whole URL. Asked only for a limit whose refusal named no instant.
+    pub usage_url: Option<&'static str>,
 }
 
 /// Where a door came from: compiled in, changed or added by providers.toml, or an env base URL.
@@ -88,6 +91,9 @@ pub struct EffortField {
     pub field: &'static str,
     pub words: &'static [(&'static str, &'static str)],
 }
+
+/// Kimi's plan answers its 5-hour and monthly windows here, on the door's own host and key.
+const KIMI_USAGES: &str = "/coding/v1/usages";
 
 /// Kimi's plan fixes these on every model it serves; another value is a 400.
 const KIMI_FIXED_SAMPLING: &[&str] = &[
@@ -125,6 +131,7 @@ pub const DEEPSEEK: Preset = Preset {
     effort: None,
     origin: Origin::BuiltIn,
     window: None,
+    usage_url: None,
 };
 
 pub const GLM: Preset = Preset {
@@ -143,6 +150,7 @@ pub const GLM: Preset = Preset {
     effort: None,
     origin: Origin::BuiltIn,
     window: None,
+    usage_url: None,
 };
 
 /// The coding plan: same vendor, a different path (`/api/coding/paas/v4`), its own
@@ -175,6 +183,7 @@ pub const GLM_CODING: Preset = Preset {
     effort: None,
     origin: Origin::BuiltIn,
     window: None,
+    usage_url: None,
 };
 
 /// Zhipu's coding plan: the mainland host of the same product as [`GLM_CODING`].
@@ -192,6 +201,7 @@ pub const GLM_CODING_CN: Preset = Preset {
     effort: None,
     origin: Origin::BuiltIn,
     window: None,
+    usage_url: None,
 };
 
 pub const GROK: Preset = Preset {
@@ -208,6 +218,7 @@ pub const GROK: Preset = Preset {
     effort: None,
     origin: Origin::BuiltIn,
     window: None,
+    usage_url: None,
 };
 
 /// Anthropic's own API, speaking Messages. The key is the console's `x-api-key`, which is the one
@@ -233,6 +244,7 @@ pub const ANTHROPIC: Preset = Preset {
     effort: None,
     origin: Origin::BuiltIn,
     window: None,
+    usage_url: None,
 };
 
 /// DeepSeek's Anthropic-compatible door: the same models as [`DEEPSEEK`], the Messages wire, and a
@@ -257,6 +269,7 @@ pub const DEEPSEEK_ANTHROPIC: Preset = Preset {
     effort: None,
     origin: Origin::BuiltIn,
     window: None,
+    usage_url: None,
 };
 
 /// Z.ai's Anthropic-compatible door, which is the one their Claude Code instructions point at:
@@ -277,6 +290,7 @@ pub const GLM_ANTHROPIC: Preset = Preset {
     effort: None,
     origin: Origin::BuiltIn,
     window: None,
+    usage_url: None,
 };
 
 /// Moonshot's Kimi Code plan, whose Claude Code instructions give the base URL
@@ -303,6 +317,7 @@ pub const KIMI_CODING: Preset = Preset {
     effort: None,
     origin: Origin::BuiltIn,
     window: None,
+    usage_url: Some(KIMI_USAGES),
 };
 
 /// OpenAI itself, on its own protocol. `gpt-6-astra` is the id the API reference's own
@@ -330,6 +345,7 @@ pub const OPENAI: Preset = Preset {
     effort: None,
     origin: Origin::BuiltIn,
     window: None,
+    usage_url: None,
 };
 
 /// Google's Gemini, whose wire is nothing like the others: `contents` of `user`/`model` parts,
@@ -354,6 +370,7 @@ pub const GEMINI: Preset = Preset {
     effort: None,
     origin: Origin::BuiltIn,
     window: None,
+    usage_url: None,
 };
 
 /// Kimi's coding plan (Moonshot): OpenAI chat completions on the plan's own host. Not the
@@ -382,6 +399,7 @@ pub const KIMI_CODE: Preset = Preset {
     effort: Some(KIMI_EFFORT),
     origin: Origin::BuiltIn,
     window: None,
+    usage_url: Some(KIMI_USAGES),
 };
 
 /// The same plan on the global host. One key works on one region's host only, so this is a
@@ -400,6 +418,7 @@ pub const KIMI_CODE_GLOBAL: Preset = Preset {
     effort: Some(KIMI_EFFORT),
     origin: Origin::BuiltIn,
     window: None,
+    usage_url: Some(KIMI_USAGES),
 };
 
 pub const ALL: &[&Preset] = &[

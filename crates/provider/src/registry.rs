@@ -33,6 +33,7 @@ const KEYS: &[&str] = &[
     "fixed",
     "aliases",
     "window",
+    "usage",
 ];
 
 /// Sampling keys `fixed` may name: the ones a cloud request carries.
@@ -199,6 +200,7 @@ struct Spec {
     effort: Option<EffortField>,
     origin: Origin,
     window: Option<u64>,
+    usage_url: Option<String>,
 }
 
 impl Spec {
@@ -217,6 +219,7 @@ impl Spec {
             effort: p.effort,
             origin: p.origin,
             window: p.window,
+            usage_url: p.usage_url.map(str::to_string),
         }
     }
 }
@@ -254,6 +257,7 @@ fn build(
         effort: None,
         origin,
         window: None,
+        usage_url: None,
     });
     // An env door stays marked by its variable, whatever the file adds.
     if !matches!(s.origin, Origin::Env(_)) {
@@ -320,6 +324,19 @@ fn build(
             _ => return Err(at("window", format!("`{w}` is not a positive token count"))),
         }
     }
+    match kv.get("usage").map(|u| u.trim()) {
+        Some("") => s.usage_url = None,
+        Some(u) if u.starts_with('/') || u.starts_with("http://") || u.starts_with("https://") => {
+            s.usage_url = Some(u.to_string())
+        }
+        Some(u) => {
+            return Err(at(
+                "usage",
+                format!("`{u}` is not a path or an http(s) URL"),
+            ));
+        }
+        None => {}
+    }
     Ok(intern(s))
 }
 
@@ -350,6 +367,7 @@ fn env_doors(env: &dyn Fn(&str) -> Option<String>) -> Vec<(String, Result<Spec, 
                 effort: None,
                 origin: Origin::Env("ANTHROPIC_BASE_URL"),
                 window: None,
+                usage_url: None,
             }),
         ));
     }
@@ -379,6 +397,7 @@ fn env_doors(env: &dyn Fn(&str) -> Option<String>) -> Vec<(String, Result<Spec, 
             effort: None,
             origin: Origin::Env("OPENAI_BASE_URL"),
             window: None,
+            usage_url: None,
         });
         out.push(("env-openai".to_string(), spec));
     }
@@ -429,6 +448,7 @@ fn intern(spec: Spec) -> &'static Preset {
         effort: spec.effort,
         origin: spec.origin,
         window: spec.window,
+        usage_url: spec.usage_url.as_deref().map(leak),
     }));
     made.push((spec, p));
     p

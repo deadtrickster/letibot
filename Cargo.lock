@@ -1661,6 +1661,7 @@ name = "letibot-provider"
 version = "0.6.0"
 dependencies = [
  "letibot-backend",
+ "letibot-http",
  "letibot-transcript",
  "serde",
  "serde_json",

@@ -2771,6 +2771,7 @@ impl Harness {
             let Some(wait) = ladder.failed(&e) else {
                 // The ladder is spent, and what comes next is the limit rule's to say: the operator's
                 // ruling is that a provider which named its reset never costs a session its turn.
+                let e = self.with_the_plans_reset(e);
                 let here = self.model_name();
                 match self.after_the_ladder(&e, &mut tried_fallbacks) {
                     limit::AfterTheLadder::Parked { said } => {

@@ -184,3 +184,23 @@ fn a_door_lists_its_models_from_its_own_endpoint() {
         "{head}"
     );
 }
+
+/// `usage` is preset data like any other: set on a new door, cleared on a built-in by an empty
+/// value, and refused when it is neither a path nor a URL.
+#[test]
+fn a_usage_endpoint_is_declared_cleared_or_refused() {
+    let f = file(
+        "usage",
+        "[provider.myplan]\nprotocol = \"chat-completions\"\n\
+         url = \"http://127.0.0.1:9/v1/chat/completions\"\nmodel = \"m\"\nusage = \"/v1/usages\"\n\n\
+         [provider.kimi-code]\nusage = \"\"\n\n\
+         [provider.badplan]\nprotocol = \"chat-completions\"\nurl = \"http://127.0.0.1:9\"\n\
+         model = \"m\"\nusage = \"usages\"\n",
+    );
+    let r = Registry::read_with(Some(&f), &no_env);
+    assert_eq!(r.find("myplan").unwrap().usage_url, Some("/v1/usages"));
+    assert_eq!(r.find("kimi-code").unwrap().usage_url, None);
+    assert!(crate::presets::KIMI_CODE.usage_url.is_some());
+    let why = r.find("badplan").unwrap_err();
+    assert!(why.contains("[provider.badplan] usage"), "{why}");
+}

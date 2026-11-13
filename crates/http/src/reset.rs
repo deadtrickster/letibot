@@ -51,6 +51,12 @@ pub fn from_prose_unbounded(body: &str, now_ms: u64) -> Option<u64> {
     Some(at.max(now_ms + SHORTEST))
 }
 
+/// Does the prose name a wall clock? A refusal that names only its window is a guess at the
+/// instant, which a door that reports its own resets can replace.
+pub fn names_a_wall_clock(body: &str) -> bool {
+    wall_clock_ms(body).is_some()
+}
+
 /// `2026-11-07 21:02:27` (or with a `T` and a trailing `Z`), read as UTC.
 fn wall_clock_ms(body: &str) -> Option<u64> {
     let at = body.to_ascii_lowercase();
@@ -114,6 +120,62 @@ fn width(n: &str, unit: &str) -> Option<u64> {
         _ => return None,
     };
     Some(n.saturating_mul(per))
+}
+
+/// An RFC 3339 instant as Unix millis: `2026-11-14T01:07:08.146515Z`, or with a `+hh:mm` offset.
+/// The fraction is kept to the millisecond; a usage endpoint's reset is read with this.
+pub fn rfc3339_ms(s: &str) -> Option<u64> {
+    let s = s.trim();
+    let b = s.as_bytes();
+    if b.len() < 20 || b[4] != b'-' || b[7] != b'-' || !matches!(b[10], b'T' | b't' | b' ') {
+        return None;
+    }
+    if b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| -> Option<i64> {
+        let t = s.get(r)?;
+        t.bytes()
+            .all(|c| c.is_ascii_digit())
+            .then(|| t.parse().ok())?
+    };
+    let (y, m, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (hh, mm, ss) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) || hh > 23 || mm > 59 || ss > 60 {
+        return None;
+    }
+    let mut rest = &s[19..];
+    let mut millis = 0i64;
+    if let Some(frac) = rest.strip_prefix('.') {
+        let digits = frac.bytes().take_while(u8::is_ascii_digit).count();
+        if digits == 0 {
+            return None;
+        }
+        let ms: String = frac[..digits]
+            .chars()
+            .chain("000".chars())
+            .take(3)
+            .collect();
+        millis = ms.parse().ok()?;
+        rest = &frac[digits..];
+    }
+    let offset = match rest {
+        "Z" | "z" => 0,
+        _ => {
+            let sign = match rest.as_bytes().first() {
+                Some(b'+') => 1,
+                Some(b'-') => -1,
+                _ => return None,
+            };
+            let (oh, om) = rest[1..].split_once(':')?;
+            if oh.len() != 2 || om.len() != 2 {
+                return None;
+            }
+            sign * (oh.parse::<i64>().ok()? * 3600 + om.parse::<i64>().ok()? * 60)
+        }
+    };
+    let secs = days_from_civil(y, m, d) * 86_400 + hh * 3600 + mm * 60 + ss - offset;
+    u64::try_from(secs * 1000 + millis).ok()
 }
 
 /// An HTTP-date as Unix millis. Three formats because RFC 9110 requires a recipient to accept all
@@ -259,6 +321,24 @@ mod tests {
             "a wall clock already past is still floored"
         );
         assert_eq!(from_prose_unbounded("rate limited", now), None);
+    }
+
+    /// A usage endpoint's two spellings of one instant: with microseconds, and whole seconds.
+    #[test]
+    fn rfc3339_keeps_the_fraction_and_the_offset() {
+        // 2026-11-14 01:07:07 UTC.
+        let at = 1_794_618_427_000;
+        assert_eq!(rfc3339_ms("2026-11-14T01:07:07Z"), Some(at));
+        assert_eq!(rfc3339_ms("2026-11-14T01:07:08.146515Z"), Some(at + 1_146));
+        assert_eq!(rfc3339_ms("2026-11-14T01:07:07.5Z"), Some(at + 500));
+        assert_eq!(rfc3339_ms("2026-11-14T02:07:07+01:00"), Some(at));
+        assert_eq!(
+            rfc3339_ms("2026-11-14T01:07:07"),
+            None,
+            "no zone is no instant"
+        );
+        assert_eq!(rfc3339_ms("2026-11-14T01:07:07.Z"), None);
+        assert_eq!(rfc3339_ms("soon"), None);
     }
 
     /// RFC 9110's two forms: a delay and an HTTP-date, the second against the caller's clock.

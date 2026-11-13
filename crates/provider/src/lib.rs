@@ -15,6 +15,7 @@ pub mod openai;
 pub mod presets;
 pub mod registry;
 pub mod responses;
+pub mod usage;
 
 pub use anthropic::AnthropicProvider;
 pub use keys::{Credentials, Gatekeeper, KeyError, MemorySection, gatekeeper, memory};

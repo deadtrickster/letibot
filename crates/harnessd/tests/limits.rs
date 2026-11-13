@@ -896,3 +896,167 @@ fn a_per_model_fallback_list_is_picked_by_the_limited_model_and_skips_limited_en
         said(&hub, "model_fallback_skip")
     );
 }
+
+/// Kimi's 5-hour refusal, verbatim: the window it closed and no instant.
+const KIMI_LIMIT_BODY: &str = "{\"error\":{\"message\":\"You've reached your 5-hour usage limit. \
+                               Your quota will reset when the current 5-hour window ends. To \
+                               continue now, purchase extra usage or upgrade your plan: \
+                               https://www.kimi.com/settings/subscription?tab=quota\",\
+                               \"type\":\"rate_limit_reached_error\"}}";
+
+/// The plan's usage report with the 5-hour window spent, verbatim.
+const USAGES_5H: &str = r#"{"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"100","used":"100","resetTime":"2026-11-14T01:07:08.146515Z"}}],"usages":{"limit_5h":{"used_ratio":1,"reset_time":"2026-11-14T01:07:07Z"},"limit_month_total":{"used_ratio":0.1688,"reset_time":"2026-12-13T00:07:40Z"},"limit_month_code":{"used_ratio":0.1688,"reset_time":"2026-12-13T00:07:40Z"}}}"#;
+
+/// The same report with the month spent as well.
+const USAGES_MONTH: &str = r#"{"usages":{"limit_5h":{"used_ratio":1,"reset_time":"2026-11-14T01:07:07Z"},"limit_month_total":{"used_ratio":1,"reset_time":"2026-12-13T00:07:40Z"},"limit_month_code":{"used_ratio":0.5,"reset_time":"2026-12-13T00:07:40Z"}}}"#;
+
+/// 2026-11-14T01:07:07Z and 2026-12-13T00:07:40Z, in millis.
+const RESET_5H: u64 = 1_794_618_427_000;
+const RESET_MONTH: u64 = 1_797_120_460_000;
+
+/// The Kimi scenarios' clock: three hours into the spent 5-hour window.
+const KIMI_NOW: u64 = RESET_5H - 3 * 3_600_000;
+
+/// A Kimi door on loopback: every POST is the 5-hour refusal, `GET /coding/v1/usages` is
+/// `usages` (a 500 when `None`). Records each request line beside its `Authorization`.
+fn kimi_door(usages: Option<&'static str>) -> (u16, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").expect("an ephemeral port");
+    let port = listener.local_addr().unwrap().port();
+    let seen: Arc<Mutex<Vec<String>>> = Default::default();
+    let record = seen.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut s) = stream else { continue };
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") && s.read(&mut byte).is_ok_and(|n| n == 1) {
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8_lossy(&head).into_owned();
+            let line = head.lines().next().unwrap_or_default().to_string();
+            let header = |name: &str| {
+                head.lines().find_map(|l| {
+                    let (k, v) = l.split_once(':')?;
+                    k.trim()
+                        .eq_ignore_ascii_case(name)
+                        .then(|| v.trim().to_string())
+                })
+            };
+            let auth = header("authorization").unwrap_or_default();
+            record
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(format!("{line} | {auth}"));
+            let want: usize = header("content-length")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let mut body = vec![0u8; want];
+            let _ = s.read_exact(&mut body);
+            let (status, payload) = if line.starts_with("GET /coding/v1/usages ") {
+                match usages {
+                    Some(u) => ("200 OK", u),
+                    None => ("500 Internal Server Error", "{}"),
+                }
+            } else {
+                ("429 Too Many Requests", KIMI_LIMIT_BODY)
+            };
+            let _ = write!(
+                s,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{payload}",
+                payload.len()
+            );
+            let _ = s.flush();
+        }
+    });
+    (port, seen)
+}
+
+/// One Kimi scenario: the refusal, then the park the usage report earns, and what the door saw.
+fn kimi_park(tag: &str, usages: Option<&'static str>) -> Option<(u64, u64, Vec<String>)> {
+    let gguf = letibot_harnessd::vocab_gguf()?;
+    let scratch = scratch_home(tag);
+    // SAFETY: as in `scratch_home` - one scenario at a time, nothing reading the environment.
+    unsafe {
+        std::env::remove_var("KIMI_API_KEY");
+        std::env::remove_var("KIMI_CODE_API_KEY");
+    }
+    let (port, seen) = kimi_door(usages);
+    std::fs::write(
+        scratch.join("letibot/providers.toml"),
+        format!(
+            "[kimi-code]\nkey = \"sk-test\"\n\
+             url = \"http://127.0.0.1:{port}/coding/v1/chat/completions\"\n"
+        ),
+    )
+    .expect("the config file");
+    let mut cfg = config(&scratch, &gguf, tag, ("kimi-code", "k3.1-pro"), Vec::new());
+    cfg.limit_clock = letibot_harnessd::config::LimitClock::fixed(KIMI_NOW).0;
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, _hub, id) = open(&parts, cfg);
+    let out = sessions
+        .submit(&id, PROMPT)
+        .expect_err("a limit is not an answer");
+    let out = out.to_string();
+    assert!(
+        out.contains("paused until") || out.contains("limited until"),
+        "{out}"
+    );
+    let park = sessions
+        .harness_of(&id)
+        .expect("open")
+        .limit_park()
+        .expect("parked")
+        .clone();
+    let seen = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    Some((park.until_ms, park.reset_ms, seen))
+}
+
+/// The refusal names only its window, so the plan is asked once and its spent window's reset is
+/// the park: the instant Kimi reports, not five hours from the refusal.
+#[test]
+fn a_kimi_limit_parks_on_the_reset_the_usage_endpoint_reports() {
+    let _alone = alone();
+    let Some((until, reset, seen)) = kimi_park("kimi-5h", Some(USAGES_5H)) else {
+        return;
+    };
+    assert_eq!(
+        until,
+        RESET_5H + 2_000,
+        "limit_5h's reset_time plus the jitter"
+    );
+    assert_eq!(reset, until);
+    let asked: Vec<_> = seen.iter().filter(|l| l.starts_with("GET ")).collect();
+    assert_eq!(asked.len(), 1, "one usage request: {seen:?}");
+    assert!(
+        asked[0].starts_with("GET /coding/v1/usages ") && asked[0].ends_with("| Bearer sk-test"),
+        "on the door's own host, with its key: {seen:?}"
+    );
+}
+
+/// A spent month outlasts the 5-hour window: nothing lifts until both have reset. The park is
+/// still bounded, so the turn is asked again in six hours rather than slept through a month.
+#[test]
+fn a_kimi_limit_with_the_month_spent_parks_until_the_month_resets() {
+    let _alone = alone();
+    let Some((until, reset, _)) = kimi_park("kimi-month", Some(USAGES_MONTH)) else {
+        return;
+    };
+    assert_eq!(reset, RESET_MONTH + 2_000, "the month's reset_time");
+    assert_eq!(until, KIMI_NOW + letibot_http::reset::LONGEST + 2_000);
+}
+
+/// A usage endpoint that fails costs nothing: the window in the refusal is the reading.
+#[test]
+fn a_failed_usage_request_falls_back_to_the_window() {
+    let _alone = alone();
+    let Some((until, _, seen)) = kimi_park("kimi-fail", None) else {
+        return;
+    };
+    assert_eq!(
+        until,
+        KIMI_NOW + 5 * 3_600_000 + 2_000,
+        "the 5-hour window: {seen:?}"
+    );
+}

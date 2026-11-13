@@ -62,6 +62,7 @@ key_env = "KIMI_API_KEY"
 model = "k3.1-pro"
 catalogue = "kimi-code-plan-global"   # models.dev id: window and prices
 fixed = ["temperature", "top_p", "n", "presence_penalty", "frequency_penalty"]
+usage = "/coding/v1/usages"   # the plan's window resets, asked when a 429 names no instant
 ```
 
 An OpenAI-compatible proxy (LiteLLM, vLLM, a gateway):
@@ -103,6 +104,11 @@ not take or a `fixed` word that is not a sampling key refuses the daemon at star
 the entry and the key. A door with no catalogue lists its models from the endpoint's own
 `GET …/models`, fetched once per daemon, and its window and prices come from `window` and
 `[prices."<model>"]` or are shown as unknown.
+
+`usage` is a path on the door's own host, or a whole URL, that reports the plan's windows. A rate
+limit whose refusal names only its window (Kimi's `5-hour usage limit`) asks it once, with the
+door's key, and parks until the latest reset among the spent windows. A failed request falls back to
+the window. The built-in Kimi doors declare it.
 
 ## Four protocols
 

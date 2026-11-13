@@ -13,6 +13,7 @@ repository.workspace = true
 # a module of `turn`: the engine stays a state machine with no runtime under it.
 [dependencies]
 letibot-backend.workspace = true
+letibot-http.workspace = true
 letibot-transcript.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
