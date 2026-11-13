@@ -315,6 +315,45 @@ fn the_facts_row_is_one_line_per_model_choice() {
     }
 }
 
+/// Which doors serve the same models is a fact of the preset table and not of a name, so the
+/// daemon publishes it: the card draws one row per catalogue, and a box whose only door is
+/// `deepseek-anthropic` still gets `deepseek`'s models listed once.
+#[test]
+fn the_doors_row_pairs_every_preset_with_the_catalogue_it_serves() {
+    let cfg = Config::for_this_box("/tmp");
+    let rows = cfg.settings("", false, &[]);
+    let doors = rows
+        .iter()
+        .find(|r| r.key == letibot_sessionlog::protocol::MODEL_DOORS_KEY)
+        .expect("the doors row is published beside the choices");
+    assert_eq!(
+        doors.choices.len(),
+        letibot_provider::presets::ALL.len(),
+        "one door per preset: {:?}",
+        doors.choices
+    );
+    let catalogue = |door: &str| {
+        doors
+            .choices
+            .iter()
+            .find(|c| c.split_once(' ').is_some_and(|(d, _)| d == door))
+            .and_then(|c| c.split_once(' '))
+            .map(|(_, cat)| cat.to_string())
+    };
+    for door in letibot_provider::presets::ALL {
+        let cat = catalogue(door.name)
+            .unwrap_or_else(|| panic!("no catalogue for {}: {:?}", door.name, doors.choices));
+        assert_eq!(
+            cat, door.catalogue_id,
+            "{} pairs with the wrong catalogue",
+            door.name
+        );
+    }
+    // The pairing is what folds them: two doors, one catalogue, one row on the card.
+    assert_eq!(catalogue("deepseek"), catalogue("deepseek-anthropic"));
+    assert_ne!(catalogue("deepseek"), catalogue("glm"));
+}
+
 /// The picker's greening comes from a row, and the row names the presets this box can actually
 /// authenticate. The assertion is the agreement, not a list: a row that disagreed with the
 /// daemon's own check would green exactly the rows that fail at the first turn.
@@ -1334,11 +1373,14 @@ fn settings_rows_lead_with_what_changes_now_and_never_repeat_a_key() {
     assert_eq!(rows[0].key, "mode");
     assert_eq!(rows[0].editable, "/mode NAME");
     assert_eq!(rows[0].source, "project store (modes.tsv)");
-    // The changeable rows lead, and the assertion is that rather than a position: `model` joined
-    // them and shifted `supervise` down, which is the list doing its job and not a regression.
-    // Indexing by number made adding a row look like breaking one. Four because the model card's
-    // facts row is the model row's own business and belongs beside it.
-    let leading: Vec<&str> = rows.iter().take(4).map(|r| r.key.as_str()).collect();
+    // The changeable rows lead, counted without the model card's own `models.*` rows: those are
+    // the model row's business and sit beside it, however many the card grows.
+    let leading: Vec<&str> = rows
+        .iter()
+        .map(|r| r.key.as_str())
+        .filter(|k| !k.starts_with("models."))
+        .take(3)
+        .collect();
     assert!(leading.contains(&"supervise"), "{leading:?}");
     assert!(leading.contains(&"model"), "{leading:?}");
     let sup = rows

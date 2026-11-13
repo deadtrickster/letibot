@@ -986,6 +986,17 @@ impl Harness {
             choices: Vec::new(),
             tools: Vec::new(),
         });
+        // The models the store's sessions were last switched to, so the card opens on what this box
+        // has been using. Here and not in `Config::settings`: a config knows the box's FILES, and
+        // which models were used is a fact of the store.
+        rows.push(letibot_sessionlog::protocol::SettingRow {
+            key: letibot_sessionlog::protocol::MODEL_RECENT_KEY.into(),
+            value: self.recent_models().join(","),
+            source: "the store's recorded provider choices".into(),
+            editable: String::new(),
+            choices: Vec::new(),
+            tools: Vec::new(),
+        });
         self.session_registry
             .set_settings(&self.cfg.session_id, rows);
     }

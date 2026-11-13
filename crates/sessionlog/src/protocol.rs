@@ -44,6 +44,15 @@ pub const MODEL_KEYLESS_KEY: &str = "models.keyless";
 /// `choices` have to stay typeable and these are not things a person types.
 pub const MODEL_FACTS_KEY: &str = "models.facts";
 
+/// One `<door> <catalogue>` per preset: two doors that serve one catalogue (`deepseek` and
+/// `deepseek-anthropic`) carry the same models, and a card that drew both would list each of them
+/// twice. Space-separated, one choice each, in the preset table's own order.
+pub const MODEL_DOORS_KEY: &str = "models.doors";
+
+/// The switch names the store's sessions were last moved to, newest activity first, comma-joined
+/// and at most five: what the card draws above the providers. Only the daemon can read it.
+pub const MODEL_RECENT_KEY: &str = "models.recent";
+
 /// One door-tool as the daemon describes it to a head: which field a bare line goes into, and
 /// what that field is, so a head can turn `/web_search` into a call.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

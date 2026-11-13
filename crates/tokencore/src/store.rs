@@ -3521,6 +3521,35 @@ impl Store {
         Ok(())
     }
 
+    /// The distinct providers this box's sessions were last switched to, most recently used first.
+    /// A session carries only its LATEST switch, so this is what the store can honestly say about
+    /// recency: the models of the sessions used most recently, then older ones, each listed once.
+    pub fn recent_models(&self, limit: usize) -> Result<Vec<String>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let filter = archived_filter(
+            " WHERE s.provider_choice IS NOT NULL AND s.provider_choice <> ''",
+            Archived::Any,
+        );
+        let mut rows = self.sessions_matching(&filter, &[])?;
+        rows.sort_by_key(|r| std::cmp::Reverse(r.last_activity_ms));
+        let mut out: Vec<String> = Vec::with_capacity(limit);
+        for row in rows {
+            let Some(choice) = row.provider_choice.filter(|c| !c.is_empty()) else {
+                continue;
+            };
+            if out.contains(&choice) {
+                continue;
+            }
+            out.push(choice);
+            if out.len() == limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
     /// The session's todo list, in the order the model last wrote it. Empty covers both "never
     /// wrote one" and "cleared it": from outside they are the same state.
     pub fn todos(&self, session_id: &str) -> Result<Vec<TodoItem>> {

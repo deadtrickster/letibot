@@ -3,6 +3,10 @@
 //! before it.
 use super::*;
 
+/// How many models the card's recent group holds: enough to reach the last few choices, few enough
+/// that the group never costs the providers their room on a 45-line screen.
+pub(crate) const RECENT_MODELS: usize = 5;
+
 /// The daemon's own server, exactly as this session's daemon was started against it: what `/models local` returns
 /// to. Captured at open, before any switch can move anything, since a switch overwrites the fields this holds. The
 /// vocabulary and wiring are the `Arc`s `Parts` opened with, so a return re-seats that pair.
@@ -927,6 +931,49 @@ impl Harness {
                 None => pc.name.clone(),
             },
         }
+    }
+
+    /// The models this box's sessions were last switched to, newest first, at most
+    /// [`RECENT_MODELS`] - the card's own group above the providers. The row the store keeps is a
+    /// session's LATEST choice and can be a bare preset, so each is resolved to a switch name here
+    /// rather than by every head that reads the row.
+    pub fn recent_models(&self) -> Vec<String> {
+        let Some(store) = &self.store else {
+            return Vec::new();
+        };
+        // A few more than the card draws: the current model is dropped below, and two sessions on
+        // one model collapse to one line.
+        let Ok(stored) = store.recent_models(RECENT_MODELS + 3) else {
+            return Vec::new();
+        };
+        let now = self.model_name();
+        let mut out: Vec<String> = Vec::new();
+        // Read once, and only if a stored choice is a bare preset: most boxes store `preset/model`.
+        let mut catalogue: Option<std::sync::Arc<letibot_provider::catalogue::Catalogue>> = None;
+        for choice in stored {
+            let name = match choice.split_once('/') {
+                Some((_, model)) if !model.is_empty() => choice.clone(),
+                // `preset/` names no model; the card would draw a switch the daemon refuses.
+                Some(_) => continue,
+                None if choice == "local" => choice.clone(),
+                None => match letibot_provider::Preset::parse(&choice) {
+                    Ok(p) => {
+                        let cat = catalogue
+                            .get_or_insert_with(letibot_provider::catalogue::Catalogue::load);
+                        format!("{}/{}", p.name, p.default_model(cat))
+                    }
+                    Err(_) => continue,
+                },
+            };
+            if name == now || out.contains(&name) {
+                continue;
+            }
+            out.push(name);
+            if out.len() == RECENT_MODELS {
+                break;
+            }
+        }
+        out
     }
 
     /// The session is over: let the backend release what it holds and say where

@@ -2039,6 +2039,57 @@ fn the_provider_choice_round_trips_with_its_four_spellings() {
     assert!(s.set_provider_choice("no-such", Some("deepseek")).is_err());
 }
 
+/// The models a box last switched to, as the card's recent group reads them: one row per model,
+/// the session used most recently first, and never more than the caller asked for. A session that
+/// never chose contributes nothing, which is not the same as choosing `local`.
+#[test]
+fn the_recent_models_are_the_last_switches_newest_first_and_once_each() {
+    let s = store();
+    let prefix_id = s.put_stable_prefix(&prefix()).unwrap();
+    let switch = |id: &str, choice: Option<&str>| {
+        s.put_session(&SessionRecord {
+            id: id.into(),
+            title: Some(id.into()),
+            model_id: "qwen".into(),
+            dialect_sha: prefix_id.clone(),
+            workspace_root: "/w".into(),
+            owner: "deadtrickster".into(),
+            role: None,
+            approvers: vec!["deadtrickster".into()],
+            parent_session_id: None,
+        })
+        .unwrap();
+        if let Some(c) = choice {
+            s.set_provider_choice(id, Some(c)).unwrap();
+        }
+        // A session's activity is its newest row, and these have none: the fallback is the moment it
+        // was written, so two sessions written twice in one millisecond tie - the sleep spaces them.
+        std::thread::sleep(std::time::Duration::from_millis(3));
+    };
+    switch("recent-a", Some("deepseek/deepseek-flash"));
+    switch("recent-b", Some("glm/glm-5.3"));
+    // The same model again, and a session that never chose.
+    switch("recent-c", Some("glm/glm-5.3"));
+    switch("recent-d", None);
+    switch("recent-e", Some("local"));
+
+    assert_eq!(
+        s.recent_models(10).unwrap(),
+        vec![
+            "local".to_string(),
+            "glm/glm-5.3".to_string(),
+            "deepseek/deepseek-flash".to_string()
+        ],
+        "the newest switch first, one row per model"
+    );
+    assert_eq!(
+        s.recent_models(2).unwrap(),
+        vec!["local".to_string(), "glm/glm-5.3".to_string()],
+        "the list is capped at what was asked for"
+    );
+    assert!(s.recent_models(0).unwrap().is_empty());
+}
+
 /// A v12 store gains the column as NULL, which is exactly "never switched": a session recorded
 /// before this column existed resumes on the daemon's own default. Walked back from a current store,
 /// so the migration is exercised against rows that already exist rather than an empty file.

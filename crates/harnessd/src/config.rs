@@ -2170,6 +2170,23 @@ impl Config {
                 ),
                 &facts.iter().map(String::as_str).collect::<Vec<_>>(),
             ));
+            // Which doors serve the same models. A card drawing the choices above would list
+            // every model of `deepseek` again under `deepseek-anthropic`, since both carry the
+            // `deepseek` catalogue: the pairing is the daemon's to publish, because a preset's
+            // catalogue id is a fact of the preset table and not of a name.
+            let doors: Vec<String> = letibot_provider::presets::ALL
+                .iter()
+                .map(|p| format!("{} {}", p.name, p.catalogue_id))
+                .collect();
+            out.push(choices(
+                row(
+                    letibot_sessionlog::protocol::MODEL_DOORS_KEY,
+                    "one door per preset, with the catalogue it serves".to_string(),
+                    "the preset table",
+                    "",
+                ),
+                &doors.iter().map(String::as_str).collect::<Vec<_>>(),
+            ));
         }
         out.push(choices(
             row(
