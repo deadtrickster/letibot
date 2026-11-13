@@ -246,6 +246,24 @@ pub fn resolve(
             url,
         });
     }
+    // A sibling door - same key variable, same host - holds the same account's key: one plan
+    // served over two protocols must not ask twice. A different host is another region's key.
+    if let Some((name, k)) = crate::presets::ALL
+        .iter()
+        .filter(|p| p.name != preset.name && p.key_env == preset.key_env)
+        .filter(|p| host_of(p.url) == host_of(preset.url))
+        .find_map(|p| {
+            let k = parsed.as_ref()?.sections.get(p.name)?.get("key")?;
+            (!k.is_empty()).then(|| (p.name, k.clone()))
+        })
+    {
+        return Ok(Credentials {
+            key: k,
+            from: format!("[{name}] in {}", file.display()),
+            prices,
+            url,
+        });
+    }
     if let Some(k) = opencode_key(preset.name) {
         return Ok(Credentials {
             key: k,
@@ -259,6 +277,12 @@ pub fn resolve(
         env: preset.key_env.into(),
         file,
     })
+}
+
+/// The host part of a door's URL, for telling one region's endpoint from another's.
+fn host_of(url: &str) -> &str {
+    let rest = url.split_once("://").map_or(url, |(_, r)| r);
+    rest.split('/').next().unwrap_or(rest)
 }
 
 fn opencode_auth_file() -> PathBuf {
@@ -960,6 +984,25 @@ mod tests {
             .unwrap_err()
             .to_string();
         assert!(e.contains("$XAI_API_KEY") && e.contains("[grok]"), "{e}");
+    }
+
+    /// One plan over two protocols asks for its key once: a key filed under the global chat door
+    /// serves the global Messages door, and never the China host's, which is another region's key.
+    #[test]
+    fn a_sibling_door_on_the_same_host_shares_the_key() {
+        if std::env::var_os("KIMI_API_KEY").is_some()
+            || std::env::var_os("KIMI_CODE_API_KEY").is_some()
+        {
+            return;
+        }
+        let f = tmp_providers("sibling_door", "[kimi-code-global]\nkey = \"sk-kimi\"\n");
+        let c = resolve(&crate::presets::KIMI_CODING, None, Some(&f)).unwrap();
+        assert_eq!(c.key, "sk-kimi");
+        assert!(c.from.contains("[kimi-code-global]"), "{}", c.from);
+        assert!(
+            resolve(&crate::presets::KIMI_CODE, None, Some(&f)).is_err(),
+            "the China host is another region's key"
+        );
     }
 
     /// A file the parser could not read is a fault, not an absence: a daemon that comes up
