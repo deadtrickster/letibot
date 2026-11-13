@@ -16,6 +16,13 @@ use serde_json::json;
 
 use fake_remote::Rig;
 
+/// One test at a time. The ssh slots are per host name and per process, every rig names `fake1`,
+/// and on a loaded box the other tests' calls fill them past the bound a fanout waits for one.
+fn serial() -> std::sync::MutexGuard<'static, ()> {
+    static ONE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    ONE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A fanout wired to one rig.
 fn tool(rig: &Rig) -> Fanout {
     Fanout::new()
@@ -62,6 +69,7 @@ fn rows(payload: &str) -> Vec<&str> {
 /// The same work on three hosts, and three rows that all say it worked.
 #[test]
 fn every_host_runs_and_answers_a_row() {
+    let _one = serial();
     let rig = Rig::new("all-ok", &["fake1", "fake2", "fake3"]);
     let answer = tool(&rig).answer(
         &json!({"hosts": ["fake1", "fake2", "fake3"], "command": "echo one; echo two"}),
@@ -96,6 +104,7 @@ fn every_host_runs_and_answers_a_row() {
 /// exit is a row's business, not the call's.
 #[test]
 fn one_failing_host_does_not_swallow_the_others() {
+    let _one = serial();
     let rig = Rig::new("one-fails", &["fake1", "fake2", "fake3"]);
     let answer = tool(&rig).answer(
         &json!({"hosts": {
@@ -123,6 +132,7 @@ fn one_failing_host_does_not_swallow_the_others() {
 /// not a failure of the whole.
 #[test]
 fn an_unknown_host_is_a_row_with_the_names_the_file_has() {
+    let _one = serial();
     let rig = Rig::new("unknown", &["fake1"]);
     let answer = tool(&rig).answer(
         &json!({"hosts": ["fake1", "nope"], "command": "true"}),
@@ -145,6 +155,7 @@ fn an_unknown_host_is_a_row_with_the_names_the_file_has() {
 /// carries that sentence rather than the fanout failing.
 #[test]
 fn an_unreachable_host_is_a_row_and_the_rest_still_report() {
+    let _one = serial();
     let mut rig = Rig::new("unreachable", &["fake1"]);
     rig.unreachable();
     let answer = tool(&rig).answer(
@@ -167,6 +178,7 @@ fn an_unreachable_host_is_a_row_and_the_rest_still_report() {
 /// third fate with the reason.
 #[test]
 fn the_deadline_stops_a_slow_host_and_its_row_says_stopped() {
+    let _one = serial();
     let rig = Rig::new("deadline", &["fake1", "fake2"]);
     // The slow branch outlives any wait this test could make, so "the call returned" and "it
     // returned before that branch could end" are one fact, and the row is the only thing that can
@@ -233,6 +245,7 @@ fn pid_command(pid: u32) -> Option<String> {
 /// reads the plan from.
 #[test]
 fn the_call_is_one_exec_that_names_every_host() {
+    let _one = serial();
     let schema = letibot_tools::runtime::Tool::schema(&Fanout::new());
     assert_eq!(schema.name, "fanout");
     assert_eq!(schema.access, letibot_tools::schema::Access::Exec);
@@ -250,6 +263,7 @@ fn the_call_is_one_exec_that_names_every_host() {
 /// on.
 #[test]
 fn every_started_branch_is_written_down_with_its_host() {
+    let _one = serial();
     #[derive(Default)]
     struct Book {
         started: std::sync::Mutex<Vec<ProcessNote>>,
@@ -310,6 +324,7 @@ fn every_started_branch_is_written_down_with_its_host() {
 /// A book that writes nothing is the default, and says so rather than pretending.
 #[test]
 fn a_run_with_no_daemon_writes_no_records_and_still_works() {
+    let _one = serial();
     let rig = Rig::new("nobook", &["fake1"]);
     let answer = Fanout::new()
         .with_file(rig.hosts_file())
@@ -377,6 +392,7 @@ fn journal(host: &HostProcesses, handle: &str) -> String {
 /// table, which is all `jobwatch` needs to settle it.
 #[test]
 fn a_background_fanout_answers_one_handle_at_once() {
+    let _one = serial();
     let rig = Rig::new("bg-at-once", &["fake1", "fake2"]);
     let host = session_host("at-once");
     // The branches outlive any wait this test could make, so "the answer came back while they
@@ -420,6 +436,7 @@ fn a_background_fanout_answers_one_handle_at_once() {
 /// `started` line for every branch still running.
 #[test]
 fn job_output_mid_run_names_the_rows_that_ended_and_the_ones_still_running() {
+    let _one = serial();
     let rig = Rig::new("bg-progress", &["fake1", "fake2"]);
     let host = session_host("progress");
     let answer = tool(&rig).answer(
@@ -460,6 +477,7 @@ fn job_output_mid_run_names_the_rows_that_ended_and_the_ones_still_running() {
 /// `stopped`: nothing about that ending is the command's own.
 #[test]
 fn job_kill_stops_every_branch_and_every_record_says_stopped() {
+    let _one = serial();
     #[derive(Default)]
     struct Book {
         ended: std::sync::Mutex<Vec<(String, String)>>,
@@ -549,6 +567,7 @@ fn job_kill_stops_every_branch_and_every_record_says_stopped() {
 /// what `jobwatch` delivers to the model.
 #[test]
 fn the_settlement_is_the_per_host_table_including_a_host_that_could_not_be_reached() {
+    let _one = serial();
     let mut rig = Rig::new("bg-settle", &["fake1"]);
     rig.unreachable();
     let host = session_host("settle");
@@ -593,6 +612,7 @@ fn the_settlement_is_the_per_host_table_including_a_host_that_could_not_be_reach
 /// nowhere, and branches nobody can reach are worse than a refusal.
 #[test]
 fn a_background_fanout_with_no_process_host_is_refused_and_starts_nothing() {
+    let _one = serial();
     let rig = Rig::new("bg-nohost", &["fake1"]);
     let answer = tool(&rig).answer(
         &json!({"hosts": ["fake1"], "command": "sleep 30", "background": true}),
