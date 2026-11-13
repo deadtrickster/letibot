@@ -28,17 +28,28 @@ fn scratch(tag: &str) -> PathBuf {
 
 const OWNER: &str = "s-1794509750373521593";
 const REPO: &str = "/w/a-package";
-const RUN: &str = "firecode-20261113-101010-4242";
+
+/// A run id of each fixture's own. The tests share `/proc`, and a pass reaps every firecracker
+/// whose `--id` names a run it has a record of, so a shared id lets one test's pass take another's VM.
+fn run_id() -> String {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(4242);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    format!("firecode-20261113-101010-{n}")
+}
 
 /// A box in a directory: the split store, the owner root, firecode's records, the cache and the
 /// runtime dir.
 struct Fixture {
     root: PathBuf,
+    run: String,
 }
 
 impl Fixture {
     fn new(tag: &str) -> Fixture {
-        let f = Fixture { root: scratch(tag) };
+        let f = Fixture {
+            root: scratch(tag),
+            run: run_id(),
+        };
         // A checkout's layout, which is what firecode's own `runs_dir` reads: `<dir>/bin/<cli>`
         // with `<dir>/runs/` beside it.
         for d in ["home", "run", "cache", "bin", "runs"] {
@@ -102,7 +113,7 @@ impl Fixture {
         // firecode's own records: a copy named for the owner under the cache, and the run's files.
         let cache = self.cache();
         std::fs::create_dir_all(cache.join(OWNER)).expect("the booted copy");
-        let run = self.at("runs").join(RUN);
+        let run = self.at("runs").join(&self.run);
         std::fs::create_dir_all(&run).expect("the run dir");
         std::fs::write(run.join("project"), cache.join(OWNER).display().to_string())
             .expect("the run's project");
@@ -115,8 +126,8 @@ impl Fixture {
         self.at("cache/letibot/firecode")
     }
 
-    /// A stand-in firecracker: a script NAMED `firecracker`, run with `--id RUN`, that ignores
-    /// SIGTERM the way a jailed VM does.
+    /// A stand-in firecracker: a script NAMED `firecracker`, run with `--id` and the fixture's run,
+    /// that ignores SIGTERM the way a jailed VM does.
     fn firecracker(&self) -> std::process::Child {
         let script = self.at("bin/firecracker");
         let body = "#!/bin/sh\n[ \"$1\" = \"--id\" ] || exit 0\ntrap '' TERM\nwhile :; do sleep 0.2; done\n";
@@ -127,7 +138,7 @@ impl Fixture {
                 .expect("its mode");
         }
         let child = std::process::Command::new(&script)
-            .args(["--id", RUN])
+            .args(["--id", self.run.as_str()])
             .spawn()
             .expect("the stand-in firecracker starts");
         let began = Instant::now();
@@ -224,6 +235,8 @@ fn a_dead_daemons_job_and_vm_are_ended_by_one_gc_now() {
     // rows are per project, and a pass that read only the index would find no job at all.
     let (ok, out, err) = f.run(&["gc", OWNER, "--now"]);
     let died = wait_dead(job_pid);
+    // Read before the fixture's own kill below, which would end the VM whatever the pass did.
+    let vm_down = wait_dead(fc.id());
     let _ = fc.kill();
     let _ = fc.wait();
     assert!(ok, "`letibot gc --now` failed. stderr:\n{err}");
@@ -231,10 +244,11 @@ fn a_dead_daemons_job_and_vm_are_ended_by_one_gc_now() {
         died,
         "the job is still running after the pass:\n{out}\n{err}"
     );
+    assert!(vm_down, "the VM is still up:\n{out}\n{err}");
     assert!(
         letibot_tools::firecode::held::firecrackers(Path::new("/proc"))
             .iter()
-            .all(|(run, _)| run != RUN),
+            .all(|(run, _)| *run != f.run),
         "the VM is still up:\n{out}\n{err}"
     );
     assert_eq!(f.owner_state(), OwnerState::Closed, "{out}\n{err}");
@@ -289,7 +303,7 @@ fn a_hold_stops_the_pass_and_says_why() {
     assert!(
         letibot_tools::firecode::held::firecrackers(Path::new("/proc"))
             .iter()
-            .any(|(run, _)| run == RUN),
+            .any(|(run, _)| *run == f.run),
         "a held owner's VM was brought down:\n{out}"
     );
 
