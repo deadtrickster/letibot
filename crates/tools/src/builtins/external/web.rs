@@ -658,9 +658,9 @@ fn render_page(ctx: &mut InvokeCtx<'_>, req: &FetchRequest, page: FetchedPage) -
         notes.push(n);
     }
 
+    // No URL here: the quarantine's `source:` line names it, and travels with the file.
     let mut body = format!(
-        "fetched {} — {} {}, {} bytes on the wire, rendered as {}\n",
-        page.final_url,
+        "fetched — {} {}, {} bytes on the wire, rendered as {}\n",
         page.status,
         page.content_type,
         page.bytes,

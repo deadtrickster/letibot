@@ -289,6 +289,13 @@ fn a_fetched_page_arrives_inside_an_untrusted_envelope() {
         r.payload
     );
     assert!(r.payload.contains("append-only"), "{}", r.payload);
+    // The address once, as the quarantine's source.
+    assert_eq!(
+        r.payload.matches("https://example.invalid/x").count(),
+        1,
+        "{}",
+        r.payload
+    );
 }
 
 #[test]
