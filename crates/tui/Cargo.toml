@@ -45,7 +45,7 @@ leticode-config.workspace = true
 # **And the terminal** (`rano::term`): raw mode, the row-diffing painter, the input decoder,
 # the kitty graphics and OSC 8 protocols. rano reads the bytes into what was *pressed*; what a
 # key *means* stays here, in `app::key_of`.
-rano = { git = "https://github.com/deadtrickster/rano", rev = "0e429b78c725ced2ccabb99e7a970a6def15f0e0" }
+rano = { git = "https://github.com/deadtrickster/rano", rev = "cafb70211145e97dcd75096625c6ae6464fc02ec" }
 # **The layer stack, the plugin SDK and the layers this binary carries** — for ONE pane: the
 # session list, whose policy is a plugin now (`docs/plugins-plan.md` §7 step 10,
 # `src/app/sessions_pane.rs`). The stack carries no engine, the SDK is serde, and `builtins` is the
