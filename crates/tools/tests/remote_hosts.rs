@@ -1348,12 +1348,14 @@ fn a_wedged_master_fails_a_big_write_at_its_deadline_and_the_next_call_is_fresh(
 /// placement's live call: every placement to a host shares the daemon's one master.
 #[test]
 fn a_timed_out_call_does_not_end_the_master_under_another_placements_live_call() {
-    let bound = Duration::from_secs(2);
+    // The live call must start before the wedged one times out and end after it, with seconds
+    // of slack each way: a loaded box spends some of them on ssh.
+    let bound = Duration::from_secs(6);
     let fake = Fake::new(
         "shared-master",
         "case \"$last\" in\n\
            *wedgeme*) sleep 30;;\n\
-           *slowok*) sleep 1.5;;\n\
+           *slowok*) sleep 4;;\n\
          esac\n\
          exec bash -lc \"$last\"",
     );
@@ -1366,8 +1368,8 @@ fn a_timed_out_call_does_not_end_the_master_under_another_placements_live_call()
 
     std::thread::scope(|s| {
         let wedged = s.spawn(|| a.read("wedgeme.txt"));
-        std::thread::sleep(Duration::from_secs(1));
-        // Starts before the first call times out (2 s) and ends after it.
+        std::thread::sleep(Duration::from_secs(3));
+        // Starts before the first call times out (6 s) and ends after it.
         let live = b.read("slowok.txt");
         assert_eq!(
             live.expect("the other placement's call was not killed with the master"),
