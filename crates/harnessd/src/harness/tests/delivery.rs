@@ -1178,7 +1178,7 @@ fn three_held_passing_lines_are_one_digest_turn_after_the_quiet_window() {
     assert!(matches!(registry.next_work(), Some(Work::Open(_))));
     let w = JobWatchers::watching_tasks(&hub, Some(Arc::clone(registry.bell())));
     let d = room_deliveries(&w, &dir, Duration::from_secs(600), "s-r203-digest");
-    crate::room::wake::forget("s-r203-digest");
+    let _ = crate::room::wake::hold("s-r203-digest");
 
     let quiet = Duration::from_millis(120);
     for (seq, said) in [(1u64, "#1 the gate is red"), (2, "#2 a peer speaks")] {
@@ -1275,5 +1275,5 @@ fn three_held_passing_lines_are_one_digest_turn_after_the_quiet_window() {
     );
     d.read(&now);
     assert_eq!(crate::room::wake::waiting("s-r203-digest"), 0, "one take");
-    crate::room::wake::forget("s-r203-digest");
+    let _ = crate::room::wake::hold("s-r203-digest");
 }

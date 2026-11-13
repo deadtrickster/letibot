@@ -854,7 +854,7 @@ mod tests {
         push_chat_in(s, "host", 7, Reach::Passing, "a".into(), true);
         push_chat_in(s, "dm", 7, Reach::Passing, "b".into(), true);
         assert_eq!(waiting(s), 3, "the same seq in two rooms is two messages");
-        forget(s);
+        discard(s);
     }
 
     /// The idle digest's clock: nothing before the window is out, once when it is, and never twice
@@ -878,7 +878,7 @@ mod tests {
             !due_digest(s, quiet, now + quiet / 2),
             "half a window later is not a second ring"
         );
-        forget(s);
+        discard(s);
     }
 
     /// The map is bounded too, and the session evicted is the one pushed longest ago - which is the
