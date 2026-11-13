@@ -1012,11 +1012,26 @@ pub enum PromptReading {
     Unreadable,
 }
 
-/// One cited range - what [`SessionEvent::Citations`] carries for each empty fence labelled
-/// `path:start-end` (or `path:line`) in a reply, in the order they appear.
+/// What a line-addressed fence is FOR, which is its label's first word: a bare range shows the
+/// lines, `note` says something about them and `suggest` hands the editor a replacement.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CitationKind {
+    /// ` ```path:10-14``` ` - the model pointed at the lines and wants them shown.
+    #[default]
+    Cite,
+    /// `note path:10-14` - the body is a note about those lines, its severity first.
+    Note,
+    /// `suggest path:10-14` - the body replaces those lines, if the operator says so.
+    Suggest,
+}
+
+/// One cited range - what [`SessionEvent::Citations`] carries for each line-addressed fence in a
+/// reply, in the order they appear.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Citation {
-    /// The fence's label as the model wrote it - what a head matches the fence by.
+    /// The fence's label as the model wrote it, without a `note`/`suggest` prefix: the range
+    /// alone, so a head finds the fence by one spelling whatever the kind.
     pub label: String,
     /// The path as cited, relative to the session's workspace or absolute.
     pub path: String,
@@ -1029,6 +1044,14 @@ pub struct Citation {
     /// past its end. `None` when every cited line was read.
     #[serde(default)]
     pub error: Option<String>,
+    /// A bare range is `Cite`; a head built before this field existed draws the lines, which is
+    /// what a note and a suggestion need too, so the default is the kind that was there.
+    #[serde(default)]
+    pub kind: CitationKind,
+    /// A `note`'s sentence or a `suggest`'s replacement text: what the fence held. Empty for a
+    /// citation, which is an empty fence.
+    #[serde(default)]
+    pub body: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -157,8 +157,14 @@ fn every_frame_is_accounted_for_at_this_version() {
     let _ = event;
     let _ = server;
     assert_eq!(
-        PROTOCOL_VERSION, 71,
-        "the match above was last reconciled with the frame list at 71. 71 added \
+        PROTOCOL_VERSION, 72,
+        "the match above was last reconciled with the frame list at 72. 72 gave \
+             `SessionEvent::Citations`'s `Citation` a `kind` and a `body`: a reply marks lines as well \
+             as citing them (`note path:3-4` with the note inside, `suggest path:3-4` with the \
+             replacement), and an editor draws a mark from it. Both fields are `serde(default)`, so a \
+             version-71 head parses the event - and draws a note as a citation of lines it then never \
+             shows the note beside, which is why the number moves: the bump is what a head reads to \
+             refuse to promise a mark it cannot draw. 71 added \
              `ClientFrame::Prompt.context`, an ADDED, DEFAULTED field that is still a bump, for 50's \
              reason with attachments: what the operator pointed at in the editor is rendered into the \
              conversation by the DAEMON (`harnessd::editor_context`), and a version-70 daemon parses \

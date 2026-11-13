@@ -222,6 +222,17 @@ impl Harness {
         // Only what an editor captured is worth a block: a context with no refs, no open buffers and no
         // ask is a head sending a defaulted field, and a bare sentence about nothing would be noise.
         let workspace = self.cfg.workspace.to_string_lossy().into_owned();
+        if let Some(c) = context {
+            // The unsaved captures are this turn's anchor for a mark the reply makes: the file on
+            // disk has not got the lines the model was shown. Cleared when the turn ends.
+            let held = crate::citations::buffers(c, &workspace);
+            if !held.is_empty() {
+                self.unsaved
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .extend(held);
+            }
+        }
         if let Some(part) = context.and_then(|c| crate::editor_context::part(c, &workspace)) {
             extra.push(part);
         }
@@ -346,6 +357,12 @@ impl Harness {
         // ended it. Whatever the session is waiting on from here is said by the rest of the facts
         // (`delivery`, a job, a monitor, a child, a card) and not by a turn.
         self.prompt_in_flight.store(false, Ordering::SeqCst);
+        // And the buffers this prompt carried anchor no reply from here on: the next reply reads the
+        // disk unless its own prompt said the file was unsaved. A mark is read when its reply lands,
+        // inside the turn, so nothing that lands after this door needs them.
+        if let Ok(mut held) = self.unsaved.lock() {
+            held.clear();
+        }
         // And a turn that ends owes nothing - one that never opened the batch it took hands the
         // results back with `put_back`, and this keeps a take from outliving its turn.
         if let Some(w) = &self.job_watch {
@@ -3256,6 +3273,9 @@ impl Harness {
             // And the same for a stop: the turn's ending reads it, and a `HubSteering` built per
             // round would report a round's stop as nothing at all.
             stopped: self.stopped.clone(),
+            // And the unsaved buffers this prompt carried, for `held`'s reason: a mark the reply
+            // makes is anchored to them, and the round that reads them is not the one that took them.
+            unsaved: self.unsaved.clone(),
             // And the board, so the operator's answer lands mid-turn. See the `AnswerTodo` arm.
             todos: Some(self.todos.clone()),
             // And this session's own parent, so a message's sentence says which way the edge
@@ -3555,8 +3575,9 @@ impl Harness {
     }
 
     /// The lines a reply cites, published after its row: the stored snapshot when there is one, since a reply
-    /// restored or carried by a fork shows what it cited when it was written, and otherwise the file as it is now.
-    /// Silent for a row that cites nothing.
+    /// restored or carried by a fork shows what it cited when it was written, and otherwise the file as it is now -
+    /// or the unsaved buffer this turn's prompt carried, which is what the model was reading. Silent for a row
+    /// that cites nothing.
     pub(crate) fn publish_citations(&self, item_id: &str, item: &TranscriptItem) {
         let TranscriptItem::Assistant { text, .. } = item else {
             return;
@@ -3577,9 +3598,16 @@ impl Harness {
             None => {
                 let backend = &self.runtime.backend;
                 let read = |p: &str| backend.read(p).map_err(|e| e.to_string());
+                // The prompt's own captures, taken when it was submitted: a mark on an article
+                // nobody has saved lands on the buffer's lines, not on the file's stale ones.
+                let held = self
+                    .unsaved
+                    .lock()
+                    .map(|h| h.clone())
+                    .unwrap_or_else(|e| e.into_inner().clone());
                 let fresh: Vec<letibot_sessionlog::Citation> = cited
                     .iter()
-                    .map(|c| crate::citations::snapshot(c, read))
+                    .map(|c| crate::citations::snapshot(c, &held, read))
                     .collect();
                 if let Some(s) = self.store.as_ref()
                     && let Ok(json) = serde_json::to_string(&fresh)

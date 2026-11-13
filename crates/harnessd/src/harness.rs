@@ -351,6 +351,11 @@ pub struct Harness {
     /// Whether the turn in flight was stopped by an interrupt, shared with every `HubSteering` for
     /// `handed_back`'s reason and read once, when the turn ends: a stopped turn rings no wake.
     stopped: Arc<AtomicBool>,
+    /// The unsaved buffers the prompt in flight carried, shared with every `HubSteering` because a
+    /// prompt typed into a running turn carries them too. A mark this turn's reply makes is
+    /// anchored to this text - the file on disk has not got the lines the model was shown - and it
+    /// is cleared when the turn ends, so a later reply is read from the disk again.
+    unsaved: Arc<Mutex<Vec<crate::citations::Buffer>>>,
     /// This session's monitors, when the backend can start processes.
     monitors: Option<Arc<Monitors>>,
     /// This session's connection to the box's room, when there is a coordinator and this session may

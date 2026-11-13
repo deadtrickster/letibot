@@ -43,6 +43,8 @@ fn a_cited_range_shows_the_files_lines_with_its_numbers_and_a_line_clicks_to_its
                     "}".into(),
                 ],
                 error: None,
+                kind: letibot_sessionlog::CitationKind::Cite,
+                body: String::new(),
             }],
         },
     )));

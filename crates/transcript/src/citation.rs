@@ -15,6 +15,11 @@
 //! ```flow/connectors/postgres/pgdump_schema.go:242-248```
 //! ````
 //!
+//! That fence can also MARK the lines: `note path:3-4` with a sentence inside it, or
+//! `suggest path:3-4` with the replacement inside it. Same label, same range rule, and the body is
+//! the block's own lines - which is why [`Fence::body`] exists here too, and why a mark is not a
+//! citation: a citation is an EMPTY fence, a mark has something in it.
+//!
 //! The daemon reads the lines and the head fills the fence, and neither can see the other  -
 //! this module is read by `harnessd::citations` and by `tui::ui::transcript::cite`.
 //! So the two spellings, the label, and where a block ends live here, once, rather than in two
@@ -43,6 +48,8 @@ pub struct Fence<'a> {
     pub empty: bool,
     /// The closing run was found. On the same line, for a one-liner.
     pub closed: bool,
+    /// The opening line's index, so a caller can read what the block holds.
+    pub start: usize,
     /// The block's last line: the closer's, the one-liner's own line, or - for a fence that was
     /// never closed - the last line before the next fence began.
     pub end: usize,
@@ -53,6 +60,21 @@ impl Fence<'_> {
     /// is [`range`]'s question, and whether the daemon sent lines for it is neither's.
     pub fn cites(&self) -> bool {
         self.closed && self.empty
+    }
+
+    /// The block's own lines, without the runs: a `note`'s sentence or a `suggest`'s
+    /// replacement. Empty for a one-liner, which has no room for a body, and for a fence that
+    /// never closed, whose body cannot be told from the next block's.
+    pub fn body(&self, lines: &[&str]) -> Vec<String> {
+        if !self.closed {
+            return Vec::new();
+        }
+        lines
+            .get(self.start + 1..self.end)
+            .unwrap_or(&[])
+            .iter()
+            .map(|l| l.to_string())
+            .collect()
     }
 }
 
@@ -71,6 +93,7 @@ pub fn fence_at<'a>(lines: &[&'a str], i: usize) -> Option<Fence<'a>> {
                 label,
                 empty: true,
                 closed: true,
+                start: i,
                 end: i,
             });
         }
@@ -85,6 +108,7 @@ pub fn fence_at<'a>(lines: &[&'a str], i: usize) -> Option<Fence<'a>> {
                 label,
                 empty,
                 closed: true,
+                start: i,
                 end: j,
             });
         }
@@ -94,6 +118,7 @@ pub fn fence_at<'a>(lines: &[&'a str], i: usize) -> Option<Fence<'a>> {
                 label,
                 empty,
                 closed: false,
+                start: i,
                 end: j - 1,
             });
         }
@@ -106,6 +131,7 @@ pub fn fence_at<'a>(lines: &[&'a str], i: usize) -> Option<Fence<'a>> {
         label,
         empty,
         closed: false,
+        start: i,
         end: lines.len() - 1,
     })
 }
@@ -144,6 +170,35 @@ pub fn range(label: &str) -> Option<Range<'_>> {
         start,
         end,
     })
+}
+
+/// What a marking fence does with the lines it names, which is the word before the range: the
+/// same range a citation has, and a body that a citation's empty block cannot carry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MarkKind {
+    /// `note path:3-4` - the body is a sentence about those lines.
+    Note,
+    /// `suggest path:3-4` - the body replaces those lines.
+    Suggest,
+}
+
+impl MarkKind {
+    /// The kind a label's first word names, or `None` for anything else.
+    pub fn of(word: &str) -> Option<MarkKind> {
+        match word {
+            "note" => Some(MarkKind::Note),
+            "suggest" => Some(MarkKind::Suggest),
+            _ => None,
+        }
+    }
+}
+
+/// The range a MARKING fence's label names: `note path:3-4` or `suggest path:3-4`, whose body is
+/// the note or the replacement. `None` for an ordinary fence, and for a bare range - that is a
+/// citation, and [`range`]'s.
+pub fn mark(label: &str) -> Option<(MarkKind, Range<'_>)> {
+    let (word, rest) = label.trim().split_once(char::is_whitespace)?;
+    Some((MarkKind::of(word)?, range(rest)?))
 }
 
 #[cfg(test)]
@@ -260,5 +315,42 @@ mod tests {
         for not in ["rust", "", "rust:2", "a.go:9-3", "a.go:0", "a.go:x-y", ":4"] {
             assert_eq!(range(not), None, "{not:?}");
         }
+    }
+
+    /// A mark is the range with a word in front of it, and the body is what the block holds - the
+    /// two halves of a fence that says something about the lines instead of only showing them.
+    #[test]
+    fn a_mark_is_a_word_and_a_range_and_its_body_is_the_blocks_own_lines() {
+        let (kind, r) = mark("note src/main.rs:3-4 write the reason: it is not obvious").unwrap();
+        assert_eq!(kind, MarkKind::Note);
+        assert_eq!((r.path, r.start, r.end), ("src/main.rs", 3, 4));
+        assert_eq!(r.label, "src/main.rs:3-4", "the label a head matches by");
+        assert_eq!(mark("suggest a/b.go:9").unwrap().0, MarkKind::Suggest);
+        // A bare range is a citation, not a mark; and an ordinary fence is neither.
+        for not in ["a/b.go:3-4", "rust", "note", "note rust", "noted a/b.go:3"] {
+            assert_eq!(mark(not), None, "{not:?}");
+        }
+
+        let text = "```suggest a/b.go:2-3\nlet x = 2;\nlet y = 3;\n```\n";
+        let lines: Vec<&str> = text.lines().collect();
+        let f = citation_in(&lines, 0);
+        assert!(!f.cites(), "a mark has a body, so it is no citation");
+        assert_eq!(f.body(&lines), vec!["let x = 2;", "let y = 3;"]);
+        assert_eq!(
+            mark(f.label).unwrap().1.path,
+            "a/b.go",
+            "the body's own text does not change the label"
+        );
+
+        // A one-liner has no room for a body, and an unclosed fence's body cannot be told from
+        // the next block's: both are empty rather than a guess.
+        let one: Vec<&str> = "```note a/b.go:2```\n".lines().collect();
+        assert!(citation_in(&one, 0).body(&one).is_empty());
+        let open: Vec<&str> = "```note a/b.go:2\nnever closed\n".lines().collect();
+        assert!(citation_in(&open, 0).body(&open).is_empty());
+    }
+
+    fn citation_in<'a>(lines: &'a [&'a str], i: usize) -> Fence<'a> {
+        fence_at(lines, i).expect("a fence here")
     }
 }

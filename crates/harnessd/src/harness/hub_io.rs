@@ -131,6 +131,9 @@ pub struct HubSteering {
     /// An interrupt this turn took, shared with the harness the way `held` is: what the turn's
     /// ending is told, so a stop does not ring a wake of its own a moment after the operator's.
     pub(crate) stopped: Arc<AtomicBool>,
+    /// The unsaved buffers a prompt carried, shared with the harness for `held`'s reason: a prompt
+    /// typed into a running turn carries them, and a mark its reply makes is anchored to that text.
+    pub(crate) unsaved: Arc<Mutex<Vec<crate::citations::Buffer>>>,
     /// This session's board, for the one command a running turn applies to it: the
     /// operator's answer to a row's question (`CommandKind::AnswerTodo`), which reaches the model
     /// at the next step boundary rather than after the turn. `None` in a test with no board.
@@ -168,6 +171,7 @@ impl HubSteering {
             subagents: None,
             held: Default::default(),
             stopped: Default::default(),
+            unsaved: Default::default(),
             todos: None,
             parent: None,
             at_boundary: false,
@@ -221,11 +225,19 @@ impl SteeringSource for HubSteering {
                     }
                     // No workspace here, so an editor's paths ride absolute rather than relatively: a
                     // prompt typed into a live round is the one door this struct cannot shorten.
-                    if let Some(part) = context
-                        .as_ref()
-                        .and_then(|c| crate::editor_context::part(c, ""))
-                    {
-                        extra.push(part);
+                    if let Some(c) = context.as_ref() {
+                        // And the unsaved captures it carried are this turn's anchor for a mark its
+                        // reply makes: filled by the same rule as the between-turns door's.
+                        let held = crate::citations::buffers(c, "");
+                        if !held.is_empty() {
+                            self.unsaved
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .extend(held);
+                        }
+                        if let Some(part) = crate::editor_context::part(c, "") {
+                            extra.push(part);
+                        }
                     }
                     Some(SteeringMessage::operator_with(text, extra))
                 }

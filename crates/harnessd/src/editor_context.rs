@@ -34,17 +34,42 @@ pub fn part(context: &EditorContext, workspace: &str) -> Option<UserPart> {
         said.push(open_line(context, workspace));
     }
     if let Some(ask) = &context.ask {
-        // The per-mode reply format is the mark package's (section 5.2): this says only what kind
-        // of answer was asked for, so a preset reaches the model without inventing a format early.
-        let wants = match ask.answer {
-            letibot_sessionlog::protocol::AnswerMode::Chat => "an answer in the conversation",
-            letibot_sessionlog::protocol::AnswerMode::Notes => "a note to keep",
-            letibot_sessionlog::protocol::AnswerMode::Suggest => "a suggested edit",
+        // The per-mode reply format (section 5.2): a note and a suggestion are taught HERE, per ask,
+        // because the system prompt's one sentence is about citations and these are two fences no
+        // prompt carries. Two lines each - what to write, then what the operator does with it.
+        let (wants, how) = match ask.answer {
+            letibot_sessionlog::protocol::AnswerMode::Chat => {
+                ("an answer in the conversation", None)
+            }
+            letibot_sessionlog::protocol::AnswerMode::Notes => (
+                "a note to keep",
+                Some([
+                    "to keep a note, mark the lines: a fence labelled `note path:N-M` - the same \
+                     `path:N-M` a citation names - whose body is the note, starting `ok:`, `warn:` or \
+                     `wrong:` and then one sentence saying why.",
+                    "write one such fence per claim you checked, and nothing else inside it: the \
+                     editor draws the body as the note on exactly those lines.",
+                ]),
+            ),
+            letibot_sessionlog::protocol::AnswerMode::Suggest => (
+                "a suggested edit",
+                Some([
+                    "to suggest an edit, mark the lines: a fence labelled `suggest path:N-M` - the \
+                     same `path:N-M` a citation names - whose body is the replacement for those \
+                     lines, whole lines and nothing else.",
+                    "the editor draws it as a pending hunk over those lines and the operator \
+                     accepts or rejects it, so write what those lines should become.",
+                ]),
+            ),
         };
         said.push(format!(
             "this is a quick ask (`{}`): the operator wants {wants}.",
             ask.preset
         ));
+        if let Some([first, second]) = how {
+            said.push(first.to_string());
+            said.push(second.to_string());
+        }
     }
     if !context.outcomes.is_empty() {
         let listed: Vec<String> = context
@@ -148,8 +173,9 @@ fn open_line(context: &EditorContext, workspace: &str) -> String {
 
 /// `p` relative to the workspace when it is inside it, as `workspace_relative` does for a paste -
 /// both sides canonicalised, because a workspace spelled through a symlink would otherwise never be
-/// a prefix of the path the editor reports.
-fn workspace_relative(workspace: &str, path: &str) -> String {
+/// a prefix of the path the editor reports. `citations::buffers` spells a mark's anchor the same
+/// way, so the path the model reads in the block is the path its fence can name.
+pub(crate) fn workspace_relative(workspace: &str, path: &str) -> String {
     let root = if workspace.is_empty() {
         return path.to_string();
     } else {
@@ -320,6 +346,42 @@ mod tests {
         assert!(t.contains("quick ask (`fact check`)"), "{t}");
         assert!(t.contains("a suggested edit"), "{t}");
         assert!(t.contains("m1 accepted"), "{t}");
+    }
+
+    /// A quick ask that wants marks teaches the fence it wants, per ask and in two lines: the
+    /// system prompt carries the citation sentence and nothing about `note` or `suggest`, so a
+    /// model that was never told would answer in prose and the editor would draw no mark.
+    #[test]
+    fn an_ask_that_wants_a_mark_teaches_its_fence_in_two_lines() {
+        let ask = |answer| EditorContext {
+            origin: "rano".into(),
+            refs: vec![a_ref()],
+            ask: Some(ContextAsk {
+                preset: "fact check".into(),
+                answer,
+            }),
+            ..Default::default()
+        };
+        let t = text_of(&part(&ask(AnswerMode::Suggest), "/ws").unwrap()).to_string();
+        assert!(t.contains("fence labelled `suggest path:N-M`"), "{t}");
+        assert!(t.contains("body is the replacement"), "{t}");
+        assert!(t.contains("accepts or rejects it"), "{t}");
+        assert!(!t.contains("`note path"), "one fence, not two: {t}");
+
+        let t = text_of(&part(&ask(AnswerMode::Notes), "/ws").unwrap()).to_string();
+        assert!(t.contains("fence labelled `note path:N-M`"), "{t}");
+        assert!(t.contains("`ok:`, `warn:` or `wrong:`"), "{t}");
+        assert!(
+            !t.contains("suggest"),
+            "the suggestion's lines are not sent: {t}"
+        );
+
+        // A chat ask wants neither, and the two lines are the two paragraphs after its own.
+        let t = text_of(&part(&ask(AnswerMode::Chat), "/ws").unwrap()).to_string();
+        assert!(t.contains("an answer in the conversation"), "{t}");
+        assert!(!t.contains("fence labelled"), "{t}");
+        let paragraphs = t.split("\n\n").filter(|p| p.contains("quick ask")).count();
+        assert_eq!(paragraphs, 1, "{t}");
     }
 
     /// The whole door, end to end and with no model: a prompt with an unsaved `ContextRef` goes into

@@ -3402,6 +3402,7 @@ impl Harness {
             injected,
             handed_back: Default::default(),
             stopped: Default::default(),
+            unsaved: Default::default(),
             monitors,
             monitor_cursor,
             room,

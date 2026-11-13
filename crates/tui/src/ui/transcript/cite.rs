@@ -116,6 +116,8 @@ mod tests {
             end: start + lines.len() as u32 - 1,
             lines: lines.iter().map(|l| l.to_string()).collect(),
             error: None,
+            kind: letibot_sessionlog::CitationKind::Cite,
+            body: String::new(),
         }
     }
 
