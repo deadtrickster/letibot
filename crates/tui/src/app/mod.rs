@@ -678,6 +678,14 @@ pub struct App {
     /// open the card and ask for fresh rows in the same breath, so the seed reads an empty list and
     /// the cursor sits on row 0. Cleared by anything the reader does, so an answer cannot snap it back.
     pub(crate) pick_unseeded: bool,
+    /// The model card's search field. The card's own line and not the composer's: a query typed into
+    /// the conversation's editor, far from the list and invisible at its top, was the defect.
+    pub(crate) model_query: String,
+    /// The provider whose models the card has open, by its group key. `None` is level one.
+    pub(crate) model_open: Option<String>,
+    /// The door a provider's models are spelled with, when a reader chose one with Tab: a group key
+    /// to an index into that provider's doors.
+    pub(crate) model_door: std::collections::BTreeMap<String, usize>,
     /// Which row the setting card's cursor was on at the last frame's scroll decision, so a cursor
     /// that MOVED takes the window with it and a window scrolled by hand is not pulled back every
     /// frame. `None` while no setting card is drawn.
@@ -1474,6 +1482,9 @@ impl App {
             reseat: None,
             mode_sel: 0,
             pick_unseeded: false,
+            model_query: String::new(),
+            model_open: None,
+            model_door: std::collections::BTreeMap::new(),
             pick_sel_at: None,
             mode_hits: Vec::new(),
             drawn_card: None,
@@ -1762,6 +1773,7 @@ pub(crate) mod keyhints;
 mod keys;
 pub(crate) mod links;
 pub(crate) mod marks;
+mod model_card;
 mod notes;
 mod panes;
 mod pick;
@@ -1803,6 +1815,7 @@ pub use keys::*;
 // would be the advertisement W8 forbids.
 pub(crate) use keys::bindings::{KeyOverrides, surface_help_keys};
 pub(crate) use links::{link_path_lines, osc8_spans};
+pub(crate) use model_card::*;
 pub(crate) use notes::*;
 pub(crate) use panes::*;
 pub(crate) use pick::*;

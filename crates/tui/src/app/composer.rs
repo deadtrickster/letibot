@@ -104,16 +104,11 @@ impl App {
             return self.rooms_say(&text);
         }
         // The setting card takes the line while it is the card in the slot: a row number or a
-        // name on the mode card, a filter on the model card. Guarded on the card being DRAWN,
-        // because a decision in front owns Enter - a line typed there is the decision's.
-        if self.pick_card_up() {
-            match self.pick {
-                Some(Pick::Mode) => return self.pick_mode(text.trim()),
-                // The name typed on the model card SWITCHES the model. Before this it left as a
-                // chat message, which is what the card's own `or type a name` promised it would not.
-                Some(Pick::Model) => return self.pick_model(text.trim()),
-                _ => {}
-            }
+        // name on the mode card. Guarded on the card being DRAWN, because a decision in front owns
+        // Enter - a line typed there is the decision's. The model card owns its own search field and
+        // never reads the composer, so it is not in this arm.
+        if self.pick_card_up() && self.pick == Some(Pick::Mode) {
+            return self.pick_mode(text.trim());
         }
         // An open decision owns Enter, typed line or not, and a line that names an option is that answer. Any other
         // line is not disposable: the ask arrived while it was being typed, and Enter on a card means answer this.

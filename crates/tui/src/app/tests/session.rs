@@ -2131,8 +2131,14 @@ fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
         ],
     });
     assert_eq!(a.command("models"), Some(Action::Settings));
-    // Take the keyless row by its number: Enter on the card, the row the daemon named keyless.
-    assert_eq!(a.key(Key::Down), None);
+    // The daemon named no provider keyed, so this row is one to ask about: the card's Enter asks
+    // for the key instead of switching - the row's job is to make its models reachable.
+    a.mode_sel = a
+        .model_rows()
+        .1
+        .iter()
+        .position(|t| t.name() == "deepseek")
+        .expect("the deepseek row");
     assert_eq!(a.key(Key::Enter), None);
     assert!(
         a.key_ask.is_some(),
@@ -2191,6 +2197,9 @@ fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
         ],
     });
     b.command("models");
+    // The card's rows are the model in force, then the providers: `local` and `deepseek`.
+    assert_eq!(b.mode_sel, 0);
+    b.key(Key::Down);
     b.key(Key::Down);
     b.key(Key::Enter);
     assert!(b.key_ask.is_some());
@@ -2227,7 +2236,12 @@ fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
         )],
     });
     c.command("models");
+    // No keys row: the provider opens rather than asking, and the model row switches - absent is
+    // *no greening*, never *no keys*.
     c.key(Key::Down);
+    c.key(Key::Down);
+    assert_eq!(c.key(Key::Enter), None, "a provider opens");
+    assert_eq!(c.model_open.as_deref(), Some("deepseek"));
     match c.key(Key::Enter).expect("the switch still goes out") {
         Action::Slash { line } => assert_eq!(line, "models deepseek/deepseek-flash"),
         other => panic!("no row, no ask: {other:?}"),
@@ -2260,9 +2274,8 @@ fn taking_a_keyless_row_asks_for_the_key_and_enter_stores_and_switches() {
     assert!(d.key_ask.is_none());
 }
 
-/// `/models` is a menu now. It printed a wall of provider rows in which
-/// the switch - the thing anybody types it for - was the least visible part.
-/// The operator: *"for starters i want it to be usual menu, like /mode"*.
+/// `/models` is a card now, two levels deep: the model answering now, the ones used lately and a
+/// row per provider, and a provider opens onto its own models.
 #[test]
 fn slash_models_opens_a_picker_seeded_on_what_answers_now() {
     let mut a = app();
@@ -2277,28 +2290,40 @@ fn slash_models_opens_a_picker_seeded_on_what_answers_now() {
         ],
     ));
     // Bare `/models` opens the list and asks the daemon, so a session whose model moved in another head does
-    // not draw a stale `← now`. It refreshes the settings and not the verb, whose whole listing would land on
+    // not draw a stale marker. It refreshes the settings and not the verb, whose whole listing would land on
     // the log under the card.
     assert_eq!(a.command("models"), Some(Action::Settings));
     assert!(a.pick == Some(Pick::Model));
-    assert_eq!(a.mode_sel, 2, "seeded on the row that answers now");
+    assert_eq!(a.mode_sel, 0, "seeded on the row that answers now");
 
     // Tall enough that the card's trailing hints survive the fit loop, which
     // drops them last-first when the screen is short.
     let screen = a.screen(110, 40).join("\n");
+    assert!(screen.contains("glm/glm-5.3-flash"), "{screen}");
     assert!(
-        screen.contains("what answers this conversation"),
-        "{screen}"
+        screen.contains('●'),
+        "the row in force is not marked: {screen}"
     );
-    assert!(screen.contains("grok/grok-4.3"), "{screen}");
-    assert!(screen.contains("← now"), "{screen}");
+    assert!(screen.contains("providers"), "{screen}");
+    assert!(screen.contains("grok"), "{screen}");
     // The card says what it does and names the verb for the other thing,
     // because one verb doing both is what sent the operator looking.
     assert!(screen.contains("this conversation only"), "{screen}");
     assert!(screen.contains("/default-model"), "{screen}");
 
-    // Arrow and Enter send the switch as the daemon verb.
-    a.key(Key::Down);
+    // A provider opens, and Enter on one of its models sends the switch as the daemon verb.
+    a.mode_sel = a
+        .model_rows()
+        .1
+        .iter()
+        .position(|t| t.name() == "grok")
+        .expect("the grok row");
+    assert_eq!(
+        a.key(Key::Enter),
+        None,
+        "opening a provider switches nothing"
+    );
+    assert_eq!(a.model_open.as_deref(), Some("grok"));
     match a.key(Key::Enter) {
         Some(Action::Slash { line }) => assert_eq!(line, "models grok/grok-4.3"),
         other => panic!("{other:?}"),

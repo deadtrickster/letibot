@@ -2083,7 +2083,7 @@ fn a_second_card_does_not_inherit_the_first_ones_scroll() {
 }
 
 #[test]
-fn the_model_picker_greens_the_providers_this_box_holds_a_key_for() {
+fn the_model_picker_names_which_providers_this_box_holds_a_key_for() {
     use letibot_sessionlog::protocol::{MODEL_KEYS_KEY, SettingRow};
     let row = |r: &str, v: &str, choices: &[&str]| SettingRow {
         key: r.into(),
@@ -2123,37 +2123,25 @@ fn the_model_picker_greens_the_providers_this_box_holds_a_key_for() {
             .unwrap_or_else(|| panic!("no row with {needle:?} in:\n{screen}"))
             .to_string()
     };
+    // A provider row says which it is in WORDS, and in the colour the words mean - a colourless
+    // head reads the sentence and loses nothing.
+    let glm = line("glm-coding");
+    assert!(glm.contains("keyed"), "{glm:?}");
     assert!(
-        line("glm-coding/glm-5.3").contains(&sgr::GREEN.to_string()),
-        "a provider this box holds a key for is not greened: {:?}",
-        line("glm-coding/glm-5.3")
+        glm.contains(&sgr::GREEN.to_string()),
+        "a provider this box holds a key for is not greened: {glm:?}"
     );
+    let deepseek = line("deepseek");
+    assert!(deepseek.contains("not connected"), "{deepseek:?}");
     assert!(
-        !line("deepseek/deepseek-flash").contains(sgr::GREEN),
-        "a provider with no key is greened: {:?}",
-        line("deepseek/deepseek-flash")
+        !deepseek.contains(sgr::GREEN),
+        "a provider with no key is greened: {deepseek:?}"
     );
-    // `local` is green for a reason of its own, and the row is found by its number rather
-    // than by the words: the colour sits between the number and the name, so a needle spanning
-    // both does not exist in the bytes.
-    let local_row = screen
-        .lines()
-        .find(|l| l.contains(" 1  ") && l.contains("local"))
-        .unwrap_or_else(|| panic!("the local row is drawn:\n{screen}"))
-        .to_string();
-    // The cursor sits on `local`, so its green comes with the highlight's inverse.
-    assert!(
-        local_row.contains(sgr::GREEN) || local_row.contains("\x1b[7;32m"),
-        "`local` needs no key, so it must not read as one of the unkeyed rows: {local_row:?}"
-    );
-    assert!(
-        screen.contains("green: this box holds a key for it"),
-        "the meaning is not on the card in words, so a colourless head is told nothing:\n{screen}"
-    );
+    // `local` needs no key at all, which is a third state and says so.
+    assert!(line("no key needed").contains("local"), "{screen}");
 
-    // A daemon that sends no such row greens nothing - older than the field, and the head
-    // reads an absent row as *no greening* rather than as *no keys*. `local` stays green,
-    // which is its own rule and not this row's.
+    // A daemon that sends no such row cannot say: the state is unknown rather than "not
+    // connected", which would be the head inventing a fact about this box's files.
     let mut b = App::new(RenderConfig {
         width: 110,
         color: true,
@@ -2173,9 +2161,10 @@ fn the_model_picker_greens_the_providers_this_box_holds_a_key_for() {
     let older = b.screen(110, 30).join("\n");
     let provider = older
         .lines()
-        .find(|l| l.contains("glm-coding/glm-5.3"))
+        .find(|l| l.contains("glm-coding"))
         .expect("the row is drawn")
         .to_string();
+    assert!(provider.contains("cannot say"), "{provider:?}");
     assert!(
         !provider.contains(sgr::GREEN),
         "an absent keys row greened a provider anyway: {provider:?}"

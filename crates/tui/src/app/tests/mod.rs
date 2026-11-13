@@ -1389,6 +1389,7 @@ mod markerclick;
 mod markerexpand;
 mod markerorder;
 mod misc;
+mod model_card;
 mod monitors;
 mod notes;
 mod one_line_walls;

@@ -1315,7 +1315,12 @@ fn the_model_card_filters_as_a_line_is_typed_and_a_digit_is_not_a_row_number() {
     ));
     assert_eq!(a.command("models"), Some(Action::Settings));
     typed(&mut a, "glm");
-    let rows: Vec<String> = a.pick_values().into_iter().map(|(n, _)| n).collect();
+    let rows: Vec<String> = a
+        .model_rows()
+        .1
+        .iter()
+        .map(|t| t.name().to_string())
+        .collect();
     assert_eq!(
         rows,
         vec!["glm/glm-5.3".to_string()],
@@ -1350,12 +1355,13 @@ fn a_typed_line_that_matches_no_model_says_so_and_stays() {
     assert!(notice.contains("no model matches"), "{notice}");
     // And the card says the same thing in its own words rather than blaming the daemon for a
     // list it did send.
-    let screen = a.screen(110, 30).join("\n");
-    assert!(screen.contains("nothing here matches"), "{screen}");
+    let card = a.model_card_layout(110).0.join("\n");
+    assert!(card.contains("nothing here matches"), "{card}");
+    assert_eq!(a.model_query, "zzz", "the line is kept to be corrected");
 }
 
-/// Each row carries the window and the price the daemon read out of the catalogue, and the rows
-/// are grouped under the provider their own name is prefixed with.
+/// Each model is one line carrying the window and the two rates the daemon read out of the
+/// catalogue, under the provider that offers it - which is where a model is chosen from.
 #[test]
 fn the_model_card_shows_each_rows_window_and_price_under_its_providers_heading() {
     let mut a = app();
@@ -1370,20 +1376,26 @@ fn the_model_card_shows_each_rows_window_and_price_under_its_providers_heading()
         ],
     ));
     assert_eq!(a.command("models"), Some(Action::Settings));
-    let screen = a.screen(110, 30);
-    let all = screen.join("\n");
-    assert!(all.contains("1M window"), "{all}");
-    assert!(all.contains("$0.15 in / $0.6 out per M"), "{all}");
-    assert!(all.contains("200k window · price unlisted"), "{all}");
-    // The headings are read off the names, so they are the providers' own spellings.
+    // The provider rows first: no model is drawn until one is opened.
+    let rows = a.model_card_layout(110).0;
+    let all = rows.join("\n");
+    assert!(rows.iter().any(|l| l.contains("deepseek")), "{all}");
+    assert!(rows.iter().any(|l| l.contains("glm")), "{all}");
+    // Opened: one line per model, and the window and both rates are their own columns.
+    a.model_open = Some("deepseek".into());
+    let opened = a.model_card_layout(110).0.join("\n");
+    assert!(opened.contains("1M"), "{opened}");
+    assert!(opened.contains("$0.15"), "{opened}");
+    assert!(opened.contains("$0.6"), "{opened}");
     assert!(
-        screen.iter().any(|l| l.trim() == "deepseek"),
-        "no deepseek heading: {all}"
+        !opened.contains("window ·"),
+        "the fact line is not a column: {opened}"
     );
-    assert!(
-        screen.iter().any(|l| l.trim() == "this box"),
-        "the bare rows got no heading: {all}"
-    );
+    // A model the catalogue prices nowhere says so in the column, not by leaving it blank.
+    a.model_open = Some("glm".into());
+    let glm = a.model_card_layout(110).0.join("\n");
+    assert!(glm.contains("200k"), "{glm}");
+    assert!(glm.contains("—"), "an unlisted price is drawn blank: {glm}");
 }
 
 /// The facts belong to the choice at their own index and to no other, and a facts row of another

@@ -3,6 +3,7 @@
 pub mod asks;
 pub mod decision;
 pub mod mode;
+pub mod model;
 pub mod quit;
 pub mod reseat;
 pub mod todo;

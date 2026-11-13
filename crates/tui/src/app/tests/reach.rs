@@ -78,6 +78,23 @@ fn send(a: &mut App, text: &str) -> Option<Action> {
     a.key(Key::Enter)
 }
 
+/// Open the `deepseek` provider on the card and take its first model: the card is two levels, so a
+/// cloud row is two Enters - the provider, then the model. A row with no key behind it asks on the
+/// first Enter instead, and the second is then the key card's, which is why the helper stops there.
+fn take_deepseek(a: &mut App) -> Option<Action> {
+    let (_, takes) = a.model_rows();
+    a.mode_sel = takes
+        .iter()
+        .position(|t| t.name() == "deepseek")
+        .expect("the deepseek provider row");
+    let first = a.key(Key::Enter);
+    if a.key_ask.is_some() || a.model_open.is_none() {
+        return first;
+    }
+    a.mode_sel = 0;
+    a.key(Key::Enter)
+}
+
 fn prompts(actions: &[Action]) -> Vec<String> {
     actions
         .iter()
@@ -189,10 +206,11 @@ fn no_local_model_on_the_box_opens_the_chooser_without_a_probe() {
 
 /// A cloud row with no key goes through the key card, and the held message follows it - the
 /// switch with the key, then the re-read, the default (`/default-model`, so it is asked once per
-/// box), and the message, in that order.
+/// box), and the message, in that order. The box holds a key for `glm` only, which is what makes
+/// `deepseek` a row to ask about.
 #[test]
 fn choosing_a_provider_with_no_key_leads_to_the_key_card_and_the_message_follows() {
-    let mut a = on_local("", "/models/qwen.gguf");
+    let mut a = on_local("glm", "/models/qwen.gguf");
     stub(
         &mut a,
         Arc::new(AtomicBool::new(false)),
@@ -202,8 +220,11 @@ fn choosing_a_provider_with_no_key_leads_to_the_key_card_and_the_message_follows
     settle(&mut a);
     a.take_actions();
 
-    a.key(Key::Down);
-    assert_eq!(a.key(Key::Enter), None);
+    let opened = take_deepseek(&mut a);
+    assert_eq!(
+        opened, None,
+        "a row with no key behind it asks, it does not switch"
+    );
     assert!(
         a.key_ask.is_some(),
         "no key held for deepseek: the key card"
@@ -259,8 +280,7 @@ fn a_keyed_cloud_row_switches_and_a_provider_session_is_not_checked() {
     send(&mut a, "hello");
     settle(&mut a);
     a.take_actions();
-    a.key(Key::Down);
-    match a.key(Key::Enter) {
+    match take_deepseek(&mut a) {
         Some(Action::Slash { line }) => assert_eq!(line, "models deepseek/deepseek-flash"),
         other => panic!("a keyed row switches: {other:?}"),
     }

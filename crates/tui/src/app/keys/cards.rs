@@ -476,72 +476,167 @@ impl App {
 
     /// An open picker owns Up/Down, Enter and the digits while it is the card in the slot: one in
     /// front hides it, and a digit typed there is that card's answer. The composer keeps its own
-    /// rule - a half-typed line's Enter means the line, which lands in `pick_mode`.
+    /// rule - a half-typed line's Enter means the line, which lands in `pick_mode`. The model card
+    /// is its own key handling: its line is a search field and not the composer.
     pub(crate) fn key_pick(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
-        if self.pick_card_up()
-            && let Some(subject) = self.pick
-        {
-            let choices = self
-                .pick_values()
-                .into_iter()
-                .map(|(v, _)| v)
-                .collect::<Vec<_>>();
-            let n = choices.len();
-            match k {
-                Key::Up if n > 0 => {
-                    self.mode_sel = if self.mode_sel == 0 {
-                        n - 1
-                    } else {
-                        self.mode_sel - 1
-                    };
-                    // The reader has taken the cursor, so a settings answer landing from
-                    // here on must not move it - see [`App::pick_unseeded`]. A worse defect
-                    // than the one the re-seed fixes: a cursor that jumps while they arrow.
-                    self.pick_unseeded = false;
-                    return ControlFlow::Break(None);
-                }
-                Key::Down if n > 0 => {
-                    self.mode_sel = (self.mode_sel + 1) % n;
-                    self.pick_unseeded = false;
-                    return ControlFlow::Break(None);
-                }
-                Key::Enter if self.editor.text().is_empty() => {
-                    if n == 0 {
-                        // A daemon older than protocol 18 sends no choices; the
-                        // pane says so rather than cycling a list it made up -
-                        // the same words the config pane's mode row says.
-                        self.say(if subject == Pick::Model {
-                            "this daemon does not send the model list; use `/models PROVIDER/MODEL`"
-                        } else {
-                            "this daemon does not send the mode list; use `/mode NAME`"
-                        });
-                        return ControlFlow::Break(None);
-                    }
-                    let name = choices[self.mode_sel.min(n - 1)].clone();
-                    return ControlFlow::Break(self.take_pick(name));
-                }
-                // A row number MARKS the row and Enter answers it, as on the ladder and the quit
-                // card: answering on the digit took the `2` of a free-text answer meant for the
-                // card in front. Never on the model card, where the line is a FILTER and a name
-                // is full of digits - a digit there must narrow the list, not move a mark.
-                _ if subject != Pick::Model
-                    && self.editor.text().is_empty()
-                    && digit_row(k, n).is_some() =>
-                {
-                    self.mode_sel = digit_row(k, n).expect("just checked");
-                    self.pick_unseeded = false;
-                    return ControlFlow::Break(None);
-                }
-                // Esc leaves the setting alone and closes the card - the card's own key now,
-                // because the card is in front of any surface, not one arm of a
-                // block that closed every pane and card at once.
-                Key::Esc | Key::CtrlC => {
-                    self.pick = None;
-                    return ControlFlow::Break(None);
-                }
-                _ => {}
+        if !self.pick_card_up() {
+            return ControlFlow::Continue(());
+        }
+        let Some(subject) = self.pick else {
+            return ControlFlow::Continue(());
+        };
+        if subject == Pick::Model {
+            return self.key_model_card(k);
+        }
+        let choices = self
+            .pick_values()
+            .into_iter()
+            .map(|(v, _)| v)
+            .collect::<Vec<_>>();
+        let n = choices.len();
+        match k {
+            Key::Up if n > 0 => {
+                self.mode_sel = if self.mode_sel == 0 {
+                    n - 1
+                } else {
+                    self.mode_sel - 1
+                };
+                // The reader has taken the cursor, so a settings answer landing from
+                // here on must not move it - see [`App::pick_unseeded`]. A worse defect
+                // than the one the re-seed fixes: a cursor that jumps while they arrow.
+                self.pick_unseeded = false;
+                return ControlFlow::Break(None);
             }
+            Key::Down if n > 0 => {
+                self.mode_sel = (self.mode_sel + 1) % n;
+                self.pick_unseeded = false;
+                return ControlFlow::Break(None);
+            }
+            Key::Enter if self.editor.text().is_empty() => {
+                if n == 0 {
+                    // A daemon older than protocol 18 sends no choices; the
+                    // pane says so rather than cycling a list it made up -
+                    // the same words the config pane's mode row says.
+                    self.say("this daemon does not send the mode list; use `/mode NAME`");
+                    return ControlFlow::Break(None);
+                }
+                let name = choices[self.mode_sel.min(n - 1)].clone();
+                return ControlFlow::Break(self.take_pick(name));
+            }
+            // A row number MARKS the row and Enter answers it, as on the ladder and the quit
+            // card: answering on the digit took the `2` of a free-text answer meant for the
+            // card in front.
+            _ if self.editor.text().is_empty() && digit_row(k, n).is_some() => {
+                self.mode_sel = digit_row(k, n).expect("just checked");
+                self.pick_unseeded = false;
+                return ControlFlow::Break(None);
+            }
+            // Esc leaves the setting alone and closes the card - the card's own key now,
+            // because the card is in front of any surface, not one arm of a
+            // block that closed every pane and card at once.
+            Key::Esc | Key::CtrlC => {
+                self.pick = None;
+                return ControlFlow::Break(None);
+            }
+            _ => {}
         }
         ControlFlow::Continue(())
+    }
+
+    /// The model card's keys, all of them: its line is the card's own search field, so a letter that
+    /// fell through would start a line in the composer under it. Esc steps back one level at a time
+    /// - the query, then the open provider, then the card.
+    fn key_model_card(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
+        let n = self.model_rows().1.len();
+        match k {
+            Key::Esc | Key::CtrlC => self.model_card_back(),
+            Key::Enter => {
+                if n == 0 && self.model_choices().is_empty() {
+                    self.say(
+                        "this daemon does not send the model list; use `/models PROVIDER/MODEL`",
+                    );
+                    return ControlFlow::Break(None);
+                }
+                if n == 0 {
+                    self.say(&format!(
+                        "no model matches {:?} — esc clears the line",
+                        self.model_query
+                    ));
+                    return ControlFlow::Break(None);
+                }
+                return ControlFlow::Break(self.model_card_enter());
+            }
+            // Right opens the provider under the cursor, the way Enter does; on a model it means
+            // nothing, since a model has nothing under it.
+            Key::Right if self.model_query.is_empty() => {
+                let (_, takes) = self.model_rows();
+                if matches!(takes.get(self.mode_sel), Some(Take::Provider { .. })) {
+                    return ControlFlow::Break(self.model_card_enter());
+                }
+            }
+            // Left is the way back: the query first, then the provider that is open.
+            Key::Left => {
+                if !self.model_query.is_empty() {
+                    self.model_query.clear();
+                    self.mode_sel = 0;
+                } else if self.model_open.is_some() {
+                    self.model_open = None;
+                    self.mode_sel = 0;
+                }
+            }
+            Key::Up if n > 0 => {
+                self.mode_sel = if self.mode_sel == 0 {
+                    n - 1
+                } else {
+                    self.mode_sel - 1
+                };
+                self.pick_unseeded = false;
+            }
+            Key::Down if n > 0 => {
+                self.mode_sel = (self.mode_sel + 1) % n;
+                self.pick_unseeded = false;
+            }
+            // A page is ten rows: the card can be longer than the screen, and an arrow per row is
+            // the wrong tool for a provider with twenty models.
+            Key::PageDown if n > 0 => {
+                self.mode_sel = (self.mode_sel + 10).min(n - 1);
+                self.pick_unseeded = false;
+            }
+            Key::PageUp if n > 0 => {
+                self.mode_sel = self.mode_sel.saturating_sub(10);
+                self.pick_unseeded = false;
+            }
+            // The query is the card's own line, so a backspace on an empty one steps back rather
+            // than doing nothing: it is the same key a reader deletes a provider with.
+            Key::Backspace => {
+                if self.model_query.pop().is_some() {
+                    self.mode_sel = 0;
+                    self.pick_unseeded = false;
+                } else {
+                    self.model_card_back();
+                }
+            }
+            Key::KillToStart | Key::KillToEnd => {
+                self.model_query.clear();
+                self.mode_sel = 0;
+            }
+            // The door a provider's models are spelled by: two doors of one catalogue serve the same
+            // models, and which wire answers is the operator's call.
+            Key::Tab => self.model_next_door(),
+            Key::Char(c) if !c.is_control() => {
+                self.model_query.push(*c);
+                // A new query is a new list, so the cursor starts at its best hit again.
+                self.mode_sel = 0;
+                self.pick_unseeded = false;
+            }
+            Key::Paste(t) => {
+                self.model_query
+                    .push_str(&t.chars().filter(|c| !c.is_control()).collect::<String>());
+                self.mode_sel = 0;
+                self.pick_unseeded = false;
+            }
+            _ => {}
+        }
+        ControlFlow::Break(None)
     }
 }

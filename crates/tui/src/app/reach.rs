@@ -177,6 +177,10 @@ impl App {
             return false;
         }
         self.pick = Some(Pick::Model);
+        // A card the reader left on a provider, or with a query in it, opens at the top again: what
+        // it was showing belonged to the switch they were making, and this is another one.
+        self.model_query.clear();
+        self.model_open = None;
         self.close_surface(Surface::Picker);
         self.close_surface(Surface::Config);
         self.seed_pick();
