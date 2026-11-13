@@ -472,3 +472,59 @@ fn opening_an_archived_session_takes_it_back_into_the_list() {
         "the note carries the archiver's reason: {notes:?}"
     );
 }
+
+/// A head's two halves of the list are one store read each: what a daemon is not holding is in
+/// `list`, and what it has put out of sight is in `list_archived` - the group a head draws - and a
+/// row is in exactly one of them.
+#[test]
+fn the_archived_half_of_the_list_is_read_from_the_store() {
+    use letibot_sessionlog::registry::SessionSource;
+
+    let dir = Scratch::new("archived-half");
+    let path = dir.0.join("sessions.db");
+    let mut cfg = Config::for_this_box(&dir.0);
+    cfg.store = Some(path.clone());
+    let open = Store::open(&path).expect("a store");
+    for (id, title) in [
+        ("s-here", "the one in the list"),
+        ("s-away", "the one away"),
+    ] {
+        open.put_session(&SessionRecord {
+            id: id.into(),
+            title: Some(title.into()),
+            model_id: "qwen".into(),
+            dialect_sha: "d".into(),
+            workspace_root: "/w".into(),
+            owner: "dead".into(),
+            approvers: Vec::new(),
+            role: None,
+            parent_session_id: None,
+        })
+        .expect("a session row");
+    }
+    open.set_archived("s-away", true, Some("the question was answered"))
+        .expect("the archive");
+    drop(open);
+
+    // A daemon opening onto that store: the two halves it would answer a head with.
+    let sessions = crate::sessions::StoreSessions::open(&cfg).expect("the daemon's store");
+    let listed: Vec<String> = SessionSource::list(&*sessions)
+        .into_iter()
+        .map(|s| s.session_id)
+        .collect();
+    assert_eq!(
+        listed,
+        vec!["s-here"],
+        "the list leaves the archived one out"
+    );
+    let archived = SessionSource::list_archived(&*sessions);
+    assert_eq!(
+        archived
+            .iter()
+            .map(|s| s.session_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["s-away"],
+        "and the archived half holds it"
+    );
+    assert_eq!(archived[0].title, "the one away", "with the row's own name");
+}

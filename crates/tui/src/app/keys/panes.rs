@@ -90,11 +90,11 @@ impl App {
         act: Act,
         k: &Key,
     ) -> ControlFlow<Option<Action>> {
-        // A key that is not the removal ends its arm: the second press is the confirmation. A
+        // A key that is not the archive ends its arm: the second press is the confirmation. A
         // letter typed into the composer is unbound here and never reaches a binding, so it
-        // cannot disarm anything - the arm's own clock ends that case (`removal::ARM_MS`).
-        if !matches!(act, Act::Remove) {
-            self.clear_removal_arm();
+        // cannot disarm anything - the arm's own clock ends that case (`archive::ARM_MS`).
+        if !matches!(act, Act::Remove | Act::Undo) {
+            self.clear_archive_arm();
         }
         let up = upward(k);
         match act {
@@ -213,16 +213,11 @@ impl App {
                 self.toggle_todos_fold_done();
                 ControlFlow::Break(None)
             }
-            // `del` on the session list: arm, or remove. See `app::removal`.
-            Act::Remove => {
-                self.remove_selected();
-                ControlFlow::Break(None)
-            }
-            // `ctrl-z`: the last removal, back.
-            Act::Undo => {
-                self.restore_removed();
-                ControlFlow::Break(None)
-            }
+            // `del` on the session list: arm, or archive. See `app::archive`.
+            Act::Remove => ControlFlow::Break(self.archive_selected()),
+            // `ctrl-z`: the last archive, back. A wrong archive is a row in another group, not a
+            // keystroke that loses anything, so one word brings it back.
+            Act::Undo => ControlFlow::Break(self.unarchive_last()),
         }
     }
 

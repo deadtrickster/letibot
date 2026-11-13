@@ -453,12 +453,21 @@ impl App {
         if let Some(id) = cmd.strip_prefix("switch ") {
             return self.pick(id.trim());
         }
-        // `/forget` is the destructive sense of removing a session, and it says no: a letter bound in the
-        // picker is matched when the composer is empty, which is the first character of a filter, and a
-        // line starting with `/` cannot be one. See `app::removal`.
+        // `/forget` is the destructive sense of removing a session, and it says no: an append-only
+        // log whose history can be removed is not one. It points at `/archive`, which is the door that
+        // exists. A line starting with `/` cannot be one of the picker's filter letters.
         if let Some(what) = verb_arg(cmd, "forget") {
             self.forget_named(what);
             return None;
+        }
+        // `/archive [ID]` and `/close [ID]`: the two ways a session stops being in front of you.
+        // Archive hides it and keeps it; close only lets go of it. Typed, so asked once - the
+        // twice-pressed gesture is `del`, where a stray key is the risk.
+        if let Some(what) = verb_arg(cmd, "archive") {
+            return self.archive_named(what);
+        }
+        if let Some(what) = verb_arg(cmd, "close") {
+            return self.close_named(what);
         }
         // Renames the session this head is IN and not an arbitrary one: the picker is where another session is on
         // screen, and a `/rename` that could reach a row you were looking at is one typo from renaming the wrong
@@ -1317,7 +1326,15 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     ("switch", "ID or list number — go to another session"),
     (
         "forget",
-        "ID — forget a session in the store (refused: see the sentence it answers)",
+        "ID — nothing here deletes: this points at /archive",
+    ),
+    (
+        "archive",
+        "[ID] — put a session out of sight and keep every row of it",
+    ),
+    (
+        "close",
+        "[ID] — let go of a session without hiding it; its rows stay in the store",
     ),
     ("rename", "NAME — name the session you are in"),
     (

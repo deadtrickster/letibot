@@ -58,8 +58,10 @@ pub struct Act {
 pub const HOST_VERBS: &[&str] = &[
     // The head's own dispatcher (`crates/tui/src/app/commands.rs`), aliases included: an alias is a
     // spelling of a verb the head answers, so it shadows just as surely.
+    "archive",
     "asks",
     "cells",
+    "close",
     "compact",
     "config",
     "copy",

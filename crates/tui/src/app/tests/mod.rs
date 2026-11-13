@@ -1357,6 +1357,7 @@ fn queue_frame(snapshot: letibot_sessionlog::event::QueueSnapshot) -> ServerFram
     ServerFrame::Queues { snapshot }
 }
 
+mod archive;
 mod askaway;
 mod askedcard;
 mod asks;
@@ -1407,7 +1408,6 @@ mod queue_rows;
 mod queue_ux;
 mod reach;
 mod redcard;
-mod removal;
 mod render;
 mod repos;
 mod reseatcard;

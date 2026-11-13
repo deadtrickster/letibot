@@ -310,6 +310,30 @@ pub struct SessionBrief {
     pub role: String,
 }
 
+/// A row this daemon does not hold, as a head reads it: from the store alone, which is all there
+/// is for a session nobody has opened - a stored one in the list, and every archived one.
+fn unheld(d: StoredBrief) -> SessionBrief {
+    SessionBrief {
+        session_id: d.session_id,
+        title: d.title,
+        created_ms: d.last_activity_ms,
+        status: SessionStatus::default(),
+        wiring: d.wiring,
+        live: false,
+        stored_items: d.items,
+        parent_session_id: d.parent_session_id,
+        context_tokens: d.context_tokens,
+        context_cached: d.context_cached,
+        stored_end: d.stored_end,
+        nags_paused: d.nags_paused,
+        waits_on_operator: d.waits_on_operator,
+        slug: d.slug,
+        origin: d.origin,
+        moved_ms: d.last_activity_ms,
+        role: d.role,
+    }
+}
+
 /// How long the operator has paused a session's idle plan-check. Wall-clock and not a duration,
 /// because it has to survive the restart it was typed to outlast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -450,6 +474,12 @@ type LiveRow = (
 pub trait SessionSource: Send + Sync {
     /// Every session on disk, newest activity first.
     fn list(&self) -> Vec<StoredBrief>;
+    /// The sessions on disk that are put out of sight, newest activity first - the other half of
+    /// [`SessionSource::list`], which leaves them out. Empty for a source that keeps no archive,
+    /// which is why it is defaulted rather than required.
+    fn list_archived(&self) -> Vec<StoredBrief> {
+        Vec::new()
+    }
     /// One session, or `None` if nothing anywhere has heard of it.
     fn lookup(&self, session_id: &str) -> Option<StoredBrief> {
         self.list().into_iter().find(|s| s.session_id == session_id)
@@ -2268,27 +2298,21 @@ impl Registry {
             if live_ids.contains(&d.session_id) {
                 continue;
             }
-            out.push(SessionBrief {
-                session_id: d.session_id,
-                title: d.title,
-                created_ms: d.last_activity_ms,
-                status: SessionStatus::default(),
-                wiring: d.wiring,
-                live: false,
-                stored_items: d.items,
-                parent_session_id: d.parent_session_id,
-                context_tokens: d.context_tokens,
-                context_cached: d.context_cached,
-                stored_end: d.stored_end,
-                nags_paused: d.nags_paused,
-                waits_on_operator: d.waits_on_operator,
-                slug: d.slug,
-                origin: d.origin,
-                moved_ms: d.last_activity_ms,
-                role: d.role,
-            });
+            out.push(unheld(d));
         }
         out
+    }
+
+    /// The sessions put out of sight: a head draws them as a group of their own, so it needs them
+    /// beside the list and not in it. None of them is live - an archive closes what it puts away -
+    /// which is why a stored row is all there is to build one from.
+    pub fn list_archived(&self) -> Vec<SessionBrief> {
+        self.source()
+            .map(|s| s.list_archived())
+            .unwrap_or_default()
+            .into_iter()
+            .map(unheld)
+            .collect()
     }
 
     pub fn len(&self) -> usize {

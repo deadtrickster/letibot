@@ -207,8 +207,7 @@ impl App {
     }
 
     /// The index of a session's parent, when that parent is on this list: `None` for a session
-    /// nobody spawned and for one whose parent this daemon does not hold. `pub(crate)` because
-    /// `app::removal` walks the same edge.
+    /// nobody spawned and for one whose parent this daemon does not hold.
     pub(crate) fn parent_on_list(&self, i: usize) -> Option<usize> {
         self.sessions[i]
             .parent_session_id
@@ -357,7 +356,7 @@ impl App {
             return Bucket::Own;
         }
         let moved = (0..self.sessions.len())
-            .filter(|&i| place[i].project == key && !self.removed_chain(i))
+            .filter(|&i| place[i].project == key)
             .map(|i| self.sessions[i].moved_ms)
             .max()
             .unwrap_or(0);
@@ -737,8 +736,9 @@ impl App {
         }
         // A session on disk and not in this daemon has to be brought in before it can be switched to: two frames,
         // the second sent when the daemon answers the first. `want_new_session` is reused because going to a session
-        // the daemon just named is one behaviour.
-        if self.sessions.iter().any(|b| b.session_id == id && !b.live) {
+        // the daemon just named is one behaviour. An ARCHIVED row is the same case: it is a stored session, and the
+        // daemon takes it back into the list as it opens it - which is what `enter` on its row means.
+        if self.sessions.iter().any(|b| b.session_id == id && !b.live) || self.archived_here(&id) {
             self.want_new_session = true;
             self.say(&format!(
                 "resuming {} from the store…",

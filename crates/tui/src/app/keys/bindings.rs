@@ -19,7 +19,7 @@ pub(crate) enum On {
     /// means. It is also the one spelling a typed line can never be, so it cannot eat the first
     /// letter of the picker's typed filter the way a letter bound there would.
     Delete,
-    /// Ctrl+Z, or ⌘Z - both decode to [`Key::Undo`]. The undo of a removal, spelled as the
+    /// Ctrl+Z, or ⌘Z - both decode to [`Key::Undo`]. The undo of an archive, spelled as the
     /// chord everybody's hands already know, and never as a letter for the same reason as
     /// [`On::Delete`].
     Undo,
@@ -138,9 +138,8 @@ pub(crate) enum Act {
     /// The todos pane's `d`: fold the done group away, or open it  -
     /// [`App::toggle_todos_fold_done`], and the switch it flips is remembered in `head.toml`.
     FoldDone,
-    /// The session list's `del`: take the row under the cursor off this list  -
-    /// [`App::remove_selected`], asked twice: the first press names what would go, the second does
-    /// it. See `app::removal` for the three senses of *remove* and which one this is.
+    /// The session list's `del`: put the row under the cursor out of sight - [`App::archive_selected`],
+    /// asked twice: the first press names what would go, the second does it. See `app::archive`.
     Remove,
     /// The rooms view's `r`: the roster also lists the offline members, or drops them.
     Roster,
@@ -150,8 +149,8 @@ pub(crate) enum Act {
     /// The rooms view's Enter on an empty composer: send the channel's failed line again, under
     /// a new id.
     ResendSend,
-    /// The session list's `ctrl-z`: put the last removed row back - [`App::restore_removed`],
-    /// the undo a removal has to have if it is to be the sense worth building.
+    /// The session list's `ctrl-z`: bring the last archived row back - [`App::unarchive_last`], the
+    /// undo an archive has to have if a wrong one is not to cost a walk to the store.
     Undo,
     /// The rooms view's `ctrl-k`: the channel switcher - fuzzy over the channel labels and the DM
     /// peers, unread first. P4 fills [`App::rooms_switcher`].
@@ -230,20 +229,20 @@ const PICKER: &[Binding] = &[
         Text("collapses it, or steps out"),
     ),
     b(&[On::Enter], Empty, Act::Open, Says::Row),
-    // `del` takes the row off the list and `ctrl-z` puts it back, asked twice: the first press
-    // says what would go, the second does it. Not letters, because the picker's typed path is a
-    // session's NUMBER OR NAME, so a bound letter would be the first character of a filter.
+    // `del` puts the row away and `ctrl-z` brings it back, asked twice: the first press says what
+    // would go, the second does it. Not letters, because the picker's typed path is a session's
+    // NUMBER OR NAME, so a bound letter would be the first character of a filter.
     b(
         &[On::Delete],
         Empty,
         Act::Remove,
-        Text("removes it from this list (twice)"),
+        Text("archives it, rows and all (twice)"),
     ),
     b(
         &[On::Undo],
         Empty,
         Act::Undo,
-        Text("brings the last removed back"),
+        Text("brings the last archived back"),
     ),
     // A page of rows at a time: the list's window follows the cursor, so a page IS a cursor move.
     // It clamps at the last stop rather than wrapping, because a page that wrapped would jump

@@ -259,13 +259,16 @@ pub struct App {
     /// which belongs to the host and not to the layer. A fold survives a re-answer because it
     /// travels back in the pane's input.
     pub(crate) picker_folds: std::collections::BTreeMap<String, bool>,
-    /// The sessions the person has taken off this list, oldest first: `x` on the row pushes one,
-    /// `u` pops it. Survives the next answer from the daemon, because the list is a view. See
-    /// `app::removal` for the three senses of remove and which one this is.
-    pub(crate) removed: Vec<String>,
-    /// The row `x` has armed, and when: `(id, at_ms)`. A second `x` on the same row inside
-    /// `removal::ARM_MS` is the removal.
-    pub(crate) removal_armed: Option<(String, u64)>,
+    /// The sessions the DAEMON has put out of sight, as of the last list it sent: a group of their
+    /// own at the foot of the session list. The head keeps no such list of its own - an archive is a
+    /// store write, and a row this head hid for itself would be gone the moment it quit.
+    pub(crate) archived: Vec<SessionBrief>,
+    /// The archive this head made last, for `ctrl-z`. One at a time, like the fold: an undo stack is
+    /// a list of rows the store has already moved, and the daemon's answer is what says where they are.
+    pub(crate) archived_last: Option<String>,
+    /// The row `del` has armed, and when: `(id, at_ms)`. A second `del` on the same row inside
+    /// `archive::ARM_MS` is the archive.
+    pub(crate) archive_armed: Option<(String, u64)>,
     /// The key a pane's `event` action asked the head to deliver, until the next ask.
     pub(crate) sessions_event: std::cell::RefCell<Option<letibot_plugin::pane::Event>>,
     /// Which session each screen row of the last picker frame belongs to, as `(y, k)` for every
@@ -1321,8 +1324,9 @@ impl App {
             #[cfg(test)]
             host_inline: std::cell::Cell::new(false),
             picker_folds: std::collections::BTreeMap::new(),
-            removed: Vec::new(),
-            removal_armed: None,
+            archived: Vec::new(),
+            archived_last: None,
+            archive_armed: None,
             sessions_event: std::cell::RefCell::new(None),
             picker_hits: Vec::new(),
             screen_rows: 0,
@@ -1727,6 +1731,7 @@ pub fn line_width(s: &str) -> usize {
 }
 
 mod action;
+pub(crate) mod archive;
 mod asks;
 mod attachments;
 mod attention;
@@ -1759,7 +1764,6 @@ mod prefs;
 mod queue_pane;
 pub(crate) mod queue_rows;
 mod reach;
-mod removal;
 pub(crate) mod reseat;
 pub(crate) mod rooms;
 pub(crate) mod rooms_push;

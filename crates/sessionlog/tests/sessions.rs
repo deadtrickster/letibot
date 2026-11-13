@@ -355,6 +355,7 @@ fn a_head_can_make_a_session_and_the_daemon_mints_the_id() {
         sessions,
         current,
         created,
+        ..
     } = frames.last().unwrap().clone()
     else {
         unreachable!()

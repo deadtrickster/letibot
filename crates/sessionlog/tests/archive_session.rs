@@ -61,6 +61,35 @@ impl Store {
     }
 }
 
+/// A store with one session put out of sight in it: what a daemon that restarts onto it reads. The
+/// live list is empty and the archived one is not, which is the state an archive leaves behind.
+#[derive(Default)]
+struct KeptStore;
+
+impl SessionSource for KeptStore {
+    fn list(&self) -> Vec<StoredBrief> {
+        Vec::new()
+    }
+    fn list_archived(&self) -> Vec<StoredBrief> {
+        vec![StoredBrief {
+            session_id: "s-away".into(),
+            title: "the one put away".into(),
+            items: 3,
+            last_activity_ms: 1_700_000_000_000,
+            wiring: SessionWiring::default(),
+            parent_session_id: None,
+            context_tokens: None,
+            context_cached: None,
+            stored_end: None,
+            nags_paused: None,
+            waits_on_operator: 0,
+            slug: String::new(),
+            origin: Default::default(),
+            role: String::new(),
+        }]
+    }
+}
+
 /// The frame a head sends, end to end: the answer is the new `Sessions` list, the archived session
 /// leaves the registry (that IS the close), and the session the asking head is in survives.
 #[test]
@@ -155,4 +184,75 @@ fn unarchiving_writes_the_row_and_reopens_nothing() {
         registry.get("s-old").is_none(),
         "and it does not seat a hub for it"
     );
+}
+
+/// The first Done-when line, on the daemon's side: the archive is the STORE's, so a daemon that is
+/// restarted, or a head that was not running when it was made, still answers with the row - in the
+/// archived half of the list, which is the group a head draws.
+#[test]
+fn the_list_carries_the_archived_half_a_restarted_daemon_reads() {
+    let registry = Registry::new();
+    registry.set_source(Arc::new(KeptStore));
+    let live = registry.list();
+    assert!(
+        live.iter().all(|s| s.session_id != "s-away"),
+        "an archived session is not in the list: {live:?}"
+    );
+    let archived = registry.list_archived();
+    assert_eq!(archived.len(), 1, "and it is kept in the other half");
+    assert_eq!(archived[0].session_id, "s-away");
+    assert_eq!(archived[0].title, "the one put away");
+    assert_eq!(archived[0].stored_items, 3, "with its rows counted");
+    assert!(
+        !archived[0].live,
+        "an archived session is not one a daemon is holding: the archive closes it"
+    );
+}
+
+/// `/close ID` closing a session that is not the one the head is in: the answer is the LIST, because
+/// which sessions are live is what the row says, and the session the head stands in is untouched.
+#[test]
+fn closing_a_named_session_leaves_the_one_you_are_in() {
+    let registry = Registry::new();
+    registry
+        .create("s-away", "the one to close", SessionWiring::default())
+        .expect("a session to close");
+    registry
+        .create("s-here", "the one still open", SessionWiring::default())
+        .expect("the session the head is in");
+    registry.set_source(Arc::new(Store::default()));
+
+    let socket = socket_in("named-close");
+    let server = serve_registry(registry.clone(), &socket).expect("bind");
+    let (mut head, hello, mut reader) =
+        HeadClient::attach(&socket, "s-here", 0, "tui", "operator", Caps::default())
+            .expect("attach");
+    assert!(matches!(hello, ServerFrame::Hello { .. }), "{hello:?}");
+
+    head.close_named("s-away", "operator", "the row was finished")
+        .expect("send the close");
+    let answer = until(&mut reader, |f| {
+        matches!(
+            f,
+            ServerFrame::Sessions { .. } | ServerFrame::Rejected { .. }
+        )
+    });
+    match answer {
+        ServerFrame::Sessions { current, .. } => {
+            assert_eq!(current, "s-here", "the head stays where it was");
+        }
+        other => panic!("a named close answers with the list, got {other:?}"),
+    }
+    assert!(
+        registry.get("s-away").is_none(),
+        "the named session is closed"
+    );
+    assert!(
+        registry.get("s-here").is_some(),
+        "and the session the head is standing in is not"
+    );
+
+    drop(reader);
+    drop(head);
+    server.shutdown();
 }

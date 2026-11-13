@@ -40,6 +40,12 @@ pub const BUILDING: &str =
 pub const UNANSWERED: &str =
     "no layer answered the session list, which is a defect; the reason is on the notice line.";
 
+/// The feed's `bucket` for the sessions the daemon has put out of sight, and the fold key of the
+/// group the layer draws them under. One spelling for both sides: the head says which bucket, the
+/// layer says which row.
+pub const ARCHIVED_BUCKET: &str = "archived";
+pub const ARCHIVED_KEY: &str = "groups/archived";
+
 /// The last line of a capped list: how many sessions the feed could not hold. A number a reader
 /// can act on is not the same fact as a list that silently stops.
 pub fn more(count: usize) -> String {

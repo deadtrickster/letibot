@@ -24,9 +24,12 @@ impl App {
             let id = self.sessions[i].session_id.clone();
             return self.switch_to(id);
         }
+        // The rows put out of sight are searched too, and deliberately: an archived session is out
+        // of SIGHT and not out of reach, and the daemon takes it back into the list as it opens it.
         let hits: Vec<&SessionBrief> = self
             .sessions
             .iter()
+            .chain(self.archived.iter())
             .filter(|s| {
                 s.session_id.starts_with(typed)
                     || (!s.title.is_empty()

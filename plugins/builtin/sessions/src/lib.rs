@@ -80,6 +80,8 @@ const RECENT_KEY: &str = "groups/recent";
 const OLDER_KEY: &str = "groups/older";
 /// Said under the first project line only.
 const PROJECT_LEGEND: &str = "a workspace root, and every session that runs in it";
+/// The archived group: its line says what the rows are, since a row of it is drawn like any other.
+const ARCHIVED_LEGEND: &str = "put out of sight - every row of it is kept: enter resumes one";
 
 /// One session, as the head holds it and as this list reads it.
 #[derive(Debug, Deserialize)]
@@ -221,6 +223,8 @@ struct Ctx<'a> {
     kids: HashMap<&'a str, Vec<usize>>,
     /// A project's key to its members' places, in feed order.
     by_project: HashMap<&'a str, Vec<usize>>,
+    /// The places the archived rows hold, in feed order - in the feed and not in the tree.
+    archived: Vec<usize>,
 }
 
 impl<'a> Ctx<'a> {
@@ -230,7 +234,15 @@ impl<'a> Ctx<'a> {
         let mut index: HashMap<&str, usize> = HashMap::new();
         let mut kids: HashMap<&str, Vec<usize>> = HashMap::new();
         let mut by_project: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut archived: Vec<usize> = Vec::new();
         for (i, s) in feed.sessions.iter().enumerate() {
+            // An archived row is in the feed and not in the tree: it is drawn flat under its own
+            // group, so it must not be a parent here, a member of a project, or the row this head
+            // is standing in - a row that was in the tree and in the group would be drawn twice.
+            if s.bucket == letibot_plugin::sessions::ARCHIVED_BUCKET {
+                archived.push(i);
+                continue;
+            }
             index.entry(s.id.as_str()).or_insert(i);
             by_project.entry(s.project.as_str()).or_default().push(i);
             if let Some(parent) = s.parent.as_deref() {
@@ -261,6 +273,7 @@ impl<'a> Ctx<'a> {
             index,
             kids,
             by_project,
+            archived,
         }
     }
 
@@ -423,6 +436,26 @@ impl<'a> Ctx<'a> {
 /// draws this answer and keeps no tree of its own.
 fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
     let mut out = rows_of_the_branches(ctx);
+    // What the daemon put out of sight, last of all and in BOTH walks: a family view is drawn from
+    // the same daemon's list, so it can be brought back from here too. They are KEPT and are not on
+    // the tree, so they are flat under one line rather than a project of their own.
+    if !ctx.archived.is_empty() {
+        let key = letibot_plugin::sessions::ARCHIVED_KEY;
+        let open = ctx.node_open(key);
+        out.push(node_row(
+            key.to_string(),
+            0,
+            format!("archived ({})", ctx.archived.len()),
+            ARCHIVED_LEGEND,
+            open,
+            ctx.tally(&ctx.archived),
+        ));
+        if open {
+            for &i in &ctx.archived {
+                out.push(archived_row(ctx, i));
+            }
+        }
+    }
     if ctx.more > 0 {
         // No id: a line a reader can act on, not a row a key can enter. The head keeps such a row
         // out of its stops for exactly that reason.
@@ -553,6 +586,24 @@ fn rows_of_the_branches(ctx: &Ctx<'_>) -> Vec<Out> {
         }
     }
     out
+}
+
+/// One row of the archived group: what it is, when it last moved, and the way back. No number and no
+/// fold - nothing here is on the tree, and a fold glyph would offer rows this list does not hold.
+fn archived_row(ctx: &Ctx<'_>, at: usize) -> Out {
+    let s = &ctx.sessions[at];
+    Out {
+        id: s.id.clone(),
+        depth: 1,
+        number: None,
+        cells: vec![mark_of(ctx, s), Cell::role(name_of(s), Role::Plain)],
+        facts: facts_of(s),
+        under: vec![under_of(s, ctx.home)],
+        open: None,
+        // Enter opens it: the daemon takes it back into the list on the way, which is why the row
+        // leaves this group rather than staying in it.
+        enter: Some(Act::switch(s.id.clone())),
+    }
 }
 
 /// One project's line and, when it is open, its tree and `system` branch. `base` is the line's own depth,

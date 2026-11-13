@@ -1767,6 +1767,7 @@ fn a_sessions_reply_re_folds_the_rows_and_the_count() {
         sessions: a_family(),
         current: "s".into(),
         created: None,
+        archived: Vec::new(),
     });
     let ids: Vec<&str> = a.subagents.iter().map(|s| s.session_id.as_str()).collect();
     assert_eq!(ids, vec!["s-sub-1", "s-sub-2"], "{ids:?}");

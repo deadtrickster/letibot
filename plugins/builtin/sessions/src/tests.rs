@@ -623,3 +623,88 @@ fn a_host_with_no_feed_is_a_pane_that_says_so() {
         "a pane with no feed claims no rows: {said}"
     );
 }
+
+/// One session the daemon has put out of sight, as the feed spells it: no project, its own bucket.
+fn archived_session(id: &str, title: &str) -> Session {
+    let mut s = session(id, title);
+    s.live = false;
+    s.heads = 0;
+    s.project = String::new();
+    s.project_name = String::new();
+    s.bucket = letibot_plugin::sessions::ARCHIVED_BUCKET.into();
+    s
+}
+
+/// What is out of sight is a group at the foot of the list and not a project of its own: closed by
+/// default, counted, and every row of it a session `enter` resumes.
+#[test]
+fn archived_sessions_are_a_group_at_the_foot() {
+    let f = feed(
+        vec![
+            session("s-a", "one"),
+            archived_session("s-old", "last week's question"),
+        ],
+        "s-a",
+    );
+    assert_eq!(
+        words(&draw(&f, &[])),
+        vec!["[letibot (1)]", "s-a", "[archived (1)]"],
+        "the archived row is not one of the project's, and the group says how many are in it"
+    );
+    let group = &draw(&f, &[])[2];
+    assert_eq!(
+        group.open,
+        Some(Fold::Closed),
+        "a group nobody opened is shut, like every other"
+    );
+    assert_eq!(group.enter, Some(Act::fold()));
+    // Opened, the row is drawn one step in, with no number and no fold - and `enter` opens it.
+    let open = draw(&f, &[(letibot_plugin::sessions::ARCHIVED_KEY, true)]);
+    let row = open.last().expect("the group's row");
+    assert_eq!(row.id, "s-old");
+    assert_eq!(row.depth, 1);
+    assert_eq!(
+        row.number, None,
+        "an archived row is not on the tree's count"
+    );
+    assert_eq!(row.open, None, "and it holds nothing to fold");
+    assert_eq!(row.enter, Some(Act::switch("s-old")));
+    assert_eq!(
+        row.cells[0].text, " ",
+        "the gutter column is reserved here too"
+    );
+    assert_eq!(row.cells[1].text, "last week's question");
+}
+
+/// An archived row is in the feed and not in the tree: the project line of the workspace it was held
+/// in does not count it, and a live child of one is drawn as a root of its own rather than folded
+/// under a parent the list does not draw.
+#[test]
+fn an_archived_row_is_neither_a_member_nor_a_parent() {
+    let mut child = session("s-kid", "a child of the one put away");
+    child.parent = Some("s-old".into());
+    let f = feed(
+        vec![
+            session("s-a", "one"),
+            archived_session("s-old", "last week's question"),
+            child,
+        ],
+        "s-a",
+    );
+    assert_eq!(
+        words(&draw(&f, &[])),
+        vec![
+            "[letibot (2)]",
+            "s-a",
+            // The child's parent is not on the tree, so the child is a root of the project's.
+            "s-kid",
+            "[archived (1)]"
+        ],
+        "the archived row's project membership is the live one's, not its own"
+    );
+    assert_eq!(
+        draw(&f, &[])[1].open,
+        None,
+        "a row whose only child is the archived one holds nothing to fold"
+    );
+}

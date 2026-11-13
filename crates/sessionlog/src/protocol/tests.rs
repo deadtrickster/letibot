@@ -632,6 +632,8 @@ fn every_frame_round_trips() {
             expected_seq: 12,
             who: "dead".into(),
             reason: "it is being carried to another machine".into(),
+            // A head closing a row it is looking at rather than where it stands.
+            session_id: "s-other".into(),
         },
         ClientFrame::Interrupt {
             client_request_id: "r2".into(),
@@ -693,6 +695,7 @@ fn a_sessions_frame_says_which_one_you_are_in() {
         sessions: Vec::new(),
         current: "s-1".into(),
         created: None,
+        archived: Vec::new(),
     };
     let json = serde_json::to_string(&f).unwrap();
     assert!(json.contains(r#""current":"s-1""#), "{json}");

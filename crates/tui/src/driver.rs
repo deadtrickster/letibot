@@ -793,6 +793,23 @@ impl Link {
                     Action::Rename { session_id, title } => {
                         self.client.rename_session(&session_id, &title)?;
                     }
+                    // Out of sight, and kept. The answer is a `Sessions` frame, which is what takes
+                    // the row off the tree and puts it in the archived group - the head keeps no
+                    // list of its own to undo.
+                    Action::Archive { session_id, reason } => {
+                        self.client.archive_session(&session_id, &reason)?;
+                    }
+                    Action::Unarchive { session_id } => {
+                        self.client.unarchive_session(&session_id)?;
+                    }
+                    // Let go of it without hiding it: the daemon drops the session, the row stays.
+                    Action::Close { session_id } => {
+                        self.client.close_named(
+                            &session_id,
+                            app.head_id(),
+                            "closed from the head",
+                        )?;
+                    }
                     // The compaction itself is disclosed on the session's own log: the
                     // summary turn streams like any turn, and the forked transcript's
                     // first item says what replaced the history. Nothing to apply here.

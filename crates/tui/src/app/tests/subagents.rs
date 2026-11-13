@@ -997,6 +997,7 @@ fn the_quit_card_says_which_other_work_a_stop_kills() {
         ],
         current: "s-1".into(),
         created: None,
+        archived: Vec::new(),
     });
     a.apply(queue_frame(queues(
         vec![queue_review_row("r-1", "reviewing")],
@@ -1253,6 +1254,7 @@ fn a_gatekeeper_child_is_not_counted_or_listed() {
         sessions: vec![brief("s", "parent", false), child, gk],
         current: "s".into(),
         created: None,
+        archived: Vec::new(),
     });
     let ids: Vec<&str> = a.subagents.iter().map(|s| s.session_id.as_str()).collect();
     assert_eq!(
@@ -1352,6 +1354,7 @@ fn a_child_ending_does_not_re_open_the_fold() {
         sessions: ended,
         current: "s".into(),
         created: None,
+        archived: Vec::new(),
     });
 
     assert!(

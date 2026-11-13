@@ -2775,6 +2775,7 @@ fn a_session_list_does_not_move_the_head_without_seating_it() {
         sessions: a_family(),
         current: "s".into(),
         created: None,
+        archived: Vec::new(),
     });
     assert_eq!(
         a.session_id, "s-sub-1",
@@ -2791,6 +2792,7 @@ fn a_session_list_does_not_move_the_head_without_seating_it() {
         sessions: a_family(),
         current: "s-sub-1".into(),
         created: None,
+        archived: Vec::new(),
     });
     assert!(
         !a.take_actions().contains(&Action::Resync),
@@ -2847,6 +2849,7 @@ fn a_picker_opened_before_this_session_is_listed_seats_on_it_when_it_is() {
         sessions: vec![brief("s1", "one", false), brief("s2", "two", false)],
         current: "s2".into(),
         created: None,
+        archived: Vec::new(),
     });
     assert!(!a.picker_seat_pending);
     let row = a.picker_rows()[a.picker_sel].clone();

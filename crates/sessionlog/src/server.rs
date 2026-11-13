@@ -317,6 +317,7 @@ fn control_seat(
                 sessions: registry.list(),
                 current: String::new(),
                 created: None,
+                archived: registry.list_archived(),
             },
             Ok(ClientFrame::NewSession {
                 client_request_id,
@@ -336,6 +337,7 @@ fn control_seat(
                             sessions: registry.list(),
                             current: String::new(),
                             created: Some(id),
+                            archived: registry.list_archived(),
                         }
                     }
                     Err(e) => ServerFrame::Rejected {
@@ -945,6 +947,7 @@ pub fn serve_conn_rooted(
                     sessions: registry.list(),
                     current: seat.hub.session_id(),
                     created: None,
+                    archived: registry.list_archived(),
                 };
                 writer.lock().unwrap().write(&f)?;
             }
@@ -1104,6 +1107,7 @@ pub fn serve_conn_rooted(
                             sessions: registry.list(),
                             current: seat.hub.session_id(),
                             created: Some(id),
+                            archived: registry.list_archived(),
                         }
                     }
                     Err(e) => ServerFrame::Rejected {
@@ -1126,6 +1130,7 @@ pub fn serve_conn_rooted(
                         sessions: registry.list(),
                         current: seat.hub.session_id(),
                         created: Some(session_id),
+                        archived: registry.list_archived(),
                     }
                 } else {
                     match registry.resumable(&session_id) {
@@ -1137,6 +1142,7 @@ pub fn serve_conn_rooted(
                                     sessions: registry.list(),
                                     current: seat.hub.session_id(),
                                     created: Some(session_id),
+                                    archived: registry.list_archived(),
                                 },
                                 Err(e) => ServerFrame::Rejected {
                                     client_request_id,
@@ -1184,6 +1190,7 @@ pub fn serve_conn_rooted(
                                         sessions: registry.list(),
                                         current: seat.hub.session_id(),
                                         created: Some(session_id),
+                                        archived: registry.list_archived(),
                                     }
                                 }
                                 Err(e) => ServerFrame::Rejected {
@@ -1233,6 +1240,7 @@ pub fn serve_conn_rooted(
                                 sessions: registry.list(),
                                 current: seat.hub.session_id(),
                                 created: None,
+                                archived: registry.list_archived(),
                             }
                         }
                     }
@@ -1258,6 +1266,7 @@ pub fn serve_conn_rooted(
                         sessions: registry.list(),
                         current: seat.hub.session_id(),
                         created: None,
+                        archived: registry.list_archived(),
                     },
                 };
                 writer.lock().unwrap().write(&f)?;
@@ -1277,6 +1286,7 @@ pub fn serve_conn_rooted(
                         sessions: registry.list(),
                         current: seat.hub.session_id(),
                         created: None,
+                        archived: registry.list_archived(),
                     },
                 };
                 writer.lock().unwrap().write(&f)?;
@@ -1305,6 +1315,7 @@ pub fn serve_conn_rooted(
                             sessions: registry.list(),
                             current: seat.hub.session_id(),
                             created: None,
+                            archived: registry.list_archived(),
                         };
                         writer.lock().unwrap().write(&f)?;
                     }
@@ -1726,8 +1737,29 @@ pub fn serve_conn_rooted(
                 expected_seq: _,
                 who,
                 reason,
+                session_id,
             }) => {
-                let session = seat.hub.session_id();
+                // The seat's own session unless the frame names another: a head's `/close ID` is an
+                // act on a row it is looking at, and every other caller means where it stands.
+                let named = !session_id.trim().is_empty();
+                let session = match named {
+                    false => seat.hub.session_id(),
+                    true => session_id.trim().to_string(),
+                };
+                let Some(hub) = registry.get(&session) else {
+                    let f = ServerFrame::Rejected {
+                        client_request_id,
+                        reason: format!(
+                            "{session} is not a session this daemon holds, so there is nothing here \
+                             to close. A session already closed is in the store: `letibot \
+                             --sessions --archived` lists what is out of sight."
+                        ),
+                        expected_seq: 0,
+                        actual_seq: seat.hub.head_seq(),
+                    };
+                    writer.lock().unwrap().write(&f)?;
+                    continue;
+                };
                 // The caller's own reason, because there are two callers and they mean different
                 // things: a migration carries the rows elsewhere, a bridge's stop settles a
                 // placement. A head reading the log is owed the one that is true.
@@ -1735,7 +1767,9 @@ pub fn serve_conn_rooted(
                     "" => String::new(),
                     words => format!(" because {words}"),
                 };
-                seat.hub.warn(
+                // On the closed session's own log, so the heads WATCHING it are told too - not only
+                // the connection that asked, which for a named close is usually another session.
+                hub.warn(
                     "session_closed",
                     format!(
                         "`{who}` closed this session{why}. Nothing here is deleted: the rows stay \
@@ -1755,10 +1789,20 @@ pub fn serve_conn_rooted(
                 if held && let Some(settler) = registry.close_settler() {
                     settler.closed(&session);
                 }
-                let f = crate::protocol::ServerFrame::Accepted {
-                    client_request_id,
-                    seq,
-                    note: crate::protocol::NOTE_SESSION_CLOSED.into(),
+                let f = match named {
+                    // A named close changes which sessions are LIVE, and the head that asked is
+                    // looking at a list: answered with the list, so its row stops saying held.
+                    true => ServerFrame::Sessions {
+                        sessions: registry.list(),
+                        current: seat.hub.session_id(),
+                        created: None,
+                        archived: registry.list_archived(),
+                    },
+                    false => crate::protocol::ServerFrame::Accepted {
+                        client_request_id,
+                        seq,
+                        note: crate::protocol::NOTE_SESSION_CLOSED.into(),
+                    },
                 };
                 writer.lock().unwrap().write(&f)?;
             }

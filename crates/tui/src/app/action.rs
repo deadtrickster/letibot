@@ -232,6 +232,22 @@ pub enum Action {
         session_id: String,
         title: String,
     },
+    /// Put a session out of sight and keep every row of it: the daemon closes it if it is live and
+    /// writes the row, and the answer is the list without it plus the archived group with it.
+    Archive {
+        session_id: String,
+        reason: String,
+    },
+    /// The other direction. Entering an archived row resumes it and takes it back this way too; this
+    /// is the door for a head with the list in front of it.
+    Unarchive {
+        session_id: String,
+    },
+    /// Let go of a session WITHOUT putting it out of sight: the daemon stops driving it and the row
+    /// stays in the list, reading as one on disk.
+    Close {
+        session_id: String,
+    },
     /// Compact the session this head is in: one summary turn, then the history
     /// is replaced by that summary through a transcript fork.
     Compact,

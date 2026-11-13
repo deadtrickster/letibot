@@ -258,12 +258,35 @@ impl HeadClient {
         who: &str,
         reason: &str,
     ) -> Result<String, ClientError> {
+        self.close_session_at("", expected_seq, who, reason)
+    }
+
+    /// [`Client::close_session`] on a session this connection is NOT in: a head's `/close ID`, which
+    /// is an act on a row of its list. The answer is a `Sessions` frame, so the row stops reading
+    /// as held.
+    pub fn close_named(
+        &mut self,
+        session_id: &str,
+        who: &str,
+        reason: &str,
+    ) -> Result<String, ClientError> {
+        self.close_session_at(session_id, 0, who, reason)
+    }
+
+    fn close_session_at(
+        &mut self,
+        session_id: &str,
+        expected_seq: u64,
+        who: &str,
+        reason: &str,
+    ) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::CloseSession {
             client_request_id: client_request_id.clone(),
             expected_seq,
             who: who.to_string(),
             reason: reason.to_string(),
+            session_id: session_id.to_string(),
         })?;
         Ok(client_request_id)
     }

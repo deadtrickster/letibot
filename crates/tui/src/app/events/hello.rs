@@ -112,10 +112,6 @@ impl App {
                 // the filter was for is [`App::session_rows`]'s business - nested, folded by default.
                 self.sessions = sessions;
                 self.rooms_sync_sessions();
-                // A removal is about a row of the daemon's list, so it goes when the row does - down
-                // the chain to where this head has just been seated (`App::prune_removed`), or a switch
-                // onto a removed row stands in a subtree the head's own list filters out.
-                self.prune_removed(&session_id);
                 self.dropped += dropped;
                 self.scrubbed += scrubbed.total();
                 // `session_id` is assigned by `load` and NOT before it: `load` decides whether this is

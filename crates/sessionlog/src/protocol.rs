@@ -660,6 +660,11 @@ pub enum ClientFrame {
         /// built before it still parse each other's frames.
         #[serde(default)]
         reason: String,
+        /// A session to close that is NOT the one this connection is in: a head's `/close ID`, an
+        /// act on a row it is looking at rather than on where it stands. Empty is this
+        /// connection's own session, which is every caller before that verb, so it is defaulted.
+        #[serde(default)]
+        session_id: String,
     },
     /// Idempotent, issuable by any attached head, announced with the issuer.
     Interrupt {
@@ -1120,6 +1125,11 @@ pub enum ServerFrame {
         /// The id `NewSession` created, when that is what this is answering.
         /// `None` for a plain list - present and null, not omitted.
         created: Option<String>,
+        /// The sessions put out of sight, which `sessions` leaves out on purpose: a head draws
+        /// them as a group of their own rather than as rows of the list. Defaulted, so a daemon
+        /// that predates archives says nothing and every row it sends reads as in the list.
+        #[serde(default)]
+        archived: Vec<SessionBrief>,
     },
     /// The answer to [`ClientFrame::ListTodos`], for the session the connection
     /// is in. The whole list as of now - later changes arrive as

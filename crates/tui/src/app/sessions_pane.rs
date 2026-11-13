@@ -1019,15 +1019,7 @@ impl App {
                 .map(|p| p.name.clone())
                 .unwrap_or_default()
         };
-        let kept: Vec<(usize, &_)> = self
-            .sessions
-            .iter()
-            .enumerate()
-            // A removed session is not in the feed at all, so the layer's rows, its counts and
-            // its numbering agree with the head's own walk by construction: one predicate
-            // (`App::removed_chain`), one drawing.
-            .filter(|(i, _)| !self.removed_chain(*i))
-            .collect();
+        let kept: Vec<(usize, &_)> = self.sessions.iter().enumerate().collect();
         // Capped before the rows are built: the feed's cost to a guest is its size. Whatever the
         // cap leaves out is COUNTED and said, because a list that stops at 250 and says nothing
         // reads as a daemon that holds 250.
@@ -1078,6 +1070,34 @@ impl App {
                     "system": place[i].system.map(|k| k.title()),
                 })
             })
+            .chain(self.archived.iter().map(|s| {
+                // The rows put out of sight ride the same feed with a bucket of their own and no
+                // project: the layer draws them flat under `archived`, and a project line for them
+                // would be a tree of one group that is not a tree.
+                json!({
+                    "id": s.session_id,
+                    "title": s.title,
+                    "slug": s.slug,
+                    "parent": null,
+                    "origin": s.origin.as_str(),
+                    "live": false,
+                    "running": false,
+                    "heads": 0,
+                    "items": 0,
+                    "stored": s.stored_items,
+                    "model": s.wiring.model,
+                    "workspace": s.wiring.workspace,
+                    "waits_on": 0,
+                    "nags_paused": s.nags_paused.is_some(),
+                    "moved_ms": s.moved_ms,
+                    "age": (s.moved_ms > 0)
+                        .then(|| sdk::age_word(now.saturating_sub(s.moved_ms))),
+                    "project": "",
+                    "project_name": "",
+                    "bucket": sdk::ARCHIVED_BUCKET,
+                    "system": null,
+                })
+            }))
             .collect();
         let fleet: Vec<Value> = self
             .fleet

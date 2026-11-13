@@ -113,9 +113,13 @@ impl App {
                 sessions,
                 current,
                 created,
+                archived,
             } => {
                 // Kept whole, like the `Hello` arm above - see it for why the filter is gone.
                 self.sessions = sessions;
+                // The two halves are one answer: a row is in exactly one of them, so a frame that
+                // was applied half-way would draw a session twice or not at all.
+                self.archived = archived;
                 self.rooms_sync_sessions();
                 // A LIST DOES NOT SEAT A HEAD: `current` is where the daemon's socket is and
                 // `self.session_id` is the session this head is DRAWING. When they disagree the ROWS

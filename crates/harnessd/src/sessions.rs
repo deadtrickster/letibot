@@ -5153,48 +5153,13 @@ impl SessionSource for StoreSessions {
     }
 
     fn list(&self) -> Vec<StoredBrief> {
-        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        // The picker's `waiting on you` mark, read for every session in one pass - the board
-        // is the question's one home, so a session nobody has opened since a restart is marked
-        // as surely as a live one.
-        let waiting = g.sessions_waiting_on_operator().unwrap_or_default();
-        // Every child's name, from its record (`subagent_record::recorded_slugs`), so a child
-        // listed after a restart is named as it was when it was spawned - and a name derived for a
-        // record from before names is unique among its parent's children, as the runner's own
-        let mut by_parent: std::collections::BTreeMap<String, Vec<_>> = Default::default();
-        for r in g.subagent_runs().unwrap_or_default() {
-            by_parent.entry(r.parent_id.clone()).or_default().push(r);
-        }
-        let slugs: std::collections::HashMap<String, String> = by_parent
-            .values()
-            .flat_map(|runs| {
-                runs.iter()
-                    .map(|r| r.child_id.clone())
-                    .zip(crate::subagent_record::recorded_slugs(runs))
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        // And every child's ROLE, from the same records: a child's row shows what it was seated as,
-        // and its run record is where that survives a restart.
-        let roles: std::collections::HashMap<String, String> = by_parent
-            .values()
-            .flat_map(|runs| {
-                runs.iter()
-                    .map(|r| r.child_id.clone())
-                    .zip(crate::subagent_record::recorded_roles(runs))
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-        g.list_sessions()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|s| {
-                let waits = waiting.get(&s.id).copied().unwrap_or(0);
-                let slug = slugs.get(&s.id).cloned().unwrap_or_default();
-                let role = roles.get(&s.id).cloned().unwrap_or_default();
-                self.brief_of(s, waits, slug, role)
-            })
-            .collect()
+        self.rows(letibot_tokencore::store::Archived::No)
+    }
+
+    /// The other half of the list: what is put out of sight, which a head draws as a group of its own
+    /// and `--sessions --archived` prints. One read for both halves, so no row can be in both.
+    fn list_archived(&self) -> Vec<StoredBrief> {
+        self.rows(letibot_tokencore::store::Archived::Yes)
     }
 
     fn lookup(&self, session_id: &str) -> Option<StoredBrief> {
@@ -5230,6 +5195,44 @@ impl SessionSource for StoreSessions {
 }
 
 impl StoreSessions {
+    /// One half of the session list, from the store: in the list, or put out of sight. The marks a
+    /// picker draws are read here for both halves - the board is the question's one home, so a
+    /// session nobody has opened since a restart is marked as surely as a live one - and a child is
+    /// named from its record, so a child listed after a restart is named as it was spawned.
+    fn rows(&self, archived: letibot_tokencore::store::Archived) -> Vec<StoredBrief> {
+        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+        // The picker's `waiting on you` mark, read for every session in one pass - the board
+        // is the question's one home, so a session nobody has opened since a restart is marked
+        // as surely as a live one.
+        let waiting = g.sessions_waiting_on_operator().unwrap_or_default();
+        // Every child's name and role, from its run record, so a child listed after a restart is
+        // named and seated as it was when it was spawned.
+        let mut by_parent: std::collections::BTreeMap<String, Vec<_>> = Default::default();
+        for r in g.subagent_runs().unwrap_or_default() {
+            by_parent.entry(r.parent_id.clone()).or_default().push(r);
+        }
+        let mut slugs = std::collections::HashMap::new();
+        let mut roles = std::collections::HashMap::new();
+        for runs in by_parent.values() {
+            let ids = runs.iter().map(|r| r.child_id.clone());
+            slugs.extend(
+                ids.clone()
+                    .zip(crate::subagent_record::recorded_slugs(runs)),
+            );
+            roles.extend(ids.zip(crate::subagent_record::recorded_roles(runs)));
+        }
+        g.list_sessions_archived(archived)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|s| {
+                let waits = waiting.get(&s.id).copied().unwrap_or(0);
+                let slug = slugs.get(&s.id).cloned().unwrap_or_default();
+                let role = roles.get(&s.id).cloned().unwrap_or_default();
+                self.brief_of(s, waits, slug, role)
+            })
+            .collect()
+    }
+
     fn waits_of(g: &Store, id: &str) -> usize {
         g.todos(id)
             .map(|t| letibot_tokencore::store::operator_asks(&t).len())
