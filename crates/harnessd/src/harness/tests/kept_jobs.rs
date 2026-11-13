@@ -125,6 +125,14 @@ fn left_behind(dir: &Scratch, sid: &str, d: &Detached) {
         store.undelivered_jobs(sid).unwrap().is_empty(),
         "a detached job is not an ending"
     );
+    let held: Vec<_> = store
+        .holdings_of(sid)
+        .unwrap()
+        .into_iter()
+        .filter(|h| h.kind == letibot_tools::lifecycle::DETACHED_JOB && h.handle == d.handle)
+        .collect();
+    assert_eq!(held.len(), 1, "{held:?}");
+    assert_eq!(held[0].state, letibot_tokencore::store::HoldingState::Held);
 }
 
 fn job_state(store: &Store, sid: &str, handle: &str) -> String {
@@ -186,6 +194,15 @@ fn a_new_daemon_adopts_a_kept_job_and_says_so_once() {
     assert_eq!(rec.state, ProcState::Running);
     let ctx = store.job_context(sid, &d.handle).unwrap().unwrap();
     assert_eq!(ctx.instance, h.session_registry.instance());
+    assert!(
+        store
+            .holdings_of(sid)
+            .unwrap()
+            .iter()
+            .filter(|r| r.handle == d.handle)
+            .all(|r| r.state == letibot_tokencore::store::HoldingState::Gone),
+        "a reattached job is not a detached holding any more"
+    );
     assert!(
         until(Duration::from_secs(30), || std::fs::metadata(&out)
             .is_ok_and(|m| m.len() > before + 20)),

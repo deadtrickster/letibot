@@ -413,7 +413,16 @@ fn the_reap_log_reaches_the_model_through_job_list() {
         "{}",
         after.payload
     );
-    assert!(after.payload.contains("observed 2"), "{}", after.payload);
+    // The command's shell and `sleep`, and the wrapper a background job runs under (its shell,
+    // the pipeline's subshell and `cat`): at least the command's two.
+    let observed: usize = after
+        .payload
+        .split("observed ")
+        .nth(1)
+        .and_then(|t| t.split(' ').next())
+        .and_then(|n| n.parse().ok())
+        .unwrap_or(0);
+    assert!(observed >= 2, "{}", after.payload);
     // The record has to be USABLE later: a pid list from an hour ago identifies
     // nothing, so the command line travels with it.
     assert!(after.payload.contains("sleep"), "{}", after.payload);

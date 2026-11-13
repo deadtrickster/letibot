@@ -472,6 +472,25 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
                 .collect();
         let mut holds: Vec<HoldingView> = Vec::new();
         for row in &rows {
+            // A job a restart kept: no walk finds it, so its row and its stamp are what is said.
+            if row.kind == DETACHED_JOB {
+                if row.state != HoldingState::Gone {
+                    holds.push(HoldingView {
+                        kind: row.kind.clone(),
+                        class: row.class,
+                        host: row.host.clone(),
+                        handle: row.handle.clone(),
+                        state: row.state,
+                        stamp: row.stamp.clone(),
+                        bytes: None,
+                        archive: None,
+                        why: row.why.clone(),
+                        memory: None,
+                        verdict: Verdict::Keep(String::new()),
+                    });
+                }
+                continue;
+            }
             let key = (row.kind.clone(), row.host.clone(), row.handle.clone());
             let view = match found.get(&key) {
                 Some(f) => HoldingView {
@@ -523,28 +542,6 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
                 archive: None,
                 why: f.why.clone(),
                 memory: f.use_,
-                verdict: Verdict::Keep(String::new()),
-            });
-        }
-        // A job a restart kept is the owner's while no daemon runs it: its proof is the stamp
-        // and the cgroup the row names, and the next daemon to open the session takes it back.
-        for p in store.detached_processes_of(&owner.id).unwrap_or_default() {
-            holds.push(HoldingView {
-                kind: DETACHED_JOB.into(),
-                class: HoldingClass::Compute,
-                host: None,
-                handle: p.handle.clone(),
-                state: HoldingState::Held,
-                stamp: format!(
-                    "pid {} {} in {}",
-                    p.pid,
-                    p.identity,
-                    p.cgroup.clone().unwrap_or_default()
-                ),
-                bytes: None,
-                archive: None,
-                why: Some(format!("detached across a restart: `{}`", p.command)),
-                memory: None,
                 verdict: Verdict::Keep(String::new()),
             });
         }

@@ -748,9 +748,10 @@ daemon that predates this never takes the marker, and the launcher says its jobs
     is delivered as any settled job's, with the wrapper's code.
   - neither, or a populated cgroup whose stamp does not match: `lost: no proof`, said in the
     restart notice. Nothing is guessed and nothing is adopted.
-- **Lifecycle.** A detached job is a holding of its session: `letibot holds` lists it as
-  `job <handle> detached`, `busy` counts it, and a gone daemon does not close an owner that holds
-  one. Its hard TTL still applies, and a closing owner's reap ends it by `(pid, start)`.
+- **Lifecycle.** A detached job is a holding of its session: the detach writes a `holding` row of
+  kind `job` (the stamp and cgroup in `stamp`), the adoption marks it `gone`, and `letibot holds`
+  lists it as `job <handle> detached`. A gone daemon does not close an owner that holds one. Its
+  hard TTL still applies, and a closing owner's reap ends it by `(pid, start)`.
 - **VM.** A VM's jobs cannot outlive the VM. A restart of a VM-placed session ends them, as a
   plain stop does, and says so in one sentence on the log and the status line.
 

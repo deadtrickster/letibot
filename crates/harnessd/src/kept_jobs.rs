@@ -2,7 +2,10 @@
 //! the daemon that opens the session next takes them back (`docs/lifecycle.md`, "Jobs across a
 //! restart"). The proof is the job's cgroup, its stamp and its status file, never the row.
 
-use letibot_tokencore::store::{Check, JobContext, JobRecord, ProcState, ProcessRecord, Store};
+use letibot_tokencore::store::{
+    Check, HoldingClass, HoldingRow, HoldingState, JobContext, JobRecord, ProcState, ProcessRecord,
+    Store,
+};
 use letibot_tools::exec::ProcessHost;
 use letibot_tools::exec::detach::{Detached, Reattached};
 
@@ -43,8 +46,26 @@ pub fn record_detached(store: &Store, session: &str, kept: &[Detached]) -> Vec<S
         if let Err(e) = store.put_job(session, &job) {
             failed.push(format!("{}: its job row: {e}", d.handle));
         }
+        // The box-wide index `letibot holds` and the reaper read: the process row is per project.
+        if let Err(e) = store.put_holding(&holding(session, d, HoldingState::Held, now)) {
+            failed.push(format!("{}: its holding: {e}", d.handle));
+        }
     }
     failed
+}
+
+fn holding(session: &str, d: &Detached, state: HoldingState, now: i64) -> HoldingRow {
+    let mut row = HoldingRow::new(
+        session,
+        letibot_tools::lifecycle::DETACHED_JOB,
+        HoldingClass::Compute,
+        &d.handle,
+        format!("pid {} {} in {}", d.pid, d.identity, d.cgroup),
+        now,
+    );
+    row.state = state;
+    row.why = Some(format!("detached across a restart: `{}`", d.command));
+    row
 }
 
 fn job_row(store: &Store, session: &str, d: &Detached) -> JobRecord {
@@ -154,10 +175,16 @@ pub fn take_back(
     for rec in store.detached_processes_of(session).unwrap_or_default() {
         let ctx = store.job_context(session, &rec.handle).ok().flatten();
         let label = label(&rec.handle, ctx.as_ref().and_then(|c| c.slug.as_deref()));
-        let outcome = match detached_of(&rec, ctx.as_ref().and_then(|c| c.slug.clone())) {
-            Some(d) => procs.reattach(&d).map(|(_, r)| r),
+        let detached = detached_of(&rec, ctx.as_ref().and_then(|c| c.slug.clone()));
+        let outcome = match &detached {
+            Some(d) => procs.reattach(d).map(|(_, r)| r),
             None => Err("its row names no cgroup or output file to look at".to_string()),
         };
+        // Detached no longer, whatever it came to: running here, ended, or said lost.
+        if let Some(d) = &detached {
+            let now = letibot_metrics::now_ms() as i64;
+            let _ = store.put_holding(&holding(session, d, HoldingState::Gone, now));
+        }
         // This daemon owns the job now: the restart pass must not remind of it or say its
         // ending a second time.
         let own = |store: &Store| {

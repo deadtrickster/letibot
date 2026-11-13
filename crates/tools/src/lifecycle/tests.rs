@@ -512,20 +512,21 @@ fn the_default_owner_root_is_not_inside_the_store() {
 /// detached, the owner is busy, and a live owner keeps it.
 #[test]
 fn a_job_kept_across_a_restart_is_a_detached_holding_of_its_owner() {
-    use letibot_tokencore::store::{ProcState, ProcessRecord};
+    use letibot_tokencore::store::HoldingRow;
     let stub = Stub::new("detached");
     let store = stub.store();
     let owner = stub.owner();
     register(&store, &stub.places, &owner).expect("the owner");
-    store
-        .put_process(&ProcessRecord {
-            state: ProcState::Detached,
-            identity: "start:42".into(),
-            command: "./fuzz.sh".into(),
-            cgroup: Some("/sys/fs/cgroup/x/job-j7".into()),
-            ..ProcessRecord::starting(&stub.sid, "j7", None, 4343)
-        })
-        .expect("the kept job's row");
+    let mut row = HoldingRow::new(
+        &stub.sid,
+        DETACHED_JOB,
+        HoldingClass::Compute,
+        "j7",
+        "pid 4343 start:42 in /sys/fs/cgroup/x/job-j7",
+        now_ms(),
+    );
+    row.why = Some("detached across a restart: `./fuzz.sh`".into());
+    store.put_holding(&row).expect("the kept job's holding");
     let plan = plan(&store, &stub.places, None, now_ms()).expect("a plan");
     let o = &plan.owners[0];
     let line = o.holds_line(now_ms());

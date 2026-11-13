@@ -577,6 +577,8 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // What the stop ended on its way out: a command was in flight, so it was ended rather
     // than waited for. The operator asked for this, so it is not a fault.
     ("daemon_stopping_runs", Class::Routine, Action::Nothing),
+    // A restart of a VM-placed session ended its jobs: a VM's processes cannot outlive it.
+    ("restart_vm_jobs", Class::Routine, Action::Nothing),
     // The store's own notes about what opening or resuming did - the workspace it took
     // from the row, the title, the seat. Facts about where you are.
     ("resume_note", Class::Routine, Action::Nothing),

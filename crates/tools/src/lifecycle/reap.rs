@@ -349,9 +349,10 @@ pub fn activity(store: &Store, o: &OwnerRow, places: &Places) -> Activity {
         busy: busy(store, o),
         parent,
         daemon: daemon_state(o, places),
-        kept: store
-            .detached_processes_of(&o.id)
-            .is_ok_and(|v| !v.is_empty()),
+        kept: store.holdings_of(&o.id).is_ok_and(|v| {
+            v.iter()
+                .any(|h| h.kind == super::plan::DETACHED_JOB && h.state != HoldingState::Gone)
+        }),
     }
 }
 
