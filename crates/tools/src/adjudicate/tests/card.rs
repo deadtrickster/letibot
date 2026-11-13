@@ -249,3 +249,83 @@ fn no_durable_rule_is_offered_over_a_command_that_sets_state() {
         req.options
     );
 }
+
+/// A label is a button and not a paragraph. The ladder at a once-only point used to explain its own
+/// mode inside the Deny rung, and the two rungs that end every ladder are the same two words
+/// everywhere: what a grant lasts is the card's sentence, drawn in the half that scrolls.
+#[test]
+fn every_rung_is_one_line_and_the_two_refusals_are_one_shape() {
+    let offer = offered(Some("sed -i*"), "sed");
+    let ladders = [
+        always_ask_options(),
+        exec_options(&offer),
+        permission_options(&offer),
+        once_only_options(&offer),
+        view_grant_options(),
+        memory_grant_options(),
+    ];
+    for opts in &ladders {
+        for o in opts {
+            assert!(!o.label.contains('\n'), "a two-line label: {}", o.label);
+            assert!(
+                o.label.len() <= 90,
+                "`{}` is a paragraph, not a button",
+                o.label
+            );
+            // The mode's story belongs to the card, so no label names the mode or points at a
+            // rung by an id a person never sees.
+            assert!(!o.label.contains("mode `"), "{}", o.label);
+            assert!(!o.label.contains("allow_session"), "{}", o.label);
+            assert!(!o.label.contains("allow_always"), "{}", o.label);
+        }
+    }
+    // The two refusals, spelled once: a head types the reason on either, so neither describes
+    // itself differently from the other.
+    for opts in [&ladders[1], &ladders[2], &ladders[3]] {
+        let deny = opts.iter().find(|o| o.id == "deny").expect("a refusal");
+        let tell = opts
+            .iter()
+            .find(|o| o.id == "deny_and_tell")
+            .expect("the second refusal");
+        assert_eq!(deny.label, "Deny");
+        assert_eq!(tell.label, "Deny, and tell the model why");
+    }
+    // The view grant's ladder ends in its own refusal, and it is one line too.
+    let view = &ladders[4];
+    assert_eq!(
+        view.iter()
+            .find(|o| o.id == "deny")
+            .expect("a refusal")
+            .label,
+        "No — leave it outside the view"
+    );
+}
+
+/// A grant that lasts for the session says so in its kind: `AllowOnce` there is a head reading the
+/// rung as one call, which is the difference between a reason typed on it and words it refuses.
+#[test]
+fn a_session_grant_is_marked_as_one() {
+    let view = view_grant_options();
+    for id in ["grant_ro", "grant_rw"] {
+        let o = view.iter().find(|o| o.id == id).expect("the rung");
+        assert!(
+            o.label.contains("for the rest of the session"),
+            "{}",
+            o.label
+        );
+        assert_eq!(
+            o.kind,
+            OptionKind::AllowSession,
+            "`{id}` says it lasts for the session and is marked otherwise"
+        );
+    }
+    let memory = memory_grant_options();
+    assert_eq!(
+        memory
+            .iter()
+            .find(|o| o.id == "grant_memory_session")
+            .expect("the session grant")
+            .kind,
+        OptionKind::AllowSession
+    );
+}

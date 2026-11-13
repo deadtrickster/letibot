@@ -109,12 +109,12 @@ pub enum Action {
     Answer {
         req_id: String,
         option_id: String,
-        /// The glob typed after the option id, for an *always allow*. `None` means
-        /// the daemon derives the pattern from the call, which is what every answer
-        /// did before this existed.
+        /// The glob typed beside an *always allow*, which is the rule that answer writes. `None`
+        /// means the daemon derives the pattern from the call, which is what an answer taken with
+        /// an empty composer does.
         pattern: Option<String>,
-        /// What to tell the model, typed after `deny_and_tell`. The option's
-        /// label promised this and nothing carried it.
+        /// What to tell the model: the line typed beside a refusal, which is the reason the gate
+        /// hands it. `None` is a refusal with no reason given, and says so.
         note: Option<String>,
     },
     /// Answer a `question`, a different frame from `Answer` because their failure modes differ:

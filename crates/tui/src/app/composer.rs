@@ -2,6 +2,7 @@
 //! shell command, and the prompt history Up recalls.
 
 use super::*;
+use crate::ui::cards::decision::{ARMING_SAID, marked_words};
 use letibot_transcript::{TranscriptItem, UserPart};
 
 impl App {
@@ -110,8 +111,9 @@ impl App {
         if self.pick_card_up() && self.pick == Some(Pick::Mode) {
             return self.pick_mode(text.trim());
         }
-        // An open decision owns Enter, typed line or not, and a line that names an option is that answer. Any other
-        // line is not disposable: the ask arrived while it was being typed, and Enter on a card means answer this.
+        // An open decision owns Enter, typed line or not. A permission's selectors are the digits and the arrows, so a
+        // typed line is the marked rung's material - the reason a deny is sent with, the glob an always-allow is
+        // written with. A rung with no use for it answers nothing and says where it could go.
         if let Some(d) = self.open.first().cloned() {
             // A question is answered with words, and that is not a courtesy: a typed answer is first-class, and the
             // requirement names the alternative it is against.
@@ -124,12 +126,25 @@ impl App {
                     self.settle_question(d.req_id.clone(), question_answer(&d.choices, typed)),
                 );
             }
-            match match_option(&d, text.trim()) {
-                OptionChoice::One {
-                    option_id,
-                    pattern,
-                    note,
-                } => {
+            // The same arming window the card's own Enter keeps: a card a frame opened sits under
+            // the keystroke that sent this line.
+            if self.card_arming() {
+                self.set_composer(&text);
+                self.say(ARMING_SAID);
+                return None;
+            }
+            let at = self.sel.min(d.options.len().saturating_sub(1));
+            let Some(option) = d.options.get(at) else {
+                // An ask with no options cannot be taken by Enter at all; the line stays held
+                // rather than becoming a prompt sent under it.
+                self.set_composer(&text);
+                self.say("this ask offers no options — your line is held");
+                return None;
+            };
+            match marked_words(option.kind, &option.label, &text) {
+                Ok(words) => {
+                    let option_id = option.option_id.clone();
+                    let (pattern, note) = words.into_answer();
                     return Some(Action::Answer {
                         req_id: d.req_id,
                         option_id,
@@ -137,26 +152,14 @@ impl App {
                         note,
                     });
                 }
-                // A name that fits several options answers nothing: the line goes back to the composer so it can be
-                // finished, the card stays up so the arrows still work, and the sentence names every candidate.
-                OptionChoice::Ambiguous { word, candidates } => {
+                // The words stay where they are, in the composer, and the card keeps the keys: an
+                // answer that dropped them is one the operator did not give.
+                Err(said) => {
                     self.set_composer(&text);
-                    self.say(&ambiguous_option_line(&word, &candidates));
+                    self.say(&said);
                     return None;
                 }
-                // Nothing on the card answers to the line: the mid-typing courtesy,
-                // below.
-                OptionChoice::Unnamed => {}
             }
-            self.set_composer(&text);
-            if let Some(a) = self.answer_marked() {
-                self.say("answered the ask — your line is held, enter sends it");
-                return Some(a);
-            }
-            // An ask with no options cannot be taken by Enter at all; the
-            // line stays held rather than becoming a prompt sent under it.
-            self.say("this ask offers no options — your line is held");
-            return None;
         }
         // A line typed while a fill is still running: the daemon answers it against the whole history, since an import
         // is one worker job, and the head must not show it as though it had been read already.

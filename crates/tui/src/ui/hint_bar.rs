@@ -54,17 +54,13 @@ impl App {
 
     /// The open decision's half of the bar - this head's, not rano's `Deciding`
     /// tail, which says *"a row number answers"*: a row number marks the row, and Enter answers.
+    /// The ladder's own sentence comes from the card, so the bar and the card cannot spell the keys
+    /// two ways, and a permission's says what a typed line becomes on the marked rung.
     pub(crate) fn deciding_tail(&self) -> String {
-        use crate::ui::cards::decision::{LADDER_HINT, PUT_AWAY_HINT, QUESTION_LADDER_HINT};
+        use crate::ui::cards::decision::PUT_AWAY_HINT;
         match self.open.first() {
-            Some(d) if d.kind == "question" && decision_rows(d) == 0 => {
-                format!("type your answer · enter sends it · {PUT_AWAY_HINT}")
-            }
-            // A question's digits are the answer being typed, so its tail offers no row number.
-            Some(d) if d.kind == "question" => {
-                format!("{QUESTION_LADDER_HINT} · {PUT_AWAY_HINT}")
-            }
-            _ => format!("{LADDER_HINT} · or type an option · {PUT_AWAY_HINT}"),
+            Some(d) => format!("{} · {PUT_AWAY_HINT}", self.ladder_hint(d).trim()),
+            None => PUT_AWAY_HINT.to_string(),
         }
     }
 

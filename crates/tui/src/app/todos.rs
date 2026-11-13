@@ -457,6 +457,8 @@ impl App {
         if front != self.sel_for {
             self.sel_for = front.clone();
             self.sel = 0;
+            // The arming window starts with the card: see `App::card_arming`.
+            self.card_arrived = self.now_ms;
             // A decision coming up closes the quit card: the decision is drawn ahead
             // of it and takes its keys, so a `1` meant as "detach" would answer the decision.
             if !front.is_empty() && self.quit_card {

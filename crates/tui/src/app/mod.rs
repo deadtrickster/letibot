@@ -509,6 +509,10 @@ pub struct App {
     /// answers it; typing still works, because a script and a test drive the head that way. Held
     /// apart from the composer so a mistyped word cannot answer a prompt.
     pub(crate) sel: usize,
+    /// When the front card became the front card, on [`App::now_ms`]: the arming window a
+    /// permission's answer keys wait out, so an Enter aimed at a line being typed does not deny a
+    /// call with that line as the reason. Zero is a head with no clock, and then there is no window.
+    pub(crate) card_arrived: u64,
     /// The `req_id` [`App::sel`] was last reset for: the highlight is reset exactly when the
     /// front card changes, so a card arriving behind the one on screen does not move it and the
     /// next card up does not inherit the last one's row. See [`App::sync_front`].
@@ -1424,6 +1428,7 @@ impl App {
             screen_requests: Vec::new(),
             term_cols: 0,
             sel: 0,
+            card_arrived: 0,
             sel_for: String::new(),
             held_line: None,
             notes: Vec::new(),

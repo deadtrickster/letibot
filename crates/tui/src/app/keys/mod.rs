@@ -1,7 +1,8 @@
 //! A key, handled: the dispatch from a keystroke to whichever card, pane, window or the
-//! composer owns it, and the matching of a typed answer to a decision's options.
+//! composer owns it, and what a typed line means to the card that is up.
 
 use super::*;
+use crate::ui::cards::decision::{ARMING_SAID, MarkedWords, marked_words};
 use letibot_sessionlog::view::OpenDecision;
 use letibot_ui::editor::Reaction;
 
@@ -487,7 +488,18 @@ impl App {
     /// The marked row is the answer: the marker is what Enter takes, the contract the pickers keep. A permission's
     /// row is an option id and goes as `Action::Answer`; a question's is an index into the model's choices and goes
     /// as `Action::AnswerQuestion`. `None` when the row is not an answer.
+    ///
+    /// The words in the composer ride the answer where the marked rung has a use for them - the reason a refusal is
+    /// sent with, the glob an always-allow is written with - and are spent with it. A rung with no use for them
+    /// answers nothing while they are there: words somebody typed meant something, and an answer that dropped them
+    /// is an answer they did not give.
     pub(crate) fn answer_marked(&mut self) -> Option<Action> {
+        // A card in its first moments does not take the Enter: it may be the keystroke that sent
+        // the line the operator was typing. See `DEC_ARM_MS`.
+        if self.card_arming() {
+            self.say(ARMING_SAID);
+            return None;
+        }
         let d = self.open.first()?;
         let n = decision_rows(d);
         if n == 0 {
@@ -503,14 +515,23 @@ impl App {
         }
         let option_id = d.options[at].option_id.clone();
         let req_id = d.req_id.clone();
+        let typed = self.editor.text();
+        let words = match marked_words(d.options[at].kind, &d.options[at].label, typed) {
+            Ok(words) => words,
+            Err(said) => {
+                self.say(&said);
+                return None;
+            }
+        };
+        if !matches!(words, MarkedWords::Bare) {
+            self.clear_composer();
+        }
+        let (pattern, note) = words.into_answer();
         Some(Action::Answer {
             req_id,
             option_id,
-            // The ladder is the no-glob path by construction: there is nothing typed to read one from. A glob is
-            // given by typing `allow_always <pattern>`, and a reason with `deny_and_tell <why>`, which taken from
-            // the ladder alone denies without a reason and says so.
-            pattern: None,
-            note: None,
+            pattern,
+            note,
         })
     }
 
@@ -637,133 +658,6 @@ impl App {
             // *old* lines.
             self.invalidate_history();
         }
-    }
-}
-
-/// The option a typed line names, or why there is not one. Three outcomes and not an `Option`, since *nothing
-/// answers to that name* and *several things do* are different answers: the first is the mid-typing courtesy,
-/// which holds the words and answers the marked row.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum OptionChoice {
-    /// Exactly one option answers to the line. This is the operator's answer, and the
-    /// caller sends it.
-    One {
-        option_id: String,
-        pattern: Option<String>,
-        note: Option<String>,
-    },
-    /// The first word of the line begins more than one option id, so the operator has
-    /// not said which one they mean. Refused, with the candidates named.
-    Ambiguous {
-        /// What they typed, echoed back so the sentence reads as a reply.
-        word: String,
-        /// The option ids it could have meant, in card order.
-        candidates: Vec<String>,
-    },
-    /// Nothing on the card answers to this line.
-    Unnamed,
-}
-
-/// The options whose id begins with `t`, all of them and not the first: naming the candidates is the whole of the
-/// refusal in [`OptionChoice::Ambiguous`], and a helper returning the first hit is the bug this exists against.
-/// Case-folded, since an id is typed by a person.
-pub(crate) fn option_candidates(d: &OpenDecision, t: &str) -> Vec<usize> {
-    if t.is_empty() {
-        return Vec::new();
-    }
-    d.options
-        .iter()
-        .enumerate()
-        .filter(|(_, o)| o.option_id.to_ascii_lowercase().starts_with(t))
-        .map(|(i, _)| i)
-        .collect()
-}
-
-/// The sentence an ambiguous prefix gets: the candidates by name and the two ways out, since a refusal that does
-/// not say what to do next is a head that has stopped listening. The same shape `pick` and `pick_mode` give the
-/// same problem for their own lists.
-pub(crate) fn ambiguous_option_line(word: &str, candidates: &[String]) -> String {
-    /// Enough to name the difference, few enough to stay on one line. A card past this
-    /// says how many there are, which is the fact that matters when the list is long.
-    const SHOWN: usize = 6;
-    let shown = candidates
-        .iter()
-        .take(SHOWN)
-        .cloned()
-        .collect::<Vec<_>>()
-        .join(", ");
-    let more = if candidates.len() > SHOWN {
-        ", …"
-    } else {
-        ""
-    };
-    format!(
-        "`{word}` starts {} options here: {shown}{more} — finish typing, or ↑↓ then enter",
-        candidates.len(),
-    )
-}
-
-pub(crate) fn match_option(d: &OpenDecision, typed: &str) -> OptionChoice {
-    let line = typed.trim();
-    let (word, rest) = match line.split_once(char::is_whitespace) {
-        Some((w, r)) => (w, r.trim()),
-        None => (line, ""),
-    };
-    let t = word.to_ascii_lowercase();
-    // An exact name is an answer and it is checked first: an equality cannot be ambiguous, and `allow_once` is the
-    // spelling the card prints beside every option. Only the prefix path can be ambiguous.
-    let exact = d.options.iter().position(|o| {
-        o.option_id.eq_ignore_ascii_case(&t) || (!t.is_empty() && o.label.to_ascii_lowercase() == t)
-    });
-    let at = match exact {
-        Some(i) => i,
-        None => {
-            // A prefix that fits more than one option is refused, not resolved. `.find(|o| o.option_id.starts_with(t))`
-            // took the first hit in list order, so `allow` silently answered `allow_once` out of three grants the
-            // person was choosing between.
-            let candidates = option_candidates(d, &t);
-            match candidates.as_slice() {
-                [] => return OptionChoice::Unnamed,
-                [only] => *only,
-                _ => {
-                    return OptionChoice::Ambiguous {
-                        word: word.to_string(),
-                        candidates: candidates
-                            .into_iter()
-                            .map(|i| d.options[i].option_id.clone())
-                            .collect(),
-                    };
-                }
-            }
-        }
-    };
-    let id = &d.options[at];
-    if rest.is_empty() {
-        return OptionChoice::One {
-            option_id: id.option_id.clone(),
-            pattern: None,
-            note: None,
-        };
-    }
-    match id.kind {
-        // A glob, for the option that writes a rule.
-        letibot_sessionlog::event::OptionKind::AllowAlways => OptionChoice::One {
-            option_id: id.option_id.clone(),
-            pattern: Some(rest.to_string()),
-            note: None,
-        },
-        // The reason, for the option that promised one: `deny_and_tell` is labelled *deny, and tell the model why*,
-        // and typing the why must not be refused, with the line left in the composer and nothing
-        // answered at all.
-        letibot_sessionlog::event::OptionKind::RejectAlways => OptionChoice::One {
-            option_id: id.option_id.clone(),
-            pattern: None,
-            note: Some(rest.to_string()),
-        },
-        // Everything else refuses trailing words rather than dropping them:
-        // somebody who typed them meant them, and answering as though they had
-        // not is the answer they did not give.
-        _ => OptionChoice::Unnamed,
     }
 }
 

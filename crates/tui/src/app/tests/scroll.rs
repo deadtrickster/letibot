@@ -2,10 +2,10 @@
 
 use super::*;
 
-/// A line that names nothing is still the mid-typing courtesy: a permission that arrives under
-/// somebody's half-thought holds their words and answers the marked row, so their Enter is not wasted.
+/// A permission that arrives under somebody's half-thought does not answer itself with it: the words
+/// are the marked rung's material, and a rung that takes none answers nothing while they stand.
 #[test]
-fn a_line_that_names_nothing_holds_the_words_and_answers_the_marked_row() {
+fn a_line_the_marked_rung_cannot_use_answers_nothing_and_keeps_the_words() {
     use letibot_sessionlog::event::OptionKind;
     let mut a = app();
     a.open.push(decision_with(&[
@@ -14,16 +14,13 @@ fn a_line_that_names_nothing_holds_the_words_and_answers_the_marked_row() {
     ]));
     let action = a.submit("why did the cache miss?".into());
     assert!(
-        matches!(action, Some(Action::Answer { ref option_id, .. }) if option_id == "allow_once"),
-        "the marked row is the answer: {action:?}"
+        action.is_none(),
+        "a grant of one call takes no words, so nothing is answered: {action:?}"
     );
-    assert_eq!(a.input(), "why did the cache miss?", "the words are held");
+    assert_eq!(a.input(), "why did the cache miss?", "the words stay");
     assert!(
-        a.notice
-            .as_deref()
-            .unwrap_or("")
-            .contains("answered the ask"),
-        "and it says which of the two things just happened: {:?}",
+        a.notice.as_deref().unwrap_or("").contains("takes no words"),
+        "and it says why nothing happened: {:?}",
         a.notice
     );
 }
@@ -591,11 +588,11 @@ fn the_cursor_scrolls_itself_into_view() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The arrows belong to the decision only while the composer is empty. A half-typed line still edits, and
-/// Enter does not send it while an ask is open: the line is held and the next Enter, with the ask
-/// settled, sends it.
+/// The arrows belong to the decision only while the composer is empty. A half-typed line still edits,
+/// and Enter never sends it while an ask is open: the words are the marked rung's material, so they
+/// answer only where the rung uses them, and otherwise they wait for the ask to settle.
 #[test]
-fn enter_on_an_ask_answers_it_and_holds_the_half_typed_line() {
+fn enter_on_an_ask_spends_the_half_typed_line_only_where_the_rung_uses_it() {
     let mut a = app();
     a.apply(ServerFrame::Event(env(1, testing::requested("r1", "rm"))));
     typed(&mut a, "some prose");
@@ -607,21 +604,29 @@ fn enter_on_an_ask_answers_it_and_holds_the_half_typed_line() {
     a.key(Key::Up);
     assert_eq!(a.sel, 0);
     assert_eq!(a.input(), "some prose");
-    // Enter answers the ask with the marked row and holds the line.
+    // Enter on a grant of one call: the rung takes no words, so nothing is answered and the line
+    // stays where it is.
+    assert_eq!(
+        a.key(Key::Enter),
+        None,
+        "a grant of one call takes no words"
+    );
+    assert_eq!(a.input(), "some prose", "the words are still theirs");
+    assert!(a.pending_prompts.is_empty(), "nothing was sent");
+    // Marked on the refusal, the same words are its reason and the ask is answered with them.
+    a.key(Key::Down);
+    assert_eq!(a.sel, 1, "the refusal is marked");
     assert_eq!(
         a.key(Key::Enter),
         Some(Action::Answer {
             req_id: "r1".into(),
-            option_id: "allow".into(),
+            option_id: "deny".into(),
             pattern: None,
-            note: None
+            note: Some("some prose".into())
         })
     );
-    assert_eq!(a.input(), "some prose", "the words are held, not sent");
+    assert_eq!(a.input(), "", "the reason went with the answer");
     assert!(a.pending_prompts.is_empty(), "nothing was sent");
-    // With the ask settled, the next Enter sends the held line.
-    a.apply(ServerFrame::Event(env(2, testing::answered("r1", "allow"))));
-    assert_eq!(a.key(Key::Enter), Some(Action::Prompt("some prose".into())));
 }
 
 /// Parked in the scrollback the arrows are the scrollback's, and `↓` is the bottom: three presses of it

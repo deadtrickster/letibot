@@ -73,6 +73,12 @@ letibot-tokencore.workspace = true
 # the daemon's own mapping, so the test feeds the head what the daemon feeds it rather
 # than a second copy of that mapping written in a test.
 letibot-sessionlog = { workspace = true, features = ["tools"] }
+# **The daemon that asks.** A permission card's answer half is one end of a seam whose other end
+# is the gate's ask: `tests/permission_card.rs` drives the real head on a pty against a real
+# `AdjudicatedGate`, and the asker between them is the daemon's own (`answers::HeadAdjudicator`) —
+# a test-authored one would be a fixture asserting about a fixture. `local` is off: nothing here
+# runs a model.
+letibot-harnessd = { workspace = true, default-features = false }
 
 [[bin]]
 name = "letibot-tui"

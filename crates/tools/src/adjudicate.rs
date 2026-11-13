@@ -440,12 +440,14 @@ pub fn view_grant_options() -> Vec<DecisionOption> {
         DecisionOption {
             id: "grant_ro".into(),
             label: "Let this session READ it (for the rest of the session)".into(),
-            kind: OptionKind::AllowOnce,
+            // The label promises the session and the kind said once: a head reads the kind to
+            // know which rung takes words, and one word moved here so it cannot be read wrong.
+            kind: OptionKind::AllowSession,
         },
         DecisionOption {
             id: "grant_rw".into(),
             label: "Let this session READ AND WRITE it (for the rest of the session)".into(),
-            kind: OptionKind::AllowOnce,
+            kind: OptionKind::AllowSession,
         },
         DecisionOption {
             id: "deny".into(),
@@ -479,12 +481,20 @@ pub fn memory_grant_options() -> Vec<DecisionOption> {
 }
 
 pub fn always_ask_options() -> Vec<DecisionOption> {
+    let mut out = vec![DecisionOption {
+        id: "allow_once".into(),
+        label: "Allow this one".into(),
+        kind: OptionKind::AllowOnce,
+    }];
+    out.extend(deny_rungs());
+    out
+}
+
+/// The two refusals every ladder ends with. They are one shape because a head types the reason on
+/// either: the two differ in what the gate records, not in what a person spells. A label is a button,
+/// so what a grant lasts is the card's sentence and not the button's.
+fn deny_rungs() -> Vec<DecisionOption> {
     vec![
-        DecisionOption {
-            id: "allow_once".into(),
-            label: "Allow this one".into(),
-            kind: OptionKind::AllowOnce,
-        },
         DecisionOption {
             id: "deny".into(),
             label: "Deny".into(),
@@ -531,16 +541,7 @@ pub fn permission_options(offer: &Offer) -> Vec<DecisionOption> {
         "Allow this class for the rest of the session".into(),
     ));
     out.extend(durable_rung(offer.derived.as_deref()));
-    out.push(DecisionOption {
-        id: "deny".into(),
-        label: "Deny".into(),
-        kind: OptionKind::Deny,
-    });
-    out.push(DecisionOption {
-        id: "deny_and_tell".into(),
-        label: "Deny, and tell the model why".into(),
-        kind: OptionKind::DenyAndTell,
-    });
+    out.extend(deny_rungs());
     out
 }
 
@@ -585,23 +586,14 @@ pub fn exec_options(offer: &Offer) -> Vec<DecisionOption> {
     }];
     out.extend(session_rung(offer, session_label));
     out.extend(durable_rung(offer.derived.as_deref()));
-    out.push(DecisionOption {
-        id: "deny".into(),
-        label: "Deny".into(),
-        kind: OptionKind::Deny,
-    });
-    out.push(DecisionOption {
-        id: "deny_and_tell".into(),
-        label: "Deny, and tell the model why".into(),
-        kind: OptionKind::DenyAndTell,
-    });
+    out.extend(deny_rungs());
     out
 }
 
 /// The ladder at a point whose grants are [`crate::mode::GrantScope::Once`]. The session
 /// rung is here too, because an explicit answer is the operator overriding the point's
 /// default, and a durable rule was already on the ladder.
-pub fn once_only_options(mode_name: &'static str, offer: &Offer) -> Vec<DecisionOption> {
+pub fn once_only_options(offer: &Offer) -> Vec<DecisionOption> {
     let mut out = vec![DecisionOption {
         id: "allow_once".into(),
         label: "Allow this one".into(),
@@ -612,20 +604,7 @@ pub fn once_only_options(mode_name: &'static str, offer: &Offer) -> Vec<Decision
         "Allow this class for the rest of the session".into(),
     ));
     out.extend(durable_rung(offer.derived.as_deref()));
-    out.push(DecisionOption {
-        id: "deny".into(),
-        label: "Deny".into(),
-        kind: OptionKind::Deny,
-    });
-    out.push(DecisionOption {
-        id: "deny_and_tell".into(),
-        label: format!(
-            "Deny, and tell the model why  (mode `{mode_name}` asks once per call by \
-                 default; `allow_session` above lifts that for this class until the \
-                 daemon stops)"
-        ),
-        kind: OptionKind::DenyAndTell,
-    });
+    out.extend(deny_rungs());
     out
 }
 
@@ -2210,7 +2189,7 @@ impl AdjudicatedGate {
                 } else if self.mode.grants == crate::mode::GrantScope::Session {
                     permission_options(&offer)
                 } else {
-                    once_only_options(self.mode.name, &offer)
+                    once_only_options(&offer)
                 }
             },
             // `None` when nothing was left off, so a complete ladder says nothing rather than

@@ -15,16 +15,117 @@ use rano::agent::decision as card;
 pub(crate) const PUT_AWAY_HINT: &str = "esc puts it away — alt-a brings it back";
 
 /// How a ladder says its keys: a row number or the arrows marks a row, Enter answers it - on the
-/// card and on the bar, one spelling.
+/// card and on the bar, one spelling. Digits and arrows are the only selectors: nothing typed here
+/// picks a rung, it is the marked rung's material.
 pub(crate) const LADDER_HINT: &str = "↑↓ or a row number marks · enter answers";
 
 /// A question's ladder: its digits are the answer being typed, so only the arrows mark a row, and
 /// typing is the other way to answer. Its rows carry no number, since a drawn number is the promise
 /// that the digit marks the row.
-pub(crate) const QUESTION_LADDER_HINT: &str = "↑↓ marks · enter answers · or type your own";
+pub(crate) const QUESTION_LADDER_HINT: &str = "↑↓ marks · enter answers · or type your own answer";
 
-/// The head of rano's ladder hint, which [`LADDER_HINT`] replaces.
-const RANO_LADDER_HINT: &str = "  ↑↓ to choose · Enter to answer";
+/// A question with nothing to choose from: its line is the answer, and Enter is the only key.
+pub(crate) const NO_LADDER_HINT: &str = "type your answer · enter sends it";
+
+/// What a rung does with the words in the composer, typed alongside the mark.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Words {
+    /// The rung writes a rule, and the words are the glob it is written with.
+    Glob,
+    /// The rung refuses, and the words are what the model is told.
+    Reason,
+    /// The rung answers on its own; words typed here have nowhere to go.
+    None,
+}
+
+/// How long a permission card ignores the key that answers it: `MODE_ARM_MS`'s window one card over.
+/// Since a typed line now means something to the marked rung, an Enter meant for the composer would
+/// deny a call with the operator's own words as its reason. Digits and arrows only mark, so they are
+/// not held.
+pub(crate) const DEC_ARM_MS: u64 = 500;
+
+/// What a card that has just appeared says when it refuses the key that would answer it.
+pub(crate) const ARMING_SAID: &str = "the card just came up — press enter again to answer it";
+
+/// What a typed line becomes for a rung of the marked kind, or the sentence that says it has
+/// nowhere to go here. One reading for Enter on the card and Enter in the composer, so the two
+/// cannot disagree about what a typed line means.
+pub(crate) fn marked_words(
+    kind: letibot_sessionlog::event::OptionKind,
+    label: &str,
+    typed: &str,
+) -> Result<MarkedWords, String> {
+    let words = typed.trim();
+    match words_for_kind(kind) {
+        Words::None if !words.is_empty() => Err(format!(
+            "`{label}` takes no words — ↑↓ marks a rung that does (a deny, an always-allow), or \
+             ctrl-c clears the line"
+        )),
+        _ if words.is_empty() => Ok(MarkedWords::Bare),
+        Words::Glob => Ok(MarkedWords::Glob(words.to_string())),
+        Words::Reason => Ok(MarkedWords::Reason(words.to_string())),
+        Words::None => Ok(MarkedWords::Bare),
+    }
+}
+
+/// A typed line spent on the marked rung: the two fields an `Action::Answer` carries besides the id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum MarkedWords {
+    /// Nothing typed, so nothing to carry.
+    Bare,
+    /// An always-allow's glob.
+    Glob(String),
+    /// A refusal's reason, which the model is told.
+    Reason(String),
+}
+
+impl MarkedWords {
+    /// The `(pattern, note)` pair, in the order `Action::Answer` takes them.
+    pub(crate) fn into_answer(self) -> (Option<String>, Option<String>) {
+        match self {
+            MarkedWords::Bare => (None, None),
+            MarkedWords::Glob(p) => (Some(p), None),
+            MarkedWords::Reason(why) => (None, Some(why)),
+        }
+    }
+}
+
+/// What the marked rung does with a typed line. The kind is the daemon's own, so the card and the
+/// gate cannot disagree about which rung takes a reason and which takes a rule.
+pub(crate) fn words_for(d: &OpenDecision, at: usize) -> Words {
+    d.options
+        .get(at)
+        .map_or(Words::None, |o| words_for_kind(o.kind))
+}
+
+fn words_for_kind(kind: letibot_sessionlog::event::OptionKind) -> Words {
+    use letibot_sessionlog::event::OptionKind as K;
+    match kind {
+        K::AllowAlways => Words::Glob,
+        K::RejectOnce | K::RejectAlways => Words::Reason,
+        _ => Words::None,
+    }
+}
+
+/// The sentence a permission card owes about its two standing rungs, drawn in the content half:
+/// what a session grant lasts, and where a durable rule is written. In the gate's words it was a
+/// paragraph inside the Deny button, which is a choice that explains itself instead of being one.
+/// The mode is named when this head knows it, since the rungs it narrows are the mode's.
+fn grant_sentence(d: &OpenDecision, mode: &str) -> Option<String> {
+    use letibot_sessionlog::event::OptionKind as K;
+    let mut said: Vec<&str> = Vec::new();
+    if d.options.iter().any(|o| o.kind == K::AllowSession) {
+        said.push("a session grant lasts until the daemon stops");
+    }
+    if d.options.iter().any(|o| o.kind == K::AllowAlways) {
+        said.push("a durable rule is written to ~/.config/letibot/permission.json");
+    }
+    let mode = match mode.trim() {
+        "" => String::new(),
+        m => format!("mode `{m}` · "),
+    };
+    (!said.is_empty()).then(|| format!("{mode}{}", said.join(" · ")))
+}
 
 /// A ladder row with its number: the digit that marks it is drawn on it, `1`-`9`; a row past the
 /// ninth has no digit and is padded to line up.
@@ -49,7 +150,7 @@ fn row_body(body: &str) -> String {
 
 impl App {
     /// The rungs, in this head's words: rano puts each option's id beside a label that already says
-    /// the answer, and the id is only read where an answer takes a word after it. The ranges come out
+    /// the answer, and a head that printed both would promise a key nobody has. The ranges come out
     /// of the same walk as the rows, so a click and the drawing cannot disagree.
     pub(crate) fn ladder_rows(
         &self,
@@ -85,41 +186,129 @@ impl App {
         }
     }
 
+    /// Whether the front card is still in its first moments, so the Enter on its way belongs to the
+    /// composer rather than to the card. A permission's only, and only where this head has a clock:
+    /// `now_ms` zero is a test or a replay, and a window nobody can measure is not a window.
+    pub(crate) fn card_arming(&self) -> bool {
+        self.open.first().is_some_and(|d| d.kind != "question")
+            && self.now_ms > 0
+            && self.now_ms.saturating_sub(self.card_arrived) < DEC_ARM_MS
+    }
+
+    /// How long there is and what silence does: the one line of rano's answer half this head keeps,
+    /// because it is a fact about the ask rather than a description of a card.
+    fn deadline_rows(&self, d: &OpenDecision, w: usize) -> Vec<rano::render::Line> {
+        let Some(deadline) = d.deadline else {
+            return Vec::new();
+        };
+        let left = match deadline.checked_sub(self.now_ms) {
+            Some(left) => rano::agent::text::countdown(left),
+            // Past its deadline: the daemon settled it without telling this head, and a count into
+            // negative seconds reads as a rendering fault.
+            None => format!(
+                "past its deadline by {}s; the daemon has not said what became of it",
+                (self.now_ms - deadline) / 1000
+            ),
+        };
+        let clause = match d.on_timeout {
+            letibot_sessionlog::event::OnTimeout::Deny => "if nobody answers, nothing runs",
+            letibot_sessionlog::event::OnTimeout::Allow => "if nobody answers, it RUNS anyway",
+            letibot_sessionlog::event::OnTimeout::Ask => {
+                "if nobody answers, the guard model decides"
+            }
+        };
+        rano::agent::text::wrap(&format!("  {left} · {clause}"), w)
+            .into_iter()
+            .map(|l| rano::agent::text::one(l, rano::style::Role::Faint))
+            .collect()
+    }
+
+    /// What the marked rung will do with the words in the composer, or with the silence: the rule
+    /// that will be written, the sentence the model will be handed, or that this rung has no use
+    /// for them. Nothing when there is nothing typed.
+    fn words_preview(&self, d: &OpenDecision, w: usize) -> Option<rano::render::Line> {
+        let typed = self.editor.text();
+        let words = typed.trim();
+        if words.is_empty() {
+            return None;
+        }
+        let at = self.sel.min(d.options.len().saturating_sub(1));
+        let said = match words_for(d, at) {
+            Words::Glob => format!("  writes the rule `{words}` to permission.json"),
+            Words::Reason => format!("  tells the model: {words}"),
+            Words::None => {
+                "  words go nowhere on this rung — deny and an always-allow take them, ↑↓ marks one"
+                    .to_string()
+            }
+        };
+        Some(rano::agent::text::one(
+            rano::agent::text::trim_to(&said, w),
+            rano::style::Role::Pending,
+        ))
+    }
+
+    /// The ladder's hint: digits and arrows mark, Enter answers, and - where the marked rung has a
+    /// use for them - what the words typed beside it become. One spelling with the bar.
+    pub(crate) fn ladder_hint(&self, d: &OpenDecision) -> String {
+        if d.kind == "question" {
+            return if decision_rows(d) == 0 {
+                format!("  {NO_LADDER_HINT}")
+            } else {
+                format!("  {QUESTION_LADDER_HINT}")
+            };
+        }
+        let at = self.sel.min(d.options.len().saturating_sub(1));
+        match words_for(d, at) {
+            Words::Glob => format!("  {LADDER_HINT} · type the rule"),
+            Words::Reason => format!("  {LADDER_HINT} · type the reason"),
+            Words::None => format!("  {LADDER_HINT}"),
+        }
+    }
+
     /// The card, split where the split is: `content` is the question, what it is about and the
     /// evidence, a viewport that shrinks and scrolls; `choices` is the ladder and what pressing it
     /// means, never trimmed and never scrolled, because that half is the answer.
+    ///
+    /// The answer half is this head's, whole: rano's rungs are replaced where the head has its own
+    /// words for them, and everything rano draws under the ladder - the id to type, the `<why>`
+    /// suffix, a glob hint with a run of spaces in it - described a card that no longer exists.
     pub(crate) fn decision_card(&self, d: &OpenDecision, w: usize) -> (Vec<String>, Vec<String>) {
         let view = self.decision_view(d);
-        let (content, mut choices) = view.split(w);
+        let (mut content, rano) = view.split(w);
         let p = self.cfg.palette();
-        // The ladder's hint, in this head's words: a permission's row number marks a row and Enter answers it, a
-        // question's digits are its answer so only the arrows mark, and a question with nothing to choose from has no
-        // ladder - its line is typed. One casing with the bar.
         let question = d.kind == "question";
-        let rows = decision_rows(d);
-        // rano's rungs go, this head's take their place: what it draws after them - the deadline,
-        // the hints - stays, so only the answer's own rows are this head's words.
-        if !question && rows > 0 {
-            let cut = view.choice_rows(w).last().map_or(0, |r| r.end);
-            choices.splice(..cut, self.ladder_rows(d, w).0);
+        // rano's rungs stay for a question, whose answers are the model's prose; a permission's are
+        // this head's, so a digit and a click cannot disagree about what row two is.
+        let cut = view.choice_rows(w).last().map_or(0, |r| r.end);
+        let rungs = if question {
+            rano[..cut].to_vec()
+        } else {
+            self.ladder_rows(d, w).0
+        };
+        // What a grant lasts, where the button cannot say it: the label is one line, and the
+        // sentence a person needs to weigh the rungs is read in the half that scrolls.
+        if let Some(said) = grant_sentence(d, &self.mode_current()) {
+            for l in rano::agent::text::wrap(&format!("  {said}"), w) {
+                content.push(rano::agent::text::one(l, rano::style::Role::Faint));
+            }
         }
-        for l in choices.iter_mut() {
-            let plain = l.plain();
-            let Some(rest) = plain.strip_prefix(RANO_LADDER_HINT) else {
-                continue;
-            };
-            let said = if question && rows == 0 {
-                "  type your answer · enter sends it".to_string()
-            } else if question {
-                format!("  {QUESTION_LADDER_HINT}{rest}")
-            } else {
-                format!("  {LADDER_HINT}{rest}")
-            };
-            *l = rano::render::Line::styled(
-                rano::agent::text::trim_to(&said, w),
-                rano::style::Role::Pending,
-            );
+        let mut choices = rungs;
+        // What silence does, below the ladder because that is the order a person reads.
+        if d.deadline.is_some() {
+            for l in self.deadline_rows(d, w) {
+                choices.push(l);
+            }
         }
+        // What the words in the composer will do, above the hint: the rule that will be saved, or
+        // the sentence the model will be given. It is the answer's own meaning, so it sits in the
+        // half that never trims.
+        if !question && let Some(l) = self.words_preview(d, w) {
+            choices.push(l);
+        }
+        choices.push(rano::agent::text::one(
+            rano::agent::text::trim_to(&self.ladder_hint(d), w),
+            rano::style::Role::Pending,
+        ));
         // A question's two spellings the model cannot offer: rano draws the hint for a question and
         // is pinned, so a note on a choice and an abstention are this head's row under it. Without
         // it they exist and are undiscoverable, which for an affordance is the same as absent.

@@ -42,7 +42,7 @@ fn a_bare_line_while_the_runs_request_is_open_is_not_spent_on_the_model() {
 /// a keypress into an `Action`, so a refusal that still answered the marked row would hand the
 /// daemon a grant nobody chose. No action, the words still in the composer, the ask still open.
 #[test]
-fn an_ambiguous_prefix_answers_nothing_and_keeps_the_words() {
+fn words_the_marked_rung_cannot_use_answer_nothing_and_keep_themselves() {
     use letibot_sessionlog::event::{OnTimeout, OptionKind};
     let mut a = app();
     a.open.push(decision_with(&[
@@ -54,35 +54,35 @@ fn an_ambiguous_prefix_answers_nothing_and_keeps_the_words() {
     a.open[0].on_timeout = OnTimeout::Deny;
     let pushed = a.open.len();
 
+    // The top rung grants one call and takes no words, so a sentence submitted on it is refused
+    // rather than spent or dropped.
     assert_eq!(
-        a.submit("allow".into()),
+        a.submit("a message for the model".into()),
         None,
-        "an ambiguous name must answer nothing at all"
+        "words the rung cannot use must answer nothing at all"
     );
-    // The card is still open, the words are still theirs, and the notice names the
-    // three they might have meant - rather than the courtesy line, which would mean
-    // the marked row had been answered for them.
+    // The card is still open, the words are still theirs, and the notice says which rungs do take
+    // them - rather than the courtesy line, which would mean the marked row had been answered.
     assert_eq!(a.open.len(), pushed, "the ask was answered anyway");
-    assert_eq!(a.input(), "allow");
+    assert_eq!(a.input(), "a message for the model");
     let said = a.notice.clone().unwrap_or_default();
-    for id in ["allow_once", "allow_session", "allow_always"] {
-        assert!(said.contains(id), "{said}");
-    }
-    assert!(
-        !said.contains("answered the ask"),
-        "the marked row was answered under an ambiguous name: {said}"
-    );
+    assert!(said.contains("takes no words"), "{said}");
+    assert!(said.contains("deny"), "{said}");
+    assert!(said.contains("always-allow"), "{said}");
+    assert!(!said.contains("answered the ask"), "{said}");
 
-    // Finishing the word answers it. The ask stays in `open` until the daemon says
-    // it settled - the head does not remove it on the strength of its own submit.
-    a.set_composer("allow_session");
+    // Down to the refusal and the same words are its reason: one Enter, and the ask is answered.
+    assert_eq!(a.key(Key::Down), None);
+    assert_eq!(a.key(Key::Down), None);
+    assert_eq!(a.key(Key::Down), None);
+    assert_eq!(a.sel, 3, "the refusal is marked");
     assert_eq!(
-        a.submit("allow_session".into()),
+        a.submit("not /tmp".into()),
         Some(Action::Answer {
             req_id: "d1".into(),
-            option_id: "allow_session".into(),
+            option_id: "deny".into(),
             pattern: None,
-            note: None
+            note: Some("not /tmp".into())
         })
     );
 }

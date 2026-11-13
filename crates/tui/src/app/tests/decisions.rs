@@ -126,199 +126,138 @@ fn a_card_that_was_never_taken_to_an_oracle_says_so_and_one_that_was_does_not() 
     );
 }
 
-/// A glob typed after the option id is the rule's coverage.
+/// A typed line is the marked rung's material, not a selector: on an always-allow it is the rule's
+/// coverage, on a refusal it is the reason the model is given, and on a rung with no use for words
+/// nothing is answered at all.
 ///
 /// > *"please add globbing to my answers somehow too"*
 #[test]
-fn an_answer_can_carry_the_operators_own_glob() {
+fn a_typed_line_is_the_marked_rungs_material() {
+    use crate::ui::cards::decision::{MarkedWords, Words, marked_words, words_for};
     use letibot_sessionlog::event::OptionKind;
     let d = decision_with(&[
         OptionKind::AllowOnce,
         OptionKind::AllowAlways,
         OptionKind::RejectOnce,
+        OptionKind::RejectAlways,
     ]);
 
-    // The bare id still answers, and asks for no pattern.
+    // Which rung takes what, read off the kind the daemon sent.
+    assert_eq!(words_for(&d, 0), Words::None);
+    assert_eq!(words_for(&d, 1), Words::Glob);
+    assert_eq!(words_for(&d, 2), Words::Reason);
+    assert_eq!(words_for(&d, 3), Words::Reason);
+
+    // A glob is a path, so it rides verbatim - it is not an id, and nothing about it is case-folded.
     assert_eq!(
-        match_option(&d, "allow_once"),
-        OptionChoice::One {
-            option_id: "allow_once".into(),
-            pattern: None,
-            note: None
-        }
+        marked_words(
+            d.options[1].kind,
+            &d.options[1].label,
+            " crates/**/Cargo.toml "
+        ),
+        Ok(MarkedWords::Glob("crates/**/Cargo.toml".into()))
     );
-    // A prefix still answers when it names exactly one option, which is how
-    // people actually type.
     assert_eq!(
-        match_option(&d, "d"),
-        OptionChoice::One {
-            option_id: "deny".into(),
-            pattern: None,
-            note: None
-        }
+        marked_words(
+            d.options[2].kind,
+            &d.options[2].label,
+            "use the scratch dir"
+        ),
+        Ok(MarkedWords::Reason("use the scratch dir".into()))
     );
 
-    // And the glob rides after it, verbatim: a pattern is a path, so it is not
-    // lowercased the way the option id is.
+    // Nothing typed carries nothing, on every rung: silence is not a reason and not a rule.
     assert_eq!(
-        match_option(&d, "allow_always crates/**/Cargo.toml"),
-        OptionChoice::One {
-            option_id: "allow_always".into(),
-            pattern: Some("crates/**/Cargo.toml".into()),
-            note: None
-        }
+        marked_words(d.options[1].kind, "", ""),
+        Ok(MarkedWords::Bare)
+    );
+    assert_eq!(
+        marked_words(d.options[2].kind, "", "   "),
+        Ok(MarkedWords::Bare)
     );
 
-    // A glob on anything but `allow_always` is refused, not dropped: somebody who typed
-    // `allow_once src/**` meant a rule, and granting one call is an answer they did not give.
-    // `Unnamed` leaves the line in the composer where they can see it.
-    assert_eq!(match_option(&d, "allow_once src/**"), OptionChoice::Unnamed);
-    assert_eq!(match_option(&d, "deny src/**"), OptionChoice::Unnamed);
+    // A rung that takes no words refuses them rather than dropping them: somebody who typed a
+    // sentence meant it, and an answer that discarded it is an answer they did not give.
+    let refused = marked_words(d.options[0].kind, "Allow this one", "because I said so")
+        .expect_err("a grant of one call takes no words");
+    assert!(refused.contains("Allow this one"), "{refused}");
+    assert!(refused.contains("ctrl-c clears"), "{refused}");
 }
 
-/// An ambiguous prefix is refused, and the candidates are named: which of three grants the operator
-/// gave is the whole content of the answer, and a grant invented by list position is an answer
-/// nobody gave. Nothing is answered - not the first guess, and not the marked row either.
+/// A refusal carries the operator's own words, on either refusal rung: the card says where they
+/// will go, and the label is one line rather than a paragraph about the mode.
 #[test]
-fn an_ambiguous_option_prefix_is_refused_with_the_candidates_named() {
+fn a_refusal_carries_the_operators_words() {
     use letibot_sessionlog::event::OptionKind;
-    let d = decision_with(&[
-        OptionKind::AllowOnce,
-        OptionKind::AllowSession,
-        OptionKind::AllowAlways,
-        OptionKind::RejectOnce,
-    ]);
-    assert_eq!(
-        match_option(&d, "allow"),
-        OptionChoice::Ambiguous {
-            word: "allow".into(),
-            candidates: vec![
-                "allow_once".into(),
-                "allow_session".into(),
-                "allow_always".into()
-            ]
-        }
-    );
-    // One character further and it is an answer again - and the case fold does not
-    // decide which of these is ambiguous.
-    assert_eq!(
-        match_option(&d, "allow_a"),
-        OptionChoice::One {
-            option_id: "allow_always".into(),
-            pattern: None,
-            note: None
-        }
-    );
-    assert_eq!(
-        match_option(&d, "ALLOW_S"),
-        OptionChoice::One {
-            option_id: "allow_session".into(),
-            pattern: None,
-            note: None
-        }
-    );
-    // An exact id is never ambiguous, however many of its siblings start the same
-    // way, and neither is a line that names nothing at all.
-    assert_eq!(
-        match_option(&d, "allow_once"),
-        OptionChoice::One {
-            option_id: "allow_once".into(),
-            pattern: None,
-            note: None
-        }
-    );
-    assert_eq!(match_option(&d, "nope"), OptionChoice::Unnamed);
-    assert_eq!(match_option(&d, ""), OptionChoice::Unnamed);
-
-    // The sentence names them and says what to do next.
-    let said = ambiguous_option_line(
-        "allow",
-        &[
-            "allow_once".into(),
-            "allow_session".into(),
-            "allow_always".into(),
-        ],
-    );
-    for id in ["allow_once", "allow_session", "allow_always"] {
-        assert!(said.contains(id), "{said}");
-    }
-    assert!(said.contains("`allow`"), "{said}");
-    assert!(said.contains("finish typing"), "{said}");
-    assert!(said.contains('↑'), "{said}");
-    // A card long enough to overflow the line says how many there are instead of
-    // silently dropping half the candidates.
-    let many: Vec<String> = (0..9).map(|i| format!("opt_{i}")).collect();
-    let long = ambiguous_option_line("opt", &many);
-    assert!(long.contains("9 options"), "{long}");
-    assert!(long.contains('…'), "{long}");
-}
-
-/// `deny_and_tell` can be told something: its label promises to tell the model why, and without a
-/// field on the wire a typed sentence was REFUSED by `match_option`, so nothing was answered at
-/// all.
-#[test]
-fn deny_and_tell_carries_the_operators_words() {
-    use letibot_sessionlog::event::OptionKind;
-    let d = decision_with(&[
+    let mut d = decision_with(&[
         OptionKind::AllowOnce,
         OptionKind::AllowAlways,
         OptionKind::RejectAlways,
     ]);
+    d.options[2].label = "Deny, and tell the model why".into();
+    let mut a = app();
+    a.open.push(d.clone());
 
-    // Keyed on the KIND, not the id: the daemon calls this option `deny_and_tell` and this fixture
-    // calls it `deny_always`, and the rule is about the option that writes a standing refusal. The
-    // words ride after the id verbatim, so they are not lowercased the way an option id is.
+    // The mark on the refusal, and the words typed beside it: the preview says where they go.
+    typed(&mut a, "Use the scratch dir, not /tmp.");
+    a.sel = 2;
+    let drawn = a.decision_lines(&d, 120).join("\n");
+    assert!(
+        drawn.contains("tells the model: Use the scratch dir, not /tmp."),
+        "the card did not say what the words will do:\n{drawn}"
+    );
+    assert!(
+        drawn.contains("type the reason"),
+        "and the hint names the choice, one spelling with the bar:\n{drawn}"
+    );
+    // Enter spends them on the answer, and the line is emptied: they are the reason now, not a
+    // message the next Enter would send.
     assert_eq!(
-        match_option(&d, "deny_always Use the scratch dir, not /tmp."),
-        OptionChoice::One {
+        a.key(Key::Enter),
+        Some(Action::Answer {
+            req_id: "d1".into(),
             option_id: "deny_always".into(),
             pattern: None,
             note: Some("Use the scratch dir, not /tmp.".into())
-        }
+        })
     );
-    // Bare still answers, and carries nothing rather than claiming a reason.
-    assert_eq!(
-        match_option(&d, "deny_always"),
-        OptionChoice::One {
-            option_id: "deny_always".into(),
-            pattern: None,
-            note: None
-        }
-    );
-    // The two trailing-word options do not borrow each other's field: a glob
-    // is a rule and a reason is a sentence, and putting one where the other
-    // goes would be a rule nobody wrote or a sentence nobody reads.
-    assert_eq!(
-        match_option(&d, "allow_always src/**"),
-        OptionChoice::One {
-            option_id: "allow_always".into(),
-            pattern: Some("src/**".into()),
-            note: None
-        }
-    );
-    // And everything else still refuses trailing words rather than dropping
-    // them.
-    assert_eq!(
-        match_option(&d, "allow_once because I said so"),
-        OptionChoice::Unnamed
-    );
+    assert_eq!(a.input(), "", "the reason went with the answer");
 
-    // The card says where to type it, which it never did.
-    let a = app();
-    assert!(
-        a.decision_lines(&d, 100)
-            .iter()
-            .any(|l| l.contains("`deny_and_tell <why>`")),
-        "{:?}",
-        a.decision_lines(&d, 100)
-    );
+    // The same words on the plain refusal rung, which is the rung a person reaches for: one rule for
+    // every refusal, because the gate reads the reason off the answer and not off the rung's name.
+    let mut b = app();
     let plain = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
-    assert!(
-        !a.decision_lines(&plain, 100)
-            .iter()
-            .any(|l| l.contains("deny_and_tell")),
-        "and only when the option is on offer"
+    let req = crate::ui::cards::decision::words_for(&plain, 1);
+    assert_eq!(req, crate::ui::cards::decision::Words::Reason);
+    b.open.push(plain);
+    typed(&mut b, "not /tmp");
+    b.sel = 1;
+    assert_eq!(
+        b.key(Key::Enter),
+        Some(Action::Answer {
+            req_id: "d1".into(),
+            option_id: "deny".into(),
+            pattern: None,
+            note: Some("not /tmp".into())
+        })
     );
+}
+
+/// A rung that takes no words answers nothing while the composer holds some, and says where they
+/// could go: the line is not dropped, and the card is not answered with words it would discard.
+#[test]
+fn a_rung_that_takes_no_words_refuses_them() {
+    use letibot_sessionlog::event::OptionKind;
+    let mut a = app();
+    a.open.push(decision_with(&[
+        OptionKind::AllowOnce,
+        OptionKind::RejectOnce,
+    ]));
+    typed(&mut a, "a message for the model");
+    assert_eq!(a.key(Key::Enter), None, "nothing is answered");
+    assert_eq!(a.input(), "a message for the model", "and nothing is lost");
+    let said = a.notice.clone().unwrap_or_default();
+    assert!(said.contains("takes no words"), "{said}");
 }
 
 /// Why a rung is missing is ON the card, under the ladder it belongs to: the gate leaves a rung off
@@ -360,24 +299,49 @@ fn the_card_draws_the_reason_a_rung_is_missing() {
     assert!(note_at > ladder_at, "{}", lines.join("\n"));
 }
 
-/// The hint only appears when the option it describes is on offer.
+/// The hint describes the rung that is marked, and only it: the glob's clause appears when the
+/// always-allow is marked, the reason's when a refusal is, and neither on a grant of one call.
 #[test]
-fn the_glob_hint_is_absent_when_no_rule_can_be_written() {
+fn the_hint_names_what_the_marked_rung_takes() {
     use letibot_sessionlog::event::OptionKind;
-    let a = app();
-    let with = decision_with(&[OptionKind::AllowOnce, OptionKind::AllowAlways]);
-    let without = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+    let ladder = [
+        OptionKind::AllowOnce,
+        OptionKind::AllowAlways,
+        OptionKind::RejectOnce,
+    ];
+    let hint = |at: usize| {
+        let mut a = app();
+        a.open.push(decision_with(&ladder));
+        a.sel = at;
+        a.decision_lines(&a.open[0].clone(), 100).join("\n")
+    };
+
+    // The selectors, and only them: no id is typed and nothing suggests one.
+    for at in 0..3 {
+        let drawn = hint(at);
+        assert!(
+            drawn.contains("↑↓ or a row number marks · enter answers"),
+            "the ladder's own sentence:\n{drawn}"
+        );
+        assert!(!drawn.contains("type the id"), "no id is typed:\n{drawn}");
+        assert!(
+            !drawn.contains("<glob>"),
+            "and no spelling of one:\n{drawn}"
+        );
+    }
     assert!(
-        a.decision_lines(&with, 100)
-            .iter()
-            .any(|l| l.contains("allow_always <glob>")),
-        "an always-allow on offer says how to scope it"
+        !hint(0).contains("type the"),
+        "a grant of one call takes no words"
     );
     assert!(
-        !a.decision_lines(&without, 100)
-            .iter()
-            .any(|l| l.contains("<glob>")),
-        "a request with no rule to write must not advertise one"
+        hint(1).contains("type the rule"),
+        "an always-allow takes the glob: {}",
+        hint(1)
+    );
+    assert!(
+        hint(2).contains("type the reason"),
+        "a refusal takes the reason: {}",
+        hint(2)
     );
 }
 
@@ -978,20 +942,33 @@ fn a_decision_is_answered_with_the_arrows_and_enter() {
 }
 
 #[test]
-fn an_open_decision_is_answered_by_typing_the_option() {
+fn an_open_decision_is_not_answered_by_typing_an_option_id() {
+    use letibot_sessionlog::event::OptionKind;
+    // Digits and the arrows are the selectors. A typed line is the marked rung's material, so an id
+    // typed on a rung that takes no words answers nothing at all - and the line stays where it is.
     let mut a = app();
-    a.apply(ServerFrame::Event(env(1, testing::requested("r1", "rm"))));
+    a.open.push(decision_with(&[
+        OptionKind::AllowOnce,
+        OptionKind::RejectOnce,
+    ]));
     typed(&mut a, "deny");
+    assert_eq!(a.key(Key::Enter), None, "a typed id selects nothing");
+    assert_eq!(a.input(), "deny", "the line is still the operator's");
+
+    // The same answer, taken the way the card says: the digit marks the rung and Enter answers it.
+    a.clear_composer();
+    assert_eq!(a.key(Key::Char('2')), None, "a move, not an answer");
+    assert_eq!(a.sel, 1, "the refusal is marked");
     assert_eq!(
-        a.key(Key::Enter),
+        a.submit("deny".into()),
         Some(Action::Answer {
-            req_id: "r1".into(),
+            req_id: "d1".into(),
             option_id: "deny".into(),
             pattern: None,
-            note: None
-        })
+            note: Some("deny".into())
+        }),
+        "and the words on it are the reason the model is given"
     );
-    assert_eq!(a.input(), "", "the typed id is consumed, not held");
 }
 
 /// A digit typed into a line that has already started is part of the line,
@@ -1009,8 +986,8 @@ fn a_digit_inside_a_half_typed_line_is_not_an_answer() {
 }
 
 /// A rung is the answer, not its id: the card drew `Allow session  (allow_session)`, an id
-/// beside a label that already says it, on every row. Typing the id still answers and a prefix is
-/// what names the list, so the row carries the label alone.
+/// beside a label that already says it, on every row. A digit and the arrows are the selectors, so
+/// the row carries the label alone.
 #[test]
 fn the_ladder_rows_carry_no_option_id() {
     use letibot_sessionlog::event::OptionKind;
@@ -1043,15 +1020,6 @@ fn the_ladder_rows_carry_no_option_id() {
         .find(|l| l.contains("Allow once"))
         .expect("the first rung");
     assert!(row.contains(sgr::REVERSE), "not the marked row: {row:?}");
-    // The id is still the way to answer by word, and a prefix still names the list.
-    assert_eq!(
-        match_option(&d, "allow_session"),
-        OptionChoice::One {
-            option_id: "allow_session".into(),
-            pattern: None,
-            note: None
-        }
-    );
 }
 
 #[test]
