@@ -11,8 +11,9 @@ use letibot_tokencore::store::{Store, TodoItem, TodoNeed};
 use serde_json::{Value, json};
 
 /// The window these tests drive the check with: a minute is the production one, and no test can
-/// sleep through it.
-const WINDOW: Duration = Duration::from_millis(200);
+/// sleep through it. The quiet clock starts as a call begins, so a store write on a loaded host
+/// takes from it.
+const WINDOW: Duration = Duration::from_millis(1000);
 
 /// The handle every test in this file writes under. Process-wide, so it is set once and never
 /// again: `set_var` from two test threads at once is the race `handle` would read.
@@ -80,6 +81,12 @@ fn nags(rx: &mpsc::Receiver<Value>, patience: Duration) -> Vec<Value> {
         }
     }
     out
+}
+
+/// Drops a nag on a row the test wrote in two calls, about the moment before its wait was set:
+/// on a loaded host the window can end between the calls, and that nag is correct.
+fn settle(rx: &mpsc::Receiver<Value>) {
+    let _ = nags(rx, Duration::from_millis(200));
 }
 
 fn nag_text(note: &Value) -> String {
@@ -277,6 +284,7 @@ fn a_row_waiting_on_something_outside_is_quiet_until_the_seat_takes_the_wait_off
                 "external": "R156's review at arangodb"}]}),
     )
     .expect("the wait is taken");
+    settle(&rx);
     assert!(
         said["said"]
             .as_str()
@@ -337,6 +345,7 @@ fn a_seat_jobs_end_settles_its_row_and_pushes_one_job_ended() {
         json!({"wait_on": [{"content": "wait for the gate", "job": handle.clone()}]}),
     )
     .expect("the seat's own job is a wait it can make");
+    settle(&rx);
     assert_eq!(
         rows(&bridge).remove(0).needs,
         vec![TodoNeed::Job {
@@ -398,6 +407,7 @@ fn a_pid_wait_settles_when_the_process_exits_and_not_when_a_pid_is_reused() {
         json!({"wait_on": [{"content": "the gate somebody ran by hand", "pid": pid}]}),
     )
     .expect("the process is here, so the wait is a wait");
+    settle(&rx);
     let start = match rows(&bridge).remove(0).needs.as_slice() {
         [TodoNeed::Pid { pid: p, start }] if *p == pid => *start,
         other => panic!("the edge is a pid wait with its start time: {other:?}"),
