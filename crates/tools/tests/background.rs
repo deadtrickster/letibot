@@ -243,8 +243,10 @@ fn a_promote_request_from_the_head_moves_the_running_command() {
             r.render()
         ),
     }
-    assert!(
-        r.render().contains("moved to the background"),
+    // Said once, by the envelope's `how:` line, which names who moved it.
+    assert_eq!(
+        r.render().matches("moved this to the background").count(),
+        1,
         "{}",
         r.render()
     );

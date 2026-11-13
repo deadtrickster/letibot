@@ -111,21 +111,21 @@ impl ToolResult {
             } => Envelope::still_running(&self.call_id).wrap(&format!(
                 // The handle is in the payload and in `next`. `how` only when the model did not
                 // ask: it knows what it asked for, and a promotion is the fact it must not miss.
-                "{}{}{head}{}\n\n\
+                "{}{head}{}\n\n\
                  STILL RUNNING — not failed and not finished; do not start it again. {next}",
-                if *ran_for_ms == 0 {
-                    String::new()
-                } else {
-                    format!(
-                        "ran in the foreground for: {} before it went to the background\n",
-                        human_ms(*ran_for_ms)
-                    )
+                match (how, *ran_for_ms) {
+                    (letibot_transcript::Backgrounding::Asked, 0) => String::new(),
+                    (letibot_transcript::Backgrounding::Asked, ms) => {
+                        format!("ran in the foreground for {} first\n", human_ms(ms))
+                    }
+                    (how, 0) => format!("how: {}\n", how.phrasing()),
+                    (how, ms) => format!(
+                        "how: {}, after {} in the foreground\n",
+                        how.phrasing(),
+                        human_ms(ms)
+                    ),
                 },
-                match how {
-                    letibot_transcript::Backgrounding::Asked => String::new(),
-                    how => format!("how: {}\n", how.phrasing()),
-                },
-                self.payload
+                self.payload.trim_end()
             )),
             other => Envelope::error(&self.call_id).wrap(&format!(
                 "outcome: {}\n{head}{}",
@@ -503,6 +503,12 @@ mod tests {
         )
         .render();
         assert_eq!(promoted.matches("how:").count(), 1, "{promoted}");
+        // Who moved it and when, on one line: the move is said once.
+        assert_eq!(promoted.matches("background").count(), 1, "{promoted}");
+        assert!(
+            promoted.contains("after 15.0s in the foreground"),
+            "{promoted}"
+        );
         let failed = ToolResult::new(
             "c1",
             "read",

@@ -978,7 +978,7 @@ impl Tool for Bash {
                 &next,
                 // Who moved it is the envelope's `how:`; the command is the call's own.
                 format!(
-                    "{body}\n\n[`{label}` was moved to the background]\n{file_line}  owned by: {} — {}\n\n{} \
+                    "{body}\n\n[running on as `{label}`]\n{file_line}  owned by: {} — {}\n\n{} \
                      So do not build your own clock: no `sleep`, no polling loop.\n",
                     p.to,
                     p.to.kind.reaped_when(),
