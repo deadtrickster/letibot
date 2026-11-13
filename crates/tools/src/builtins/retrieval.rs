@@ -94,8 +94,9 @@ impl Retrieval for Unavailable {
                 kind.tool_name(),
                 "no retrieval backend",
                 "no corpus was queried and no index was opened",
-                "no retrieval backend is attached to this session, so nothing was \
-                 queried; `grep` and `read` over this tree answer what it would have.",
+                // How to attach, not the missing backend and the detour again: those are
+                // `why` and `instead`.
+                "the daemon wires none into any session, so there is no switch to turn on",
             )
             .instead("`grep` and `read` over this tree"),
         ))
@@ -295,6 +296,10 @@ mod tests {
         let mut h = harness_with_retrieval(std::sync::Arc::new(Unavailable));
         let r = h.call("ask_code", r#"{"question":"anything"}"#);
         assert!(matches!(r.outcome, ToolOutcome::NotRun { .. }));
+        // Each of what is missing and what still works said once.
+        let card = r.render();
+        assert_eq!(card.matches("no retrieval backend").count(), 1, "{card}");
+        assert_eq!(card.matches("`grep`").count(), 1, "{card}");
         // And a caller with only this call may not report Ok.
         assert!(matches!(
             propagate(std::slice::from_ref(&r.outcome)),
