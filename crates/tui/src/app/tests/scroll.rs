@@ -687,13 +687,13 @@ fn parked_in_the_scrollback_the_arrows_are_the_scrollbacks_and_down_is_the_botto
         "the banner is still up after ↓: {screen:#?}"
     );
 
-    // With the reader following, `↑` is not this arm's at all: it is the take-back two arms above, so the
-    // queued prompts come back for editing rather than scrolling anything.
-    a.key(Key::Up);
+    // With the reader following, alt-↑ is the take-back: the queued prompts come back for editing
+    // rather than scrolling anything.
+    a.key(Key::AltUp);
     assert_eq!(
         a.editor.text(),
         "the first prompt\nthe second prompt",
-        "↑ while following must still be the head's own key"
+        "alt-↑ while following must still be the head's own key"
     );
 }
 

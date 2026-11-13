@@ -113,6 +113,8 @@ fn key_bytes(token: &str) -> Option<(Vec<u8>, bool)> {
         "tab" => return seq("\t"),
         "↑" | "<up>" | "up" => return seq("\x1b[A"),
         "↓" | "<down>" | "down" => return seq("\x1b[B"),
+        // Before the `alt-` letters below, which would send ESC and the arrow's UTF-8.
+        "alt-↑" | "alt-up" => return seq("\x1b[1;3A"),
         "←" | "<left>" => return seq("\x1b[D"),
         "→" | "<right>" => return seq("\x1b[C"),
         "pgup" | "<pgup>" => return seq("\x1b[5~"),

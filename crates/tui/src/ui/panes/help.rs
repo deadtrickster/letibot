@@ -54,7 +54,11 @@ pub(crate) fn help_lines(
         ),
         (
             "↑ ↓",
-            "move inside the prompt, then walk the prompts you have sent",
+            "move inside the prompt, then walk the prompts you have sent, whatever is queued",
+        ),
+        (
+            "alt-↑",
+            "take a queued prompt back into an empty prompt, to edit or drop it before it is sent",
         ),
         (
             "pgup pgdn",

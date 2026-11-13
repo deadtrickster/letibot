@@ -163,8 +163,8 @@ wheel router. A test walks every pane to check the wheel does not reach the tran
 
 Behind a running turn the operator's queue is one message. Consecutive operator prompts coalesce
 (`Pending::absorb` in the engine, `submit()` in the mirror). Notices (harness injections, monitor
-firings) stand alone and split the run. Up on an empty composer recalls the queue and sends
-`WithdrawPrompts`. `retire_pending` retires a queued row's echo by exact match or front-strip.
+firings) stand alone and split the run. Alt+Up on an empty composer recalls the queue and sends
+`WithdrawPrompts`; plain Up only walks history. `retire_pending` retires a queued row's echo by exact match or front-strip.
 
 Never show a button the gate would decline. The permission ladder orders its rules: tier first
 (`AlwaysAsk` offers allow_once/deny/deny_and_tell), then exec class (a shell never takes a session

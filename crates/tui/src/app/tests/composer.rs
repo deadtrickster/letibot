@@ -159,7 +159,7 @@ fn tab_on_a_bang_line_completes_the_path_and_shows_the_choices() {
 }
 
 #[test]
-fn up_recalls_the_queued_line_for_editing_and_takes_it_back() {
+fn alt_up_recalls_the_queued_line_for_editing_and_takes_it_back() {
     let mut a = app();
     a.apply(hello(
         "s",
@@ -172,8 +172,13 @@ fn up_recalls_the_queued_line_for_editing_and_takes_it_back() {
     typed(&mut a, "and add a test for it");
     a.key(Key::Enter);
     assert_eq!(a.pending_prompts.len(), 1);
-    // Up with an empty composer: the queue comes back, the take-back rides.
-    assert_eq!(a.key(Key::Up), Some(Action::WithdrawPrompts));
+    // alt-↑ with an empty composer: the queue comes back, the take-back rides.
+    let keys: Vec<Key> = rano::term::decode(b"\x1b[1;3A")
+        .into_iter()
+        .filter_map(key_of)
+        .collect();
+    assert_eq!(keys, vec![Key::AltUp], "the terminal's alt-↑ decodes to it");
+    assert_eq!(a.key(Key::AltUp), Some(Action::WithdrawPrompts));
     assert_eq!(a.input(), "also fix the parser\nand add a test for it");
     assert!(a.pending_prompts.is_empty(), "recalled, not held");
     // The operator edits and sends; the edited line queues fresh, and the
@@ -187,6 +192,28 @@ fn up_recalls_the_queued_line_for_editing_and_takes_it_back() {
         ))
     );
     assert_eq!(a.pending_prompts.len(), 1);
+}
+
+/// Up browses history whatever is queued, as in a shell: the operator reaching for a past `/pane`
+/// with a prompt queued got the queue taken back instead.
+#[test]
+fn up_with_a_queued_prompt_walks_history_and_leaves_the_queue() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    typed(&mut a, "also fix the parser");
+    a.key(Key::Enter);
+    typed(&mut a, "/pane");
+    a.key(Key::Enter);
+    a.key(Key::Esc);
+    assert_eq!(a.pending_prompts.len(), 1);
+    assert_eq!(a.key(Key::Up), None, "no take-back rides with a recall");
+    assert_eq!(a.input(), "/pane");
+    assert_eq!(a.pending_prompts, vec!["also fix the parser".to_string()]);
 }
 
 /// A line typed while the conversation is still being imported is refused and its words go back to
@@ -221,11 +248,11 @@ fn a_line_typed_during_an_import_is_held_in_the_composer() {
     assert!(s.contains("still being imported"), "{s}");
 }
 
-/// The held `!` line is recallable, and the take-back rides with it: `up` on an empty composer
+/// The held `!` line is recallable, and the take-back rides with it: alt-↑ on an empty composer
 /// pulls the line back AND asks the daemon to drop it, because a command that ran after it was
 /// visibly taken back would be work nobody re-asked for.
 #[test]
-fn a_held_bang_line_is_recalled_by_up_and_the_take_back_rides_with_it() {
+fn a_held_bang_line_is_recalled_by_alt_up_and_the_take_back_rides_with_it() {
     let mut a = app();
     typed(&mut a, "! make -j8");
     assert_eq!(
@@ -234,7 +261,7 @@ fn a_held_bang_line_is_recalled_by_up_and_the_take_back_rides_with_it() {
             line: "! make -j8".into()
         })
     );
-    assert_eq!(a.key(Key::Up), Some(Action::WithdrawPrompts));
+    assert_eq!(a.key(Key::AltUp), Some(Action::WithdrawPrompts));
     assert_eq!(a.input(), "! make -j8", "the line is back for editing");
     assert!(a.pending_prompts.is_empty(), "the echo stood down");
     // And the edited resend is a `!` line again, not prose that happens to have
@@ -1058,9 +1085,9 @@ fn an_open_ask_does_not_take_the_draft_on_enter_or_on_up() {
     // queued line rather than about the sent one the coalescing already folded it into.
     c.pending_prompts.clear();
     c.pending_prompts.push("a queued line".into());
-    // With nothing typed, `↑` IS the recall - the premise, so the refusal below is about the
+    // With nothing typed, alt-↑ IS the recall - the premise, so the refusal below is about the
     // draft and not about the key being dead.
-    c.key(Key::Up);
+    c.key(Key::AltUp);
     assert_eq!(c.input(), "a queued line", "the premise: the recall works");
     assert!(
         c.pending_prompts.is_empty(),
@@ -1072,6 +1099,11 @@ fn an_open_ask_does_not_take_the_draft_on_enter_or_on_up() {
     c.set_composer("");
     c.pending_prompts.push("a queued line".into());
     typed(&mut c, "half a thought");
+    assert!(
+        c.key(Key::AltUp).is_none(),
+        "alt-↑ over a draft is not the recall"
+    );
+    assert_eq!(c.input(), "half a thought");
     assert!(
         c.key(Key::Up).is_none(),
         "a draft's Up is not the queue's recall"

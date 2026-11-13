@@ -313,18 +313,17 @@ impl App {
             self.anchor = None;
             return None;
         }
-        // Up with an empty composer recalls the queued line: the echo above the composer is the person's own words,
-        // and the one thing this head can do about a message it already sent is take it back before it lands. The
-        // take-back rides with the recall, and browsing history never does.
-        if matches!(k, Key::Up)
-            && self.editor.text().is_empty()
-            && self.scroll == 0
-            && !self.pending_prompts.is_empty()
-        {
-            let text = self.pending_prompts.join("\n");
-            self.pending_prompts.clear();
-            self.set_composer(&text);
-            return Some(Action::WithdrawPrompts);
+        // alt-↑ with an empty composer takes the queued line back for editing: the echo is the
+        // operator's own words, and withdrawing them is a separate act from browsing history.
+        if matches!(k, Key::AltUp) {
+            if self.editor.text().is_empty() && self.scroll == 0 && !self.pending_prompts.is_empty()
+            {
+                let text = self.pending_prompts.join("\n");
+                self.pending_prompts.clear();
+                self.set_composer(&text);
+                return Some(Action::WithdrawPrompts);
+            }
+            return None;
         }
 
         // Tab: completion by the line's first character. A `/` line completes a command and a `!` line completes
@@ -899,6 +898,9 @@ pub enum Key {
     /// column, the rooms sidebar's otherwise.
     AltNarrow,
     AltWiden,
+    /// alt-↑: take the queued prompts back into an empty composer. Plain ↑ is history's, as in a
+    /// shell, so a recall never withdraws anything by accident.
+    AltUp,
     Backspace,
     Delete,
     Left,
@@ -1065,6 +1067,7 @@ impl Key {
             | Key::AltM
             | Key::AltNarrow
             | Key::AltWiden
+            | Key::AltUp
             | Key::PageUp
             | Key::PageDown
             | Key::WheelUp

@@ -71,12 +71,13 @@ fn key(k: KeyEvent) -> Option<Key> {
         KeyCode::Backspace if m == Mods::ALT => Key::KillWordBack,
         KeyCode::Backspace => return None,
         KeyCode::Esc => Key::Esc,
-        // Ctrl+arrow (`CSI 1;5 C`) is the word motion every editor binds it to. Every other
-        // modifier on a cursor key is the key itself.
+        // Ctrl+arrow (`CSI 1;5 C`) is the word motion every editor binds it to, and alt-↑ takes a
+        // queued prompt back. Every other modifier on a cursor key is the key itself.
         KeyCode::Left if m == Mods::CTRL => Key::WordLeft,
         KeyCode::Right if m == Mods::CTRL => Key::WordRight,
         KeyCode::Left => Key::Left,
         KeyCode::Right => Key::Right,
+        KeyCode::Up if m == Mods::ALT => Key::AltUp,
         KeyCode::Up => Key::Up,
         KeyCode::Down => Key::Down,
         KeyCode::Home => Key::Home,
