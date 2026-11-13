@@ -4161,6 +4161,17 @@ pub fn build_provider(
             p.sampling = provider_sampling(sampling);
             Ok(Box::new(p))
         }
+        letibot_provider::Protocol::GenAi => {
+            let mut p =
+                letibot_provider::gemini::GeminiProvider::new(preset, pc.model.as_deref(), creds)
+                    .with_notes(notes)
+                    .with_first_byte(deadlines.first_byte)
+                    .with_response_timeout(deadlines.answer)
+                    .with_effort(effort);
+            p.thinking = pc.thinking;
+            p.sampling = provider_sampling(sampling);
+            Ok(Box::new(p))
+        }
     }
 }
 

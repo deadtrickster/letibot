@@ -11,6 +11,9 @@ pub enum Protocol {
     AnthropicMessages,
     /// OpenAI Responses: `POST …/responses`, input items, and a reasoning item per thought.
     Responses,
+    /// Google GenAI: `POST …/models/{model}:streamGenerateContent`, `contents` of parts, and the
+    /// model in the path, so the preset's URL is a base.
+    GenAi,
 }
 
 /// One provider's shape: where it is, which header carries the key, and which
@@ -212,6 +215,25 @@ pub const OPENAI: Preset = Preset {
     catalogue_id: "openai",
 };
 
+/// Google's Gemini, whose wire is nothing like the others: `contents` of `user`/`model` parts,
+/// `systemInstruction`, `functionDeclarations`, and the model in the PATH rather than the body, so
+/// [`Preset::url`] is a base here rather than an endpoint. [`crate::gemini`] is the client.
+///
+/// `fallback_model` is the model Google's own list calls the everyday-coding one
+/// (<https://ai.google.dev/gemini-api/docs/models>). `catalogue_id` is models.dev's id for the
+/// Gemini API; it carries no `google` row in the vendored snapshot yet, so a box with no other
+/// catalogue plans against no window and prices nothing — honest, if stingy.
+pub const GEMINI: Preset = Preset {
+    name: "gemini",
+    url: "https://generativelanguage.googleapis.com/v1beta",
+    key_env: "GEMINI_API_KEY",
+    protocol: Protocol::GenAi,
+    alt_envs: &["GOOGLE_API_KEY"],
+    fallback_model: "gemini-4-hydrogen",
+    thinking_field: None,
+    catalogue_id: "google",
+};
+
 pub const ALL: &[&Preset] = &[
     &DEEPSEEK,
     &GLM,
@@ -223,6 +245,7 @@ pub const ALL: &[&Preset] = &[
     &GLM_ANTHROPIC,
     &KIMI_CODING,
     &OPENAI,
+    &GEMINI,
 ];
 
 impl Preset {
@@ -245,7 +268,8 @@ impl Preset {
     }
 
     /// Names this build knows, with the aliases each answers to; anything else is an error naming
-    /// every one rather than a guess.
+    /// every one of them rather than a guess - read off [`ALL`], so adding a door does not have to
+    /// find this sentence.
     pub fn parse(s: &str) -> Result<&'static Preset, String> {
         match s.trim().to_ascii_lowercase().as_str() {
             "deepseek" => Ok(&DEEPSEEK),
@@ -257,6 +281,7 @@ impl Preset {
             "grok" | "xai" | "x.ai" => Ok(&GROK),
             "kimi-coding" | "kimi" | "moonshot" => Ok(&KIMI_CODING),
             "openai" => Ok(&OPENAI),
+            "gemini" | "google" | "genai" => Ok(&GEMINI),
             // Read from `ALL` rather than typed again: a provider added to one list and not
             // the other is exactly the drift this sentence exists to prevent.
             other => Err(format!(
@@ -309,6 +334,7 @@ mod tests {
         for p in ALL {
             assert!(why.contains(p.name), "{why}");
         }
+        assert!(why.contains(&format!("there are {}", ALL.len())), "{why}");
         // Every door has to be reachable by its own name, or `ALL` and `parse` disagree about what
         // this build knows and a picker offers a name the flag refuses.
         for preset in ALL {
@@ -318,6 +344,7 @@ mod tests {
         assert_eq!(ANTHROPIC.protocol, Protocol::AnthropicMessages);
         assert_eq!(DEEPSEEK.protocol, Protocol::ChatCompletions);
         assert_eq!(OPENAI.protocol, Protocol::Responses);
+        assert_eq!(GEMINI.protocol, Protocol::GenAi);
     }
 
     /// Every `fallback_model` must be a name the catalogue carries in its shortest form,

@@ -726,7 +726,7 @@ pub fn models_listing(current: &str) -> Vec<String> {
         "  local the llama.cpp server this daemon was started against   /models local".into(),
     );
     // This fleet's own models, above the presets, because they cost nothing and a listing that
-    // buries them under five metered providers reads as "the choices are cloud".
+    // buries them under the metered providers reads as "the choices are cloud".
     for m in letibot_provider::keys::local_models(None) {
         let sampling = if m.profile.sampling.is_empty() {
             "the built-in sampling".to_string()

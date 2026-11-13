@@ -29,7 +29,7 @@ d = json.load(open("/tmp/models.dev.json"))
 
 # Every provider a crate::presets Preset names as its catalogue_id. Adding a preset
 # means adding its id here — the script fails loudly below if it forgets.
-WANT = ["deepseek", "zhipuai", "zai-coding-plan", "zhipuai-coding-plan", "xai"]
+WANT = ["deepseek", "zhipuai", "zai-coding-plan", "zhipuai-coding-plan", "xai", "google"]
 
 trimmed = {}
 for pid in WANT:

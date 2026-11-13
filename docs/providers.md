@@ -1,4 +1,4 @@
-# Cloud providers: OpenAI, GLM, DeepSeek, Grok, Anthropic
+# Cloud providers: OpenAI, GLM, DeepSeek, Grok, Anthropic, Gemini
 
 `crates/provider` (`letibot-provider`) is the one crate in the tree with a TLS stack (ureq +
 rustls); the engine above it stays a state machine with no runtime under it.
@@ -24,14 +24,16 @@ harnessd --provider openai   [--model MODEL] [--thinking] [--effort high] …
 | `deepseek-anthropic` | `api.deepseek.com/anthropic` | `$DEEPSEEK_API_KEY` |
 | `glm-anthropic` | `api.z.ai/api/anthropic` | the same GLM key |
 | `kimi-coding` | `api.kimi.ai/coding` | `$KIMI_API_KEY`, or `MOONSHOT_API_KEY` |
+| `gemini` | `generativelanguage.googleapis.com` | `$GEMINI_API_KEY`, or `GOOGLE_API_KEY` |
 
 Anything else is refused, naming every provider this build knows. `--model` defaults to the
 catalogue's pick for that provider, and `--thinking` asks for a reasoning turn - which on GLM is a
-field of its own and on OpenAI is `reasoning.effort`, taken from `--effort` when that is set.
+field of its own, on OpenAI is `reasoning.effort` and on Gemini `thinkingConfig.thinkingLevel`,
+both taken from `--effort` when that is set.
 The coding plan is a subscription: the metered GLM name on that key answers a 429 that reads like an
 empty account, which is why it is a preset of its own.
 
-## Three protocols
+## Four protocols
 
 A preset's `protocol` is the whole of the choice, and `harness::open::build_provider` is where it is
 made. Most doors speak OpenAI chat completions (`openai.rs`, `messages.rs`).
@@ -50,6 +52,8 @@ is retried once with every thinking block left out, which is the API's own docum
 `input` items, and a reasoning item per thought, whose ciphertext the client keeps in memory rather
 than on the row because only the issuing account can read it.
 
+`gemini` speaks Google GenAI (`crates/provider/src/gemini.rs`), described in its own section below.
+
 The key comes from the environment above, `--api-key` for a one-off, or
 `~/.config/letibot/providers.toml`:
 
@@ -67,6 +71,47 @@ output = 1.10
 A missing key refuses at open, naming the variable and the file. A price comes from this table first,
 then from the model catalogue; the operator's number wins where they wrote one, because it may be a
 contract price. A model neither prices is **unpriced**, not free: the turn reports no cost, not `$0`.
+
+## Gemini: its own protocol, not another endpoint
+
+`crates/provider/src/gemini.rs` is its own client for `generateContent`/`streamGenerateContent`,
+and everything it shares with the chat-completions client - the
+deadlines, the notes closure, the picture marks, the catalogue, `BackendCaps::METERED_API` - is
+shared rather than copied.
+
+| the other doors | Gemini |
+|---|---|
+| `POST /chat/completions`, model in the body | `POST /v1beta/models/{model}:streamGenerateContent?alt=sse`, model in the PATH |
+| `Authorization: Bearer KEY` | `x-goog-api-key: KEY` |
+| `messages` of `system`/`user`/`assistant`/`tool` | `contents` of `user`/`model`, `systemInstruction`, `functionDeclarations` |
+| `reasoning_content`, echoed or not | `thought: true` parts, returned only when asked; `thinkingConfig` is the switch |
+| images as `image_url` | `inlineData` blobs, so only a `data:` reference can be sent |
+| `tool_call_id` | `functionCall`/`functionResponse`, matched by `name` and by the model's own `id` |
+
+`--effort` is Gemini's thinking LEVEL (`LOW`/`MEDIUM`/`HIGH`/`XHIGH`, and `xhigh` only on
+`gemini-4-hydrogen`); nothing is sent unless the operator asks, because `thinkingConfig` on a model
+that does not think is an error rather than a no-op. `--thinking` adds `includeThoughts`.
+
+Three facts worth knowing before reading a refusal:
+
+- **`Schema` is a subset of OpenAPI 3.0.** A tool schema is translated into it, annotation keys
+  (`additionalProperties`, `$schema`, `default`) are dropped, and the constructs with no equivalent
+  (`$ref`, `oneOf`, `allOf`, `const`, `patternProperties`, a non-string `enum`) are REFUSED before
+  the post, naming the parameter and the keyword. A union of types (`type: ["boolean","integer"]`)
+  becomes `anyOf`.
+- **Thought signatures** ride on parts in this protocol and Gemini 4/3 refuse the turn whose current
+  function calls lost them. `TranscriptItem` has no field for one, so the client keeps them itself,
+  by call id, in memory: a turn's rounds share a provider and the validation does not reach back
+  past the current turn.
+- **A block is a refusal, not an empty answer.** `promptFeedback.blockReason`, or a candidate with
+  `finishReason: SAFETY`/`RECITATION`/`MALFORMED_FUNCTION_CALL` and no content, arrives as HTTP 200
+  and is reported as `BackendError::Refused` carrying that status, so the retry ladder does not take
+  the round again and the operator is told which filter fired.
+
+`429 RESOURCE_EXHAUSTED` is the rate limit and reaches `Trouble::RateLimit` through its status; the
+`retryDelay` in the error's `RetryInfo` detail (or a `Retry-After` header, which wins) is the instant
+a caller may sleep on. `thoughtsTokenCount` is billed as output and `candidatesTokenCount` excludes
+it, so the turn's generated count is both.
 
 ## When the model you are on is OUT
 

@@ -5239,6 +5239,61 @@ mod endpoint_retry {
         assert_eq!((d.first_byte.as_secs(), d.answer.as_secs()), (30, 30));
     }
 
+    /// The protocol fork, seen from the daemon: `gemini` gets the GenAI client, which refuses a tool
+    /// schema Gemini cannot read BEFORE any request goes out. The OpenAI-shaped client would have
+    /// posted it — it passes a schema through untouched — so this is the one observable that tells
+    /// the two apart without a network.
+    #[test]
+    fn a_gemini_provider_is_the_genai_client_and_not_the_chat_completions_one() {
+        use letibot_backend::{BackendError, StreamFlow};
+        let pc = crate::config::ProviderConfig {
+            name: "gemini".into(),
+            model: None,
+            api_key: Some("k".into()),
+            thinking: false,
+        };
+        let hub = letibot_sessionlog::hub::Hub::new("gemini-fork");
+        let built = crate::harness::open::build_provider(
+            &pc,
+            &serde_json::json!({}),
+            crate::harness::open::provider_notes(&hub),
+            crate::leticode_config::Deadlines {
+                slow_notice: std::time::Duration::from_secs(15),
+                first_byte: std::time::Duration::from_secs(60),
+                answer: std::time::Duration::from_secs(600),
+            },
+            None,
+        )
+        .expect("a gemini provider");
+        assert_eq!(built.name(), "gemini");
+        let tools = vec![
+            r##"{"type":"function","function":{"name":"t","parameters":
+                 {"type":"object","properties":{"x":{"$ref":"definitions/x"}}}}}"##
+                .to_string(),
+        ];
+        let items = [letibot_transcript::TranscriptItem::User {
+            speaker: Default::default(),
+            parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
+        }];
+        let req = letibot_backend::TurnRequest {
+            system: "",
+            tools_json: &tools,
+            items: &items,
+            tail: &[],
+            max_output_tokens: None,
+            thinking: None,
+        };
+        match built.complete(&req, &mut |_| StreamFlow::Continue) {
+            Err(BackendError::Malformed(m)) => {
+                assert!(
+                    m.contains("$ref"),
+                    "the GenAI client refused the schema: {m}"
+                );
+            }
+            other => panic!("the chat-completions client would have posted it: {other:?}"),
+        }
+    }
+
     /// A round that is STREAMING is not silent. The watch's clock was the round's start and it never
     /// saw a delta, so every cloud round over the threshold published `model_slow_first_byte` and a
     /// `stall` trouble while text was arriving, which on a thinking-mode provider is most rounds.
