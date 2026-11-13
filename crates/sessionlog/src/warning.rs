@@ -915,6 +915,17 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // The operator put this session out of sight (`letibot --archive`): the rows stay and it
     // opens again by id, so the row is news, not something that went wrong.
     ("session_archived", Class::Routine, Action::Nothing),
+    // A package that has been quiet for its idle TTL is about to be closed: the heads are told
+    // five minutes ahead, and `letibot hold` is the only thing that stops it. Live state, so the
+    // status line - the conversation keeps no row it did not ask for.
+    (
+        "idle_closing",
+        Class::Routine,
+        Action::Do("`letibot hold` keeps it"),
+    ),
+    // And it was closed: no compute is left, the rows are untouched, and `leticode_send` reopens
+    // it. News about a lifetime rather than a fault, which is why it is Routine.
+    ("idle_closed", Class::Routine, Action::Nothing),
     // The store, in every way it can fail to do its job: the session does not open, the
     // transcript cannot be written, the corpus cannot be consulted, the title cannot be
     // recorded, a resume fails, an import stops part-way.
@@ -1155,6 +1166,10 @@ pub const STATUS: &[&str] = &[
     "merge_queued",
     "refusal_undelivered",
     "gate_timeout",
+    // An owner the reaper is about to close for idleness, and the close itself: news about a
+    // lifetime, said where live state is said - the conversation keeps no row for it.
+    "idle_closing",
+    "idle_closed",
     // A provider that will not answer, and what it says about when.
     "limit_returned",
     "model_switch_pending",

@@ -30,19 +30,38 @@ letibot holds [OWNER] [--folder DIR] [--json] [--line]
     letibot holds s-1794509750373521593 --json";
 
 const USAGE_GC: &str = "\
-letibot gc [OWNER] [--folder DIR] [--json] [--log]
+letibot gc [OWNER] [--folder DIR] [--json] [--log] [--now]
   The plan: for every owner, what would be reaped, why, and when or never. A directory that looks
   like letibot's and names no owner the store knows is listed under `unrecorded` and is never
-  reaped by a pattern. **Nothing in this build removes, stops or writes anything**: compute is G2,
-  work (archive, then remove) is G3, caches and records are G4.
+  reaped by a pattern.
 
   --folder DIR   only the owners working against DIR
   --json         the plan as one object
   --log          the journal of what was done to these owners (`reap_event`), oldest first
+  --now          DO it, for compute only: cgroups ended, VMs brought down, daemons stopped.
+                 Work, branches and caches are left where they are (G3, G4).
 
   example:
     letibot gc
-    letibot gc s-1794509750373521593";
+    letibot gc s-1794509750373521593 --now";
+
+const USAGE_HOLD: &str = "\
+letibot hold OWNER [--for 2d]
+  Keep an owner from every automatic close: no idle TTL, no hard TTL, no daemon-gone pass. It is
+  the only opt-out, it is visible in `letibot holds` and in the plan, and it expires - without
+  `--for` it is held for ever. `letibot release OWNER` lets go again.
+
+  --for D        a span: `90s`, `30m`, `6h`, `2d`, or `1h30m`
+
+  example:
+    letibot hold s-1794509750373521593 --for 2d";
+
+const USAGE_RELEASE: &str = "\
+letibot release OWNER
+  Let go of a hold `letibot hold` put on an owner, so the automatic triggers apply again.
+
+  example:
+    letibot release s-1794509750373521593";
 
 pub fn run_holds(args: &[String]) -> ExitCode {
     match holds(args) {
@@ -64,6 +83,26 @@ pub fn run_gc(args: &[String]) -> ExitCode {
     }
 }
 
+pub fn run_hold(args: &[String]) -> ExitCode {
+    match hold(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(why) => {
+            eprintln!("letibot hold: {why}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+pub fn run_release(args: &[String]) -> ExitCode {
+    match release(args) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(why) => {
+            eprintln!("letibot release: {why}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// What both verbs take, parsed once.
 struct Args {
     owner: Option<String>,
@@ -73,6 +112,10 @@ struct Args {
     line: bool,
     /// `gc --log`: the journal instead of the plan.
     log: bool,
+    /// `gc --now`: act, for compute.
+    now: bool,
+    /// `hold --for`: the span, in milliseconds.
+    until: Option<i64>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -82,6 +125,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
         json: false,
         line: false,
         log: false,
+        now: false,
+        until: None,
     };
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
@@ -93,6 +138,13 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--json" => out.json = true,
             "--line" => out.line = true,
             "--log" => out.log = true,
+            "--now" => out.now = true,
+            "--for" => {
+                let span = it
+                    .next()
+                    .ok_or("`--for` needs a span after it, e.g. `2d`")?;
+                out.until = Some(span_ms(span)?);
+            }
             other if other.starts_with('-') => return Err(format!("no such flag: {other}")),
             _ if out.owner.is_some() => {
                 return Err(format!(
@@ -104,6 +156,42 @@ fn parse(args: &[String]) -> Result<Args, String> {
         }
     }
     Ok(out)
+}
+
+/// `90s`, `30m`, `6h`, `2d`, or `1h30m` as milliseconds. Every unit is a multiple of a second, so a
+/// span is read as a sum of them and a bare number is refused rather than guessed at.
+fn span_ms(span: &str) -> Result<i64, String> {
+    let mut total: i64 = 0;
+    let mut digits = String::new();
+    let mut any = false;
+    for c in span.chars() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+            continue;
+        }
+        let n: i64 = digits
+            .parse()
+            .map_err(|_| format!("`{span}` is not a span: `2d`, `6h`, `30m` or `90s`"))?;
+        digits.clear();
+        total += n * match c.to_ascii_lowercase() {
+            's' => 1_000,
+            'm' => 60 * 1_000,
+            'h' => 60 * 60 * 1_000,
+            'd' => 24 * 60 * 60 * 1_000,
+            other => {
+                return Err(format!(
+                    "`{other}` is not a unit: `s`, `m`, `h` or `d` (`{span}`)"
+                ));
+            }
+        };
+        any = true;
+    }
+    if !digits.is_empty() || !any {
+        return Err(format!(
+            "`{span}` names no unit: `2d`, `6h`, `30m` or `90s`"
+        ));
+    }
+    Ok(total)
 }
 
 fn holds(args: &[String]) -> Result<(), String> {
@@ -165,6 +253,12 @@ fn gc(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
     let parsed = parse(args)?;
+    if parsed.now {
+        // Opening for a write is the one thing this verb family does not do read-only, so it is
+        // asked BEFORE the plan's reader is opened: one connection, and no second opinion about
+        // which file the facts are in.
+        return gc_now(parsed.owner.as_deref(), parsed.folder.as_deref());
+    }
     let (store, places) = open()?;
     let now = lifecycle::now_ms();
     if parsed.log {
@@ -193,8 +287,7 @@ fn gc(args: &[String]) -> Result<(), String> {
         }
         if !any {
             println!(
-                "no journal lines: nothing has been reaped, which is what this build does - the \
-                 plan is all there is"
+                "no journal lines: nothing has been reaped yet - `letibot gc --now` is what does it"
             );
         }
         return Ok(());
@@ -226,6 +319,133 @@ fn gc(args: &[String]) -> Result<(), String> {
 /// `6.1 GiB`, in the one spelling the plan uses.
 pub(crate) fn bytes(n: u64) -> String {
     lifecycle::human_bytes(n)
+}
+
+/// `letibot gc --now`: one reap pass, over every owner or the one named, printed as it goes. The
+/// store is opened for WRITING, which is the one place a verb of this family does - and every
+/// change is a `reap_event` row, so what it did is readable afterwards with `letibot gc --log`.
+fn gc_now(owner: Option<&str>, folder: Option<&Path>) -> Result<(), String> {
+    let (store, places) = open_for_acts(owner)?;
+    let ops = lifecycle::Ops::here("letibot gc --now");
+    let now = lifecycle::now_ms();
+    let pass = lifecycle::reap_pass(&store, &places, &ops, owner, now);
+    for act in &pass.acts {
+        println!("{}", act.line());
+    }
+    for kept in &pass.kept {
+        println!("kept {kept}");
+    }
+    if let Some(want) = folder {
+        // A pass acts on the whole box; the filter is said rather than silently narrowing it.
+        println!(
+            "(this pass acted on every owner; `--folder {}` narrows the PLAN, not the pass)",
+            want.display()
+        );
+    }
+    match pass.acts.is_empty() {
+        true => println!("nothing to reap: no owner is idle, past a TTL, or under a gone daemon"),
+        false => println!(
+            "{} act(s); `letibot gc --log {}` is the journal",
+            pass.acts.len(),
+            owner.unwrap_or_default()
+        ),
+    }
+    Ok(())
+}
+
+fn hold(args: &[String]) -> Result<(), String> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{USAGE_HOLD}");
+        return Ok(());
+    }
+    let parsed = parse(args)?;
+    let id = parsed
+        .owner
+        .ok_or("`letibot hold` needs an owner: `letibot hold s-… --for 2d`")?;
+    let (store, _) = open_for_acts(Some(&id))?;
+    let owner = store
+        .owner(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| {
+            format!(
+                "no owner `{id}` in this store: a hold is on a session letibot recorded, and this \
+                 one has no row"
+            )
+        })?;
+    let now = lifecycle::now_ms();
+    // No `--for` is a hold for ever, which is `0` and not an accident of parsing.
+    let until = parsed.until.map_or(0, |span| now + span);
+    store
+        .hold_owner(&id, Some(until))
+        .map_err(|e| e.to_string())?;
+    println!(
+        "{}: held {}",
+        owner.id,
+        match parsed.until {
+            Some(span) => format!(
+                "for {} (until {}Z)",
+                lifecycle::human_millis(span as u64),
+                lifecycle::stamp_of(until)
+            ),
+            None => "for ever (`letibot release` lets go)".to_string(),
+        }
+    );
+    Ok(())
+}
+
+fn release(args: &[String]) -> Result<(), String> {
+    if args.iter().any(|a| a == "--help" || a == "-h") {
+        println!("{USAGE_RELEASE}");
+        return Ok(());
+    }
+    let parsed = parse(args)?;
+    let id = parsed
+        .owner
+        .ok_or("`letibot release` needs an owner: `letibot release s-…`")?;
+    let (store, _) = open_for_acts(Some(&id))?;
+    let owner = store
+        .owner(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("no owner `{id}` in this store"))?;
+    store.hold_owner(&id, None).map_err(|e| e.to_string())?;
+    println!(
+        "{}: released — the automatic triggers apply again",
+        owner.id
+    );
+    Ok(())
+}
+
+/// The store for a verb that ACTS: `$LETIBOT_STORE` else this box's data directory, opened for
+/// writing. A split directory is opened as the SET of the owner's own project file, because the
+/// `process` rows a reap ends are kept per project - an owner named with no row still opens the
+/// index alone.
+fn open_for_acts(owner: Option<&str>) -> Result<(Store, Places), String> {
+    let target = std::env::var_os("LETIBOT_STORE")
+        .map(PathBuf::from)
+        .unwrap_or_else(lifecycle::data_dir);
+    if !target.is_dir() {
+        if !target.is_file() {
+            return Err(format!(
+                "no store at {}: nothing has been recorded to hold anything",
+                target.display()
+            ));
+        }
+        let store = Store::open(&target).map_err(|e| format!("{}: {e}", target.display()))?;
+        return Ok((store, Places::here()));
+    }
+    let key = owner
+        .and_then(|id| {
+            Store::open_reader(&split::shared_path(&target))
+                .ok()?
+                .owner(id)
+                .ok()
+                .flatten()
+        })
+        .and_then(|o| o.repo)
+        .map(|repo| letibot_tokencore::migrate_split::project_key(&repo))
+        .unwrap_or_else(|| "000000000000".to_string());
+    let store = Store::open_set(&target, &key).map_err(|e| format!("{}: {e}", target.display()))?;
+    Ok((store, Places::here()))
 }
 
 /// Is this owner's repository the folder a caller asked about? `None` means the caller did not

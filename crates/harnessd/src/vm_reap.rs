@@ -57,6 +57,14 @@ pub enum Owner {
         instance: String,
         daemon: Daemon,
     },
+    /// Its OWNER row says the owner's compute is gone (`closed` and after): a top-level session
+    /// started with a VM has a `session` row and no `subagent_run` row, which is the case R193 was
+    /// filed on and the one this reaper used to be blind to. `since_ms` is when that state began.
+    Closed {
+        owner: String,
+        state: String,
+        since_ms: u64,
+    },
 }
 
 /// May this VM be reaped, and why - the sentence is the capacity notice's.
@@ -100,6 +108,25 @@ pub fn judge(owner: &Owner, now_ms: u64) -> Verdict {
             } else {
                 Verdict::Keep(format!(
                     "its owner `{child}` is `{state}` ({} min ago); its own `down` may still be \
+                     delivering the work",
+                    minutes(ago)
+                ))
+            }
+        }
+        Owner::Closed {
+            owner,
+            state,
+            since_ms,
+        } => {
+            let ago = now_ms.saturating_sub(*since_ms);
+            if ago >= FINISHED_GRACE_MS {
+                Verdict::Reap(format!(
+                    "its owner `{owner}` is `{state}` ({} min ago) and its VM is still up",
+                    minutes(ago)
+                ))
+            } else {
+                Verdict::Keep(format!(
+                    "its owner `{owner}` is `{state}` ({} min ago); its own `down` may still be \
                      delivering the work",
                     minutes(ago)
                 ))
@@ -227,6 +254,11 @@ impl Holder {
 }
 
 /// The owner of a VM, read off the store.
+///
+/// Two records can name one: a `subagent_run` row (a child), and the newer `owner` row every
+/// session writes at open. The second is the one that was missing: a top-level session started
+/// with a VM has a `session` row and NO `subagent_run`, so the reaper here judged it
+/// `Unrecorded` and kept a VM nobody was running (R193).
 pub fn owner(
     store: &Store,
     child: Option<String>,
@@ -236,7 +268,24 @@ pub fn owner(
     let Some(child) = child else {
         return (Owner::Unrecorded { child: None }, None);
     };
-    let Ok(Some(run)) = store.subagent_run(&child) else {
+    let Ok(run) = store.subagent_run(&child) else {
+        return (Owner::Unrecorded { child: Some(child) }, None);
+    };
+    if run.is_none()
+        && let Ok(Some(row)) = store.owner(&child)
+        && row.state.compute_gone()
+    {
+        let since_ms = row.closed_ms.unwrap_or(row.created_ms).max(0) as u64;
+        return (
+            Owner::Closed {
+                owner: child,
+                state: row.state.word().to_string(),
+                since_ms,
+            },
+            None,
+        );
+    }
+    let Some(run) = run else {
         return (Owner::Unrecorded { child: Some(child) }, None);
     };
     let owner = if run.state == "running" {

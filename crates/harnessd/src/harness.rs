@@ -544,6 +544,13 @@ pub fn skill_message(skill: &letibot_tools::builtins::skill::Skill, then: &str) 
 }
 
 impl Harness {
+    /// This session's store, or `None` for one opened with no durable half. The door `Sessions`
+    /// needs to move the owner's lease on every turn (`docs/lifecycle.md` d.3): the lease is what
+    /// an idle TTL is measured from, and a turn is the activity it is measured by.
+    pub(crate) fn store(&self) -> Option<&Store> {
+        self.store.as_ref()
+    }
+
     /// The turn this harness last started, or empty before the first one. Empty is a real answer - a
     /// turn that failed while being set up never got an id - and a head treats it as the pane it is
     /// looking at, the only one that can be spinning then.

@@ -361,11 +361,38 @@ scope_ok() {
   return 1
 }
 # Sets SCOPE_RUN to the words that start a command in such a scope, or to nothing.
+#
+# **Every daemon goes under `letibot.slice`** (`docs/lifecycle.md` d.7): one slice is where
+# letibot as a whole can be throttled by a `MemoryHigh` instead of starving another project's
+# work, and it is also what makes "the units named letibot-*" a thing the sweep can read.
+#
+# A caller that knows the command is a PACKAGE daemon exports `LETIBOT_SCOPE_RUNTIME_MAX` (a
+# systemd timespan, `25h`) and the scope carries that wall-clock bound. It is asked for rather
+# than assumed because a `--scope` is not a service: the manager refuses a property its unit
+# type does not have, and a bound nobody asked for must not be the reason a daemon never starts.
+# What is left of the hard TTL when this cannot be had is the reaper's own (`owner.hard_ttl_ms`).
+SCOPE_SLICE=letibot.slice
+SCOPE_RUNTIME_WHY=""
+scope_accepts_runtime_max() {
+  local out rc=0
+  out="$(probe_bounded systemd-run --user --scope --quiet --collect --expand-environment=no \
+    -p "RuntimeMaxSec=$1" true 2>&1)" || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  SCOPE_RUNTIME_WHY="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1 || true)"
+  return 1
+}
 scope_run() { # scope_run UNIT-STEM
   SCOPE_RUN=()
   if scope_ok; then
     SCOPE_RUN=(systemd-run --user --scope --quiet --collect --expand-environment=no
-      --unit "$1-$KEY-$$" -p Delegate=yes -p OOMPolicy=continue)
+      --unit "$1-$KEY-$$" --slice "$SCOPE_SLICE" -p Delegate=yes -p OOMPolicy=continue)
+    if [ -n "${LETIBOT_SCOPE_RUNTIME_MAX:-}" ]; then
+      if scope_accepts_runtime_max "$LETIBOT_SCOPE_RUNTIME_MAX"; then
+        SCOPE_RUN+=(-p "RuntimeMaxSec=$LETIBOT_SCOPE_RUNTIME_MAX")
+      else
+        echo "letibot: the user manager would not put a runtime bound on a scope: ${SCOPE_RUNTIME_WHY:-it refused, and said nothing} - the hard TTL is the reaper's, which reads the owner row" >&2
+      fi
+    fi
   elif [ "$HOST_OS" != Darwin ]; then
     echo "letibot: ${SCOPE_WHY} - harnessd shares this terminal's cgroup, and its tool calls run uncapped" >&2
   fi

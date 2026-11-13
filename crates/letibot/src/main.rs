@@ -293,6 +293,11 @@ fn main() -> ExitCode {
                     gc::run_holds(&tail())
                 } else if word == "gc" {
                     gc::run_gc(&tail())
+                } else if word == "hold" {
+                    // The one opt-out from every automatic close, and the operator's alone.
+                    gc::run_hold(&tail())
+                } else if word == "release" {
+                    gc::run_release(&tail())
                 } else if word == "where" || word == "--where" {
                     // Which daemon serves a folder, for a program that drives letibot and must
                     // not re-derive the socket's hash. `scripts/letibot --where` execs it.
@@ -379,8 +384,10 @@ VERBS
                               and folder in one object (`letibot --where` is the same verb)
   holds [OWNER]               what every owner holds on disk - its cgroup with its process
                               count and memory, its VM, its copies, its worktree and target
-  gc [OWNER]                  the read-only plan: what would be reaped, why, when; `--log`
-                              shows the journal. Nothing in this build removes anything
+  gc [OWNER]                  what would be reaped, why, when; `--log` shows the journal.
+                              `--now` DOES it for compute: a cgroup, a VM, a daemon
+  hold OWNER [--for 2d]       keep an owner from every automatic close (no `--for` is for
+                              ever); `release OWNER` lets go again. The only opt-out there is
 
 Every verb answers for itself: `letibot <verb> --help` says what it takes, which
 flags have defaults, and one example. A role is reachable by its own name through a

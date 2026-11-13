@@ -80,6 +80,7 @@ pub mod plugins;
 pub mod pr_watch;
 pub mod progress;
 pub mod prompt;
+pub mod reap_pass;
 pub mod recall_index;
 pub mod recall_offer;
 pub mod restart;

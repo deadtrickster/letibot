@@ -2387,6 +2387,12 @@ impl<'a> Sessions<'a> {
                 &out,
             );
         }
+        // A turn is the activity an idle TTL is measured from (`docs/lifecycle.md` d.3): the
+        // owner's lease moves here, and nowhere a head merely being attached could move it - a
+        // bridge's attached head that renewed is how a finished package holds its daemon for ever.
+        if let Some(store) = h.store() {
+            let _ = store.touch_owner(session_id, letibot_metrics::now_ms() as i64);
+        }
         self.open.insert(session_id.to_string(), h);
         out
     }
@@ -3041,10 +3047,17 @@ impl<'a> Sessions<'a> {
         if self.seat.is_some() {
             return Some("it holds a flowy seat".into());
         }
+        let closed = self.owners_with_no_compute();
         for id in self.registry.ids() {
             let Some(hub) = self.registry.get(&id) else {
                 continue;
             };
+            // An owner the reaper has closed holds nothing, whatever a head still attached to it
+            // looks like: the attached head is the hold that made a finished package hold this
+            // daemon for ever, and a closed owner is reopened by `leticode_send`, not by waiting.
+            if closed.contains(&id) {
+                continue;
+            }
             if hub.attached_heads() > 0 {
                 return Some(format!("{id} has a head attached"));
             }
@@ -3074,6 +3087,27 @@ impl<'a> Sessions<'a> {
             .store
             .as_deref()
             .and_then(crate::mergequeue::busy_here)
+    }
+
+    /// The sessions whose owner row says its compute is gone: reaped, their rows kept. Read from
+    /// the owner rows rather than remembered, because the reaper that closed one may be another
+    /// thread or another process entirely - `letibot gc --now` closes an owner with no daemon
+    /// involved at all. One store connection per look, which is what `mergequeue::busy_here`
+    /// beside it already spends.
+    fn owners_with_no_compute(&self) -> std::collections::HashSet<String> {
+        let Some(at) = self.base.store_at() else {
+            return Default::default();
+        };
+        let Ok(store) = at.open() else {
+            return Default::default();
+        };
+        store
+            .owners()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|o| o.state.compute_gone())
+            .map(|o| o.id)
+            .collect()
     }
 
     /// The idle exit's window, `None` when this daemon never exits on its own.

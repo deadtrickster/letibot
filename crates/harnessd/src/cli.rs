@@ -1345,7 +1345,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     registry.set_terminal(std::sync::Arc::new(terminals));
     // A close settles its session's placement here when the worker cannot: a turn inside a tool
     // call holds the harness, and the guest that call is in would otherwise outlive the session.
-    crate::close_settle::install(&registry);
+    crate::close_settle::install(&registry, cfg.store_at());
     // The stored row's parent and name come in with the first session, read once
     // here at startup
     let stored = registry.resumable(&cfg.session_id);
@@ -1853,6 +1853,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // daemon is gone, is brought down rather than left holding a slot every review then waits
     // on (`crate::vm_reap`). Its own thread, so a reap that takes minutes is not the worker's
     crate::vm_reap::spawn(cfg.store_at(), registry.clone());
+    // And the owner reaper, from the same start: an owner that has gone idle, past its hard TTL
+    // or whose daemon is gone has its compute ended and its row closed (`crate::reap_pass`), which
+    // is what lets this daemon go when it holds nothing anybody is running.
+    crate::reap_pass::spawn(cfg.store_at(), registry.clone());
     // The process supervisor, from the start - RH7. Its own thread, and its FIRST tick is
     // the recovery: it reads every record the last daemon left open, checks each host once
     // and writes down which processes are still the ones recorded.

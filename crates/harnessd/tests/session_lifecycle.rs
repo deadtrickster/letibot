@@ -867,3 +867,119 @@ fn a_package_daemon_with_only_its_gatekeeper_idles_out() {
     );
     d.registry.close();
 }
+
+/// **Done when** a package session left idle with a bridge head attached is `closed` after its
+/// idle TTL, its notice was written first, its daemon has let go of it, and sending to it reopens
+/// it with its transcript intact (`docs/lifecycle.md` G2).
+///
+/// The notice is NOT a conversation row, and that is the choice the package made: this pass runs
+/// where no ledger is held, so a row written here would be one whose tokens nobody computed. It
+/// goes to the status line (`idle_closing`) and to the journal, and the conversation keeps exactly
+/// the rows the model was sent - which the last assertion measures.
+#[test]
+fn an_idle_package_with_a_head_attached_is_closed_and_lets_its_daemon_go() {
+    let _one = serial();
+    let mut d = a_daemon_with_no_model("harnessd-reap-idle");
+    let mut sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
+        .expect("the daemon opens");
+    let store_path = d.cfg.store.clone().expect("a store");
+    let store = letibot_tokencore::store::Store::open(&store_path).expect("a second reader");
+
+    // The session is a PACKAGE with a one-second idle TTL that has already run out - what the
+    // reaper would see thirty minutes into a package's quiet, in a window a test can wait for.
+    let now = letibot_metrics::now_ms() as i64;
+    let mut owner = letibot_tokencore::store::OwnerRow::live(
+        ROOT,
+        letibot_tokencore::store::OwnerKind::Package,
+        Some("/tmp".into()),
+        now - 60_000,
+    );
+    owner.idle_ttl_ms = Some(1_000);
+    store.put_owner(&owner).expect("the owner row");
+
+    // A bridge head is attached, which is the hold that used to keep this daemon up for ever.
+    let hub = d.registry.get(ROOT).expect("the root's hub");
+    let head = hub.attach("letibot-mcp", "test", Caps::default(), 0);
+    assert!(hub.attached_heads() > 0);
+    assert_eq!(
+        sessions.idle_exit_refusal(),
+        Some(format!("{ROOT} has a head attached")),
+        "before the reap, the attached head holds the daemon"
+    );
+    let rows_before = store
+        .session(ROOT)
+        .expect("a read")
+        .expect("the session row")
+        .items;
+
+    // One pass of the daemon's own reaper.
+    let acts = letibot_harnessd::reap_pass::pass(&store, Some(&d.registry), "daemon test");
+    let notice = acts
+        .iter()
+        .position(|l| l.contains("plan") && l.contains("closing in"));
+    let close = acts.iter().position(|l| l.contains(" close"));
+    assert!(
+        notice.is_some(),
+        "the notice is written first and recorded: {acts:?}"
+    );
+    assert!(
+        close.is_some_and(|c| c > notice.unwrap()),
+        "the close comes after the notice: {acts:?}"
+    );
+    assert_eq!(
+        store.owner(ROOT).unwrap().unwrap().state,
+        letibot_tokencore::store::OwnerState::Closed,
+        "the owner row is closed: {acts:?}"
+    );
+
+    // Its daemon has let go of it: the session left the registry, and the head that was attached
+    // no longer holds the daemon up.
+    assert!(
+        d.registry.get(ROOT).is_none(),
+        "the daemon still holds the session it closed"
+    );
+    assert_eq!(
+        sessions.idle_exit_refusal(),
+        None,
+        "a head attached to a closed owner still holds the daemon"
+    );
+    let _ = head;
+
+    // Nothing was deleted: the rows are the ones the model was sent, and the journal says why.
+    assert_eq!(
+        store.session(ROOT).unwrap().unwrap().items,
+        rows_before,
+        "the close wrote or removed a conversation row"
+    );
+    assert!(
+        store
+            .reap_events_of(ROOT)
+            .expect("the journal")
+            .iter()
+            .any(|e| e.act == "close" && e.said.contains("idle")),
+        "the journal names the idle close"
+    );
+
+    // And `leticode_send`'s door - an open - moves it back to `live` on the same row, with its
+    // transcript whole.
+    let reopened = letibot_tools::lifecycle::owner_for_open(
+        &store,
+        ROOT,
+        letibot_tokencore::store::OwnerKind::Package,
+        Some("/tmp".into()),
+        letibot_metrics::now_ms() as i64,
+    )
+    .expect("the reopen's row");
+    assert_eq!(reopened.state, letibot_tokencore::store::OwnerState::Live);
+    assert!(
+        reopened.closed_ms.is_some(),
+        "the first close stays on the row a reopen brought back: it is a fact"
+    );
+    store.put_owner(&reopened).expect("the reopen");
+    assert_eq!(
+        store.session(ROOT).unwrap().unwrap().items,
+        rows_before,
+        "reopening lost the conversation"
+    );
+    d.registry.close();
+}

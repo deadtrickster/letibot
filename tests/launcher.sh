@@ -1519,6 +1519,54 @@ STUB
   expect "  ...and the run goes on there too" "$out" "^harnessd .*--prompt one"
 fi
 
+# **THE SCOPE CARRIES THE SLICE, AND THE BOUND WHEN ONE IS ASKED FOR** (`docs/lifecycle.md` d.7):
+# every daemon goes under `letibot.slice`, and a package daemon's caller exports
+# `LETIBOT_SCOPE_RUNTIME_MAX` so the user manager enforces a wall clock even with every letibot
+# process wedged. The stub sits ahead of the real `systemd-run` and writes down the words it was
+# given, which is the only reading of a unit this box can do - the second half (`systemctl --user
+# show`) needs a user manager, and is skipped with that said rather than pretended.
+if [ "$(uname -s)" = Linux ]; then
+  mkdir -p "$T/scope"
+  cat > "$T/scope/systemd-run" << STUB
+#!/usr/bin/env bash
+# Every ask, one line: the probe, the bound's probe, and the real scope. It records and answers
+# yes without running anything, so the scope's own words can be read and no daemon starts here.
+printf '%s\\n' "\$*" >> "$T/scope/said"
+exit 0
+STUB
+  chmod +x "$T/scope/systemd-run"
+  : > "$T/scope/said"
+  out="$(RUN_PATH_EXTRA="$T/scope:" LETIBOT_SCOPE_RUNTIME_MAX=25h run "$DEFAULT_ONLY" "one question")"
+  scope_line="$(grep -c -- '--slice' "$T/scope/said" 2>/dev/null || true)"
+  if [ "${scope_line:-0}" -gt 0 ]; then
+    echo "ok   the daemon's scope names letibot.slice"
+  else
+    echo "FAIL the daemon's scope names letibot.slice; the stub was given:"
+    sed 's/^/     /' "$T/scope/said"
+    fails=$((fails + 1))
+  fi
+  if grep -q -- 'RuntimeMaxSec=25h' "$T/scope/said" 2>/dev/null; then
+    echo "ok   ...and the bound its caller asked for"
+  else
+    echo "FAIL a package daemon's scope carries the runtime bound:"
+    sed 's/^/     /' "$T/scope/said"
+    fails=$((fails + 1))
+  fi
+  # And the bound is ASKED FOR, not assumed: a manager that refuses it leaves a daemon that still
+  # starts, with a sentence saying the hard TTL is the reaper's.
+  cat > "$T/scope/systemd-run" << STUB
+#!/usr/bin/env bash
+case "\$*" in
+  *RuntimeMaxSec*) echo "Failed to start transient scope unit: Unknown assignment RuntimeMaxSec" >&2; exit 1 ;;
+esac
+exit 0
+STUB
+  chmod +x "$T/scope/systemd-run"
+  out="$(RUN_PATH_EXTRA="$T/scope:" LETIBOT_SCOPE_RUNTIME_MAX=25h run "$DEFAULT_ONLY" "one question")"
+  expect "a manager that refuses the bound is said, not fatal" "$out" \
+    "would not put a runtime bound on a scope"
+fi
+
 if [ "$fails" -ne 0 ]; then
   echo "launcher: $fails failed"
   exit 1
