@@ -220,6 +220,10 @@ impl Policy {
             "please recharge",
             "no available resource package",
             "billing",
+            // Kimi's coding plan, whose own client reads this one code as a spent account rather
+            // than a wait: its 5-hour and weekly limits are 429s whose prose names a window, and
+            // those stay retryable rate limits.
+            "exceeded_current_quota_error",
             // The provider's own words, which are what actually arrived: a reader who cannot
             // decode them would otherwise be told only that the endpoint "did not answer".
             "余额不足",
@@ -438,6 +442,22 @@ mod tests {
             Some(Trouble::Quota),
             "the provider's own words decide it, not the status"
         );
+        // Kimi's coding plan says `exceeded_current_quota_error` for a spent plan, and its own
+        // client treats that one as non-retryable; a 429 naming a window is still a rate limit.
+        assert_eq!(
+            Policy::trouble(&said(
+                429,
+                "you have reached your usage limit (exceeded_current_quota_error)"
+            )),
+            Some(Trouble::Quota)
+        );
+        assert_eq!(
+            Policy::trouble(&said(
+                429,
+                "Usage limit reached for 5 hour. Your limit will reset at 2026-11-13 06:00:00"
+            )),
+            Some(Trouble::RateLimit)
+        );
         // A timeout is the model's API not answering, and the KIND is the whole of it: a sentence
         // about timing is not an instrument a fallback may move a session over.
         assert_eq!(
@@ -537,6 +557,9 @@ mod tests {
             r#"{"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}"#,
             "http 429: you are out of credits",
             r#"{"error":{"message":"Your credit balance is too low to access the API"}}"#,
+            // Kimi's coding plan, whose 429 prose names a usage limit rather than money and whose
+            // own client reads this one code as a spent plan: it is the same fact as a balance.
+            r#"{"error":{"code":"exceeded_current_quota_error","message":"You have reached your usage limit."}}"#,
         ] {
             let e = said(429, body);
             assert_eq!(p.class(&e), Class::Refused, "{body}");
