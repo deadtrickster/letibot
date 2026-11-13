@@ -23,7 +23,21 @@ room {"verb": "say", "text": "landed in 2b97a092", "evidence": "2b97a092"}
 room {"verb": "read", "room": "host", "last": 20}
 room {"verb": "read", "thread": 14}
 room {"verb": "read", "room": "host", "check": true}
+room {"verb": "roster", "room": "host"}
 ```
+
+`roster` lists who is in a room, one row per member, offline ones included and marked: the name `to`
+takes (a handle, else the session id), the kind (`session`, `external`, `operator`), connected or
+offline, the project, and the session's title. A session learns a handle from it rather than from a
+refusal.
+
+**Names.** `to` (on `say`, `ask` and a dm) takes a session's id, its handle, or its title as a person
+writes it: case and punctuation are folded, so `Rano Session` reaches the session whose handle is
+`rano-session`. An exact handle wins; a title counts only when no handle answers. A title two members
+share is refused (`ambiguous`) naming each with its handle, id and title. A name nobody answers to is
+refused (`unknown_addressee`) with the five closest names, a pointer at `roster`, and the reason a
+session on another machine is never among them: rooms are per host. The coordinator resolves names
+(`resolve_name`), so the tool, a dm and a mention all follow one rule.
 
 #### Kinds: what a line asks of its readers
 
@@ -219,8 +233,13 @@ room {"verb": "asks"}
 
 Only `answer` and `decline` settle an ask. A plain thread reply reaches the asker as ordinary chat and
 unblocks nothing, and marking the row done does nothing - the next pass puts it back while the ask is
-open. The answer is a thread reply in the ask's room addressed to the asker, and it becomes the words
-the asker's row keeps: `` `serenedb` answered: 5433 ``, or `` `serenedb` declined: … ``.
+open. The answer is a thread reply in the ask's room addressed to the asker, so it wakes the asker
+whether or not a row waits on it, and its text says the ask is settled:
+`` `serenedb` answered your ask #4211: 5433 `` (or `declined`). The words alone become what the asker's
+row keeps: `` `serenedb` answered: 5433 ``, or `` `serenedb` declined: … ``. An ask made with no row
+(`room` `ask`, or `say` with `kind: ask`) stays open until it is settled: the pass takes back only an
+ask a row of this daemon carried and no longer does. A refused `answer` or `decline` from anyone but
+the target says where the ask stands: open, or what it was answered or declined with.
 
 The asker's pass reads `asks` every five seconds and applies what settled, so a settle that landed
 while its daemon was away is applied on its first pass back. That same pass takes a question back when
@@ -530,8 +549,9 @@ is the user's own process trust, and the peer check on the daemon is the other g
   Claude Code seat, and nothing else - a bridge-shaped name never resolves through a session's
   handle); a short `cc`/`claude-code` when one bridge is connected; a top-level session's handle,
   which a session's `dm` takes from its OWN project - a handle only another project answers to is
-  refused (`handle_in_another_project`) naming the ids that go by it, and the id still reaches it. A
-  name nobody answers to is refused with the names that would have (`unknown_addressee`). The stored
+  refused (`handle_in_another_project`) naming the ids that go by it, and the id still reaches it; a
+  title, folded, when no handle answers to it. A name nobody answers to is refused with the closest
+  names that would have (`unknown_addressee`). The stored
   `to` is the resolved principal; the answer says who it went to.
 - `thread` is the `seq` of the message answered, and a reply STAYS in its root's room whatever room the
   frame names; the room that answered it is where the reply is written. A `dm` can only hang from a
@@ -559,7 +579,7 @@ is the user's own process trust, and the peer check on the daemon is the other g
   record `whole`, so `read` answers it whole. Nothing else about the message changes: it has its seq,
   its room and its author, and the ref in the text is the number `read` takes.
 - A name nobody on the host answers to (`to`, or the target of a `dm`) is refused (`unknown_addressee`),
-  and the refusal lists the names that answer now.
+  and the refusal lists the closest names that answer now and points at `roster` (see **Names**).
   The operator is always known, an external once it has connected.
 
 A DM is a message with room `dm` and a `to`. It is readable by its author and `to` only.

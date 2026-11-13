@@ -228,7 +228,7 @@ fn a_question_is_a_message_and_its_answer_settles_the_ask() {
     let answer = a.next_seq(ask.seq + 1);
     assert_eq!(answer.thread, Some(ask.seq));
     assert_eq!(answer.to.as_deref(), Some("s-a"));
-    assert_eq!(answer.text, "5433");
+    assert_eq!(answer.text, "`s-b` answered your ask #1: 5433");
     assert_eq!(answer.room, ask.room, "an answer stays in the ask's room");
 }
 
@@ -245,7 +245,7 @@ fn only_the_session_that_was_asked_may_answer() {
 
     assert!(matches!(
         refused(c.reply("r1", ask.seq, "3306")),
-        Refused::AskNotTheTarget { ask: id, target } if id == ask.seq && target == "s-b"
+        Refused::AskNotTheTarget { ask: id, target, .. } if id == ask.seq && target == "s-b"
     ));
     let (by_me, _) = a.asks();
     assert!(by_me[0].open(), "a stranger's words settle nothing");
@@ -322,6 +322,61 @@ fn a_target_gone_past_the_grace_escalates_and_a_reconnect_clears_it() {
     assert_eq!(by_me[0].gone_since_ms, None);
     let (_, of_me) = b.asks();
     assert!(!of_me[0].escalated);
+}
+
+/// A refused answer says where the ask stands, and a settle reaches the asker as one line that
+/// says it is settled, by whom and with what - not a bare reply it could take for more chat.
+#[test]
+fn a_settle_says_so_to_the_asker_and_a_wrong_answerer_learns_the_asks_state() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let a = seat(&server, "s-a", A, Seat::Session);
+    let b = seat(&server, "s-b", A, Seat::Session);
+    tell(&a, vec![top("s-a", "mac"), top("s-b", "rano")]);
+
+    let one = asked(a.ask("q1", "rano", "which port?"));
+    let two = asked(a.ask("q2", "rano", "which user?"));
+    let state_of = |r: Response| refused(r).to_string();
+    // The asker answering its own ask is told it is still open, and whose it is.
+    let open = state_of(a.reply("r0", one.seq, "never mind"));
+    assert_eq!(
+        open,
+        format!(
+            "ask #{} was put to `rano`; it is open, and only `rano` may answer or decline it",
+            one.seq
+        )
+    );
+
+    asked(b.reply("r1", one.seq, "5433"));
+    let answer = a.next_seq(one.seq + 2);
+    assert_eq!(
+        answer.text,
+        format!("`rano` answered your ask #{}: 5433", one.seq)
+    );
+    assert_eq!(answer.to.as_deref(), Some("mac"), "addressed to the asker");
+    asked(b.decline("d1", two.seq, "not my area"));
+    let declined = a.next_seq(answer.seq + 1);
+    assert_eq!(
+        declined.text,
+        format!("`rano` declined your ask #{}: not my area", two.seq)
+    );
+
+    assert_eq!(
+        state_of(a.reply("r2", one.seq, "again")),
+        format!("ask #{} was put to `rano`; it was answered: 5433", one.seq)
+    );
+    assert_eq!(
+        state_of(a.decline("r3", two.seq, "again")),
+        format!(
+            "ask #{} was put to `rano`; it was declined: not my area",
+            two.seq
+        )
+    );
+    // And the asker's own list says each one's state.
+    let (by_me, _) = a.asks();
+    let lines: Vec<String> = by_me.iter().map(|x| x.line()).collect();
+    assert!(lines[0].ends_with("- answered: 5433"), "{lines:?}");
+    assert!(lines[1].ends_with("- declined: not my area"), "{lines:?}");
 }
 
 /// A decline is an answer: the ask ends, and the asker's row learns which of the two it was.

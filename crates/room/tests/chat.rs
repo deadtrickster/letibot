@@ -977,6 +977,129 @@ fn a_named_session_is_addressed_and_authored_by_its_handle() {
     said(say_to(&plain, "5", "renamed", "new name"));
 }
 
+/// A member as a daemon reports it: a handle (empty when its slug was taken) and the title.
+fn titled(session: &str, handle: &str, label: &str) -> letibot_room::Member {
+    letibot_room::Member {
+        label: label.into(),
+        ..top(session, handle)
+    }
+}
+
+/// `roster` is every member of the room with what `to` takes: two sessions (one titled, one not)
+/// and an external, each with its name, kind and connection, and the title where there is one.
+#[test]
+fn roster_lists_sessions_and_externals_with_handles_kinds_and_titles() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let rano = seat(&server, "s-rano", A, Seat::Session);
+    let _plain = seat(&server, "s-plain", A, Seat::Session);
+    let _cc = seat(&server, "cc@mac", A, Seat::External);
+    tell(
+        &rano,
+        vec![
+            titled("s-rano", "rano", "Rano"),
+            titled("s-plain", "", "ws 1a2b"),
+            titled("s-away", "away", "Away"),
+        ],
+    );
+    let rows = match rano.call(Request::Roster {
+        room: String::new(),
+    }) {
+        Response::Roster { rows, .. } => rows,
+        other => panic!("{other:?}"),
+    };
+    let row = |id: &str| {
+        rows.iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("`{id}` is not on the roster: {rows:?}"))
+    };
+    assert_eq!(
+        (
+            row("s-rano").name.as_str(),
+            row("s-rano").kind,
+            row("s-rano").label.as_str()
+        ),
+        ("rano", Seat::Session, "Rano")
+    );
+    assert!(row("s-rano").connected);
+    assert_eq!(
+        row("s-plain").name,
+        "s-plain",
+        "untitled is named by its id"
+    );
+    assert_eq!(row("cc@mac").kind, Seat::External);
+    assert!(row("cc@mac").connected);
+    assert!(
+        !row("s-away").connected,
+        "an offline member is listed and marked"
+    );
+}
+
+/// `to` takes a session's title as well as its handle when exactly one member answers to it. Two
+/// that share a title are refused with both, and a name nobody answers to points at `roster`.
+#[test]
+fn a_title_addresses_its_session_and_an_ambiguous_or_unknown_one_is_refused_in_words() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let me = seat(&server, "s-me", A, Seat::Session);
+    let rano = seat(&server, "s-rano", A, Seat::Session);
+    tell(
+        &me,
+        vec![
+            titled("s-me", "me", "Me"),
+            titled("s-rano", "rano-session", "Rano Session"),
+            titled("s-f1", "fuzz-run", "Fuzz Run"),
+            titled("s-f2", "", "fuzz run"),
+        ],
+    );
+
+    // The title, as a person writes it, reaches the one session it names.
+    let m = said(say_to(&me, "1", "Rano Session", "hi"));
+    assert_eq!(m.to.as_deref(), Some("rano-session"));
+    let (heard, names_you) = rano.next();
+    assert!(names_you, "the title resolved to `s-rano`: {heard:?}");
+
+    // Two members fold to one title: refused, naming both with their handles and ids.
+    let why = refused(say_to(&me, "2", "Fuzz Run", "which?"));
+    match &why {
+        Refused::Ambiguous {
+            candidates, shown, ..
+        } => {
+            assert_eq!(candidates, &vec!["s-f1".to_string(), "s-f2".to_string()]);
+            assert_eq!(shown.len(), 2, "{shown:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let sentence = why.to_string();
+    for want in ["`fuzz-run` (s-f1", "s-f2", "`roster` lists everyone"] {
+        assert!(sentence.contains(want), "`{want}` missing: {sentence}");
+    }
+    // The handle itself is exact and is not ambiguous.
+    said(say_to(&me, "3", "fuzz-run", "you"));
+
+    // Nobody: the closest names, the roster hint and the per-host sentence.
+    let why = refused(say_to(&me, "4", "ranno", "typo"));
+    match &why {
+        Refused::UnknownAddressee { known, .. } => {
+            assert_eq!(
+                known.first().map(String::as_str),
+                Some("rano-session"),
+                "{known:?}"
+            );
+            assert!(known.len() <= 5, "a few, not all: {known:?}");
+        }
+        other => panic!("{other:?}"),
+    }
+    let sentence = why.to_string();
+    for want in [
+        "nobody on this host answers to `ranno`",
+        "`roster` lists everyone here",
+        "Rooms are per host: a session on another machine is not reachable from this one",
+    ] {
+        assert!(sentence.contains(want), "`{want}` missing: {sentence}");
+    }
+}
+
 /// The same handle in two projects: the sender's own project wins, and a sender in neither is
 /// refused with the ids.
 #[test]

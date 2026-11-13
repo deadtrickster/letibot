@@ -289,7 +289,7 @@ pub enum Refused {
     /// an archived one would be a box its own seats cannot see.
     HostRoomKept,
     /// Nobody answers to this name, so the message would be told to no one. `known` is what a
-    /// sender could have written instead - every name the room answers to now.
+    /// sender could have written instead - the names closest to it, a few at most.
     UnknownAddressee {
         name: String,
         #[serde(default)]
@@ -318,9 +318,12 @@ pub enum Refused {
         name: String,
     },
     /// A short name that fits more than one connected member, so the message names no one.
+    /// `shown` is each candidate as a reader picks it: its handle, id and title.
     Ambiguous {
         name: String,
         candidates: Vec<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        shown: Vec<String>,
     },
     /// Only a head's operator seat may do this.
     NotTheOperator,
@@ -384,10 +387,13 @@ pub enum Refused {
     },
     /// Only a session connection asks: an ask is a wait between two top-level sessions.
     AskNotASession,
-    /// A `Reply` or `Decline` from somebody other than the session that was asked.
+    /// A `Reply` or `Decline` from somebody other than the session that was asked. `state` is
+    /// where the ask stands, so a refused asker does not read it as still open.
     AskNotTheTarget {
         ask: u64,
         target: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        state: Option<crate::chat::AskState>,
     },
     /// The ask has already ended, and an ended ask takes no second answer.
     AskSettled {
@@ -418,6 +424,11 @@ pub enum Refused {
         why: String,
     },
 }
+
+/// What a refused name is told after the closest names: where the full list is, and why a
+/// session on another machine is not among them.
+pub const NAMES_HINT: &str = "`roster` lists everyone here. Rooms are per host: a session on another \
+     machine is not reachable from this one";
 
 impl fmt::Display for Refused {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -581,9 +592,9 @@ impl fmt::Display for Refused {
                     "nobody on this host answers to `{name}` - a message to a typo tells no one"
                 )?;
                 if !known.is_empty() {
-                    write!(f, ". The names here are: {}", known.join(", "))?;
+                    write!(f, ". Closest: {}", known.join(", "))?;
                 }
-                Ok(())
+                write!(f, ". {NAMES_HINT}")
             }
             Refused::HandleInAnotherProject { name, sessions } => write!(
                 f,
@@ -608,10 +619,19 @@ impl fmt::Display for Refused {
             Refused::NameInUse { name } => {
                 write!(f, "another connection already speaks as `{name}`")
             }
-            Refused::Ambiguous { name, candidates } => write!(
+            Refused::Ambiguous {
+                name,
+                candidates,
+                shown,
+            } => write!(
                 f,
-                "`{name}` fits more than one member - name one of: {}",
-                candidates.join(", ")
+                "`{name}` fits more than one member - name one of: {}. `roster` lists everyone \
+                 here",
+                if shown.is_empty() {
+                    candidates.join(", ")
+                } else {
+                    shown.join(", ")
+                }
             ),
             Refused::NotTheOperator => write!(f, "only the operator's seat may do this"),
             Refused::OperatorSeat { why } => write!(
@@ -683,7 +703,7 @@ impl fmt::Display for Refused {
             Refused::AskUnknown { name, known } => write!(
                 f,
                 "nobody on this host answers to `{name}`, so an ask of it would wait for ever. \
-                 The top-level sessions here are: {}",
+                 Closest: {}. {NAMES_HINT}",
                 if known.is_empty() {
                     "(none - no daemon has reported a tree to the room yet)".to_string()
                 } else {
@@ -695,10 +715,35 @@ impl fmt::Display for Refused {
                 "only a top-level session asks: an ask is a wait between two of them, and this \
                  seat has no board to wait on"
             ),
-            Refused::AskNotTheTarget { ask, target } => write!(
-                f,
-                "ask #{ask} was put to `{target}`, and only `{target}` may answer or decline it"
-            ),
+            Refused::AskNotTheTarget { ask, target, state } => match state {
+                None | Some(crate::chat::AskState::Open) => write!(
+                    f,
+                    "ask #{ask} was put to `{target}`; it is open, and only `{target}` may answer \
+                     or decline it"
+                ),
+                Some(crate::chat::AskState::Answered { text, .. }) => {
+                    write!(
+                        f,
+                        "ask #{ask} was put to `{target}`; it was answered: {text}"
+                    )
+                }
+                Some(crate::chat::AskState::Declined { text, .. }) => {
+                    write!(
+                        f,
+                        "ask #{ask} was put to `{target}`; it was declined: {text}"
+                    )
+                }
+                Some(crate::chat::AskState::Withdrawn { by, .. }) => {
+                    write!(
+                        f,
+                        "ask #{ask} was put to `{target}`; it was withdrawn by {by}"
+                    )
+                }
+                Some(crate::chat::AskState::Down { .. }) => write!(
+                    f,
+                    "ask #{ask} was put to `{target}`; it ended: `{target}` was shut down for good"
+                ),
+            },
             Refused::AskSettled { ask, state } => write!(
                 f,
                 "ask #{ask} is {state} already - an ended ask takes no second answer"

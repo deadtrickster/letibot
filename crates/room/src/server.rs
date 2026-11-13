@@ -1155,7 +1155,7 @@ impl Server {
         // handles is how a dm meant for `cc@serenedb` was stored against a session of another
         // project: the handle, not the name, decided the addressee.
         if chat::bridge_parts(name).is_some() {
-            return Err(Miss::Unknown(self.top_handles()));
+            return Err(Miss::Unknown);
         }
         if !chat::BRIDGE_ALIASES.contains(&name) {
             return self.resolve_handle(project, name, reach);
@@ -1169,7 +1169,7 @@ impl Server {
         found.dedup();
         match found.len() {
             1 => Ok(found.remove(0)),
-            0 => Err(Miss::Unknown(self.top_handles())),
+            0 => Err(Miss::Unknown),
             _ => Err(Miss::Ambiguous(found)),
         }
     }
@@ -1250,26 +1250,41 @@ impl Server {
     /// only one that has it. `Miss` says which ids answer when it is not one name.
     fn resolve_handle(&self, project: &str, name: &str, reach: Reach) -> Result<String, Miss> {
         let want = name.to_lowercase();
-        let found: Vec<(String, String)> = {
+        let key = name_key(name);
+        let (by_handle, by_title) = {
             let rooms = self.inner.rooms.lock().expect("the rooms lock");
-            rooms
-                .iter()
-                .flat_map(|(p, r)| {
-                    r.members()
-                        .iter()
-                        .filter(|m| m.group == crate::Group::Top && m.handle == want)
-                        .map(|m| (p.clone(), m.session.clone()))
-                        .collect::<Vec<_>>()
-                })
-                .collect()
+            let mut by_handle: Vec<(String, String)> = Vec::new();
+            let mut by_title: Vec<(String, String)> = Vec::new();
+            for (p, r) in rooms.iter() {
+                for m in r.members().iter().filter(|m| m.group == crate::Group::Top) {
+                    let row = (p.clone(), m.session.clone());
+                    if !m.handle.is_empty() && m.handle == want {
+                        by_handle.push(row);
+                    } else if !key.is_empty()
+                        && (name_key(&m.handle) == key || name_key(&m.label) == key)
+                    {
+                        by_title.push(row);
+                    }
+                }
+            }
+            (by_handle, by_title)
         };
+        // A handle is exact and wins; a title or label is the same name written the way a person
+        // reads it, so it counts only when no handle answers.
+        let mut found = if by_handle.is_empty() {
+            by_title
+        } else {
+            by_handle
+        };
+        found.sort();
+        found.dedup();
         let here: Vec<&(String, String)> = found.iter().filter(|(p, _)| p == project).collect();
         let mut ids: Vec<String> = found.iter().map(|(_, id)| id.clone()).collect();
         ids.sort();
         ids.dedup();
         match (here.as_slice(), found.as_slice()) {
             ([one], _) => Ok(one.1.clone()),
-            (_, []) => Err(Miss::Unknown(self.top_handles())),
+            (_, []) => Err(Miss::Unknown),
             (_, [_]) if project.is_empty() || reach == Reach::Host => Ok(found[0].1.clone()),
             // A session's dm keeps to its own project's names: a handle that only another
             // project answers to is that session's, and saying so is not the same as sending to
@@ -1351,13 +1366,8 @@ impl Server {
                 Ok(_) => {}
                 // A mention of nobody stays as it was written: the sentence is the sender's, and
                 // only a name that fits several is a refusal, because only that one is not.
-                Err(Miss::Ambiguous(candidates)) => {
-                    return Err(crate::Refused::Ambiguous {
-                        name: m,
-                        candidates,
-                    });
-                }
-                Err(Miss::Unknown(_) | Miss::Elsewhere(_)) => {}
+                Err(miss @ Miss::Ambiguous(_)) => return Err(miss.refused(&m, self)),
+                Err(Miss::Unknown | Miss::Elsewhere(_)) => {}
             }
         }
         Ok(out)
@@ -2033,7 +2043,7 @@ impl Server {
                     Err(miss) => {
                         return Some(Response::Refused {
                             id: Some(id.clone()),
-                            why: miss.refused(asked),
+                            why: miss.refused(asked, self),
                         });
                     }
                 };
@@ -2306,7 +2316,7 @@ impl Server {
                 let to = to.trim().trim_start_matches('@').to_string();
                 let to = match self.resolve_name(project, &to, Reach::OwnProject) {
                     Ok(t) => t,
-                    Err(miss) => return refuse(Some(id), miss.refused(&to)),
+                    Err(miss) => return refuse(Some(id), miss.refused(&to, self)),
                 };
                 let text = &match self.resolve_mentions(project, text) {
                     Ok(t) => t,
@@ -2316,8 +2326,8 @@ impl Server {
                     return refuse(
                         Some(id),
                         crate::Refused::UnknownAddressee {
+                            known: self.closest(&to),
                             name: to,
-                            known: self.top_handles(),
                         },
                     );
                 }
@@ -2590,14 +2600,14 @@ impl Server {
                 let asked = session.trim().trim_start_matches('@');
                 let who = match self.resolve_name(project, asked, Reach::Host) {
                     Ok(who) => who,
-                    Err(miss) => return refuse(None, miss.refused(asked)),
+                    Err(miss) => return refuse(None, miss.refused(asked, self)),
                 };
                 if !self.is_known(&who) {
                     return refuse(
                         None,
                         crate::Refused::UnknownAddressee {
+                            known: self.closest(&who),
                             name: who,
-                            known: self.top_handles(),
                         },
                     );
                 }
@@ -2829,7 +2839,7 @@ impl Server {
             None => None,
             Some(t) => match self.resolve_name(project, t, Reach::OwnProject) {
                 Ok(full) => Some(full),
-                Err(miss) => return refuse(miss.refused(t)),
+                Err(miss) => return refuse(miss.refused(t, self)),
             },
         };
         if let Some(t) = &to
@@ -2837,7 +2847,7 @@ impl Server {
         {
             return refuse(crate::Refused::UnknownAddressee {
                 name: t.clone(),
-                known: self.top_handles(),
+                known: self.closest(t),
             });
         }
         // Looked up before the room: a reply stays in its root's room, so the frame's room does
@@ -3478,6 +3488,34 @@ impl Server {
         }
     }
 
+    /// The names closest to one nobody answers to, a few at most: the refusal points at `roster`
+    /// for the rest, so the list stays short enough to read.
+    fn closest(&self, written: &str) -> Vec<String> {
+        let want = name_key(written);
+        let mut known: Vec<(usize, String)> = self
+            .top_handles()
+            .into_iter()
+            .map(|n| (name_distance(&want, &name_key(&n)), n))
+            .collect();
+        known.sort();
+        known.into_iter().take(CLOSEST).map(|(_, n)| n).collect()
+    }
+
+    /// A candidate as a reader picks it: `` `handle` (id, "title") `` for a session the tree names,
+    /// else the name itself.
+    fn who_is(&self, id: &str) -> String {
+        let rooms = self.inner.rooms.lock().expect("the rooms lock");
+        let member = rooms
+            .values()
+            .flat_map(|r| r.members().iter())
+            .find(|m| m.session == id && m.group == crate::Group::Top);
+        match member {
+            Some(m) if !m.handle.is_empty() => format!("`{}` ({id}, \"{}\")", m.handle, m.label),
+            Some(m) if !m.label.is_empty() => format!("{id} (\"{}\")", m.label),
+            _ => id.to_string(),
+        }
+    }
+
     /// The top-level sessions this box has, as a reader names them - the list a refusal about an
     /// unknown handle hands back.
     fn top_handles(&self) -> Vec<String> {
@@ -3545,13 +3583,8 @@ impl Server {
             Ok(t) => t,
             // A name nobody answers to is left to the block below, which tells another box's
             // `x@host` from a typo: both are the same question about the same name.
-            Err(Miss::Unknown(_)) => asked.to_string(),
-            Err(Miss::Ambiguous(candidates)) => {
-                return refuse(crate::Refused::Ambiguous {
-                    name: asked.to_string(),
-                    candidates,
-                });
-            }
+            Err(Miss::Unknown) => asked.to_string(),
+            Err(miss @ Miss::Ambiguous(_)) => return refuse(miss.refused(asked, self)),
             Err(Miss::Elsewhere(sessions)) => {
                 return refuse(crate::Refused::HandleInAnotherProject {
                     name: asked.to_string(),
@@ -3581,7 +3614,7 @@ impl Server {
             }
             return refuse(crate::Refused::AskUnknown {
                 name: asked.to_string(),
-                known: self.top_handles(),
+                known: self.closest(asked),
             });
         }
         let question = question.trim();
@@ -3838,7 +3871,8 @@ impl Server {
         if found.target != name {
             return refuse(crate::Refused::AskNotTheTarget {
                 ask,
-                target: found.target,
+                target: self.handles().remove(&found.target).unwrap_or(found.target),
+                state: Some(found.state),
             });
         }
         if !found.open() {
@@ -3861,6 +3895,16 @@ impl Server {
                 ms: now,
             },
         };
+        // The reply says the ask is settled in its own words: the asker may have had plain replies
+        // in the thread already, and only this one ends the wait.
+        let who = self
+            .handles()
+            .remove(name)
+            .unwrap_or_else(|| name.to_string());
+        let said = match answered {
+            true => format!("`{who}` answered your ask #{ask}: {text}"),
+            false => format!("`{who}` declined your ask #{ask}: {text}"),
+        };
         let appended = self.inner.chat.lock().expect("the chat lock").append(
             now,
             id,
@@ -3871,7 +3915,7 @@ impl Server {
             Some(found.seq),
             Vec::new(),
             Vec::new(),
-            text,
+            &said,
         );
         let message = match appended {
             Ok(m) => m,
@@ -4545,12 +4589,61 @@ enum Reach {
     Host,
 }
 
+/// How many near names an unknown-name refusal lists.
+const CLOSEST: usize = 5;
+
+/// A name as a person writes it, folded: lowercase, every run of other characters one `-`. A
+/// title `Rano Session` and the handle `rano-session` fold to the same key.
+fn name_key(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.trim().chars().flat_map(char::to_lowercase) {
+        if c.is_alphanumeric() {
+            out.push(c);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_string()
+}
+
+/// How far apart two folded names are: 0 for one inside the other, else one more than the edit
+/// distance to the nearest of `b`, its words and its head, so a typo of one word still ranks.
+fn name_distance(a: &str, b: &str) -> usize {
+    if !a.is_empty() && !b.is_empty() && (a.contains(b) || b.contains(a)) {
+        return 0;
+    }
+    let head: String = b.chars().take(a.chars().count()).collect();
+    std::iter::once(b)
+        .chain(b.split('-'))
+        .chain(std::iter::once(head.as_str()))
+        .map(|part| edit_distance(a, part) + 1)
+        .min()
+        .unwrap_or(usize::MAX)
+}
+
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut row: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut prev = row[0];
+        row[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let next = (prev + usize::from(ca != *cb))
+                .min(row[j] + 1)
+                .min(row[j + 1] + 1);
+            prev = row[j + 1];
+            row[j + 1] = next;
+        }
+    }
+    row[b.len()]
+}
+
 /// Why a written name named nobody, or more than one, and what would have named somebody.
 enum Miss {
     /// Several principals fit it: these are the names to choose between.
     Ambiguous(Vec<String>),
-    /// Nobody the sender may address answers to it: these are the names it could have written.
-    Unknown(Vec<String>),
+    /// Nobody the sender may address answers to it.
+    Unknown,
     /// It is a handle, but another project's: these are the session ids that go by it.
     Elsewhere(Vec<String>),
 }
@@ -4558,15 +4651,16 @@ enum Miss {
 impl Miss {
     /// The refusal a door answers with. One place, so a door that forgets to say what it *could*
     /// have been told is a door that does not compile.
-    fn refused(self, written: &str) -> crate::Refused {
+    fn refused(self, written: &str, server: &Server) -> crate::Refused {
         match self {
             Miss::Ambiguous(candidates) => crate::Refused::Ambiguous {
                 name: written.to_string(),
+                shown: candidates.iter().map(|c| server.who_is(c)).collect(),
                 candidates,
             },
-            Miss::Unknown(known) => crate::Refused::UnknownAddressee {
+            Miss::Unknown => crate::Refused::UnknownAddressee {
                 name: written.to_string(),
-                known,
+                known: server.closest(written),
             },
             Miss::Elsewhere(sessions) => crate::Refused::HandleInAnotherProject {
                 name: written.to_string(),
