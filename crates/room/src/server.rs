@@ -2249,6 +2249,7 @@ impl Server {
                             members: self.roster_rows(&id).len() as u64,
                             last_seq: chat.last_in(&id),
                             unread: chat.unread(name, &id, |_| true),
+                            archived_ms: chat.archived_ms(&id),
                             project: key,
                             id,
                         }
@@ -2616,6 +2617,8 @@ impl Server {
                     room,
                 }
             }
+            Request::ArchiveRoom { room } => self.archive_room(project, seat, room, true, now),
+            Request::UnarchiveRoom { room } => self.archive_room(project, seat, room, false, now),
             Request::Ack { seq } => {
                 let mut chat = self.inner.chat.lock().expect("the chat lock");
                 // A session's ack is also its seen mark (see `append_and_push`).
@@ -2652,6 +2655,52 @@ impl Server {
                 Response::Noted
             }
             _ => refuse(None, crate::Refused::ChatIsTheServers),
+        }
+    }
+
+    /// A project room put out of sight, or brought back. The host room is refused: it is the one
+    /// room every seat on the box is in, and putting it away would hide the box from its seats.
+    /// An archived room keeps every message - only the lists a person picks from lose it.
+    fn archive_room(
+        &self,
+        project: &str,
+        seat: Seat,
+        room: &str,
+        archived: bool,
+        now: u64,
+    ) -> Response {
+        let named = self.own_room_or(room, project);
+        // The host room is answered before any lookup: it is never put away, by anybody.
+        if named == chat::HOST_ROOM {
+            return Response::Refused {
+                id: None,
+                why: crate::Refused::HostRoomKept,
+            };
+        }
+        let Some(room) = self.project_room_named(&named) else {
+            return Response::Refused {
+                id: None,
+                why: crate::Refused::UnknownChatRoom { room: named },
+            };
+        };
+        // The room's own members and the operator put a room away; a guest it was merely invited
+        // into comes and goes in it, and does not decide whether anybody else finds it.
+        let key = chat::project_of_room(&room).unwrap_or("");
+        if !seat.is_wide() && project != key {
+            return Response::Refused {
+                id: None,
+                why: Self::room_refusal(project, &room),
+            };
+        }
+        let mut chat = self.inner.chat.lock().expect("the chat lock");
+        if archived {
+            chat.archive(&room, now);
+        } else {
+            chat.unarchive(&room);
+        }
+        Response::Archived {
+            archived_ms: chat.archived_ms(&room),
+            room,
         }
     }
 
@@ -4466,6 +4515,8 @@ fn is_chat_frame(frame: &Request) -> bool {
             | Request::Retire { .. }
             | Request::Asks
             | Request::Leave { .. }
+            | Request::ArchiveRoom { .. }
+            | Request::UnarchiveRoom { .. }
     )
 }
 
@@ -4941,14 +4992,14 @@ mod tests {
     /// spells the number rather than the constant, so a wire change that misses a pin is a quiet lie
     /// about what two binaries share.
     #[test]
-    fn the_room_speaks_protocol_eleven() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 11);
+    fn the_room_speaks_protocol_twelve() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 12);
         // And the refusal names which side is older, in both directions.
-        let old = crate::wire::protocol_refusal(10).expect("10 is not 11");
+        let old = crate::wire::protocol_refusal(11).expect("11 is not 12");
         assert!(old.contains("the client is the older"), "{old}");
-        let new = crate::wire::protocol_refusal(12).expect("12 is not 11");
+        let new = crate::wire::protocol_refusal(13).expect("13 is not 12");
         assert!(new.contains("this room is the older"), "{new}");
-        assert_eq!(crate::wire::protocol_refusal(11), None);
+        assert_eq!(crate::wire::protocol_refusal(12), None);
         assert!(
             new.contains("letibot --room --stop && letibot --room"),
             "{new}"

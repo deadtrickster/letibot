@@ -75,13 +75,14 @@ impl Tool for RoomTool {
         ToolSchema::new(
             TOOL,
             format!(
-                "The host room. A TAG is a lock (RAM, a port): one live claim, others refused; \
-                 `rule` is the arbiter's. `say`: `to` is a private dm, `@name` in the text a public \
-                 mention; both wake them. An `ask` names a `path` or `topic` and the room asks its \
-                 owner; only `answer` and `decline` settle one. `own` a scope so others see who has \
-                 it; edits renew it; `hand` waits for `accept`. `status` is your one line; it \
-                 expires. `claude-code` and `cc@...` are other seats. `host` takes `@name` or \
-                 `kind: announce`; a refusal is etiquette, not an error. {beat} {STANDING_RULE}"
+                "The rooms. A TAG is a lock (RAM, a port): one live claim, others refused; \
+                 `rule` is the arbiter's. `say`: `to` a dm, `@name` a mention; both wake. \
+                 `ask` a `path`/`topic`; the room asks its owner, `answer`/`decline` settle it. `own` \
+                 a scope so others see who has it; edits renew; `hand` waits for `accept`. `status` \
+                 is your line; it expires. `rooms` lists them, archived or not; \
+                 `archive`/`unarchive` puts a project room away or back. `cc@...` is a seat. `host` \
+                 takes `@name` or `kind: announce`; a refusal is etiquette, not an error. {beat} \
+                 {STANDING_RULE}"
             ),
             json!({
                 "type": "object",
@@ -92,7 +93,8 @@ impl Tool for RoomTool {
                             "post", "claim", "claim_item", "beat", "waiting", "done", "abandon",
                             "dispute", "rule", "queue", "item", "holding", "reminders", "questions",
                             "say", "ask", "read", "invite", "leave", "asks", "answer", "decline",
-                            "own", "hand", "accept", "release", "status"
+                            "own", "hand", "accept", "release", "status", "rooms", "archive",
+                            "unarchive"
                         ],
                         "description": "`post` tag+body; `claim`/`queue` tag; `item` reads a row by number; an item verb an item; `rule` question+decision; `say`/`ask` text; `answer`/`decline` ask+text; `own`/`hand`/`accept`/`release` scope."
                     },
@@ -810,6 +812,26 @@ mod tests {
         assert_eq!(seen.len(), 1);
         assert_eq!(seen[0].0, "post");
         assert_eq!(seen[0].1["tag"], "ram");
+    }
+
+    /// A room can be put away and found again from the model's own door: the listing carries the
+    /// archive state, and the two verbs take no argument because the room is the session's own
+    /// unless it names another.
+    #[test]
+    fn the_archive_verbs_and_the_listing_reach_the_room() {
+        let link = Recorder::new(Ok("`project/ab12` is archived"));
+        for verb in ["rooms", "archive", "unarchive"] {
+            let (ok, text) = invoke(link.clone(), json!({"verb": verb}));
+            assert!(ok, "{verb}: {text}");
+        }
+        let seen = link.seen.lock().unwrap();
+        let verbs: Vec<&str> = seen.iter().map(|s| s.0.as_str()).collect();
+        assert_eq!(verbs, vec!["rooms", "archive", "unarchive"]);
+        assert!(
+            seen[1].1.get("room").is_none(),
+            "no room named is the session's own: {:?}",
+            seen[1].1
+        );
     }
 
     #[test]

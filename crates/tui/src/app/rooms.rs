@@ -42,6 +42,10 @@ pub(crate) struct RoomRow {
     /// The project's folder name, empty for the host room.
     #[serde(default)]
     pub label: String,
+    /// When the coordinator put this room out of sight. An archived room is not one a person picks
+    /// from: it is out of the list and out of `ctrl-k`, and it still reads back by its id.
+    #[serde(default)]
+    pub archived_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
@@ -267,6 +271,9 @@ pub(crate) struct RoomsView {
     /// The channel that vanished while selected, named so the view can say so. `None` until a
     /// poll drops the selected channel, cleared by the next explicit move.
     pub gone: Option<String>,
+    /// That channel left the list because it was archived rather than because the coordinator
+    /// dropped it: the two are different facts and the sentence says which.
+    pub gone_archived: bool,
     /// The roster lists the offline members too, not just their count.
     pub roster_all: bool,
     pub roster: BTreeMap<String, Vec<Member>>,
@@ -360,11 +367,13 @@ impl RoomsView {
         out.into_iter().collect()
     }
 
-    /// The host room, then the project rooms as the coordinator listed them, then the DMs.
+    /// The host room, then the project rooms as the coordinator listed them, then the DMs. An
+    /// archived project room is not one of them: it was put away, and a list that still offered it
+    /// would be a person walking back into a room they closed.
     pub(crate) fn channels(&self) -> Vec<Chan> {
         let mut out = vec![Chan::Room("host".into())];
         for r in &self.rows {
-            if r.id != "host" && r.id != "dm" {
+            if r.id != "host" && r.id != "dm" && r.archived_ms.is_none() {
                 out.push(Chan::Room(r.id.clone()));
             }
         }
@@ -449,10 +458,13 @@ impl RoomsView {
         }
     }
 
-    /// Unread messages across the rooms the coordinator listed, from the last room list.
+    /// Unread messages across the rooms the coordinator listed, from the last room list. An
+    /// archived room is not counted: the head gives no way to open it, so a count for it would be a
+    /// number a person can never get rid of.
     pub(crate) fn unread_total(&self) -> u64 {
         self.rows
             .iter()
+            .filter(|r| r.archived_ms.is_none())
             .map(|r| self.unread(&Chan::Room(r.id.clone())))
             .sum()
     }
@@ -528,6 +540,17 @@ impl RoomsView {
                 Some(key) => key.to_string(),
                 None => id.to_string(),
             },
+        }
+    }
+
+    /// Is this channel a room the coordinator put out of sight? A DM is never archived.
+    pub(crate) fn archived(&self, c: &Chan) -> bool {
+        match c {
+            Chan::Room(id) => self
+                .rows
+                .iter()
+                .any(|r| &r.id == id && r.archived_ms.is_some()),
+            Chan::Dm(_) | Chan::Session(_) => false,
         }
     }
 
@@ -795,7 +818,9 @@ impl App {
                         .as_ref()
                         .is_some_and(|c| !self.rooms.channels().contains(c));
                     if gone {
-                        let name = self.rooms_name(self.rooms.sel.as_ref().expect("just checked"));
+                        let chan = self.rooms.sel.as_ref().expect("just checked").clone();
+                        let name = self.rooms_name(&chan);
+                        self.rooms.gone_archived = self.rooms.archived(&chan);
                         self.rooms.gone = Some(name);
                         self.rooms.sel = None;
                     }

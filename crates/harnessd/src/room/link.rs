@@ -152,6 +152,27 @@ fn links() -> &'static Mutex<std::collections::BTreeMap<String, Weak<SessionRoom
     LINKS.get_or_init(Default::default)
 }
 
+/// Put a project's room out of sight, on `session`'s own connection - the daemon's act, reported
+/// through the link of the session it is archiving. A room is never put away WHILE a session of it
+/// is still in the list, and the caller has already asked the store that. Off the caller's thread,
+/// from a link it may be about to close: the archive row is what has to land, not this sentence.
+pub(crate) fn archive_project_room(session: &str, room: &str) {
+    let Some(link) = links()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(session)
+        .and_then(Weak::upgrade)
+    else {
+        return;
+    };
+    let room = room.to_string();
+    let _ = std::thread::Builder::new()
+        .name("room-archive".into())
+        .spawn(move || {
+            let _ = link.client.request(&Request::ArchiveRoom { room });
+        });
+}
+
 /// A session was DELETED, not restarted: tell the room, so every open ask of it ends `DOWN` and
 /// every ask it made is withdrawn. Best effort and said aloud - a box with no coordinator holds no
 /// ask, and a room that did not hear it leaves the asks open until one side's grace escalates.
@@ -1360,6 +1381,15 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
             room: s("room"),
             session: s("session"),
         },
+        // A room put away, or brought back. The room is the model's own project room unless it
+        // names one, exactly as `say` and `read` default.
+        "archive" => Request::ArchiveRoom {
+            room: chat_room(&s("room")),
+        },
+        "unarchive" => Request::UnarchiveRoom {
+            room: chat_room(&s("room")),
+        },
+        "rooms" => Request::Rooms,
         "leave" => Request::Leave {
             room: s("room"),
             session: Some(s("session")).filter(|x| !x.is_empty()),
@@ -1368,7 +1398,8 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
             return Err(format!(
                 "`{other}` is not a room verb — the verbs are post, claim, claim_item, beat, \
                  waiting, done, abandon, dispute, rule, queue, item, holding, reminders, \
-                 questions, say, ask, read, invite, leave, answer, decline, asks and signals"
+                 questions, say, ask, read, invite, leave, answer, decline, asks, rooms, archive, \
+                 unarchive and signals"
             ));
         }
     })
@@ -1588,13 +1619,24 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
         Response::Rooms { rows } => rows
             .iter()
             .map(|r| {
+                let archived = match r.archived_ms.is_some() {
+                    true => ", archived",
+                    false => "",
+                };
                 format!(
-                    "{} - {} here, newest #{}, {} unread",
+                    "{} - {} here, newest #{}, {} unread{archived}",
                     r.id, r.members, r.last_seq, r.unread
                 )
             })
             .collect::<Vec<_>>()
             .join("\n"),
+        Response::Archived { room, archived_ms } => match archived_ms {
+            Some(_) => format!(
+                "`{room}` is archived: it is off the lists a person picks a room from, and every \
+                 message in it still reads back. A message into it brings it back"
+            ),
+            None => format!("`{room}` is back in the room lists"),
+        },
         Response::Roster { room, rows } => format!(
             "in `{room}`: {}",
             rows.iter()

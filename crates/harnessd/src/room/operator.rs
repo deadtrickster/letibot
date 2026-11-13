@@ -127,6 +127,10 @@ impl OperatorSeat {
                 | Request::Signals
                 | Request::PutBlob { .. }
                 | Request::GetBlob { .. }
+                // A room put out of sight is a chat request: the operator's seat is the one a
+                // head, or a bridge acting for a person, reaches it from.
+                | Request::ArchiveRoom { .. }
+                | Request::UnarchiveRoom { .. }
         ) {
             return json!({"error": "the operator seat takes chat requests only"});
         }

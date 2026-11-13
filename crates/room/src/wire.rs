@@ -14,7 +14,9 @@ use crate::room::{
 /// 10 is the ask: a version-9 coordinator knows no `Ask`, and would answer one with a refusal a
 /// session would read as *this peer cannot be asked*. 11 is the ask by SCOPE: a version-10
 /// coordinator knows no `path` or `topic`, and would read the asker's scope as a session name.
-pub const ROOM_PROTOCOL_VERSION: u16 = 11;
+/// 12 is the archive: a version-11 coordinator knows no `ArchiveRoom`, and would take a put-away
+/// room for one it cannot see.
+pub const ROOM_PROTOCOL_VERSION: u16 = 12;
 
 /// The sentence a protocol mismatch is refused with, or `None` when the two agree. One function because
 /// two doors refuse it - a [`crate::Server`]'s and [`crate::Room::answer_traced`]'s - and two sentences
@@ -281,6 +283,11 @@ pub enum Request {
         #[serde(default)]
         session: Option<String>,
     },
+    /// Put a project room out of sight: it leaves every list a person picks a room from, reads
+    /// back whole by id, and a message into it brings it back. The host room is never archived.
+    ArchiveRoom { room: String },
+    /// Bring an archived room back into the lists.
+    UnarchiveRoom { room: String },
     /// Post a need under a tag. `body` is the need, in the poster's words.
     Post {
         id: String,
@@ -417,6 +424,8 @@ impl Request {
             | Request::WakeEnded { .. }
             | Request::Invite { .. }
             | Request::Leave { .. }
+            | Request::ArchiveRoom { .. }
+            | Request::UnarchiveRoom { .. }
             | Request::Queue { .. }
             | Request::Item { .. }
             | Request::Holding { .. }
@@ -593,6 +602,13 @@ pub enum Response {
     },
     Rooms {
         rows: Vec<crate::chat::RoomInfo>,
+    },
+    /// The answer to [`Request::ArchiveRoom`] and [`Request::UnarchiveRoom`]: the room and when it
+    /// was put out of sight, which is `None` once it is back.
+    Archived {
+        room: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        archived_ms: Option<u64>,
     },
     Said {
         id: String,
@@ -883,7 +899,9 @@ impl Room {
             | Request::Hand { .. }
             | Request::Accept { .. }
             | Request::Release { .. }
-            | Request::Leave { .. } => Answer::quiet(Response::Refused {
+            | Request::Leave { .. }
+            | Request::ArchiveRoom { .. }
+            | Request::UnarchiveRoom { .. } => Answer::quiet(Response::Refused {
                 id: request.request_id().map(str::to_string),
                 why: Refused::ChatIsTheServers,
             }),
@@ -937,22 +955,22 @@ impl Room {
 mod tests {
     use super::*;
 
-    /// The number is the contract: a version-10 coordinator knows no `path` or `topic` and would
-    /// read a scope ask as an ask of a session called `""`.
+    /// The number is the contract: a version-11 coordinator knows no `ArchiveRoom` and would take a
+    /// room put away for one it cannot see.
     #[test]
-    fn the_protocol_is_eleven() {
-        assert_eq!(ROOM_PROTOCOL_VERSION, 11);
-        assert_eq!(crate::server::protocol(), 11);
+    fn the_protocol_is_twelve() {
+        assert_eq!(ROOM_PROTOCOL_VERSION, 12);
+        assert_eq!(crate::server::protocol(), 12);
         assert_eq!(
-            protocol_refusal(11),
+            protocol_refusal(12),
             None,
             "the same build speaks to itself"
         );
-        let older = protocol_refusal(10).expect("a version-10 client is told");
-        assert!(older.contains("this room speaks protocol 11"), "{older}");
+        let older = protocol_refusal(11).expect("a version-11 client is told");
+        assert!(older.contains("this room speaks protocol 12"), "{older}");
         assert!(older.contains("the client is the older"), "{older}");
         assert!(older.contains(CLIENT_UPGRADE), "{older}");
-        let newer = protocol_refusal(12).expect("a newer client is told");
+        let newer = protocol_refusal(13).expect("a newer client is told");
         assert!(newer.contains(ROOM_UPGRADE), "{newer}");
         // And an old client's frame is still a frame: the attachments it cannot know are defaulted,
         // so a version-9 head reading a 10 daemon's `say` sees exactly what it always saw.

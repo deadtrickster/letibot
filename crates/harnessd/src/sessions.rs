@@ -4971,10 +4971,35 @@ impl SessionSource for StoreSessions {
 
     /// Put a session out of sight, or bring it back, on its row. A refusal is returned rather than
     /// swallowed: the head that asked is owed the difference between *archived* and *not there*.
+    /// A project's room goes out with its LAST session: a room nobody is in is the room to put away.
     fn set_archived(&self, session_id: &str, archived: bool, reason: &str) -> Result<(), String> {
-        let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
-        g.set_archived(session_id, archived, Some(reason))
-            .map_err(|e| e.to_string())
+        let room = {
+            let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
+            g.set_archived(session_id, archived, Some(reason))
+                .map_err(|e| e.to_string())?;
+            // The project is the session's own folder and the room is that project's, so the last
+            // one out says the room is empty. A session still in the list keeps its room in it.
+            match archived {
+                false => None,
+                true => g
+                    .session_workspace(session_id)
+                    .ok()
+                    .flatten()
+                    .map(|root| letibot_room::project_key(&root))
+                    .filter(|key| !key.is_empty())
+                    .filter(|key| {
+                        !g.list_sessions_archived(letibot_tokencore::store::Archived::No)
+                            .unwrap_or_default()
+                            .iter()
+                            .any(|s| letibot_room::project_key(&s.workspace_root) == *key)
+                    })
+                    .map(|key| letibot_room::project_room(&key)),
+            }
+        };
+        if let Some(room) = room {
+            crate::room::link::archive_project_room(session_id, &room);
+        }
+        Ok(())
     }
 
     fn todos(&self, session_id: &str) -> Vec<letibot_sessionlog::event::TodoEntry> {

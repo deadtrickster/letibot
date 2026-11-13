@@ -1009,6 +1009,10 @@ pub struct RoomInfo {
     pub last_seq: u64,
     /// Messages after this principal's inbox cursor that are not its own.
     pub unread: u64,
+    /// When this room was put out of sight, and `None` while it is in the list. An archived room
+    /// is out of SIGHT, not out of reach: it reads back whole and a message into it brings it back.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_ms: Option<u64>,
 }
 
 /// One participant in a room's roster.
@@ -1220,6 +1224,12 @@ enum Record {
         seq: u64,
         text: String,
     },
+    /// A room put out of sight (`ms` set) or brought back (`ms` `None`). Written both ways, so a
+    /// replay reads the LAST one and an unarchive is a fact the store holds, not an absence.
+    Archived {
+        room: String,
+        ms: Option<u64>,
+    },
 }
 
 /// The log chat is kept in. The file the caller named is its first segment; the state sits beside
@@ -1287,6 +1297,9 @@ pub struct Chat {
     /// The whole text of each message filed as a record, by its `seq`, and their bytes together.
     whole: BTreeMap<u64, String>,
     whole_bytes: usize,
+    /// When each archived room was put out of sight, by room id. A room with no entry is in the
+    /// list. The host room never gets one.
+    archived: BTreeMap<String, u64>,
 }
 
 fn ring_bytes(ring: &VecDeque<Message>) -> usize {
@@ -1388,6 +1401,12 @@ impl Chat {
                 }
             }
             Record::Whole { seq, text } => self.keep_whole(seq, text),
+            Record::Archived { room, ms } => {
+                match ms {
+                    Some(ms) => self.archived.insert(room, ms),
+                    None => self.archived.remove(&room),
+                };
+            }
         }
     }
 
@@ -1618,6 +1637,12 @@ impl Chat {
                 text: text.clone(),
             });
         }
+        for (room, ms) in &self.archived {
+            records.push(Record::Archived {
+                room: room.clone(),
+                ms: Some(*ms),
+            });
+        }
         let mut buf = String::new();
         for r in &records {
             if let Ok(line) = serde_json::to_string(r) {
@@ -1785,6 +1810,12 @@ impl Chat {
             request: request.to_string(),
             message: m.clone(),
         }]);
+        // The log is written before the room is reopened, so an appended message never leaves the
+        // room archived and its message unsaid. A `system` line is the harness filing a fact, not
+        // somebody speaking to the room, so it does not bring one back.
+        if kind != Seat::System {
+            self.reopened_by(room);
+        }
         if let Some(whole) = whole {
             self.keep_whole(seq, whole.clone());
             self.write(&[Record::Whole { seq, text: whole }]);
@@ -1883,6 +1914,7 @@ impl Chat {
             },
             Record::Ask { ask: ask.clone() },
         ]);
+        self.reopened_by(room);
         Ok(ask)
     }
 
@@ -2323,6 +2355,45 @@ impl Chat {
     /// The file chat is kept in, `None` for a chat in memory only.
     pub fn store_path(&self) -> Option<&Path> {
         self.store.as_ref().map(|s| s.path.as_path())
+    }
+
+    /// Put `room` out of sight, and keep when. `false` when it already was: the first archiving is
+    /// the one a room's row shows. The host room is the caller's to refuse - it is never archived.
+    pub fn archive(&mut self, room: &str, ms: u64) -> bool {
+        if room == HOST_ROOM || self.archived.contains_key(room) {
+            return false;
+        }
+        self.archived.insert(room.to_string(), ms);
+        self.write(&[Record::Archived {
+            room: room.to_string(),
+            ms: Some(ms),
+        }]);
+        true
+    }
+
+    /// Bring `room` back into the list. `false` when it was never out of it.
+    pub fn unarchive(&mut self, room: &str) -> bool {
+        if self.archived.remove(room).is_none() {
+            return false;
+        }
+        self.write(&[Record::Archived {
+            room: room.to_string(),
+            ms: None,
+        }]);
+        true
+    }
+
+    /// When `room` was put out of sight, `None` while it is in the list.
+    pub fn archived_ms(&self, room: &str) -> Option<u64> {
+        self.archived.get(room).copied()
+    }
+
+    /// A message in a room that was out of sight brings it back: the room was put away because
+    /// nothing was happening in it, and something is now.
+    fn reopened_by(&mut self, room: &str) {
+        if self.archived.contains_key(room) {
+            self.unarchive(room);
+        }
     }
 
     /// Invite `name` into `room` (`on`) or take it out, and keep that. `false` when nothing changed.
@@ -3467,6 +3538,32 @@ mod store_tests {
         let one = again.read(HOST_ROOM, 0, Some(MAX_READ), None, Some(2), |_| true);
         assert_eq!(one.rows.len(), 1);
         assert_eq!(one.rows[0], first, "the first message, byte for byte");
+        sweep(&p);
+    }
+
+    /// An archive outlives the coordinator, and so does the fact that the room came back: the state
+    /// file holds the last word either way, so a restart cannot resurrect a room that was put away.
+    #[test]
+    fn an_archive_and_an_unarchive_survive_a_restart() {
+        let p = path("archive");
+        let mut c = Chat::open(&p);
+        say(&mut c, "1", "project/quiet", "a room with something in it");
+        assert!(c.archive("project/quiet", 4_211));
+        assert_eq!(c.archived_ms("project/quiet"), Some(4_211));
+        // The host room is refused by the chat itself, not only by the server above it.
+        assert!(!c.archive(HOST_ROOM, 4_211));
+        assert_eq!(c.archived_ms(HOST_ROOM), None);
+
+        let again = Chat::open(&p);
+        assert_eq!(again.archived_ms("project/quiet"), Some(4_211));
+        let mut again = again;
+        assert!(again.unarchive("project/quiet"));
+        let back = Chat::open(&p);
+        assert_eq!(
+            back.archived_ms("project/quiet"),
+            None,
+            "the unarchive is a fact the state file keeps, not an absence"
+        );
         sweep(&p);
     }
 

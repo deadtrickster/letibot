@@ -285,6 +285,9 @@ pub enum Refused {
         room: String,
         own: String,
     },
+    /// The host room, and nothing to put away: it is the one room every seat on the box is in, and
+    /// an archived one would be a box its own seats cannot see.
+    HostRoomKept,
     /// Nobody answers to this name, so the message would be told to no one. `known` is what a
     /// sender could have written instead - every name the room answers to now.
     UnknownAddressee {
@@ -566,6 +569,11 @@ impl fmt::Display for Refused {
                 f,
                 "`{room}` is another project's room - a seat reads and posts in `host` and in its \
                  own project's room (`{own}`) only; a dm or an `@` reaches anyone on this host"
+            ),
+            Refused::HostRoomKept => write!(
+                f,
+                "`host` is never archived: it is the one room every seat on this box is in, and a \
+                 box its own seats cannot see is not a room put away - nothing was done"
             ),
             Refused::UnknownAddressee { name, known } => {
                 write!(

@@ -1630,3 +1630,56 @@ fn the_scorecard_renders_a_line_per_sender() {
     let report = a.rooms.signals_report();
     assert!(report.contains("kinds\n  session 3/5"), "{report}");
 }
+
+/// An archived room is out of the channel list and out of `Ctrl+K`: it was put away, and a list
+/// that still offered it would be a person walking back into a room they closed. A head sitting in
+/// it when it goes is told it was archived, not that the coordinator dropped it.
+#[test]
+fn an_archived_room_leaves_the_list_and_the_switcher() {
+    let mut a = opened(1_000);
+    let rows = json!({"type": "rooms", "rows": [
+        {"id": "host", "kind": "host", "members": 2, "last_seq": 1, "unread": 0},
+        {"id": PROJECT, "kind": "project", "members": 3, "last_seq": 9, "unread": 0},
+        {"id": "project/shipyard", "kind": "project", "members": 1, "last_seq": 4,
+         "unread": 0, "archived_ms": 1_763_000_000_000i64},
+    ]});
+    reply(&mut a, rows);
+    let chans: Vec<String> = a
+        .rooms
+        .channels()
+        .into_iter()
+        .map(|c| crate::app::rooms::RoomsView::key(&c))
+        .collect();
+    assert!(chans.contains(&PROJECT.to_string()), "{chans:?}");
+    assert!(
+        !chans.contains(&"project/shipyard".to_string()),
+        "an archived room is not a channel: {chans:?}"
+    );
+
+    // The switcher is the same list, so it cannot offer it either.
+    let _ = a.rooms_switcher();
+    let labels: Vec<String> = crate::app::chat_nav::shown(&a)
+        .into_iter()
+        .map(|r| r.label)
+        .collect();
+    assert!(labels.iter().any(|l| l == "#ab12cd34ef56"), "{labels:?}");
+    assert!(!labels.iter().any(|l| l == "#shipyard"), "{labels:?}");
+    a.key(Key::Esc);
+
+    // Sitting in the room when it is put away: the room is still in the list it came from, with
+    // `archived_ms` on the row, and the sentence says which way it left.
+    a.rooms.sel = Some(crate::app::rooms::Chan::Room("project/shipyard".into()));
+    reply(
+        &mut a,
+        json!({"type": "rooms", "rows": [
+            {"id": "host", "kind": "host", "members": 2, "last_seq": 1, "unread": 0},
+            {"id": PROJECT, "kind": "project", "members": 3, "last_seq": 9, "unread": 0},
+            {"id": "project/shipyard", "kind": "project", "members": 1, "last_seq": 4,
+             "unread": 0, "archived_ms": 1_763_000_000_000i64},
+        ]}),
+    );
+    assert_eq!(a.rooms.selected(), None);
+    assert!(a.rooms.gone_archived, "the reason is the archive");
+    let all = a.screen(100, 30).join("\n");
+    assert!(all.contains("#shipyard is archived"), "{all}");
+}

@@ -601,12 +601,11 @@ impl App {
             // The selected channel is gone rather than empty, and the sentence says which:
             // an empty channel draws "nothing here yet", which would be a lie here.
             let which = self.rooms.gone.clone().unwrap_or_else(|| "the room".into());
-            return (
-                vec![pane::faint(format!(
-                    "  {which} is gone - up or down selects a room"
-                ))],
-                None,
-            );
+            let why = match self.rooms.gone_archived {
+                true => format!("  {which} is archived - up or down selects a room"),
+                false => format!("  {which} is gone - up or down selects a room"),
+            };
+            return (vec![pane::faint(why)], None);
         };
         if let Chan::Session(id) = &c {
             return (self.session_card(id, rw), None);

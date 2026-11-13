@@ -253,6 +253,28 @@ fn a_hand_without_a_target_is_refused_here_and_never_sent() {
     assert!(e.contains("not a room verb"), "{e}");
 }
 
+/// Putting a room away is the room's own frame, and the room a model names is its own project's
+/// unless it says otherwise - the reading `say` and `read` already take.
+#[test]
+fn the_archive_verbs_are_the_rooms_own_frames() {
+    assert_eq!(
+        request_of("archive", &json!({})).expect("a frame"),
+        Request::ArchiveRoom {
+            room: String::new()
+        }
+    );
+    assert_eq!(
+        request_of("unarchive", &json!({"room": "project/ab12cd34ef56"})).expect("a frame"),
+        Request::UnarchiveRoom {
+            room: "project/ab12cd34ef56".into()
+        }
+    );
+    assert_eq!(
+        request_of("rooms", &json!({})).expect("a frame"),
+        Request::Rooms
+    );
+}
+
 /// What backs a claim about the world rides `refs` as an `evidence` ref, so the frame's shape did
 /// not change and a `say` without one carries no such ref at all.
 #[test]

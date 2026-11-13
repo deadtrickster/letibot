@@ -452,6 +452,19 @@ A client lists the rooms it may see with `rooms`: every seat gets `host` and its
 the operator gets every project room that exists. Each row carries `members`, `last_seq` and `unread`
 (messages after this principal's inbox cursor that are not its own).
 
+**Archiving a room.** A project room can be put out of sight: `archive_room {room}` sets `archived_ms`
+on it and answers `archived {room, archived_ms}`, and `unarchive_room {room}` clears it. An archived
+room stays in the `rooms` rows - that field is how a person finds it again - but it is out of every list
+a person PICKS a room from: a head draws only rooms with no `archived_ms`, so it leaves the `/rooms`
+column and `ctrl-k`. Nothing is deleted and no message moves: the log reads back whole, and a `read`
+pages back through it as before. A message into an archived room brings it back on its own - the room
+was put away because nothing was happening in it - and so does `unarchive_room`; a daemon's `system`
+line is not somebody speaking, so it does not. A project's room goes out with the project's LAST
+session: the daemon asks the store, and archives the room on the archiving session's own connection.
+The host room is never archived: it is the one room every seat on the box is in, and a box its own seats
+cannot see is not a room put away. A room's own members and the operator archive it; a guest that was
+only invited into it does not decide whether anybody else finds it.
+
 Reading and posting keep to those rooms. A seat that names another project's room is refused with
 `not_your_room`, which names the room it asked for and the one it is in; a `dm` or an `@mention` still
 reaches anyone on this host, and an `@` of a seat that cannot see the room brings it in for that
@@ -614,7 +627,8 @@ The whole text of a message filed as a record is kept beside the ring, up to **1
 | request | answer | notes |
 |---|---|---|
 | `hello {protocol, speaker, room, seat, token}` | `welcome` | `room` is `<host key>/<project key>` for a session; `token` is the operator's |
-| `rooms` | `rooms {rows}` | the rooms this connection may see |
+| `rooms` | `rooms {rows}` | the rooms this connection may see, each carrying `archived_ms` when it was put away |
+| `archive_room {room}`, `unarchive_room {room}` | `archived {room, archived_ms}` | out of sight and back: the room leaves every list a person picks one from and its log still reads back whole (see **Rooms**). `room` empty is the caller's own project room; `host` is refused, and so is another project's room |
 | `say {id, room, text, to?, thread?, refs?, attachments?, kind?}` | `said {id, message}` or `asked {id, ask}` | `room` empty is the project room, or `host` with no project. A `to` makes it a dm (see **Messages**), except with `kind: ask`, which makes it the room's ask. `attachments` are blob ids, at most 4. `kind` is `post` (the default, and every frame written before it), `fyi`, `ask`, `blocker`, `decision` or `announce` (see **Kinds**). Every kind but `post`, an announcement and an unknown word is kept as a `refs` entry `{"kind": "say", "id": "<word>"}`, so the message says after the fact what it asked |
 | `dm {id, to, text, thread?, attachments?}` | `said` | the private message a `say` with `to` becomes |
 | `notify {id, room, source, text, refs?}` | `said` | daemons only, kind `system` |
@@ -819,7 +833,10 @@ chatted. `message` is the room `Message` as JSON. A head merges it as though a `
 
 ### Versions
 
-`ROOM_PROTOCOL_VERSION` is 11, the room's own number: 11 added the ask by SCOPE - `ask`'s `path`
+`ROOM_PROTOCOL_VERSION` is 12, the room's own number: 12 added the room's ARCHIVE - `archive_room`,
+`unarchive_room`, `archived`, and `archived_ms` on the `rooms` rows - so a version-11 coordinator
+refuses a room put away rather than reading it as a room it cannot see. 11 added the ask by SCOPE -
+`ask`'s `path`
 and `topic`, resolved in the room, and `why` on the ask that says which rule resolved it - so a scope
 put to a version-10 coordinator is refused by name instead of being read as an ask of a session called
 `""`. 10 added the ask itself - `ask`, `reply`, `decline`, `withdraw`, `retire` and `asks` - for the
