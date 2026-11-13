@@ -55,6 +55,10 @@ channel events still starts with `claude --dangerously-load-development-channels
 plugin:leticode@leticode`. Without the flag the tools and the room waiter work and the channel does
 not.
 
+A third head speaks somebody else's protocol. `letibot-acp` is an Agent Client Protocol agent on
+stdio, so Zed and Neovim hold a letibot session in their own editor ([docs/acp.md](docs/acp.md));
+the session is the daemon's, so a turn outlives the client and `letibot` can watch the same one.
+
 ## Supported, and not
 
 Supported: Linux (x86_64, aarch64) and macOS on Apple silicon, one person's box, with llama.cpp

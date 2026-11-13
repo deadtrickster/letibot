@@ -1,0 +1,36 @@
+[package]
+name = "letibot-acp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The Agent Client Protocol adapter (`docs/rano-integration.md` §8.2 L12): an ACP agent on stdio
+# that holds a letibot session as one more HEAD. Zed and Neovim speak ACP, so it is a spelling of
+# the daemon's own wire and adds no semantics: `docs/acp.md` is the mapping.
+[[bin]]
+name = "letibot-acp"
+path = "src/main.rs"
+
+[dependencies]
+# The wire and the head half of it: `HeadClient` is the three obligations a head owes (attach with
+# a seq, ack after handling, a prompt with an expected seq), and the events are already typed.
+letibot-sessionlog.workspace = true
+# `ToolEditExcerpt` and `ToolOutcome`: an edit's two sides and how a call ended are this crate's
+# types, and ACP's `diff` is built out of exactly them.
+letibot-transcript.workspace = true
+# `daemon::resolve` and `head::create_session_in`: which folder's daemon a session belongs to, and
+# how one is made on it. A second spelling of the socket's name here would be the drift the tree
+# has already paid for once.
+letibot-bridge.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# **A real daemon, in this process**, so the client scripts under `tests/` drive the binary against
+# a socket a test bound and not a stub. `default-features = false` keeps llama.cpp - and every
+# model file on the box - out of the build: the turn goes to a loopback provider.
+letibot-harnessd = { workspace = true, default-features = false }
+# `git` with the operator's own config kept out of it, for the repository a session lives in.
+letibot-tools = { workspace = true, features = ["testing"] }

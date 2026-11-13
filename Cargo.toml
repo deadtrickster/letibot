@@ -79,6 +79,10 @@ members = [
     # bridge (docs/claude-code-bridge.md) reaches the daemon over the same socket the TUI
     # does, and holds a session rather than running one.
     "crates/bridge",
+    # **The third head, and the one that speaks somebody else's protocol**: an Agent Client
+    # Protocol agent on stdio (`docs/acp.md`), so Zed and Neovim can hold a letibot session. It
+    # is a spelling of the daemon's wire and owns no session, no store and no model.
+    "crates/acp",
     # **The one binary, last, because it depends on the roles' crates.** Everything
     # above is a library or a role's own executable; this is the multicall that will
     # absorb them. It sits at the bottom of the list so the direction of the

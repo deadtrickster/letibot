@@ -1421,6 +1421,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-acp"
+version = "0.6.0"
+dependencies = [
+ "letibot-bridge",
+ "letibot-harnessd",
+ "letibot-sessionlog",
+ "letibot-tools",
+ "letibot-transcript",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "letibot-activation"
 version = "0.6.0"
 dependencies = [

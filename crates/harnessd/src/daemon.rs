@@ -26,7 +26,7 @@ use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
 use letibot_sessionlog::hub::Hub;
 use letibot_sessionlog::registry::Registry;
-use letibot_sessionlog::server::{ServerHandle, serve_registry};
+use letibot_sessionlog::server::{ServerHandle, serve_registry, serve_registry_rooted};
 
 use crate::harness::HarnessError;
 use letibot_sessionlog::registry::{Work, WorkOrIdle};
@@ -210,6 +210,25 @@ impl Daemon {
     /// `letibot-m1` and the loop test have.
     pub fn serve_one(hub: Arc<Hub>, socket: &std::path::Path) -> io::Result<Daemon> {
         Daemon::serve(Registry::of(hub), socket)
+    }
+
+    /// [`Daemon::serve`] with the tree a connection is judged by named instead of this process.
+    /// A test that serves in-process and runs a HEAD as its own child needs it: without it the
+    /// child descends from this process and the daemon refuses it as a tool call - the reason
+    /// `serve_registry_rooted` exists one level down. Production never calls this.
+    pub fn serve_rooted(
+        registry: Arc<Registry>,
+        socket: &std::path::Path,
+        tree_root: i32,
+    ) -> io::Result<Daemon> {
+        if let Some(parent) = socket.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let server = serve_registry_rooted(registry, socket, tree_root)?;
+        Ok(Daemon {
+            server,
+            _pipe: None,
+        })
     }
 
     pub fn socket(&self) -> &std::path::Path {
