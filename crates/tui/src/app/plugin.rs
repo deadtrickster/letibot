@@ -580,6 +580,58 @@ impl App {
         out
     }
 
+    /// The panes the open `/pane` listing names: empty while the listing on screen is another
+    /// command's, since a later listing replaces `slash_out` without closing the surface.
+    pub(crate) fn listed_panes(&self) -> &[(String, String, String)] {
+        match &self.slash_out {
+            Some((echo, _)) if echo == "/pane" => &self.pane_listing,
+            _ => &[],
+        }
+    }
+
+    /// Enter or a click on a `/pane` row: the listing closes and the pane opens, as `/pane NAME`.
+    pub(crate) fn open_listed_pane(&mut self) -> std::ops::ControlFlow<Option<Action>> {
+        let panes = self.listed_panes();
+        let Some((name, ..)) = panes.get(self.pane_listing_sel.min(panes.len().saturating_sub(1)))
+        else {
+            return std::ops::ControlFlow::Continue(());
+        };
+        let name = name.clone();
+        self.close_surface(Surface::Listing);
+        std::ops::ControlFlow::Break(self.open_plugin(&name))
+    }
+
+    /// The `/pane` listing's rows with the cursor drawn, recording the rows each pane took.
+    pub(crate) fn pane_listing_lines(&mut self, w: usize) -> Vec<String> {
+        use crate::ui::render::{row, wrap};
+        let p = self.cfg.palette();
+        let sel = self
+            .pane_listing_sel
+            .min(self.pane_listing.len().saturating_sub(1));
+        let mut out = Vec::new();
+        let mut spans = Vec::new();
+        for (k, (name, title, badge)) in self.pane_listing.iter().enumerate() {
+            let at = out.len();
+            let mark = if k == sel { "▸ " } else { "  " };
+            let head = if badge.is_empty() {
+                format!("{mark}{title}")
+            } else {
+                format!("{mark}{title} — {badge}")
+            };
+            for piece in wrap(&head, w) {
+                out.push(if k == sel {
+                    row(&rano::agent::text::one(piece, rano::style::Role::Strong), p)
+                } else {
+                    piece
+                });
+            }
+            out.extend(wrap(&format!("    /pane {name}"), w));
+            spans.push(at..out.len());
+        }
+        self.pane_listing_rows = spans;
+        out
+    }
+
     /// The status row's badge for the pane on the screen - the pane's own counter, drawn
     /// where a turn's progress is, and only while the pane is on the screen: a counter about a
     /// screen nobody is looking at is furniture.

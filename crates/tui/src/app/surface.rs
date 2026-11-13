@@ -309,7 +309,11 @@ impl App {
             Surface::QueueEntry => self.queue_open = None,
             Surface::SubOut => self.sub_out = None,
             Surface::JobOut => self.job_out = None,
-            Surface::Listing => self.slash_out = None,
+            Surface::Listing => {
+                self.slash_out = None;
+                self.pane_listing.clear();
+                self.pane_listing_rows.clear();
+            }
             Surface::Subagents => self.sub_out_pending = None,
             Surface::Standing => self.standing_corpus = None,
             // The rows and the cursor stay: a skill written since is a row at the next open,

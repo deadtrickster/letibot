@@ -977,12 +977,23 @@ impl App {
                     row(&rano::agent::text::one(echo, Role::Strong), p),
                     String::new(),
                 ];
-                rows.extend(lines.iter().flat_map(|l| wrap(l, w)));
+                // The `/pane` listing's rows are doors: drawn with a cursor, their rows recorded
+                // for the click. Every other listing is text and only scrolls.
+                let footer = if self.listed_panes().is_empty() {
+                    self.pane_listing_rows.clear();
+                    rows.extend(lines.iter().flat_map(|l| wrap(l, w)));
+                    "    esc closes · up/down scrolls"
+                } else {
+                    let top = rows.len();
+                    let panes = self.pane_listing_lines(w);
+                    for r in &mut self.pane_listing_rows {
+                        *r = r.start + top..r.end + top;
+                    }
+                    rows.extend(panes);
+                    "    enter or a click opens it · up/down moves · esc closes"
+                };
                 rows.push(String::new());
-                rows.push(row(
-                    &rano::agent::pane::faint("    esc closes · up/down scrolls"),
-                    p,
-                ));
+                rows.push(row(&rano::agent::pane::faint(footer), p));
                 self.pane_window(rows, room)
             }
             Drawn::Surface(Surface::Help) => {

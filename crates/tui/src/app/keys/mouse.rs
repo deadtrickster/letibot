@@ -302,6 +302,11 @@ impl App {
                 Surface::PluginPane => self.plugin_sel = k,
                 Surface::Standing => self.standing_sel = k,
                 Surface::Config => self.config_sel = k,
+                // A `/pane` row opens its pane, as Enter does: the row is a door, not a mark.
+                Surface::Listing => {
+                    self.pane_listing_sel = k;
+                    return self.open_act(Surface::Listing);
+                }
                 _ => return ControlFlow::Break(None),
             },
             (Target::Decision, Some(k)) => self.sel = k,

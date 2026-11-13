@@ -174,6 +174,18 @@ impl App {
                     Surface::PluginPane => self.pane_stops(&self.plugin_stop_rows, top, room),
                     Surface::Standing => self.pane_stops(&self.standing_stop_rows, top, room),
                     Surface::Config => self.pane_stops(&self.config_stop_rows(), top, room),
+                    // Both rows of a listed pane are its stop: the title and its `/pane NAME`.
+                    Surface::Listing => self
+                        .pane_listing_rows
+                        .iter()
+                        .enumerate()
+                        .flat_map(|(k, r)| r.clone().map(move |row| (row, k)))
+                        .filter_map(|(row, k)| {
+                            row.checked_sub(self.pane_scroll)
+                                .filter(|d| *d < room)
+                                .map(|d| (top + d, k))
+                        })
+                        .collect(),
                     _ => Vec::new(),
                 };
                 self.hits.push(Hit {

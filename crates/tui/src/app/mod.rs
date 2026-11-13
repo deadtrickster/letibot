@@ -859,6 +859,11 @@ pub struct App {
     /// close, `None` when it is shut. A one-line confirmation is still a note, but a `/job`
     /// answer's sixteen kilobytes of output must not land in the scrollback.
     pub(crate) slash_out: Option<(String, Vec<String>)>,
+    /// The `/pane` listing's rows as `(name, title, badge)`, the row under its cursor, and the
+    /// listing rows each was drawn on: a row is a door to its pane, so Enter and a click open it.
+    pub(crate) pane_listing: Vec<(String, String, String)>,
+    pub(crate) pane_listing_sel: usize,
+    pub(crate) pane_listing_rows: Vec<std::ops::Range<usize>>,
     /// The surface stack: what holds the conversation's rectangle, top last. See `app::surface`
     /// for the rule and for the nine `bool`s it replaced.
     pub(crate) surfaces: Vec<Open>,
@@ -1535,6 +1540,9 @@ impl App {
             repo_sel: 0,
             repo_open: false,
             slash_out: None,
+            pane_listing: Vec::new(),
+            pane_listing_sel: 0,
+            pane_listing_rows: Vec::new(),
             surfaces: Vec::new(),
             hits: Vec::new(),
             link_targets: Vec::new(),

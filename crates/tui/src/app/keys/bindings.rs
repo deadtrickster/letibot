@@ -516,7 +516,14 @@ const ROOMS: &[Binding] = &[
     PAGE,
     WHEEL,
 ];
-const LISTING: &[Binding] = &[b(UPDOWN, Always, Act::Scroll, Text("scroll")), PAGE, WHEEL];
+// The arrows scroll a listing of text and walk the `/pane` listing's rows, whose Enter opens
+// the pane; the row decides which (`App::row_says`).
+const LISTING: &[Binding] = &[
+    b(UPDOWN, Always, Act::Cursor, Row),
+    b(&[On::Enter], Empty, Act::Open, Row),
+    PAGE,
+    WHEEL,
+];
 // A plugin's pane: the host's keys, and the plugin's own behind them. The panel keys and the
 // action letters are the VIEW's, which a static table cannot name, so one last binding hands
 // every other key to [`App::plugin_key`], and a letter that is none of those falls through.
@@ -783,6 +790,13 @@ impl App {
     /// The words for a row-dependent binding, from the row under the cursor.
     fn row_says(&self, s: Surface, b: &Binding) -> Option<String> {
         match (s, b.act) {
+            (Surface::Listing, Act::Cursor) if self.listed_panes().is_empty() => {
+                Some("scroll".to_string())
+            }
+            (Surface::Listing, Act::Cursor) => Some("moves".to_string()),
+            (Surface::Listing, Act::Open) => {
+                (!self.listed_panes().is_empty()).then(|| "opens the pane".to_string())
+            }
             // What Enter does on the session under the cursor is the ROW's own words, read by
             // [`App::list_says`] - a picker's footer is a function of the row, and spelling it
             // here twice is how the two drifted. A row with no act drops the binding from the bar.

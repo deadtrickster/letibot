@@ -447,6 +447,67 @@ fn the_pane_verb_lists_them_by_title_and_opens_by_name() {
     );
 }
 
+/// A second pane, sorting after [`PANE`] in the listing.
+const SECOND: &str = "zz-layer/second";
+
+/// A head holding two panes, with the bare `/pane` listing open.
+fn two_listed() -> App {
+    let mut a = holding(dashboard());
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::PluginPane {
+            pane: SECOND.into(),
+            view: serde_json::json!({"title": "the second pane", "panels": []}),
+        },
+    )));
+    a.command("pane");
+    assert!(a.is_open(Surface::Listing));
+    a
+}
+
+/// A `/pane` row is the door the listing says it is: the arrows walk the rows, Enter opens the
+/// one under the cursor through `/pane NAME`'s door, and the listing closes.
+#[test]
+fn enter_on_a_pane_listing_row_opens_that_pane() {
+    let mut a = two_listed();
+    let list = shown(&mut a, 110, 30);
+    assert!(list.contains("▸ stroppy-conformity"), "{list}");
+    assert!(
+        a.hint_bar(200).contains("enter opens the pane"),
+        "{}",
+        a.hint_bar(200)
+    );
+    a.key(Key::Down);
+    assert!(shown(&mut a, 110, 30).contains("▸ the second pane"));
+    assert_eq!(
+        a.key(Key::Enter),
+        Some(Action::PaneOpen {
+            pane: SECOND.into(),
+            w: 0,
+            h: 0,
+        })
+    );
+    assert!(!a.is_open(Surface::Listing), "the listing closes");
+    assert!(a.is_open(Surface::PluginPane));
+    assert_eq!(a.plugin_open.as_deref(), Some(SECOND));
+}
+
+/// Any other listing is text: its arrows scroll and its Enter opens nothing.
+#[test]
+fn enter_on_another_listing_opens_nothing() {
+    let mut a = holding(dashboard());
+    a.command("plugin");
+    assert!(a.is_open(Surface::Listing));
+    assert_eq!(a.key(Key::Down), None);
+    assert_eq!(a.key(Key::Enter), None);
+    assert!(!a.is_open(Surface::PluginPane));
+    assert!(
+        !a.hint_bar(200).contains("opens the pane"),
+        "{}",
+        a.hint_bar(200)
+    );
+}
+
 /// Esc at the overview closes the pane AND tells the daemon - C4's `PaneClose`, and the only
 /// thing that takes a pane off the host's refresh clock. The view below it is a step of Esc's
 /// ladder and says nothing: leaving a panel's view is not leaving the pane.

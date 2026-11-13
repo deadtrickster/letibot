@@ -298,3 +298,36 @@ fn a_click_on_the_quit_cards_consequence_arms_nothing() {
     click_on(&mut a, "leave and stop the daemon");
     assert_eq!(a.quit_sel, 1);
 }
+
+/// A click on a `/pane` listing row opens that pane, as Enter does - the row is a door.
+#[test]
+fn a_click_on_a_pane_listing_row_opens_that_pane() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    for (seq, pane, title) in [
+        (1, "a-layer/first", "the first pane"),
+        (2, "b-layer/second", "the second pane"),
+    ] {
+        a.apply(ServerFrame::Event(env(
+            seq,
+            SessionEvent::PluginPane {
+                pane: pane.into(),
+                view: serde_json::json!({"title": title, "panels": []}),
+            },
+        )));
+    }
+    a.command("pane");
+    a.key(Key::Down);
+    let frame = a.screen(110, 30);
+    let y = row_of(&frame, "the first pane");
+    assert_eq!(
+        a.key(Key::Click { x: 12, y }),
+        Some(Action::PaneOpen {
+            pane: "a-layer/first".into(),
+            w: 0,
+            h: 0,
+        })
+    );
+    assert!(!a.is_open(Surface::Listing), "the listing closes");
+    assert_eq!(a.plugin_open.as_deref(), Some("a-layer/first"));
+}

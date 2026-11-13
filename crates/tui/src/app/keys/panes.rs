@@ -340,6 +340,19 @@ impl App {
                 }
                 self.rooms_step(up)
             }
+            // The `/pane` listing walks its panes; any other listing is text, and scrolls.
+            Surface::Listing => {
+                let n = self.listed_panes().len();
+                if n == 0 {
+                    self.scroll_pane(up, 1);
+                    return ControlFlow::Break(None);
+                }
+                self.pane_listing_sel = step(self.pane_listing_sel.min(n - 1), n, up);
+                if let Some(r) = self.pane_listing_rows.get(self.pane_listing_sel).cloned() {
+                    self.scroll_into_view(r.end.saturating_sub(1));
+                    self.scroll_into_view(r.start);
+                }
+            }
             _ => return ControlFlow::Continue(()),
         }
         ControlFlow::Break(None)
@@ -402,6 +415,7 @@ impl App {
             // Enter reads the stop under the cursor whole: a finding with its evidence, its fix
             // and its verify; a row with its `detail` (C3).
             Surface::PluginPane => ControlFlow::Break(self.plugin_enter()),
+            Surface::Listing => self.open_listed_pane(),
             _ => ControlFlow::Continue(()),
         }
     }

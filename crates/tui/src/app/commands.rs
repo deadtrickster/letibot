@@ -606,10 +606,12 @@ impl App {
             // What this session is watching - the monitors the model armed.
             "monitors" => self.toggle_surface(Surface::Monitors),
             // The plugin panes this session has - C3/C4's `pane_` hooks. Bare, it is the
-            // list of them by title; `/pane NAME` opens one, through the same door a row of
-            // that list names, and asks the daemon for a fresh look as it opens.
+            // list of them by title, and Enter or a click on a row opens it; `/pane NAME` opens
+            // one through the same door, asking the daemon for a fresh look as it opens.
             "pane" => {
                 self.slash_out = Some(("/pane".to_string(), self.plugin_listing()));
+                self.pane_listing = self.plugin_list();
+                self.pane_listing_sel = 0;
                 self.push_surface(Surface::Listing);
                 None
             }
