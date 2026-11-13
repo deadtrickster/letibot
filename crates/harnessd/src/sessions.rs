@@ -355,6 +355,9 @@ pub struct Sessions<'a> {
     /// the census's repeat from `[queue]` - [`NagTimings::default`] is the daemon that shipped, and
     /// a field so a test can drive a delivery without sleeping through a minute.
     nag: NagTimings,
+    /// How long a session may hold room lines nothing rang for before they are said as one digest
+    /// turn - `[room] held_quiet_seconds`, and a field for `set_held_quiet`'s reason.
+    held_quiet: Duration,
     /// When to next look for a tool call nothing will answer. See `arm_sweep`.
     sweep_at: Option<Instant>,
     /// When to next look for a subagent this worker holds that has been idle long enough to park - 's idle-child policy, for the children served here rather than on their own thread.
@@ -565,6 +568,11 @@ fn court_main(
                 let pass = Instant::now();
                 let ran = s.deliver_due_nags();
                 crate::instruments::worker_pass("todo-check", pass, ran);
+                // And the room's held lines, as the daemon's idle pass does: one digest turn once
+                // the quiet window has passed.
+                let pass = Instant::now();
+                let rang = s.ring_due_digests();
+                crate::instruments::worker_pass("room-digest", pass, rang);
                 // And the queue's census, on the same idle arm and as a TURN - one model call per
                 // interval while a row is stuck, because a notice reaches nobody.
                 let pass = Instant::now();
@@ -707,6 +715,7 @@ impl<'a> Sessions<'a> {
             fabric_seen: HashMap::new(),
             nags: HashMap::new(),
             nag: cfg.leticode.nag_timings(),
+            held_quiet: cfg.leticode.held_room_quiet(),
             sweep_at: None,
             park_at: None,
             // Due at once: the first idle pass looks, because a daemon that started between a
@@ -971,6 +980,7 @@ impl<'a> Sessions<'a> {
             fabric_seen: HashMap::new(),
             nags: HashMap::new(),
             nag: self.nag,
+            held_quiet: self.held_quiet,
             sweep_at: None,
             park_at: None,
             // The daemon's own clocks are the daemon's. A court with a review clock or an
@@ -3263,6 +3273,44 @@ impl<'a> Sessions<'a> {
         self.rearm_todo_nag(session_id);
         if let (Some(next), Some(clock)) = (next, self.nags.get_mut(session_id)) {
             clock.arm_in(the_next_check(next, self.nag), Instant::now());
+        }
+    }
+
+    /// Ring every session that has held room lines for a whole quiet window, and answer how many -
+    /// the idle digest's clock. A line nothing rang for (a passing note, an `fyi` naming nobody)
+    /// is queued and would otherwise wait for a turn that may never come; the ring makes one, and
+    /// the door that opens it says the whole batch under one `[meanwhile]` heading.
+    pub fn ring_due_digests(&mut self) -> usize {
+        let mut rang = self.ask_courts(|s| s.ring_due_digests());
+        let now = std::time::SystemTime::now();
+        // What each session holds is published here as well as by the settlement's own door: a room
+        // line nothing rang for never reaches that door, and `N held` must still be true.
+        for h in self.open.values() {
+            h.say_held_now();
+        }
+        let due: Vec<String> = self
+            .open
+            .keys()
+            .filter(|id| crate::room::wake::due_digest(id, self.held_quiet, now))
+            .cloned()
+            .collect();
+        for session_id in due {
+            self.registry.bell().ring_wake(&session_id);
+            rang += 1;
+        }
+        rang
+    }
+
+    /// The quiet window the digest is rung at, from now on - the tests' door, as
+    /// [`Sessions::set_nag_window`] is for the plan's. A test that waited ten minutes for a digest
+    /// would not be a test.
+    pub fn set_held_quiet(&mut self, quiet: Duration) {
+        self.held_quiet = quiet;
+        let courted: Vec<String> = self.courts.keys().cloned().collect();
+        for id in courted {
+            if let Some(court) = self.courts.get(&id) {
+                court.post(move |s: &mut Sessions<'static>| s.set_held_quiet(quiet));
+            }
         }
     }
 

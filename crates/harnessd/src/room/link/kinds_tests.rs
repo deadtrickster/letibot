@@ -1,5 +1,6 @@
-//! What a `say`'s kind does to the wake path: an `fyi` is noted and never rings, a `blocker` rings
-//! the room it was said in and arrives as a full turn, and an ordinary line keeps waking as before.
+//! What a `say`'s kind does to the wake path: an `fyi` is a note to the room it sits in and an
+//! ADDRESS to the reader it names, a `blocker` rings the room it was said in and arrives as a full
+//! turn, and an ordinary line keeps waking as before.
 
 use super::*;
 
@@ -57,7 +58,7 @@ fn the_tools_kind_list_is_the_rooms_own() {
 }
 
 #[test]
-fn an_fyi_is_noted_and_never_rung_and_a_blocker_is_a_full_turn() {
+fn an_fyi_rings_only_the_reader_it_names_and_a_blocker_is_a_full_turn() {
     let scratch = Scratch::new("wake");
     let path = scratch.0.join("room.sock");
     let server =
@@ -69,42 +70,58 @@ fn an_fyi_is_noted_and_never_rung_and_a_blocker_is_a_full_turn() {
         let rung = Arc::clone(&rung);
         Arc::new(move |session: &str| rung.lock().unwrap().push(session.to_string()))
     };
-    let _me = SessionRoom::connect(
-        me_id,
-        &path,
-        letibot_room::DEFAULT_PROJECT,
-        None,
-        bell.clone(),
-        None,
-    )
-    .expect("this session connects");
-    let other = SessionRoom::connect(
-        other_id,
-        &path,
-        letibot_room::DEFAULT_PROJECT,
-        None,
-        bell,
-        None,
-    )
-    .expect("the peer connects");
+    let _me = SessionRoom::connect(me_id, &path, "f4f4f4f4f4f4", None, bell.clone(), None)
+        .expect("this session connects");
+    let other = SessionRoom::connect(other_id, &path, "f4f4f4f4f4f4", None, bell, None)
+        .expect("the peer connects");
 
-    // An `fyi` is a note for a cheap turn: no bell, nothing taking the whole of a turn.
+    // An `fyi` that NAMES this session is an address: the bell rings for it and the note is a full
+    // turn. The live case: a dm was answered in the host room as `@x ...` with kind `fyi`, and the
+    // one session it was for was never woken.
     other
         .call(
             "say",
             &json!({"room": "host", "text": "@s-a-kinds the port moved to 5433", "kind": "fyi"}),
         )
         .expect("an fyi");
-    settle();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while std::time::Instant::now() < deadline && !rung.lock().unwrap().iter().any(|s| s == me_id) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
     assert!(
-        !rung.lock().unwrap().iter().any(|s| s == me_id),
-        "an fyi rang the bell: {:?}",
+        rung.lock().unwrap().iter().any(|s| s == me_id),
+        "an fyi that names a session did not ring it: {:?}",
         rung.lock().unwrap()
     );
     let noted = wake::take_wake(me_id);
     assert!(
         noted.text().iter().any(|l| l.contains("the port moved")),
         "the fyi was not noted at all: {noted:?}"
+    );
+    assert!(!noted.cheap, "a mention woke a cheap turn: {noted:?}");
+    rung.lock().unwrap().clear();
+
+    // And an `fyi` that names nobody is a note for a cheap turn: no bell, nothing taking the whole
+    // of a turn. It goes to the project room, where an unaddressed line is allowed at all.
+    other
+        .call(
+            "say",
+            &json!({"text": "the cache key moved", "kind": "fyi"}),
+        )
+        .expect("an fyi");
+    settle();
+    assert!(
+        !rung.lock().unwrap().iter().any(|s| s == me_id),
+        "an fyi that names nobody rang the bell: {:?}",
+        rung.lock().unwrap()
+    );
+    let noted = wake::take_wake(me_id);
+    assert!(
+        noted
+            .text()
+            .iter()
+            .any(|l| l.contains("the cache key moved")),
+        "the unnamed fyi was not noted at all: {noted:?}"
     );
     assert!(noted.cheap, "an fyi woke a full turn: {noted:?}");
     rung.lock().unwrap().clear();

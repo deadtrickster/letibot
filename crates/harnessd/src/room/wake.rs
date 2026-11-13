@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::io::Write;
 use std::sync::{Mutex, OnceLock};
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use crate::delivery::RoomLine;
 
@@ -49,6 +49,9 @@ struct Queue {
     chat_seq: u64,
     /// A line other than a passing-by chat line is queued, so the wake is a full turn.
     full: bool,
+    /// When the idle digest last rang for this pen - so one quiet window rings once, however
+    /// often the daemon's pass runs ([`due_digest`]).
+    rang_at: Option<SystemTime>,
 }
 
 /// The process-wide queues and the counter that orders them.
@@ -72,25 +75,45 @@ pub fn push(session: &str, line: String) {
     }
 }
 
-/// A chat message's line, remembered by its `seq` so the turn that carries it can tell the room.
-/// Only a `Passing` line leaves the wake cheap.
-pub fn push_chat(session: &str, seq: u64, reach: letibot_room::chat::Reach, line: String) {
+/// A chat message's line, remembered by its room and `seq` so the turn that carries it can tell the
+/// room - and so the same message queued twice is one line. Only a `Passing` line leaves the wake
+/// cheap; `held` says nothing rang for it, which is what the idle digest is made of.
+pub fn push_chat_in(
+    session: &str,
+    room: &str,
+    seq: u64,
+    reach: letibot_room::chat::Reach,
+    line: String,
+    held: bool,
+) {
     let passing = reach == letibot_room::chat::Reach::Passing;
     let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
-    enqueue(&mut q, session, note(&line, seq, passing));
+    enqueue(&mut q, session, note_room(&line, room, seq, passing, held));
     if let Some(entry) = q.map.get_mut(session) {
         entry.chat_seq = entry.chat_seq.max(seq);
         entry.full |= !passing;
     }
 }
 
+/// [`push_chat_in`] for a caller that knows neither the room nor whether anything rang: a test, and
+/// a door that queues a line it is about to ring for.
+pub fn push_chat(session: &str, seq: u64, reach: letibot_room::chat::Reach, line: String) {
+    push_chat_in(session, "", seq, reach, line, false)
+}
+
 fn note(line: &str, seq: u64, passing: bool) -> RoomLine {
+    note_room(line, "", seq, passing, false)
+}
+
+fn note_room(line: &str, room: &str, seq: u64, passing: bool, held: bool) -> RoomLine {
     RoomLine {
         seq,
         stands_for: Vec::new(),
+        room: room.to_string(),
         line: line.to_string(),
         arrived: SystemTime::now(),
         passing,
+        held,
     }
 }
 
@@ -109,7 +132,8 @@ pub fn seen_meanwhile(session: &str, seq: u64) -> bool {
 }
 
 /// The push, given the queues it goes into - so a test can prove the bound without filling the
-/// process's own map.
+/// process's own map. A message already in the pen is not queued twice: the live push and a
+/// reconnect's replay both carry it, and the model reads it once whichever arrived second.
 fn enqueue(queues: &mut Queues, session: &str, line: RoomLine) {
     queues.next += 1;
     let pushed = queues.next;
@@ -129,8 +153,20 @@ fn enqueue(queues: &mut Queues, session: &str, line: RoomLine) {
     }
     let entry = queues.map.entry(session.to_string()).or_default();
     entry.pushed = pushed;
-    entry.lines.push_back(line);
+    if !already(entry, &line) {
+        entry.lines.push_back(line);
+    }
     fold(entry);
+}
+
+/// Is this message in the pen already? Its identity is `(room, seq)`: two lines for one message are
+/// one message, and a line that stands for no single message is always its own. A folded line keeps
+/// only its `seq`, so the fold is asked by that alone.
+fn already(entry: &Queue, line: &RoomLine) -> bool {
+    let Some((_, seq)) = line.identity() else {
+        return false;
+    };
+    entry.folded.seqs.contains(&seq) || entry.lines.iter().any(|l| l.identity() == line.identity())
 }
 
 /// Keep at most [`HELD_ROOM_MAX`] lines: the overflow is summarised, never dropped. The digest
@@ -159,10 +195,43 @@ fn digest(entry: &Queue) -> Option<RoomLine> {
     Some(RoomLine {
         seq: entry.folded.seqs.first().copied().unwrap_or(0),
         stands_for: entry.folded.seqs.clone(),
+        room: String::new(),
         line: text,
         arrived: first,
         passing: true,
+        held: true,
     })
+}
+
+/// Has this session held room lines for a whole quiet window? The idle digest's clock: `true` says
+/// ring it now, and records the ring so one window rings once however often the pass runs. A line
+/// nothing rang for would otherwise wait for a turn that may never come, which is the black hole
+/// this closes.
+pub fn due_digest(session: &str, quiet: Duration, now: SystemTime) -> bool {
+    let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
+    let Some(entry) = q.map.get_mut(session) else {
+        return false;
+    };
+    let Some(oldest) = entry
+        .lines
+        .iter()
+        .map(|l| l.arrived)
+        .chain(entry.folded.first)
+        .min()
+    else {
+        return false;
+    };
+    if now.duration_since(oldest).unwrap_or(Duration::ZERO) < quiet {
+        return false;
+    }
+    if entry
+        .rang_at
+        .is_some_and(|at| now.duration_since(at).unwrap_or(Duration::ZERO) < quiet)
+    {
+        return false;
+    }
+    entry.rang_at = Some(now);
+    true
 }
 
 /// Everything waiting for this session, in the order it arrives - the door's take. It does not ack:
@@ -248,6 +317,10 @@ pub fn put_back(session: &str, lines: Vec<RoomLine>) {
         // names, and whether a line other than passing-by talk is in it.
         entry.chat_seq = entry.chat_seq.max(line.seq);
         entry.full |= !line.passing;
+        // A hand-back of something the pen already holds - a put-back of a put-back - is one line.
+        if already(entry, &line) {
+            continue;
+        }
         entry.lines.push_front(line);
     }
     fold(entry);
@@ -758,6 +831,54 @@ mod tests {
         );
         assert_eq!(again.ack, 2);
         discard(s);
+    }
+
+    /// A message queued twice - the live push and a reconnect's replay - is one line, and the pen's
+    /// identity for it is `(room, seq)`: the same `seq` in two rooms is two messages. The operator
+    /// read four lines for two messages, so this is the guard at the push.
+    #[test]
+    fn the_same_message_queued_twice_is_one_line() {
+        use letibot_room::chat::Reach;
+        let s = "s-room-twice";
+        push_chat_in(s, "host", 1326, Reach::Passing, "#1326 a".into(), true);
+        push_chat_in(s, "host", 1326, Reach::Passing, "#1326 a".into(), true);
+        assert_eq!(waiting(s), 1, "the second copy of a message is not a line");
+        assert_eq!(hold(s).lines.len(), 1);
+        // A hand-back of a line the pen already holds is dropped too.
+        push_chat_in(s, "host", 1327, Reach::Passing, "#1327 b".into(), true);
+        let taken = hold(s);
+        put_back(s, taken.lines.clone());
+        put_back(s, taken.lines.clone());
+        assert_eq!(waiting(s), 1, "a put-back of a put-back is one line");
+        // Two rooms, one seq: two messages (plus the hand-back still in the pen).
+        push_chat_in(s, "host", 7, Reach::Passing, "a".into(), true);
+        push_chat_in(s, "dm", 7, Reach::Passing, "b".into(), true);
+        assert_eq!(waiting(s), 3, "the same seq in two rooms is two messages");
+        forget(s);
+    }
+
+    /// The idle digest's clock: nothing before the window is out, once when it is, and never twice
+    /// inside one window however often the daemon's pass asks.
+    #[test]
+    fn the_digest_clock_is_a_quiet_window_and_rings_once() {
+        use letibot_room::chat::Reach;
+        let s = "s-room-digest-clock";
+        let quiet = Duration::from_millis(80);
+        assert!(!due_digest(s, quiet, SystemTime::now()), "nothing held");
+        push_chat_in(s, "host", 1, Reach::Passing, "#1 a".into(), true);
+        assert!(
+            !due_digest(s, quiet, SystemTime::now()),
+            "a line held for no time at all is not due"
+        );
+        std::thread::sleep(quiet + Duration::from_millis(30));
+        let now = SystemTime::now();
+        assert!(due_digest(s, quiet, now), "the window is out");
+        assert!(!due_digest(s, quiet, now), "one window, one ring");
+        assert!(
+            !due_digest(s, quiet, now + quiet / 2),
+            "half a window later is not a second ring"
+        );
+        forget(s);
     }
 
     /// The map is bounded too, and the session evicted is the one pushed longest ago - which is the

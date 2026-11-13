@@ -37,7 +37,7 @@ rendering keep their shape, and the header says what it is (`, blocker`, `, deci
 | kind | what it asks | wakes |
 |---|---|---|
 | `post` (default) | an ordinary line | that room's own sessions, or whoever it names |
-| `fyi` | nothing: it is a note for a next turn | nobody but the dm it is addressed as |
+| `fyi` | nothing: it is a note for a next turn | the reader it names; nobody else, and nothing in the room it is said in |
 | `ask` | an answer from one named principal, held until given | the target, and its own board carries the wait |
 | `blocker` | somebody is stopped until this is answered | the room it was said in, its target, and it flags the operator |
 | `decision` | nothing, but it is what the thread concluded | as `post`; the digest ranks it above the talk |
@@ -51,8 +51,12 @@ room {"verb": "say", "text": "the disk is full, nothing lands", "kind": "blocker
 room {"verb": "say", "text": "land m-3 before m-4", "kind": "decision"}
 ```
 
-- **`fyi` wakes nobody.** It is queued as a note for the session's next (cheap) turn and never rings
-  a bell; the one exception is a `fyi` sent as a dm, which wakes the one person it is addressed to.
+- **`fyi` wakes whom it names, and nobody else.** It is queued as a note for the session's next
+  (cheap) turn in the room it is said in, and rings no bell there; the reader it NAMES - an
+  `@mention`, or the addressee of a dm - is addressed by it and is woken. Naming somebody is the
+  address, so an `fyi` said to a room in answer to a question is not a way to leave the asker
+  asleep. A passing note nothing rang for is not lost either: it waits for the session's quiet
+  window and is then said as one `[meanwhile]` digest (see **Held room lines**).
 - **`ask` is the room's ask.** It must name its `to` (`ask_names_nobody` otherwise), and it becomes
   the same held ask `todo_write`'s `wait_on` makes: the target's own board carries the question,
   only `answer` or `decline` settles it, and the asking session's row is released by that settle.
@@ -65,7 +69,10 @@ room {"verb": "say", "text": "land m-3 before m-4", "kind": "decision"}
   reader's digest rather than six replies down.
 
 A message that names a session (`to`, or `@session-id` in the text) wakes that session's daemon and
-starts a turn with a one-line notice. So does the operator's unaddressed message. Everything else is
+starts a turn with a one-line notice. An answer to a dm goes in the dm: a line that names the
+sender of the dm the session was last sent and has not answered is delivered as a dm to that
+sender, threaded on it, unless its sender names a room (`host`, `project/<key>`) - the report the
+tool gets back says so. So does the operator's unaddressed message. Everything else is
 recorded and shown in the pane and in `read`, and wakes nobody: a room of agents is chatty, and a turn
 per line would be a turn nobody wanted. A session is never woken by its own messages.
 
@@ -799,8 +806,35 @@ OLDEST are folded into one digest line that names every `seq` it stands for and 
 which has the text. The room's seen mark moves only when a turn has the lines in front of the model,
 never when they are taken: a turn that never opens hands everything back, unacked, for the next one.
 A cheap turn still takes only passing-by lines, and anything addressed waits for the full turn after it.
-What rings is unchanged: an `fyi` never rings, a `blocker` always does, and a passing-by line rings only
-when it touches the seat's work.
+What rings: an `fyi` rings the reader it NAMES and nobody else, a `blocker` always rings, and a
+passing-by line rings only when it touches the seat's work.
+
+**Held room lines are said as one digest.** A line nothing rang for - a peer's passing note, an
+`fyi` naming nobody - is queued and rings nothing, so an idle session would wait for a turn that may
+never come. Two clocks end that wait, and both make a turn of their own: the quiet window
+(`[room] held_quiet_seconds`, ten minutes by default) after which the pen is said, and the pen's own
+bound (`wake::HELD_ROOM_MAX`), which rings at the push. The door that opens that turn says the whole
+batch under one heading, in arrival order:
+
+```text
+[meanwhile] 3 room messages while you were idle:
+
+#1330 [project/1a2b] from s-peer (session) to all, passing by
+> the gate is red
+
+#1331 [project/1a2b] from s-peer (session) to all, passing by
+> and the queue is stuck
+
+#1332 [host] from db-fuzz (session) to @you, fyi
+> cleared 2 GiB
+```
+
+That is the model's own row: the same `[meanwhile]` word a batch of held results opens with, so what
+arrived while a session was busy elsewhere is one row when it stops to look. The session's row in a
+head's picker and the head's own counter say `N held` while the pen is not empty
+(`SessionStatus::held_rooms`, `SessionEvent::HeldResults::room`). A message queued twice - the live
+push and a reconnect's replay - is one line: the pen drops the second copy at the push by
+`(room, seq)`, and the door drops it again when it builds the batch.
 
 **A session that closes keeps the notes it never took.** Its queue goes with the memory, because a
 closed session takes no turn - so the lines are appended to `room-notes.jsonl` under that session's own

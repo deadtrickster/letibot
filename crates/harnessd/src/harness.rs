@@ -1117,6 +1117,15 @@ impl Harness {
         self.job_watch.clone()
     }
 
+    /// Say what this session holds, if it changed - the head's counter beside *Responding* and the
+    /// `N held` on its row in a picker. The room's pen is the one thing that changes without a
+    /// settlement, so the daemon's idle pass asks rather than waits to be told.
+    pub fn say_held_now(&self) {
+        if let Some(w) = &self.job_watch {
+            w.say_held();
+        }
+    }
+
     /// The sink for a call this session runs OUTSIDE a turn: the operator's own call and their `!` line.
     /// Null, because the transcript row is the durable record and every head draws it; watched, because
     /// a `Backgrounded` outcome is a promise the row makes in words and nothing else delivers it.

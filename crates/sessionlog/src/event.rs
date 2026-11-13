@@ -1567,6 +1567,11 @@ pub enum SessionEvent {
         /// How many of those, of either kind, FAILED - a non-zero exit, a signal, a child that answered
         /// `failed`.
         failed: u64,
+        /// Room lines the session's pen holds: passing notes nothing rang for, which the idle
+        /// digest says once their quiet window passes. A version-71 head reads none of them and
+        /// counts only the results; the field is defaulted so such a head still parses the event.
+        #[serde(default)]
+        room: u64,
     },
     /// A plugin pane's view: the document a `pane_<name>` hook answered, published so every head
     /// draws the same dashboard.

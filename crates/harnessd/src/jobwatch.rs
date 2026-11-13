@@ -367,7 +367,7 @@ pub struct JobWatchers {
     /// The held counts last published to the hub - `(jobs, subagents, failed)` - so
     /// [`SessionEvent::HeldResults`] goes out when the set changes, not on every touch (a
     /// re-sort that puts the same results back changes nothing a head draws).
-    held_said: Arc<Mutex<(u64, u64, u64)>>,
+    held_said: Arc<Mutex<(u64, u64, u64, u64)>>,
     /// Handles this session has said it wants the moment they end - a wait on one, a
     /// foreground call promoted out from under it, or `wake: "now"` at its start. See
     /// [`WantedNow`]. Per session: a want is the asking session's, never its tree's.
@@ -444,7 +444,7 @@ impl JobWatchers {
             held: Arc::new(Mutex::new(Vec::new())),
             held_now: Arc::new(AtomicUsize::new(0)),
             rings_held: Arc::new(AtomicBool::new(false)),
-            held_said: Arc::new(Mutex::new((0, 0, 0))),
+            held_said: Arc::new(Mutex::new((0, 0, 0, 0))),
             wanted: Arc::clone(&wanted),
             watched: WatchedNow::new(wanted),
             // A root session is its own tree: the root and its own id are one.
@@ -526,7 +526,7 @@ impl JobWatchers {
             held: Arc::new(Mutex::new(Vec::new())),
             held_now: Arc::new(AtomicUsize::new(0)),
             rings_held: Arc::new(AtomicBool::new(false)),
-            held_said: Arc::new(Mutex::new((0, 0, 0))),
+            held_said: Arc::new(Mutex::new((0, 0, 0, 0))),
             wanted: Arc::clone(&wanted),
             watched: WatchedNow::new(wanted),
             root: hub.session_id(),
@@ -917,17 +917,24 @@ impl JobWatchers {
         taken
     }
 
-    /// The held set's counts - jobs, subagents, and how many of them failed.
-    pub fn held_counts(&self) -> (u64, u64, u64) {
+    /// The held set's counts - jobs, subagents, how many of them failed, and how many room lines
+    /// the session's pen holds. The room lines are not held RESULTS, but they are the same fact to
+    /// a reader: what this daemon has not put in front of its model yet.
+    pub fn held_counts(&self) -> (u64, u64, u64, u64) {
         let h = self.held.lock().expect("held results");
         let jobs = h.iter().filter(|c| c.kind == BackgroundKind::Job).count() as u64;
         let subagents = h.len() as u64 - jobs;
         let failed = h.iter().filter(|c| crate::delivery::failed(c)).count() as u64;
-        (jobs, subagents, failed)
+        (
+            jobs,
+            subagents,
+            failed,
+            crate::room::wake::waiting(&self.me) as u64,
+        )
     }
 
     /// Publish [`SessionEvent::HeldResults`] when the held counts changed since the last one - the head's counter beside *Responding*. A set whose hub has gone publishes nothing.
-    fn say_held(&self) {
+    pub(crate) fn say_held(&self) {
         let now = self.held_counts();
         {
             let mut said = self.held_said.lock().expect("held counts said");
@@ -941,6 +948,7 @@ impl JobWatchers {
                 jobs: now.0,
                 subagents: now.1,
                 failed: now.2,
+                room: now.3,
             });
         }
     }

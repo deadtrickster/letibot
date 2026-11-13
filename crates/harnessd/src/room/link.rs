@@ -314,22 +314,37 @@ impl SessionRoom {
                 let wakes = m.kind != letibot_room::Seat::System || names;
                 // A peer's passing line rings only a seat whose work it touches (an owned scope, an
                 // edited file, its branch); the rest take it as a note on their next turn. A seat
-                // with nothing to judge by is rung as before. The kind decides two of these: an
-                // `fyi` never rings (a dm to you still does), and a `blocker` always does.
+                // with nothing to judge by is rung as before. An `fyi` is the one kind that is
+                // its own rule: it rings exactly whom it NAMES and nobody else - not the room it
+                // sits in, not the seat whose work it brushes. A `blocker` always rings.
                 if plain && wakes && m.wakes(&me, names, &sits_in) {
                     let reach = wake::reach(m, names);
                     let fyi = m.say_kind() == letibot_room::SayKind::Fyi;
-                    let ring = !fyi
-                        && (reach != letibot_room::chat::Reach::Passing
-                            || m.kind == letibot_room::Seat::System
-                            || judge
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .as_ref()
-                                .and_then(|s| s.overlaps(&m.text))
-                                .unwrap_or(true));
-                    wake::push_chat(&me, m.seq, reach, wake::chat_sentence(m, names));
-                    if ring {
+                    let ring = match fyi {
+                        true => reach != letibot_room::chat::Reach::Passing,
+                        false => {
+                            reach != letibot_room::chat::Reach::Passing
+                                || m.kind == letibot_room::Seat::System
+                                || judge
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .as_ref()
+                                    .and_then(|s| s.overlaps(&m.text))
+                                    .unwrap_or(true)
+                        }
+                    };
+                    wake::push_chat_in(
+                        &me,
+                        &m.room,
+                        m.seq,
+                        reach,
+                        wake::chat_sentence(m, names),
+                        !ring,
+                    );
+                    // A line nothing rang for waits for a turn that may never come, so the pen's
+                    // own bound rings once it holds HELD_ROOM_MAX of them: the whole batch is then
+                    // said as one digest rather than growing for ever.
+                    if ring || wake::waiting(&me) >= wake::HELD_ROOM_MAX {
                         bell(&me);
                     }
                 } else if !wake::seen_meanwhile(&me, m.seq) {

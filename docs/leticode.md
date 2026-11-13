@@ -65,6 +65,7 @@ repeat_cap_seconds = 1800     # the ceiling the doubled interval retreats to
 
 [room]
 tie_breaker = "deepseek/deepseek-flash"   # the model that arbitrates the room's items
+held_quiet_seconds = 600      # how long a held room line waits before its digest turn
 
 [warnings]
 mute = ["model_slow_first_byte"]  # codes the head files and never draws

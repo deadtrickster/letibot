@@ -268,9 +268,11 @@ fn everything_held_is_in_arrival_order() {
     let line = |seq: u64, ms: u64| RoomLine {
         seq,
         stands_for: Vec::new(),
+        room: "host".into(),
         line: format!("#{seq}"),
         arrived: t(ms),
         passing: true,
+        held: true,
     };
     let all = in_arrival_order(
         vec![line(2, 300), line(3, 500)],
@@ -291,9 +293,11 @@ fn everything_held_is_in_arrival_order() {
     let event = RoomLine {
         seq: 0,
         stands_for: Vec::new(),
+        room: String::new(),
         line: "[room] an event".into(),
         arrived: t(150),
         passing: false,
+        held: false,
     };
     let all = in_arrival_order(vec![event, line(4, 160)], Vec::new());
     assert_eq!(all.len(), 2);

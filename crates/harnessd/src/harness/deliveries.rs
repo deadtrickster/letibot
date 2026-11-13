@@ -653,6 +653,31 @@ impl Said {
     }
 }
 
+/// Which of the two doors took a batch, and whether the take may run a cheap turn. A turn already
+/// running takes the room's lines at any poll; a turn STARTING between turns is where a digest is
+/// said, so only that door heads one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Door {
+    /// A turn is running now.
+    Running { cheap: bool },
+    /// A turn is starting: what was held is said as one row before the model reads the prompt.
+    BetweenTurns { cheap: bool },
+}
+
+impl Door {
+    /// Whether a batch taken here opens with the held room lines' digest heading.
+    fn digest(self) -> bool {
+        matches!(self, Door::BetweenTurns { .. })
+    }
+
+    /// Whether a take of nothing but passing-by talk may run cheap.
+    fn cheap(self) -> bool {
+        match self {
+            Door::Running { cheap } | Door::BetweenTurns { cheap } => cheap,
+        }
+    }
+}
+
 /// One item the door owes, and the rule it is released under when it was HELD for a turn that was
 /// running (`None` for what had not been held, which is said without the `[meanwhile]` heading).
 struct Owed(Held, Option<crate::delivery::Rule>);
@@ -758,7 +783,8 @@ impl Deliveries {
     }
 
     /// Everything one door took, in arrival order - the room's lines and every result it is saying -
-    /// with the `[meanwhile]` heading opening the first result that was held.
+    /// with the `[meanwhile]` heading opening the first result that was held. `door` says which
+    /// door took it: only a turn starting between turns heads a digest.
     fn owe(
         &self,
         room: Vec<RoomLine>,
@@ -766,9 +792,12 @@ impl Deliveries {
         at_once: Vec<JobCompletion>,
         released: Vec<JobCompletion>,
         rule: crate::delivery::Rule,
-        room_cheap: bool,
+        door: Door,
     ) -> HeldNow {
+        let room_cheap = door.cheap();
         let rows = self.rows();
+        // A message queued twice is said once, whichever paths carried it here.
+        let room = crate::delivery::once_each(room);
         let mut owed: Vec<Owed> = at_once
             .into_iter()
             .map(|c| Owed(Held::Result(c), None))
@@ -786,7 +815,7 @@ impl Deliveries {
         let cheap = room_cheap && owed.iter().all(|o| matches!(o.0, Held::Room(_)));
         let told: Vec<Held> = owed.iter().map(|o| o.0.clone()).collect();
         HeldNow {
-            parts: self.render(owed, &rows),
+            parts: self.render(owed, &rows, door.digest()),
             told,
             ack,
             cheap,
@@ -794,13 +823,27 @@ impl Deliveries {
     }
 
     /// The sentences, in the order the items arrived: a run of results keeps
-    /// `completion_notices`' grouping, and a room line is its own sentence.
-    fn render(&self, owed: Vec<Owed>, rows: &[TodoItem]) -> Vec<Said> {
+    /// `completion_notices`' grouping, and a room line is its own sentence. `digest` is a turn that
+    /// exists because these lines were held, so the ones nothing rang for open with one
+    /// `[meanwhile]` heading and are each their own line under it.
+    fn render(&self, owed: Vec<Owed>, rows: &[TodoItem], digest: bool) -> Vec<Said> {
         let mut out: Vec<Said> = Vec::new();
         let mut headed = false;
+        let mut room_headed = false;
+        let held_rooms = owed
+            .iter()
+            .filter(|o| matches!(&o.0, Held::Room(r) if r.held))
+            .count();
         let mut i = 0;
         while i < owed.len() {
             if let Held::Room(r) = &owed[i].0 {
+                if digest && r.held && !room_headed {
+                    room_headed = true;
+                    out.push(Said::Room {
+                        seqs: Vec::new(),
+                        text: crate::delivery::meanwhile_room(held_rooms),
+                    });
+                }
                 out.push(Said::Room {
                     // A digest stands for every line it folded, so the facts count those.
                     seqs: r.seqs(),
@@ -869,7 +912,8 @@ impl Deliveries {
                 Vec::new(),
                 Vec::new(),
                 crate::delivery::Rule::Starvation,
-                true,
+                // A turn is running: these lines arrived during it.
+                Door::Running { cheap: true },
             );
         }
         let rows = self.rows();
@@ -906,7 +950,8 @@ impl Deliveries {
             at_once,
             released,
             crate::delivery::Rule::Starvation,
-            false,
+            // A turn that is running: these lines arrived during work, not while idle.
+            Door::Running { cheap: false },
         )
     }
 
@@ -980,7 +1025,14 @@ impl Deliveries {
             // there is no turn owed and nothing for a reader to wait on.
             self.watch.turn_began();
         }
-        self.owe(room.lines, room.ack, at_once, busy, held_rule, room.cheap)
+        self.owe(
+            room.lines,
+            room.ack,
+            at_once,
+            busy,
+            held_rule,
+            Door::BetweenTurns { cheap: room.cheap },
+        )
     }
 
     /// What was taken is in front of the model now - the read record the plan check's grace reads, a

@@ -603,6 +603,11 @@ pub struct SessionStatus {
     pub model: String,
     /// `Envelope::ts` of the last event. Zero before anything has happened.
     pub last_ms: u64,
+    /// Room lines this session's pen holds: what it has been told and its model has not been put
+    /// in front of yet. Read off the last `HeldResults` the hub published, so it is zero for a
+    /// session whose daemon has never held anything.
+    #[serde(default)]
+    pub held_rooms: u64,
 }
 
 /// What the thread that owns a session's queue found to do. A `Wake` is not a command and
@@ -1862,6 +1867,10 @@ impl Hub {
             running: g.view.turn().is_some_and(|t| t.state.is_running()),
             model: g.view.turn().map(|t| t.model.clone()).unwrap_or_default(),
             last_ms: g.log.last_ts(),
+            held_rooms: match &g.held_now {
+                Some(SessionEvent::HeldResults { room, .. }) => *room,
+                _ => 0,
+            },
         }
     }
 

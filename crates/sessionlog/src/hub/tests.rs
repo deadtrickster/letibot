@@ -168,7 +168,7 @@ fn a_hubs_census_carries_what_its_harness_holds() {
 /// `HeldResults` is ephemeral and said only when it changes.
 #[test]
 fn a_head_that_attaches_or_reconnects_is_told_the_held_counts() {
-    let held = |b: &crate::cursor::Batch| -> Vec<(u64, u64, u64)> {
+    let held = |b: &crate::cursor::Batch| -> Vec<(u64, u64, u64, u64)> {
         b.events()
             .iter()
             .filter_map(|e| match e.event {
@@ -176,7 +176,8 @@ fn a_head_that_attaches_or_reconnects_is_told_the_held_counts() {
                     jobs,
                     subagents,
                     failed,
-                } => Some((jobs, subagents, failed)),
+                    room,
+                } => Some((jobs, subagents, failed, room)),
                 _ => None,
             })
             .collect()
@@ -195,6 +196,7 @@ fn a_head_that_attaches_or_reconnects_is_told_the_held_counts() {
         jobs: 2,
         subagents: 1,
         failed: 0,
+        room: 0,
     });
 
     // A head that attaches after the count was said.
@@ -203,7 +205,7 @@ fn a_head_that_attaches_or_reconnects_is_told_the_held_counts() {
     let Delivery::Events(b) = hub.next_batch(&late.head_id, 64) else {
         panic!("expected events");
     };
-    assert_eq!(held(&b), vec![(2, 1, 0)], "the late head was not told");
+    assert_eq!(held(&b), vec![(2, 1, 0, 0)], "the late head was not told");
 
     // The count goes to zero while a head is away; it reconnects with a replay, which
     // scrubs the ephemeral zero, and must still be told it.
@@ -213,6 +215,7 @@ fn a_head_that_attaches_or_reconnects_is_told_the_held_counts() {
         jobs: 0,
         subagents: 0,
         failed: 0,
+        room: 0,
     });
     let back = hub.attach("tui", "dead@lab2x1", Caps::default(), since);
     assert!(
@@ -227,7 +230,7 @@ fn a_head_that_attaches_or_reconnects_is_told_the_held_counts() {
     };
     assert_eq!(
         held(&b),
-        vec![(0, 0, 0)],
+        vec![(0, 0, 0, 0)],
         "the reconnected head was not told"
     );
 
@@ -240,7 +243,11 @@ fn a_head_that_attaches_or_reconnects_is_told_the_held_counts() {
     let Delivery::Events(b) = hub.next_batch(&back.head_id, 64) else {
         panic!("expected events");
     };
-    assert_eq!(held(&b), vec![(0, 0, 0)], "the resynced head was not told");
+    assert_eq!(
+        held(&b),
+        vec![(0, 0, 0, 0)],
+        "the resynced head was not told"
+    );
 }
 
 /// A head that attaches in the middle of a named operation is told which one: the same rule

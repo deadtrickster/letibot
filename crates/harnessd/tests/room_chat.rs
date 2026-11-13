@@ -176,3 +176,89 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
 
     server.stop();
 }
+
+/// An `fyi` is a note to the room it is said in and an ADDRESS to the one it names: the named
+/// reader is woken by it, nobody else is, and an `fyi` that names nobody rings nothing at all.
+/// The live case this comes from: a dm was answered in the host room as `@x ...` with kind `fyi`,
+/// and the one session it was for was never woken.
+#[test]
+fn an_fyi_rings_only_the_session_it_names() {
+    let dir = std::env::temp_dir().join(format!("letibot-chat-fyi-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("room.sock");
+    let server = Server::serve(&path, Room::new()).expect("a coordinator");
+
+    let rung: Arc<Mutex<Vec<String>>> = Arc::default();
+    let bell: Arc<dyn Fn(&str) + Send + Sync> = {
+        let rung = Arc::clone(&rung);
+        Arc::new(move |s: &str| rung.lock().unwrap().push(s.to_string()))
+    };
+    let connect = |id: &str| {
+        SessionRoom::connect(id, &path, "f4f4f4f4f4f4", None, bell.clone(), None).expect("connects")
+    };
+    let me = connect("s-fyi-me");
+    let peer = connect("s-fyi-peer");
+
+    // Nobody named: every session of the room is handed the line as a note, and no bell rings.
+    me.call(
+        "say",
+        &json!({"text": "the cache key moved", "kind": "fyi"}),
+    )
+    .expect("a say");
+    wait_for("the note", || {
+        (wake::waiting("s-fyi-peer") > 0).then_some(())
+    });
+    assert!(
+        !rung.lock().unwrap().iter().any(|s| s == "s-fyi-peer"),
+        "an fyi that names nobody rang a session: {:?}",
+        rung.lock().unwrap()
+    );
+    assert!(
+        wake::take("s-fyi-peer")[0].contains(", passing by"),
+        "an unnamed fyi is not a passing note"
+    );
+
+    // Naming the peer: this is the peer's to answer, so its daemon is woken, and only its.
+    me.call(
+        "say",
+        &json!({"text": "@s-fyi-peer the port moved to 5433", "kind": "fyi"}),
+    )
+    .expect("a say");
+    wait_for("the peer rung", || {
+        rung.lock()
+            .unwrap()
+            .iter()
+            .any(|s| s == "s-fyi-peer")
+            .then_some(())
+    });
+    let said = wake::take("s-fyi-peer");
+    assert!(said[0].contains("the port moved to 5433"), "{said:?}");
+    assert!(
+        !said[0].contains("passing by"),
+        "the session it names is told it only passed by: {}",
+        said[0]
+    );
+    assert!(
+        rung.lock().unwrap().iter().all(|s| s != "s-fyi-me"),
+        "an author was rung by its own line"
+    );
+    // And the other side of the rule holds as tightly: an `fyi` naming nobody rings nobody, not
+    // even the session whose work the room is talking about.
+    peer.call(
+        "say",
+        &json!({"text": "the disk is fine again", "kind": "fyi"}),
+    )
+    .expect("a say");
+    std::thread::sleep(Duration::from_millis(300));
+    assert!(
+        rung.lock()
+            .unwrap()
+            .iter()
+            .filter(|s| *s == "s-fyi-peer")
+            .count()
+            == 1,
+        "a peer's unnamed fyi rang it again: {:?}",
+        rung.lock().unwrap()
+    );
+    server.stop();
+}

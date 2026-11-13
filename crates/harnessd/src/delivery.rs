@@ -49,9 +49,9 @@ impl ResultKind {
     }
 }
 
-/// A room line a session is owed, as the room's reader composed it: the sentence, the chat `seq`
-/// behind it (`0` for a queue event or a gap), when it was queued, and whether it only passed by.
-/// The `seq` rides on the entry so an ack can be made from what was actually delivered.
+/// A room line a session is owed, as the room's reader composed it: the sentence, the room and
+/// chat `seq` behind it (`0` for a queue event or a gap), when it was queued, whether it only
+/// passed by, and whether anything rang for it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomLine {
     pub seq: u64,
@@ -59,10 +59,18 @@ pub struct RoomLine {
     /// whole of it - and the folded ones for a digest, so the door's facts and the wake's report
     /// count the lines the digest took the place of rather than the one line it is.
     pub stands_for: Vec<u64>,
+    /// The room the message was said in (`host`, `project/<key>`, `dm`), empty for a queue event
+    /// or a note the daemon pushed itself. With `seq` it is what a line IS: a message queued
+    /// twice - once by the push and once by a reconnect's replay - is one line.
+    pub room: String,
     pub line: String,
     pub arrived: SystemTime,
     /// Only passing-by talk: a turn carrying nothing but these may run cheap.
     pub passing: bool,
+    /// Nothing rang for this line, so it is held until a quiet window (`HELD_ROOM_QUIET`) passes
+    /// and it is said as one digest. A line that rang a bell is not held: a turn is already coming
+    /// for it.
+    pub held: bool,
 }
 
 impl RoomLine {
@@ -74,6 +82,15 @@ impl RoomLine {
                 seq => vec![seq],
             },
             false => self.stands_for.clone(),
+        }
+    }
+
+    /// What makes two lines the same message - `(room, seq)` - or `None` for a line that stands for
+    /// no single message at all (a queue event, a folded digest).
+    pub fn identity(&self) -> Option<(&str, u64)> {
+        match (self.seq, self.stands_for.is_empty()) {
+            (0, _) | (_, false) => None,
+            (seq, true) => Some((self.room.as_str(), seq)),
         }
     }
 }
@@ -119,6 +136,29 @@ pub fn arrivals<T>(items: Vec<T>, at: impl Fn(&T) -> SystemTime) -> Vec<T> {
     let mut items = items;
     items.sort_by_key(|i| at(i));
     items
+}
+
+/// One line per message. A room line can be queued twice - the live push and a reconnect's replay,
+/// a mention and the room it was said in - and the model reads a message once however many paths
+/// carried it. The pen drops the second copy at the push; this is the door's own guard, so a batch
+/// built from two pens cannot say a message twice either.
+pub fn once_each(lines: Vec<RoomLine>) -> Vec<RoomLine> {
+    let mut seen: Vec<(String, u64)> = Vec::new();
+    let mut out = Vec::with_capacity(lines.len());
+    for line in lines {
+        match line.identity() {
+            Some((room, seq)) => {
+                let key = (room.to_string(), seq);
+                if seen.contains(&key) {
+                    continue;
+                }
+                seen.push(key);
+                out.push(line);
+            }
+            None => out.push(line),
+        }
+    }
+    out
 }
 
 /// Why a result is delivered at once: the rule that applied, recorded with the delivery.
@@ -358,6 +398,23 @@ pub fn meanwhile_heading(_n: usize, _rule: Rule, _cap: Duration) -> String {
 /// The opening word of a held batch - what the head's fold and every test that reads the batch
 /// apart from the rest of a delivery looks for.
 pub const MEANWHILE: &str = "[meanwhile] Finished while you were working:";
+
+/// How long an idle session may hold room lines nothing rang for before they are said as one
+/// digest turn. `Config`'s default, and `[room] held_quiet_seconds` overrides it.
+pub const HELD_ROOM_QUIET: Duration = Duration::from_secs(10 * 60);
+
+/// The heading a digest of held room lines opens with - the same `[meanwhile]` word a batch of
+/// held results opens with, because it is the same thing: what arrived while the session was busy
+/// elsewhere, said in one row when it stops to look.
+pub fn meanwhile_room(n: usize) -> String {
+    match n {
+        1 => format!("{MEANWHILE_ROOM} 1 room message while you were idle:"),
+        n => format!("{MEANWHILE_ROOM} {n} room messages while you were idle:"),
+    }
+}
+
+/// The opening of [`meanwhile_room`], which is what a head keys its fold on.
+pub const MEANWHILE_ROOM: &str = "[meanwhile]";
 
 /// The append-only delivery record: one JSON line per delivered result, under the session's logs.
 ///

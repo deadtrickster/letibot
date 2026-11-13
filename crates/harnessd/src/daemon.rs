@@ -293,6 +293,15 @@ impl Daemon {
                         if ran > 0 {
                             eprintln!("  todo check -> {ran} session(s)");
                         }
+                        // And the room's held lines: a passing note nothing rang for is said as one
+                        // digest turn once the quiet window passes, so nothing waits for ever on a
+                        // turn that may never come.
+                        let pass = std::time::Instant::now();
+                        let rang = sessions.ring_due_digests();
+                        crate::instruments::worker_pass("room-digest", pass, rang);
+                        if rang > 0 {
+                            eprintln!("  room digest -> {rang} session(s)");
+                        }
                         // And the queue's stuck-row census, on the same idle arm and as a TURN one model call per
                         // interval per project while a row is stuck, because a notice reaches nobody. The clock is
                         // the plan check's, the daemon's clock being the only clock

@@ -157,8 +157,16 @@ fn every_frame_is_accounted_for_at_this_version() {
     let _ = event;
     let _ = server;
     assert_eq!(
-        PROTOCOL_VERSION, 72,
-        "the match above was last reconciled with the frame list at 72. 72 gave \
+        PROTOCOL_VERSION, 73,
+        "the match above was last reconciled with the frame list at 73. 73 added \
+             `SessionEvent::HeldResults`'s `room` and `SessionStatus`'s `held_rooms`: what a session \
+             has been TOLD and its model has not been shown - a room line nothing rang for, held \
+             until its quiet window passes and then said as one digest (R203). Both are \
+             `serde(default)`, so a version-72 head parses the event and the status and drops the \
+             field - which is why the number moves: the head would draw no held counter for the \
+             lines that are waiting, and the picker's row would not say `N held` either, so the one \
+             fact the operator asked for (*nothing is blackholed*) would be missing exactly where it \
+             is looked for. 72 gave \
              `SessionEvent::Citations`'s `Citation` a `kind` and a `body`: a reply marks lines as well \
              as citing them (`note path:3-4` with the note inside, `suggest path:3-4` with the \
              replacement), and an editor draws a mark from it. Both fields are `serde(default)`, so a \

@@ -339,6 +339,7 @@ fn held_said(hub: &Hub) -> Vec<(u64, u64, u64)> {
                 jobs,
                 subagents,
                 failed,
+                ..
             } => Some((jobs, subagents, failed)),
             _ => None,
         })
@@ -996,9 +997,11 @@ fn a_room_line_put_back_rings_the_session_that_owes_it() {
         told: vec![crate::delivery::Held::Room(crate::delivery::RoomLine {
             seq: 7,
             stands_for: Vec::new(),
+            room: "host".into(),
             line: "#7 a line no turn has read".into(),
             arrived: SystemTime::now(),
             passing: false,
+            held: false,
         })],
         ack: 7,
         cheap: false,
@@ -1155,4 +1158,122 @@ fn a_room_line_alone_reaches_a_running_turn_without_waiting_for_a_boundary() {
         .try_next()
         .expect("a poll that is not a boundary still says the room");
     assert!(got.text.contains("#4 for you"), "{}", got.text);
+}
+
+/// A line nothing rang for is held until the quiet window passes, and then said as ONE digest turn:
+/// the ring the idle pass makes opens the turn, the door that opens it says every line in the order
+/// they arrived, and nothing rings before the window is out. This is the black hole R187 left open -
+/// a passing line to an idle session waited for a turn that might never come.
+#[test]
+fn three_held_passing_lines_are_one_digest_turn_after_the_quiet_window() {
+    use letibot_room::chat::Reach;
+    use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
+
+    let dir = Scratch::new("r203-digest");
+    let registry = Registry::new();
+    let hub = registry
+        .create("s-r203-digest", "", SessionWiring::default())
+        .expect("the session is in the registry");
+    // The create rang an Open; what this test reads is the ring the digest makes.
+    assert!(matches!(registry.next_work(), Some(Work::Open(_))));
+    let w = JobWatchers::watching_tasks(&hub, Some(Arc::clone(registry.bell())));
+    let d = room_deliveries(&w, &dir, Duration::from_secs(600), "s-r203-digest");
+    crate::room::wake::forget("s-r203-digest");
+
+    let quiet = Duration::from_millis(120);
+    for (seq, said) in [(1u64, "#1 the gate is red"), (2, "#2 a peer speaks")] {
+        crate::room::wake::push_chat_in(
+            "s-r203-digest",
+            "project/aaaaaaaaaaaa",
+            seq,
+            Reach::Passing,
+            said.into(),
+            true,
+        );
+    }
+    // The same message queued twice - the live push and a reconnect's replay - is one line, and
+    // the third is a different message of the same shape.
+    crate::room::wake::push_chat_in(
+        "s-r203-digest",
+        "project/aaaaaaaaaaaa",
+        2,
+        Reach::Passing,
+        "#2 a peer speaks".into(),
+        true,
+    );
+    crate::room::wake::push_chat_in(
+        "s-r203-digest",
+        "host",
+        3,
+        Reach::Passing,
+        "#3 the host says so".into(),
+        true,
+    );
+    assert_eq!(
+        crate::room::wake::waiting("s-r203-digest"),
+        3,
+        "a message pushed twice is one line"
+    );
+
+    // Nothing rings before the window is out: the pen is holding, not owed.
+    assert!(!crate::room::wake::due_digest(
+        "s-r203-digest",
+        quiet,
+        SystemTime::now()
+    ));
+    assert!(
+        matches!(
+            registry.next_work_until(Some(std::time::Instant::now())),
+            WorkOrIdle::Idle
+        ),
+        "a held passing line rang a turn before its window"
+    );
+
+    // The window passes: the clock says ring, once, and the ring is a turn of this session's.
+    std::thread::sleep(quiet + Duration::from_millis(40));
+    assert!(crate::room::wake::due_digest(
+        "s-r203-digest",
+        quiet,
+        SystemTime::now()
+    ));
+    assert!(
+        !crate::room::wake::due_digest("s-r203-digest", quiet, SystemTime::now()),
+        "one quiet window rings once however often the pass runs"
+    );
+    registry.bell().ring_wake("s-r203-digest");
+    assert!(
+        matches!(
+            registry.next_work_until(Some(std::time::Instant::now())),
+            WorkOrIdle::Work(Work::Woken(id)) if id == "s-r203-digest"
+        ),
+        "the digest rang nothing"
+    );
+
+    // The turn that ring opened: ONE heading, then all three in the order they arrived.
+    let now = d.at_turn_start_unread();
+    let text = now.text();
+    assert!(
+        text.starts_with("[meanwhile] 3 room messages while you were idle:"),
+        "{text}"
+    );
+    let first = text.find("#1 the gate is red").expect("the first line");
+    let second = text.find("#2 a peer speaks").expect("the second line");
+    let third = text.find("#3 the host says so").expect("the third line");
+    assert!(
+        first < second && second < third,
+        "not in arrival order: {text}"
+    );
+    assert_eq!(
+        text.matches("[meanwhile]").count(),
+        1,
+        "one heading for the batch: {text}"
+    );
+    assert_eq!(
+        text.matches("#2 a peer speaks").count(),
+        1,
+        "a message queued twice was said twice: {text}"
+    );
+    d.read(&now);
+    assert_eq!(crate::room::wake::waiting("s-r203-digest"), 0, "one take");
+    crate::room::wake::forget("s-r203-digest");
 }

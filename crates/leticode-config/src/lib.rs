@@ -1640,11 +1640,19 @@ impl NagKeys {
     }
 }
 
-/// `[room]` in a `leticode.toml`: the model that arbitrates the room's items. `None` is
+/// The default the room's quiet window takes when `[room] held_quiet_seconds` says nothing: ten
+/// minutes, the operator's number for *long enough that it is not a turn per line, short enough
+/// that a passing line is not lost for the session's life*.
+pub const ROOM_QUIET_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+/// `[room]` in a `leticode.toml`: the model that arbitrates the room's items, and how long a room
+/// line nothing rang for is held before it is said as one digest turn. `tie_breaker: None` is
 /// `room::coordinator::DEEPSEEK`, the operator's own *"with deepseek as default"*.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RoomKeys {
     pub tie_breaker: Option<String>,
+    /// Seconds a session may hold room lines nothing rang for before they are said as one digest.
+    pub held_quiet_seconds: Option<u64>,
 }
 
 /// `[ui]` in a `leticode.toml`: how the head lays itself out. `rooms_sidebar` keeps the Rooms,
@@ -1951,7 +1959,8 @@ fn nag_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result<
 }
 
 fn room_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result<RoomKeys, String> {
-    let keys = "the one key is `tie_breaker`, the model that arbitrates the room's items";
+    let keys = "the keys are `tie_breaker` (the model that arbitrates the room's items) and \
+                `held_quiet_seconds` (how long a held room line waits for its digest turn)";
     let table = table_at(value, path, text, "room", keys)?;
     let mut out = RoomKeys::default();
     for (key, v) in table {
@@ -1967,6 +1976,9 @@ fn room_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result
                         ),
                     }
                 })?);
+            }
+            "held_quiet_seconds" => {
+                out.held_quiet_seconds = Some(seconds_at(v, &from, "room", key)?)
             }
             other => return Err(format!("{from}: [room] `{other}` is not a key; {keys}")),
         }
@@ -2314,6 +2326,10 @@ impl LeticodeConfig {
                     .tie_breaker
                     .clone()
                     .or_else(|| self.room.tie_breaker.clone()),
+                held_quiet_seconds: other
+                    .room
+                    .held_quiet_seconds
+                    .or(self.room.held_quiet_seconds),
             },
             ui: UiKeys {
                 rooms_sidebar: other.ui.rooms_sidebar.or(self.ui.rooms_sidebar),
@@ -2346,6 +2362,15 @@ impl LeticodeConfig {
     /// The `[queue] mute` names, both levels unioned.
     pub fn queue_mute(&self) -> &[String] {
         &self.queue.mute
+    }
+
+    /// How long a session may hold room lines nothing rang for before they are said as one digest
+    /// turn: `[room] held_quiet_seconds`, or [`ROOM_QUIET_DEFAULT`].
+    pub fn held_room_quiet(&self) -> std::time::Duration {
+        self.room
+            .held_quiet_seconds
+            .map(std::time::Duration::from_secs)
+            .unwrap_or(ROOM_QUIET_DEFAULT)
     }
 
     /// What this session does when its provider answers a usage limit with a known reset: the
