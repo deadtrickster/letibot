@@ -163,7 +163,9 @@ fn a_daemon_the_bridge_started_is_listed_by_the_launcher() {
     );
     let words: Vec<&str> = line.unwrap().split_whitespace().collect();
     assert!(
-        words.windows(3).any(|w| w == ["up", "pid", pid.to_string().as_str()]),
+        words
+            .windows(3)
+            .any(|w| w == ["up", "pid", pid.to_string().as_str()]),
         "and that it is up, by the pid the record names — the fake daemon is listening on that \
          socket. It said:\n{said}"
     );
