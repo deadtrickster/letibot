@@ -85,13 +85,13 @@ fn settle_of(state: &AskState) -> Option<AskSettle> {
     })
 }
 
-/// The asks of MINE to take back: every one still open that no row of mine carries any more - it was
-/// done, cancelled, detached or re-worded, and the target must stop being nagged by a question
-/// nobody is waiting for. `carried` is [`letibot_tools::builtins::todo::TodoBoard::asks_on_the_board`].
-pub fn withdrawals(by_me: &[AskView], carried: &BTreeSet<u64>) -> Vec<u64> {
+/// The asks of MINE to take back: every one still open that a row of mine carried once and no row
+/// carries any more. An ask made with no row (`room` `ask`) was never carried, so it waits for its
+/// answer. `carried` is [`letibot_tools::builtins::todo::TodoBoard::asks_on_the_board`].
+pub fn withdrawals(by_me: &[AskView], carried: &BTreeSet<u64>, once: &BTreeSet<u64>) -> Vec<u64> {
     by_me
         .iter()
-        .filter(|a| a.open() && !carried.contains(&a.seq))
+        .filter(|a| a.open() && !carried.contains(&a.seq) && once.contains(&a.seq))
         .map(|a| a.seq)
         .collect()
 }
@@ -354,9 +354,8 @@ mod tests {
         assert_eq!(settle_class(&got[0].1), "ask_settled");
     }
 
-    /// An ask I made that no row carries any more is taken back: the target must not stay nagged by
-    /// a question nobody waits on. A settled ask is not withdrawn again, and one a row still carries
-    /// stays.
+    /// An ask I made that a row carried and no row carries any more is taken back. A settled ask is
+    /// not withdrawn again, one a row still carries stays, and one no row ever carried stays.
     #[test]
     fn an_ask_no_row_carries_is_taken_back() {
         let carried: BTreeSet<u64> = [7u64].into_iter().collect();
@@ -369,10 +368,16 @@ mod tests {
                 ms: 1,
             },
         );
-        assert_eq!(withdrawals(&[open(7), open(9), settled], &carried), vec![9]);
-        assert!(withdrawals(&[open(7)], &carried).is_empty());
+        let once: BTreeSet<u64> = [7u64, 8, 9].into_iter().collect();
+        assert_eq!(
+            withdrawals(&[open(7), open(9), settled], &carried, &once),
+            vec![9]
+        );
+        assert!(withdrawals(&[open(7)], &carried, &once).is_empty());
         // A row detached with `detach` takes the wait off, so the ask goes back with it.
-        assert_eq!(withdrawals(&[open(7)], &BTreeSet::new()), vec![7]);
+        assert_eq!(withdrawals(&[open(7)], &BTreeSet::new(), &once), vec![7]);
+        // An ask no row ever carried is the `room` tool's, and it waits for its answer.
+        assert!(withdrawals(&[open(10)], &BTreeSet::new(), &once).is_empty());
     }
 
     /// The card is raised on `escalated` and withdrawn when it clears - and its words are the key,

@@ -107,13 +107,19 @@ impl Harness {
             .set_ask_rows(crate::room::asks::owed_rows(me, &of_me));
         // 3. What to take back: an ask of mine no open row carries any more. The row was done,
         //    cancelled, detached or re-worded, and the target must stop being nagged by it.
-        for ask in crate::room::asks::withdrawals(&by_me, &self.todos.asks_on_the_board()) {
+        //    An ask no row ever carried was made with the `room` tool and is not taken back.
+        let carried = self.todos.asks_on_the_board();
+        self.asks_carried.extend(carried.iter().copied());
+        for ask in crate::room::asks::withdrawals(&by_me, &carried, &self.asks_carried) {
             if let Err(why) = room.withdraw(ask) {
                 // Said once and not retried here: the next pass re-reads `by_me` and asks again,
                 // so a room that was briefly away loses nothing but a window.
                 eprintln!("harnessd: `{me}` could not withdraw ask #{ask}: {why}");
             }
         }
+        // Only open asks need remembering; the rest have ended for good.
+        self.asks_carried
+            .retain(|a| carried.contains(a) || by_me.iter().any(|x| x.seq == *a && x.open()));
         // 4. The operator's card: raised while the other end has been gone past the grace, and
         //    withdrawn the moment it is back - the same words both ways, because they are its key.
         for (ask, question, on) in crate::room::asks::escalations(&by_me, &of_me, me) {

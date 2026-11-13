@@ -3518,6 +3518,7 @@ impl Harness {
             room,
             room_late,
             room_connector,
+            asks_carried: Default::default(),
             seat,
             tool_sink,
             job_watch,
