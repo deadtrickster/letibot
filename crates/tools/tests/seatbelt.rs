@@ -825,6 +825,18 @@ fn a_child_cannot_shadow_a_packed_only_branch_and_still_commits() {
         ],
     );
     git(&repo, &["pack-refs", "--all", "--prune"]);
+    let common = repo.join(".git").canonicalize().unwrap();
+    assert!(
+        !common.join("refs/heads/main").exists(),
+        "main must start packed only"
+    );
+    let packed = std::fs::read_to_string(common.join("packed-refs")).unwrap();
+    let main_sha = packed
+        .lines()
+        .find(|l| l.ends_with(" refs/heads/main"))
+        .and_then(|l| l.split(' ').next())
+        .expect("main is in packed-refs")
+        .to_string();
     let op = f.root.join("operator");
     std::fs::create_dir_all(&op).unwrap();
     let mut view = ViewSpec::project_only(&wt)
@@ -838,10 +850,12 @@ fn a_child_cannot_shadow_a_packed_only_branch_and_still_commits() {
     }
     let s = Seatbelt::probe_as(view, Egress::Denied, vec![f.denied()], op)
         .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
-    let common = repo.join(".git").canonicalize().unwrap();
-    assert!(
-        !common.join("refs/heads/main").exists(),
-        "main must be packed only"
+    // The seat holds a packed-only branch by a real loose copy of it, the same ref.
+    let loose = || std::fs::read_to_string(common.join("refs/heads/main")).unwrap_or_default();
+    assert_eq!(
+        loose().trim(),
+        main_sha,
+        "the protected copy is main's own value"
     );
     let (rc, out) = run_in(
         &s,
@@ -852,7 +866,11 @@ fn a_child_cannot_shadow_a_packed_only_branch_and_still_commits() {
         ),
     );
     assert_ne!(rc, 0, "a child shadowed main with a loose ref: {out}");
-    assert!(!common.join("refs/heads/main").exists(), "{out}");
+    assert_eq!(
+        loose().trim(),
+        main_sha,
+        "main still names its commit: {out}"
+    );
     let (rc, out) = run_in(
         &s,
         &wt,
