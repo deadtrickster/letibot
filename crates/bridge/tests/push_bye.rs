@@ -1,5 +1,6 @@
 //! The channel is silent about a connection closed by a stop the bridge asked for, and about
-//! nothing else: a daemon that goes away under a session nobody stopped is still a failure.
+//! nothing else: a daemon that goes away under a session nobody stopped is still a failure. Its
+//! watcher then ends rather than looping on a head that answers every wait at once.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -80,4 +81,24 @@ fn a_daemon_that_goes_away_without_being_asked_is_still_a_failure() {
             said.push(note);
         }
     }
+
+    // A closed head answers every `wait` at once, so a watcher that outlives the `Bye` spins a
+    // core for as long as the bridge holds the head. `head` is still held here, as a bridge would.
+    while watchers() > 0 {
+        assert!(
+            Instant::now() < deadline,
+            "the push watcher outlived the daemon's Bye"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    drop(head);
+}
+
+/// This process's push watcher threads, by the name `push::watch` gives them (cut to 15 bytes).
+fn watchers() -> usize {
+    std::fs::read_dir("/proc/self/task")
+        .expect("procfs")
+        .filter_map(|t| std::fs::read_to_string(t.ok()?.path().join("comm")).ok())
+        .filter(|comm| comm.trim_end() == "leticode-push-s")
+        .count()
 }

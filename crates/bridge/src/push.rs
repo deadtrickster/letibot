@@ -313,11 +313,14 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>, rules: Arc<Rules>) {
         None => return,
     };
     let mut last_limit = 0u64;
+    let mut last_key: Option<String> = None;
     loop {
         let Some(head) = weak.upgrade() else {
             return;
         };
-        let attention = head.wait(Instant::now() + TICK);
+        let deadline = Instant::now() + TICK;
+        let attention = head.wait(deadline);
+        let over = head.is_over();
         let word = head.word();
         let (jobs, rows) = head.open_work();
         let page = head.events(job_cursor, PER_PASS);
@@ -330,6 +333,7 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>, rules: Arc<Rules>) {
             .map(|n| limit_event(&head, &n));
         last_limit = limits;
         let event = event(&head, &attention);
+        let key = event.as_ref().map(|(key, _)| key.clone());
         // What this session is parked on, read before the head is dropped: a job's end is news to
         // a package sitting on it, and to nobody else (see the ring loop below).
         let parked = head.parked_on_jobs();
@@ -373,7 +377,36 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>, rules: Arc<Rules>) {
         {
             outbox.record(key, note);
         }
+        // A closed head answers `wait` at once forever, and so does an ask nobody answers: the
+        // first ends the watcher, the second rests out the tick instead of re-deciding it.
+        if over {
+            return;
+        }
+        if let Some(rest) = rest(
+            last_key.as_deref(),
+            key.as_deref(),
+            deadline,
+            Instant::now(),
+        ) {
+            std::thread::sleep(rest);
+        }
+        last_key = key;
     }
+}
+
+/// How long a pass that learned nothing new sleeps: the rest of its tick when `wait` answered
+/// early with the key the previous pass already had, and nothing otherwise.
+pub fn rest(
+    last: Option<&str>,
+    key: Option<&str>,
+    deadline: Instant,
+    now: Instant,
+) -> Option<Duration> {
+    let key = key?;
+    if last != Some(key) || now >= deadline {
+        return None;
+    }
+    Some(deadline - now)
 }
 
 /// A limit's channel notification: `limited until X`, `switched to Y`, or the daemon's own words
@@ -941,6 +974,22 @@ mod tests {
             out.push(v["params"]["content"].as_str().unwrap_or("").to_string());
         }
         out
+    }
+
+    #[test]
+    fn a_repeated_early_answer_rests_out_its_tick() {
+        let now = Instant::now();
+        let deadline = now + TICK;
+        // The ask nobody answers: `wait` returns it at once on every pass.
+        assert_eq!(
+            rest(Some("ask:7"), Some("ask:7"), deadline, now),
+            Some(TICK)
+        );
+        // News, a timeout, or a pass that already used its tick goes straight on.
+        assert_eq!(rest(Some("ask:7"), Some("ask:8"), deadline, now), None);
+        assert_eq!(rest(None, Some("ask:7"), deadline, now), None);
+        assert_eq!(rest(Some("ask:7"), None, deadline, now), None);
+        assert_eq!(rest(Some("ask:7"), Some("ask:7"), deadline, deadline), None);
     }
 
     #[test]

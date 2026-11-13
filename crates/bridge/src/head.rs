@@ -1842,6 +1842,13 @@ impl Head {
             .collect()
     }
 
+    /// Whether nothing more can arrive on this head: the daemon said `Bye`, or its boot failed.
+    /// [`Head::wait`] answers such a head at once, so a caller that loops on it has to stop.
+    pub fn is_over(&self) -> bool {
+        let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        g.closed.is_some() || g.boot_failed.is_some()
+    }
+
     /// Whether this bridge asked the daemon to close this session (`leticode_stop`). The `Bye` that
     /// follows the close is that act arriving, not a failure of the session's to report.
     pub fn stopped_by_bridge(&self) -> bool {
