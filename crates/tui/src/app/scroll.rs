@@ -390,7 +390,6 @@ impl App {
                             .map(String::as_str)
                             .map(|t| echo_mark(&self.unconfirmed, t, true))
                             .unwrap_or(QUEUED),
-                        echo_open: self.echo_open,
                         // See the forward walk: an open run IS the rung lifted for its rows.
                         vis: if open_run {
                             Visibility::lifted()
@@ -545,7 +544,7 @@ impl App {
         self.hist_upto.saturating_sub(self.hist_floor)
     }
 
-    /// The row `ctrl-t` opens, asked of the whole head, and the answer depends on the rung: under
+    /// The row `ctrl-v` opens, asked of the whole head, and the answer depends on the rung: under
     /// `conversation` the long rows are inside a run that draws as one marker line, so what there is to open
     /// is the run, and the newest one. One function, so the chord and the seam cannot disagree.
     pub(crate) fn newest_openable(&self) -> Option<String> {
@@ -602,6 +601,74 @@ impl App {
         self.payload_sel = Some(id);
         self.payload_page = 0;
         self.payload_max.set(usize::MAX);
+    }
+
+    /// Take the window down, and the lift that named it with it: what Esc, `ctrl-v`, a click on the open
+    /// row and every path that loses the rows behind a window ask. One act, so nothing is left open that
+    /// no row is drawn under - which is a key that pages a window nothing shows.
+    pub(crate) fn close_payload_window(&mut self) {
+        // The lift first, because `drop_lift` reads `payload_sel` to decide whether the panel it closes is
+        // this window's, and a panel left standing is a lift with no key that could reach it.
+        self.drop_lift();
+        self.payload_sel = None;
+        self.payload_page = 0;
+        self.invalidate_history();
+    }
+
+    /// The row the frame drew at terminal row `y`, by id - the pointer's answer to *which row is this*.
+    /// Read off the last frame's spans, the rule [`App::run_row_at`] follows, so a click and the rows on
+    /// the screen cannot disagree.
+    pub(crate) fn item_at(&self, y: u16) -> Option<&str> {
+        let line = self.line_at(y)?;
+        let i = self
+            .spans
+            .partition_point(|sp| sp.at <= line)
+            .checked_sub(1)?;
+        self.items
+            .get(self.spans[i].row)
+            .map(|it| it.item_id.as_str())
+    }
+
+    /// The body line drawn at terminal row `y`, as the last frame numbered it. The click handlers ask
+    /// this to tell a row's header from its own lines; the frame's `view_top` answers where the window
+    /// starts, which is the only honest source between two frames.
+    pub(crate) fn line_at(&self, y: u16) -> Option<usize> {
+        let top = self
+            .hits
+            .iter()
+            .find(|h| h.target == Target::Conversation)
+            .map(|h| h.rect.y)?;
+        let line = usize::from(y).checked_sub(top).map(|r| self.view_top + r)?;
+        let i = self
+            .spans
+            .partition_point(|sp| sp.at <= line)
+            .checked_sub(1)?;
+        let sp = self.spans[i];
+        (line < sp.at + sp.lines).then_some(line)
+    }
+
+    /// Put the row `id` on the screen: hold the viewport at its first line, which is what a key that opens
+    /// a row owes the reader when the row is above the last frame's window. A row already in that window
+    /// is left where it is, and so is one nothing has been drawn for - the frame that follows follows the
+    /// stream, and holding on a guess would park a reader who never scrolled.
+    pub(crate) fn reveal_row(&mut self, id: &str) {
+        let Some(ordinal) = self.items.iter().position(|it| it.item_id == id) else {
+            return;
+        };
+        let on_screen = self.view_room > 0
+            && self.span_for(id).is_some_and(|sp| {
+                sp.at + sp.lines > self.view_top && sp.at < self.view_top + self.view_room
+            });
+        if on_screen || self.view_room == 0 {
+            return;
+        }
+        self.fill_to_row(ordinal);
+        self.anchor = Some(Held {
+            item_id: id.to_string(),
+            ordinal,
+            into: 0,
+        });
+        self.invalidate_history();
     }
 
     /// Put the clicked line at the top of the window: it writes [`App::payload_page`], the field the arrows
@@ -701,19 +768,16 @@ impl App {
         live_work(self.turn.as_ref(), &self.items, &self.cfg, superseded)
     }
 
-    /// The newest transcript row with a payload to page: a tool result with more than a line or two. Newest
-    /// because that is the row the reader is looking at, and the only one a head with no cursor can address;
-    /// every other long row's seam names `/t`. `None` means the chord opens nothing.
+    /// The newest transcript row with a payload to page: the row whose seam offers the key. Newest
+    /// because that is the row the reader is looking at, and the only one a head with no cursor can
+    /// address; every other long row's seam names `/t`. `None` means the chord opens nothing.
     pub(crate) fn newest_payload_row(&self) -> Option<String> {
+        let budget = self.cfg.budget.body_lines;
         self.items
             .iter()
             .rev()
-            .find_map(|it| match it.item.as_ref() {
-                Some(TranscriptItem::ToolResult { payload, .. }) if payload.lines().count() > 2 => {
-                    Some(it.item_id.clone())
-                }
-                _ => None,
-            })
+            .find(|it| crate::ui::folded_rest(it, budget) > 0)
+            .map(|it| it.item_id.clone())
     }
 
     /// Scroll back by `by` lines, rendering whatever that needs: the fill happens before the scroll is
@@ -844,6 +908,12 @@ impl App {
     /// Let go of the `n` oldest rows, and of everything drawn for them. Every row this head keeps is
     /// still one contiguous run, so the page a reader asks for next is `items_base`.
     fn drop_rows_above(&mut self, n: usize, room: usize) {
+        // The window may be open on one of the rows about to go. A window whose row this head no
+        // longer holds is one the arrows page with nothing drawn under it, so it comes down here
+        // rather than on the next key.
+        if self.window_row_in(0, n) {
+            self.close_payload_window();
+        }
         // The reader's own row, when the trim takes it: the anchor names a row that is about to be
         // gone, and the nearest surviving one is the oldest this head keeps.
         let held_gone = self.anchor.as_ref().is_some_and(|h| h.ordinal < n);
@@ -889,12 +959,30 @@ impl App {
         self.fill_backward_until(room + TAIL_SLACK, stop);
     }
 
+    /// Whether the open window's row is one of `from..to` - the rows a trim is about to let go, so
+    /// the window can come down with them. `false` for a lift (which names a run) and for a window
+    /// on a row this head does not hold.
+    fn window_row_in(&self, from: usize, to: usize) -> bool {
+        let Some(id) = self.payload_sel.as_deref().filter(|id| !id.is_empty()) else {
+            return false;
+        };
+        self.items
+            .iter()
+            .position(|it| it.item_id == id)
+            .is_some_and(|at| at >= from && at < to)
+    }
+
     /// The rows below the window, let go: nothing this head draws is of rows it no longer holds,
     /// so the history is rendered again from the end back to the reader's row.
     fn drop_rows_below(&mut self, m: usize, room: usize) {
         let keep = self.items.len().saturating_sub(m);
         if keep == 0 {
             return;
+        }
+        // The same rule at the other end: the rows below the window go, and a window on one of them
+        // goes with them.
+        if self.window_row_in(keep, self.items.len()) {
+            self.close_payload_window();
         }
         self.items.truncate(keep);
         self.items_below += m;

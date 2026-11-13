@@ -1114,9 +1114,6 @@ pub struct App {
     /// after a snapshot the head cannot tell *still coming* from *replaced by a fork*. So the echo
     /// says `unconfirmed` and retires when a row lands. See [`App::retire_pending`].
     pub(crate) unconfirmed: Vec<String>,
-    /// Whether an echo is drawn in full or as its elided headline. Folded by default and flipped
-    /// by `/t`: one key for one idea, so a reader who wants the long rows shown whole asks once.
-    pub(crate) echo_open: bool,
     /// A stop this head asked for and has not finished: `Some` from the frame going out until the
     /// daemon is gone or the deadline passes. While it is set and unresolved [`App::should_quit`]
     /// is false - the head does not exit until it can say the daemon has gone.
@@ -1620,7 +1617,6 @@ impl App {
             view_top: 0,
             view_room: 0,
             head_run_seq: 0,
-            echo_open: false,
             stopping: None,
             rooms: rooms::RoomsView::default(),
             nav: chat_nav::Nav::default(),

@@ -116,6 +116,12 @@ impl App {
             self.flip_run_tools();
             return ControlFlow::Break(None);
         }
+        // And a click on a settled row is the pointer's `ctrl-v` on THAT row: the rest of a tool
+        // result opens, and a second click closes it. The keyboard has no cursor, so it opens the
+        // newest row a seam offers; the pointer says which row it means.
+        if target == Target::Conversation && stop.is_none() && self.toggle_row_window(y) {
+            return ControlFlow::Break(None);
+        }
         self.click_on(target, stop)
     }
 

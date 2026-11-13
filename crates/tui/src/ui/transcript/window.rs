@@ -92,7 +92,7 @@ impl App {
         // frame's half of [`App::render_held`], which is where the bootstrap lives now so a scroll key between
         // frames can run the same two steps.
         self.render_held(room);
-        // The one row `ctrl-t` can act on, read once here rather than per row inside
+        // The one row `ctrl-v` can act on, read once here rather than per row inside
         // the walk below - and before the walk's own borrow of `self`, which is why it is
         // not beside the rest of the tail's inputs. See [`ItemCtx::payload_newest`].
         let newest_payload = self.newest_payload_row();
@@ -361,7 +361,7 @@ impl App {
             // `hist_lines` has its blank below it, and an echo's blank in front put it one row higher than the row
             // that replaces it.
             let mut taken: Vec<String> = Vec::new();
-            let open = self.echo_open;
+            let open = tool.is_open();
             let unconfirmed = self.unconfirmed.clone();
             // What the daemon is busy with instead, when it has said: a named fill, or a fold
             // (`CompactionProgress`), which holds the worker the same way.
@@ -768,7 +768,6 @@ impl App {
             screen_rows,
             bound_prompts,
             unconfirmed,
-            echo_open,
             spans,
             note_cards,
             visibility,
@@ -781,7 +780,6 @@ impl App {
             ..
         } = self;
         let diff_split = *diff_split;
-        let echo_open = *echo_open;
         // The cards layer, built here because the destructure below leaves `self` apart: a row's card
         // is asked of the SAME stack the picker asks, so a layer installed is a layer answering every
         // row of the conversation too. Borrowed per row - the ask is cached inside it by row id.
@@ -791,7 +789,7 @@ impl App {
         // re-deriving them from `items` per row is what made a long hidden run
         // quadratic (R123.3).
         let runs = RunIndex::of(items, *visibility, bound_prompts, think);
-        // The run `ctrl-t` opens, computed once per frame: the seam names the chord only on the run it acts on,
+        // The run `ctrl-v` opens, computed once per frame: the seam names the chord only on the run it acts on,
         // and asking per row would be a scan of the transcript for every row drawn.
         let newest_run = newest_unseen_run(&runs, live);
         // Where the window ends. The ring's own end while it has rows let go, and the session's
@@ -956,7 +954,6 @@ impl App {
                                 .map(String::as_str)
                                 .map(|t| echo_mark(unconfirmed, t, true))
                                 .unwrap_or(QUEUED),
-                            echo_open,
                             // An open run lifts the rung for its own rows, which is what "it opens" means: the
                             // reader sees the rows the rung was hiding with their own headlines and diffs,
                             // rather than a second rendering of them.

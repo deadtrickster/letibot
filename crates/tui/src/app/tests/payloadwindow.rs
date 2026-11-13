@@ -308,11 +308,52 @@ fn a_click_on_a_line_reads_the_window_from_that_line() {
     );
 }
 
-/// A click that is not on a line of the payload is not a click on the window - the header, the
-/// `↑ N more lines above` seam and the `… +N lines` seam all act on nothing, so a reader pointing
-/// at *"61 elided"* cannot move the window by accident.
+/// A click on a settled row is the pointer's `ctrl-v` on THAT row: the keyboard has no cursor and
+/// opens the newest row a seam offers, and the pointer says which row it means. A second click on
+/// the row's header puts the window away again.
 #[test]
-fn a_click_on_the_header_or_a_seam_acts_on_nothing() {
+fn a_click_on_a_settled_row_toggles_it() {
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::NORMAL);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    // Two long rows, so the newest is not the only one a reader could mean.
+    result(&mut a, 1, "s.t1", "c0", 6);
+    result(&mut a, 9, "s.t2", "c1", 6);
+    let screen = a.screen(100, 30).join("\n");
+    let older = row_of(&screen, "LINE-0");
+    assert_eq!(
+        a.newest_payload_row().as_deref(),
+        Some("s.t2"),
+        "the premise: the key would open the newer row"
+    );
+
+    a.key(Key::Click { x: 6, y: older });
+    assert_eq!(
+        a.payload_sel.as_deref(),
+        Some("s.t1"),
+        "a click did not open the row it landed on"
+    );
+
+    // The same row again: the header is the toggle, and the window's own lines are the window's.
+    let screen = a.screen(100, 30).join("\n");
+    let header = row_of(&screen, "6 lines");
+    a.key(Key::Click { x: 6, y: header });
+    assert!(
+        !a.payload_window_open(),
+        "a second click on the row did not put its window away"
+    );
+}
+
+/// A click that is not on a line of the payload is not a click on the window: the `↑ N more lines
+/// above` and `… +N lines` seams act on nothing, so a reader pointing at *"61 elided"* cannot move
+/// the window by accident. The row's HEADER is the row's own, and a click there is the pointer's
+/// `ctrl-v` - it closes the window it opened, the second half of `a_click_on_a_settled_row_toggles_it`.
+#[test]
+fn a_click_on_a_seam_acts_on_nothing() {
     let mut a = long_result(97);
     a.key(Key::CtrlV);
     a.screen(100, 47);
@@ -322,7 +363,6 @@ fn a_click_on_the_header_or_a_seam_acts_on_nothing() {
     assert_eq!(page, 10, "the premise: a page in, so both seams are drawn");
 
     for (what, y) in [
-        ("the header", row_of(&screen, "97 lines")),
         ("the seam above", row_of(&screen, "more lines above")),
         ("the seam below", row_of(&screen, "pages down")),
     ] {
@@ -333,6 +373,14 @@ fn a_click_on_the_header_or_a_seam_acts_on_nothing() {
             a.payload_page
         );
     }
+
+    // And the header is the row's, so a click there puts the window away.
+    let y = row_of(&screen, "97 lines");
+    a.key(Key::Click { x: 10, y });
+    assert!(
+        !a.payload_window_open(),
+        "a click on the open row's header did not close its window"
+    );
 }
 
 /// A drag over the window selects its cells and copies them - the pointer's own selection,
@@ -428,4 +476,187 @@ fn the_quit_card_takes_the_arrows_and_esc_from_an_open_window() {
         a.quit_sel, 0,
         "at its own first row, not the one meant a moment ago"
     );
+}
+
+/// The seam names the verb's own state: with the fold already open, `/t` takes the rest away, so a
+/// row that still elides has to say `folds` - it said `unfolds it`, which the same press undid.
+#[test]
+fn the_seam_names_the_fold_it_is_in() {
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::NORMAL);
+    a.cfg.budget.body_lines = 4;
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    // Two rows, because only the NEWEST names `ctrl-v`: the older one is the seam's own sentence.
+    result(&mut a, 1, "s.t1", "c0", 8);
+    result(&mut a, 9, "s.t2", "c1", 8);
+    let folded = a.screen(100, 30).join("\n");
+    assert!(
+        folded.matches("/t unfolds it").count() >= 1,
+        "the premise: a folded row offers the verb:\n{folded}"
+    );
+
+    assert_eq!(a.command("t"), None);
+    assert!(a.tools.is_open(), "the premise: `/t` unfolded them");
+    let open = a.screen(100, 30).join("\n");
+    assert!(
+        !open.contains("/t unfolds it"),
+        "an open fold still tells the reader `/t` unfolds it:\n{open}"
+    );
+    assert!(
+        open.contains("lines · /t folds it"),
+        "the elided row names no key at all:\n{open}"
+    );
+}
+
+/// The seam's own count is what the key acts on. A folded row keeps one line, so a two-line payload's
+/// marker says `… +1 lines` - and the row that says `ctrl-v opens it` is the row the key opens. The
+/// key used to want three lines, so the row marked `+1 lines` was one it refused.
+#[test]
+fn the_row_marked_one_line_opens_on_the_key() {
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::NORMAL);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    result(&mut a, 1, "s.t1", "c0", 2);
+    let screen = a.screen(100, 30).join("\n");
+    assert!(
+        screen.contains("… +1 lines · ctrl-v opens it"),
+        "the premise: the marker offers this row to the key:\n{screen}"
+    );
+
+    a.key(Key::CtrlV);
+    let screen = a.screen(100, 30).join("\n");
+    assert!(
+        a.payload_window_open(),
+        "the key opened no window:\n{screen}"
+    );
+    assert_eq!(
+        a.payload_sel.as_deref(),
+        Some("s.t1"),
+        "the key opened a row other than the marked one:\n{screen}"
+    );
+    assert_eq!(
+        drawn(&screen),
+        vec![0, 1],
+        "the window does not draw the one line the marker counted:\n{screen}"
+    );
+}
+
+/// `/t` twice is where it started: one fold, so the verb and its undo are the same state rather than
+/// two switches that can be left disagreeing - a queued echo's headline reads it too.
+#[test]
+fn t_twice_returns_to_the_state_it_started_in() {
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::NORMAL);
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    result(&mut a, 1, "s.t1", "c0", 6);
+    // And a prompt the daemon has not taken: its echo is one elided headline, and `/t` owns it too.
+    a.apply(ServerFrame::Event(env(3, testing::turn_started("t1"))));
+    typed(
+        &mut a,
+        "a question with more words than one line holds, twice over",
+    );
+    a.key(Key::Enter);
+    // The verb says a sentence, and a notice is not the fold's state.
+    a.clear_notice();
+    let before = a.screen(100, 30).join("\n");
+    let fold = a.tools;
+
+    assert_eq!(a.command("t"), None);
+    a.clear_notice();
+    let once = a.screen(100, 30).join("\n");
+    assert_ne!(once, before, "the premise: /t moved what is drawn");
+
+    assert_eq!(a.command("t"), None);
+    a.clear_notice();
+    let twice = a.screen(100, 30).join("\n");
+    assert_eq!(a.tools, fold, "/t twice left the fold somewhere else");
+    assert_eq!(
+        twice, before,
+        "/t twice did not put the screen back: one switch, moved and moved back"
+    );
+}
+
+/// The window is a row's, so it goes with the row: when a trim lets the row under an open window go,
+/// the window comes down - otherwise the arrows page a window nothing is drawn under and the
+/// transcript stops scrolling.
+#[test]
+fn after_a_trim_took_the_open_rows_row_the_arrows_scroll_the_transcript() {
+    let mut a = app();
+    a.visibility = Visibility::of(Profile::NORMAL);
+    a.walk_limit = 1;
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", true)],
+        Hub::new("s").snapshot(),
+    ));
+    let filler = "row of the conversation, long enough to cost its bytes\n";
+    for i in 1..20u64 {
+        shell_row(
+            &mut a,
+            i * 2 + 1,
+            &format!("s.t{i}"),
+            "user",
+            operator_row(&format!("row {i} {filler}{}\n", "filler ".repeat(40))),
+        );
+    }
+    // The long result now, so `ctrl-v` opens it before the window closes over it.
+    result(&mut a, 100, "s.t0", "c0", 40);
+    a.key(Key::CtrlV);
+    assert!(
+        a.payload_window_open(),
+        "the premise: a window is open (items {} sel {:?})",
+        a.items.len(),
+        a.payload_sel
+    );
+
+    // Now the bound bites: rows above the reader go, and the window's row is one of them.
+    a.held_limit = 4 * 1024;
+    for i in 40..80u64 {
+        shell_row(
+            &mut a,
+            i * 2 + 1,
+            &format!("s.t{i}"),
+            "user",
+            operator_row(&format!("row {i} {filler}{}\n", "filler ".repeat(40))),
+        );
+    }
+    let _ = a.screen(100, 40);
+    assert!(
+        !a.items.iter().any(|it| it.item_id == "s.t0"),
+        "the premise: the trim did not let the row go"
+    );
+    assert!(
+        !a.payload_window_open(),
+        "the window is still open over a row this head no longer holds"
+    );
+
+    // And the page keys and the arrows are the transcript's again: an open window would have paged
+    // itself on any of them.
+    a.key(Key::PageUp);
+    let _ = a.screen(100, 40);
+    assert!(
+        !a.following(),
+        "page up paged a window that is not open instead of scrolling the transcript"
+    );
+    let top = a.view_top;
+    a.key(Key::Up);
+    let _ = a.screen(100, 40);
+    assert!(
+        a.view_top < top,
+        "↑ did not scroll the transcript (top {top} → {})",
+        a.view_top
+    );
+    assert_eq!(a.payload_page, 0, "a closed window kept a page");
 }

@@ -26,9 +26,9 @@ pub(crate) const CONVERSATION: &[Chord] = &[
     Chord::Surface(Surface::Subagents, "subagents"),
     Chord::Show(Show::Thinking),
     // `ctrl-v` and `/t` are adjacent on purpose: they are the two things a reader
-    // confuses, so the bar states both - one result against all of them. A clipboard picture
-    // is what `ctrl-v` attaches first, so the bar says so.
-    Chord::Says("ctrl-v", "picture or newest result"),
+    // confuses, so the bar states both - one result against all of them. The clipboard's
+    // picture is `cmd-v`'s and is no longer this key's first step, so the bar does not say so.
+    Chord::Says("ctrl-v", "newest result"),
     Chord::Says("/t", "all tool rows"),
     // A notice line's details from the keyboard: the click's other half.
     Chord::Says("alt-n", "newest notice"),

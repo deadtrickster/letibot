@@ -200,16 +200,11 @@ impl App {
 
     /// The one writer of the two folds - so a switch moved by a chord, by `/t`, by the
     /// config pane or by a profile all land in the same field, and none of them can move the
-    /// other's.
+    /// other's. An echo's headline is one of the long rows `/t` owns, so it reads this fold
+    /// rather than keeping a switch of its own that only some of the writers knew to move.
     pub(crate) fn set_fold(&mut self, show: Show, fold: Fold) {
         match show {
-            Show::Tools => {
-                self.tools = fold;
-                // `/t` moves one key for the long rows, and an echo's headline is one of
-                // them, so the two travel together here as they did at every other
-                // writing of this field.
-                self.echo_open = fold.is_open();
-            }
+            Show::Tools => self.tools = fold,
             Show::Thinking => self.reasoning = fold,
             Show::Edits | Show::System | Show::RawCalls => {}
         }
@@ -537,15 +532,14 @@ impl App {
                 // others do not.
                 self.flip_thinking()
             }
-            // `/tools` asks what this conversation can call. It is not a second spelling of ctrl-t, which
+            // `/tools` asks what this conversation can call. It is not a second spelling of `/t`, which
             // already folds tool output and is the key anybody uses for it.
             // With a run open it is that run's rows the verb unfolds, as the rows' own seams say.
             "t" if self.flip_run_tools() => None,
             "t" => {
-                self.tools = self.tools.flip();
-                // One key for the long rows, and that includes an echo: a queued prompt is one elided headline and
-                // this opens it, since a second fold chord for a second kind of row is a second thing to learn.
-                self.echo_open = !self.echo_open;
+                // Through the one writer, so this verb, the config pane and a profile cannot end up
+                // saying two different things about the tool rows.
+                self.set_fold(Show::Tools, self.tools.flip());
                 self.refold();
                 None
             }

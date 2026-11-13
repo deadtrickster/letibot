@@ -574,7 +574,9 @@ impl App {
                         self.flip_thinking();
                     }
                     HeadSetting::Tools => {
-                        self.tools = self.tools.flip();
+                        // The one writer, so the pane's row and `/t` cannot disagree - the second field an
+                        // echo's headline used to keep was exactly what let them.
+                        self.set_fold(Show::Tools, self.tools.flip());
                         self.invalidate_history();
                     }
                     HeadSetting::RawCalls => {

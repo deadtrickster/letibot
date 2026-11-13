@@ -534,10 +534,7 @@ impl crate::app::App {
         }
         // An empty paste is the terminal's way of saying “no text”. A clipboard holding a
         // picture is exactly that case, and it is the one the operator's question was about.
-        if pasted.trim().is_empty() && self.attach_from_clipboard() {
-            return true;
-        }
-        false
+        pasted.trim().is_empty() && self.attach_from_clipboard()
     }
 
     /// Take the picture on the clipboard into the composer, if there is one. `true` means something

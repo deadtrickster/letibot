@@ -145,6 +145,42 @@ impl App {
         true
     }
 
+    /// The pointer's `ctrl-v`: open the payload window on the row drawn at terminal row `y`, or close
+    /// the one already open on it. `false` when that row has nothing under a seam, so the click goes on
+    /// to whatever else the row is. Read off the last frame (`App::item_at`), the rule a marker click keeps.
+    pub(crate) fn toggle_row_window(&mut self, y: u16) -> bool {
+        let Some(id) = self.item_at(y).map(str::to_string) else {
+            return false;
+        };
+        if self.payload_window_open() && self.payload_sel.as_deref() == Some(id.as_str()) {
+            // The window's own lines are the window's: a payload line pages the reader and a seam acts
+            // on nothing, so the row's HEADER is the only line here that is the toggle.
+            let header = self
+                .span_for(&id)
+                .zip(self.line_at(y))
+                .is_some_and(|(sp, line)| sp.at == line);
+            if header {
+                self.close_payload_window();
+            }
+            return header;
+        }
+        let budget = self.cfg.budget.body_lines;
+        let rest = self
+            .items
+            .iter()
+            .find(|it| it.item_id == id)
+            .is_some_and(|it| crate::ui::folded_rest(it, budget) > 0);
+        if !rest {
+            return false;
+        }
+        // The row is under the pointer, so nothing is scrolled: the reader is looking at it. The lift goes
+        // first, because it is read against the address this is about to move.
+        self.drop_lift();
+        self.open_payload_window(id);
+        self.invalidate_history();
+        true
+    }
+
     /// Is the screen row `y` inside the open run's rows, as the last frame drew them.
     pub(crate) fn run_row_at(&self, y: u16) -> bool {
         let Some(id) = self.payload_sel.as_deref().filter(|_| self.run_is_open()) else {

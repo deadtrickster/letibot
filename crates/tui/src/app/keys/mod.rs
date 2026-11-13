@@ -924,6 +924,9 @@ pub enum Key {
     /// the whole-conversation unfold is `/t`. `v` for view is the mnemonic the byte never had, and it moved here off
     /// `ctrl-t`, which is the todos pane now.
     CtrlV,
+    /// Attach the picture on the clipboard to the composer (`cmd-v`). Its own key because it was
+    /// `ctrl-v`'s first step, and one press cannot mean *attach a screenshot* and *open the newest result*.
+    PasteImage,
     /// Show or hide the raw, unparsed text of tool calls.
     CtrlX,
     /// Repaint from scratch.
@@ -1037,6 +1040,7 @@ impl Key {
             Key::CtrlR
             | Key::CtrlT
             | Key::CtrlV
+            | Key::PasteImage
             | Key::CtrlX
             | Key::CtrlL
             | Key::CtrlS

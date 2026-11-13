@@ -26,9 +26,9 @@ fn key(k: KeyEvent) -> Option<Key> {
         // the TERMINAL copies the selection and this head's drag release copies it too
         // (`App::copy_selection`), so acting here would be a second copy of one fact.
         KeyCode::Char('c') if m == Mods::SUPER => return None,
-        // ⌘V: the clipboard's picture, through the door ctrl-v already opens - the clipboard
-        // first, unless a payload window is open (`App::attach_from_clipboard`).
-        KeyCode::Char('v') if m == Mods::SUPER => Key::CtrlV,
+        // ⌘V: the clipboard's picture, and nothing else - `ctrl-v` is the reader's window, and a chord
+        // that attached a screenshot on its way to opening a row was two acts on one press.
+        KeyCode::Char('v') if m == Mods::SUPER => Key::PasteImage,
         // ⌘Z undoes and ⌘⇧Z redoes, the chords everybody's hands already know. The shifted
         // spelling comes either as `z` with shift or as `Z` with it, depending on the terminal.
         KeyCode::Char('z') if m == Mods::SUPER => Key::Undo,
@@ -556,8 +556,8 @@ mod tests {
             ))]
         );
         assert_eq!(decode(b"\x1b[99;13u"), Vec::<Key>::new());
-        // ⌘V asks the clipboard for a picture - the door ctrl-v opens.
-        assert_eq!(decode(b"\x1b[118;9u"), vec![Key::CtrlV]);
+        // ⌘V asks the clipboard for a picture, on the key of its own - not `ctrl-v`'s.
+        assert_eq!(decode(b"\x1b[118;9u"), vec![Key::PasteImage]);
         // ⌘Z undoes, ⌘⇧Z redoes, in either spelling of the shifted letter.
         assert_eq!(decode(b"\x1b[122;9u"), vec![Key::Undo]);
         assert_eq!(decode(b"\x1b[122;10u"), vec![Key::Redo]);

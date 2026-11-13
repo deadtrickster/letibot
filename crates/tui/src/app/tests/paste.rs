@@ -43,11 +43,12 @@ fn a_picture_with_clipboard(tag: &str) -> App {
     a
 }
 
-/// Ctrl-V takes the picture off the clipboard and puts a chip in the composer.
+/// `cmd-v` takes the picture off the clipboard and puts a chip in the composer - the key of its own,
+/// because `ctrl-v` is the reader's window and one press cannot mean both.
 #[test]
-fn ctrl_v_with_an_image_on_the_clipboard_makes_a_chip() {
+fn the_paste_key_takes_the_picture_off_the_clipboard() {
     let mut a = a_picture_with_clipboard("ctrl-v");
-    a.key(Key::CtrlV);
+    a.key(Key::PasteImage);
     let input = a.input().to_string();
     assert!(
         input.starts_with("[image 1 · png · "),
@@ -66,7 +67,7 @@ fn ctrl_v_with_an_image_on_the_clipboard_makes_a_chip() {
 }
 
 /// The terminal's paste key with an image arrives as an EMPTY bracketed paste - there is no
-/// text on the clipboard - and it is the same act as ctrl-v.
+/// text on the clipboard - and it is the same act as `cmd-v`.
 #[test]
 fn an_empty_paste_with_an_image_on_the_clipboard_makes_a_chip() {
     let mut a = a_picture_with_clipboard("empty-paste");
@@ -83,12 +84,12 @@ fn an_empty_paste_with_an_image_on_the_clipboard_makes_a_chip() {
 /// file is a picture, and these 33 bytes are not; saying so here is the only place in the chain
 /// where the person can paste again.
 #[test]
-fn ctrl_v_with_a_png_header_attaches_nothing_and_says_so() {
+fn the_paste_key_with_a_png_header_attaches_nothing_and_says_so() {
     let mut a = app();
     let where_it_would_go = dir("header-only");
     a.set_attachments_dir(where_it_would_go.clone());
     a.set_clipboard(FakeClipboard(Ok(Some(png_header_only()))));
-    a.key(Key::CtrlV);
+    a.key(Key::PasteImage);
     assert!(a.chips.is_empty(), "a header was chipped: {:?}", a.input());
     assert_eq!(a.input(), "", "something went into the composer");
     let said = a.notice.clone().unwrap_or_default();
@@ -126,11 +127,13 @@ fn a_test_build_cannot_name_the_operators_attachment_directory() {
     );
 }
 
-/// And with no picture on the clipboard ctrl-v is the window it always was - the regression
-/// this feature must not cause. `app()`'s fake holds nothing, which is the ordinary case.
+/// And ctrl-v is the window it always was, whatever the clipboard holds: the picture is `cmd-v`'s
+/// and the key that opens a row does not look at the clipboard at all - the regression this
+/// split must not reintroduce, in the direction that mattered (a screenshot chipped instead of a
+/// window opened).
 #[test]
-fn ctrl_v_with_no_image_still_opens_the_payload_window() {
-    let mut a = app();
+fn ctrl_v_with_an_image_on_the_clipboard_still_opens_the_payload_window() {
+    let mut a = a_picture_with_clipboard("ctrl-v-window");
     a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
     let long: String = (0..40).map(|i| format!("line {i}\n")).collect();
     bang_rows(&mut a, 2, "i1", "! cat the-log", &long);
@@ -139,6 +142,11 @@ fn ctrl_v_with_no_image_still_opens_the_payload_window() {
     assert!(
         a.payload_sel.is_some(),
         "the key stopped opening a long result's window"
+    );
+    assert!(
+        a.chips.is_empty(),
+        "ctrl-v attached a picture instead of opening the row: {:?}",
+        a.input()
     );
 }
 

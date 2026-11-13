@@ -27,35 +27,36 @@ impl App {
                 )));
             }
             Key::CtrlV => {
-                // A picture on the clipboard is what this key attaches, and that comes first -
-                // a silent `osascript` lookup is the whole cost when there is none. Not while a
-                // window is open: that press must close the result the reader opened.
-                if self.payload_sel.is_none() && self.attach_from_clipboard() {
-                    return ControlFlow::Break(None);
-                }
                 // One row, not a switch: a chord cannot be named by a per-row seam and mean the
                 // whole conversation, so the wall's unfold stays `/t`. Under `conversation` the
-                // same chord opens the run - `newest_openable` decides, so seam and chord agree.
+                // same chord opens the run - `newest_openable` decides, so seam and chord agree,
+                // and that function is the marker's own rule, so the row a seam offers is the row
+                // this opens.
                 if self.payload_sel.is_some() {
-                    self.payload_sel = None;
-                    self.payload_page = 0;
-                    // And the switch goes with the panel - `drop_lift` takes both, so a run
-                    // this key opened cannot outlive the window that named it. (The two fields
-                    // this replaces were cleared here by hand and one of them was missed.)
-                    self.drop_lift();
-                    // And an open run closes: it was opened by this key, so this key closes it,
-                    // or the second press would open a payload window inside a row that is only
-                    // on screen because the run is open.
-                    self.invalidate_history();
+                    // The switch goes with the panel, through the one door: a run this key opened
+                    // cannot outlive the window that named it.
+                    self.close_payload_window();
                 } else if let Some(id) = self.newest_openable() {
                     // The window opens at its top, through the one door - see
                     // [`App::open_payload_window`]. A new result never inherits the offset of the
-                    // one the reader was in.
-                    self.open_payload_window(id);
+                    // one the reader was in. And the row is put on the screen: a window opened on
+                    // a row above the viewport is one the reader cannot see, and the keys that
+                    // page it then move text nobody is looking at.
+                    self.open_payload_window(id.clone());
+                    self.reveal_row(&id);
                 }
                 // Not `refold`. That is the fold's own: it resets the scroll and
                 // announces the fold state, and neither happened here.
                 self.invalidate_history();
+                return ControlFlow::Break(None);
+            }
+            // The clipboard's picture has a key of its own. It shared `ctrl-v`'s first step, so a
+            // reader asking for the newest result silently attached a screenshot instead - one press
+            // standing for two acts, and the act nobody asked for made the paper trail.
+            Key::PasteImage => {
+                // Silent when there is no picture: `cmd-v` on text is the terminal's own paste, and
+                // this key has already answered for it.
+                self.attach_from_clipboard();
                 return ControlFlow::Break(None);
             }
             Key::CtrlL => {

@@ -210,7 +210,7 @@ fn every_says_literal_on_the_conversation_bar_does_what_it_says() {
                 let _ = b.notes_command("notes", "dismiss all");
                 assert_eq!(by_key, b.notice, "ctrl-n is not `/notes dismiss all`");
             }
-            ("ctrl-v", "picture or newest result") => {
+            ("ctrl-v", "newest result") => {
                 a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
                 let long: String = (0..40).map(|i| format!("line {i}\n")).collect();
                 a_result_row(&mut a, 2, "i1", &long);

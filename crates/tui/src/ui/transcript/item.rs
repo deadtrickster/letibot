@@ -119,8 +119,6 @@ pub(crate) struct ItemCtx<'a> {
     /// from `bound`: the same words are `queued` when a row is expected and `unconfirmed` when a
     /// snapshot already replaced the transcript without it, and only `App` knows which.
     pub(crate) echo_mark: &'a str,
-    /// Whether an echo is drawn in full or as its elided headline.
-    pub(crate) echo_open: bool,
     /// Which set of switches this row is drawn for. On the context because `item_lines` is a free
     /// function and the walk holds the app apart. A SET and not a rung: `keeps` is the ladder's
     /// answer with the edit card's exception, so the renderer and the run finder cannot disagree.
@@ -137,7 +135,7 @@ pub(crate) struct ItemCtx<'a> {
     /// forty-row budget put the top of a long result above a shorter terminal, unreachable while
     /// the window held the keys. `usize::MAX` where there is no screen to fit.
     pub(crate) window_rows: usize,
-    /// The one row `ctrl-t` can act on, or `None` when no result is long enough to have a rest.
+    /// The one row `ctrl-v` can act on, or `None` when no result is long enough to have a rest.
     /// There is no cursor in this head, so exactly one row can be addressed - the newest long
     /// result - and every other row's seam names `/t`, the verb that does reach an older payload.
     pub(crate) payload_newest: Option<&'a str>,
@@ -166,7 +164,6 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
         payload_newest,
         bound,
         echo_mark,
-        echo_open,
         vis,
         ..
     } = *ctx;
@@ -188,9 +185,11 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
         // id and a kind and no text, and the head already holds the words of its own prompt: drawn
         // in the row's own place, above the reply, keeping the echo's `queued` shape.
         if let Some(text) = bound {
+            // The echo is drawn whole or elided by the tool rows' own fold: `/t` is the one key
+            // for a long row, and a second switch for one kind of row is a second thing to learn.
             return (
                 RowClass::Speech,
-                queued_lines(text, cfg, echo_mark, echo_open),
+                queued_lines(text, cfg, echo_mark, ctx.tools.is_open()),
             );
         }
         // No echo and no body yet. One line where the row's word for itself is known - a tool result

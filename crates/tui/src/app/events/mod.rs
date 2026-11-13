@@ -95,6 +95,10 @@ impl App {
     /// Replace all state from a snapshot. This is the late-join path and the
     /// resync path; they are the same path, which is why resync is not special.
     pub(crate) fn load(&mut self, s: Snapshot) {
+        // The window is a row of a transcript that is being replaced, and a resync can carry other rows
+        // back: a window left open over an id the snapshot does not hold is one the arrows page with
+        // nothing drawn under it. Closed before the rows go, so the lift goes with it.
+        self.close_payload_window();
         // The held counts are not in a snapshot: the daemon says them again right
         // after one, so whatever this head last read is dropped rather than carried over.
         self.held = None;
@@ -630,6 +634,9 @@ impl App {
             .items
             .iter()
             .any(|r| r.item_id.starts_with(here.as_str()));
+        // The window names a row of the transcript that is going, and this head cannot tell yet whether
+        // its id comes back: coming down is the honest answer, and the row can be opened again.
+        self.close_payload_window();
         self.carry = Some(Carry {
             words: self.held_row_words(),
             line: self.held_line(),

@@ -489,7 +489,6 @@ fn item_rendered(
         workspace: "",
         bound: None,
         echo_mark: QUEUED,
-        echo_open: false,
         vis: Visibility::lifted(),
         diff_split: true,
         payload_view: None,

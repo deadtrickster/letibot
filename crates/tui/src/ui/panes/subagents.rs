@@ -102,7 +102,6 @@ impl App {
                 bound: None,
                 // Nothing here is this head's own echo, so the mark never appears.
                 echo_mark: QUEUED,
-                echo_open: false,
                 // The lifted set, because this pane exists to show a child's rows whole: it is
                 // the same "the rung lifted" the open run draws its own rows with, so a peeked
                 // session is not filtered by whatever profile the parent happens to be in.

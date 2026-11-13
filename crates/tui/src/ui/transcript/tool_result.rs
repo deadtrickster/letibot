@@ -149,6 +149,16 @@ pub(crate) fn tool_result_row_lines(
         cell.set(max);
     }
     let mut rendered = row_strings(&layout.lines, p);
+    // `… +N lines · /t unfolds it` is rano's, and it names the verb's word for the state the head
+    // holds: with the fold already open `/t` takes the rest AWAY, so a row that still elides has to
+    // say so. The clause is a word and not a count, so it is rewritten and nothing is re-measured.
+    if tools.is_open() {
+        for l in &mut rendered {
+            if l.contains("· /t unfolds it") {
+                *l = l.replace("· /t unfolds it", "· /t folds it");
+            }
+        }
+    }
     // A question's card is its header, folded: every other tool's folded card keeps its first payload
     // line and the seam, because there that line is the only place the result is on the screen - but
     // this one's result is the exchange, which is the `asked` line and the person's answer right below.
@@ -159,4 +169,39 @@ pub(crate) fn tool_result_row_lines(
         rendered.extend(rows);
     }
     (RowClass::Activity, step_in(rendered, ind))
+}
+
+/// The lines a FOLDED tool row leaves under its `… +N lines` seam: the marker's own count, and the rule
+/// that says which row `ctrl-v` opens. Zero for a fold that keeps everything - one line rides the header,
+/// an edit draws its diff, and a failed call with no sentence draws its whole body, `body_lines` of it.
+pub(crate) fn folded_rest(it: &SnapshotItem, body_lines: usize) -> usize {
+    let Some(TranscriptItem::ToolResult {
+        name,
+        payload,
+        outcome,
+        edits,
+        ..
+    }) = it.item.as_ref()
+    else {
+        return 0;
+    };
+    // The diff arm returns before the payload is laid out, so its own seam is the one this row
+    // draws: `+N diff rows`, and `/t` is already the only key that reaches them.
+    if !edits.is_empty() && rano::agent::card::Verb::of(name).is_an_edit() {
+        return 0;
+    }
+    let shown = display_outcome(outcome);
+    let kept = if !matches!(shown, rano::agent::outcome::Outcome::Ok) && shown.reason().is_none() {
+        body_lines
+    } else {
+        1
+    };
+    // Counted the way rano counts it: a line's envelope markers are the model's, and they are gone
+    // before either the count or the seam is worked out.
+    payload
+        .lines()
+        .map(rano::agent::text::clean_line)
+        .filter(|l| !rano::agent::text::is_envelope(l))
+        .count()
+        .saturating_sub(kept)
 }
