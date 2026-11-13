@@ -964,7 +964,9 @@ BUILD_STAMP  = { command = "date +%F" }              # run at open, OUTSIDE the 
 ```
 
 - **Keys.** `grants_ro`, `grants_rw` (lists of paths, `~/` or absolute), `hide` (denied after every
-grant), `secrets` (the named secrets it may carry) and `env`. An env value is a string (a
+grant), `docker` (`true` or `false`: the one capability that is not a path - a socket under the
+session's owner root, served by the labelling proxy, never the engine's own socket; see
+`docs/lifecycle.md` G6), `secrets` (the named secrets it may carry) and `env`. An env value is a string (a
 constant), `{ file = "…" }` or `{ command = "…" }`; a value a file or a command gives is a
 **secret**, masked in every slice the daemon reads back, because a value read from outside the box
 is exactly what masking exists for. A constant with a secret's name is refused (`env_refusal`); a
@@ -973,7 +975,7 @@ computed one may carry that name, and the loader variables (`LD_*`, `DYLD_*`, `P
 - **The rules are `[boundary]`'s**: `~/.ssh` and every fenced store are never granted by any
 spelling, a `.` or `..` must not climb, and the refusal names the file, the line and the key.
 - **Project files narrow, they never widen.** A project's `[perimeter.<name>]` may `hide` and may set
-  env constants; a `grants_ro`, `grants_rw` or `secrets` there is refused (`a_project_perimeter_may_not_grant`),
+  env constants; a `grants_ro`, `grants_rw`, `docker = true` or `secrets` there is refused (`a_project_perimeter_may_not_grant`),
   because a project file is one the sessions it governs can edit.
 - **Secrets are named, and only `github` exists**: `gh auth token` run by the daemon outside the box,
   plus a git credential helper that answers `password=$GH_TOKEN` on github.com and nothing else. The

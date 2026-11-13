@@ -1173,8 +1173,9 @@ fn perimeter_tables(
     text: &str,
     user: bool,
 ) -> Result<BTreeMap<String, PerimeterTable>, String> {
-    let keys = "the keys are `grants_ro`, `grants_rw`, `hide` (lists of paths), `secrets` (a list \
-                of names) and `env` (constants, or `{ file = ... }` / `{ command = ... }`)";
+    let keys = "the keys are `grants_ro`, `grants_rw`, `hide` (lists of paths), `docker` (true or \
+                false), `secrets` (a list of names) and `env` (constants, or `{ file = ... }` / \
+                `{ command = ... }`)";
     let Some(names) = value.as_table() else {
         return Err(format!(
             "{}:{}: [perimeter] is a table of named perimeters; {keys}",
@@ -1232,6 +1233,21 @@ fn perimeter_tables(
                 "grants_ro" => t.grants_ro = list("grants_ro")?,
                 "grants_rw" => t.grants_rw = list("grants_rw")?,
                 "hide" => t.hide = list("hide")?,
+                "docker" => {
+                    // A capability, not a path: the seat gets a socket under its owner root and
+                    // the engine's own socket stays out of its view (`docs/lifecycle.md` G6).
+                    let Some(on) = v.as_bool() else {
+                        return Err(format!(
+                            "{}:{}: [perimeter.{name}] docker is `true` or `false`",
+                            path.display(),
+                            line_of(text, "docker")
+                        ));
+                    };
+                    t.docker = Some(Entry {
+                        value: on,
+                        from: at("docker"),
+                    });
+                }
                 "secrets" => {
                     for e in list("secrets")? {
                         let Some(s) = Secret::parse(&e.value) else {
@@ -2616,6 +2632,18 @@ struct LeticodeConfigFile {
     #[serde(default)]
     #[allow(dead_code)]
     bridge: Option<toml::Value>,
+    /// The `[gc]` and `[docker]` tables, read by `letibot_tools::lifecycle::config` and
+    /// `letibot_tools::docker::config` from this same file: where owner roots live, the shared
+    /// build targets, and docker's engine, memory bound and opt-in prune policy. Accepted and not
+    /// interpreted for `[embeddings]`' reason - neither seats a tool nor sets a model - and because
+    /// this reader's `deny_unknown_fields` would otherwise make a box that wrote `[gc] root`
+    /// unopenable by its own daemon.
+    #[serde(default)]
+    #[allow(dead_code)]
+    gc: Option<toml::Value>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    docker: Option<toml::Value>,
     /// The `[notes]` table, see [`NotesKeys`].
     #[serde(default)]
     notes: Option<toml::Value>,
