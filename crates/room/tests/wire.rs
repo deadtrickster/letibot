@@ -72,6 +72,7 @@ fn every_frame_round_trips_through_json() {
         Request::Queue {
             tag: "ram".to_string(),
         },
+        Request::Item { item: 1 },
         Request::Holding { session: None },
         Request::Reminders,
         Request::Questions,

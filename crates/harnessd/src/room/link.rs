@@ -1336,6 +1336,9 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
             before: n("before"),
         },
         "queue" => Request::Queue { tag: s("tag") },
+        "item" => Request::Item {
+            item: n("item").ok_or("`item` needs `item`: the number a sentence gave")?,
+        },
         "answer" => Request::Reply {
             id,
             ask: n("ask").ok_or("`answer` needs `ask`: the number a row or `room asks` gave")?,
@@ -1364,8 +1367,8 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
         other => {
             return Err(format!(
                 "`{other}` is not a room verb — the verbs are post, claim, claim_item, beat, \
-                 waiting, done, abandon, dispute, rule, queue, holding, reminders, questions, say, \
-                 ask, read, invite, leave, answer, decline, asks and signals"
+                 waiting, done, abandon, dispute, rule, queue, item, holding, reminders, \
+                 questions, say, ask, read, invite, leave, answer, decline, asks and signals"
             ));
         }
     })
@@ -1430,6 +1433,20 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
                 }
                 s
             }
+        }
+        Response::Item { item: Some(item) } => format!(
+            "#{id} under `{tag}` — {body} — {state} (posted by `{by}` at {posted})",
+            id = item.id,
+            tag = item.tag,
+            body = item.body,
+            state = describe(item),
+            by = item.posted_by,
+            posted = item.posted_ms
+        ),
+        Response::Item { item: None } => {
+            "this room never minted that number: `room queue <tag>` lists what is live, and \
+             `room questions` the open ones"
+                .to_string()
         }
         Response::Holding { session, rows } => {
             if rows.is_empty() {

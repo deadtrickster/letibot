@@ -90,11 +90,11 @@ impl Tool for RoomTool {
                         "type": "string",
                         "enum": [
                             "post", "claim", "claim_item", "beat", "waiting", "done", "abandon",
-                            "dispute", "rule", "queue", "holding", "reminders", "questions",
+                            "dispute", "rule", "queue", "item", "holding", "reminders", "questions",
                             "say", "ask", "read", "invite", "leave", "asks", "answer", "decline",
                             "own", "hand", "accept", "release", "status"
                         ],
-                        "description": "`post` tag+body; `claim`/`queue` tag; an item verb an item; `rule` question+decision; `say`/`ask` text; `answer`/`decline` ask+text; `own`/`hand`/`accept`/`release` scope."
+                        "description": "`post` tag+body; `claim`/`queue` tag; `item` reads a row by number; an item verb an item; `rule` question+decision; `say`/`ask` text; `answer`/`decline` ask+text; `own`/`hand`/`accept`/`release` scope."
                     },
                     "tag": {
                         "type": "string",
@@ -134,7 +134,7 @@ impl Tool for RoomTool {
                     },
                     "to": {
                         "type": "string",
-                        "description": "`say`: a principal, PRIVATE dm. `ask`: a session or `path`/`topic`. `rule`/`hand`: the holder."
+                        "description": "`say`: a principal. `ask`: a session or `path`/`topic`. `rule`/`hand`: the holder."
                     },
                     "path": {
                         "type": "string",
@@ -142,7 +142,7 @@ impl Tool for RoomTool {
                     },
                     "topic": {
                         "type": "string",
-                        "description": "`ask`: a topic word."
+                        "description": "`ask`: a topic."
                     },
                     "room": {
                         "type": "string",
@@ -150,11 +150,11 @@ impl Tool for RoomTool {
                     },
                     "since": {
                         "type": "integer",
-                        "description": "`read`: after this seq."
+                        "description": "`read`: after seq."
                     },
                     "last": {
                         "type": "integer",
-                        "description": "`read`: newest N (20)."
+                        "description": "`read`: newest N."
                     },
                     "thread": {
                         "type": "integer",
@@ -174,11 +174,11 @@ impl Tool for RoomTool {
                     },
                     "check": {
                         "type": "boolean",
-                        "description": "`read`: check claims vs the queue."
+                        "description": "`read`: claims vs the queue."
                     },
                     "session": {
                         "type": "string",
-                        "description": "Id or name (you)."
+                        "description": "Id or name."
                     },
                     "scope": {
                         "type": "string",
@@ -339,7 +339,7 @@ fn dispatch(
         "post" if !nonempty(args, "tag") => Some("tag"),
         "post" if !nonempty(args, "body") => Some("body"),
         "claim" | "queue" if !nonempty(args, "tag") => Some("tag"),
-        "claim_item" | "beat" | "done" => {
+        "claim_item" | "beat" | "done" | "item" => {
             if item_of(args).is_none() {
                 Some("item")
             } else {

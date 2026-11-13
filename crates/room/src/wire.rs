@@ -351,6 +351,10 @@ pub enum Request {
     Release { id: String, scope: String },
     /// A tag's queue, in order - the read that makes polling unnecessary after a reconnect.
     Queue { tag: String },
+    /// One item by the number a sentence gave, out of the live window or the closed segment: a
+    /// settled row that aged out of memory is still answerable, which is what keeps a queue deeper
+    /// than the window accountable. A read: it moves nothing.
+    Item { item: u64 },
     /// What a session holds and what it is waiting on. `session: None` means *me*.
     Holding { session: Option<String> },
     /// Every reminder the room owes.
@@ -414,6 +418,7 @@ impl Request {
             | Request::Invite { .. }
             | Request::Leave { .. }
             | Request::Queue { .. }
+            | Request::Item { .. }
             | Request::Holding { .. }
             | Request::Reminders
             | Request::Questions
@@ -515,6 +520,11 @@ pub enum Response {
     Queue {
         tag: String,
         rows: Vec<Item>,
+    },
+    /// One item by its number - the answer to [`Request::Item`]. `None` is *this room never minted
+    /// that number*, said rather than refused: a read is not a verb.
+    Item {
+        item: Option<Item>,
     },
     Holding {
         session: String,
@@ -880,6 +890,9 @@ impl Room {
             Request::Queue { tag } => Answer::quiet(Response::Queue {
                 tag: tag.trim().to_lowercase(),
                 rows: self.queue(tag).into_iter().cloned().collect(),
+            }),
+            Request::Item { item } => Answer::quiet(Response::Item {
+                item: self.read_item(*item),
             }),
             Request::Holding { session } => {
                 let session = session.clone().unwrap_or_else(|| who.session.clone());

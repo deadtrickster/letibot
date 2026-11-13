@@ -1611,6 +1611,20 @@ impl Room {
         self.items.get(&id)
     }
 
+    /// One item by its id, the live window first and the closed segment after it: a row the room
+    /// has put out of memory is still a fact a reader may name. [`Room::item`] answers the window
+    /// only, because a verb that MUTATES a row has to find it here.
+    pub fn read_item(&self, id: u64) -> Option<Item> {
+        if let Some(item) = self.items.get(&id) {
+            return Some(item.clone());
+        }
+        let store = self.store.as_ref()?;
+        store
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .item(&self.project, id)
+    }
+
     /// Every item in the room, oldest first - what the pane draws, finished and dropped included.
     pub fn all(&self) -> Vec<&Item> {
         self.items.values().collect()

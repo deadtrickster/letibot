@@ -319,3 +319,49 @@ fn a_lease_that_reaches_the_threshold_on_reload_raises_and_asks() {
     second.stop();
     std::mem::forget((a, _heard_a, d, _heard_d, e, _heard_e));
 }
+
+/// The bar: six hundred items posted and settled, the coordinator stopped and started again, and
+/// the FIRST of them read by its id over the socket. The window bounds the memory; the closed
+/// segment is the record.
+#[test]
+fn a_settled_item_out_of_the_window_is_read_by_its_id_after_a_restart() {
+    let dir = Scratch::new("closed");
+    let first = stored(&dir);
+    let (a, heard) = client(&first, "s-a");
+    for i in 0..600u64 {
+        let one = post(&a, &format!("p{i}"), "ram", "8 GB, ~10 min");
+        assert!(matches!(
+            claim(&a, &format!("c{i}"), "ram"),
+            Response::Claimed { .. }
+        ));
+        let done = call(
+            &a,
+            Request::Done {
+                id: format!("d{i}"),
+                item: one,
+            },
+        );
+        assert!(matches!(done, Response::Finished { .. }), "{done:?}");
+    }
+    first.stop();
+    std::thread::sleep(Duration::from_millis(20));
+
+    let second = stored(&dir);
+    assert_eq!(second.items().len(), 500, "the window is what memory holds");
+    let (b, heard_b) = client(&second, "s-b");
+    match call(&b, Request::Item { item: 1 }) {
+        Response::Item { item: Some(one) } => {
+            assert_eq!(one.id, 1);
+            assert_eq!(one.state_name(), "done", "the state it closed in");
+            assert_eq!(one.body, "8 GB, ~10 min");
+        }
+        other => panic!("item 1 is readable by its id after a restart: {other:?}"),
+    }
+    // A number this room never minted is said, not refused: a read is not a verb.
+    match call(&b, Request::Item { item: 10_000 }) {
+        Response::Item { item: None } => {}
+        other => panic!("an unminted number answers nothing: {other:?}"),
+    }
+    second.stop();
+    std::mem::forget((a, heard, b, heard_b));
+}

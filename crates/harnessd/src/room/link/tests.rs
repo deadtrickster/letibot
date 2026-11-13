@@ -78,6 +78,7 @@ fn every_verb_becomes_a_frame_with_a_request_id() {
         json!({"verb": "dispute", "item": 1, "says": "still on it"}),
         json!({"verb": "rule", "question": 1, "decision": "retry"}),
         json!({"verb": "queue", "tag": "ram"}),
+        json!({"verb": "item", "item": 7}),
         json!({"verb": "holding"}),
         json!({"verb": "reminders"}),
         json!({"verb": "questions"}),
@@ -95,6 +96,7 @@ fn every_verb_becomes_a_frame_with_a_request_id() {
         let mutates = !matches!(
             frame,
             Request::Queue { .. }
+                | Request::Item { .. }
                 | Request::Holding { .. }
                 | Request::Reminders
                 | Request::Questions

@@ -316,9 +316,14 @@ and start a turn on the sessions they concern. A beat does not. Reads:
 
 ```text
 room {"verb": "queue", "tag": "ram"}
+room {"verb": "item", "item": 3}
 room {"verb": "holding"}
 room {"verb": "reminders"}
 ```
+
+`item` takes a number a sentence gave and answers that row out of the room's window or out of the
+closed segment: a settled item that aged out of memory is still readable by its id, which is what
+makes a queue deeper than the window accountable.
 
 An answer to a post is a `post` under the same tag. The item and its tag are the thread.
 
@@ -328,6 +333,10 @@ An answer to a post is a `post` under the same tag. The item and its tag are the
   `merge-b`). There is no priority number. Urgent work gets a tag of its own (`ram-urgent`).
 - The head is first come, first served. `claim` takes the head of a tag, `claim_item` takes a named item
   only while it is still the head.
+- The room holds the newest **500** items and questions in memory, and that is the whole of what the
+  number bounds: a row that leaves the window is filed in the store's closed segment, so it is still
+  readable by its id (`item`) and its number is never reused. An ended ownership claim past
+  `ENDED_KEEP` goes the same way.
 - An abandonment is not a withdrawal. It counts, it goes on the item, and the arbiter reads it. A
   voluntary release from the pane is the same verb with a gentler sentence.
 - Three abandonments raise a question for the room's arbiter, which rules `retry` (keep the count),
@@ -584,7 +593,10 @@ leases (record `claim`), and the roster's `seat.owns` lists them.
 Each room keeps its newest **500** messages, and **256 KiB** of text. The oldest is dropped first. The
 coordinator appends chat, cursors and members' seen marks to `room-<host key>.chat` beside its socket and
 loads it at start, so a restart keeps history, `seq` and cursors. Without that file (a bare `Server`) chat
-is memory only. Items and leases are in `room-<host key>.items`, and the blobs messages carry are files
+is memory only. Items and leases are in `room-<host key>.items`, and the rows that leave the room's
+500-row window - settled items, answered questions, ended claims - are appended to
+`room-<host key>.items-closed` beside it, which nothing rewrites or compacts: a closed row is the
+record of what happened, so it is filed rather than dropped. The blobs messages carry are files
 in `room-<host key>.blobs/`: `<id>` is the bytes and `<id>.json` what they are. A read says
 `trimmed: true` when messages after the asked-for `seq` were dropped.
 
@@ -775,6 +787,11 @@ never when they are taken: a turn that never opens hands everything back, unacke
 A cheap turn still takes only passing-by lines, and anything addressed waits for the full turn after it.
 What rings is unchanged: an `fyi` never rings, a `blocker` always does, and a passing-by line rings only
 when it touches the seat's work.
+
+**A session that closes keeps the notes it never took.** Its queue goes with the memory, because a
+closed session takes no turn - so the lines are appended to `room-notes.jsonl` under that session's own
+`logs/<session>/` first (`wake::keep`), where a person can read them afterwards with `wake::kept`. The
+queue is memory and the file is the record.
 
 **A delivery starts a turn; it is not left for one nobody will begin.** A door whose turn never opens
 hands its lines back and rings the wake it came with (`delivery::Deliveries::put_back` →
