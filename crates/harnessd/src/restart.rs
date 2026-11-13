@@ -70,7 +70,7 @@
 //! it was about nothing.
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use letibot_sessionlog::registry::Registry;
@@ -162,6 +162,7 @@ impl letibot_sessionlog::PromptJournal for StoreJournal {
 pub struct Lifeline {
     store: Option<Store>,
     registry: Arc<Registry>,
+    started: Arc<Mutex<bool>>,
 }
 
 impl Lifeline {
@@ -170,26 +171,31 @@ impl Lifeline {
         registry: Arc<Registry>,
     ) -> Lifeline {
         let at = at.map(Into::into);
+        let started = Arc::new(Mutex::new(false));
         let mut store = None;
         if let Some(at) = &at {
-            let instance = registry.instance().to_string();
-            let started = registry.started_ms();
             // The daemon's very first store call, so a fresh data directory's two files are made
-            // here rather than a start that was not recorded.
-            match at
-                .open()
-                .and_then(|s| s.life_started(&instance, started).map(|()| s))
-            {
+            // here. The row itself is written off the boot path: a busy shared file held the
+            // start for 30-40 s on a row nothing at boot reads.
+            match at.open() {
                 Ok(s) => {
-                    store = Some(s);
                     // A second HANDLE on the same connection, moved to the heartbeat's thread
                     // `Store::open` shares, so this opens no descriptor of its own.
-                    if let Ok(beat) = at.open() {
+                    let beating = at.open().ok().and_then(|beat| {
                         let reg = registry.clone();
-                        let _ = std::thread::Builder::new()
+                        let gate = started.clone();
+                        std::thread::Builder::new()
                             .name("daemon-heartbeat".into())
-                            .spawn(move || heartbeat(beat, reg));
+                            .spawn(move || {
+                                record_start(&gate, &beat, &reg);
+                                heartbeat(beat, reg)
+                            })
+                            .ok()
+                    });
+                    if beating.is_none() {
+                        record_start(&started, &s, &registry);
                     }
+                    store = Some(s);
                 }
                 Err(e) => eprintln!(
                     "  this daemon's start was not recorded ({e}); a restart after it cannot \
@@ -197,7 +203,11 @@ impl Lifeline {
                 ),
             }
         }
-        Lifeline { store, registry }
+        Lifeline {
+            store,
+            registry,
+            started,
+        }
     }
 
     /// The orderly stop, said with its exact time.
@@ -205,10 +215,28 @@ impl Lifeline {
         let Some(store) = &self.store else {
             return;
         };
+        // After the start, never before it: a start written later would clear this stop.
+        record_start(&self.started, store, &self.registry);
         let now = letibot_sessionlog::registry::now_ms();
         if let Err(e) = store.life_stopped(self.registry.instance(), now) {
             eprintln!("  this daemon's stop was not recorded ({e})");
         }
+    }
+}
+
+/// Write the start row once, whichever of the heartbeat and the stop gets here first. The lock is
+/// held across the write so the stop cannot slip in between.
+fn record_start(gate: &Mutex<bool>, store: &Store, registry: &Registry) {
+    let mut done = gate.lock().unwrap_or_else(|e| e.into_inner());
+    if *done {
+        return;
+    }
+    *done = true;
+    if let Err(e) = store.life_started(registry.instance(), registry.started_ms()) {
+        eprintln!(
+            "  this daemon's start was not recorded ({e}); a restart after it cannot say how \
+             long it was down"
+        );
     }
 }
 
@@ -1732,6 +1760,40 @@ mod tests {
         assert!(l.stopped_ms.is_some(), "the stop was not recorded: {l:?}");
     }
 
+    /// The start row is written off the boot path: another daemon holding the store's write lock
+    /// does not hold this daemon's boot, and the row lands once the lock goes.
+    #[test]
+    fn the_start_does_not_wait_for_another_daemons_write_lock() {
+        let dir = Scratch::new("lifeline-busy");
+        // Held, as a daemon's registry holds it by now: the lifeline shares this connection.
+        let _daemons = Store::open(&dir.store()).unwrap();
+        let other = letibot_tokencore::rusqlite::Connection::open(dir.store()).unwrap();
+        other.execute_batch("BEGIN IMMEDIATE").unwrap();
+        let registry = Registry::new();
+        let t = std::time::Instant::now();
+        let life = Lifeline::start(Some(dir.store()), registry.clone());
+        let boot = t.elapsed();
+        // The lock is still held, so a start that writes inline waits out the whole busy ladder
+        // (90 s). The bound leaves room for other tests' opens, which share one registry lock.
+        assert!(
+            boot < Duration::from_secs(30),
+            "the boot waited {boot:?} on another daemon's lock for its own life row"
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        other.execute_batch("COMMIT").unwrap();
+        let reader = Store::open(&dir.store()).unwrap();
+        let began = std::time::Instant::now();
+        while reader.life(registry.instance()).unwrap().is_none() {
+            assert!(
+                began.elapsed() < Duration::from_secs(30),
+                "the start row never landed"
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        registry.close();
+        life.stopped();
+    }
+
     /// A stop the force path cuts short is still a stop - the registry closes first on every
     /// stop asked for (a signal, a head's `Stop`), and a SIGKILL during the drain that follows
     /// never reaches [`Lifeline::stopped`]. The heartbeat writes the stop when it sees the close.
@@ -1745,11 +1807,9 @@ mod tests {
         registry.close();
         let began = std::time::Instant::now();
         let stopped = loop {
-            let l = reader
-                .life(registry.instance())
-                .unwrap()
-                .expect("a life row");
-            if let Some(at) = l.stopped_ms {
+            // The start row is the heartbeat's to write, so it may not be there yet.
+            let l = reader.life(registry.instance()).unwrap();
+            if let Some(at) = l.and_then(|l| l.stopped_ms) {
                 break at;
             }
             assert!(
