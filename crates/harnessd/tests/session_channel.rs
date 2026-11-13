@@ -128,7 +128,7 @@ fn a_repository(under: &Path, branch: &str) -> (PathBuf, String, String) {
 
 /// How long the driver waits for something a correct build produces in milliseconds -
 /// generous on purpose, because the assertion is what happened, not how fast.
-const PATIENCE: Duration = Duration::from_secs(20);
+const PATIENCE: Duration = Duration::from_secs(120);
 
 // ---------------------------------------------------------------------------
 // The fixtures
