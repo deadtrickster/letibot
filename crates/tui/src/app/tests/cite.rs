@@ -101,6 +101,8 @@ fn a_cited_range_is_a_cite_mark_on_those_lines() {
                     "}".into(),
                 ],
                 error: None,
+                kind: letibot_sessionlog::CitationKind::Cite,
+                body: String::new(),
             }],
         },
     )));
@@ -147,6 +149,8 @@ fn an_unreadable_range_is_not_a_mark() {
                 end: 10,
                 lines: Vec::new(),
                 error: Some("no such file".into()),
+                kind: letibot_sessionlog::CitationKind::Cite,
+                body: String::new(),
             }],
         },
     )));

@@ -2261,6 +2261,8 @@ fn a_replys_cited_lines_are_marks_in_the_pane() {
                 end: 11,
                 lines: vec!["line 10".into(), "line 11".into()],
                 error: None,
+                kind: letibot_sessionlog::CitationKind::Cite,
+                body: String::new(),
             }],
         },
     )));

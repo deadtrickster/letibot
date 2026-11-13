@@ -114,7 +114,7 @@ fn a_stop_brings_down_the_vm_of_a_session_no_worker_can_close() {
     // The daemon's registry, with the close's settler installed exactly where the daemon installs
     // it, and no worker: the session is never opened, so nothing but the settler can close anything.
     let registry = Registry::new();
-    letibot_harnessd::close_settle::install(&registry);
+    letibot_harnessd::close_settle::install(&registry, None);
     registry
         .create(SESSION, "", SessionWiring::default())
         .expect("a fresh registry takes the session");
