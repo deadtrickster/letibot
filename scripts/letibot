@@ -3473,12 +3473,17 @@ if ! live; then
   # The banner names what will answer the turns, not the local vocab's model — see
   # `answers_now`.
   echo "letibot: no harnessd for $WORKSPACE - starting one (role $ROLE, model $(answers_now), pid $DPID)" >&2
-  # Poll the cheap check, not the probe: this runs up to sixty times while a cold
-  # daemon boots, and sixty head processes to watch one start is the same mistake
-  # one layer down.
-  for _ in $(seq 1 60); do
-    live && break
+  # Poll the cheap check, not the probe. Wait while the daemon is alive rather than a fixed
+  # half minute: a loaded box spends that on store calls alone. A dead daemon fails at once.
+  waited=0
+  while ! live; do
+    kill -0 "$DPID" 2>/dev/null || break
+    [ "$waited" -ge 600 ] && break
+    if [ "$waited" -gt 0 ] && [ $((waited % 20)) -eq 0 ]; then
+      echo "letibot: still starting ($((waited / 2))s): $(tail -1 "$LOG" 2>/dev/null | cut -c1-120)" >&2
+    fi
     sleep 0.5
+    waited=$((waited + 1))
   done
   live || {
     echo "letibot: daemon did not come up; last lines of $LOG:" >&2
