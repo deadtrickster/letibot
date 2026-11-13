@@ -41,6 +41,7 @@ pub mod firecode_route;
 // leg a job of that host's own table and a `process` record the daemon's supervisor owns.
 pub mod fleet;
 pub mod gatekeeper;
+pub mod git;
 pub mod grant;
 pub mod head_run;
 pub mod heredoc;
