@@ -1437,7 +1437,17 @@ mod tests {
         );
         let (local, _) = models_choice("local", None, None, Some(&f)).unwrap();
         assert_eq!(local, ModelChoice::OwnServer);
-        assert!(models_choice("openai", None, None, Some(&f)).unwrap_err()[0].contains("five"));
+        // A name no preset claims names EVERY one this build knows, so a reader who typed the
+        // wrong word is shown the right ones. Read from `ALL`, because a provider added to the
+        // table must appear in the sentence without this test being edited.
+        let unknown = models_choice("nonesuch", None, None, Some(&f)).unwrap_err()[0].clone();
+        for p in letibot_provider::presets::ALL {
+            assert!(
+                unknown.contains(p.name),
+                "`{}` is missing from: {unknown}",
+                p.name
+            );
+        }
     }
 
     #[test]

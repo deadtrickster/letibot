@@ -5231,6 +5231,7 @@ mod endpoint_retry {
             &serde_json::json!({}),
             crate::harness::open::provider_notes(&hub),
             d,
+            None,
         );
         assert!(built.is_ok(), "{:?}", built.err());
         cfg.provider_timeout = Some(std::time::Duration::from_secs(30));

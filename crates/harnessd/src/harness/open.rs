@@ -3330,6 +3330,7 @@ impl Harness {
                 &cfg.sampling,
                 provider_notes(&hub),
                 cfg.deadlines_for(Some(pc)),
+                cfg.effort.as_deref(),
             ) {
                 Ok(p) => Some(scoped_provider(
                     p,
@@ -4114,16 +4115,17 @@ pub(crate) fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) ->
 }
 
 /// A provider backend from its config: preset, key (missing is a refusal naming variable and file), model, switches.
-/// `notes` is passed in because the provider must stay below this crate's session log. `deadlines` are the first-byte and answer budgets, resolved from the config by [`crate::config::Config::deadlines_for`].
+/// `notes` is passed in because the provider must stay below this crate's session log. `deadlines` are the first-byte and answer budgets, resolved from the config by [`crate::config::Config::deadlines_for`]. `effort` is the operator's `--effort`, which only a protocol with a reasoning switch of its own has a use for.
 ///
 /// The ONE place a protocol is chosen: a preset says which wire its door speaks, and this hands the
-/// session the client that speaks it. Both carry the same switches, so a session's config means the
-/// same thing whichever protocol it lands on.
+/// session the client that speaks it. Every client carries the same switches, so a session's config
+/// means the same thing whichever protocol it lands on.
 pub fn build_provider(
     pc: &crate::config::ProviderConfig,
     sampling: &serde_json::Value,
     notes: letibot_provider::openai::Notes,
     deadlines: crate::leticode_config::Deadlines,
+    effort: Option<&str>,
 ) -> Result<Box<dyn letibot_backend::MessagesBackend>, String> {
     let preset = letibot_provider::Preset::parse(&pc.name)?;
     let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), None)
@@ -4142,6 +4144,17 @@ pub fn build_provider(
             let mut p =
                 letibot_provider::AnthropicProvider::new(preset, pc.model.as_deref(), creds)
                     .with_notes(notes)
+                    .with_first_byte(deadlines.first_byte)
+                    .with_response_timeout(deadlines.answer);
+            p.thinking = pc.thinking;
+            p.sampling = provider_sampling(sampling);
+            Ok(Box::new(p))
+        }
+        letibot_provider::Protocol::Responses => {
+            let mut p =
+                letibot_provider::ResponsesProvider::new(preset, pc.model.as_deref(), creds)
+                    .with_notes(notes)
+                    .with_effort(effort)
                     .with_first_byte(deadlines.first_byte)
                     .with_response_timeout(deadlines.answer);
             p.thinking = pc.thinking;
