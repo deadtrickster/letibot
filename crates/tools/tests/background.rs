@@ -974,16 +974,21 @@ fn a_named_job_is_called_by_its_name_and_its_id_still_resolves() {
     // The label, spelled exactly as the settlement notice will spell it.
     let label = format!("release-build · {id}");
     assert!(
-        body.contains(&format!("started `{label}` in the background")),
+        body.contains(&format!("started `{label}`")),
         "the bash result is where the operator first meets the job: {body}"
     );
-    // The handle it hands over must resolve: the name, and the id beside it.
+    // The handle it hands over must resolve: the call it suggests passes the id, not the label.
     assert!(
-        body.contains(&format!(
-            "`job_output`, `job_kill` and `job_wait` take this or `{id}`"
-        )),
-        "the resolvable handles must be spelled out, because the label is not one: {body}"
+        body.contains(&format!("job=\"{id}\"")) && !body.contains(&format!("job=\"{label}\"")),
+        "the suggested handle must be one that resolves, because the label is not one: {body}"
     );
+    // Each fact once: the id is spelled in the label and in the one call that takes it.
+    assert_eq!(body.matches(&format!("`{label}`")).count(), 1, "{body}");
+    assert_eq!(body.matches(&format!("job=\"{id}\"")).count(), 1, "{body}");
+    assert_eq!(body.matches("job_output").count(), 1, "{body}");
+    for gone in ["tool:", "job:", "how:", "take this or"] {
+        assert!(!body.contains(gone), "`{gone}` restates the row: {body}");
+    }
 
     // Read back by the name the model stated.
     let by_name = h.call(

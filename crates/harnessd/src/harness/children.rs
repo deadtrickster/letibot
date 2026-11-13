@@ -2438,10 +2438,10 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             |p| std::path::Path::new(p).is_dir(),
         )?;
         self.resume_run(&store, &run, spec)?;
+        // Delivery and the `task_result` call are `task_resume`'s `next`, said once there.
         Ok(format!(
             "`{handle}` is resumed in its own session — the same conversation{}, role and model — \
-             and its turn continues with a restart notice. Its answer reaches you on its own when \
-             it finishes; `task_result` with task=\"{handle}\" shows where it has got to.",
+             and its turn continues with a restart notice.",
             run_place(&run)
         ))
     }

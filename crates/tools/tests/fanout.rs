@@ -424,6 +424,15 @@ fn a_background_fanout_answers_one_handle_at_once() {
         "by name as well as id"
     );
     assert_eq!(view.pid, 0, "a job of jobs has no process of its own");
+    // Delivery once, and the label instead of a line spelling the two handles again.
+    let next = match &answer.outcome {
+        ToolOutcome::Backgrounded { next, .. } => next.clone(),
+        _ => String::new(),
+    };
+    let said = format!("{}\n{next}", answer.payload);
+    assert!(said.contains(&format!("`fanout · {handle}`")), "{said}");
+    assert_eq!(said.matches("reaches you").count(), 1, "{said}");
+    assert!(!said.contains("take this or"), "{said}");
     assert!(
         view.command.contains("2 branch(es) on fake1, fake2"),
         "the row says what it is: {}",

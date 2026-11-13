@@ -81,13 +81,13 @@ pub(super) fn start(
         Duration::ZERO,
         letibot_transcript::Backgrounding::Asked,
         format!(
-            "carry on — the table reaches you on its own when the last branch ends, so there is \
-             nothing to wait for. `job_output` with job=\"{handle}\" reads the per-host progress so \
-             far; `job_kill` stops every branch, on every host."
+            "`job_output` with job=\"{handle}\" reads the per-host progress so far; `job_kill` \
+             stops every branch, on every host."
         ),
+        // The label carries both handles, as `bash`'s does; delivery is said once, here.
         format!(
-            "started `{slug}` in the background: {started} branch(es) on {}.\n  name: {slug} — \
-             `job_output`, `job_kill` and `job_wait` take this or `{handle}`\n\n{}\n",
+            "started `{}`: {started} branch(es) on {}.\n\n{}\n",
+            crate::exec::job_label(Some(&slug), &handle.0),
             hosts.join(", "),
             super::DELIVERED,
         ),

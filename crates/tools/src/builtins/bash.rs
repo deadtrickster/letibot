@@ -843,8 +843,7 @@ impl Tool for Bash {
                 view.as_ref().and_then(|v| v.output_file.clone()),
             ) {
                 (None, Some(f)) => format!(
-                    "  output file: {} (from byte {}) — every byte it prints goes there too, \
-                     and that file is not bounded by the window's 8 MiB\n",
+                    "  output file: {} (from byte {}) — all of it, where the window keeps 8 MiB\n",
                     f.path, f.from
                 ),
                 _ => String::new(),
@@ -854,23 +853,13 @@ impl Tool for Bash {
             // grounding for an answer nothing has produced.
             let read_it = match &redirected {
                 Some(path) => format!(
-                    "Its own window will be EMPTY however long it runs — the command sends \
-                     stdout to `{path}` — so read `{path}` with `read` when the completion \
-                     tells you it ended, and do not read the window looking for progress."
+                    "Its own window stays EMPTY: stdout goes to `{path}`. `read` that file once \
+                     the completion says it ended, not the window for progress."
                 ),
                 None => format!(
                     "`job_output` with job=\"{id}\" reads what it has written so far; \
                      `job_kill` stops it."
                 ),
-            };
-            // The handles a caller may pass: the caller's own word for the work, spelled back with
-            // the id so that a string a person can read resolves to this job. Absent when nobody
-            // said one, and never a derived one.
-            let named = match &slug {
-                Some(s) => format!(
-                    "  name: {s} — `job_output`, `job_kill` and `job_wait` take this or `{id}`\n"
-                ),
-                None => String::new(),
             };
             // `wake: "now"` is said to the daemon here, where the handle first exists.
             if let Some(w) = wake {
@@ -889,8 +878,10 @@ impl Tool for Bash {
                     "{read_it}{}",
                     crate::builtins::todo::attach_now(ctx, "job", &id.0)
                 ),
+                // The label carries both handles, and `job_*` take either half; the envelope
+                // says it is running in the background.
                 format!(
-                    "started `{label}` in the background (pid {}).\n{named}{kept}  scope: {} — {}\n\n{} \
+                    "started `{label}` (pid {}).\n{kept}  scope: {} — {}\n\n{} \
                      So do not build your own clock: no `sleep`, no polling loop.",
                     view.as_ref().map(|v| v.pid).unwrap_or(0),
                     scope.as_str(),
@@ -965,28 +956,17 @@ impl Tool for Bash {
             // for: delivered the moment it ends, never held for a break.
             ctx.want_completion(&id.0, WantedNow::Awaited);
             // A promotion is a backgrounding, so the redirect rule is this one's too: the same
-            // sentence must not tell its reader to open a window that will stay empty. And this is
-            // where the file is said, because it is the only moment the caller learns it.
-            let kept = match &p.output_file {
-                Some(f) => format!(
-                    " Every byte it printed before the move, and every byte it prints from here \
-                     on, is also going into `{}` — that file is not bounded by the window's 8 MiB, \
-                     so the output of a long run is not lost past it.",
-                    f.path
-                ),
-                None => String::new(),
-            };
+            // sentence must not tell its reader to open a window that will stay empty.
             let next = match crate::builtins::output_redirect_path(command) {
                 Some(path) => format!(
-                    "carry on — `{label}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. Its own window will be EMPTY: the command sends stdout to `{path}` — read that file with `read` when the completion tells you it ended, and do not build your own clock in the meantime.{kept}"
+                    "Its own window will be EMPTY: the command sends stdout to `{path}` — read that file with `read` when the completion tells you it ended."
                 ),
-                None => format!(
-                    "carry on — `{label}`'s completion will be delivered to you on its own when it ends, so there is nothing to wait for. `job_output` with job=\"{id}\" reads what it has written so far.{kept}"
-                ),
+                None => format!("`job_output` with job=\"{id}\" reads what it has written so far."),
             } + &crate::builtins::todo::attach_now(ctx, "job", &id.0);
+            // Said once, here, the only moment the caller learns the file.
             let file_line = match &p.output_file {
                 Some(f) => format!(
-                    "  output file: {} (from byte {} of its output)\n",
+                    "  output file: {} (from byte {}) — all of it, where the window keeps 8 MiB\n",
                     f.path, f.from
                 ),
                 None => String::new(),
@@ -996,14 +976,13 @@ impl Tool for Bash {
                 p.ran_for,
                 p.how.clone(),
                 &next,
+                // Who moved it is the envelope's `how:`; the command is the call's own.
                 format!(
-                    "{body}\n\n[`{label}` was moved to the background: {}]\
-                     \n  command: {command}\n{file_line}  owned by: {} — {}\n\nIts \
-                     completion is delivered when it ends; \
-                     nothing is held for a break.\n",
-                    p.how.phrasing(),
+                    "{body}\n\n[`{label}` was moved to the background]\n{file_line}  owned by: {} — {}\n\n{} \
+                     So do not build your own clock: no `sleep`, no polling loop.\n",
                     p.to,
-                    p.to.kind.reaped_when()
+                    p.to.kind.reaped_when(),
+                    super::DELIVERED,
                 ),
             );
             if !p.complete() {

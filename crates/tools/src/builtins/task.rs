@@ -1289,9 +1289,8 @@ impl Tool for TaskTool {
                 crate::builtins::todo::attach_now(ctx, "child", &handle)
             ),
             format!(
-                "started subagent `{label}` as `{}`.\n  subtask: {}\n\nIt is working \
-                 now, and this call did not wait for it. {} `task_result` with \
-                 task=\"{handle}\" shows where it has got to.",
+                // Running and unwaited is the envelope's; the `task_result` call is `next`'s.
+                "started subagent `{label}` as `{}`.\n  subtask: {}\n\n{}",
                 match &spec.model {
                     // The model is named when the child was given one - a spawn that
                     // prints only the role would leave the reader to guess which model is
@@ -1873,10 +1872,8 @@ impl Tool for TaskStartTool {
             format!(
                 "started subagent `{}` as `{}` in {}.\n  subtask: {}\n  path: {}\n  \
                  branch: {}\n  base: {}\n{seam_line}{build_line}\nThe branch is the deliverable and \
-                 is NOT pushed; it is to be landed by a merge queue. It is working now, \
-                 and this call did not wait for it. {} `task_result` with task=\"{}\" \
-                 reports where it has got to. A child in the wrong PLACE is corrected \
-                 with `task_message`, not killed: killing is for wrong work.",
+                 is NOT pushed; it is to be landed by a merge queue. {} A child in the wrong \
+                 PLACE is corrected with `task_message`, not killed: killing is for wrong work.",
                 label,
                 match &spec.model {
                     Some(m) => format!("{m} (as a {})", spec.role),
@@ -1888,7 +1885,6 @@ impl Tool for TaskStartTool {
                 handle.placement.branch,
                 handle.placement.base_sha,
                 super::DELIVERED,
-                handle.handle,
             ),
         )
     }

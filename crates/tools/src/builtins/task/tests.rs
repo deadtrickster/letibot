@@ -476,7 +476,8 @@ fn starting_a_subagent_does_not_wait_for_it() {
         "{:?}",
         r.outcome
     );
-    assert!(r.payload.contains("task_result"), "{}", r.payload);
+    // The read call is `next`'s, so it is in the rendered result rather than the payload.
+    assert!(r.render().contains("task_result"), "{}", r.render());
 
     // Collecting before it is done is the WAIT ending, not the child ending:
     // an abstention, which `is_grounded` will not treat as an answer.
@@ -778,7 +779,7 @@ fn the_tool_parses_access_and_where_and_refuses_the_unknown() {
             },
             sink,
         )
-        .payload
+        .render()
     };
     // `task` hands back a handle; the spec it parsed is what the subagent was
     // started with, and `task_result` is where the answer comes from.
@@ -1693,6 +1694,14 @@ fn the_task_tools_take_a_slug_and_name_the_child_by_it() {
             .contains("started subagent `audit-the-store-schema · s-1-sub-8`"),
         "{}",
         started.payload
+    );
+    // The read call and delivery once each: `next` carries the one, the payload the other.
+    let card = started.render();
+    assert_eq!(card.matches("task_result").count(), 1, "{card}");
+    assert_eq!(
+        card.matches(crate::builtins::DELIVERED).count(),
+        1,
+        "{card}"
     );
     // A name that cannot be one is refused before anything spawns.
     let bad = call("task", r#"{"prompt": "x", "slug": "a/b"}"#);
