@@ -191,6 +191,9 @@ struct Inner {
     /// Open asks whose target had no connection when it was asked: escalated at once while it
     /// is still away. Memory only, a restart gives them the grace again.
     asked_absent: Mutex<BTreeSet<u64>>,
+    /// The dm each principal was sent and has not answered — [`DmAwaiting`]. A line that answers
+    /// it goes back as a dm however its sender spelled it.
+    dms_awaiting: Mutex<BTreeMap<String, DmAwaiting>>,
     /// How long a session may be gone before the operator is asked to restart it -
     /// [`ASK_GRACE_MS`], or what a test set. A liveness fact never settles an ask; it escalates.
     ask_grace_ms: AtomicU64,
@@ -214,6 +217,14 @@ struct Inner {
 struct Missed {
     count: u64,
     since_ms: u64,
+}
+
+/// The dm a principal is owed an answer to and has not answered: who sent it, and its `seq` - so
+/// an answer said anywhere else is still delivered where it belongs. See [`Inner::dms_awaiting`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DmAwaiting {
+    seq: u64,
+    peer: String,
 }
 
 /// A principal's chat while it has no connection - see [`Inner::pending`]. `dropped` is what did
@@ -318,6 +329,7 @@ impl Server {
                 seats: Mutex::new(BTreeMap::new()),
                 claims: Mutex::new(BTreeMap::new()),
                 asked_absent: Mutex::new(BTreeSet::new()),
+                dms_awaiting: Mutex::new(BTreeMap::new()),
                 ask_grace_ms: AtomicU64::new(ASK_GRACE_MS),
                 blobs: Mutex::new(crate::blob::Blobs::open(&path.with_extension("blobs"))),
                 blob_rewrites: AtomicU64::new(0),
@@ -2946,6 +2958,39 @@ impl Server {
                 &text,
                 now,
             )
+        } else if room.trim().is_empty()
+            && answers_the_dm(kind)
+            && let Some(dm) = self.dm_awaited(name, &text)
+        {
+            // The answer to a dm goes to the dm. Said in a room it is a line the one it is for
+            // will not be woken by, which is how a private question was answered in public.
+            let note = format!(
+                "this answered the dm from `{}` (#{}), so it went there, not to the room{} — \
+                 name a room (`host`, `project/<key>`) to say a line there instead",
+                dm.peer,
+                dm.seq,
+                if crate::SayKind::Fyi == kind {
+                    " as an `fyi`"
+                } else {
+                    ""
+                },
+            );
+            let mut said = self.say_and_push(
+                id,
+                chat::DM_ROOM,
+                name,
+                seat,
+                Some(dm.peer),
+                Some(dm.seq),
+                refs.to_vec(),
+                attachments,
+                &text,
+                now,
+            );
+            if let Response::Said { note: out, .. } = &mut said {
+                *out = note;
+            }
+            said
         } else {
             let room = match room.trim() {
                 "" => Self::default_chat_room(seat, project),
@@ -3290,10 +3335,51 @@ impl Server {
         }
     }
 
+    /// The dm each principal was SENT and has not answered, kept for [`Server::dm_awaited`]. A dm
+    /// sent pays the sender's own debt to that peer: answering in the dm is how a dm's answer ends.
+    fn note_dm(&self, message: &chat::Message) {
+        if message.room != chat::DM_ROOM {
+            return;
+        }
+        let Some(to) = &message.to else { return };
+        let mut dms = self
+            .inner
+            .dms_awaiting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        dms.insert(
+            to.clone(),
+            DmAwaiting {
+                seq: message.seq,
+                peer: message.author.clone(),
+            },
+        );
+        let paid = dms.get(&message.author).is_some_and(|d| {
+            message.to.as_deref() == Some(d.peer.as_str()) || message.thread == Some(d.seq)
+        });
+        if paid {
+            dms.remove(&message.author);
+        }
+    }
+
+    /// The dm `who` was sent and has not answered, when `text` answers it - the `seq` it hangs from
+    /// and the peer it goes to. `None` once the dm was answered, or when the line names somebody
+    /// else, so a session's later lines about other things are left where their sender put them.
+    fn dm_awaited(&self, who: &str, text: &str) -> Option<DmAwaiting> {
+        let dms = self
+            .inner
+            .dms_awaiting
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let dm = dms.get(who)?;
+        chat::names_in_text(text, &dm.peer).then(|| dm.clone())
+    }
+
     /// Everything a message does once it is in the log: pushed to whoever may see it, kept for
     /// whoever may not and will be here later, and the blobs nothing names any more collected.
     fn deliver(&self, message: &chat::Message, now: u64) {
         self.note_message(message, now);
+        self.note_dm(message);
         let answered = message.thread.and_then(|t| {
             self.inner
                 .chat
@@ -4672,6 +4758,13 @@ fn peer_uid(stream: &UnixStream) -> Option<u32> {
         )
     };
     (rc == 0).then_some(cred.uid)
+}
+
+/// May a line of `kind` be moved into the dm it answers? A `blocker` is the operator's to see
+/// whatever else it is, and an `announce` is one line for a whole room by construction; every
+/// other kind is the sender's answer to say privately.
+fn answers_the_dm(kind: crate::SayKind) -> bool {
+    !matches!(kind, crate::SayKind::Blocker | crate::SayKind::Announce)
 }
 
 /// The clock every part of the room reads, from the tree's one, re-exported so a beat and a

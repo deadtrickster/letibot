@@ -222,6 +222,14 @@ pub struct Message {
     pub text: String,
 }
 
+/// Does a text name `who` in its `@` handles? The one reading of that question: the room decides
+/// who a line reaches with it, and an answer to a dm is recognised by it.
+pub fn names_in_text(text: &str, who: &str) -> bool {
+    mentions(text)
+        .iter()
+        .any(|m| m == who || group_names(m, who))
+}
+
 /// The names `@name` puts in a text, lowercase, without the `@`.
 pub fn mentions(text: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -370,8 +378,9 @@ impl Message {
 
     /// Why this message reached a reader, from the room's `names_you`: the fact a model needs to
     /// stay quiet without reasoning about it. The kind decides the two cases a room line cannot:
-    /// an `fyi` is a note whatever it sits in (a dm to you still wakes you), and a `blocker` is
-    /// never a cheap turn whatever it names.
+    /// an `fyi` is a note to everyone it only passes, and an address to the reader it NAMES (a
+    /// mention or a dm, both of which it is the reader's to answer), and a `blocker` is never a
+    /// cheap turn whatever it names.
     pub fn reach(&self, names_you: bool) -> Reach {
         if self.kind == Seat::Operator {
             return Reach::Operator;
@@ -380,7 +389,7 @@ impl Message {
             return Reach::Dm;
         }
         match self.say_kind() {
-            crate::SayKind::Fyi => Reach::Passing,
+            crate::SayKind::Fyi if !names_you => Reach::Passing,
             crate::SayKind::Blocker => Reach::Addressed,
             _ if names_you => Reach::Addressed,
             _ => Reach::Passing,
@@ -466,17 +475,16 @@ impl Message {
 
     /// Does this message name `who`: addressed to them, or `@who` in the text?
     pub fn names(&self, who: &str) -> bool {
-        self.to.as_deref() == Some(who)
-            || mentions(&self.text)
-                .iter()
-                .any(|m| m == who || group_names(m, who))
+        self.to.as_deref() == Some(who) || names_in_text(&self.text, who)
     }
 
     /// Does this message reach `who` at all? `named` is the room's own answer to *does it name
     /// you* (which counts a reply to your own message). The operator wakes wherever they speak; a
     /// room line wakes that room's own sessions; talk between two others wakes nobody else.
-    /// An `fyi` reaches its room and whoever it names, and its own `reach` keeps that to a note; a
-    /// `blocker` rings its target and the room it was said in, because the room is blocked on it.
+    /// An `fyi` reaches its room and whoever it names: the room takes it as a note (`reach` is
+    /// `Passing` there) and the one it names takes it as an address, because being named IS the
+    /// address. A `blocker` rings its target and the room it was said in, because the room is
+    /// blocked on it.
     pub fn wakes(&self, who: &str, named: bool, sits_in: impl Fn(&str) -> bool) -> bool {
         if self.author == who {
             return false;

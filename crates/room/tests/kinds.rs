@@ -269,10 +269,11 @@ fn an_ask_says_who_it_is_for_and_is_held_for_them() {
     assert_eq!(question.to.as_deref(), Some("s-b"));
 }
 
-/// An `fyi` asks nothing of anybody: it wakes nobody it sits in and only the dm it is. A `blocker`
-/// is the opposite - it rings the room it was said in and the target it names.
+/// An `fyi` asks nothing of the room it sits in - it is a note there - and everything of the room
+/// it NAMES: a mention is an address, so it wakes that reader and nobody else. A `blocker` is the
+/// opposite - it rings the room it was said in and the target it names.
 #[test]
-fn an_fyi_wakes_nobody_and_a_blocker_wakes_its_room_and_its_target() {
+fn an_fyi_wakes_only_the_reader_it_names_and_a_blocker_wakes_its_room_and_its_target() {
     let dir = Scratch::new();
     let server = Server::serve(&dir.0.join("room.sock"), Room::new()).expect("a coordinator");
     let a = seat(&server, "s-a", Seat::Session);
@@ -287,7 +288,30 @@ fn an_fyi_wakes_nobody_and_a_blocker_wakes_its_room_and_its_target() {
         "an fyi reached a session of another room"
     );
     assert_eq!(fyi.reach(false), chat::Reach::Passing);
-    assert_eq!(fyi.reach(true), chat::Reach::Passing);
+    // The same kind, naming a reader: that reader is addressed by it, and nobody else is.
+    let named = said(a.say("f2", SayKind::Fyi, "@s-b the port moved to 5433", None));
+    assert!(named.names("s-b"));
+    assert_eq!(
+        named.reach(true),
+        chat::Reach::Addressed,
+        "an fyi that names a reader is an address to them"
+    );
+    assert_eq!(
+        named.reach(false),
+        chat::Reach::Passing,
+        "and it is still a note to everybody else"
+    );
+    assert!(
+        !named.delivered(true, 600).contains("passing by"),
+        "the reader it names is not told it is passing by: {}",
+        named.delivered(true, 600)
+    );
+    assert!(
+        named.delivered(false, 600).contains("@s-b")
+            && named.delivered(false, 600).contains(", passing by"),
+        "and everybody it does not name still reads a note: {}",
+        named.delivered(false, 600)
+    );
 
     let blocker = said(a.say("b", SayKind::Blocker, "the disk is full", None));
     assert!(
@@ -314,6 +338,89 @@ fn an_fyi_wakes_nobody_and_a_blocker_wakes_its_room_and_its_target() {
     assert_eq!(fyi_dm.room, chat::DM_ROOM);
     assert_eq!(fyi_dm.reach(true), chat::Reach::Dm);
     assert_eq!(fyi_dm.reach(false), chat::Reach::Passing);
+}
+
+/// A dm is answered in the dm. A seat that answers one with a plain room line that names the
+/// sender - no `to`, no `thread`, no room named - has the answer delivered privately, hanging from
+/// the dm it answers, and its tool result says so. The live case: a dm about a full tmpfs was
+/// answered in the host room as `@sender ...` with kind `fyi`, and the session it was for was
+/// never woken, because in a room an `fyi` is a note to everyone it only passes.
+#[test]
+fn a_dm_is_answered_in_the_dm() {
+    let dir = Scratch::new();
+    let server = Server::serve(&dir.0.join("room.sock"), Room::new()).expect("a coordinator");
+    let a = seat(&server, "s-a", Seat::Session);
+    let b = seat(&server, "s-b", Seat::Session);
+
+    let dm = said(a.say("d1", SayKind::Post, "the tmpfs is full", Some("s-b")));
+    assert_eq!(dm.room, chat::DM_ROOM);
+
+    // The answer, spelled the way the live case spelled it: a line that names the sender and asks
+    // for no room of its own.
+    let (answer, note) = match b.call(Request::Say {
+        id: "a1".into(),
+        room: String::new(),
+        text: "@s-a cleared 2 GiB, try again".into(),
+        to: None,
+        thread: None,
+        refs: Vec::new(),
+        attachments: Vec::new(),
+        kind: SayKind::Fyi,
+    }) {
+        Response::Said { message, note, .. } => (message, note),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(answer.room, chat::DM_ROOM, "the answer landed in a room");
+    assert_eq!(answer.to.as_deref(), Some("s-a"));
+    assert_eq!(
+        answer.thread,
+        Some(dm.seq),
+        "the answer does not hang from the dm it answers"
+    );
+    assert!(note.contains("answered the dm from `s-a`"), "{note}");
+    // And the one it is for is woken by it, as a dm of theirs: it reached them as `names_you`.
+    assert!(
+        a.heard()
+            .iter()
+            .any(|(m, names)| m.seq == answer.seq && *names),
+        "the sender of the dm was not woken by its answer"
+    );
+    // Nothing of it is in the project room they both sit in.
+    let rows = match b.call(Request::Read {
+        room: chat::project_room(A),
+        since: 0,
+        last: None,
+        thread: None,
+        before: None,
+    }) {
+        Response::History(h) => h.rows,
+        other => panic!("{other:?}"),
+    };
+    assert!(
+        !rows.iter().any(|m| m.seq == answer.seq),
+        "the answer was also said in the room"
+    );
+
+    // The debt is paid once: a later line that names the same session is an ordinary room line, so
+    // a conversation about other things is not dragged into a dm for ever.
+    let (later, _) = match b.call(Request::Say {
+        id: "a2".into(),
+        room: String::new(),
+        text: "@s-a the disk is full again".into(),
+        to: None,
+        thread: None,
+        refs: Vec::new(),
+        attachments: Vec::new(),
+        kind: SayKind::Post,
+    }) {
+        Response::Said { message, note, .. } => (message, note),
+        other => panic!("{other:?}"),
+    };
+    assert_eq!(
+        later.room,
+        chat::project_room(A),
+        "a line naming a peer it no longer owes an answer to was taken off the room"
+    );
 }
 
 /// A blocker is the operator's to unblock: it reaches the person's connection as if it named them,
