@@ -839,3 +839,60 @@ fn a_weekly_limit_with_no_fallback_parks_and_names_the_real_reset() {
     assert_eq!(sessions.resume_due_limits(), 1, "the bound asks again");
     assert_eq!(glm.count(), 2);
 }
+
+/// The per-model table: the limited model's own list, else its provider's, else `*`. A
+/// limited entry in the chosen list is skipped like any other.
+#[test]
+fn a_per_model_fallback_list_is_picked_by_the_limited_model_and_skips_limited_entries() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("per-model");
+    let glm = model(&[Act::RefuseWith(WEEKLY_BODY)]);
+    let coding = model(&[Act::Answer]);
+    let deepseek = model(&[Act::Answer, Act::RefuseWith(WEEKLY_BODY)]);
+    providers3(&scratch, glm.port, coding.port, deepseek.port);
+    // `*` would send glm to glm-coding; `glm/*` wins and sends it to deepseek.
+    let mut cfg = config(
+        &scratch,
+        &gguf,
+        "per-model",
+        ("glm", "glm-5.3"),
+        vec!["glm-coding/glm-5.3".into()],
+    );
+    cfg.fallback_for = [
+        ("glm/*".to_string(), vec!["deepseek/deepseek-flash".into()]),
+        (
+            "deepseek/deepseek-flash".to_string(),
+            vec!["glm/glm-5.3".into(), "glm-coding/glm-5.3".into()],
+        ),
+    ]
+    .into_iter()
+    .collect();
+    let (clock, _handle) = letibot_harnessd::config::LimitClock::fixed(T0);
+    cfg.limit_clock = clock;
+    cfg.on_limit = leticode_on_limit_switch();
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+    let on = |s: &Sessions| s.harness_of(&id).expect("open").model_name().to_string();
+
+    sessions.submit(&id, PROMPT).expect("deepseek answered");
+    assert_eq!(on(&sessions), "deepseek/deepseek-flash", "`glm/*` beat `*`");
+    assert_eq!(coding.count(), 0);
+
+    // deepseek's own key lists glm first, which is limited, so glm-coding takes the turn.
+    sessions
+        .submit(&id, "and again")
+        .expect("glm-coding answered");
+    assert_eq!(on(&sessions), "glm-coding/glm-5.3");
+    assert_eq!(glm.count(), 1, "the limited entry was not asked");
+    assert!(
+        said(&hub, "model_fallback_skip")
+            .iter()
+            .any(|d| d.contains("glm/glm-5.3")),
+        "{:?}",
+        said(&hub, "model_fallback_skip")
+    );
+}

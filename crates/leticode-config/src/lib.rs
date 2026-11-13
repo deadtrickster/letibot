@@ -33,6 +33,12 @@
 //!                                         # model is out, tried in this order
 //! fallback_after_timeouts = 3             # consecutive model timeouts that earn a move
 //!
+//! # or, per model - the limited model's own key, then `provider/*`, then `*`:
+//! # [fallback]
+//! # "claude/opus-5-5" = ["kimi-code-global/k3.1-pro", "deepseek"]
+//! # "kimi-code-global/*" = ["glm-coding/glm-5.3"]
+//! # "*" = ["deepseek"]
+//!
 //! [roles]                                 # a named-role override: a future role
 //! reviewer = "deepseek/deepseek-reasoner" # needs no new key, only a line here
 //! ```
@@ -42,8 +48,9 @@
 //!
 //! A fallback list is replaced by the higher level, never joined to it. A project
 //! that names two models must not silently inherit a third from the user file, so a
-//! non-empty list here is the whole list. `fallback_after_timeouts = 0` is refused by
-//! name: a move on the first timeout is written `1`.
+//! non-empty list here is the whole list, and a `[fallback]` table replaces every key of the
+//! lower level's. `fallback = [...]` is the table's `"*"`. `fallback_after_timeouts = 0` is
+//! refused by name: a move on the first timeout is written `1`.
 //!
 //! `[provider]` also holds the model API deadlines: `slow_notice_seconds` (15, the red "model
 //! slow" notice), `first_byte_seconds` (60) and `answer_seconds` (600), as defaults for every
@@ -552,6 +559,9 @@ pub struct LeticodeConfig {
     /// A higher level's non-empty list replaces the whole list, because a list of models a
     /// session may answer on is one decision and not a set to union.
     pub fallback: Vec<String>,
+    /// `[fallback]` keys other than `"*"`: a model in `/models` spelling, or `provider/*`. See
+    /// [`fallback_for`].
+    pub fallback_for: BTreeMap<String, Vec<String>>,
     /// How many consecutive model timeouts earn that move. `None` is the daemon's own
     /// number, and `0` never reaches here: it is refused at the parser by name.
     pub fallback_after_timeouts: Option<u32>,
@@ -2156,10 +2166,8 @@ impl LeticodeConfig {
                 Some(v) => perimeter_tables(v, path, &text, level == Level::User)?,
                 None => BTreeMap::new(),
             },
-            fallback: match &file.fallback {
-                Some(v) => fallback_list(v).map_err(|why| format!("{}: {why}", path.display()))?,
-                None => Vec::new(),
-            },
+            fallback: Vec::new(),
+            fallback_for: BTreeMap::new(),
             fallback_after_timeouts: match &file.fallback_after_timeouts {
                 Some(v) => {
                     Some(fallback_timeouts(v).map_err(|why| format!("{}: {why}", path.display()))?)
@@ -2213,6 +2221,10 @@ impl LeticodeConfig {
                 None => VerbosityKeys::default(),
             },
         };
+
+        if let Some(v) = &file.fallback {
+            (config.fallback, config.fallback_for) = fallback_keys(v, path, &text)?;
+        }
 
         // One list of models, two places to write it. `[provider] fallback` is the newer home of
         // the top-level key, so a file may carry either - and a file that carries both to
@@ -2333,10 +2345,16 @@ impl LeticodeConfig {
                 out
             },
             // Replaced, not joined: a project that names two models must not inherit a third.
-            fallback: if other.fallback.is_empty() {
-                self.fallback.clone()
-            } else {
+            // The whole table goes with the level that wrote any of it, as the list always did.
+            fallback: if other.has_fallback() {
                 other.fallback.clone()
+            } else {
+                self.fallback.clone()
+            },
+            fallback_for: if other.has_fallback() {
+                other.fallback_for.clone()
+            } else {
+                self.fallback_for.clone()
             },
             fallback_after_timeouts: other
                 .fallback_after_timeouts
@@ -2479,13 +2497,16 @@ impl LeticodeConfig {
     /// are the operator's ruling, since a session that fails on a limit the provider put a time on
     /// has thrown the turn away for nothing.
     pub fn limit_policy(&self) -> OnLimit {
-        self.provider
-            .on_limit
-            .unwrap_or(if self.fallback.is_empty() {
-                OnLimit::Wait
-            } else {
-                OnLimit::Switch
-            })
+        self.provider.on_limit.unwrap_or(if self.has_fallback() {
+            OnLimit::Switch
+        } else {
+            OnLimit::Wait
+        })
+    }
+
+    /// Did this level name any fallback - the list, or any key of the `[fallback]` table.
+    pub fn has_fallback(&self) -> bool {
+        !self.fallback.is_empty() || !self.fallback_for.is_empty()
     }
 
     /// How close a reset must be for `switch` to wait for it anyway: the file's span, else
@@ -2539,6 +2560,9 @@ impl LeticodeConfig {
         // The budget is a number and not a model, so it stays out of this list.
         for m in &self.fallback {
             out.push(format!("fallback {m}"));
+        }
+        for (key, list) in &self.fallback_for {
+            out.push(format!("fallback for {key} {}", list.join(", ")));
         }
         // And the answer to a limit, when the file gave one: an absent key is the daemon's own
         // default, which `limit_policy` states, and the disclosure must not claim a setting nobody
@@ -2783,6 +2807,72 @@ fn fallback_list(value: &toml::Value) -> Result<Vec<String>, String> {
         out.push(name);
     }
     Ok(out)
+}
+
+/// `[fallback]` keys other than `"*"`, each to its list.
+pub type FallbackTable = BTreeMap<String, Vec<String>>;
+
+/// The top-level `fallback`: a list (the `"*"` key) or a `[fallback]` table keyed by the limited
+/// model. Returns the `"*"` list and the other keys. A bad key or an empty list is refused with
+/// its line, since an empty list would read as "no fallback" for a model somebody named.
+fn fallback_keys(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+) -> Result<(Vec<String>, FallbackTable), String> {
+    let toml::Value::Table(table) = value else {
+        let list = fallback_list(value).map_err(|why| format!("{}: {why}", path.display()))?;
+        return Ok((list, BTreeMap::new()));
+    };
+    let (mut star, mut out) = (Vec::new(), BTreeMap::new());
+    for (key, v) in table {
+        let line = line_after(text, "[fallback]", &format!("\"{key}\""));
+        let at = |why: String| format!("{}:{line}: [fallback] \"{key}\" {why}", path.display());
+        if !fallback_key_ok(key) {
+            return Err(at(
+                "is not a key: write a model as `/models` spells it (`claude/opus-5-5`), a \
+                 provider's every model (`kimi-code-global/*`), or `*`"
+                    .into(),
+            ));
+        }
+        let list = fallback_list(v).map_err(|why| at(format!("- {why}")))?;
+        if list.is_empty() {
+            return Err(at(
+                "is an empty list; a key with no models is no fallback, so leave it out".into(),
+            ));
+        }
+        if key == "*" {
+            star = list;
+        } else {
+            out.insert(key.clone(), list);
+        }
+    }
+    Ok((star, out))
+}
+
+/// `*`, `provider/*`, or a model name with no `*` and no blank in it.
+fn fallback_key_ok(key: &str) -> bool {
+    if key == "*" {
+        return true;
+    }
+    let name = key.strip_suffix("/*").unwrap_or(key);
+    !name.is_empty() && !name.contains('*') && !name.chars().any(char::is_whitespace)
+}
+
+/// The list a session on `model` falls back along: its own key, then `provider/*`, then `"*"`
+/// (`star`). Most specific wins whole - the lists are never joined.
+pub fn fallback_for<'a>(
+    table: &'a BTreeMap<String, Vec<String>>,
+    star: &'a [String],
+    model: &str,
+) -> &'a [String] {
+    if let Some(list) = table.get(model) {
+        return list;
+    }
+    let provider = model.split_once('/').map_or(model, |(p, _)| p);
+    table
+        .get(&format!("{provider}/*"))
+        .map_or(star, Vec::as_slice)
 }
 
 /// The timeout budget as the file wrote it: a whole number of at least one. Zero is refused

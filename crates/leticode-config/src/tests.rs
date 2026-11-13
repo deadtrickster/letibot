@@ -1321,6 +1321,88 @@ fn a_bad_provider_table_and_two_disagreeing_fallbacks_are_refused_by_name() {
     );
 }
 
+/// `[fallback]` keyed by the model that is out: its own key beats `provider/*`, which beats
+/// `*`, and `fallback = [...]` is still `*`. A higher level's table replaces the lower whole.
+#[test]
+fn a_fallback_table_picks_the_most_specific_key() {
+    let dir = project_dir("fallback_table");
+    let table = write_file(
+        &sub(&dir, "table"),
+        "[fallback]\n\"claude/opus-5-5\" = [\"kimi-code-global/k3.1-pro\", \"deepseek\"]\n\
+         \"kimi-code-global/*\" = [\"glm-coding/glm-5.3\"]\n\"*\" = [\"deepseek\"]\n",
+    );
+    let cfg = LeticodeConfig::load(&table).expect("the table is read");
+    assert_eq!(cfg.fallback, ["deepseek"], "`*` is the list");
+    let pick = |m: &str| fallback_for(&cfg.fallback_for, &cfg.fallback, m).to_vec();
+    assert_eq!(
+        pick("claude/opus-5-5"),
+        ["kimi-code-global/k3.1-pro", "deepseek"]
+    );
+    assert_eq!(pick("kimi-code-global/k3.1-pro"), ["glm-coding/glm-5.3"]);
+    assert_eq!(pick("glm/glm-5.3"), ["deepseek"]);
+    assert_eq!(cfg.limit_policy(), OnLimit::Switch, "a table means switch");
+    assert!(
+        cfg.set_models()
+            .contains(&"fallback for kimi-code-global/* glm-coding/glm-5.3".to_string()),
+        "{:?}",
+        cfg.set_models()
+    );
+
+    // No `*`: a model no key names has no fallback at all.
+    let no_star = write_file(
+        &sub(&dir, "nostar"),
+        "[fallback]\n\"glm/*\" = [\"deepseek\"]\n",
+    );
+    let cfg2 = LeticodeConfig::load(&no_star).unwrap();
+    assert!(fallback_for(&cfg2.fallback_for, &cfg2.fallback, "claude/opus-5-5").is_empty());
+    assert_eq!(
+        fallback_for(&cfg2.fallback_for, &cfg2.fallback, "glm/glm-5.3"),
+        ["deepseek"]
+    );
+
+    // The project's table replaces the user's list whole, and a level that names none keeps it.
+    let list =
+        LeticodeConfig::load(&write_file(&sub(&dir, "list"), "fallback = [\"dense\"]\n")).unwrap();
+    let merged = list.overridden_by(&cfg2);
+    assert!(
+        merged.fallback.is_empty(),
+        "the user's `*` is not inherited"
+    );
+    assert_eq!(merged.fallback_for, cfg2.fallback_for);
+    let kept = cfg.overridden_by(&LeticodeConfig::default());
+    assert_eq!(kept.fallback, ["deepseek"]);
+    assert_eq!(kept.fallback_for.len(), 2);
+}
+
+/// A bad `[fallback]` key or an empty list is refused with its file and line.
+#[test]
+fn a_bad_fallback_table_is_refused_by_line() {
+    let dir = project_dir("fallback_table_bad");
+    for (tag, body, want) in [
+        (
+            "glob",
+            "\n[fallback]\n\"*/glm\" = [\"deepseek\"]\n",
+            "is not a key",
+        ),
+        (
+            "blank",
+            "\n[fallback]\n\"\" = [\"deepseek\"]\n",
+            "is not a key",
+        ),
+        ("empty", "\n[fallback]\n\"glm/*\" = []\n", "empty list"),
+        (
+            "shape",
+            "\n[fallback]\n\"glm/*\" = \"deepseek\"\n",
+            "not a list",
+        ),
+    ] {
+        let path = write_file(&sub(&dir, tag), body);
+        let err = LeticodeConfig::load(&path).expect_err(tag);
+        assert!(err.contains("leticode.toml:3:"), "{tag}: {err}");
+        assert!(err.contains(want), "{tag}: {err}");
+    }
+}
+
 /// `wait_if_within` is a span next to `on_limit`: 45m when absent, `0` allowed, a bare number or
 /// a stranger refused with its file and line, and the project's span beats the user's.
 #[test]

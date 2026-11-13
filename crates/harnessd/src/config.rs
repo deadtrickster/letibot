@@ -531,6 +531,9 @@ pub struct Config {
     /// `providers.toml`, in the order written; empty is the old behaviour. Read once at startup
     /// like `[default]`, so an edit takes effect on the next daemon.
     pub fallback: Vec<String>,
+    /// Per-model lists from a `leticode.toml` `[fallback]` table, keyed by the model that is out
+    /// (or `provider/*`); `fallback` above is the `"*"` list they fall through to.
+    pub fallback_for: std::collections::BTreeMap<String, Vec<String>>,
     /// How many consecutive model timeouts earn one of those moves. A timeout is the failure that
     /// says nothing about the model - the request never came back - so one is weather and a run of
     /// them is the model. 3 unless a session's own `leticode.toml` says otherwise.
@@ -1637,6 +1640,7 @@ impl Config {
             // No fallback until `run` reads `[fallback]`: an empty list is the old behaviour
             // exactly, so a test that wants the fallback path sets this field by hand.
             fallback: Vec::new(),
+            fallback_for: Default::default(),
             // Three timeouts in a row, which is what a session gets before the daemon stops believing
             // the provider is merely slow.
             fallback_after_timeouts: 3,

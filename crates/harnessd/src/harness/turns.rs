@@ -3234,7 +3234,11 @@ impl Harness {
         e: &letibot_turn::HttpError,
         tried: &mut Vec<String>,
     ) -> Option<String> {
-        if !self.worth_moving_for(e) || self.cfg.fallback.is_empty() {
+        let here = self.model_name();
+        let list =
+            crate::leticode_config::fallback_for(&self.cfg.fallback_for, &self.cfg.fallback, &here)
+                .to_vec();
+        if !self.worth_moving_for(e) || list.is_empty() {
             return None;
         }
         if let letibot_turn::HttpError::Status { body, .. } = e
@@ -3242,8 +3246,7 @@ impl Harness {
         {
             return None;
         }
-        let here = self.model_name();
-        for name in self.cfg.fallback.clone() {
+        for name in list {
             // Once each, and never the model that just refused the round. A name
             // already spent is skipped; a name that IS what is answering would be a
             // no-op switch and the same failure one attempt later. A name the provider has

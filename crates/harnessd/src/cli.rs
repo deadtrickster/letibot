@@ -330,10 +330,19 @@ impl Drop for GuestsDown {
 
 /// Where this session's turns go when its model is out. `[fallback] models` is the default and a `leticode.toml` list replaces it whole, so a project naming two does not inherit a third. The timeout budget rides with the list.
 fn session_fallback(cfg: &mut Config) {
-    if !cfg.leticode.fallback.is_empty() {
+    if cfg.leticode.has_fallback() {
+        let mut lists: Vec<String> = cfg
+            .leticode
+            .fallback_for
+            .iter()
+            .map(|(k, l)| format!("{k} → {}", l.join(", ")))
+            .collect();
+        if !cfg.leticode.fallback.is_empty() {
+            lists.push(format!("* → {}", cfg.leticode.fallback.join(", ")));
+        }
         eprintln!(
             "  fallback: {} — from leticode.toml ({})",
-            cfg.leticode.fallback.join(", "),
+            lists.join("; "),
             cfg.leticode
                 .path
                 .as_ref()
@@ -341,6 +350,7 @@ fn session_fallback(cfg: &mut Config) {
                 .unwrap_or_default()
         );
         cfg.fallback = cfg.leticode.fallback.clone();
+        cfg.fallback_for = cfg.leticode.fallback_for.clone();
     }
     if let Some(n) = cfg.leticode.fallback_after_timeouts {
         cfg.fallback_after_timeouts = n;
