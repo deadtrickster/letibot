@@ -1023,11 +1023,15 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 
     if let Some(p) = cfg.provider.as_mut() {
         if p.name.is_empty() {
-            return Err(
-                "--api-key / --thinking need --provider NAME (deepseek | glm | glm-coding | \
-                 glm-coding-cn | grok)"
-                    .into(),
-            );
+            // Read off the preset table, so a door added there is named here too.
+            let names: Vec<&str> = letibot_provider::presets::ALL
+                .iter()
+                .map(|p| p.name)
+                .collect();
+            return Err(format!(
+                "--api-key / --thinking need --provider NAME ({})",
+                names.join(" | ")
+            ));
         }
         p.model = model_given.clone();
     }

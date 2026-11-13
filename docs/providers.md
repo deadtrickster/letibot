@@ -1,4 +1,4 @@
-# Cloud providers: OpenAI, GLM, DeepSeek, Grok, Anthropic, Gemini
+# Cloud providers: OpenAI, GLM, DeepSeek, Grok, Kimi, Anthropic, Gemini
 
 `crates/provider` (`letibot-provider`) is the one crate in the tree with a TLS stack (ureq +
 rustls); the engine above it stays a state machine with no runtime under it.
@@ -23,15 +23,28 @@ harnessd --provider openai   [--model MODEL] [--thinking] [--effort high] …
 | `anthropic` | `api.anthropic.com/v1/messages` | `$ANTHROPIC_API_KEY` |
 | `deepseek-anthropic` | `api.deepseek.com/anthropic` | `$DEEPSEEK_API_KEY` |
 | `glm-anthropic` | `api.z.ai/api/anthropic` | the same GLM key |
-| `kimi-coding` | `api.kimi.ai/coding` | `$KIMI_API_KEY`, or `MOONSHOT_API_KEY` |
+| `kimi-code` | `api.kimi.com/coding` | `$KIMI_API_KEY`, or `KIMI_CODE_API_KEY` |
+| `kimi-code-global` | `api.kimi.ai/coding` | the same key |
+| `kimi-coding` | `api.kimi.ai/coding/v1/messages` | the same key |
 | `gemini` | `generativelanguage.googleapis.com` | `$GEMINI_API_KEY`, or `GOOGLE_API_KEY` |
 
 Anything else is refused, naming every provider this build knows. `--model` defaults to the
-catalogue's pick for that provider, and `--thinking` asks for a reasoning turn - which on GLM is a
-field of its own, on OpenAI is `reasoning.effort` and on Gemini `thinkingConfig.thinkingLevel`,
+catalogue's pick for that provider, and `--thinking` asks for a reasoning turn - which on GLM and
+Kimi is a field of its own, on OpenAI is `reasoning.effort` and on Gemini `thinkingConfig.thinkingLevel`,
 both taken from `--effort` when that is set.
 The coding plan is a subscription: the metered GLM name on that key answers a 429 that reads like an
 empty account, which is why it is a preset of its own.
+
+Kimi's coding plan is the same shape and is not the pay-per-token Open Platform
+(`api.moonshot.ai/v1`, `$MOONSHOT_API_KEY`): those keys and URLs are not interchangeable, and one
+Kimi key works on one region's host only. Two things are Kimi's rather than OpenAI's: an assistant
+message that proposed a tool call must carry `reasoning_content` (this build sends `""` where no
+thought was recorded), and K3.1 Pro refuses a request that turns thinking off, so a cheap turn on it
+leaves the switch out. Kimi also admits the coding clients it recognises by `User-Agent`, so every
+request there names itself `letibot/<version>`; passing for another agent is a documented violation,
+and a 403 says which gate refused it. A 429 carrying `exceeded_current_quota_error` is a spent plan
+rather than a wait: it is not retried, while the plan's 5-hour and weekly limits are, with their
+reset.
 
 ## Four protocols
 

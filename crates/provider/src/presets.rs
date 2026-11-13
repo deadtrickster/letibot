@@ -188,7 +188,8 @@ pub const KIMI_CODING: Preset = Preset {
     url: "https://api.kimi.ai/coding/v1/messages",
     key_env: "KIMI_API_KEY",
     protocol: Protocol::AnthropicMessages,
-    alt_envs: &["MOONSHOT_API_KEY"],
+    // Not `MOONSHOT_API_KEY`: that is the metered Open Platform's key, another product's.
+    alt_envs: &["KIMI_CODE_API_KEY"],
     fallback_model: "k3",
     thinking_field: None,
     catalogue_id: "kimi-code-plan-global",

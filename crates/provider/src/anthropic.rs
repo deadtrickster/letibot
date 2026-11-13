@@ -285,6 +285,9 @@ impl AnthropicProvider {
                 .header("anthropic-version", API_VERSION)
                 .header("Content-Type", "application/json")
                 .header("Accept", "text/event-stream")
+                // Kimi's plan admits coding clients by this header (`kimi-coding` is a Messages
+                // door to it), and our own name is the honest one on every other door.
+                .header("User-Agent", crate::kimi::USER_AGENT)
                 .send(payload.as_bytes())
             {
                 Ok(resp) => break resp,
