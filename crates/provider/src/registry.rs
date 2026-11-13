@@ -134,7 +134,10 @@ impl Registry {
         let hit = self
             .entries
             .iter()
-            .find(|e| e.name == want || e.aliases.iter().any(|a| a.eq_ignore_ascii_case(&want)))
+            .find(|e| {
+                e.name.eq_ignore_ascii_case(&want)
+                    || e.aliases.iter().any(|a| a.eq_ignore_ascii_case(&want))
+            })
             .or_else(|| {
                 let builtin = Preset::parse(&want).ok()?;
                 self.entries.iter().find(|e| e.name == builtin.name)

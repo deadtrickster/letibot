@@ -64,6 +64,10 @@ fn a_new_door_is_built_from_its_entry_and_a_stray_key_is_refused() {
     );
     let r = Registry::read_with(Some(&f), &no_env);
     let p = r.find("mp").unwrap();
+    assert!(
+        std::ptr::eq(p, r.find("MyProxy").unwrap()),
+        "a name is matched without case"
+    );
     assert_eq!(p.name, "myproxy");
     assert_eq!(p.protocol, Protocol::AnthropicMessages);
     assert_eq!(p.key_env, "MYPROXY_API_KEY");
