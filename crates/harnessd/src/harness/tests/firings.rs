@@ -152,8 +152,16 @@ fn a_burst_is_one_delivery_and_it_is_taken_once() {
         true,
     )
     .unwrap();
+    // Appended, not rewritten: `fs::write` truncates first, and the monitor's own poller can
+    // see the empty file between the two calls and fire for it.
     for n in 0..20 {
-        std::fs::write(&log, format!("line {n}")).unwrap();
+        use std::io::Write as _;
+        let mut f = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .unwrap();
+        f.write_all(format!("line {n}\n").as_bytes()).unwrap();
         ms.tick();
     }
     assert_eq!(
