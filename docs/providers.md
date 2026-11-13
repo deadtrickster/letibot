@@ -46,6 +46,64 @@ and a 403 says which gate refused it. A 429 carrying `exceeded_current_quota_err
 rather than a wait: it is not retried, while the plan's 5-hour and weekly limits are, with their
 reset.
 
+## Your own provider
+
+Any endpoint speaking one of the four protocols is a few lines of
+`~/.config/letibot/providers.toml`, or two environment variables. `letibot --providers` lists every
+door with its protocol, URL, key variable and where it was defined.
+
+Kimi's coding plan over Messages:
+
+```toml
+[provider.kimi-messages]
+protocol = "anthropic-messages"    # chat-completions | anthropic-messages | responses | genai
+url = "https://api.kimi.ai/coding/v1/messages"
+key_env = "KIMI_API_KEY"
+model = "k3.1-pro"
+catalogue = "kimi-code-plan-global"   # models.dev id: window and prices
+fixed = ["temperature", "top_p", "n", "presence_penalty", "frequency_penalty"]
+```
+
+An OpenAI-compatible proxy (LiteLLM, vLLM, a gateway):
+
+```toml
+[provider.myproxy]
+protocol = "chat-completions"
+url = "http://127.0.0.1:4000/v1/chat/completions"
+key_env = "MYPROXY_API_KEY"    # or key = "…"; default $MYPROXY_API_KEY
+model = "qwen-coder"
+window = 131072                # no catalogue: say it, or the window is unknown
+aliases = ["proxy"]
+thinking = "thinking"          # the body field that switches reasoning, if any
+
+[prices."qwen-coder"]          # optional; without it the model is unpriced, never free
+input = 0.2
+cached = 0.02
+output = 0.6
+```
+
+The env form, as Claude Code reads it:
+
+```sh
+ANTHROPIC_BASE_URL=https://api.kimi.ai/coding/ ANTHROPIC_API_KEY=sk-… ANTHROPIC_MODEL=k3.1-pro \
+  letibot --provider env-anthropic
+OPENAI_BASE_URL=http://127.0.0.1:4000/v1 OPENAI_API_KEY=sk-… OPENAI_MODEL=qwen-coder \
+  letibot --provider env-openai     # LETIBOT_OPENAI_PROTOCOL=responses for the Responses wire
+```
+
+`ANTHROPIC_AUTH_TOKEN` stands in for `ANTHROPIC_API_KEY` on `env-anthropic` and is also sent as a
+bearer token. `/v1/messages`, `/chat/completions` or `/responses` is appended to a base URL that
+does not already end in it.
+
+Which wins: an entry named for a built-in (`[provider.deepseek]`) changes that built-in field by
+field and leaves the rest. An env door has its own name, `env-anthropic` or `env-openai`, and
+without a base URL the variables mean what they always did: the built-in `anthropic` and `openai`
+keys. A new entry needs `protocol`, `url` and `model`. An unknown protocol, a key the entry does
+not take or a `fixed` word that is not a sampling key refuses the daemon at start, naming the file,
+the entry and the key. A door with no catalogue lists its models from the endpoint's own
+`GET …/models`, fetched once per daemon, and its window and prices come from `window` and
+`[prices."<model>"]` or are shown as unknown.
+
 ## Four protocols
 
 A preset's `protocol` is the whole of the choice, and `harness::open::build_provider` is where it is
