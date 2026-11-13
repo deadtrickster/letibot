@@ -161,7 +161,7 @@ fn every_frame_is_accounted_for_at_this_version() {
         "the match above was last reconciled with the frame list at 73. 73 added \
              `SessionEvent::HeldResults`'s `room` and `SessionStatus`'s `held_rooms`: what a session \
              has been TOLD and its model has not been shown - a room line nothing rang for, held \
-             until its quiet window passes and then said as one digest (R203). Both are \
+             until its quiet window passes and then said as one digest (R204). Both are \
              `serde(default)`, so a version-72 head parses the event and the status and drops the \
              field - which is why the number moves: the head would draw no held counter for the \
              lines that are waiting, and the picker's row would not say `N held` either, so the one \
