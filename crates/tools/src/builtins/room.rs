@@ -96,7 +96,7 @@ impl Tool for RoomTool {
                             "own", "hand", "accept", "release", "status", "rooms", "archive",
                             "unarchive"
                         ],
-                        "description": "`post` tag+body; `claim`/`queue` tag; `item` reads a row by number; an item verb an item; `rule` question+decision; `say`/`ask` text; `answer`/`decline` ask+text; `own`/`hand`/`accept`/`release` scope."
+                        "description": "`post` tag+body; `claim`/`queue` tag; `item` reads a row; an item verb an item; `rule` question+decision; `say`/`ask` text; `answer`/`decline` ask+text; `own`/`hand`/`accept`/`release` scope."
                     },
                     "tag": {
                         "type": "string",
@@ -104,11 +104,11 @@ impl Tool for RoomTool {
                     },
                     "body": {
                         "type": "string",
-                        "description": "The need: `8 GB, 10 min`."
+                        "description": "Need: `8 GB, 10 min`."
                     },
                     "item": {
                         "type": "integer",
-                        "description": "The item's number."
+                        "description": "Its number."
                     },
                     "ask": {
                         "type": "integer",
@@ -116,7 +116,7 @@ impl Tool for RoomTool {
                     },
                     "text": {
                         "type": "string",
-                        "description": "A message, your line, or an answer."
+                        "description": "A message, your line or an answer."
                     },
                     "why": {
                         "type": "string"
@@ -140,7 +140,7 @@ impl Tool for RoomTool {
                     },
                     "path": {
                         "type": "string",
-                        "description": "`ask`: a repo path."
+                        "description": "`ask`: repo path."
                     },
                     "topic": {
                         "type": "string",
@@ -160,7 +160,7 @@ impl Tool for RoomTool {
                     },
                     "thread": {
                         "type": "integer",
-                        "description": "`say`/`own`: the seq answered. `read`: that thread."
+                        "description": "`say`/`own`: seq answered. `read`: that thread."
                     },
                     "todo": {
                         "type": "string",
