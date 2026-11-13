@@ -88,8 +88,8 @@ fn repo_and_paths(dir: &Path) -> (PathBuf, Paths) {
 }
 
 /// The host a placement is made to: no mise, and no boundary, because the probe would answer
-/// differently on Linux and on a Mac. The bound is short because the sweep inherits it, and the
-/// queue this test fills is what the sweep must wait out.
+/// differently on Linux and on a Mac. The sweep inherits the bound and the full queue is waited out
+/// at it, so it is as short as a loaded box lets the second sweep's real call answer within.
 fn spec_for(repo: &Path, paths: &Paths, program: &Path) -> SshSpec {
     SshSpec {
         host: Host {
@@ -108,7 +108,7 @@ fn spec_for(repo: &Path, paths: &Paths, program: &Path) -> SshSpec {
         exec: true,
         ssh: Some(program.to_path_buf()),
         paths: Some(paths.clone()),
-        bound: Some(Duration::from_secs(3)),
+        bound: Some(Duration::from_secs(10)),
         place_bound: None,
         egress: Egress::Denied,
         confine: Some(false),
