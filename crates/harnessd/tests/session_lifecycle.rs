@@ -879,8 +879,8 @@ fn a_package_daemon_with_only_its_gatekeeper_idles_out() {
 #[test]
 fn an_idle_package_with_a_head_attached_is_closed_and_lets_its_daemon_go() {
     let _one = serial();
-    let mut d = a_daemon_with_no_model("harnessd-reap-idle");
-    let mut sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
+    let d = a_daemon_with_no_model("harnessd-reap-idle");
+    let sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
         .expect("the daemon opens");
     let store_path = d.cfg.store.clone().expect("a store");
     let store = letibot_tokencore::store::Store::open(&store_path).expect("a second reader");

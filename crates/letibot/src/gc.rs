@@ -444,7 +444,10 @@ fn open_for_acts(owner: Option<&str>) -> Result<(Store, Places), String> {
         .and_then(|o| o.repo)
         .map(|repo| letibot_tokencore::migrate_split::project_key(&repo))
         .unwrap_or_else(|| "000000000000".to_string());
-    let store = Store::open_set(&target, &key).map_err(|e| format!("{}: {e}", target.display()))?;
+    // An EXISTING set: a verb that acts must not create a project file for a key nobody works in,
+    // which is the R129 rake in the other direction. A set opens without its project file.
+    let store = Store::open_set_existing(&target, &key)
+        .map_err(|e| format!("{}: {e}", target.display()))?;
     Ok((store, Places::here()))
 }
 
