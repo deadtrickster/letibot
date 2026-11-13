@@ -1,4 +1,16 @@
-//! The three providers, as facts about their doors.
+//! The providers, as facts about their doors.
+
+/// Which protocol a door speaks: the shape of the request body and of the stream. Two protocols
+/// are spoken here, and which one a preset is decides which client builds the session's backend -
+/// one match arm in `harness::open::build_provider`, so a third can arrive without touching either
+/// client.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Protocol {
+    /// OpenAI chat completions: `POST …/chat/completions`, `data:` chunks, `[DONE]`.
+    ChatCompletions,
+    /// Anthropic Messages: `POST …/v1/messages`, `anthropic-version`, named SSE events.
+    AnthropicMessages,
+}
 
 /// One provider's shape: where it is, which header carries the key, and which
 /// environment variable the operator will have put the key in.
@@ -7,6 +19,8 @@ pub struct Preset {
     pub name: &'static str,
     pub url: &'static str,
     pub key_env: &'static str,
+    /// What the request body and the stream look like on this door.
+    pub protocol: Protocol,
     /// Other names the same key goes by (a vendor's SDK and its rebrand).
     pub alt_envs: &'static [&'static str],
     /// The fallback for a box with no catalogue: the API accepts a retired name and
@@ -32,6 +46,7 @@ pub const DEEPSEEK: Preset = Preset {
     name: "deepseek",
     url: "https://api.deepseek.com/chat/completions",
     key_env: "DEEPSEEK_API_KEY",
+    protocol: Protocol::ChatCompletions,
     alt_envs: &[],
     fallback_model: "deepseek-flash",
     thinking_field: None,
@@ -42,6 +57,7 @@ pub const GLM: Preset = Preset {
     name: "glm",
     url: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
     key_env: "ZHIPUAI_API_KEY",
+    protocol: Protocol::ChatCompletions,
     alt_envs: &["ZHIPU_API_KEY", "ZAI_API_KEY", "GLM_API_KEY"],
     fallback_model: "glm-5.3-flash",
     // Zhipu's `thinking: {"type": "enabled"}` switches GLM's reasoning on; the
@@ -68,6 +84,7 @@ pub const GLM_CODING: Preset = Preset {
     name: "glm-coding",
     url: "https://api.z.ai/api/coding/paas/v4/chat/completions",
     key_env: "ZHIPUAI_API_KEY",
+    protocol: Protocol::ChatCompletions,
     alt_envs: &["ZHIPU_API_KEY", "ZAI_API_KEY", "GLM_API_KEY"],
     // The catalogue's rule picks this: the plan's models tie on window and price, so the
     // qualifier and version rungs decide, and they name glm-5.3.
@@ -81,6 +98,7 @@ pub const GLM_CODING_CN: Preset = Preset {
     name: "glm-coding-cn",
     url: "https://open.bigmodel.cn/api/coding/paas/v4/chat/completions",
     key_env: "ZHIPUAI_API_KEY",
+    protocol: Protocol::ChatCompletions,
     alt_envs: &["ZHIPU_API_KEY", "ZAI_API_KEY", "GLM_API_KEY"],
     fallback_model: "glm-5.3",
     thinking_field: Some("thinking"),
@@ -91,13 +109,97 @@ pub const GROK: Preset = Preset {
     name: "grok",
     url: "https://api.x.ai/v1/chat/completions",
     key_env: "XAI_API_KEY",
+    protocol: Protocol::ChatCompletions,
     alt_envs: &["GROK_API_KEY"],
     fallback_model: "grok-4.3",
     thinking_field: None,
     catalogue_id: "xai",
 };
 
-pub const ALL: &[&Preset] = &[&DEEPSEEK, &GLM, &GLM_CODING, &GLM_CODING_CN, &GROK];
+/// Anthropic's own API, speaking Messages. The key is the console's `x-api-key`, which is the one
+/// header every Anthropic-compatible endpoint reads; `ANTHROPIC_AUTH_TOKEN` is deliberately not an
+/// alias, because that variable carries an OAuth bearer token for a different header.
+///
+/// <https://platform.claude.com/docs/en/api/messages>
+///
+/// The fallback is the model the models overview tells an unsure operator to start with
+/// (<https://platform.claude.com/docs/en/about-claude/models/overview>), and the catalogue may
+/// carry `anthropic` on a box that has refreshed it - this preset is written to work without one.
+pub const ANTHROPIC: Preset = Preset {
+    name: "anthropic",
+    url: "https://api.anthropic.com/v1/messages",
+    key_env: "ANTHROPIC_API_KEY",
+    protocol: Protocol::AnthropicMessages,
+    alt_envs: &[],
+    fallback_model: "claude-opus-5-5",
+    thinking_field: None,
+    catalogue_id: "anthropic",
+};
+
+/// DeepSeek's Anthropic-compatible door: the same models as [`DEEPSEEK`], the Messages wire, and a
+/// base URL of `/anthropic` - the endpoint reads `x-api-key` as well as a bearer token, and ignores
+/// `anthropic-version`.
+///
+/// <https://api-docs.deepseek.com/guides/anthropic_api>
+///
+/// Its catalogue id is `deepseek`'s: the door serves the same models, so a turn is priced by the
+/// model's name rather than by the spelling of the URL.
+pub const DEEPSEEK_ANTHROPIC: Preset = Preset {
+    name: "deepseek-anthropic",
+    url: "https://api.deepseek.com/anthropic/v1/messages",
+    key_env: "DEEPSEEK_API_KEY",
+    protocol: Protocol::AnthropicMessages,
+    alt_envs: &[],
+    fallback_model: "deepseek-flash",
+    thinking_field: None,
+    catalogue_id: "deepseek",
+};
+
+/// Z.ai's Anthropic-compatible door, which is the one their Claude Code instructions point at:
+/// same coding-plan models as [`GLM_CODING`], a different wire.
+///
+/// <https://docs.z.ai/scenario-example/develop-tools/claude>
+pub const GLM_ANTHROPIC: Preset = Preset {
+    name: "glm-anthropic",
+    url: "https://api.z.ai/api/anthropic/v1/messages",
+    key_env: "ZHIPUAI_API_KEY",
+    protocol: Protocol::AnthropicMessages,
+    alt_envs: &["ZHIPU_API_KEY", "ZAI_API_KEY", "GLM_API_KEY"],
+    fallback_model: "glm-5.3",
+    thinking_field: None,
+    catalogue_id: "zai-coding-plan",
+};
+
+/// Moonshot's Kimi Code plan, whose Claude Code instructions give the base URL
+/// `https://api.kimi.ai/coding/` and let the tool append `/v1/messages`. The path here is the whole
+/// of it, because this client posts the URL it is given rather than a base URL.
+///
+/// <https://www.kimi.com/code/docs/en/third-party-tools/claude-code>
+///
+/// The key variable is not `ANTHROPIC_API_KEY`: a box may hold both doors' keys at once, and one
+/// variable for two providers is one provider's key silently sent to the other.
+pub const KIMI_CODING: Preset = Preset {
+    name: "kimi-coding",
+    url: "https://api.kimi.ai/coding/v1/messages",
+    key_env: "KIMI_API_KEY",
+    protocol: Protocol::AnthropicMessages,
+    alt_envs: &["MOONSHOT_API_KEY"],
+    fallback_model: "k3.1-pro",
+    thinking_field: None,
+    catalogue_id: "moonshotai",
+};
+
+pub const ALL: &[&Preset] = &[
+    &DEEPSEEK,
+    &GLM,
+    &GLM_CODING,
+    &GLM_CODING_CN,
+    &GROK,
+    &ANTHROPIC,
+    &DEEPSEEK_ANTHROPIC,
+    &GLM_ANTHROPIC,
+    &KIMI_CODING,
+];
 
 impl Preset {
     /// The context window to plan compaction against, from the catalogue; `None` when it
@@ -118,8 +220,8 @@ impl Preset {
             .unwrap_or_else(|| self.fallback_model.to_string())
     }
 
-    /// Names this build knows, with the aliases each answers to; anything else is an
-    /// error naming all five rather than a guess.
+    /// Names this build knows, with the aliases each answers to; anything else is an error naming
+    /// every one rather than a guess.
     pub fn parse(s: &str) -> Result<&'static Preset, String> {
         match s.trim().to_ascii_lowercase().as_str() {
             "deepseek" => Ok(&DEEPSEEK),
@@ -129,9 +231,16 @@ impl Preset {
             "glm-coding" | "zai-coding" | "coding-plan" => Ok(&GLM_CODING),
             "glm-coding-cn" | "zhipu-coding" | "bigmodel-coding" => Ok(&GLM_CODING_CN),
             "grok" | "xai" | "x.ai" => Ok(&GROK),
+            // The same vendors over the Messages wire. Their own names, because a base URL moved
+            // onto another protocol is a different door: one answers `tool_result` and the other
+            // `tool` messages, and a preset is what that choice is written down as.
+            "anthropic" | "claude" => Ok(&ANTHROPIC),
+            "deepseek-anthropic" | "deepseek-messages" => Ok(&DEEPSEEK_ANTHROPIC),
+            "glm-anthropic" | "zai-anthropic" | "glm-messages" => Ok(&GLM_ANTHROPIC),
+            "kimi-coding" | "kimi" | "moonshot" => Ok(&KIMI_CODING),
             other => Err(format!(
-                "`{other}` is not a provider this build knows; there are five: deepseek, \
-                 glm, glm-coding, glm-coding-cn, grok"
+                "`{other}` is not a provider this build knows; there are nine: {}",
+                ALL.iter().map(|p| p.name).collect::<Vec<_>>().join(", ")
             )),
         }
     }
@@ -171,7 +280,20 @@ mod tests {
         // 1000 prompt of which 600 cached, 100 out: 400*1 + 600*0.1 + 100*2 = 660 micro-USD.
         assert_eq!(p.micros(1000, 600, 100), 660);
         assert_eq!(Preset::parse("Zhipu").unwrap().name, "glm");
-        assert!(Preset::parse("openai").unwrap_err().contains("five"));
+        let unknown = Preset::parse("openai").unwrap_err();
+        assert!(
+            unknown.contains("not a provider this build knows"),
+            "{unknown}"
+        );
+        // Every door has to be reachable by its own name, or `ALL` and `parse` disagree about what
+        // this build knows and a picker offers a name the flag refuses.
+        for preset in ALL {
+            assert_eq!(Preset::parse(preset.name).map(|p| p.name), Ok(preset.name));
+        }
+        // The Messages doors are the ones a head may not assume: a door's protocol is what decides
+        // which client answers for it.
+        assert_eq!(ANTHROPIC.protocol, Protocol::AnthropicMessages);
+        assert_eq!(DEEPSEEK.protocol, Protocol::ChatCompletions);
     }
 
     /// Every `fallback_model` must be a name the catalogue carries in its shortest form,

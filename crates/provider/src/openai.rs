@@ -797,6 +797,8 @@ impl Accumulator {
                 micros_usd,
             },
             raw_usage: u.map(|u| u.to_string()),
+            // Plain text: this API signs nothing, so its reasoning is all the row needs.
+            thoughts: Vec::new(),
         }
     }
 }

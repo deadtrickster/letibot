@@ -1,4 +1,4 @@
-# Cloud providers: GLM, DeepSeek, Grok
+# Cloud providers: GLM, DeepSeek, Grok, Anthropic
 
 `crates/provider` (`letibot-provider`) is the one crate in the tree with a TLS stack (ureq +
 rustls); the engine above it stays a state machine with no runtime under it.
@@ -8,6 +8,7 @@ rustls); the engine above it stays a state machine with no runtime under it.
 ```
 harnessd --provider deepseek [--model MODEL] …
 harnessd --provider glm      [--model MODEL] [--thinking] …
+harnessd --provider anthropic [--model MODEL] [--thinking] …
 ```
 
 | `--provider` | endpoint | key |
@@ -17,11 +18,28 @@ harnessd --provider glm      [--model MODEL] [--thinking] …
 | `glm-coding` | `api.z.ai/api/coding` | the same key |
 | `glm-coding-cn` | `open.bigmodel.cn/api/coding` | the same key |
 | `grok` | `api.x.ai` | `$XAI_API_KEY`, or `GROK_API_KEY` |
+| `anthropic` | `api.anthropic.com/v1/messages` | `$ANTHROPIC_API_KEY` |
+| `deepseek-anthropic` | `api.deepseek.com/anthropic` | `$DEEPSEEK_API_KEY` |
+| `glm-anthropic` | `api.z.ai/api/anthropic` | the same GLM key |
+| `kimi-coding` | `api.kimi.ai/coding` | `$KIMI_API_KEY`, or `MOONSHOT_API_KEY` |
 
-Anything else is refused, naming all five. `--model` defaults to the catalogue's pick for that
-provider, and `--thinking` asks for a reasoning turn, which only the GLM presets have a field for.
-The coding plan is a subscription: the metered GLM name on that key answers a 429 that reads like an
-empty account, which is why it is a preset of its own.
+Anything else is refused, naming every one. `--model` defaults to the catalogue's pick for that
+provider, and `--thinking` asks for a reasoning turn. The coding plan is a subscription: the metered
+GLM name on that key answers a 429 that reads like an empty account, which is why it is a preset of
+its own.
+
+## Two protocols
+
+Every preset before the last four speaks OpenAI chat completions. The last four speak Anthropic
+Messages (`crates/provider/src/anthropic.rs`): the system prompt is a top-level field, a tool result
+is a `tool_result` block in the user turn that answers it, and the stream is named SSE events. A
+preset's `protocol` is the whole of the choice - `harness::open::build_provider` is where it is made.
+
+A Messages provider signs its thinking: the block comes back with a `signature` that must go back
+unmodified, so it is kept on the reasoning row (`ReasoningField::Signed`, or `Redacted` for the
+encrypted form) and replayed from there. A model that only has the old manual thinking mode is asked
+again for it when it refuses `adaptive` by name; a history whose signatures the API will not accept
+is retried once with every thinking block left out, which is the API's own documented remedy.
 
 The key comes from the environment above, `--api-key` for a one-off, or
 `~/.config/letibot/providers.toml`:

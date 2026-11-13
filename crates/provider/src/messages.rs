@@ -308,7 +308,15 @@ pub fn carries_pictures<'a>(items: impl IntoIterator<Item = &'a TranscriptItem>)
 
 /// What one picture becomes: sent, or the reason it is not. The order of the three reasons is
 /// their scope: the model, then the bytes, then what a provider said about this picture.
-fn picture_fate(data_ref: &str, eyes: Eyes<'_>, withheld: Withheld<'_>) -> Option<String> {
+///
+/// `pub(crate)` because the Messages protocol asks the same question of the same picture and
+/// must answer it the same way: two answers would be one model sent an image by one door and a
+/// placeholder by another.
+pub(crate) fn picture_fate(
+    data_ref: &str,
+    eyes: Eyes<'_>,
+    withheld: Withheld<'_>,
+) -> Option<String> {
     if !eyes.takes_images() {
         return Some(eyes.why_not().unwrap_or_default());
     }
@@ -321,7 +329,7 @@ fn picture_fate(data_ref: &str, eyes: Eyes<'_>, withheld: Withheld<'_>) -> Optio
 /// One picture, said as one text part, for a model that will not be given it. It carries no name,
 /// so it is named by its position among its message's images. The size is the DECODED size,
 /// because base64 is 4/3 of it and that ratio is an encoding detail.
-fn not_sent_said(nth: usize, mime: &str, bytes: Option<usize>, why: &str) -> String {
+pub(crate) fn not_sent_said(nth: usize, mime: &str, bytes: Option<usize>, why: &str) -> String {
     let size = match bytes {
         Some(n) => size_said(n),
         None => "size unknown".to_string(),
@@ -330,7 +338,7 @@ fn not_sent_said(nth: usize, mime: &str, bytes: Option<usize>, why: &str) -> Str
 }
 
 /// The decoded length of a `data:<mime>;base64,<payload>` reference.
-fn data_ref_bytes(data_ref: &str) -> Option<usize> {
+pub(crate) fn data_ref_bytes(data_ref: &str) -> Option<usize> {
     let payload = data_ref.split_once(";base64,")?.1;
     if payload.len() % 4 != 0 {
         return None;
