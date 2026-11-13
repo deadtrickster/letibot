@@ -89,9 +89,8 @@ fn package(id: &str, lease_ms: i64, idle: i64) -> OwnerRow {
     o
 }
 
-fn activity(last_ms: i64, busy: bool) -> Activity {
+fn activity(busy: bool) -> Activity {
     Activity {
-        last_ms: Some(last_ms),
         busy,
         parent: None,
         daemon: None,
@@ -104,10 +103,10 @@ fn activity(last_ms: i64, busy: bool) -> Activity {
 fn a_turn_in_flight_is_never_idle() {
     let o = package("s-1", 0, 60_000);
     assert!(
-        close_due(&o, &activity(0, true), 600_000).is_none(),
+        close_due(&o, &activity(true), 600_000).is_none(),
         "a busy owner was closed for idleness"
     );
-    assert!(close_due(&o, &activity(0, false), 600_000).is_some());
+    assert!(close_due(&o, &activity(false), 600_000).is_some());
 }
 
 /// The notice comes five minutes before the close, and not before - so a session that spoke
@@ -115,7 +114,7 @@ fn a_turn_in_flight_is_never_idle() {
 #[test]
 fn the_notice_is_five_minutes_ahead_of_the_close() {
     let o = package("s-1", 0, 60 * 60 * 1000);
-    let a = activity(0, false);
+    let a = activity(false);
     let closes_at = 60 * 60 * 1000;
     assert_eq!(notice_at(&o, &a, 1_000), None, "nothing to say yet");
     assert_eq!(
@@ -135,7 +134,7 @@ fn the_notice_is_five_minutes_ahead_of_the_close() {
 fn a_hard_ttl_does_not_care_what_the_owner_is_doing() {
     let mut o = package("s-1", 0, 60_000);
     o.hard_ttl_ms = Some(3_600_000);
-    let busy = activity(3_599_999, true);
+    let busy = activity(true);
     assert!(close_due(&o, &busy, 3_600_000).is_some());
 }
 
@@ -144,9 +143,9 @@ fn a_hard_ttl_does_not_care_what_the_owner_is_doing() {
 fn a_hold_stops_the_close_and_an_expired_one_does_not() {
     let mut o = package("s-1", 0, 60_000);
     o.held_until_ms = Some(0);
-    assert!(close_due(&o, &activity(0, false), 10_000_000).is_none());
+    assert!(close_due(&o, &activity(false), 10_000_000).is_none());
     o.held_until_ms = Some(5_000);
-    assert!(close_due(&o, &activity(0, false), 10_000_000).is_some());
+    assert!(close_due(&o, &activity(false), 10_000_000).is_some());
 }
 
 /// A child does not outlive a parent whose compute is gone.
@@ -157,7 +156,7 @@ fn a_closed_parent_takes_its_child_with_it() {
     child.parent_id = Some("s-1".into());
     let a = Activity {
         parent: Some(OwnerState::Closed),
-        ..activity(0, false)
+        ..activity(false)
     };
     let why = close_due(&child, &a, 1_000).expect("a child of a closed parent is closed");
     assert!(why.contains("s-1"), "{why}");
@@ -171,7 +170,7 @@ fn an_interactive_session_is_never_closed_automatically() {
     o.hard_ttl_ms = Some(2_000);
     let a = Activity {
         daemon: Some(false),
-        ..activity(0, false)
+        ..activity(false)
     };
     assert!(close_due(&o, &a, 10_000_000).is_none());
 }
@@ -182,7 +181,7 @@ fn a_record_with_no_process_behind_it_closes_the_owner() {
     let o = package("s-1", 0, 60 * 60 * 1000);
     let a = Activity {
         daemon: Some(false),
-        ..activity(now_ms(), false)
+        ..activity(false)
     };
     let why = close_due(&o, &a, now_ms()).expect("its daemon is gone");
     assert!(why.contains("daemon"), "{why}");

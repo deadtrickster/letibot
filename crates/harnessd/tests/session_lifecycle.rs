@@ -885,16 +885,18 @@ fn an_idle_package_with_a_head_attached_is_closed_and_lets_its_daemon_go() {
     let store_path = d.cfg.store.clone().expect("a store");
     let store = letibot_tokencore::store::Store::open(&store_path).expect("a second reader");
 
-    // The session is a PACKAGE with a one-second idle TTL that has already run out - what the
-    // reaper would see thirty minutes into a package's quiet, in a window a test can wait for.
+    // The session is a PACKAGE on a ten-minute idle clock, told five minutes before the close.
+    // The first pass falls inside that heads-up window; the second, with the lease moved back, is
+    // the one that closes it - which is the order the design has them in, said by the journal.
     let now = letibot_metrics::now_ms() as i64;
+    let ttl = 10 * 60 * 1000;
     let mut owner = letibot_tokencore::store::OwnerRow::live(
         ROOT,
         letibot_tokencore::store::OwnerKind::Package,
         Some("/tmp".into()),
-        now - 60_000,
+        now - ttl + 60_000,
     );
-    owner.idle_ttl_ms = Some(1_000);
+    owner.idle_ttl_ms = Some(ttl);
     store.put_owner(&owner).expect("the owner row");
 
     // A bridge head is attached, which is the hold that used to keep this daemon up for ever.
@@ -912,19 +914,37 @@ fn an_idle_package_with_a_head_attached_is_closed_and_lets_its_daemon_go() {
         .expect("the session row")
         .items;
 
-    // One pass of the daemon's own reaper.
+    // The pass inside the heads-up window: the notice, and no close.
     let acts = letibot_harnessd::reap_pass::pass(&store, Some(&d.registry), "daemon test");
-    let notice = acts
-        .iter()
-        .position(|l| l.contains("plan") && l.contains("closing in"));
-    let close = acts.iter().position(|l| l.contains(" close"));
     assert!(
-        notice.is_some(),
-        "the notice is written first and recorded: {acts:?}"
+        acts.iter()
+            .any(|l| l.contains("plan") && l.contains("closing in")),
+        "the notice comes first and is recorded: {acts:?}"
     );
+    assert_eq!(
+        store.owner(ROOT).unwrap().unwrap().state,
+        letibot_tokencore::store::OwnerState::Live,
+        "the notice is not the close: {acts:?}"
+    );
+
+    // And the pass that closes it, the idle clock having run out.
+    store
+        .put_owner(&letibot_tokencore::store::OwnerRow {
+            lease_ms: now - ttl - 60_000,
+            ..owner.clone()
+        })
+        .expect("the clock moved on");
+    let acts = letibot_harnessd::reap_pass::pass(&store, Some(&d.registry), "daemon test");
     assert!(
-        close.is_some_and(|c| c > notice.unwrap()),
-        "the close comes after the notice: {acts:?}"
+        acts.iter().any(|l| l.contains("close")),
+        "the close is recorded: {acts:?}"
+    );
+    let journal = store.reap_events_of(ROOT).expect("the journal");
+    let notice_at = journal.iter().position(|e| e.kind.as_deref() == Some("notice"));
+    let close_at = journal.iter().position(|e| e.act == "close");
+    assert!(
+        notice_at.is_some_and(|n| close_at.is_some_and(|c| n < c)),
+        "the notice is in the journal before the close: {journal:?}"
     );
     assert_eq!(
         store.owner(ROOT).unwrap().unwrap().state,

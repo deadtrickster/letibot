@@ -69,9 +69,6 @@ impl Ops {
 /// What the records and the kernel say an owner is doing - the whole input a close decision has.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Activity {
-    /// The newest thing the owner did, as the store dates the session (`last_activity_ms`). The
-    /// lease is the later of this and the owner row's own clock.
-    pub last_ms: Option<i64>,
     /// A turn in flight or a job running. Read from the cgroup where there is one: a session whose
     /// leader is gone can still hold a hundred processes.
     pub busy: bool,
@@ -83,9 +80,9 @@ pub struct Activity {
 }
 
 impl Activity {
-    /// The clock an idle TTL is measured from.
+    /// The clock an idle TTL is measured from: the owner row's own lease, which a turn renews.
     pub fn lease(&self, o: &OwnerRow) -> i64 {
-        self.last_ms.unwrap_or(o.lease_ms).max(o.lease_ms)
+        o.lease_ms
     }
 }
 
@@ -211,18 +208,12 @@ impl Pass {
 
 /// What this owner is doing, read from the store and the kernel - no daemon is asked anything.
 pub fn activity(store: &Store, o: &OwnerRow, places: &Places) -> Activity {
-    let last_ms = store
-        .session(&o.id)
-        .ok()
-        .flatten()
-        .map(|s| s.last_activity_ms);
     let parent = o
         .parent_id
         .as_ref()
         .and_then(|p| store.owner(p).ok().flatten())
         .map(|p| p.state);
     Activity {
-        last_ms,
         busy: busy(store, o),
         parent,
         daemon: daemon_state(o, places),
