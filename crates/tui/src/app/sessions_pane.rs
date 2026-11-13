@@ -1043,6 +1043,7 @@ impl App {
                     "live": s.live,
                     "running": s.status.running,
                     "heads": s.status.heads,
+                    "held": s.status.held_rooms,
                     "items": s.status.items,
                     "stored": s.stored_items,
                     "model": s.wiring.model,

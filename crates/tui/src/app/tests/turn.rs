@@ -1731,6 +1731,7 @@ fn the_held_counter_rides_the_responding_row_while_something_is_held() {
             jobs: 2,
             subagents: 1,
             failed: 0,
+            room: 0,
         },
     )));
     let row = a.turn_status(160);
@@ -1746,6 +1747,7 @@ fn the_held_counter_rides_the_responding_row_while_something_is_held() {
             jobs: 1,
             subagents: 0,
             failed: 1,
+            room: 0,
         },
     )));
     assert!(
@@ -1759,9 +1761,15 @@ fn the_held_counter_rides_the_responding_row_while_something_is_held() {
             jobs: 3,
             subagents: 0,
             failed: 1,
+            room: 2,
         },
     )));
-    assert!(a.turn_status(160).contains("held: 3 jobs (1 failed)"));
+    assert!(
+        a.turn_status(160)
+            .contains("held: 3 jobs · 2 room lines (1 failed)"),
+        "{}",
+        a.turn_status(160)
+    );
 
     a.apply(ServerFrame::Event(env(
         5,
@@ -1769,6 +1777,7 @@ fn the_held_counter_rides_the_responding_row_while_something_is_held() {
             jobs: 0,
             subagents: 0,
             failed: 0,
+            room: 0,
         },
     )));
     let row = a.turn_status(160);
@@ -1793,6 +1802,7 @@ fn a_snapshot_drops_the_held_counter_the_daemon_will_say_again() {
             jobs: 2,
             subagents: 0,
             failed: 0,
+            room: 0,
         },
     )));
     assert!(a.turn_status(160).contains("held: 2 jobs"));

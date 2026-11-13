@@ -108,6 +108,9 @@ struct Session {
     running: bool,
     #[serde(default)]
     heads: usize,
+    /// Room lines held for this session's idle digest: told, and not yet shown to its model.
+    #[serde(default)]
+    held: u64,
     /// Rows in the live log, for a session the daemon holds.
     #[serde(default)]
     items: usize,
@@ -732,6 +735,10 @@ fn facts_of(s: &Session) -> Vec<Cell> {
     if s.heads > 0 {
         let plural = if s.heads == 1 { "" } else { "s" };
         push_fact(&mut facts, format_args!("{} head{plural}", s.heads));
+    }
+    // What it has been told and its model has not been shown: invisible on every other column.
+    if s.held > 0 {
+        push_fact(&mut facts, format_args!("{} held", s.held));
     }
     if !s.model.is_empty() {
         push_fact(&mut facts, format_args!("{}", s.model));

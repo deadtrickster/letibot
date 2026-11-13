@@ -49,8 +49,10 @@ impl App {
                 jobs,
                 subagents,
                 failed,
+                room,
             } => {
-                self.held = (jobs + subagents > 0).then_some((jobs, subagents, failed));
+                self.held =
+                    (jobs + subagents + room > 0).then_some((jobs, subagents, failed, room));
                 Disposition::Rendered
             }
             SessionEvent::CompactionProgress {

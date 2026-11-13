@@ -1149,10 +1149,10 @@ pub struct App {
     /// `None` is every ordinary attach. State and not a row: an older binary keeps working when
     /// the newer schema only added things, and says so in red on the status line every frame.
     pub(crate) store_newer: Option<String>,
-    /// What the daemon is holding back from the model right now, `(jobs, subagents, failed)` from
-    /// the last `HeldResults`, `None` once all are zero. Drawn on the turn's status row
-    /// ([`App::held_label`]).
-    pub(crate) held: Option<(u64, u64, u64)>,
+    /// What the daemon is holding back from the model right now, `(jobs, subagents, failed, room
+    /// lines)` from the last `HeldResults`, `None` once all are zero. Drawn on the turn's status row
+    /// ([`App::held_label`]) and on the session's own row in the picker.
+    pub(crate) held: Option<(u64, u64, u64, u64)>,
     /// What the daemon says this session is waiting on: quiet, or busy with the list. Folded from
     /// `ActivityChanged` and seeded from a snapshot, drawn as one muted line on the status row
     /// ([`App::activity_line`]). `Quiet` is all a daemon without the frame can say.

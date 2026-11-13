@@ -666,6 +666,7 @@ fn brief(id: &str, title: &str, running: bool) -> SessionBrief {
             heads: 1,
             running,
             model: "qwen-3.8-flash-next".into(),
+            held_rooms: 0,
             last_ms: 0,
         },
         wiring: wiring(),

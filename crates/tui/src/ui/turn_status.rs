@@ -315,11 +315,11 @@ impl App {
         }
     }
 
-    /// What the daemon is holding back from the model, in a few words (`held: 2 jobs · 1
-    /// subagent`), or `None`. Results are held only so a running turn is not interrupted, so it
-    /// sits after the turn's own words.
+    /// What the daemon is holding back from the model, in a few words (`held: 2 jobs · 1 room
+    /// line`), or `None`. Results are held only so a running turn is not interrupted, and room
+    /// lines until their quiet window passes, so it sits after the turn's own words.
     pub(crate) fn held_label(&self) -> Option<String> {
-        let (jobs, subagents, failed) = self.held?;
+        let (jobs, subagents, failed, room) = self.held?;
         let n = |k: u64, one: &str, many: &str| match k {
             0 => None,
             1 => Some(format!("1 {one}")),
@@ -328,6 +328,7 @@ impl App {
         let kinds: Vec<String> = [
             n(jobs, "job", "jobs"),
             n(subagents, "subagent", "subagents"),
+            n(room, "room line", "room lines"),
         ]
         .into_iter()
         .flatten()
