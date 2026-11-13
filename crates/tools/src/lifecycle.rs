@@ -154,7 +154,7 @@ impl Places {
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
             .or_else(|| settings.root.clone())
-            .unwrap_or_else(|| cache_dir().join("gc"));
+            .unwrap_or_else(default_gc_root);
         // `[firecode] runs` first: a box that put firecode's state on a big disk put its runs
         // there too, and asking the binary where its checkout keeps them would answer the other
         // disk.
@@ -251,6 +251,12 @@ pub fn session_dirs(places: &Places, owner: &str) -> std::io::Result<(PathBuf, P
             .create(d)?;
     }
     Ok((spill, session))
+}
+
+/// The owner roots when nothing names them: under the cache directory, never the store, which a
+/// command's view hides - a session's `TMPDIR` is under them.
+pub fn default_gc_root() -> PathBuf {
+    cache_dir().join("gc")
 }
 
 /// `$XDG_CACHE_HOME/letibot`, else `~/.cache/letibot`: what can be rebuilt, temp files and build

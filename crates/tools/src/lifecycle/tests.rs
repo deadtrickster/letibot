@@ -499,7 +499,7 @@ fn snapshot(root: &Path) -> Vec<(String, u64, std::time::SystemTime)> {
 /// command's view hides the store, so a root inside it is a temp dir no command can write.
 #[test]
 fn the_default_owner_root_is_not_inside_the_store() {
-    let root = super::cache_dir().join("gc");
+    let root = super::default_gc_root();
     assert!(
         !root.starts_with(super::data_dir()),
         "{} is inside the store {}",
