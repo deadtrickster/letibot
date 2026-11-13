@@ -615,7 +615,8 @@ impl Store {
                bytes = COALESCE(excluded.bytes, holding.bytes),
                archive = COALESCE(excluded.archive, holding.archive),
                why = COALESCE(excluded.why, holding.why),
-               checked_ms = excluded.checked_ms",
+               checked_ms = excluded.checked_ms,
+               attempts = MAX(holding.attempts, excluded.attempts)",
             params![
                 h.owner_id,
                 h.kind,

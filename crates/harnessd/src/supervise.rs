@@ -97,6 +97,10 @@ pub struct Tick {
     /// Leases this tick gave back because their owner was gone, one line each - the block, what
     /// was removed from it, and any refusal the operator's never-touch list made.
     pub released: Vec<String>,
+    /// Owner leases this tick renewed on another machine, and the renewals that failed: the host's
+    /// own reaper closes an owner whose lease went stale, so a live home box says so once a minute
+    /// (`docs/lifecycle.md` d.3's lease-renewal row).
+    pub renewed: Vec<String>,
 }
 
 /// One host's group of open records, as a tick hands them to a probe.
@@ -128,6 +132,10 @@ pub struct Supervisor {
     hosts: Option<std::path::PathBuf>,
     /// How long each session named by a held lease has been unseen, for the reaper's grace.
     lease_seen: std::sync::Mutex<BTreeMap<String, i64>>,
+    /// The home box's side of a remote owner's lease (`docs/lifecycle.md` d.3): renewed once a
+    /// minute per host, so the host's own reaper can tell a live home box from one that stopped.
+    /// `None` on a box with no remote session, and in a test that drives the tick by hand.
+    leases: Option<Arc<dyn letibot_tools::lifecycle::RemoteLeases>>,
 }
 
 impl Supervisor {
@@ -139,6 +147,7 @@ impl Supervisor {
             owner: None,
             hosts: None,
             lease_seen: std::sync::Mutex::new(BTreeMap::new()),
+            leases: None,
         }
     }
 
@@ -155,7 +164,17 @@ impl Supervisor {
             owner: None,
             hosts: None,
             lease_seen: std::sync::Mutex::new(BTreeMap::new()),
+            leases: None,
         }
+    }
+
+    /// The lease renewal a tick runs over every host it finds a job on.
+    pub fn with_leases(
+        mut self,
+        leases: Arc<dyn letibot_tools::lifecycle::RemoteLeases>,
+    ) -> Supervisor {
+        self.leases = Some(leases);
+        self
     }
 
     /// Who serves a session - what the lease reaper asks. Without it no lease is ever reaped
@@ -229,6 +248,16 @@ impl Supervisor {
         };
         for (host, recs) in group(open) {
             report.hosts += 1;
+            // The home box's half of a remote owner's lease, once a minute per host: the host's own
+            // reaper closes an owner nobody renews, so a live home box has to say it is alive. Done
+            // before the probe, because a probe that fails still leaves the placement there.
+            if let (Some(leases), Some(named)) = (&self.leases, host.as_deref()) {
+                let mut sessions: Vec<String> = recs.iter().map(|r| r.session.clone()).collect();
+                sessions.sort();
+                sessions.dedup();
+                let now = (self.now_ms)();
+                report.renewed.extend(leases.renew(named, &sessions, now));
+            }
             let wants: Vec<Want> = recs
                 .iter()
                 .map(|r| Want {
@@ -878,13 +907,22 @@ pub fn spawn(
                 eprintln!("  supervisor: the store did not open; no process is supervised");
                 return;
             };
+            // The lease renewal a tick runs on another machine, over the same hands the reap pass
+            // uses: a placement's `owner.json` there is renewed once a minute, so that host's own
+            // reaper can tell a live home box from one that stopped.
+            let hands: Arc<dyn letibot_tools::lifecycle::Hands> =
+                Arc::new(letibot_tools::lifecycle::BoxHands::new());
+            let leases: Arc<dyn letibot_tools::lifecycle::RemoteLeases> = Arc::new(
+                letibot_tools::lifecycle::LeaseRenewer::for_this_box(hands),
+            );
             let sup = Arc::new(
                 Supervisor::with_clock(
                     Arc::new(std::sync::Mutex::new(store)),
                     Arc::new(HostProbe::new()),
                     Box::new(now_ms),
                 )
-                .with_owner(Arc::new(RegistryOwner(Arc::clone(&registry)))),
+                .with_owner(Arc::new(RegistryOwner(Arc::clone(&registry))))
+                .with_leases(leases),
             );
             let _ = SUPERVISOR.set(Arc::clone(&sup));
             loop {
@@ -897,9 +935,10 @@ pub fn spawn(
                     || !tick.lost.is_empty()
                     || !tick.errors.is_empty()
                     || !tick.released.is_empty()
+                    || !tick.renewed.is_empty()
                 {
                     eprintln!(
-                        "  supervisor: {} host(s), {} running, ended {:?}, expired {:?}, lost {:?}{}{}",
+                        "  supervisor: {} host(s), {} running, ended {:?}, expired {:?}, lost {:?}{}{}{}",
                         tick.hosts,
                         tick.running,
                         tick.ended,
@@ -914,6 +953,11 @@ pub fn spawn(
                             String::new()
                         } else {
                             format!(", released {:?}", tick.released)
+                        },
+                        if tick.renewed.is_empty() {
+                            String::new()
+                        } else {
+                            format!(", leases not renewed {:?}", tick.renewed)
                         }
                     );
                 }

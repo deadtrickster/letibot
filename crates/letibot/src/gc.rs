@@ -30,20 +30,27 @@ letibot holds [OWNER] [--folder DIR] [--json] [--line]
     letibot holds s-1794509750373521593 --json";
 
 const USAGE_GC: &str = "\
-letibot gc [OWNER] [--folder DIR] [--json] [--log] [--now]
+letibot gc [OWNER] [--folder DIR] [--json] [--log | --now [--json]]
   The plan: for every owner, what would be reaped, why, and when or never. A directory that looks
   like letibot's and names no owner the store knows is listed under `unrecorded` and is never
-  reaped by a pattern.
+  reaped by a pattern. Without `--now` nothing in this command removes, stops or writes anything.
 
   --folder DIR   only the owners working against DIR
-  --json         the plan as one object
+  --json         the plan (or the pass) as one object
   --log          the journal of what was done to these owners (`reap_event`), oldest first
-  --now          DO it, for compute only: cgroups ended, VMs brought down, daemons stopped.
-                 Work, branches and caches are left where they are (G3, G4).
+  --now          ACT, in one pass. Compute first: an owner idle, past a TTL or under a gone
+                 daemon is closed, and its cgroups, VMs and daemons are ended. Then disk: the
+                 caches of every owner whose compute is gone (a build target, a /tmp, a confined
+                 home, the tree a VM was booted on, a firecode state layer), a copy-out after its
+                 work is in refs/letibot/archive/, the run directories of VMs that are down, the
+                 shared build targets over their quota under the lock `rrun` takes, and each
+                 remote host's own pass. Worktrees and branches stay (G3). Every act is
+                 journaled, and an act is done when the thing is ABSENT.
 
   example:
     letibot gc
-    letibot gc s-1794509750373521593 --now";
+    letibot gc s-1794509750373521593 --now
+    letibot gc --log";
 
 const USAGE_HOLD: &str = "\
 letibot hold OWNER [--for 2d]
@@ -257,7 +264,11 @@ fn gc(args: &[String]) -> Result<(), String> {
         // Opening for a write is the one thing this verb family does not do read-only, so it is
         // asked BEFORE the plan's reader is opened: one connection, and no second opinion about
         // which file the facts are in.
-        return gc_now(parsed.owner.as_deref(), parsed.folder.as_deref());
+        return gc_now(
+            parsed.owner.as_deref(),
+            parsed.folder.as_deref(),
+            parsed.json,
+        );
     }
     let (store, places) = open()?;
     let now = lifecycle::now_ms();
@@ -324,17 +335,16 @@ pub(crate) fn bytes(n: u64) -> String {
 /// `letibot gc --now`: one reap pass, over every owner or the one named, printed as it goes. The
 /// store is opened for WRITING, which is the one place a verb of this family does - and every
 /// change is a `reap_event` row, so what it did is readable afterwards with `letibot gc --log`.
-fn gc_now(owner: Option<&str>, folder: Option<&Path>) -> Result<(), String> {
+fn gc_now(owner: Option<&str>, folder: Option<&Path>, json: bool) -> Result<(), String> {
     let (store, places) = open_for_acts(owner)?;
     let ops = lifecycle::Ops::here("letibot gc --now");
     let now = lifecycle::now_ms();
-    let pass = lifecycle::reap_pass(&store, &places, &ops, owner, now);
-    for act in &pass.acts {
-        println!("{}", act.line());
+    let pass = lifecycle::pass(&store, &places, &ops, owner, now).map_err(|e| e.to_string())?;
+    if json {
+        println!("{}", pass.to_json());
+        return Ok(());
     }
-    for kept in &pass.kept {
-        println!("kept {kept}");
-    }
+    print!("{}", pass.render());
     if let Some(want) = folder {
         // A pass acts on the whole box; the filter is said rather than silently narrowing it.
         println!(
@@ -342,13 +352,11 @@ fn gc_now(owner: Option<&str>, folder: Option<&Path>) -> Result<(), String> {
             want.display()
         );
     }
-    match pass.acts.is_empty() {
-        true => println!("nothing to reap: no owner is idle, past a TTL, or under a gone daemon"),
-        false => println!(
-            "{} act(s); `letibot gc --log {}` is the journal",
-            pass.acts.len(),
+    if !pass.acts.is_empty() {
+        println!(
+            "`letibot gc --log {}` is the journal",
             owner.unwrap_or_default()
-        ),
+        );
     }
     Ok(())
 }

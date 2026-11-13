@@ -1,27 +1,36 @@
-//! Compute reap: close, idle, TTL, and a daemon that lets go (`docs/lifecycle.md`, package G2).
+//! The reaper: one pass that ends compute and then frees disk (`docs/lifecycle.md`, G2 and G4).
 //!
-//! G1 judged; this acts, and only on `compute` - a cgroup, a VM, a daemon. Nothing here removes a
-//! worktree, a branch or a cache: those are G3 and G4, and a closed owner keeps them until their
-//! own pass. What makes the close safe is exactly that: compute ends, the rows and the work stay,
-//! and `leticode_send` reopens the owner where it stopped.
+//! G1 judged; this acts. The compute half (this file) closes an owner and ends its cgroups, VMs
+//! and daemons; the disk half ([`disks`]) then removes the caches of an owner whose compute is
+//! gone, retires its run directories, keeps shared targets under quota and asks remote hosts for
+//! their own pass. Work is never removed without an archive, so `leticode_send` still reopens a
+//! closed owner where it stopped.
 //!
 //! Every decision reads the store and the kernel, never a daemon and never `ps`: this pass is what
 //! runs when the daemon that owned the session was SIGKILLed, so nothing may be asked of it. A
 //! job's liveness comes from its cgroup (`cgroup.events` populated, `cgroup.procs`, `memory.events`
 //! oom_kill) or, where no cgroup could be made, from the `process` row's `(pid, identity)`.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use letibot_tokencore::store::{
     Check, HoldingRow, HoldingState, OwnerKind, OwnerRow, OwnerState, ProcState, ProcessRecord,
-    ReapAct, ReapEvent, Store,
+    ReapAct, ReapEvent, Result as StoreResult, Store,
 };
 
-use super::{DAEMON, Places, SCOPE, VM, daemons_of, discover_all, human_millis, scope_clause};
+use super::{
+    DAEMON, Places, SCOPE, VM, daemons_of, discover_all, human_bytes, human_millis, scope_clause,
+    stamp_of,
+};
+
+mod disks;
 use crate::exec::procs::{self, Signal};
 use crate::exec::scope;
 use crate::firecode::held::{self, Patience};
+pub use disks::{BoxHands, Hands};
 
 /// How long before an idle close the owner is told (`docs/lifecycle.md` d.9). It is a heads-up and
 /// nothing depends on it: the close happens whether or not anybody read it.
@@ -41,7 +50,7 @@ pub const DAEMON_GRACE: Duration = Duration::from_secs(5);
 pub const ATTEMPTS_BEFORE_STUCK: i64 = 2;
 
 /// Who is running a pass, and what it may use to act. `by` is what the journal records.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Ops {
     /// `gc timer`, `letibot gc --now`, `daemon d-…`.
     pub by: String,
@@ -51,17 +60,33 @@ pub struct Ops {
     pub grace: Duration,
     pub after_kill: Duration,
     pub daemon_grace: Duration,
+    /// What the disk half reaches through: firecode's verbs, the build lock, remote hosts.
+    pub hands: Arc<dyn Hands>,
+}
+
+impl std::fmt::Debug for Ops {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Ops")
+            .field("by", &self.by)
+            .field("firecode", &self.firecode)
+            .field("grace", &self.grace)
+            .field("after_kill", &self.after_kill)
+            .field("daemon_grace", &self.daemon_grace)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Ops {
-    /// A pass on this box, run by `by`, with the box's own firecode and bounds.
+    /// A pass on this box, run by `by`, with the box's own firecode, bounds and hands.
     pub fn here(by: impl Into<String>) -> Ops {
+        let hands = BoxHands::new();
         Ops {
             by: by.into(),
-            firecode: crate::firecode::firecode_available().ok(),
+            firecode: hands.firecode.clone(),
             grace: SIGTERM_GRACE,
             after_kill: AFTER_KILL,
             daemon_grace: DAEMON_GRACE,
+            hands: Arc::new(hands),
         }
     }
 }
@@ -160,28 +185,40 @@ pub fn notice_at(o: &OwnerRow, a: &Activity, now_ms: i64) -> Option<i64> {
 pub struct Act {
     pub owner: String,
     pub kind: String,
+    /// The machine it was on, when that is not this box.
+    pub host: Option<String>,
     pub handle: String,
     pub act: ReapAct,
     pub said: String,
+    /// What a removal freed; 0 for everything else.
+    pub bytes: u64,
 }
 
 impl Act {
     pub fn line(&self) -> String {
         format!(
-            "{} {} {} — {}",
+            "{} {}{} {} — {}",
             self.owner,
             self.kind,
+            self.host
+                .as_deref()
+                .map(|h| format!(" on {h}"))
+                .unwrap_or_default(),
             self.act.word(),
             self.said
         )
     }
 }
 
-/// What one pass did, in order.
+/// What one pass did, in order, and what it refused to do and why.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Pass {
+    pub now_ms: i64,
+    pub owners: usize,
     pub acts: Vec<Act>,
-    /// Owners this pass left exactly as they were, with why - a hold, a live turn.
+    /// Holdings on a host this box could not reach: marked `lost`, removed nothing, retried.
+    pub lost: Vec<(String, String, String)>,
+    /// What this pass left exactly as it was, with why - a hold, a live turn, a held build lock.
     pub kept: Vec<String>,
 }
 
@@ -201,6 +238,92 @@ impl Pass {
             "gc: closed {closes} idle or finished owner(s); {}",
             parts.join("; ")
         ))
+    }
+
+    /// The bytes this pass freed: removes only, since a keep frees nothing.
+    pub fn freed(&self) -> u64 {
+        self.acts
+            .iter()
+            .filter(|a| matches!(a.act, ReapAct::Remove | ReapAct::Down))
+            .map(|a| a.bytes)
+            .sum()
+    }
+
+    /// `gc: removed 3, freed 2.1 GiB, 1 host unreachable` - the one line a pass posts.
+    pub fn line(&self) -> String {
+        if self.acts.is_empty() && self.lost.is_empty() {
+            return "gc: nothing to reap".into();
+        }
+        let mut parts: Vec<String> = Vec::new();
+        let mut by: BTreeMap<&'static str, usize> = BTreeMap::new();
+        for a in &self.acts {
+            *by.entry(a.act.word()).or_default() += 1;
+        }
+        for (act, n) in by {
+            parts.push(format!("{act} {n}"));
+        }
+        if !self.acts.is_empty() {
+            parts.push(format!("freed {}", human_bytes(self.freed())));
+        }
+        if !self.lost.is_empty() {
+            parts.push(format!(
+                "{} host(s) unreachable, their holdings `lost`",
+                self.lost.len()
+            ));
+        }
+        format!("gc: {}", parts.join(", "))
+    }
+
+    /// The operator's report: one line per act, then the keeps and the losses.
+    pub fn render(&self) -> String {
+        let at = stamp_of(self.now_ms);
+        let mut out = String::new();
+        for a in &self.acts {
+            out.push_str(&format!(
+                "{at} {} {}{} — {} ({})\n",
+                a.owner,
+                a.kind,
+                a.host
+                    .as_deref()
+                    .map(|h| format!(" on {h}"))
+                    .unwrap_or_default(),
+                a.said,
+                human_bytes(a.bytes)
+            ));
+        }
+        for k in &self.kept {
+            out.push_str(&format!("{at} keep — {k}\n"));
+        }
+        for (owner, host, said) in &self.lost {
+            out.push_str(&format!(
+                "{at} {owner} on {host} — lost: {said} (nothing of it was touched here; the next \
+                 pass tries again)\n"
+            ));
+        }
+        out.push_str(&self.line());
+        out.push('\n');
+        out
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "now_ms": self.now_ms,
+            "owners": self.owners,
+            "freed": self.freed(),
+            "acts": self.acts.iter().map(|a| serde_json::json!({
+                "owner": a.owner,
+                "kind": a.kind,
+                "host": a.host,
+                "handle": a.handle,
+                "act": a.act.word(),
+                "said": a.said,
+                "bytes": a.bytes,
+            })).collect::<Vec<_>>(),
+            "kept": self.kept,
+            "lost": self.lost.iter().map(|(o, h, s)| serde_json::json!({
+                "owner": o, "host": h, "said": s
+            })).collect::<Vec<_>>(),
+        })
     }
 }
 
@@ -258,71 +381,111 @@ fn daemon_state(o: &OwnerRow, places: &Places) -> Option<bool> {
 
 // ---------------------------------------------------------------- the acting half
 
-/// One pass: judge every owner that can still be closed, act on the ones this pass may, and journal
-/// each act. Idempotent end to end - a kill of an empty cgroup, a `down` of a VM that is down and a
-/// remove of a missing path are all answers, not failures (d.10).
-pub fn reap_pass(
+/// One pass over every owner, or the one named: compute first, then disk. Closing an owner and
+/// freeing its caches happen in the same pass, and the shared targets and remote hosts follow.
+/// Idempotent end to end - a kill of an empty cgroup, a `down` of a VM that is down and a remove of
+/// a missing path are all answers, not failures (d.10).
+pub fn pass(
     store: &Store,
     places: &Places,
     ops: &Ops,
     only: Option<&str>,
-    at_ms: i64,
-) -> Pass {
+    now: i64,
+) -> StoreResult<Pass> {
     let owners: Vec<OwnerRow> = match only {
-        Some(id) => store.owner(id).ok().flatten().into_iter().collect(),
-        None => store.owners().unwrap_or_default(),
+        Some(id) => store.owner(id)?.into_iter().collect(),
+        None => store.owners()?,
     };
-    let mut out = Pass::default();
+    let mut out = Pass {
+        now_ms: now,
+        owners: owners.len(),
+        ..Pass::default()
+    };
     for owner in &owners {
-        match owner.state {
-            OwnerState::Live => {
-                let a = activity(store, owner, places);
-                if let Some(closes_at) = notice_at(owner, &a, at_ms) {
-                    note_idle_close(store, owner, closes_at, ops, at_ms, &mut out);
-                }
-                match close_due(owner, &a, at_ms) {
-                    Some(why) => {
-                        store
-                            .set_owner_state(&owner.id, OwnerState::Closing, &why, at_ms)
-                            .ok();
-                        out.acts.push(journal(
-                            store,
-                            at_ms,
-                            owner,
-                            "",
-                            "",
-                            ReapAct::Signal,
-                            &format!("closing: {why}"),
-                            &ops.by,
-                        ));
-                    }
-                    None => {
-                        out.kept.push(format!(
-                            "{}: {}",
-                            owner.id,
-                            match owner.held(at_ms) {
-                                true => "the operator holds it".to_string(),
-                                false => "it is live and nothing says close it".to_string(),
-                            }
-                        ));
-                        continue;
-                    }
-                }
-            }
-            OwnerState::Closing => {}
-            _ => continue,
-        }
-        // The row as the CLOSE left it: `closed_why` is the sentence the journal - and so
-        // `letibot gc --log` - reads back, and the copy this loop holds was read before the state
-        // moved.
-        let owner = &store
+        compute(store, places, ops, owner, now, &mut out);
+        // The row as the compute half left it: an owner it closed just now loses its caches here.
+        let owner = store
             .owner(&owner.id)
             .ok()
             .flatten()
             .unwrap_or_else(|| owner.clone());
-        reap_compute(store, places, ops, owner, at_ms, &mut out);
+        if owner.held(now) {
+            out.kept.push(format!(
+                "{}: the operator holds it, so nothing of it is closed or removed",
+                owner.id
+            ));
+            continue;
+        }
+        // A store error in the disk half is said and the pass goes on: the closes already made
+        // are in `acts`, and the daemon acts on them only if the pass returns them.
+        if disks::past_compute(&owner)
+            && let Err(e) = disks::reap_owner(store, places, ops, &owner, now, &mut out)
+        {
+            out.kept.push(format!(
+                "{}: its disks were left, the store said {e}",
+                owner.id
+            ));
+        }
     }
-    out
+    disks::shared_targets(places, ops, now, &mut out);
+    if let Err(e) = disks::remote_hosts(store, places, ops, now, only, &mut out) {
+        out.kept
+            .push(format!("remote hosts were left, the store said {e}"));
+    }
+    Ok(out)
+}
+
+/// The compute half for one owner: judge a live one, and end the compute of one that is closing.
+fn compute(
+    store: &Store,
+    places: &Places,
+    ops: &Ops,
+    owner: &OwnerRow,
+    at_ms: i64,
+    out: &mut Pass,
+) {
+    match owner.state {
+        OwnerState::Live => {
+            let a = activity(store, owner, places);
+            if let Some(closes_at) = notice_at(owner, &a, at_ms) {
+                note_idle_close(store, owner, closes_at, ops, at_ms, out);
+            }
+            let Some(why) = close_due(owner, &a, at_ms) else {
+                // A hold is said once, by the pass, for both halves.
+                if !owner.held(at_ms) {
+                    out.kept.push(format!(
+                        "{}: it is live and nothing says close it",
+                        owner.id
+                    ));
+                }
+                return;
+            };
+            store
+                .set_owner_state(&owner.id, OwnerState::Closing, &why, at_ms)
+                .ok();
+            out.acts.push(journal(
+                store,
+                at_ms,
+                owner,
+                "",
+                "",
+                ReapAct::Signal,
+                &format!("closing: {why}"),
+                &ops.by,
+            ));
+        }
+        OwnerState::Closing => {}
+        _ => return,
+    }
+    // The row as the CLOSE left it: `closed_why` is the sentence the journal - and so
+    // `letibot gc --log` - reads back, and the copy this loop holds was read before the state
+    // moved.
+    let owner = &store
+        .owner(&owner.id)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| owner.clone());
+    reap_compute(store, places, ops, owner, at_ms, out);
 }
 
 /// The heads-up before an idle close. It is journaled and said on the owner's status line, and it
@@ -364,7 +527,7 @@ fn note_idle_close(
 }
 
 /// Reap one `closing` owner's compute, in the design's order, and move it to `closed` when nothing
-/// of class `compute` is left. Work and caches are left alone: G3 and G4 own those.
+/// of class `compute` is left. Caches are the disk half's, once the owner is closed; work is G3's.
 fn reap_compute(
     store: &Store,
     places: &Places,
@@ -809,9 +972,11 @@ fn journal(
     Act {
         owner: owner.id.clone(),
         kind: kind.unwrap_or_default(),
+        host: None,
         handle: handle.unwrap_or_default(),
         act,
         said: said.to_string(),
+        bytes: 0,
     }
 }
 

@@ -577,11 +577,13 @@ fn civil_of(days: i64) -> (i64, i64, i64) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lifecycle::Settings;
 
     fn places() -> Places {
         Places {
             gc_root: "/nonexistent/gc".into(),
             box_id: "lab2x1".into(),
+            settings: Settings::default(),
             data_dir: "/nonexistent/data".into(),
             rundir: "/nonexistent/run".into(),
             firecode_runs: None,

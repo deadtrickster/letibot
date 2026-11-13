@@ -18,15 +18,28 @@ use letibot_tokencore::store::{
 
 use crate::exec::scope::{self, ScopeUse};
 
+mod archive;
+mod config;
 mod plan;
 mod reap;
+mod remote;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_disks;
+pub use archive::{Kept, fetch_bundle, keep, namespace};
+pub use config::{Settings, SharedTarget, config_file};
 pub use plan::{
     HoldingView, LANDED_GRACE_MS, OwnerView, Plan, Stranger, UNLANDED_GRACE_MS, Verdict, judge,
     plan, stamp_of,
 };
-pub use reap::{Act, Activity, Ended, NOTICE_LEAD_MS, Ops, Pass, close_due, notice_at, reap_pass};
+pub use reap::{
+    Act, Activity, BoxHands, Ended, Hands, NOTICE_LEAD_MS, Ops, Pass, close_due, notice_at, pass,
+};
+pub use remote::{
+    Bundle, HostPass, LeaseKeeper, LeaseRenewer, RENEW_MS, RemoteLeases, RemoteOwner,
+    collect_bundle, host_pass, renew_script,
+};
 /// The file an owner root carries: the owner id, this box, the kind and the lease. It is what a
 /// reaper with no store reads, and the one thing that tells letibot's root from a directory that
 /// merely sits beside it.
@@ -48,6 +61,8 @@ pub const VM: &str = "vm";
 pub const DAEMON: &str = "daemon";
 /// The copy a VM was booted on, under letibot's firecode cache.
 pub const COPY: &str = "copy";
+/// A firecode state layer: the filesystem a project's guest writes, under `FIRECODE_STATE`.
+pub const STATE: &str = "state";
 /// What `firecode down` delivered beside it - the only copy of that work until it is fetched.
 pub const COPY_OUT: &str = "copy-out";
 /// A remote home or build directory, under that host's `.letibot-home`.
@@ -88,6 +103,9 @@ pub struct Places {
     /// Where owner roots live: `<gc_root>/<box>/<owner>/…`.
     pub gc_root: PathBuf,
     pub box_id: String,
+    /// The `[gc]` and `[firecode]` tables this box was configured with: the shared targets, and
+    /// where firecode keeps its state and its runs.
+    pub settings: Settings,
     /// The directory this box's store is in - what a remote or a journal is found beside.
     pub data_dir: PathBuf,
     /// `$XDG_RUNTIME_DIR/letibot`: a folder's daemon record is `<key>.json` in it.
@@ -103,23 +121,32 @@ pub struct Places {
 }
 
 impl Places {
-    /// This box's own places, as every caller computes them. `$LETIBOT_GC_ROOT` moves the owner
-    /// roots; a test points the rest at a fixture through [`Places`] itself.
+    /// This box's own places, as every caller computes them. The owner roots are `$LETIBOT_GC_ROOT`
+    /// first - a test's and a debug build's door - then `[gc] root` from the box's
+    /// `leticode.toml`, then the data directory: a box whose root disk is small writes that key.
     pub fn here() -> Places {
         let data_dir = data_dir();
+        let settings = Settings::load_or_default();
         let gc_root = std::env::var_os("LETIBOT_GC_ROOT")
             .map(PathBuf::from)
             .filter(|p| p.is_absolute())
+            .or_else(|| settings.root.clone())
             .unwrap_or_else(|| data_dir.join("gc"));
-        let runs = crate::firecode::firecode_available()
-            .ok()
-            .and_then(|bin| crate::firecode::held::runs_dir(&bin));
+        // `[firecode] runs` first: a box that put firecode's state on a big disk put its runs
+        // there too, and asking the binary where its checkout keeps them would answer the other
+        // disk.
+        let runs = settings.firecode_runs.clone().or_else(|| {
+            crate::firecode::firecode_available()
+                .ok()
+                .and_then(|bin| crate::firecode::held::runs_dir(&bin))
+        });
         let cache = crate::firecode::FirecodeBackend::project_of("x")
             .parent()
             .map(Path::to_path_buf);
         Places {
             gc_root,
             box_id: box_id(),
+            settings,
             data_dir,
             rundir: rundir(),
             firecode_runs: runs,
@@ -139,12 +166,67 @@ impl Places {
         self.gc_root.join(&self.box_id)
     }
 
+    /// The two directories a build writes in, made if they are not there: this is what puts a
+    /// package's cargo target and its `/tmp` inside its owner root instead of on the root disk.
+    pub fn build_dirs(&self, owner: &str) -> (PathBuf, PathBuf) {
+        let target = self.owner_root(owner).join("target");
+        let tmp = self.owner_root(owner).join("tmp");
+        let _ = std::fs::create_dir_all(&target);
+        let _ = std::fs::create_dir_all(&tmp);
+        (target, tmp)
+    }
+
+    /// Whether an owner root may be made at all. A root under a `LETIBOT_GC_ROOT` a test named is
+    /// made on demand; the default one only when its parent exists, so a box that never set the
+    /// key keeps its roots where the data directory already is.
+    pub fn owned_root_ready(&self) -> bool {
+        self.gc_root.is_dir() || std::fs::create_dir_all(&self.gc_root).is_ok()
+    }
+
     /// The stamp on one owner root, or `None` for a directory that is not letibot's - a missing
     /// file and an unreadable one are the same answer, and both are *look, do not act*.
     pub fn stamp_at(&self, root: &Path) -> Option<Stamp> {
         let text = std::fs::read_to_string(root.join(OWNER_JSON)).ok()?;
         serde_json::from_str(&text).ok()
     }
+}
+
+/// The pairs a build inside an owner root needs, so its target and its temp files land there and
+/// not on the root disk (`docs/lifecycle.md` d.4). Only when the key is set: a box that never asked
+/// for a `gc.root` keeps cargo's own default, because moving a build nobody was warned about is a
+/// slower surprise than the disk filling.
+pub fn owner_env(places: &Places, owner: &str) -> Vec<(String, String)> {
+    if places.settings.root.is_none() && std::env::var_os("LETIBOT_GC_ROOT").is_none() {
+        return Vec::new();
+    }
+    let (target, tmp) = places.build_dirs(owner);
+    vec![
+        ("CARGO_TARGET_DIR".to_string(), target.display().to_string()),
+        ("TMPDIR".to_string(), tmp.display().to_string()),
+        ("LETIBOT_OWNER".to_string(), owner.to_string()),
+    ]
+}
+
+/// A session's two temporary directories, both under its owner root ON DISK: `spill`, where tools
+/// leave artifacts too big for the transcript, and `tmp`, the `/tmp` a confined command is given.
+///
+/// Never the runtime directory. `$XDG_RUNTIME_DIR` is RAM, and on 2026-11-13 a Go fuzz job's 54 323
+/// worker temp dirs under `<runtime>/scratch-<pid>/tmp/<session>` filled this box's 19 GiB tmpfs and
+/// broke every other session's gate. The runtime dir keeps sockets and records; a session's temp
+/// files are a cache of its owner's, on the disk the owner root was put on.
+pub fn session_dirs(places: &Places, owner: &str) -> std::io::Result<(PathBuf, PathBuf)> {
+    use std::os::unix::fs::DirBuilderExt;
+    let tmp = places.owner_root(owner).join("tmp");
+    let spill = tmp.join("spill");
+    let session = tmp.join("session");
+    for d in [&spill, &session] {
+        // 0700, because what a command writes to its `/tmp` is not the next session's business.
+        std::fs::DirBuilder::new()
+            .mode(0o700)
+            .recursive(true)
+            .create(d)?;
+    }
+    Ok((spill, session))
 }
 
 /// `$XDG_DATA_HOME/letibot`, else `~/.local/share/letibot`: the directory the store lives in.
@@ -666,6 +748,31 @@ fn from_firecode(owner: &OwnerRow, places: &Places) -> Vec<Found> {
                     use_: None,
                 });
             }
+        }
+    }
+    // A firecode state layer: the guest's own filesystem for this owner's project. It is a cache
+    // (the tree it holds is rebuilt from the source), and firecode's own `gc --state` is what
+    // removes one: a `rm -rf` under firecode's state root is the reap-by-pattern this design
+    // refuses. Only a layer named for the owner is claimed - the project a VM is booted on is
+    // named by the session id, so that is the layer this owner provably has.
+    if let Some(state) = &places.settings.firecode_state {
+        let layer = state.join(&owner.id);
+        if layer.is_dir() {
+            let (bytes, complete) = size_of(&layer);
+            out.push(Found {
+                owner: owner.id.clone(),
+                kind: STATE.to_string(),
+                host: None,
+                handle: layer.display().to_string(),
+                class: HoldingClass::Cache,
+                stamp: format!(
+                    "a state layer named for its owner under {}",
+                    state.display()
+                ),
+                bytes,
+                why: (!complete).then(|| "its size was not measured whole".into()),
+                use_: None,
+            });
         }
     }
     // The booted copy (a cache) and the copy-out beside it (work).

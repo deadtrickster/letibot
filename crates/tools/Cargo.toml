@@ -24,6 +24,9 @@ letibot-metrics.workspace = true
 # that crate's cosine, so every caller gets one blend and keeps only its own floor.
 letibot-embeddings.workspace = true
 serde.workspace = true
+# `[gc]` and `[firecode]` in `leticode.toml`: the box's own settings, read here because this crate
+# is below `leticode-config` (which reads the session's keys and depends on this one).
+toml.workspace = true
 # preserve_order for the same reason the engine needs it: a tool call's argument
 # key order becomes prompt bytes on the next turn, and reordering re-prefills.
 serde_json = { workspace = true, features = ["preserve_order"] }

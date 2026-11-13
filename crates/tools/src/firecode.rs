@@ -145,27 +145,47 @@ pub fn down_session(session: &str) -> bool {
 pub struct Probe {
     /// `layer inherit`: a copy boots with its source's layers.
     pub inherit: bool,
+    /// `gc --run`: a run directory can be retired by firecode itself (`docs/lifecycle.md` d.5).
+    pub gc_run: bool,
+    /// `gc --state`: a per-project state layer can be retired by firecode itself.
+    pub gc_state: bool,
+    /// `--ephemeral` on `up`: the state goes once the copy-out is published. Newer than this
+    /// tree, so an older CLI is the normal case and the environment variable below is ignored.
+    pub ephemeral: bool,
 }
 
-/// Ask `bin` what it can do. The verbs are read off its own `layer` usage line, which
-/// names every subcommand it has - no version number to keep in step with.
+/// How long one `--help` gets when a capability is probed, and why it is short: a usage line is
+/// local work, so a help that has not answered has nothing to say and the caller's fallback is
+/// better than a boot waiting on it.
+const PROBE_BOUND: Duration = Duration::from_secs(5);
+
+/// Ask `bin` what it can do. The verbs are read off its own usage lines, which name every
+/// subcommand and flag it has - no version number to keep in step with.
 pub fn probe(bin: &Path) -> Probe {
-    // Bounded ([`CLIENT_TIMEOUT`]): a client call asked once at start, and the banner it feeds
-    // must not be what holds a daemon's startup.
-    let usage = match crate::rpc::run_bounded(
-        bin,
-        &["layer".to_string(), "--help".to_string()],
-        CLIENT_TIMEOUT,
-    ) {
-        crate::rpc::Ended::Answered(o) => {
-            let mut t = String::from_utf8_lossy(&o.stdout).into_owned();
-            t.push_str(&String::from_utf8_lossy(&o.stderr));
-            t
+    let help = |args: &[&str]| -> String {
+        let args: Vec<String> = args.iter().map(|a| a.to_string()).collect();
+        // Bounded ([`PROBE_BOUND`]): a client call asked once at start, and the banner it feeds
+        // must not be what holds a daemon's startup. Shorter than [`CLIENT_TIMEOUT`] because a
+        // `--help` that has not answered in five seconds has nothing to say.
+        match crate::rpc::run_bounded(bin, &args, PROBE_BOUND) {
+            crate::rpc::Ended::Answered(o) => {
+                let mut t = String::from_utf8_lossy(&o.stdout).into_owned();
+                t.push_str(&String::from_utf8_lossy(&o.stderr));
+                t
+            }
+            _ => String::new(),
         }
-        _ => String::new(),
     };
+    let layer = help(&["layer", "--help"]);
+    let gc = help(&["gc", "--help"]);
+    let up = help(&["up", "--help"]);
     Probe {
-        inherit: usage.contains("inherit"),
+        inherit: layer.contains("inherit"),
+        // A `gc` this firecode does not have answers with its top-level usage, which names no
+        // `--run`: the same answer as a `gc` that has neither flag, and the reap falls back.
+        gc_run: gc.contains("--run"),
+        gc_state: gc.contains("--state"),
+        ephemeral: up.contains("ephemeral") || help(&["--help"]).contains("ephemeral"),
     }
 }
 
@@ -417,9 +437,32 @@ pub struct FirecodeSpec {
     /// `owner` once the run exists. That file is the stamp a discovery pass reads, so a VM is
     /// attributable with no store and no daemon (`docs/lifecycle.md` d.4).
     pub owner: Option<String>,
+    /// The VM's state goes when its copy-out is published (`FIRECODE_EPHEMERAL=1`): the default,
+    /// because a stopped package VM's 32 GiB layer is what filled this box's root disk. A session
+    /// that is resumable on purpose sets this false and opts out of the whole point.
+    pub ephemeral: bool,
+    /// Where firecode keeps a project's state layers (`FIRECODE_STATE`), from `[firecode] state`.
+    pub state: Option<PathBuf>,
+    /// Where firecode keeps a run's own directory (`FIRECODE_RUNS`), from `[firecode] runs`.
+    pub runs: Option<PathBuf>,
 }
 
 impl FirecodeSpec {
+    /// [`FirecodeSpec::new`], with what this box's `[firecode]` and `[gc]` tables say: where the
+    /// state layers and the run directories go, and the ephemerality this tree wants.
+    ///
+    /// Every package VM letibot boots is ephemeral (`FIRECODE_EPHEMERAL=1`): a stopped VM's 32 GiB
+    /// layer plus its copy is what filled this box's root disk on 2026-11-13 and killed three
+    /// running VMs. A session that is resumable on purpose opts out by setting the field back.
+    pub fn for_box(source: impl Into<PathBuf>, name: impl Into<String>) -> Self {
+        let settings = crate::lifecycle::Settings::load_or_default();
+        let mut spec = FirecodeSpec::new(source, name);
+        spec.ephemeral = true;
+        spec.state = settings.firecode_state;
+        spec.runs = settings.firecode_runs;
+        spec
+    }
+
     pub fn new(source: impl Into<PathBuf>, name: impl Into<String>) -> Self {
         // `$XDG_CACHE_HOME` first, as the XDG spec has it: a test points it at its own root.
         let cache = std::env::var_os("XDG_CACHE_HOME")
@@ -448,6 +491,9 @@ impl FirecodeSpec {
             verify: None,
             mount_rw: false,
             owner: None,
+            ephemeral: true,
+            state: None,
+            runs: None,
             copy_max: std::env::var("LETIBOT_FIRECODE_COPY_MAX")
                 .ok()
                 .and_then(|v| v.trim().parse().ok())
@@ -472,6 +518,27 @@ fn layer_env() -> Vec<(String, String)> {
         "FIRECODE_LAYER_SIZE".to_string(),
         LAYER_SIZE_BYTES.to_string(),
     )]
+}
+
+/// And the pairs that decide where a VM's disks live and whether it leaves any (`docs/lifecycle.md`
+/// d.5's firecode rows): `FIRECODE_EPHEMERAL=1` unless the owner is resumable on purpose, and the
+/// box's `[firecode] state`/`runs` when it named them.
+///
+/// Environment rather than flags, deliberately: an older firecode ignores a variable it does not
+/// know, where an unknown flag is a boot that fails. [`FirecodeSpec::ephemeral`]'s capability is
+/// then a note, not a precondition.
+fn firecode_env(spec: &FirecodeSpec) -> Vec<(String, String)> {
+    let mut out = layer_env();
+    if spec.ephemeral {
+        out.push(("FIRECODE_EPHEMERAL".to_string(), "1".to_string()));
+    }
+    if let Some(state) = &spec.state {
+        out.push(("FIRECODE_STATE".to_string(), state.display().to_string()));
+    }
+    if let Some(runs) = &spec.runs {
+        out.push(("FIRECODE_RUNS".to_string(), runs.display().to_string()));
+    }
+    out
 }
 
 impl FirecodeBackend {
@@ -584,7 +651,7 @@ impl FirecodeBackend {
             args.push("--verify".to_string());
             args.push(check.clone());
         }
-        let up = match crate::rpc::run_bounded_env(&bin, &args, UP_TIMEOUT, &layer_env()) {
+        let up = match crate::rpc::run_bounded_env(&bin, &args, UP_TIMEOUT, &firecode_env(spec)) {
             crate::rpc::Ended::Answered(out) => out,
             crate::rpc::Ended::TimedOut => {
                 // A boot nobody can see the end of is not a VM to hand to a session. The run

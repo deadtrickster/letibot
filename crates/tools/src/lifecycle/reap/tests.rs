@@ -36,6 +36,7 @@ impl Box_ {
         Places {
             gc_root: self.at("gc"),
             box_id: crate::lifecycle::box_id(),
+            settings: crate::lifecycle::Settings::default(),
             data_dir: self.at("data"),
             rundir: self.at("run"),
             firecode_runs: Some(runs),
@@ -71,6 +72,25 @@ impl Drop for Box_ {
     }
 }
 
+/// Hands that reach nothing: these tests are about compute, and no fixture here has a remote host,
+/// a shared target or a firecode verb to ask.
+struct NoHands;
+
+impl Hands for NoHands {
+    fn firecode(&self, _: &[String]) -> Result<String, String> {
+        Err("no firecode in this test".into())
+    }
+    fn lock_held(&self, _: &Path) -> Result<bool, String> {
+        Err("no lock in this test".into())
+    }
+    fn host_command(&self, host: &str, _: &str) -> Result<String, String> {
+        Err(format!("no {host} in this test"))
+    }
+    fn host_read(&self, host: &str, _: &str) -> Result<Vec<u8>, String> {
+        Err(format!("no {host} in this test"))
+    }
+}
+
 /// Bounds a test can wait for: nothing here is a real ten-second grace.
 fn quick(by: &str) -> Ops {
     Ops {
@@ -79,6 +99,7 @@ fn quick(by: &str) -> Ops {
         grace: Duration::from_millis(200),
         after_kill: Duration::from_millis(200),
         daemon_grace: Duration::from_millis(200),
+        hands: std::sync::Arc::new(NoHands),
     }
 }
 
@@ -325,7 +346,7 @@ fn an_idle_package_is_closed_by_one_pass_and_the_notice_comes_first() {
     s.put_owner(&owner).expect("the owner");
 
     // One pass at the moment the notice is due: it is journaled and nothing is closed.
-    let first = reap_pass(&s, &places, &quick("test"), None, now - 1);
+    let first = pass(&s, &places, &quick("test"), None, now - 1).expect("a pass");
     assert!(
         first.acts.iter().any(|a| a.kind == "notice"),
         "the notice comes first: {first:?}"
@@ -337,7 +358,7 @@ fn an_idle_package_is_closed_by_one_pass_and_the_notice_comes_first() {
     );
 
     // And the pass that does close it: the notice is not written twice.
-    let second = reap_pass(&s, &places, &quick("test"), None, now);
+    let second = pass(&s, &places, &quick("test"), None, now).expect("a pass");
     let back = s.owner("s-1").unwrap().unwrap();
     assert_eq!(back.state, OwnerState::Closed, "{second:?}");
     assert!(back.closed_ms.is_some());
@@ -356,7 +377,7 @@ fn an_idle_package_is_closed_by_one_pass_and_the_notice_comes_first() {
     );
 
     // A third pass has nothing left to do: a closed owner is not closed again.
-    let third = reap_pass(&s, &places, &quick("test"), None, now + 60_000);
+    let third = pass(&s, &places, &quick("test"), None, now + 60_000).expect("a pass");
     assert!(third.acts.is_empty(), "{third:?}");
 }
 
@@ -370,7 +391,7 @@ fn a_held_owner_keeps_everything_and_says_why() {
     let mut owner = package("s-1", 0, 60_000);
     owner.held_until_ms = Some(0);
     s.put_owner(&owner).expect("the owner");
-    let out = reap_pass(&s, &places, &quick("test"), None, now);
+    let out = pass(&s, &places, &quick("test"), None, now).expect("a pass");
     assert!(out.acts.is_empty(), "a held owner lost something: {out:?}");
     assert_eq!(s.owner("s-1").unwrap().unwrap().state, OwnerState::Live);
     assert!(
@@ -404,7 +425,7 @@ fn a_dead_daemons_job_is_ended_by_a_pass_that_asks_no_daemon() {
     })
     .expect("the job row");
 
-    let out = reap_pass(&s, &places, &quick("test"), None, now);
+    let out = pass(&s, &places, &quick("test"), None, now).expect("a pass");
     let _ = job.wait();
     assert!(
         !procs::alive(job.id(), info.start),
@@ -473,7 +494,7 @@ fn a_vm_outliving_its_daemon_is_brought_down_and_seen_gone() {
         firecode: Some(bin),
         ..quick("test")
     };
-    let out = reap_pass(&s, &places, &ops, None, now);
+    let out = pass(&s, &places, &ops, None, now).expect("a pass");
     let _ = fc.wait();
     assert!(
         held::live_vms(&runs, &places.proc_root).is_empty(),

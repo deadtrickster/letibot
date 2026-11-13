@@ -1056,9 +1056,25 @@ impl Harness {
         // channel, so the request is honoured while the worker is blocked inside it.
         let backend = backend.with_promote_channel(hub.promote_channel());
         // The session's scratch directory, where tools put working artifacts too big for the
-        // transcript: per-session and in the runtime dir, so a fetched page never touches the
-        // operator's tree. A backend that cannot reach it simply has no scratch.
-        let scratch = scratch_dir();
+        // transcript, and the `/tmp` a confined command gets: both under this owner's root ON DISK
+        // (`docs/lifecycle.md` d.4). Not the runtime dir, which is RAM: a Go fuzz job's 54 323
+        // worker temp dirs under `$XDG_RUNTIME_DIR/letibot/scratch-*/tmp/<session>` filled this
+        // box's 19 GiB tmpfs on 2026-11-13 and broke every other session's gate. The runtime dir
+        // keeps sockets and records.
+        let places = letibot_tools::lifecycle::Places::here();
+        let (scratch, session_tmp) =
+            letibot_tools::lifecycle::session_dirs(&places, &cfg.session_id).unwrap_or_else(|e| {
+                // An owner root that cannot be made is said, and the fallback is named as the risk
+                // it is: the daemon's scratch is on the runtime tmpfs.
+                let said = format!(
+                    "this session's own temp directory could not be made ({e}); its `/tmp` is the \
+                     daemon's scratch directory instead, which is on the runtime tmpfs"
+                );
+                eprintln!("letibot: {said}");
+                hub.warn("owner_root_absent", said);
+                let fallback = scratch_dir().join("tmp").join(&cfg.session_id);
+                (scratch_dir(), fallback)
+            });
         // 0700, not the umask's default: `create_dir_all` cannot take a mode, and 0755 would leave
         // the scratch world-readable wherever the parent already existed. The mode applies to every
         // component this creates; the ones that exist were 0700 when they were made.
@@ -1074,13 +1090,16 @@ impl Harness {
             }
         }
         let backend = backend.with_scratch_dir(&scratch);
-        // The session's own `/tmp`, for a command that runs inside a boundary: a fresh tmpfs per
-        // call lost a half-written patch, and the failure read as a broken shell. It is a directory
-        // of its own, created and removed by the backend; with no boundary `/tmp` is left alone.
-        let session_tmp = scratch.join("tmp").join(&cfg.session_id);
         let backend = backend
             .with_session_tmp(&session_tmp)
             .map_err(|e| HarnessError::Setup(format!("this session's /tmp: {e}")))?;
+        // And the pairs that point a build at the owner root, when this box named one.
+        if let Some(seat) = seat.as_mut() {
+            seat.env.extend(letibot_tools::lifecycle::owner_env(
+                &places,
+                &cfg.session_id,
+            ));
+        }
         // R121 item 8: the file tools obey the perimeter the shell's view draws, so a path a
         // command cannot reach is refused to `read` and `write` in the same words. The letibot
         // store is reachable only where this session's own `sessions/<id>/` is. A seat whose view
@@ -1139,7 +1158,7 @@ impl Harness {
                 // `--vm` on a Mac: the workspace itself, mounted read-write, every repository in
                 // it - not a copy of one. A copy otherwise, as before.
                 let mounts = cfg.vm_mounts_workspace();
-                let mut spec = letibot_tools::firecode::FirecodeSpec::new(
+                let mut spec = letibot_tools::firecode::FirecodeSpec::for_box(
                     if mounts {
                         cfg.workspace.clone()
                     } else {

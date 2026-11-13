@@ -1253,6 +1253,18 @@ echo "TOLD $told"
 echo "LEFT $(mine)"
 "#;
 
+/// The sweep of [`SESSION_SWEEP`] as one command, for the caller that is not this backend: the
+/// host's own reaper (G4's lease-expiry pass) ends an owner's processes by the same rule a
+/// session's close uses, so there is one answer to "is this process still this session's".
+pub fn sweep_command(id: &str, ledger: &str) -> String {
+    format!(
+        "bash -lc {} letibot-end {} {}",
+        quote(SESSION_SWEEP),
+        quote(id),
+        quote(ledger)
+    )
+}
+
 /// Which `mise` a host turned out to have, per process, `None` meaning *asked, and it has none*. A
 /// cache because the answer costs a round trip and does not change under a running daemon; a negative
 /// entry because a host without mise must pay for that fact once.
@@ -3495,6 +3507,34 @@ impl SshBackend {
         let mirror = format!("{root}/{repo_name}.git");
         let worktree = format!("{root}/{repo_name}/{short}");
         let ledger = format!("{root}/.letibot-jobs/{short}");
+
+        // **The owner's stamp on this machine** (`docs/lifecycle.md` d.4, d.10): the lease a
+        // host-local reaper judges, the tree whose work it will bundle, and the ledger its pids are
+        // in. Written before the checkout exists - a row with no resource is harmless, a resource
+        // with no row is the leak - into the owner's home on that host.
+        {
+            let home = format!("{root}/{HOME_DIR}/{short}");
+            let stamp = crate::lifecycle::RemoteOwner {
+                owner: spec.name.clone(),
+                box_id: crate::lifecycle::box_id(),
+                kind: "session".to_string(),
+                created_ms: crate::lifecycle::now_ms(),
+                lease_ms: crate::lifecycle::now_ms(),
+                idle_ttl_ms: Some(crate::lifecycle::PACKAGE_IDLE_TTL_MS),
+                work: Some(worktree.clone()),
+                ledger: Some(ledger.clone()),
+            };
+            ssh.must(
+                "writing this session's owner stamp on that machine",
+                &format!(
+                    "mkdir -p {home} && printf '%s\\n' {line} > {file}",
+                    home = quote(&home),
+                    line = quote(&stamp.line()),
+                    file = quote(&format!("{home}/owner.json"))
+                ),
+            )
+            .map_err(place)?;
+        }
 
         // `mise exec -C` needs a directory that EXISTS, and the checkout below does not exist until
         // `git worktree add` has run, so the wrapper is pointed at the root until then. mise refuses a

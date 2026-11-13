@@ -121,6 +121,7 @@ impl Stub {
         let places = Places {
             gc_root: fixture.at("gc"),
             box_id: "lab2x1".into(),
+            settings: Settings::default(),
             data_dir: fixture.at("data"),
             rundir: fixture.at("run"),
             firecode_runs: Some(fixture.at("runs")),

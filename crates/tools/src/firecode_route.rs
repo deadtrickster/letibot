@@ -505,7 +505,7 @@ pub fn production(
                 repo.file_name().and_then(|n| n.to_str()).unwrap_or("repo")
             );
             let start: Start = Box::new(move || {
-                let mut spec = crate::firecode::FirecodeSpec::new(repo.clone(), name.clone());
+                let mut spec = crate::firecode::FirecodeSpec::for_box(repo.clone(), name.clone());
                 spec.mount_rw = true;
                 let b = crate::firecode::FirecodeBackend::up(&spec).map_err(|e| e.to_string())?;
                 Ok(Arc::new(b) as Arc<dyn ExecBackend>)
