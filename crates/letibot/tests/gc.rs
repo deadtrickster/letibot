@@ -224,6 +224,35 @@ fn holds_answers_what_the_owner_holds() {
     assert_eq!(snapshot(&gc_root), disk_before, "holds changed the disk");
 }
 
+/// `holds --top` orders the box's owners by the memory their cgroups hold and says what the box
+/// itself has left: the view where the question is who is holding this machine (G5). It removes
+/// nothing, and an owner whose cgroup the walk could not read is a zero it earned.
+#[test]
+fn holds_top_orders_owners_by_memory_and_names_the_boxs_own_answer() {
+    let f = Fixture::new("holds-top");
+    let (_data, gc_root) = f.box_with_a_closed_owner();
+    let disk_before = snapshot(&gc_root);
+    let (ok, out, err) = f.run(&["holds", "--top"]);
+    assert!(ok, "`letibot holds --top` failed. stderr:\n{err}");
+    assert!(
+        out.contains("s-1794509750373521593"),
+        "the owner is named even with no cgroup to measure: {out}"
+    );
+    assert!(
+        out.contains("now") && out.contains("peak"),
+        "both kernel numbers are said per owner: {out}"
+    );
+    assert!(
+        out.contains("box:") && (out.contains("available") || out.contains("unknown")),
+        "the box's own answer is printed, or said to be unknown: {out}"
+    );
+    assert_eq!(
+        snapshot(&gc_root),
+        disk_before,
+        "holds --top changed the disk"
+    );
+}
+
 /// A box with no store says so by path instead of printing an empty plan.
 #[test]
 fn a_box_with_no_store_is_refused_by_name() {

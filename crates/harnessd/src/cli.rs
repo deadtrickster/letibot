@@ -446,6 +446,28 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 Err(e) => eprintln!("harnessd: the daemon's memory.high could not be set: {e}"),
             }
         }
+        // The slice's MemoryHigh, so letibot as a whole cannot starve other work (d.7). Only a
+        // daemon in a scope of its own sets it: a store query or a test's harnessd must not
+        // retune the box's user manager.
+        let delegated = letibot_tools::exec::delegate_memory().is_ok();
+        match crate::memory_high::slice_high() {
+            _ if !delegated => {}
+            Ok(Some(bytes)) => {
+                use letibot_tools::lifecycle::UnitManager as _;
+                match letibot_tools::lifecycle::Systemd.set_slice_high(bytes) {
+                    Ok(()) => eprintln!(
+                        "harnessd: letibot.slice is throttled at {} ({})",
+                        letibot_tools::exec::human_bytes(bytes),
+                        letibot_tools::lifecycle::systemd::SLICE
+                    ),
+                    Err(why) => {
+                        eprintln!("harnessd: letibot.slice's MemoryHigh was not set: {why}")
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(why) => eprintln!("harnessd: {why}; letibot.slice has no MemoryHigh"),
+        }
     }
     {
         let gk = letibot_provider::gatekeeper(None);

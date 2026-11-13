@@ -13,10 +13,11 @@ use letibot_tokencore::store::split;
 use letibot_tokencore::store::{
     HoldingClass, HoldingRow, HoldingState, OwnerKind, OwnerRow, OwnerState, Store,
 };
+use letibot_tools::lifecycle::UnitManager as _;
 use letibot_tools::lifecycle::{self, Places, Plan};
 
 const USAGE_HOLDS: &str = "\
-letibot holds [OWNER] [--folder DIR] [--json] [--line]
+letibot holds [OWNER] [--folder DIR] [--json] [--line] [--top]
   What the owners of this box hold on disk, one line each and one line per holding: the cgroup a
   session's jobs run in (with its process count and memory, which no `ps` can give a seat in a
   sandbox), a VM, its copies, its daemon, its worktree and target. `OWNER` narrows it to one
@@ -25,6 +26,8 @@ letibot holds [OWNER] [--folder DIR] [--json] [--line]
   --folder DIR   only the owners working against DIR
   --json         the same facts as one object, for a program
   --line         only the `holds:` lines, which is what `--status` and a prompt row want
+  --top          owners by the memory they hold (their session cgroup and their VM's run
+                 cgroup), biggest first, then the box's own MemAvailable
 
   Read-only: it opens the store read-only and removes nothing.
   example:
@@ -133,6 +136,8 @@ struct Args {
     json: bool,
     /// `holds --line`: only the `holds:` sentences.
     line: bool,
+    /// `holds --top`: owners by the memory their cgroups hold, then the box's own free memory.
+    top: bool,
     /// `gc --log`: the journal instead of the plan.
     log: bool,
     /// `gc --now`: act, for compute.
@@ -159,6 +164,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         folder: None,
         json: false,
         line: false,
+        top: false,
         log: false,
         now: false,
         until: None,
@@ -178,6 +184,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--json" => out.json = true,
             "--line" => out.line = true,
+            "--top" => out.top = true,
             "--log" => out.log = true,
             "--now" => out.now = true,
             "--settle" => out.settle = true,
@@ -271,6 +278,8 @@ fn holds(args: &[String]) -> Result<(), String> {
             owners: owners.iter().map(|o| (*o).clone()).collect(),
             looks_like_ours: plan.looks_like_ours.clone(),
             now_ms: plan.now_ms,
+            systemd: plan.systemd.clone(),
+            systemd_why: plan.systemd_why.clone(),
         };
         println!("{}", filtered.to_json());
         return Ok(());
@@ -282,6 +291,22 @@ fn holds(args: &[String]) -> Result<(), String> {
                 Some(f) => format!(" against {}", f.display()),
                 None => String::new(),
             }
+        );
+        return Ok(());
+    }
+    if parsed.top {
+        // Owners by memory, then the box's own `MemAvailable`: the one view where the question is
+        // "who is holding this box" rather than "what would be reaped" (G5).
+        print!(
+            "{}",
+            Plan {
+                owners: owners.iter().map(|o| (*o).clone()).collect(),
+                looks_like_ours: Vec::new(),
+                now_ms: plan.now_ms,
+                systemd: None,
+                systemd_why: None,
+            }
+            .top()
         );
         return Ok(());
     }
@@ -369,8 +394,14 @@ fn gc(args: &[String]) -> Result<(), String> {
         }
         return Ok(());
     }
-    let plan = lifecycle::plan(&store, &places, parsed.owner.as_deref(), now)
+    let mut plan = lifecycle::plan(&store, &places, parsed.owner.as_deref(), now)
         .map_err(|e| e.to_string())?;
+    // The user manager's table is G5's, and it is read HERE and not in `plan()`: `holds` builds
+    // the same plan on every turn, and a plan a model reads must not shell out to `systemctl`.
+    match lifecycle::Systemd.table() {
+        Ok(t) => plan.systemd = Some(t),
+        Err(why) => plan.systemd_why = Some(why),
+    }
     if parsed.folder.is_some() || parsed.json {
         let filtered = Plan {
             owners: plan
@@ -381,6 +412,8 @@ fn gc(args: &[String]) -> Result<(), String> {
                 .collect(),
             looks_like_ours: plan.looks_like_ours.clone(),
             now_ms: plan.now_ms,
+            systemd: plan.systemd.clone(),
+            systemd_why: plan.systemd_why.clone(),
         };
         if parsed.json {
             println!("{}", filtered.to_json());
@@ -405,12 +438,36 @@ fn gc_now(owner: Option<&str>, folder: Option<&Path>, json: bool) -> Result<(), 
     let (store, places) = open_for_acts(owner)?;
     let ops = lifecycle::Ops::here("letibot gc --now");
     let now = lifecycle::now_ms();
+    // The unit table belongs to the BOX, not to an owner, and `reset-failed` is this command's:
+    // the timer runs exactly this line, so a failed `letibot-*` unit is cleared with no daemon and
+    // no operator (G5, R191). A failed unit of another name is somebody else's and is left - it is
+    // the record of a crash this box did not cause.
+    let manager = lifecycle::Systemd;
+    let reset = match manager.table() {
+        Ok(t) if t.ours_failed.is_empty() => None,
+        Ok(t) => Some(manager.reset_failed(&t.ours_failed).map(|()| t)),
+        Err(why) => {
+            if !json {
+                println!("user manager: {why}");
+            }
+            None
+        }
+    };
     let pass = lifecycle::pass(&store, &places, &ops, owner, now).map_err(|e| e.to_string())?;
     if json {
         println!("{}", pass.to_json());
         return Ok(());
     }
     print!("{}", pass.render());
+    match reset {
+        Some(Ok(t)) => println!(
+            "user manager: reset {} failed letibot unit(s): {}",
+            t.ours_failed.len(),
+            t.ours_failed.join(", ")
+        ),
+        Some(Err(why)) => println!("user manager: the failed letibot units were not reset: {why}"),
+        None => {}
+    }
     if let Some(want) = folder {
         // A pass acts on the whole box; the filter is said rather than silently narrowing it.
         println!(

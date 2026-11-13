@@ -51,7 +51,17 @@ pub fn holds(bridge: &Bridge, owner: Option<&str>) -> Result<Value, String> {
 /// `gc_plan`: what would be reaped and why, and when - the verdicts only, with the read-only
 /// promise in the answer so a caller never has to assume it.
 pub fn gc_plan(bridge: &Bridge, owner: Option<&str>) -> Result<Value, String> {
-    let plan = plan_of(bridge, owner)?;
+    let mut plan = plan_of(bridge, owner)?;
+    // The user manager's table, on the same door the CLI's plan uses (G5): the unit count, and
+    // which failed units are letibot's. `holds` does not ask, because a model reads that on every
+    // turn and a plan is not worth a `systemctl` call there.
+    {
+        use letibot_tools::lifecycle::UnitManager as _;
+        match letibot_tools::lifecycle::Systemd.table() {
+            Ok(t) => plan.systemd = Some(t),
+            Err(why) => plan.systemd_why = Some(why),
+        }
+    }
     let mut out = plan.to_json();
     out["plan"] = json!(plan.render());
     out["read_only"] = json!(true);

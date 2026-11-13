@@ -11,6 +11,7 @@ use letibot_tokencore::store::{
 };
 
 use super::{Found, Places, discover_all, human_bytes, human_millis, unowned};
+use crate::exec::scope::ScopeUse;
 
 /// How long a closed owner's work is kept once the queue proved it landed (`docs/lifecycle.md`
 /// d.3's settle triggers).
@@ -70,6 +71,10 @@ pub struct HoldingView {
     pub archive: Option<String>,
     /// What the resource itself says: a live VM's pid and tap, a cgroup's process count and memory.
     pub why: Option<String>,
+    /// The cgroup's own numbers, when this holding IS one the kernel measures: `memory.current`,
+    /// `memory.peak` and the OOM counters. `None` for a row the plan could only read from the
+    /// store, which is the absence of a measurement rather than a zero.
+    pub memory: Option<ScopeUse>,
     /// What would happen to it, and why.
     pub verdict: Verdict,
 }
@@ -127,6 +132,25 @@ impl OwnerView {
     /// The bytes this owner holds, all classes together.
     pub fn bytes(&self) -> u64 {
         self.holds.iter().filter_map(|h| h.bytes).sum()
+    }
+
+    /// What the kernel says this owner holds in memory right now, and the most it ever did: its
+    /// session cgroup and its VM's run cgroup, read from `memory.current`/`memory.peak` by the
+    /// discovery walk (G5, `docs/lifecycle.md` d.7). `(0, 0)` is an owner that runs nothing, which
+    /// is a fact; a cgroup nobody could read is simply not counted and says so on its own row.
+    pub fn memory(&self) -> (u64, u64) {
+        let mut now = 0;
+        let mut peak = 0;
+        for h in &self.holds {
+            if matches!(h.state, HoldingState::Gone) || !matches!(h.kind.as_str(), "scope" | "vm") {
+                continue;
+            }
+            if let Some(u) = &h.memory {
+                now += u.memory_current.unwrap_or(0);
+                peak += u.memory_peak.unwrap_or(0);
+            }
+        }
+        (now, peak)
     }
 
     /// `session s-… (live, 3 procs)` - the heading of its block in the plan.
@@ -232,6 +256,12 @@ pub struct Plan {
     pub looks_like_ours: Vec<Stranger>,
     /// The instant the plan was built.
     pub now_ms: i64,
+    /// What the user manager holds, when `letibot gc` asked it: the unit table is G5's, and
+    /// `holds` does not ask, because a plan a model reads on every turn must not shell out.
+    pub systemd: Option<crate::lifecycle::UnitTable>,
+    /// Why the manager could not be asked, when it could not. A box with no user manager is a
+    /// fact the plan prints - not a reason for it to fail.
+    pub systemd_why: Option<String>,
 }
 
 impl Plan {
@@ -261,6 +291,41 @@ impl Plan {
             }
         }
         (n, bytes)
+    }
+
+    /// `letibot holds --top`: owners by the memory they hold, biggest first, and then the box's own
+    /// `MemAvailable` - the number that says whether the biggest of them is why the box is short.
+    /// Nobody's cgroup is guessed at: an owner with none is `0 B`, which is what it runs.
+    pub fn top(&self) -> String {
+        let mut rows: Vec<(&str, &str, u64, u64)> = self
+            .owners
+            .iter()
+            .map(|o| {
+                let (now, peak) = o.memory();
+                (o.kind.word(), o.id.as_str(), now, peak)
+            })
+            .collect();
+        rows.sort_by_key(|(_, _, now, peak)| std::cmp::Reverse((*now, *peak)));
+        let mut out = String::new();
+        for (kind, id, now, peak) in &rows {
+            out.push_str(&format!(
+                "{:>10} now  {:>10} peak  {kind} {id}\n",
+                human_bytes(*now),
+                human_bytes(*peak)
+            ));
+        }
+        match crate::exec::memory::Meminfo::read() {
+            Some(m) => out.push_str(&format!(
+                "box: {} available of {} · {} owner(s) measured\n",
+                human_bytes(m.available),
+                human_bytes(m.total),
+                rows.len()
+            )),
+            None => out.push_str(
+                "box: `/proc/meminfo` cannot be read here, so this box's free memory is unknown\n",
+            ),
+        }
+        out
     }
 
     /// The operator's plan, grouped by owner, one line per holding, then the strangers
@@ -305,6 +370,11 @@ impl Plan {
             human_bytes(bytes)
         ));
         out.push_str("this is a plan: nothing was removed, and nothing was stopped.\n");
+        if let Some(t) = &self.systemd {
+            out.push_str(&format!("{}\n", t.line()));
+        } else if let Some(why) = &self.systemd_why {
+            out.push_str(&format!("user manager: {why}\n"));
+        }
         out
     }
 
@@ -361,6 +431,14 @@ impl Plan {
             "totals": self.totals().into_iter()
                 .map(|(c, b)| (c.to_string(), b))
                 .collect::<BTreeMap<String, u64>>(),
+            "systemd": self.systemd.as_ref().map(|t| serde_json::json!({
+                "units": t.units,
+                "limit": crate::lifecycle::systemd::UNIT_LIMIT,
+                "ours_failed": t.ours_failed,
+                "other_failed": t.other_failed,
+                "line": t.line(),
+            })),
+            "systemd_why": self.systemd_why,
         })
     }
 }
@@ -378,6 +456,8 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
         owners: Vec::new(),
         looks_like_ours: Vec::new(),
         now_ms,
+        systemd: None,
+        systemd_why: None,
     };
     for owner in &owners {
         let rows = store.holdings_of(&owner.id)?;
@@ -400,6 +480,7 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
                     bytes: f.bytes.or(row.bytes),
                     archive: row.archive.clone(),
                     why: f.why.clone().or_else(|| row.why.clone()),
+                    memory: f.use_,
                     verdict: Verdict::Keep(String::new()),
                 },
                 None => HoldingView {
@@ -412,6 +493,7 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
                     bytes: row.bytes,
                     archive: row.archive.clone(),
                     why: row.why.clone(),
+                    memory: None,
                     verdict: Verdict::Keep(String::new()),
                 },
             };
@@ -436,6 +518,7 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
                 bytes: f.bytes,
                 archive: None,
                 why: f.why.clone(),
+                memory: f.use_,
                 verdict: Verdict::Keep(String::new()),
             });
         }
@@ -639,8 +722,79 @@ mod tests {
             bytes: Some(1024),
             archive: None,
             why: None,
+            memory: None,
             verdict: Verdict::Keep(String::new()),
         }
+    }
+
+    /// An owner's memory is its session cgroup plus its VM's run cgroup, both read from the kernel:
+    /// `holds --top` orders owners by that sum, biggest first, and prints the box's own available
+    /// memory beside it (G5). An owner whose cgroup the walk could not read is not guessed at.
+    #[test]
+    fn the_top_view_sums_the_cgroups_and_puts_the_biggest_owner_first() {
+        let use_ = |now: u64, peak: u64| crate::exec::scope::ScopeUse {
+            populated: true,
+            procs: 2,
+            memory_current: Some(now),
+            memory_peak: Some(peak),
+            ..Default::default()
+        };
+        let with = |id: &str, kind: OwnerKind, holds: Vec<HoldingView>| OwnerView {
+            id: id.into(),
+            kind,
+            state: OwnerState::Live,
+            repo: None,
+            closed_ms: None,
+            held_until_ms: None,
+            ttl_ms: None,
+            lease_ms: 0,
+            holds,
+        };
+        let mut small = holding(HoldingClass::Compute, "scope");
+        small.memory = Some(use_(1 << 30, 2 << 30));
+        let mut big_scope = holding(HoldingClass::Compute, "scope");
+        big_scope.memory = Some(use_(3 << 30, 4 << 30));
+        let mut big_vm = holding(HoldingClass::Compute, "vm");
+        big_vm.memory = Some(use_(2 << 30, 5 << 30));
+        let p = Plan {
+            owners: vec![
+                with("s-small", OwnerKind::Package, vec![small]),
+                with("s-big", OwnerKind::Package, vec![big_scope, big_vm]),
+                // A cgroup nobody could read is not a zero it earned, and it is not counted.
+                with(
+                    "s-blind",
+                    OwnerKind::Package,
+                    vec![holding(HoldingClass::Cache, "target")],
+                ),
+            ],
+            looks_like_ours: Vec::new(),
+            now_ms: 0,
+            systemd: None,
+            systemd_why: None,
+        };
+        assert_eq!(
+            p.owners[1].memory(),
+            (5 << 30, 9 << 30),
+            "scope + vm, current and peak"
+        );
+        assert_eq!(
+            p.owners[2].memory(),
+            (0, 0),
+            "a target directory holds no memory"
+        );
+        let top = p.top();
+        let lines: Vec<&str> = top.lines().collect();
+        assert!(
+            lines[0].contains("s-big"),
+            "the box's biggest owner is first: {top}"
+        );
+        assert!(lines[1].contains("s-small"), "{top}");
+        assert!(lines[2].contains("s-blind"), "{top}");
+        assert!(top.contains("5 GiB now"), "{top}");
+        assert!(
+            top.contains("available") || top.contains("cannot be read here"),
+            "the box's own answer is said, or said to be unknown: {top}"
+        );
     }
 
     /// A live owner loses nothing: every class of holding is kept, and each says why in its own

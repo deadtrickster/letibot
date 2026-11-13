@@ -772,6 +772,10 @@ Grace periods, in one place:
   hits its cap dies whole instead of leaving half a test run.
 - Every gate step and job gets `RLIMIT_CORE=0` (R191). The sweep prints the user manager's
   unit count against its limit, and resets failed units named `letibot-*` only.
+- Both bounds are `[memory]` keys in `providers.toml`, beside `daemon_high`: `owner_high` (a size,
+  a fraction of the box, or `max` for none) and `slice_high` (60% of the box when the file says
+  nothing, `max` to turn it off). A malformed one is refused with the file's name, never read as
+  "no bound".
 - When no scope can be made (R192) the owner is created with `compute: unbounded` in its
   `holds` line, and its hard TTL falls back to kill by process group and `(pid, identity)`.
 

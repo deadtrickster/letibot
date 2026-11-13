@@ -348,6 +348,60 @@ fn a_hold_is_a_clock_and_an_unknown_owner_is_refused() {
     assert!(err.contains("no owner `s-nobody`"), "{err}");
 }
 
+/// The user manager's table is printed by the plan, and `gc --now` resets a failed unit named
+/// `letibot-*` while leaving one of another name alone: that unit is the record of a crash this
+/// box did not cause (G5, `docs/lifecycle.md` d.7). The manager is a script in the fixture's own
+/// `bin/`, first on the verb's `PATH`, so nothing here reaches the real one.
+#[test]
+fn the_plan_names_the_unit_table_and_only_letibots_failed_units_are_reset() {
+    let f = Fixture::new("units");
+    f.store();
+    let resets = f.at("resets");
+    let fake = format!(
+        "#!/bin/sh\n\
+         # The user manager as a fixture: one failed unit that is letibot's, one that is not.\n\
+         case \" $* \" in\n\
+         *\" reset-failed \"*)\n\
+         printf '%s\\n' \"$*\" > '{}'\n\
+         exit 0 ;;\n\
+         esac\n\
+         printf '%s\\n' \\\n\
+         'session-1.scope loaded active running A session' \\\n\
+         'letibot-harnessd-1.scope loaded failed failed The daemon' \\\n\
+         'drkonqi-coredump-launcher@1.service loaded failed failed A crash loop' \\\n\
+         'letibot-gc.service loaded inactive dead The timer'\n",
+        resets.display()
+    );
+    let at = f.at("bin/systemctl");
+    std::fs::write(&at, fake).expect("the manager");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&at, std::fs::Permissions::from_mode(0o755)).expect("executable");
+    }
+
+    let (ok, out, err) = f.run(&["gc"]);
+    assert!(ok, "`letibot gc` failed:\n{err}");
+    assert!(out.contains("user manager: 4 units of 131072"), "{out}");
+    assert!(
+        out.contains("2 failed, 1 of them letibot's"),
+        "the plan counts the failures and says which are ours: {out}"
+    );
+
+    let (ok, out, err) = f.run(&["gc", "--now"]);
+    assert!(ok, "`letibot gc --now` failed:\n{err}");
+    assert!(
+        out.contains("reset 1 failed letibot unit(s): letibot-harnessd-1.scope"),
+        "{out}"
+    );
+    let asked = std::fs::read_to_string(&resets).expect("the manager was asked to reset");
+    assert!(asked.contains("letibot-harnessd-1.scope"), "{asked}");
+    assert!(
+        !asked.contains("drkonqi"),
+        "a failed unit of another name is somebody else's crash to clear: {asked}"
+    );
+}
+
 /// A test's stand-in job: killed and reaped when the test is done with it, whether or not the
 /// reaper under test got to it first, so no test leaves a zombie behind.
 struct Reaped(std::process::Child);

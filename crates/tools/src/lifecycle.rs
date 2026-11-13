@@ -23,6 +23,7 @@ mod config;
 mod plan;
 mod reap;
 mod remote;
+pub mod systemd;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
@@ -44,6 +45,7 @@ pub use remote::{
     Bundle, HostPass, LeaseKeeper, LeaseRenewer, RENEW_MS, RemoteLeases, RemoteOwner,
     collect_bundle, host_pass, renew_script,
 };
+pub use systemd::{NoManager, Systemd, UnitManager, UnitTable};
 pub use worktree::{
     Archived, OWNER_FILE, Place, Restored, STAMP_KEY, WIP_MAX_BYTES, archive_and_remove, archives,
     branch_name, drop_archive, make as make_worktree, package_dir, proved as worktree_proved,
@@ -874,13 +876,16 @@ fn from_firecode(owner: &OwnerRow, places: &Places) -> Vec<Found> {
                     "{} names its owner",
                     runs.join(&vm.run).join("owner").display()
                 ),
+                // The VM's memory is the firecracker process's, in the run's own cgroup: the same
+                // two numbers a session's cgroup gives, so `holds --top` can add them to the owner
+                // that boots it (G5, d.7).
                 bytes: vm.cgroup.as_deref().and_then(|c| {
                     std::fs::read_to_string(c.join("memory.current"))
                         .ok()
                         .and_then(|v| v.trim().parse().ok())
                 }),
                 why: Some(vm.line()),
-                use_: None,
+                use_: vm.cgroup.as_deref().and_then(scope::use_at),
             });
         }
         // And a run whose owner file names it but whose firecracker is gone: a record, not a VM.
