@@ -978,8 +978,12 @@ impl Tool for Bash {
                 &next,
                 // Who moved it is the envelope's `how:`; the command is the call's own.
                 format!(
-                    "{body}\n\n[running on as `{label}`]\n{file_line}  owned by: {} — {}\n\n{} \
+                    "{}[running on as `{label}`]\n{file_line}  owned by: {} — {}\n\n{} \
                      So do not build your own clock: no `sleep`, no polling loop.\n",
+                    match body.trim_end() {
+                        "" => String::new(),
+                        b => format!("{b}\n\n"),
+                    },
                     p.to,
                     p.to.kind.reaped_when(),
                     super::DELIVERED,

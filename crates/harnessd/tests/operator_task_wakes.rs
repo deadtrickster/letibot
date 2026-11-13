@@ -355,7 +355,7 @@ fn an_operator_shell_run_moved_to_the_background_still_reaches_the_model() {
         .iter()
         .find_map(|i| match i {
             TranscriptItem::ToolResult { payload, .. }
-                if payload.contains("moved to the background") =>
+                if payload.contains("moved this to the background") =>
             {
                 Some(payload.clone())
             }
@@ -368,7 +368,7 @@ fn an_operator_shell_run_moved_to_the_background_still_reaches_the_model() {
             )
         });
     assert!(
-        said.contains("delivered to you on its own"),
+        said.contains(letibot_tools::builtins::DELIVERED),
         "the row promises the completion this test is about: {said}"
     );
 
