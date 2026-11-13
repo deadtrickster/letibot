@@ -377,6 +377,53 @@ fn an_orphan_output_is_dropped_and_the_operators_own_is_their_turn() {
     );
 }
 
+/// A row recorded while a call was running - a room note, a steering message - must not
+/// orphan the result that answers it: the note waits behind the results, which is what the
+/// chat-completions path measured and the same shape here.
+#[test]
+fn a_note_between_a_call_and_its_result_waits_for_the_result() {
+    let items = vec![
+        user("go"),
+        calls(&["c-1"]),
+        TranscriptItem::Notice {
+            kind: letibot_transcript::NoticeKind::Monitor,
+            text: "room: a message for everyone".into(),
+            facts: None,
+        },
+        result("c-1"),
+    ];
+    let p = provider(Some("gpt-6-astra"));
+    let body = p
+        .body(&TurnRequest {
+            system: "",
+            tools_json: &[],
+            items: &items,
+            tail: &[],
+            max_output_tokens: None,
+            thinking: None,
+        })
+        .expect("a body");
+    let input = body["input"].as_array().unwrap();
+    assert!(
+        input
+            .iter()
+            .all(|i| i["type"] != "function_call_output" || i["output"] == "done"),
+        "the real result was replaced by a filler: {input:#?}"
+    );
+    let answered = input
+        .iter()
+        .position(|i| i["type"] == "function_call_output")
+        .expect("the call is answered");
+    let note = input
+        .iter()
+        .position(|i| i["content"] == "room: a message for everyone")
+        .expect("the note was not lost");
+    assert!(
+        note > answered,
+        "the note waits behind the results: {input:#?}"
+    );
+}
+
 /// A turn interrupted between a call and its result leaves exactly one shape behind, and
 /// the gap is filled where it is rather than the request being sent to be refused.
 #[test]

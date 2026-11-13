@@ -633,34 +633,52 @@ fn pairing<'a>(text: &str, ledger: &'a [Issued], cursor: &mut usize) -> Vec<&'a 
 /// nothing is dropped unless the operator ran it.
 ///
 /// The two shapes are the ones `messages.rs` fills for chat completions, for the same
-/// reason and with one difference: output is matched by `call_id` rather than by
-/// adjacency, so a note recorded while calls were running keeps its place instead of
-/// being held behind the results. What a call may not do is go unanswered - an
-/// interrupted turn leaves exactly that - so the gap is named where it is, before whatever
-/// came next, rather than the request being sent to be refused.
+/// reason: an output the provider will not accept is the smaller loss than a result the
+/// model never sees. A row recorded WHILE the calls were running - a room note, a steering
+/// message - waits behind the results rather than orphaning them, which is also what the
+/// chat-completions path measured.
+///
+/// What a call may not do is go unanswered: an interrupted turn leaves exactly that, and the
+/// gap is filled where its window closed rather than the request being sent to be refused.
 fn pair_outputs(rows: Vec<Input>) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::with_capacity(rows.len());
     // The calls opened and not yet answered, in the order they were made.
     let mut owed: Vec<String> = Vec::new();
+    // Rows recorded while calls were still running, held until the results land.
+    let mut held: Vec<Value> = Vec::new();
     for row in rows {
         if let Some(id) = &row.answers {
             if let Some(at) = owed.iter().position(|o| o == id) {
                 owed.remove(at);
                 out.push(row.item);
+                if owed.is_empty() {
+                    out.append(&mut held);
+                }
             } else if row.own_author {
                 // No model proposed this call, so an output would answer nothing: the
                 // person's own turn is what their `!` line actually was.
                 let content = row.item.get("output").cloned().unwrap_or(Value::Null);
-                out.push(json!({"role": "user", "content": content}));
+                let person = json!({"role": "user", "content": content});
+                if owed.is_empty() {
+                    out.push(person);
+                } else {
+                    held.push(person);
+                }
             }
+            continue;
+        }
+        let opens = row.item.get("type").and_then(Value::as_str) == Some("function_call");
+        // A row between a call and its result waits; an assistant message is what closes the
+        // answering window, since nothing after it can be answering these calls.
+        if !opens && !owed.is_empty() && !closes_the_window(&row.item) {
+            held.push(row.item);
             continue;
         }
         for id in std::mem::take(&mut owed) {
             out.push(unanswered(&id));
         }
-        if row.item.get("type").and_then(Value::as_str) == Some("function_call")
-            && let Some(id) = row.item.get("call_id").and_then(Value::as_str)
-        {
+        out.append(&mut held);
+        if opens && let Some(id) = row.item.get("call_id").and_then(Value::as_str) {
             owed.push(id.to_string());
         }
         out.push(row.item);
@@ -668,7 +686,14 @@ fn pair_outputs(rows: Vec<Input>) -> Vec<Value> {
     for id in owed {
         out.push(unanswered(&id));
     }
+    out.append(&mut held);
     out
+}
+
+/// The one row that ends the window a run of calls opened: an assistant message is the model
+/// speaking again, and no later output can answer a call it has moved past.
+fn closes_the_window(item: &Value) -> bool {
+    item.get("role").and_then(Value::as_str) == Some("assistant")
 }
 
 fn unanswered(call_id: &str) -> Value {
