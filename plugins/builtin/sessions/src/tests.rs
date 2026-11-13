@@ -19,6 +19,7 @@ fn session(id: &str, title: &str) -> Session {
         live: true,
         running: false,
         heads: 1,
+        held: 0,
         items: 6,
         stored: 0,
         model: "qwen".into(),
