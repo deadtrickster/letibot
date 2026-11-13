@@ -91,6 +91,7 @@ pub const READER_ARMS: &[(i64, Arm)] = &[
     (46, Arm::Additive), // queued_prompt.context_json: a defaulted column
     (47, Arm::Additive), // recall_unit: a new table, which an older reader never names
     (48, Arm::Additive), // owner/holding/reap_event: new tables, which an older reader never names
+    (49, Arm::Additive), // process.cgroup: a NULLed column
 ];
 
 /// The floor a store at `version` carries: the newest arm at or below it that [`Arm::Breaks`],
@@ -119,15 +120,18 @@ pub struct NewerStore {
     pub found: i64,
     /// The version this build knows.
     pub known: i64,
+    /// The oldest reader the file allows, which this build is at or above.
+    pub floor: i64,
 }
 
 impl NewerStore {
-    /// The sentence in the operator's own terms: what is wrong, and the command that fixes it. The
-    /// daemon appends which binary it is; the store cannot know that.
+    /// What is true of every such open: this build reads the file, and a newer build is what
+    /// clears the sentence. Whether a restart would pick one up is the daemon's to add.
     pub fn sentence(&self) -> String {
         format!(
-            "this daemon (schema {}) is older than its store ({}) — restart it: letibot --stop",
-            self.known, self.found
+            "a newer build (schema {}) wrote this store; this one (schema {}) reads it (floor {}) - \
+             install the newer build to clear this",
+            self.found, self.known, self.floor
         )
     }
 }
@@ -210,6 +214,7 @@ impl Store {
                 *self.shared.newer.lock().unwrap_or_else(|e| e.into_inner()) = Some(NewerStore {
                     found,
                     known: SCHEMA_VERSION,
+                    floor,
                 });
                 Ok(())
             }

@@ -17,10 +17,10 @@ pub fn said(cfg: &Config) -> Result<Option<String>, String> {
         // older reader may read a newer file is the store's declaration to make
         // and a second opinion here is a second answer to one question.
         Ok(store) => Ok(store.newer_store().map(|newer| {
-            format!(
-                "{} · running {}",
-                newer.sentence(),
-                build_of(std::env::current_exe().ok().as_deref())
+            sentence(
+                &newer,
+                std::env::current_exe().ok().as_deref(),
+                crate::exe_stamp::replaced().as_deref(),
             )
         })),
         // A refusal is fatal and says why. Every other store error is left to the paths that
@@ -31,6 +31,23 @@ pub fn said(cfg: &Config) -> Result<Option<String>, String> {
         }
         Err(_) => Ok(None),
     }
+}
+
+/// The store's sentence, the binary, and a restart only when one would run another binary: the
+/// file this daemon started from has been replaced since.
+fn sentence(
+    newer: &letibot_tokencore::store::NewerStore,
+    exe: Option<&Path>,
+    replaced: Option<&Path>,
+) -> String {
+    let mut said = format!("{} · running {}", newer.sentence(), build_of(exe));
+    if let Some(path) = replaced {
+        said.push_str(&format!(
+            " · {} has been rebuilt since this daemon started - restart it: letibot --restart",
+            path.display()
+        ));
+    }
+    said
 }
 
 /// Which binary this is: its path and when it was built, in a person's words. Both halves
@@ -64,13 +81,27 @@ mod tests {
         let newer = letibot_tokencore::store::NewerStore {
             found: 34,
             known: 33,
+            floor: 30,
         };
-        let said = format!("{} · running {}", newer.sentence(), build_of(None));
+        let said = sentence(&newer, None, None);
         assert!(
             said.starts_with(
-                "this daemon (schema 33) is older than its store (34) — restart it: letibot --stop"
+                "a newer build (schema 34) wrote this store; this one (schema 33) reads it \
+                 (floor 30) - install the newer build to clear this"
             ),
             "{said}"
+        );
+        assert!(
+            !said.contains("restart"),
+            "nothing newer is installed, so a restart would change nothing: {said}"
+        );
+        let rebuilt = sentence(&newer, None, Some(Path::new("/x/target/release/harnessd")));
+        assert!(
+            rebuilt.ends_with(
+                "/x/target/release/harnessd has been rebuilt since this daemon started - restart \
+                 it: letibot --restart"
+            ),
+            "{rebuilt}"
         );
         assert!(
             said.contains("a binary the platform would not name"),

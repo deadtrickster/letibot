@@ -2993,9 +2993,16 @@ mod reader_floor {
         assert_eq!(
             newer.sentence(),
             format!(
-                "this daemon (schema {SCHEMA_VERSION}) is older than its store ({ahead}) — \
-                 restart it: letibot --stop"
+                "a newer build (schema {ahead}) wrote this store; this one (schema \
+                 {SCHEMA_VERSION}) reads it (floor {}) - install the newer build to clear this",
+                newer.floor
             )
+        );
+        assert!(newer.floor <= SCHEMA_VERSION, "{newer:?}");
+        assert!(
+            !newer.sentence().contains("restart"),
+            "{}",
+            newer.sentence()
         );
 
         // It is a store this build can USE, not a read-only courtesy: the rows are there and a
