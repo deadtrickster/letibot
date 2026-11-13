@@ -3089,7 +3089,9 @@ fn the_service_serves_the_queues_and_stops() {
         move || service.run(&stop)
     });
     let s = w.store();
-    let until = std::time::Instant::now() + Duration::from_secs(20);
+    // A hang breaker per step, sized to the store's own budget: one call on a loaded disk can
+    // stall for seconds, and the claim and the landing are each several calls.
+    let until = std::time::Instant::now() + letibot_tokencore::store::BUSY_RETRY_TOTAL;
     while s.review_row("svc").unwrap().unwrap().state != ReviewState::Reviewing {
         assert!(std::time::Instant::now() < until, "never claimed");
         std::thread::sleep(Duration::from_millis(50));
@@ -3099,6 +3101,7 @@ fn the_service_serves_the_queues_and_stops() {
     assert_eq!(carried.head_sha, head2);
     assert_eq!(carried.target, "main");
     let m = w.accept("svc", &me);
+    let until = std::time::Instant::now() + letibot_tokencore::store::BUSY_RETRY_TOTAL;
     while s.merge_row(&m).unwrap().unwrap().state != MergeState::Landed {
         assert!(std::time::Instant::now() < until, "never landed");
         std::thread::sleep(Duration::from_millis(50));
