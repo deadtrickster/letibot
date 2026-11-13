@@ -1912,6 +1912,11 @@ impl Harness {
         let backstop = round_backstop(self.cfg.max_tool_rounds);
         for round in 0..backstop {
             self.stop_the_turn_at_the_wall(round)?;
+            // Every round is activity: a package runs its whole brief as one turn, and a lease
+            // moved only when a turn ended let the idle reaper close a session mid-turn.
+            if let Some(store) = &self.store {
+                let _ = store.touch_owner(&self.cfg.session_id, letibot_metrics::now_ms() as i64);
+            }
             // This sink holds the round's ending, because the round's end and the turn's end are two
             // facts and this loop is the only place that decides the second (see `CapturingSink`).
             let mut sink = CapturingSink::holding_the_rounds_end(self.hub.clone());
