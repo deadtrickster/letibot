@@ -50,3 +50,6 @@ letibot-dialect-glm.workspace = true
 # `kill(pid, 0)` — the liveness probe `tests/restore.rs` uses to tell a stale store copy from
 # one a running test still owns. It is a test-only need, and portable where `/proc` is not.
 libc = "0.2"
+# The real chat-completions client against a loopback server, so the cloud repeat guard is
+# tested on the stream a provider actually hands the engine.
+letibot-provider.workspace = true

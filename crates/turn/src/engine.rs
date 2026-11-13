@@ -32,7 +32,7 @@ use serde_json::Value;
 use crate::capture::FrameCapture;
 use crate::completion::{Chunk, CompletionRequest, FinishReason};
 use crate::events::{DeltaTarget, EventSink, TurnEvent, args_digest, head_hex};
-use crate::guards::{GuardSet, Trip};
+use crate::guards::{GuardSet, TextRepeat, Trip};
 use crate::http::{self, Endpoint, Flow, HttpError};
 use crate::items::{self};
 use crate::length::{self, EmptyReason, LengthVerdict, SalvageBudget, TurnShape};
@@ -1181,22 +1181,36 @@ impl TurnEngine {
         let mut urgent: Option<String> = None;
         // The first-token clock: the first delta of any kind, against the turn's start.
         let mut first_byte_ms: Option<u64> = None;
+        // A provider stream has no token ids for `GuardSet`, so its loops are caught as text.
+        let mut text_guard = TextRepeat::new("text");
+        let mut reasoning_guard = TextRepeat::new("reasoning");
+        let mut guard_trip: Option<Trip> = None;
         let mut on_delta = |d: &Delta| -> StreamFlow {
             if first_byte_ms.is_none() {
                 first_byte_ms = Some(started.elapsed().as_millis() as u64);
             }
-            match d {
-                Delta::Text(t) => sink.emit(TurnEvent::Delta {
-                    turn_id: turn_id.clone(),
-                    target: DeltaTarget::Text,
-                    text: t.clone(),
-                }),
-                Delta::Reasoning(t) => sink.emit(TurnEvent::Delta {
-                    turn_id: turn_id.clone(),
-                    target: DeltaTarget::Reasoning,
-                    text: t.clone(),
-                }),
-                Delta::ToolCall { .. } => {}
+            let tripped = match d {
+                Delta::Text(t) => {
+                    sink.emit(TurnEvent::Delta {
+                        turn_id: turn_id.clone(),
+                        target: DeltaTarget::Text,
+                        text: t.clone(),
+                    });
+                    text_guard.observe(t)
+                }
+                Delta::Reasoning(t) => {
+                    sink.emit(TurnEvent::Delta {
+                        turn_id: turn_id.clone(),
+                        target: DeltaTarget::Reasoning,
+                        text: t.clone(),
+                    });
+                    reasoning_guard.observe(t)
+                }
+                Delta::ToolCall { .. } => None,
+            };
+            if let Some(t) = tripped {
+                guard_trip = Some(t);
+                return StreamFlow::Stop;
             }
             // The escape hatch, checked once per delta: an urgent message
             // closes the connection; the rest queue for the boundary.
@@ -1207,6 +1221,37 @@ impl TurnEngine {
             StreamFlow::Continue
         };
         let failed = backend.complete(&req, &mut on_delta);
+        // Whatever the stream returned after the stop, the round ends the way a local guard
+        // trip ends it: a named warning, an interrupt, nothing committed.
+        if let Some(trip) = guard_trip {
+            sink.emit(TurnEvent::Warning {
+                code: trip.code,
+                detail: trip.detail.clone(),
+            });
+            sink.emit(TurnEvent::TurnInterrupted {
+                turn_id: turn_id.clone(),
+                reason: trip.code.to_string(),
+                partial_kept: false,
+            });
+            let mut metrics = self.messages_metrics(
+                &turn_id,
+                &model,
+                session,
+                failed.as_ref().ok(),
+                started.elapsed().as_millis() as u64,
+                FinishReason::Aborted,
+                backend,
+            );
+            metrics.first_byte_ms = first_byte_ms;
+            sink.emit(TurnEvent::TurnFinished {
+                turn_id: turn_id.clone(),
+                finish_reason: FinishReason::Aborted,
+                proposed_calls: false,
+                metrics: Box::new(metrics),
+            });
+            pending.give_back(steering);
+            return Err(TurnFailure::Guard { turn_id, trip });
+        }
         // A round that produced nothing has nothing to interrupt, so a deadline is the first moment
         // an urgent steer can be heard: it closes the round, and the failure is the interrupt the
         // operator asked for rather than the provider's silence.

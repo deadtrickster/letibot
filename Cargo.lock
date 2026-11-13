@@ -1777,6 +1777,7 @@ dependencies = [
  "letibot-dialect-glm",
  "letibot-http",
  "letibot-llama",
+ "letibot-provider",
  "letibot-tokencore",
  "letibot-transcript",
  "letibot-turn",

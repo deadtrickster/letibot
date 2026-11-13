@@ -2136,3 +2136,203 @@ fn an_interrupt_taken_at_the_end_of_a_successful_round_goes_back_to_the_source()
     assert!(back.urgent, "it came back as something else: {back:?}");
     assert_eq!(back.text, "ABORT");
 }
+
+// --------------------------------------------------------------------------
+// The text repeat guard on a provider's stream
+// --------------------------------------------------------------------------
+
+/// The thinking a kimi-code-global/k3.1-pro round looped on for minutes, verbatim.
+const K3_LOOP: &str = "Given the scale, let me first give the assessment and the plan, then \
+    implement.\nGiven the size, maybe I should ask a clarifying question? No \u{2014} the operator \
+    was clear.\nLet me check what vt100 looks like (a crate) and whether I can add it.\n";
+
+/// One SSE event per fragment of `text`, cut at sizes that cycle so words and the em dash
+/// straddle deltas, on the chat-completions field `field`.
+fn sse_fragments(text: &str, field: &str, out: &mut String) {
+    let sizes = [3usize, 17, 1, 41, 8, 90, 5];
+    let (mut at, mut k) = (0, 0);
+    while at < text.len() {
+        let mut end = (at + sizes[k % sizes.len()]).min(text.len());
+        while !text.is_char_boundary(end) {
+            end += 1;
+        }
+        k += 1;
+        let delta =
+            serde_json::json!({"choices": [{"index": 0, "delta": {field: &text[at..end]}}]});
+        out.push_str(&format!("data: {delta}\n\n"));
+        at = end;
+    }
+}
+
+/// A chat-completions door on loopback that answers every request with `sse`.
+fn chat_door(sse: String) -> String {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!(
+        "http://{}/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let mut reader = BufReader::new(conn.try_clone().unwrap());
+            let mut length = 0usize;
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).unwrap_or(0) == 0 {
+                    break;
+                }
+                let h = h.trim_end().to_ascii_lowercase();
+                if h.is_empty() {
+                    break;
+                }
+                if let Some(v) = h.strip_prefix("content-length:") {
+                    length = v.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut body = vec![0u8; length];
+            let _ = reader.read_exact(&mut body);
+            let _ = write!(
+                conn,
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\n\
+                 Connection: close\r\n\r\n{sse}",
+                sse.len()
+            );
+        }
+    });
+    url
+}
+
+fn kimi(url: &str) -> letibot_provider::OpenAiProvider {
+    let creds = letibot_provider::Credentials {
+        key: "sk-test".into(),
+        from: "test".into(),
+        prices: Default::default(),
+        url: Some(url.into()),
+    };
+    letibot_provider::OpenAiProvider::new(
+        &letibot_provider::presets::KIMI_CODE_GLOBAL,
+        Some("k3.1-pro"),
+        creds,
+    )
+    .with_catalogue(std::sync::Arc::new(
+        letibot_provider::catalogue::Catalogue::default(),
+    ))
+}
+
+/// One provider round over `sse` through the engine, with what the head was shown.
+fn cloud_round(
+    tag: &str,
+    sse: String,
+) -> (Result<letibot_turn::TurnOk, TurnFailure>, RecordingSink) {
+    let idle = Canned::serve(Vec::new(), 0);
+    let mut engine = engine(idle.endpoint.clone());
+    let mut session = session(&engine, tag);
+    let mut sink = RecordingSink::new();
+    session
+        .append_items(&engine, &[user("rewrite the pane renderer")], &mut sink)
+        .unwrap();
+    let door = kimi(&chat_door(sse));
+    let out = engine.run_turn_messages(
+        &mut session,
+        &mut sink,
+        &mut NoSteering,
+        &door,
+        "be terse",
+        &[],
+        None,
+    );
+    (out, sink)
+}
+
+fn shown(sink: &RecordingSink, want: DeltaTarget) -> usize {
+    sink.events
+        .iter()
+        .map(|e| match e {
+            TurnEvent::Delta { target, text, .. } if *target == want => text.len(),
+            _ => 0,
+        })
+        .sum()
+}
+
+const SSE_END: &str = "data: {\"choices\":[{\"index\":0,\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n\
+    data: [DONE]\n\n";
+
+/// k3.1-pro looping on three sentences in its thinking: the round ends at a named
+/// `repetition_collapse` within a few copies, not after the provider's whole stream.
+#[test]
+fn a_provider_thinking_loop_ends_the_round_as_repetition_collapse() {
+    let _lock = serial();
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
+        eprintln!("SKIPPED: no vocabulary GGUF, so the engine cannot open a session");
+        return;
+    };
+    let looped = K3_LOOP.repeat(300);
+    let mut sse = String::new();
+    sse_fragments(&looped, "reasoning_content", &mut sse);
+    sse_fragments("Here is the plan.", "content", &mut sse);
+    sse.push_str(SSE_END);
+
+    let (out, sink) = cloud_round("k3-loop", sse);
+    match out.expect_err("a looping round must not finish as an answer") {
+        TurnFailure::Guard { trip, .. } => {
+            assert_eq!(trip.code, "repetition_collapse");
+            assert!(trip.detail.contains("reasoning"), "{}", trip.detail);
+        }
+        other => panic!("{other:?}"),
+    }
+    assert!(
+        sink.warnings()
+            .iter()
+            .any(|(c, _)| *c == "repetition_collapse"),
+        "the head was not told: {:?}",
+        sink.kinds()
+    );
+    let kinds = sink.kinds();
+    assert!(kinds.contains(&"TurnInterrupted"), "{kinds:?}");
+    assert!(kinds.contains(&"TurnFinished"), "{kinds:?}");
+    let read = shown(&sink, DeltaTarget::Reasoning);
+    assert!(
+        read <= 8 * K3_LOOP.len(),
+        "the round read {read} of {} bytes before it stopped",
+        looped.len()
+    );
+    assert_eq!(shown(&sink, DeltaTarget::Text), 0, "the stream went on");
+}
+
+/// Repetitive but legitimate output on both channels finishes as an ordinary answer.
+#[test]
+fn a_provider_answer_with_repetitive_but_real_content_is_not_cut() {
+    let _lock = serial();
+    let Some(_) = letibot_llama::apparatus::present_gguf() else {
+        eprintln!("SKIPPED: no vocabulary GGUF, so the engine cannot open a session");
+        return;
+    };
+    let thinking = format!(
+        "{}Then the table. ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok ok.\n",
+        K3_LOOP.repeat(3)
+    );
+    let mut answer = String::from("| crate | tests | status |\n|---|---|---|\n");
+    for i in 0..200 {
+        answer.push_str(&format!("| letibot-mod{i} | {} | ok |\n", 10 + i % 3));
+    }
+    answer.push_str("```rust\n");
+    for i in 0..40 {
+        for _ in 0..3 {
+            answer.push_str("    out.push_str(\"\\n\");\n");
+        }
+        answer.push_str(&format!("    out.push_str(&row({i}));\n"));
+    }
+    answer.push_str("```\n");
+    answer.push_str(&"ok ".repeat(600));
+    let mut sse = String::new();
+    sse_fragments(&thinking, "reasoning_content", &mut sse);
+    sse_fragments(&answer, "content", &mut sse);
+    sse.push_str(SSE_END);
+
+    let (out, sink) = cloud_round("k3-control", sse);
+    if let Err(e) = out {
+        panic!("{e:?}; warnings {:?}", sink.warnings());
+    }
+    assert_eq!(shown(&sink, DeltaTarget::Text), answer.len());
+}
