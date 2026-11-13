@@ -67,6 +67,9 @@ struct NoteFs<'a> {
     /// The backend's workspace, which is where the session's files are. Not the scope's: that is
     /// the path the DAEMON sees, and on a placed session it names another machine's tree.
     root: PathBuf,
+    /// The notes checkout and the box-wide directory: letibot's own, never the session's, even
+    /// when the workspace holds them - a session in `~` has the store under its root.
+    own: Vec<PathBuf>,
 }
 
 impl<'a> NoteFs<'a> {
@@ -77,13 +80,22 @@ impl<'a> NoteFs<'a> {
             .workspace_path()
             .map(PathBuf::from)
             .unwrap_or_else(|| scope.workspace());
-        NoteFs { backend, root }
+        let own = scope
+            .repo()
+            .into_iter()
+            .chain(Some(scope.global_dir()))
+            .filter(|p| !p.as_os_str().is_empty())
+            .collect();
+        NoteFs { backend, root, own }
     }
 
     /// The path in the backend's own spelling, when the backend is what holds it. That test is
     /// the whole rule: under the workspace is the session's, and everything else - the box-wide
     /// notes - is this box's.
     fn on_backend(&self, path: &Path) -> Option<String> {
+        if self.own.iter().any(|o| path.starts_with(o)) {
+            return None;
+        }
         let rest = path.strip_prefix(&self.root).ok()?;
         let rel = rest.to_string_lossy().replace('\\', "/");
         Some(if rel.is_empty() { ".".to_string() } else { rel })

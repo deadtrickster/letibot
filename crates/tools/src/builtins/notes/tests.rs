@@ -1100,3 +1100,86 @@ impl NotesScope for FixtureScope {
         self.workspace.join("notes-repo/proj")
     }
 }
+
+/// A backend that refuses every call, with a workspace that holds the notes repo: a session in
+/// `~`, whose root holds the letibot store and the notes checkout in it.
+struct FencedHome(String);
+
+impl crate::backend::ExecBackend for FencedHome {
+    fn run(
+        &self,
+        _cmd: &crate::backend::Command,
+    ) -> Result<crate::backend::Output, crate::backend::BackendError> {
+        Err(unreachable())
+    }
+    fn read(&self, _path: &str) -> Result<Vec<u8>, crate::backend::BackendError> {
+        Err(unreachable())
+    }
+    fn write(&self, _path: &str, _bytes: &[u8]) -> Result<(), crate::backend::BackendError> {
+        Err(unreachable())
+    }
+    fn processes_arc(&self) -> Option<Arc<dyn crate::exec::ProcessHost>> {
+        None
+    }
+    fn is_writable(&self) -> bool {
+        true
+    }
+    fn workspace_path(&self) -> Option<String> {
+        Some(self.0.clone())
+    }
+    fn list(&self, _path: &str) -> Result<Vec<DirEntry>, crate::backend::BackendError> {
+        Err(unreachable())
+    }
+    fn stat(&self, _path: &str) -> Option<DirEntry> {
+        None
+    }
+    fn describe(&self) -> String {
+        "a seat that fences the store".into()
+    }
+}
+
+struct RepoScope {
+    workspace: PathBuf,
+    repo: PathBuf,
+}
+impl NotesScope for RepoScope {
+    fn workspace(&self) -> PathBuf {
+        self.workspace.clone()
+    }
+    fn global_dir(&self) -> PathBuf {
+        PathBuf::new()
+    }
+    fn project_dir(&self) -> PathBuf {
+        self.repo.join("proj")
+    }
+    fn repo(&self) -> Option<PathBuf> {
+        Some(self.repo.clone())
+    }
+}
+
+/// The notes checkout is letibot's own even inside the session's workspace: a session in `~`
+/// has the store under its root, and the seat's fence refused every note it tried to add.
+#[test]
+fn the_notes_repo_is_read_and_written_directly_even_under_the_workspace() {
+    let home = crate::backend::tempdir::TempDir::new();
+    let repo = home.path().join(".local/share/letibot/notes");
+    let backend = FencedHome(home.path().display().to_string());
+    let scope = RepoScope {
+        workspace: home.path().to_path_buf(),
+        repo: repo.clone(),
+    };
+    let fs = NoteFs::new(&backend, &scope);
+    let note = repo.join("proj/a.md");
+    assert_eq!(
+        fs.read(&note),
+        Ok(None),
+        "an absent note in the repo is absent, not fenced"
+    );
+    fs.write(&note, b"a\n")
+        .expect("the repo is written directly");
+    assert_eq!(fs.read(&note), Ok(Some("a\n".to_string())));
+    assert!(
+        fs.read(&home.path().join("tree.md")).is_err(),
+        "the rest of the workspace is still the backend's"
+    );
+}

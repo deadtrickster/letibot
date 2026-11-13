@@ -1168,3 +1168,35 @@ fn a_denied_runtime_cannot_be_run_renamed_copied_or_reached_through_make_or_a_sc
         assert_ne!(rc, 0, "`{a}` succeeded: {out}");
     }
 }
+
+/// What a session in the wide seat needs from macOS itself, run for real inside the profile: a
+/// session temp dir under `~/.cache` it can write (never the store, which the seat hides), the
+/// user temp dir the toolchain's `xcrun` cache asks for, and `top` and `log`, which macOS will
+/// not run inside a profile.
+#[test]
+fn a_wide_seat_writes_its_cache_tmp_finds_the_user_temp_dir_and_runs_top_and_log() {
+    let f = Fixture::new("widetools");
+    let op = f.root.join("operator");
+    let tmp = op.join(".cache/letibot/gc/this-box/s-1/tmp/session");
+    std::fs::create_dir_all(&tmp).expect("the session tmp");
+    let view = ViewSpec::project_only(f.project())
+        .with_home(HomeView::Dir(op.clone()))
+        .with_tmp(TmpView::Session(tmp.clone()));
+    let s = Seatbelt::probe_as(view, Egress::Denied, vec![], op.clone())
+        .unwrap_or_else(|e| panic!("the macOS boundary did not measure on this box: {e}"));
+    let cwd = f.project();
+    let (rc, out) = run_in(&s, &cwd, "echo x > \"$TMPDIR/f\" && cat \"$TMPDIR/f\"");
+    assert_eq!(rc, 0, "the session tmp under ~/.cache is writable: {out}");
+    let (rc, out) = run_in(&s, &cwd, "/usr/bin/getconf DARWIN_USER_TEMP_DIR");
+    assert_eq!(rc, 0, "the user temp dir is found: {out}");
+    assert!(out.trim_end().ends_with("/T/"), "{out}");
+    let (rc, out) = run_in(&s, &cwd, "/usr/bin/top -l 1 -n 0 | head -1");
+    assert!(rc == 0 && out.starts_with("Processes:"), "top runs: {out}");
+    let (rc, out) = run_in(
+        &s,
+        &cwd,
+        "/usr/bin/log show --last 1s --style compact | head -1",
+    );
+    assert_eq!(rc, 0, "log runs: {out}");
+    assert!(!out.contains("Cannot run while sandboxed"), "{out}");
+}
