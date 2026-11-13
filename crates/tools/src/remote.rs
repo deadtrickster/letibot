@@ -4347,6 +4347,17 @@ pub fn collect(spec: &CollectSpec) -> Result<String, BackendError> {
     Ok(home.fetch(&ssh, &format!("the session on {host} was collected")))
 }
 
+/// The owner home a placement makes on a host: `<root>/.letibot-home/<short>`. The short id is the
+/// placement's own (a branch name cannot hold a session id whole), which is why the stamp inside is
+/// found by the owner id it carries and never by this directory's name.
+pub fn owner_home(root: &str, session: &str) -> String {
+    format!(
+        "{}/{HOME_DIR}/{}",
+        root.trim_end_matches('/'),
+        short_branch_id(session)
+    )
+}
+
 /// The last eight usable characters of a session id, as a branch and directory name. Alphanumerics
 /// only: a session id is a time and a random tail, the tail is what tells two apart, and a `-`
 /// among eight characters buys a branch name with a seam in it.

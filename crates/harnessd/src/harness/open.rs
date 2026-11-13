@@ -1922,6 +1922,26 @@ impl Harness {
             confined: backend_confined,
             whole_host: backend_whole_host,
         } = Self::place_the_tools(&mut cfg, &hub, &session_registry)?;
+        // The owner's home on that machine is a holding of this owner, on that host: the row this
+        // box marks `lost` when the host stops answering, and the one the plan shows. The host's
+        // own reaper reads the `owner.json` the placement wrote beside it.
+        if let (Some(store), Some(name)) = (&store, cfg.placement.host()) {
+            let hosts = letibot_tools::remote::Hosts::load();
+            if let Some(host) = hosts.get(name) {
+                let home = letibot_tools::remote::owner_home(&host.root, &cfg.session_id);
+                let _ = store.put_holding(
+                    &letibot_tokencore::store::HoldingRow::new(
+                        &cfg.session_id,
+                        letibot_tools::lifecycle::REMOTE_HOME,
+                        letibot_tokencore::store::HoldingClass::Cache,
+                        &home,
+                        "owner.json there names the owner",
+                        letibot_metrics::now_ms() as i64,
+                    )
+                    .on_host(Some(host.name.clone())),
+                );
+            }
+        }
         let backend_boundary = backend.boundary();
         let backend_boundary_refusal = backend.boundary_refusal();
 
