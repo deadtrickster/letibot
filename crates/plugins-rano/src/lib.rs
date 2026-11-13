@@ -54,7 +54,10 @@ impl RanoLoader {
         )
         .map_err(|why| from.refusal(&why))?;
         COMPILES.fetch_add(1, Ordering::SeqCst);
-        let module: Arc<dyn Module> = Arc::new(RanoModule { plugin });
+        let module: Arc<dyn Module> = Arc::new(RanoModule {
+            plugin,
+            calling: Mutex::new(()),
+        });
         Ok(remember(sha, module))
     }
 }
@@ -176,6 +179,16 @@ impl Module for Shared {
 /// `Arc` be shared by a session's stack, the gate's shadow and every pane render.
 struct RanoModule {
     plugin: rano::plugin::Plugin,
+    /// Held across a call and the read of its fuel: rano keeps one `last_fuel` per plugin, and
+    /// another thread's call on the shared module would overwrite it in between.
+    calling: Mutex<()>,
+}
+
+thread_local! {
+    /// The fuel of this thread's last call, by module address, so `fuel` answers for the caller.
+    static FUEL: std::cell::RefCell<BTreeMap<usize, u64>> = const {
+        std::cell::RefCell::new(BTreeMap::new())
+    };
 }
 
 impl Module for RanoModule {
@@ -186,11 +199,20 @@ impl Module for RanoModule {
     fn call(&self, hook: &str, input: &str) -> Result<Option<String>, String> {
         // `Ok(None)` is rano's *unchanged* - the layer passed. Anything else is an `Err` the stack
         // records against the layer and answers from below.
-        self.plugin.call(hook, input)
+        let _one = self.calling.lock().unwrap_or_else(|e| e.into_inner());
+        let answer = self.plugin.call(hook, input);
+        let burnt = self.plugin.last_fuel();
+        FUEL.with(|f| f.borrow_mut().insert(self as *const Self as usize, burnt));
+        answer
     }
 
     fn fuel(&self) -> u64 {
-        self.plugin.last_fuel()
+        FUEL.with(|f| {
+            f.borrow()
+                .get(&(self as *const Self as usize))
+                .copied()
+                .unwrap_or(0)
+        })
     }
 }
 
@@ -238,6 +260,30 @@ mod tests {
         assert!(
             Arc::ptr_eq(&one, &same),
             "the second name holds the same module"
+        );
+    }
+
+    /// One module is shared by every host in the process, so the fuel a caller reads is its own
+    /// call's, whatever another thread called on the same module in between.
+    #[test]
+    fn the_fuel_read_is_the_callers_own_call() {
+        let module = RanoLoader
+            .load_builtin("todo", builtin("todo"), &[])
+            .expect("compiles");
+        let _ = module.call("command_todo", "{}");
+        let mine = module.fuel();
+        assert!(mine > 0, "the guest ran");
+        let other = Arc::clone(&module);
+        std::thread::spawn(move || {
+            let _ = other.call("pane_not_exported", "{}");
+            assert_eq!(other.fuel(), 0, "a hook it does not export burns nothing");
+        })
+        .join()
+        .expect("the other caller");
+        assert_eq!(
+            module.fuel(),
+            mine,
+            "another thread's call is not this caller's fuel"
         );
     }
 
