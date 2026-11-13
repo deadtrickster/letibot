@@ -1006,6 +1006,17 @@ impl Drop for FirecodeBackend {
     }
 }
 
+/// The shell step that gives a staged file the mode of the file it replaces, before the rename:
+/// a write is a new inode, and without this an edited script came back without its `x` bit.
+/// A target that does not exist yet keeps the staged file's own mode.
+fn keep_mode(staged: &str, target: &str) -> String {
+    format!(
+        "{{ [ ! -e {t} ] || chmod --reference={t} {s}; }} && ",
+        t = shell_quote(target),
+        s = shell_quote(staged)
+    )
+}
+
 impl ExecBackend for FirecodeBackend {
     fn run(&self, cmd: &Command) -> Result<Output, BackendError> {
         if self.processes.is_none() {
@@ -1104,10 +1115,11 @@ impl ExecBackend for FirecodeBackend {
         if bytes.len() <= INLINE_WRITE_BYTES {
             let b64 = encode_base64(bytes);
             let (out, exit) = self.guest(&format!(
-                "mkdir -p {} && printf %s {} | base64 -d > {} && mv -f {} {}",
+                "mkdir -p {} && printf %s {} | base64 -d > {} && {}mv -f {} {}",
                 shell_quote(&dir),
                 shell_quote(&b64),
                 shell_quote(&tmp),
+                keep_mode(&tmp, &gp.display().to_string()),
                 shell_quote(&tmp),
                 shell_quote(&gp.display().to_string())
             ))?;
@@ -1175,7 +1187,8 @@ impl ExecBackend for FirecodeBackend {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let (out, exit) = self.guest(&format!(
-            "mv -f {} {}",
+            "{}mv -f {} {}",
+            keep_mode(&format!("{dir}/{staged_name}"), &gp.display().to_string()),
             shell_quote(&format!("{dir}/{staged_name}")),
             shell_quote(&gp.display().to_string())
         ))?;
@@ -1890,3 +1903,63 @@ pub(crate) fn decode_base64(text: &[u8]) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod keep_mode_tests {
+    use super::keep_mode;
+    use std::os::unix::fs::PermissionsExt;
+
+    /// The step run for real: an executable replaced through a staged file is still executable,
+    /// and a new file keeps the mode it was written with.
+    #[test]
+    fn a_replaced_script_keeps_its_x_bit() {
+        let dir = std::env::temp_dir().join(format!("keep-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let target = dir.join("run.sh");
+        std::fs::write(&target, "old").unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let staged = dir.join("run.sh.letibot-1");
+        std::fs::write(&staged, "new").unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let script = format!(
+            "{}mv -f '{}' '{}'",
+            keep_mode(&staged.display().to_string(), &target.display().to_string()),
+            staged.display(),
+            target.display()
+        );
+        assert!(
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&script)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let mode = std::fs::metadata(&target).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o755, "the script lost its mode");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "new");
+
+        let fresh = dir.join("fresh.txt");
+        let staged = dir.join("fresh.txt.letibot-1");
+        std::fs::write(&staged, "x").unwrap();
+        std::fs::set_permissions(&staged, std::fs::Permissions::from_mode(0o644)).unwrap();
+        let script = format!(
+            "{}mv -f '{}' '{}'",
+            keep_mode(&staged.display().to_string(), &fresh.display().to_string()),
+            staged.display(),
+            fresh.display()
+        );
+        assert!(
+            std::process::Command::new("sh")
+                .arg("-c")
+                .arg(&script)
+                .status()
+                .unwrap()
+                .success()
+        );
+        let mode = std::fs::metadata(&fresh).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o644);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
