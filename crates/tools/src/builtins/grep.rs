@@ -285,8 +285,9 @@ impl Tool for Grep {
 
         // Nothing, anywhere, under any relaxation. That is not a result and must not be dressed
         // as one, but the body still says what was searched and what to do next.
+        // The count and the miss are the reason's; the body adds where and what else was tried.
         let mut body = format!(
-            "searched {files_scanned} file(s) under `{scope}`{}.\n",
+            "searched under `{scope}`{}.\n",
             file_glob
                 .map(|g| format!(" matching `{g}`"))
                 .unwrap_or_default()
@@ -299,8 +300,8 @@ impl Tool for Grep {
             body.push_str(&format!("  - {t}\n"));
         }
         body.push_str(
-            "\nthe string is not in the searched tree. `glob` searches file *names*, \
-             and `ask_code` answers questions the text does not spell out.\n",
+            "\n`glob` searches file *names*, and `ask_code` answers questions the text does \
+             not spell out.\n",
         );
         let suggestion = outline_suggestion(source, &scope, &parseable);
         let mut inv = Invocation::abstained(
@@ -906,6 +907,9 @@ mod tests {
             "{rendered}"
         );
         assert!(rendered.contains("searched"), "{rendered}");
+        // The file count and the miss once each: the reason says them, the body does not.
+        assert_eq!(rendered.matches("file(s)").count(), 1, "{rendered}");
+        assert!(!rendered.contains("not in the searched tree"), "{rendered}");
     }
 
     /// A pattern that does not compile is reported and nothing is searched. Treating it as a

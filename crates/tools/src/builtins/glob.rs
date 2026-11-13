@@ -106,15 +106,19 @@ impl Tool for Glob {
         // Nothing matched at any rung, so the surrounding listing is the only
         // answer that can still correct the pattern.
         let mut body = surroundings(ctx, source);
+        let tried = ladder(source)
+            .iter()
+            .skip(1)
+            .map(|(p, _)| format!("`{p}`"))
+            .collect::<Vec<_>>()
+            .join(", ");
         body.push_str(&format!(
-            "\n{} file(s) were walked under `{scope}`. Relaxations tried: {}.\n",
+            "\n{} file(s) were walked under `{scope}`.{}\n",
             files.len(),
-            ladder(source)
-                .iter()
-                .skip(1)
-                .map(|(p, _)| format!("`{p}`"))
-                .collect::<Vec<_>>()
-                .join(", ")
+            match tried.is_empty() {
+                true => String::new(),
+                false => format!(" Relaxations tried: {tried}."),
+            }
         ));
         Invocation::abstained(
             format!("no path matches `{source}`, and no relaxation of it matches either"),
@@ -166,6 +170,10 @@ fn ladder(source: &str) -> Vec<(String, Option<String>)> {
             )),
         ));
     }
+    // A rung that spells a pattern already on the ladder walks the tree again for nothing,
+    // and is listed twice as a relaxation.
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|(p, _)| seen.insert(p.clone()));
     out
 }
 
@@ -227,5 +235,15 @@ mod tests {
         // Still useful: the listing is in the body.
         assert!(r.payload.contains("src"), "{}", r.payload);
         assert!(r.payload.contains("Relaxations tried"), "{}", r.payload);
+    }
+
+    /// A rung that respells the pattern is neither walked nor listed again.
+    #[test]
+    fn a_relaxation_is_listed_once() {
+        let mut h = harness();
+        let r = h.call("glob", r#"{"pattern":"**/*.zz"}"#);
+        assert!(!r.is_grounded());
+        assert_eq!(r.payload.matches("`**/*.zz`").count(), 0, "{}", r.payload);
+        assert!(!r.payload.contains("Relaxations tried"), "{}", r.payload);
     }
 }
