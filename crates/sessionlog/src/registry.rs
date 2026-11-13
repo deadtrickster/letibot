@@ -384,14 +384,10 @@ fn mint_instance() -> String {
 }
 
 /// The last eight characters of a session id, with a leading ellipsis. Ids are minted `s-<nanos>`,
-/// so two made the same afternoon share a prefix.
+/// so two made the same afternoon share a prefix. The rule lives in the plugin SDK, because the
+/// `sessions` layer draws the same id and a guest cannot call this crate.
 pub fn short_id(id: &str) -> String {
-    let n = id.chars().count();
-    if n <= 10 {
-        return id.to_string();
-    }
-    let tail: String = id.chars().skip(n - 8).collect();
-    format!("…{tail}")
+    letibot_plugin::sessions::short_id(id)
 }
 
 /// A session that exists somewhere the registry cannot see, on disk. The registry holds hubs,

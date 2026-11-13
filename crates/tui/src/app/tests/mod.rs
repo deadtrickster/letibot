@@ -1422,6 +1422,7 @@ mod screen;
 mod scroll;
 mod seat_board;
 mod session;
+mod sessions_feed;
 mod sessions_list;
 mod sessions_override;
 mod sessions_way_out;

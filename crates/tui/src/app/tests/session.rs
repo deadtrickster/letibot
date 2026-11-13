@@ -219,14 +219,22 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     // The project's line and the conversation, the child folded away - the whole reason the
     // default is not noisy.
     let folded: Vec<String> = a
-        .session_rows()
+        .picker_rows()
         .iter()
-        .map(|r| match r.idx {
+        .map(|r| match r.session {
             Some(i) => a.sessions[i].title.clone(),
-            None => format!("[{}]", r.node.title()),
+            None => format!("[node {}]", r.id),
         })
         .collect();
-    assert_eq!(folded, vec!["[letibot (2)]", "root"], "{folded:?}");
+    assert_eq!(folded.len(), 2, "{folded:?}");
+    assert!(
+        folded.iter().any(|r| r.contains("[node ")),
+        "the project's line: {folded:?}"
+    );
+    assert!(
+        folded.contains(&"root".to_string()),
+        "the conversation: {folded:?}"
+    );
     let closed = a.screen(100, 30).join("\n");
     assert!(
         !closed.contains("the child"),
@@ -236,9 +244,9 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     // The fold, on the parent's row - the cursor starts on the session this head is in, so
     // set it on that row and open it. Expanding is a fold, not a daemon action.
     a.picker_sel = a
-        .session_rows()
+        .picker_rows()
         .iter()
-        .position(|r| r.idx.is_some_and(|i| a.sessions[i].session_id == "s-root"))
+        .position(|r| r.id == "s-root")
         .expect("the conversation's row");
     assert_eq!(a.key(Key::Right), None, "expanding is not a daemon action");
     let open = a.screen(100, 30).join("\n");
@@ -270,12 +278,12 @@ fn a_sub_session_is_listed_under_its_parent_and_switches_like_any_other() {
     // `←` on the child row is the way back UP the tree: the cursor goes to the row the child is
     // drawn under, and nothing is closed - a tree's left on a leaf steps out, it does not fold.
     assert_eq!(
-        a.session_rows().len(),
+        a.picker_rows().len(),
         3,
         "the project and its tree are open"
     );
     assert_eq!(a.key(Key::Left), None);
-    assert_eq!(a.session_rows().len(), 3, "left on a leaf closed something");
+    assert_eq!(a.picker_rows().len(), 3, "left on a leaf closed something");
     assert_eq!(
         a.picker_row().map(|r| r.id),
         Some("s-root".to_string()),
@@ -303,9 +311,12 @@ fn a_child_is_listed_attached_to_sent_to_and_left_like_any_other_session() {
     // Listed one level under its parent, and numbered like any other row - the number is the
     // drawn list's, so a child a person can see is a child a number can name.
     let rows: Vec<(String, usize)> = a
-        .session_rows()
+        .picker_rows()
         .iter()
-        .filter_map(|r| r.idx.map(|i| (a.sessions[i].session_id.clone(), r.depth)))
+        .filter_map(|r| {
+            r.session
+                .map(|i| (a.sessions[i].session_id.clone(), r.depth))
+        })
         .collect();
     assert_eq!(
         rows,

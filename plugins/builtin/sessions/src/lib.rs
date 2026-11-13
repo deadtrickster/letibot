@@ -4,6 +4,7 @@
 
 use letibot_guest_abi as abi;
 use letibot_plugin::pane::{Act, Cell, Fold, Role};
+use letibot_plugin::sessions::{EMPTY, TITLE, clean, more, short_id};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -45,6 +46,10 @@ struct Feed {
     /// The line ending the group when stopped packages are not listed, worded by the head.
     #[serde(default)]
     unlisted: Option<String>,
+    /// Sessions the host could not put in the feed at all - its cap, not this list's. A number a
+    /// reader can act on, because a list that stops at 250 without saying so is a lie by omission.
+    #[serde(default)]
+    more: usize,
     /// The session the head is standing in - its list is drawn around it.
     #[serde(default)]
     here: String,
@@ -186,10 +191,6 @@ struct Tree {
     empty: &'static str,
 }
 
-/// The empty list's sentence, said once.
-const EMPTY: &str = "none listed yet — the daemon has not answered, or this head is replaying a \
-                    recorded log and has no daemon to ask.";
-
 /// What one call needs besides the feed itself: the three indexes a walk reads once per row. Every one
 /// of them was a scan of the whole list when this pane trapped on a daemon's own session list, and a
 /// call's fuel is what a trap is made of.
@@ -200,6 +201,8 @@ struct Ctx<'a> {
     here: &'a str,
     home: &'a str,
     folded: &'a BTreeMap<String, bool>,
+    /// Sessions the host's cap left out of the feed.
+    more: usize,
     /// The chain from `here` up to its root, so the way back is always on the list.
     path: Vec<String>,
     /// A session's id to its place in the feed - the first, as `position` found it.
@@ -243,6 +246,7 @@ impl<'a> Ctx<'a> {
             here: &feed.here,
             home: &feed.home,
             folded,
+            more: feed.more,
             path,
             index,
             kids,
@@ -357,9 +361,30 @@ impl<'a> Ctx<'a> {
 }
 
 /// The whole list, in drawing order - a tree of projects, and a `system` branch inside each. The
-/// shape is the head's (`App::session_rows`), and the two are held together by
-/// `the_heads_list_and_the_plugins_list_draw_the_same_rows`.
+/// shape is the head's (`App::session_rows`), and the walk drawn here is the only one: the head
+/// draws this answer and keeps no tree of its own.
 fn rows(ctx: &Ctx<'_>) -> Vec<Out> {
+    let mut out = rows_of_the_branches(ctx);
+    if ctx.more > 0 {
+        // No id: a line a reader can act on, not a row a key can enter. The head keeps such a row
+        // out of its stops for exactly that reason.
+        out.push(Out {
+            id: String::new(),
+            depth: 0,
+            number: None,
+            cells: vec![Cell::role(more(ctx.more), Role::Faint)],
+            facts: Vec::new(),
+            under: Vec::new(),
+            open: None,
+            enter: None,
+        });
+    }
+    out
+}
+
+/// A project's tree and a `system` branch inside each - everything [`rows`] draws but the line that
+/// says the feed itself was cut.
+fn rows_of_the_branches(ctx: &Ctx<'_>) -> Vec<Out> {
     // A head standing in a sub-session draws its family: the parent and its children, and no tree at
     // all. The family is walked with no branch, because kinship is not a display category - filtered
     // by the parent's group, this walk dropped every child and drew the one row beside the head.
@@ -660,7 +685,7 @@ fn children(
 /// paused nags.
 fn name_of(s: &Session) -> String {
     let name = if s.title.is_empty() {
-        short_id(&s.id).to_string()
+        short_id(&s.id)
     } else {
         s.title.clone()
     };
@@ -682,8 +707,7 @@ fn name_of(s: &Session) -> String {
         name
     };
     // A title is somebody's, and a control character in it would be measured one way and drawn
-    // another - the same rule the under line is drawn with, and the head's `row_name` is the same
-    // sentence.
+    // another - the same rule the under line is drawn with.
     clean(&name)
 }
 
@@ -758,20 +782,6 @@ fn tilde(path: &str, home: &str) -> String {
     }
 }
 
-/// Control characters out of a string this layer is about to draw: a title is somebody's, and an
-/// escape in it would be measured one way and drawn another.
-fn clean(text: &str) -> String {
-    text.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect()
-}
-
-/// A session's id, cut to the tail a person recognises - the head's `short_id` rule.
-fn short_id(id: &str) -> &str {
-    let tail = id.rsplit(['-', ':']).next().unwrap_or(id);
-    if tail.len() >= 6 { tail } else { id }
-}
-
 /// The input this layer reads: the envelope's own fields, and the `sessions` feed typed on the way
 /// in. The SDK's `pane::Input` holds `feeds` as a `Value` tree, so reading the feed from it parses a
 /// daemon's whole session list twice, and the second pass is what made this pane exhaust its fuel.
@@ -808,12 +818,8 @@ fn no_feed() -> View {
     }
 }
 
-/// The pane's title - the head's own list carries the same one, so *which layer drew this* is not a
-/// guess a reader has to make.
-const TITLE: &str = "sessions in this daemon";
-
 /// The pane's answer, or `None` for *unchanged* - a layer with nothing to say passes, and what is
-/// below it (or the head's own list) answers.
+/// below it answers.
 fn answer(bytes: &[u8]) -> Option<String> {
     let ask: Ask = serde_json::from_slice(bytes).ok()?;
     // A feed the host did not hand is a screen that says so. Passing would draw nothing at all, and

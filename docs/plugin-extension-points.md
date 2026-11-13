@@ -154,7 +154,9 @@ first, what `/dm` or `/reply 12` means, what the switcher lists first.
 
 One rule from the session list carries over (`plugins-plan.md` §7, step 10): the way out cannot be
 a plugin. The chat is how agents reach the operator, so the native drawing stays as the fallback a
-broken layer falls to, as `App::session_list` does for `pane_sessions`.
+broken layer falls to. (The session list itself has since made its built-in layer the one drawing -
+see `app::sessions_pane` - but that works only because the layer is part of the binary; a chat that
+is only ever a person's layer keeps its native half.)
 
 ### Capability by capability
 

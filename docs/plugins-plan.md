@@ -847,11 +847,12 @@ of FEEDS rather than one sessions-shaped input, with the acts declared beside th
 | the example | `plugins/examples/sessions-override`, a project layer that calls below, renames a group and hides its rows |
 
 Three decisions a reader should see. The session list's pane is answered by the HEAD, not the daemon, because
-the list is the way out of a broken session. The way out is the head's own list (`App::session_list`),
-unchanged, because the code that draws it today is the code that must keep working the day a layer breaks.
-And a built-in is a layer, so a project's `sessions` may `mask` the hook as any layer may; a built-in whose
-manifest declares `[[tools]]` is also installed into the daemon's stack, because `tool_` is a hook only the
-daemon dispatches.
+the list is the way out of a broken session. And the built-in `sessions` layer is the ONE drawing: the head
+keeps no tree of its own, and while its stack is being built it says so in one line
+(`letibot_plugin::sessions::BUILDING`) rather than drawing a list that then changes shape. A binary whose own
+layer is broken says that too, by name. And a built-in is a layer, so a project's `sessions` may `mask` the hook
+as any layer may; a built-in whose manifest declares `[[tools]]` is also installed into the daemon's stack,
+because `tool_` is a hook only the daemon dispatches.
 
 Step 11 stops on two decisions this plan does not make. Where the engine artifact comes from: no JavaScript
 engine is available offline on this box (`Cargo.lock` has none and the offline registry cache holds no

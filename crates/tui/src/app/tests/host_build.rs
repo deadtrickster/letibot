@@ -1,7 +1,8 @@
 //! The head's stack is built on a thread of its own (R175 item 5): the frame that first asks for
-//! one draws the head's own list, and the layer's drawing appears on a later frame. Both halves are
-//! here, and a real build is asked for rather than only the machinery, because a thread nobody ever
-//! starts would leave the pane on the head's list for ever.
+//! one draws ONE LINE saying the list is being built, and the layer's drawing appears on a later
+//! frame. There is no second drawing to swap in - see `app::sessions_pane`. Both halves are here,
+//! and a real build is asked for rather than only the machinery, because a thread nobody ever
+//! starts would leave the pane saying *building* for ever.
 
 use super::*;
 use crate::app::sessions_pane::{Host, HostBuild, RanoLoader};
@@ -22,12 +23,13 @@ fn a_head_with_a_session() -> App {
     a
 }
 
-/// The frame that asks for a stack does not wait for it, and draws the head's own list meanwhile;
-/// the frame after the build lands asks the layer and draws its answer. The build is HELD open by
-/// the test - a thread cannot be held still - and it is the real `Host`, with the binary's own
-/// layers at the bottom, that is handed over.
+/// The frame that asks for a stack does not wait for it, and draws ONE LINE about the list being
+/// built - not a list of its own that then changes shape. The build is HELD open by the test - a
+/// thread cannot be held still - and it is the real `Host`, with the binary's own layers at the
+/// bottom, that is handed over. This is the redraw swap, as a test: no session row is on the screen
+/// before the layer's answer, and the line that is there says what it is waiting for.
 #[test]
-fn the_head_draws_its_first_frame_before_the_host_is_built() {
+fn the_head_draws_one_line_before_the_host_is_built() {
     let mut a = a_head_with_a_session();
     let workspace = a.workspace_path();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -38,16 +40,20 @@ fn the_head_draws_its_first_frame_before_the_host_is_built() {
 
     let first = a.picker_lines(100).join("\n");
     assert!(
-        first.contains("the head's own conversation"),
-        "the first frame is drawn, and from the head's own tree:\n{first}"
+        first.contains(letibot_plugin::sessions::BUILDING),
+        "the first frame says the list is being built:\n{first}"
+    );
+    assert!(
+        !first.contains("the head's own conversation"),
+        "and names no session: there is one drawing and it is not ready yet:\n{first}"
     );
     assert!(
         a.sessions_host.borrow().is_none(),
         "the frame did not wait for a stack to be built"
     );
     assert!(
-        a.sessions_list(100).is_none(),
-        "there is no layer to ask yet, so nothing plugin-driven is drawn"
+        a.sessions_list(100, 40).is_none(),
+        "there is no layer to ask yet"
     );
 
     // The build lands: a real stack, with the binary's layers at the bottom.
@@ -62,12 +68,16 @@ fn the_head_draws_its_first_frame_before_the_host_is_built() {
         "the frame that followed took the stack the thread built"
     );
     assert!(
-        a.sessions_list(100).is_some(),
+        a.sessions_list(100, 40).is_some(),
         "and the pane is now the layer's drawing"
     );
     assert!(
         second.contains("the head's own conversation"),
-        "which still names the session:\n{second}"
+        "which names the session:\n{second}"
+    );
+    assert!(
+        !second.contains(letibot_plugin::sessions::BUILDING),
+        "and no longer says it is building:\n{second}"
     );
 }
 
@@ -103,7 +113,7 @@ fn the_head_asks_for_its_host_off_the_drawing_thread() {
         "the build lands"
     );
     assert!(
-        a.sessions_list(100).is_some(),
+        a.sessions_list(100, 40).is_some(),
         "and the layer answers the pane"
     );
     std::fs::remove_dir_all(&workspace).ok();

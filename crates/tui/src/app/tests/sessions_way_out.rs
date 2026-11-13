@@ -124,7 +124,7 @@ fn a_layer_that_traps_falls_down_to_the_builtin() {
 
     // The list is drawn - by the built-in, below the layer that failed.
     let list = a
-        .sessions_list(100)
+        .sessions_list(100, 40)
         .expect("the built-in answers under the trap");
     let drawn = crate::ui::render::row_strings(&list.content.lines, a.cfg.palette());
     assert!(
@@ -155,13 +155,15 @@ fn a_layer_that_traps_falls_down_to_the_builtin() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// **No layer at all - a head whose built-in table could not be built - draws the head's own
-/// list**, through the same rano primitive, and the keys act on the same rows.
+/// **No layer at all - a head whose built-in table could not be built - says so in one line, and
+/// draws no list of its own.** The built-in `sessions` layer is part of the binary, so a stack
+/// without it is a defect: the pane names it, the refusal says why, and there is no second drawing
+/// to fall back to (`docs/plugins-plan.md` §7).
 #[test]
-fn a_broken_builtin_falls_to_the_plain_list() {
+fn a_broken_builtin_says_so_and_draws_no_second_list() {
     let tmp = tempdir("empty");
     // An empty stack: no project, no session, no user scope, and no built-in installed - the
-    // binary that somehow carries nothing, which is the shape this fallback exists for.
+    // binary that somehow carries nothing.
     let stack = Stack::discover(
         None,
         Some(&tmp),
@@ -175,36 +177,32 @@ fn a_broken_builtin_falls_to_the_plain_list() {
     ));
 
     assert!(
-        a.sessions_list(100).is_none(),
-        "there is no layer to answer, which is what the way out is for"
+        a.sessions_list(100, 40).is_none(),
+        "there is no layer to answer"
     );
     let plain = a.picker_lines(100);
     assert!(
-        plain.iter().any(|l| l.contains("the habr article")),
-        "the head's own list is drawn: {plain:?}"
+        plain
+            .iter()
+            .any(|l| l.contains(letibot_plugin::sessions::UNANSWERED)),
+        "the pane says no layer answered: {plain:?}"
     );
-    // And it is the head's own TREE: a project's line, and both conversations under it. The
-    // way out draws the same shape the layer does, through the same primitive.
     assert!(
-        plain.iter().any(|l| l.contains("letibot (2)")),
-        "the project's line is drawn: {plain:?}"
+        !plain.iter().any(|l| l.contains("the habr article")),
+        "and draws no list of its own: {plain:?}"
     );
-
-    // The keys act on the rows that were drawn. The project's line, then the two sessions: the
-    // third row is the second session.
-    a.picker_sel = 2;
-    assert_eq!(
-        a.key(Key::Enter),
-        Some(Action::Switch("s-other".into())),
-        "the plain list switches like any other"
+    assert!(
+        a.picker_rows().is_empty(),
+        "so there is no row for a key to switch to"
     );
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// A layer that answers something the host cannot draw is treated as no answer, and the head's
-/// own list is drawn - the same rule as a trap, one step later in the pipeline.
+/// A layer that answers something the host will not draw is no answer, and it is SAID: the pane
+/// draws the one line, and the sentence naming the view goes to the head's notice line. A refusal
+/// that hid behind a second drawing is exactly what this pane no longer has.
 #[test]
-fn an_answer_that_is_not_a_list_falls_to_the_plain_list() {
+fn an_answer_that_is_not_a_list_is_said_and_draws_no_second_list() {
     /// A layer that answers a document with no tree in it: a view, but not one this pane can use.
     struct NotAList;
     impl Module for NotAList {
@@ -234,14 +232,20 @@ fn an_answer_that_is_not_a_list_falls_to_the_plain_list() {
     *a.sessions_host.get_mut() = Some(crate::app::sessions_pane::Host::with_stack(
         stack, workspace,
     ));
-    assert!(a.sessions_list(100).is_none(), "no tree, so no list");
+    assert!(a.sessions_list(100, 40).is_none(), "no tree, so no list");
     assert!(
         a.picker_lines(100)
             .iter()
-            .any(|l| l.contains("the habr article")),
-        "and the head's own list is what is drawn"
+            .any(|l| l.contains(letibot_plugin::sessions::UNANSWERED)),
+        "and the pane says no layer answered"
     );
-    a.picker_sel = 2;
-    assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-other".into())));
+    let said = a
+        .take_sessions_failure()
+        .expect("a refused view is news the person is owed");
+    assert!(
+        said.contains("will not draw"),
+        "naming what the layer answered: {said}"
+    );
+    assert!(a.take_sessions_failure().is_none(), "and only once");
     std::fs::remove_dir_all(&tmp).ok();
 }

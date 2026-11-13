@@ -78,15 +78,33 @@ fn a_daemon_with_two_projects() -> App {
     a
 }
 
-/// Every row as a person reads it: a node's line in `[brackets]`, a session by its title.
+/// Every drawn row as a person reads it: a node's line in `[brackets]`, a session by its title.
+/// The drawn list is the one the keys act on, so this is the screen and the enumeration at once.
 fn rows(a: &App) -> Vec<String> {
-    a.session_rows()
+    a.picker_rows()
         .iter()
-        .map(|r| match r.idx {
+        .map(|r| match r.session {
             Some(i) => a.sessions[i].title.clone(),
-            None => format!("[{}]", r.node.title()),
+            None => format!("[{}]", node_text(a, &r.id)),
         })
         .collect()
+}
+
+/// A node's own words, off the line the list drew for it.
+fn node_text(a: &App, id: &str) -> String {
+    let (lines, spans) = a.picker_layout(100, 40);
+    let rows = a.picker_rows();
+    rows.iter()
+        .position(|r| r.id == id)
+        .and_then(|k| spans.get(k))
+        .and_then(|s| lines.get(s.start))
+        .map(|l| {
+            // The fold column is the renderer's: the row's own words start after it.
+            l.trim_start_matches(|c: char| !c.is_alphanumeric() && c != '~' && c != '/')
+                .trim()
+                .to_string()
+        })
+        .unwrap_or_default()
 }
 
 /// The project lines, as the tree draws them, with the two recency groups opened so every project
@@ -95,10 +113,12 @@ fn projects(a: &mut App) -> Vec<String> {
     a.set_row_fold("groups/recent", true);
     a.set_row_fold("groups/older", true);
     let out = a
-        .session_rows()
+        .picker_rows()
         .iter()
-        .filter(|r| matches!(r.node, crate::app::session::Node::Project { .. }))
-        .map(|r| r.node.title())
+        // A project's key is a path; the `system` branch and its groups live under one, which is
+        // why they are filtered out rather than matched by their words.
+        .filter(|r| r.session.is_none() && r.id.starts_with('/') && !r.id.contains("/system"))
+        .map(|r| node_text(a, &r.id))
         .collect();
     a.set_row_fold("groups/recent", false);
     a.set_row_fold("groups/older", false);
@@ -107,10 +127,20 @@ fn projects(a: &mut App) -> Vec<String> {
 
 /// The row of a session by its id, or a panic naming what was drawn instead.
 fn row_of(a: &App, id: &str) -> usize {
-    a.session_rows()
+    a.picker_rows()
         .iter()
-        .position(|r| r.idx.is_some_and(|i| a.sessions[i].session_id == id))
+        .position(|r| r.id == id)
         .unwrap_or_else(|| panic!("`{id}` is drawn: {:?}", rows(a)))
+}
+
+/// The depth a session's row is drawn at.
+fn depth_of(a: &App, id: &str) -> usize {
+    a.picker_rows()[row_of(a, id)].depth
+}
+
+/// Whether a row folds, and which way.
+fn fold_of(a: &App, id: &str) -> Option<rano::agent::tree_list::Fold> {
+    a.picker_rows()[row_of(a, id)].open
 }
 
 /// A project's line per workspace root - two checkouts, two lines, and no line for the folder
@@ -138,12 +168,15 @@ fn a_project_line_per_workspace_root() {
 fn a_top_level_session_is_drawn_under_its_project() {
     let a = a_daemon_with_two_projects();
     let habr = row_of(&a, "s-habr");
-    let row = &a.session_rows()[habr];
-    assert_eq!(row.depth, 1, "one step under its project");
-    assert_eq!(row.open, Some(false), "its children are folded away");
+    assert_eq!(depth_of(&a, "s-habr"), 1, "one step under its project");
+    assert_eq!(
+        fold_of(&a, "s-habr"),
+        Some(rano::agent::tree_list::Fold::Closed),
+        "its children are folded away"
+    );
     // And the project's line is the row above it.
     assert!(
-        a.session_rows()[habr - 1].idx.is_none(),
+        a.picker_rows()[habr - 1].session.is_none(),
         "the project's line"
     );
     // A package's conversation is a top-level session like any other: the tree does not ask who
@@ -169,11 +202,7 @@ fn a_child_sits_under_its_parent_and_a_grandchild_under_it() {
     );
     a.set_row_fold("s-habr", true);
     let child = row_of(&a, "s-sub-1");
-    assert_eq!(
-        a.session_rows()[child].depth,
-        2,
-        "under its parent, one step in"
-    );
+    assert_eq!(depth_of(&a, "s-sub-1"), 2, "under its parent, one step in");
     assert!(
         !rows(&a).contains(&"and again".to_string()),
         "the grandchild is folded under its own parent: {:?}",
@@ -181,7 +210,7 @@ fn a_child_sits_under_its_parent_and_a_grandchild_under_it() {
     );
     a.set_row_fold("s-sub-1", true);
     let deep = row_of(&a, "s-sub-2");
-    assert_eq!(a.session_rows()[deep].depth, 3, "and one step further in");
+    assert_eq!(depth_of(&a, "s-sub-2"), 3, "and one step further in");
     assert_eq!(
         deep,
         child + 1,
@@ -262,8 +291,8 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
          session of the project this head is standing in"
     );
     assert_eq!(
-        a.session_rows()[2].open,
-        Some(false),
+        fold_of(&a, &format!("{LETIBOT}/system")),
+        Some(rano::agent::tree_list::Fold::Closed),
         "`system` starts closed — a head in an ordinary conversation is not standing in it"
     );
     // The rows themselves: opened, and each in its own group and nowhere else.
@@ -278,8 +307,7 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
         ("keepers", "s-keeper".to_string()),
     ] {
         let at = row_of(&a, &id);
-        let row = &a.session_rows()[at];
-        assert_eq!(row.depth, 3, "`{id}` is one step inside its group");
+        assert_eq!(depth_of(&a, &id), 3, "`{id}` is one step inside its group");
         assert_eq!(
             drawn[at - 1],
             format!("[{group} (1)]"),
@@ -287,7 +315,10 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
         );
         // `at` is a ROW of the list and `a.sessions` is indexed by SESSION - the two are not
         // the same list, which is the whole defect this test exists to catch.
-        let title = a.sessions[row.idx.expect("a session row")].title.clone();
+        let row = &a.picker_rows()[at];
+        let title = a.sessions[row.session.expect("a session row")]
+            .title
+            .clone();
         assert_eq!(
             drawn.iter().filter(|r| **r == title).count(),
             1,
@@ -303,9 +334,9 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
     );
     // And nothing of the system branch is a child of the operator's conversation.
     assert!(
-        !a.session_rows()
+        !a.picker_rows()
             .iter()
-            .any(|r| r.depth == 2 && r.node == crate::app::session::Node::Session),
+            .any(|r| r.depth == 2 && r.session.is_some()),
         "a system row was drawn as a sub-session of the project's tree: {:?}",
         rows(&a)
     );
@@ -350,12 +381,8 @@ fn the_keepers_brief_and_the_trees_mark_are_one_string() {
 fn the_fold_works_at_every_level() {
     let mut a = a_daemon_with_two_projects();
     // The project: closed by the operator, and its rows go.
-    let at = a
-        .session_rows()
-        .iter()
-        .position(|r| r.idx.is_none() && r.node.title() == "letibot (6)")
-        .expect("the project's line");
-    a.picker_sel = at;
+    let project = a.picker_rows()[0].id.clone();
+    a.picker_sel = 0;
     assert_eq!(a.key(Key::Left), None);
     assert_eq!(
         rows(&a),
@@ -363,8 +390,8 @@ fn the_fold_works_at_every_level() {
         "a closed project draws its line and nothing else"
     );
     assert_eq!(
-        a.session_rows()[at].open,
-        Some(false),
+        fold_of(&a, &project),
+        Some(rano::agent::tree_list::Fold::Closed),
         "and the glyph says so"
     );
     // Opened again by the same key, and the tree comes back.
@@ -377,9 +404,9 @@ fn the_fold_works_at_every_level() {
     // `system` folds too, and it is a level of its own. It starts CLOSED, so the key that puts its
     // groups on the list is `→`.
     let sys = a
-        .session_rows()
+        .picker_rows()
         .iter()
-        .position(|r| r.idx.is_none() && r.node.title() == "system (3)")
+        .position(|r| r.session.is_none() && node_text(&a, &r.id) == "system (3)")
         .expect("the system line");
     a.picker_sel = sys;
     a.key(Key::Right);
@@ -640,12 +667,8 @@ fn the_bar_follows_the_cursor_onto_a_nodes_line() {
     );
     a.set_row_fold(&format!("{LETIBOT}/system"), true);
     a.set_row_fold(&format!("{LETIBOT}/system/gatekeepers"), true);
-    let at = a
-        .session_rows()
-        .iter()
-        .position(|r| r.idx.is_none() && r.node.title() == "gatekeepers (1)")
-        .expect("the group's line");
-    a.picker_sel = at;
+    let group = format!("{LETIBOT}/system/gatekeepers");
+    a.picker_sel = row_of(&a, &group);
     assert!(
         a.hint_bar(200).contains("enter folds it away"),
         "{}",
@@ -683,7 +706,10 @@ fn every_project_line_is_drawn_and_the_others_are_shut() {
         rows(&a)
     );
     assert_eq!(
-        a.session_rows().iter().filter(|r| r.idx.is_some()).count(),
+        a.picker_rows()
+            .iter()
+            .filter(|r| r.session.is_some())
+            .count(),
         2,
         "and nothing else's"
     );
@@ -695,14 +721,9 @@ fn every_project_line_is_drawn_and_the_others_are_shut() {
 #[test]
 fn the_project_holding_here_is_open_and_the_chain_to_it_is_drawn() {
     let mut a = a_daemon_with_two_projects();
-    let at = a
-        .session_rows()
-        .iter()
-        .position(|r| r.idx.is_none() && r.node.title() == "letibot (6)")
-        .expect("the project's line");
     assert_eq!(
-        a.session_rows()[at].open,
-        Some(true),
+        fold_of(&a, LETIBOT),
+        Some(rano::agent::tree_list::Fold::Open),
         "the project this head is standing in is open, folded by nobody"
     );
     assert_eq!(
@@ -713,8 +734,10 @@ fn the_project_holding_here_is_open_and_the_chain_to_it_is_drawn() {
     // The chain: `s-sub-1` is a child of the row the head is in, so the row above it says `-` the
     // moment its parent is opened - and `here` is never hidden.
     a.set_row_fold("s-habr", true);
-    let habr = row_of(&a, "s-habr");
-    assert_eq!(a.session_rows()[habr].open, Some(true));
+    assert_eq!(
+        fold_of(&a, "s-habr"),
+        Some(rano::agent::tree_list::Fold::Open)
+    );
     assert!(
         rows(&a).contains(&"read the repo".to_string()),
         "{:?}",
@@ -735,7 +758,10 @@ fn enter_on_a_project_line_opens_and_closes_it() {
         "Enter closed the project: {:?}",
         rows(&a)
     );
-    assert_eq!(a.session_rows()[0].open, Some(false));
+    assert_eq!(
+        fold_of(&a, &a.picker_rows()[0].id),
+        Some(rano::agent::tree_list::Fold::Closed)
+    );
     // And the same key brings them back.
     a.key(Key::Enter);
     assert!(
@@ -781,5 +807,5 @@ fn an_orphan_is_a_root_of_its_projects_tree() {
     ));
     a.push_surface(Surface::Picker);
     assert_eq!(rows(&a), vec!["[letibot (1)]", "whose child is this"]);
-    assert_eq!(a.session_rows()[1].depth, 1);
+    assert_eq!(depth_of(&a, "s-orphan"), 1);
 }

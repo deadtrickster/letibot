@@ -147,10 +147,11 @@ fn a_projects_sessions_layer_renames_a_branch_and_hides_its_rows() {
     std::fs::remove_dir_all(&project).ok();
 }
 
-/// **A project layer that names a verb it did not declare is refused, and the head's own list is
-/// drawn** - the manifest is what a reviewer reads, and a view that reaches past it is not drawn.
+/// **A project layer that names a verb it did not declare is refused, and the pane says so** - the
+/// manifest is what a reviewer reads, and a view that reaches past it is not drawn. It is not
+/// quietly replaced by a second drawing either: the refusal is the whole answer.
 #[test]
-fn a_layer_that_uses_an_undeclared_act_falls_back() {
+fn a_layer_that_uses_an_undeclared_act_is_refused_and_said() {
     let project = the_project_with_the_override();
     // The same module, with the acts taken out of its manifest: every row it answers carries
     // `switch`, and the layer no longer declares it.
@@ -177,13 +178,17 @@ fn a_layer_that_uses_an_undeclared_act_falls_back() {
     ));
     let text = a.picker_lines(100).join("\n");
     assert!(
-        text.contains("system (2)"),
-        "the layer's view is refused, so the head's own list is drawn:\n{text}"
+        text.contains(letibot_plugin::sessions::UNANSWERED),
+        "the pane says no layer answered:\n{text}"
     );
     assert!(
         !text.contains("the harness's own (0)"),
         "and the refused view is not what a person sees:\n{text}"
     );
+    let said = a
+        .take_sessions_failure()
+        .expect("a refused view is news the person is owed");
+    assert!(said.contains("will not draw"), "{said}");
     std::fs::remove_dir_all(&project).ok();
 }
 
@@ -218,10 +223,10 @@ fn a_layer_written_for_the_groups_is_refused_and_the_builtins_tree_is_drawn() {
         stack, workspace,
     ));
 
-    // The built-in's list is what is drawn: a layer answered, so the head's own tree is not the
-    // way out being used, and the branch the example would have renamed is still the built-in's.
+    // The built-in's list is what is drawn: a layer answered below the one refused at load, and
+    // the branch the example would have renamed is still the built-in's.
     assert!(
-        a.sessions_list(100).is_some(),
+        a.sessions_list(100, 40).is_some(),
         "the built-in answers where the refused layer would have"
     );
     let text = a.picker_lines(100).join("\n");

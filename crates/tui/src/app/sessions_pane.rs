@@ -1,12 +1,17 @@
 //! The session list, drawn from a plugin: the built-in `sessions` layer decides the groups, names,
 //! counts and keys, and the head draws its answer through rano's one tree. The head runs the layer
 //! in process, because the list is how a person gets out of a broken session.
+//!
+//! There is ONE drawing. While the head's stack is being built the pane says so in one line
+//! ([`letibot_plugin::sessions::BUILDING`]) rather than drawing a list of its own that then changes
+//! shape under the reader; the words both sides say live in `letibot_plugin::sessions`.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use letibot_plugin::pane::{Act as RowAct, Feed, Input};
+use letibot_plugin::sessions as sdk;
 use letibot_plugins::{Refusal, Refusals, Stack};
 use letibot_sessionlog::pane as pv;
 use rano::agent::pane::PaneLines;
@@ -19,29 +24,6 @@ use crate::app::*;
 
 /// The hook this pane answers under.
 pub(crate) const HOOK: &str = "pane_sessions";
-
-/// The list's frame, in the head's own words - the tree the head draws without a layer
-/// ([`App::session_list`]) carries exactly this title, and a plugin's list that looked different
-/// because a layer answered it would make *which layer drew this* a guess.
-const TITLE: &str = "sessions in this daemon";
-
-/// The keys that are the HEAD's, whatever a layer says. The row-dependent half of the hint (`enter
-/// switches`) is the selected row's own act and comes from the answer.
-const HINT: [&str; 5] = [
-    "↑↓ moves",
-    "or type a number or part of a name and press enter",
-    "/new [title] makes one",
-    "/rename NAME names this one",
-    "esc closes",
-];
-
-const NOTE: &str = "switching does not stop anything: a turn keeps running in the session you \
-                    left, and it is still there when you come back.";
-
-/// What the list says when the daemon holds nothing - the same sentence the built-in layer answers
-/// with, so an empty list is one picture whichever of the two drew it.
-const EMPTY: &str = "none listed yet — the daemon has not answered, or this head is replaying a \
-                     recorded log and has no daemon to ask.";
 
 /// One row the list drew, as the keys read it.
 #[derive(Debug, Clone, Default)]
@@ -117,6 +99,9 @@ pub(crate) struct Host {
     /// means, and a test reads it rather than believing the cache.
     #[cfg(test)]
     asked: std::sync::atomic::AtomicUsize,
+    /// The same count for `pane_` answers, which is the measure of an idle frame.
+    #[cfg(test)]
+    list_asked: std::sync::atomic::AtomicUsize,
     /// What a layer owes the person, said once each: a failure, a trap, or an answer this head will
     /// not draw. Fail down LOUDLY (`docs/plugins-plan.md`): the list the person sees may be the
     /// built-in's or the head's own, and either way the reason their layer is not drawing it is news.
@@ -136,9 +121,15 @@ const POLL_MS: u64 = 2_000;
 #[derive(Default)]
 struct Cached {
     /// `"<hook>\n<the input's JSON>"` - the hook is part of the key because one host answers two
-    /// panes, and two panes' inputs can be byte-identical while their answers are not.
+    /// panes, and two panes' inputs can be byte-identical while their answers are not. Nothing that
+    /// moves on its own belongs in it: the clock left it with the age buckets (see
+    /// `App::sessions_feed`), so an idle frame asks once and not once per frame.
     key: String,
     answer: Option<Value>,
+    /// The size the last ask was made for, so a test can prove the pane is asked about the height
+    /// it is drawn at rather than a number this file made up.
+    #[cfg(test)]
+    size: Option<(u32, u32)>,
 }
 
 /// What one call came back with. The failure a layer met is not here: [`Host::ask`] keeps it for
@@ -343,6 +334,8 @@ impl Host {
             cards: Mutex::new(CardCache::default()),
             #[cfg(test)]
             asked: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            list_asked: std::sync::atomic::AtomicUsize::new(0),
             refusals,
             workspace,
             next_poll: 0,
@@ -387,6 +380,8 @@ impl Host {
             cards: Mutex::new(CardCache::default()),
             #[cfg(test)]
             asked: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            list_asked: std::sync::atomic::AtomicUsize::new(0),
             refusals,
             workspace: workspace.to_path_buf(),
             next_poll: 0,
@@ -541,6 +536,9 @@ impl Host {
                 fuel: None,
             };
         }
+        #[cfg(test)]
+        self.list_asked
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let value = serde_json::to_value(input).unwrap_or(Value::Null);
         let resolved = self.stack.call(hook, &value);
         // Fail down, loudly: a layer that traps is skipped by the stack and
@@ -552,6 +550,10 @@ impl Host {
         if let Ok(mut cache) = self.cache.lock() {
             cache.key = key;
             cache.answer = resolved.answer.clone();
+            #[cfg(test)]
+            {
+                cache.size = Some((input.size.w, input.size.h));
+            }
         }
         if let Some(failure) = resolved.failures.first() {
             self.refuse(
@@ -622,10 +624,23 @@ impl Host {
         resolved.answer
     }
 
-    /// How many `card_` asks reached the layer - a test's measure of *once per row*.
+    /// How many asks reached the layer - a test's measure of *once per row*.
     #[cfg(test)]
     pub(crate) fn cards_asked(&self) -> usize {
         self.asked.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// How many `pane_` asks were NOT served from the cache: the measure of *an idle frame does not
+    /// re-run the guest*.
+    #[cfg(test)]
+    pub(crate) fn list_asks(&self) -> usize {
+        self.list_asked.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// The size the last `pane_` ask was made for: `(w, h)`.
+    #[cfg(test)]
+    pub(crate) fn asked_size(&self) -> Option<(u32, u32)> {
+        self.cache.lock().ok().and_then(|c| c.size)
     }
 
     /// Say why a row was drawn the head's way rather than a layer's: queued under the hook it
@@ -828,29 +843,33 @@ impl App {
         true
     }
 
-    /// The session list, from the plugin - `None` when there is no layer to ask, when its
-    /// answer is not a list this head can draw, or when it could not be trusted enough to draw it.
-    /// Each of those is the head's own list's cue.
-    pub(crate) fn sessions_list(&self, w: usize) -> Option<List> {
+    /// The session list, from the plugin - `None` when there is no layer to ask, or when its
+    /// answer is not a list this head will draw (and that is SAID, because the pane no longer has a
+    /// second drawing to hide behind).
+    pub(crate) fn sessions_list(&self, w: usize, h: usize) -> Option<List> {
         let slot = self.plugin_host();
         let host = slot.as_ref()?;
         host.reader(HOOK, Feed::Sessions)?;
         let declared = host.declared(HOOK, Feed::Sessions);
         let state = host.state_of(HOOK);
-        let input = self.sessions_input(state);
+        let input = self.sessions_input(state, w, h);
         let answered = host.ask(HOOK, "the session list", &input);
         if let Some(answer) = answered.view.as_ref() {
             host.remember(HOOK, answer.state.clone());
         }
         let view = answered.view?;
         // The host's rules, and the acts the layer declared (C3).
-        if view.validate_for(&declared).is_err() {
+        if let Err(why) = view.validate_for(&declared) {
+            host.complain(
+                HOOK,
+                format!("the session list's layer answered a view this head will not draw: {why}"),
+            );
             return None;
         }
         let (rows, empty) = tree_of(&view, &self.picker_folds)?;
         let width = w.max(20);
         let list = TreeList {
-            title: TITLE.to_string(),
+            title: sdk::TITLE.to_string(),
             rows,
             selected: Some(self.picker_sel),
             empty,
@@ -858,8 +877,8 @@ impl App {
             // The full id sits at column 6, under the mark and the fold column.
             detail_column: 6,
             margin: 2,
-            hint: HINT.iter().map(|h| (*h).to_string()).collect(),
-            notes: vec![NOTE.to_string()],
+            hint: sdk::HINT.iter().map(|h| (*h).to_string()).collect(),
+            notes: vec![sdk::NOTE.to_string()],
         };
         Some(List {
             rows: listed(&view, self),
@@ -942,8 +961,10 @@ impl App {
         }
     }
 
-    /// What the pane is asked with - the one feed it declared, the fold state, and the size.
-    fn sessions_input(&self, state: Option<Value>) -> Input {
+    /// What the pane is asked with - the one feed it declared, the fold state, and the size it is
+    /// DRAWN at. A layer is handed the height its own rectangle gives it, not a number this file
+    /// chose: a pane that drew to a made-up height drew to somebody else's screen.
+    fn sessions_input(&self, state: Option<Value>, w: usize, h: usize) -> Input {
         let mut feeds = BTreeMap::new();
         feeds.insert(Feed::Sessions.name().to_string(), self.sessions_feed());
         Input {
@@ -952,8 +973,8 @@ impl App {
             look: None,
             event: self.sessions_event.borrow().clone(),
             size: letibot_plugin::pane::Size {
-                w: self.cfg.width as u32,
-                h: 40,
+                w: w as u32,
+                h: h as u32,
             },
             feeds,
             folded: self.picker_folds.clone(),
@@ -965,6 +986,10 @@ impl App {
     /// The daemon's session list as the feed spells it, one object per session. `project` and
     /// `system` are computed HERE: they are facts about the whole list, and a guest that
     /// recomputed them would be a second opinion about where a row goes. The layer says what.
+    ///
+    /// **No clock.** An age is bucketed here (`sdk::age_word`) and the bucket is what a row gets.
+    /// A raw `now` made every frame a different input, so the one-slot cache never hit and the
+    /// guest was re-run on every idle frame.
     pub(crate) fn sessions_feed(&self) -> Value {
         let place = self.placements();
         let projects = self.projects(&place);
@@ -982,16 +1007,20 @@ impl App {
             .enumerate()
             // A removed session is not in the feed at all, so the layer's rows, its counts and
             // its numbering agree with the head's own walk by construction: one predicate
-            // (`App::removed_chain`), two drawings.
+            // (`App::removed_chain`), one drawing.
             .filter(|(i, _)| !self.removed_chain(*i))
             .collect();
-        // Capped before the rows are built: the feed's cost to a guest is its size.
+        // Capped before the rows are built: the feed's cost to a guest is its size. Whatever the
+        // cap leaves out is COUNTED and said, because a list that stops at 250 and says nothing
+        // reads as a daemon that holds 250.
+        let total = kept.len();
         let kept = letibot_plugin::pane::cap_session_rows(kept, |(_, s)| {
             (
                 s.live || s.status.running || s.status.heads > 0 || s.session_id == self.session_id,
                 s.moved_ms,
             )
         });
+        let more = total.saturating_sub(kept.len());
         let sessions: Vec<Value> = kept
             .into_iter()
             .map(|(i, s)| {
@@ -1015,6 +1044,10 @@ impl App {
                     // a row of a session list is read for. Off the daemon's own brief, which reads
                     // the store's row (`SessionBrief::moved_ms`).
                     "moved_ms": s.moved_ms,
+                    // The same fact as one word, and a word that only moves when its bucket does:
+                    // this is the field a row draws, and it is why an idle frame asks nothing.
+                    "age": (s.moved_ms > 0)
+                        .then(|| sdk::age_word(now.saturating_sub(s.moved_ms))),
                     // Where it sits: the project's key and the name to draw, and the `system`
                     // group when it is one of the harness's own agents.
                     "project": place[i].project,
@@ -1044,14 +1077,12 @@ impl App {
             "fleet": fleet,
             "unlisted": (self.fleet_unlisted > 0)
                 .then(|| letibot_sessionlog::fleet::unlisted_words(self.fleet_unlisted)),
+            // The sessions the cap left out, for the layer's stated "N more" line.
+            "more": more,
             "here": self.session_id,
-            // The one home the head shortens against - the same value its own list uses, so
-            // a plugin's rows and the head's rows cannot disagree about what `~` means.
+            // The one home the head shortens against - the same value the layer uses, so a
+            // plugin's rows and the daemon's cannot disagree about what `~` means.
             "home": self.home,
-            // The host's clock: a guest compiled for wasm has no `SystemTime`, so an age is the
-            // host's fact and the layer's arithmetic. The daemon's feed carries the same field, so
-            // the two feeds are one shape rather than two.
-            "now": letibot_sessionlog::registry::now_ms(),
         })
     }
 
@@ -1110,271 +1141,59 @@ impl App {
         }
     }
 
-    /// The list's rows, for the keys - the plugin's when there is one, the head's own
-    /// otherwise, as one shape.
+    /// The list's rows, for the keys - the layer's answer, as one shape.
     pub(crate) fn picker_rows(&self) -> Vec<Listed> {
-        self.picker_list(self.picker_width()).rows
+        self.picker_list(self.picker_width(), self.picker_height())
+            .rows
     }
 
-    /// The list being drawn - the layer's answer when there is one, the head's own tree when
-    /// there is not. One door, because the drawing, the keys, the click map and `/switch N` must
-    /// all be reading the same list.
-    pub(crate) fn picker_list(&self, w: usize) -> List {
-        self.sessions_list(w)
-            .unwrap_or_else(|| self.session_list(w))
-    }
-
-    /// The head's own list, drawn from [`App::session_rows`] - the way out when no layer
-    /// answers, and the same rano primitive the layer's answer is drawn through, so the two
-    /// pictures cannot come to differ.
-    pub(crate) fn session_list(&self, w: usize) -> List {
-        let rows = self.session_rows();
-        let mut tree: Vec<TreeRow> = Vec::with_capacity(rows.len());
-        let mut listed: Vec<Listed> = Vec::with_capacity(rows.len());
-        let mut number = 0;
-        let mut said_project = false;
-        for r in &rows {
-            let open = r.open.map(|o| if o { Fold::Open } else { Fold::Closed });
-            match r.idx {
-                Some(i) => {
-                    // A number is the n-th SESSION, which is what the drawn list writes beside
-                    // the row and what `/switch N` reads - one enumeration, here.
-                    number += 1;
-                    let id = self.sessions[i].session_id.clone();
-                    tree.push(TreeRow {
-                        id: Some(id.clone()),
-                        depth: r.depth,
-                        number: Some(number),
-                        open,
-                        cells: vec![TreeCell::role(
-                            self.row_name(i),
-                            if id == self.session_id {
-                                rano::style::Role::Strong
-                            } else {
-                                rano::style::Role::Plain
-                            },
-                        )],
-                        facts: self.session_row_facts(i),
-                        detail: vec![self.row_under(i)],
-                        detail_column: None,
-                        actions: vec![TreeAction::new("enter", "switches")],
-                        ..TreeRow::default()
-                    });
-                    listed.push(Listed {
-                        id: id.clone(),
-                        session: Some(i),
-                        number: Some(number),
-                        enter: Some(RowAct::switch(id)),
-                        open,
-                        depth: r.depth,
-                    });
-                }
-                None if matches!(r.node, crate::app::session::Node::FleetUnlisted { .. }) => {
-                    tree.push(TreeRow {
-                        id: Some(r.node.key().to_string()),
-                        depth: r.depth,
-                        number: None,
-                        open: None,
-                        cells: vec![TreeCell::role(
-                            clean(&r.node.title()),
-                            rano::style::Role::Faint,
-                        )],
-                        ..TreeRow::default()
-                    });
-                    listed.push(Listed {
-                        id: r.node.key().to_string(),
-                        session: None,
-                        number: None,
-                        enter: None,
-                        open: None,
-                        depth: r.depth,
-                    });
-                }
-                None if matches!(r.node, crate::app::session::Node::Fleet { .. }) => {
-                    let Some(f) = self.fleet.iter().find(|f| f.id == r.node.key()) else {
-                        continue;
-                    };
-                    tree.push(TreeRow {
-                        id: Some(f.id.clone()),
-                        depth: r.depth,
-                        number: None,
-                        open: None,
-                        cells: vec![TreeCell::role(
-                            clean(&fleet_name(f)),
-                            rano::style::Role::Plain,
-                        )],
-                        facts: vec![TreeCell::role(
-                            clean(&fleet_facts(f)),
-                            if f.state == letibot_sessionlog::FleetState::Running {
-                                rano::style::Role::Pending
-                            } else {
-                                rano::style::Role::Faint
-                            },
-                        )],
-                        detail: vec![clean(&fleet_under(f, &self.home))],
-                        detail_column: None,
-                        actions: vec![TreeAction::new("enter", "shows the attach command")],
-                        ..TreeRow::default()
-                    });
-                    listed.push(Listed {
-                        id: f.id.clone(),
-                        session: None,
-                        number: None,
-                        enter: Some(RowAct::switch(f.id.clone())),
-                        open: None,
-                        depth: r.depth,
-                    });
-                }
-                None => {
-                    // The project legend is said on the first project line only.
-                    let legend = match &r.node {
-                        crate::app::session::Node::Project { .. } if !said_project => {
-                            said_project = true;
-                            crate::app::session::PROJECT_LEGEND
-                        }
-                        crate::app::session::Node::Project { .. } => "",
-                        _ => r.node.legend(),
-                    };
-                    // A node's line is a stop with an act of its own - `enter` folds it - and
-                    // it carries no number, because a number is somewhere to go.
-                    let key = r.node.key().to_string();
-                    let words = if r.open == Some(true) {
-                        "folds it away"
-                    } else {
-                        "unfolds it"
-                    };
-                    tree.push(TreeRow {
-                        id: Some(key.clone()),
-                        depth: r.depth,
-                        number: None,
-                        open,
-                        cells: vec![TreeCell::role(
-                            clean(&r.node.title()),
-                            rano::style::Role::Strong,
-                        )],
-                        facts: Vec::new(),
-                        detail: if legend.is_empty() {
-                            Vec::new()
-                        } else {
-                            vec![legend.to_string()]
-                        },
-                        detail_column: None,
-                        actions: vec![TreeAction::new("enter", words)],
-                        ..TreeRow::default()
-                    });
-                    listed.push(Listed {
-                        id: key,
-                        session: None,
-                        number: None,
-                        enter: Some(RowAct::fold()),
-                        open,
-                        depth: r.depth,
-                    });
-                }
-            }
+    /// The list being drawn - ONE drawing, and one door, because the drawing, the keys, the click
+    /// map and `/switch N` must all be reading the same list. The size is recorded here, because
+    /// the keys ask about the pane the picture was drawn in: a key that asked about another height
+    /// would miss the guest's cache and re-run it on every press.
+    pub(crate) fn picker_list(&self, w: usize, h: usize) -> List {
+        self.picker_size.set((w, h));
+        match self.sessions_list(w, h) {
+            Some(list) => list,
+            // Building or unanswered: one line about the LIST, never a second list of it.
+            None if self.host_build.borrow().is_some() => self.saying(sdk::BUILDING, w),
+            None => self.saying(sdk::UNANSWERED, w),
         }
-        let list = TreeList {
-            title: TITLE.to_string(),
-            rows: tree,
-            selected: Some(self.picker_sel),
-            empty: EMPTY.to_string(),
+    }
+
+    /// The pane as one line, in the list's own frame - title, hint and note - so the pane does not
+    /// jump when the layer's answer arrives.
+    fn saying(&self, line: &str, w: usize) -> List {
+        let tree = TreeList {
+            title: sdk::TITLE.to_string(),
+            rows: Vec::new(),
+            selected: None,
+            empty: line.to_string(),
             fold_column: true,
             detail_column: 6,
             margin: 2,
-            hint: HINT.iter().map(|h| (*h).to_string()).collect(),
-            notes: vec![NOTE.to_string()],
+            hint: sdk::HINT.iter().map(|h| (*h).to_string()).collect(),
+            notes: vec![sdk::NOTE.to_string()],
         };
         List {
-            rows: listed,
-            content: list.content(w.max(20)),
+            rows: Vec::new(),
+            content: tree.content(w.max(20)),
         }
     }
 
-    /// A session's name on its row - its slug when it has one, `WAITING ON YOU` when it is
-    /// waiting, and paused nags when they are. The layer's `name_of` is this same sentence, held
-    /// together by `the_heads_list_and_the_plugins_list_draw_the_same_rows`.
-    fn row_name(&self, i: usize) -> String {
-        let s = &self.sessions[i];
-        let name = if s.title.is_empty() {
-            letibot_sessionlog::registry::short_id(&s.session_id).to_string()
-        } else {
-            s.title.clone()
-        };
-        let name = if s.slug.trim().is_empty() {
-            name
-        } else {
-            format!("{} · {name}", s.slug)
-        };
-        let name = match s.waits_on_operator {
-            0 => name,
-            1 => format!("{name} · WAITING ON YOU"),
-            n => format!("{name} · WAITING ON YOU ({n})"),
-        };
-        let name = if s.nags_paused.is_some() {
-            format!("{name} · nags paused")
-        } else {
-            name
-        };
-        clean(&name)
-    }
-
-    /// The right-hand column of a session's row: what it IS, in one run of facts.
-    fn session_row_facts(&self, i: usize) -> Vec<TreeCell> {
-        let s = &self.sessions[i];
-        let mut facts: Vec<String> = Vec::new();
-        if s.status.running {
-            facts.push("generating".into());
-        }
-        if !s.live {
-            facts.push("on disk".into());
-        }
-        let rows = if s.stored_items > 0 {
-            s.stored_items as usize
-        } else {
-            s.status.items
-        };
-        if rows > 0 {
-            facts.push(format!("{rows} rows"));
-        }
-        if s.status.heads > 0 {
-            facts.push(format!(
-                "{} head{}",
-                s.status.heads,
-                if s.status.heads == 1 { "" } else { "s" }
-            ));
-        }
-        if !s.wiring.model.is_empty() {
-            facts.push(s.wiring.model.clone());
-        }
-        if facts.is_empty() {
-            return Vec::new();
-        }
-        vec![TreeCell::role(
-            facts.join(" · "),
-            if s.status.running {
-                rano::style::Role::Pending
-            } else {
-                rano::style::Role::Faint
-            },
-        )]
-    }
-
-    /// The faint line under a session's row: the full id, and the workspace when there is one  -
-    /// for a stored session the only thing on the row that says what the conversation was about.
-    fn row_under(&self, i: usize) -> String {
-        let s = &self.sessions[i];
-        let under = if s.wiring.workspace.is_empty() {
-            s.session_id.clone()
-        } else {
-            format!("{}  {}", s.session_id, self.tilde_path(&s.wiring.workspace))
-        };
-        clean(&under)
-    }
-
-    /// The width the list is measured at when it is not being drawn - the frame's own, so a
-    /// key and the picture it moves are one list rather than two renderings of one.
+    /// The width the list was last DRAWN at - the pane's own column, which is the sidebar's width
+    /// away from the frame's. A key and the picture it moves are one list, not two renderings.
     pub(crate) fn picker_width(&self) -> usize {
-        self.cfg.width.max(20)
+        let (w, _) = self.picker_size.get();
+        if w > 0 { w } else { self.cfg.width.max(20) }
+    }
+
+    /// The height the list was last DRAWN at - the pane's own rectangle, which is the height the
+    /// layer is handed. The keys ask about the same one: a key that asked about another height
+    /// would send the guest a different input and re-run it on every press.
+    pub(crate) fn picker_height(&self) -> usize {
+        let (_, h) = self.picker_size.get();
+        if h > 0 { h } else { self.screen_rows.max(1) }
     }
 
     /// The row under the cursor, from whichever list is drawn (`picker_rows`).
@@ -1397,18 +1216,10 @@ impl App {
     }
 
     /// Open or close a row that folds - one door for Enter, the arrows and a click, so a fold is
-    /// one act however it was asked for. It is ALSO written into `expanded`, because the head's
-    /// own tree reads that one: the way out starts from the state the person left.
+    /// one act however it was asked for. The state travels back to the layer in the pane's input,
+    /// which is where a fold lives: a layer remembers nothing, and the head keeps no tree.
     pub(crate) fn set_row_fold(&mut self, id: &str, open: bool) {
         self.picker_folds.insert(id.to_string(), open);
-        let at = self.expanded.iter().position(|e| e == id);
-        match (open, at) {
-            (true, None) => self.expanded.push(id.to_string()),
-            (false, Some(at)) => {
-                self.expanded.remove(at);
-            }
-            _ => {}
-        }
     }
 }
 
@@ -1419,7 +1230,7 @@ const FLEET_REFRESH_MS: u64 = 5_000;
 /// the head's sentences and cannot differ.
 fn fleet_name(f: &letibot_sessionlog::FleetRow) -> String {
     if f.title.is_empty() {
-        letibot_sessionlog::registry::short_id(&f.id).to_string()
+        sdk::short_id(&f.id)
     } else {
         f.title.clone()
     }
@@ -1518,15 +1329,6 @@ fn enter_action(act: &RowAct, open: Option<Fold>) -> Option<TreeAction> {
         },
     };
     Some(TreeAction::new("enter", words))
-}
-
-/// Control characters out of a row's words: a title and a workspace are somebody's, and an escape
-/// in one would be measured one way and drawn another. The layer spells this rule too, because a
-/// guest cannot call the host; the equality test is what keeps the two in step.
-fn clean(text: &str) -> String {
-    text.chars()
-        .map(|c| if c.is_control() { ' ' } else { c })
-        .collect()
 }
 
 fn fold_of(f: pv::Fold) -> Fold {
@@ -1747,9 +1549,9 @@ mod tests {
         assert_eq!(host.take_problem(), None, "and nothing was owed a sentence");
     }
 
-    /// A built-in that will not load is SAID, not silently skipped: the head still falls back to
-    /// its own list, but a binary whose own layer is broken is a defect. A build cannot ship an
-    /// empty table - the build script stops with one sentence.
+    /// A built-in that will not load is SAID, not silently skipped: the pane says no layer answered
+    /// and the sentence names the layer, because a binary whose own layer is broken is a defect. A
+    /// build cannot ship an empty table - the build script stops with one sentence.
     #[test]
     fn a_builtin_that_cannot_load_is_a_sentence_and_not_a_silence() {
         struct Refuses;

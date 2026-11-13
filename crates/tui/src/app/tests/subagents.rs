@@ -415,12 +415,14 @@ fn esc_inside_a_busy_subagent_goes_up_and_the_pair_does_not_interrupt_it_there()
 #[test]
 fn ctrl_s_inside_a_subagent_lists_the_parent_and_its_siblings() {
     let mut a = inside_a_subagent();
-    let rows = a.session_rows();
-    let shown: Vec<(&str, usize)> = rows
+    // The drawn list is the one the keys read: the layer's rows, in drawing order.
+    a.key(Key::CtrlS);
+    let shown: Vec<(&str, usize)> = a
+        .picker_rows()
         .iter()
-        .map(|r| {
-            let i = r.idx.expect("a family view has no group lines");
-            (a.sessions[i].session_id.as_str(), r.depth)
+        .filter_map(|r| {
+            r.session
+                .map(|i| (a.sessions[i].session_id.as_str(), r.depth))
         })
         .collect();
     assert_eq!(
@@ -428,11 +430,10 @@ fn ctrl_s_inside_a_subagent_lists_the_parent_and_its_siblings() {
         vec![("s", 0), ("s-sub-1", 1), ("s-sub-2", 1)],
         "{shown:?}"
     );
-    // Nothing was expanded and the siblings are on the list anyway.
-    assert!(a.expanded.is_empty());
+    // Nothing was folded open and the siblings are on the list anyway.
+    assert!(a.picker_folds.is_empty());
     // And the screen says the same thing the enumeration does - one list, read by the
     // drawings and by the keys.
-    a.key(Key::CtrlS);
     let screen = a.screen(100, 30).join("\n");
     assert!(screen.contains("parent"), "{screen}");
     assert!(screen.contains("audit the store"), "{screen}");

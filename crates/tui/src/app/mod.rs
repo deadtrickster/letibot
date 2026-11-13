@@ -231,6 +231,10 @@ pub struct App {
     /// Which picker row the cursor is on. It starts on the session this head is already in, so
     /// an untouched list answers Enter with a no-op rather than a surprise.
     pub(crate) picker_sel: usize,
+    /// The size the session list was last DRAWN at - `(w, h)` of the pane's own rectangle, and `0`
+    /// before the first frame. The layer is told this height, and the keys ask about the same one:
+    /// two sizes would be two answers, and a guest re-run on every press.
+    pub(crate) picker_size: std::cell::Cell<(usize, usize)>,
     /// The picker opened before the cursor could be seated on this session (its list had not
     /// landed, or lacked it). The next list seats it; any cursor move cancels.
     pub(crate) picker_seat_pending: bool,
@@ -922,10 +926,6 @@ pub struct App {
     /// `items.len()` when the hold began, so the release can say how much arrived while it was
     /// held. Counted once, at that moment: a live count is an animation and an animation writes.
     pub(crate) hold_rows: usize,
-    /// Which rows of the sessions tree the picker has opened. Empty is closed for every node, and a
-    /// list with nothing open still draws where you are: the project holding this session and its
-    /// chain of parents, which keeps twenty subagents from burying the conversations.
-    pub(crate) expanded: Vec<String>,
     /// Wall clock fed in by the driver, and when this head last had anything from the daemon.
     /// Received-at rather than the event's `ts`, because the daemon's opinion of how long it has
     /// been quiet is exactly the number missing when it stopped talking. Zero says nothing.
@@ -1313,6 +1313,7 @@ impl App {
             plugin_detail: None,
             plugin_sent: None,
             picker_sel: 0,
+            picker_size: std::cell::Cell::new((0, 0)),
             picker_seat_pending: false,
             home: std::env::var("HOME").unwrap_or_default(),
             sessions_host: std::cell::RefCell::new(None),
@@ -1539,7 +1540,6 @@ impl App {
             hold_frame: None,
             hold_size: (0, 0),
             hold_rows: 0,
-            expanded: Vec::new(),
             now_ms: 0,
             last_event_at: 0,
             git: None,

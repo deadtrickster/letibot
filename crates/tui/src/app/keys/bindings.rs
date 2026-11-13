@@ -781,7 +781,7 @@ impl App {
             // [`App::list_says`] - a picker's footer is a function of the row, and spelling it
             // here twice is how the two drifted. A row with no act drops the binding from the bar.
             (Surface::Picker, Act::Open) => self
-                .picker_list(self.picker_width())
+                .picker_list(self.picker_width(), self.picker_height())
                 .selected(self.picker_sel)
                 .and_then(|row| self.list_says(row))
                 .map(str::to_string),

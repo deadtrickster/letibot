@@ -1,9 +1,10 @@
-//! The session list's drawing, pinned - the picture the picker drew before the
-//! list became a built-in plugin, and the assertions the port must keep true.
+//! The session list's drawing, pinned - the picture the picker drew before the list became a
+//! built-in plugin, and the assertions the port must keep true.
 //!
-//! `docs/plugins-plan.md` moves the decisions this fixture exercises (groups, what a row says, `WAITING ON YOU`, folds)
-//! into `plugins/builtin/sessions`. The drawing is pinned FIRST: two committed pictures of one daemon (as the picker opens,
-//! and with every fold opened), held against the plugin path by `the_heads_list_and_the_plugins_list_draw_the_same_rows`.
+//! There is ONE drawing: the built-in `sessions` layer answers, and the head draws its answer
+//! through rano's tree list. These tests read that one list - `App::picker_lines` for the picture,
+//! `App::picker_rows` for the stops the keys act on - so a change to the layer is a red test rather
+//! than a second drawing to compare against.
 //!
 //! # Regenerating a picture
 //!
@@ -121,22 +122,10 @@ fn the_session_list_looks_like_this_as_it_opens() {
 #[test]
 fn the_session_list_looks_like_this_with_every_fold_open() {
     let mut a = the_daemon();
-    // The folds are the drawn list's, keyed by row id - the head's own tree reads the same
-    // state, and `set_row_fold` keeps both in step (`app::sessions_pane`). Opening a project puts
-    // rows on the list that were not there to open, so the walk runs until it adds nothing.
-    for _ in 0..4 {
-        let keys: Vec<String> = a
-            .session_rows()
-            .iter()
-            .map(|r| match r.idx {
-                Some(i) => a.sessions[i].session_id.clone(),
-                None => r.node.key().to_string(),
-            })
-            .collect();
-        for key in keys {
-            a.set_row_fold(&key, true);
-        }
-    }
+    // The folds are the drawn list's, keyed by row id, and they travel back to the layer in the
+    // pane's input. Opening a project puts rows on the list that were not there to open, so the
+    // walk runs until it adds nothing.
+    open_everything(&mut a);
     let now = drawn(&a, 100);
     assert_eq!(golden("sessions-list-open.txt", now.clone()), now);
     assert!(now.contains("read the repo"), "{now}");
@@ -168,24 +157,21 @@ fn the_workspace_is_shortened_against_the_heads_own_home() {
     );
 }
 
-/// The head's own list IS the plugin's list: one row per row, the same order, the same words, at the
-/// same width. The built-in `sessions` layer decides the tree's shape and [`App::session_list`] is
-/// the fallback, so a change to one side alone is a red test rather than a silent difference.
+/// One drawing, one enumeration: the rows the keys act on ARE the list's stops, so a drawing and a
+/// keypress cannot come to different conclusions about row four.
 #[test]
-fn the_heads_list_and_the_plugins_list_draw_the_same_rows() {
+fn one_stop_per_row_that_can_be_acted_on() {
     let a = the_daemon();
     let list = a
-        .sessions_list(100)
+        .sessions_list(100, 40)
         .expect("the built-in sessions layer answers in this process");
-    // The rows the keys act on are the list's own - the same enumeration the `switch` acts
-    // read, so a drawing and a keypress cannot come to different conclusions about row four.
     assert_eq!(
         list.rows.len(),
         list.content.stop_rows.len(),
         "one stop per row that can be acted on"
     );
-    let (own, plugins) = both_lists(&a);
-    assert_eq!(own, plugins, "the plugin's list is the head's list");
+    // And the listing is not empty, or the equality would hold for two empty lists.
+    assert!(list.rows.len() > 4, "the daemon's rows: {:?}", list.rows);
 }
 
 /// A daemon whose head is standing in `here` - the family view, and the state a head is in
@@ -198,24 +184,16 @@ fn standing_in(here: &str, sessions: Vec<SessionBrief>) -> App {
     a
 }
 
-/// The two drawings of one daemon at one width: the head's own list, and the layer's.
-fn both_lists(a: &App) -> (Vec<String>, Vec<String>) {
-    let plugins = crate::ui::render::row_strings(
-        &a.sessions_list(100)
-            .expect("the built-in sessions layer answers in this process")
-            .content
-            .lines,
-        a.cfg.palette(),
-    );
-    let own = crate::ui::render::row_strings(&a.session_list(100).content.lines, a.cfg.palette());
-    (own, plugins)
+/// The one drawing of this daemon, one entry per drawn row.
+fn stops(a: &App) -> Vec<String> {
+    crate::ui::render::row_strings(&a.picker_list(100, 40).content.lines, a.cfg.palette())
 }
 
 /// A family is drawn whatever group its members are in: a review's parent is the gatekeeper
 /// (`system = "gatekeepers"`) and the review itself a `reviewer`, so a walk that stays inside the
-/// parent's group loses the session the head is standing in. The head's family walk has no branch.
+/// parent's group loses the session the head is standing in. The family walk has no branch.
 #[test]
-fn the_family_of_a_review_is_drawn_by_both_lists() {
+fn the_family_of_a_review_is_drawn() {
     let queue = letibot_sessionlog::gatekeeper_session_for_key("0123456789ab");
     let reviewer = format!("{queue}-sub-1791759365511364772");
     let mut gatekeeper = brief(&queue, "the review queue", false);
@@ -223,22 +201,18 @@ fn the_family_of_a_review_is_drawn_by_both_lists() {
     let mut review = brief(&reviewer, "You are the gatekeeper. review it", false);
     review.parent_session_id = Some(queue.clone());
     let a = standing_in(&reviewer, vec![gatekeeper, review]);
+    let rows = a.picker_rows();
     assert_eq!(
-        a.session_rows().len(),
+        rows.len(),
         2,
-        "the head's family is the parent and the row it is standing in: {:?}",
-        a.session_rows()
-            .iter()
-            .map(|r| r.idx.map(|i| a.sessions[i].title.clone()))
-            .collect::<Vec<_>>()
+        "the family is the parent and the row it is standing in: {rows:?}"
     );
     assert_eq!(
-        a.session_rows()[0].open,
-        Some(true),
+        rows[0].open,
+        Some(rano::agent::tree_list::Fold::Open),
         "the gatekeeper holds a row that is on the list, so it says `-`"
     );
-    let (own, plugins) = both_lists(&a);
-    assert_eq!(own, plugins, "the layer's family is the head's family");
+    let own = stops(&a);
     let gatekeeper_line = own
         .iter()
         .find(|l| l.contains("the review queue"))
@@ -256,9 +230,9 @@ fn the_family_of_a_review_is_drawn_by_both_lists() {
 
 /// The same rule on the other pair the tree creates: a notes keeper spawned as a `task` child
 /// of an ordinary conversation has a parent with no group at all, and it is that conversation's
-/// child on both lists.
+/// child on the list.
 #[test]
-fn the_family_of_a_keeper_is_drawn_by_both_lists() {
+fn the_family_of_a_keeper_is_drawn() {
     let mut keeper = brief(
         "s-keeper",
         "You are the notes keeper. tidy the notes",
@@ -269,24 +243,25 @@ fn the_family_of_a_keeper_is_drawn_by_both_lists() {
         "s-keeper",
         vec![brief("s-habr", "the habr article", false), keeper],
     );
-    let (own, plugins) = both_lists(&a);
-    assert_eq!(own, plugins, "the layer's family is the head's family");
+    let own = stops(&a);
     assert!(
         own.iter().any(|l| l.contains("the notes keeper")),
         "the keeper is drawn, and it is the row the head is standing in: {own:?}"
     );
+    assert!(
+        own.iter().any(|l| l.contains("the habr article")),
+        "and so is its parent: {own:?}"
+    );
 }
 
-/// A title and a workspace are somebody's text, and both lists draw it the same way - the
-/// layer turned a control character into a space and the head did not, so one row was two
-/// pictures, and one of them carried an escape to the terminal.
+/// A title and a workspace are somebody's text, and the one drawing turns a control character into
+/// a space: a row that carried an escape to the terminal is measured one way and drawn another.
 #[test]
-fn a_control_character_in_a_row_is_drawn_as_a_space_by_both_lists() {
+fn a_control_character_in_a_row_is_drawn_as_a_space() {
     let mut nasty = brief("s-nasty", "the\u{7}bell\u{1b}[31mred", false);
     nasty.wiring.workspace = "/home/dead/Projects/letibot/letibot\u{7}".into();
     let a = standing_in("s-nasty", vec![nasty]);
-    let (own, plugins) = both_lists(&a);
-    assert_eq!(own, plugins, "one row, one picture");
+    let own = stops(&a);
     assert!(
         !own.iter().any(|l| l.chars().any(char::is_control)),
         "and no control character reaches the screen:\n{}",
@@ -298,12 +273,15 @@ fn a_control_character_in_a_row_is_drawn_as_a_space_by_both_lists() {
 // `SessionBrief::parent_session_id` and by nothing else - not by the id, not by the workspace.
 // Every test below is a spawner whose child must land under its parent, or at its project's top.
 
-/// The rows `session_rows()` would draw, as `(session, depth)` - a node's line has no session, so
-/// it is not here; see the file's note on the two indices.
+/// The drawn rows that are sessions, as `(session, depth)` - a node's line has no session, so it
+/// is not here.
 fn tree(a: &App) -> Vec<(String, usize)> {
-    a.session_rows()
+    a.picker_rows()
         .iter()
-        .filter_map(|r| r.idx.map(|i| (a.sessions[i].session_id.clone(), r.depth)))
+        .filter_map(|r| {
+            r.session
+                .map(|i| (a.sessions[i].session_id.clone(), r.depth))
+        })
         .collect()
 }
 
@@ -312,14 +290,7 @@ fn tree(a: &App) -> Vec<(String, usize)> {
 /// care about nesting rather than about what a folded list looks like.
 fn open_everything(a: &mut App) {
     for _ in 0..4 {
-        let keys: Vec<String> = a
-            .session_rows()
-            .iter()
-            .map(|r| match r.idx {
-                Some(i) => a.sessions[i].session_id.clone(),
-                None => r.node.key().to_string(),
-            })
-            .collect();
+        let keys: Vec<String> = a.picker_rows().iter().map(|r| r.id.clone()).collect();
         for key in keys {
             a.set_row_fold(&key, true);
         }
@@ -512,9 +483,9 @@ fn packages_of_other_daemons_are_listed_with_folder_and_state() {
             FleetState::DaemonDown,
         ),
     ];
-    a.set_row_fold(crate::app::session::PACKAGES_KEY, true);
-    let (own, plugins) = both_lists(&a);
-    assert_eq!(own, plugins, "the plugin's list is the head's list");
+    // The group's fold key is the layer's: a path or `groups/…` for a node, `fleet/packages` here.
+    a.set_row_fold("fleet/packages", true);
+    let own = stops(&a);
     let text = own.join("\n");
     assert!(text.contains("packages in other daemons (2)"), "{text}");
     assert!(text.contains("work of s-far-1"), "{text}");
@@ -531,21 +502,19 @@ fn packages_of_other_daemons_are_listed_with_folder_and_state() {
         a.notice
     );
     // Folded, the group is one line.
-    a.set_row_fold(crate::app::session::PACKAGES_KEY, false);
-    let (own, plugins) = both_lists(&a);
-    assert_eq!(own, plugins);
+    a.set_row_fold("fleet/packages", false);
+    let own = stops(&a);
     assert!(!own.join("\n").contains("work of s-far-1"));
 }
 
-/// Stopped packages outside the window are said, not dropped: the group ends with how many and how to
-/// see them, in both drawings, and the line is not an act.
+/// Stopped packages outside the window are said, not dropped: the group ends with how many and how
+/// to see them, and the line is not an act.
 #[test]
 fn the_packages_group_ends_with_how_many_older_stopped_ones_are_not_listed() {
     let mut a = the_daemon();
     a.fleet_unlisted = 3;
-    a.set_row_fold(crate::app::session::PACKAGES_KEY, true);
-    let (own, plugins) = both_lists(&a);
-    assert_eq!(own, plugins, "the plugin's list is the head's list");
+    a.set_row_fold("fleet/packages", true);
+    let own = stops(&a);
     let text = own.join("\n");
     assert!(text.contains("packages in other daemons (0)"), "{text}");
     assert!(
@@ -575,13 +544,8 @@ fn the_header_and_the_tree_lead_with_the_name_and_keep_the_id_in_details() {
     );
     a.push_surface(Surface::Picker);
     open_everything(&mut a);
-    // Both drawings lead a named session with its name; an unnamed row is not compared, since the
-    // layer spells a bare id its own way.
-    let (own, plugins) = both_lists(&a);
-    assert!(
-        plugins.iter().any(|l| l.contains("stroppy-conformity")),
-        "{plugins:#?}"
-    );
+    // The one drawing leads a named session with its name and keeps the id for the line under it.
+    let own = stops(&a);
     let at = own
         .iter()
         .position(|l| l.contains("stroppy-conformity"))
@@ -623,11 +587,22 @@ fn recency_daemon() -> App {
     )
 }
 
+/// A node's line as it is DRAWN - the words a person reads, taken off the stop the row occupies
+/// rather than from a second model of the tree.
 fn node_titles(a: &App) -> Vec<String> {
-    a.session_rows()
+    let (lines, spans) = a.picker_layout(100, 40);
+    a.picker_rows()
         .iter()
-        .filter(|r| r.idx.is_none())
-        .map(|r| r.node.title())
+        .zip(&spans)
+        .filter(|(r, _)| r.session.is_none())
+        .filter_map(|(_, span)| {
+            lines.get(span.start).map(|l| {
+                // The fold column is the renderer's: the row's own words start after it.
+                l.trim_start_matches(|c: char| !c.is_alphanumeric() && c != '~' && c != '/')
+                    .trim()
+                    .to_string()
+            })
+        })
         .collect()
 }
 
@@ -636,21 +611,25 @@ fn node_titles(a: &App) -> Vec<String> {
 #[test]
 fn projects_are_grouped_by_recency_with_the_own_workspace_first() {
     let a = recency_daemon();
-    let rows = a.session_rows();
+    let rows = a.picker_rows();
     assert_eq!(
         node_titles(&a),
         vec!["home-ws (1)", "other projects (1)", "older (2)"],
         "own first, then the recent group, then the older one"
     );
     assert_eq!(rows[0].depth, 0);
-    assert_eq!(rows[0].open, Some(true), "the own workspace is expanded");
-    assert!(rows[1].idx.is_some(), "its session is the next row");
+    assert_eq!(
+        rows[0].open,
+        Some(rano::agent::tree_list::Fold::Open),
+        "the own workspace is expanded"
+    );
+    assert!(rows[1].session.is_some(), "its session is the next row");
     let groups: Vec<_> = rows
         .iter()
-        .filter(|r| r.depth == 0 && r.idx.is_none())
+        .filter(|r| r.depth == 0 && r.session.is_none())
         .collect();
-    assert_eq!(groups[1].open, Some(false));
-    assert_eq!(groups[2].open, Some(false));
+    assert_eq!(groups[1].open, Some(rano::agent::tree_list::Fold::Closed));
+    assert_eq!(groups[2].open, Some(rano::agent::tree_list::Fold::Closed));
     // Nothing dropped: opening both groups and their projects shows all four sessions.
     let mut a = a;
     for key in [
@@ -663,8 +642,6 @@ fn projects_are_grouped_by_recency_with_the_own_workspace_first() {
         a.set_row_fold(key, true);
     }
     assert_eq!(tree(&a).len(), 4, "{:?}", node_titles(&a));
-    let (own, plugins) = both_lists(&a);
-    assert_eq!(own, plugins, "both drawings group alike");
 }
 
 /// A project line explains itself once, on the first one, and not under each.
@@ -680,8 +657,7 @@ fn the_workspace_root_line_is_said_once() {
     ] {
         a.set_row_fold(key, true);
     }
-    let (own, plugins) = both_lists(&a);
-    assert_eq!(own, plugins);
+    let own = stops(&a);
     let said = |lines: &[String]| {
         lines
             .iter()
@@ -689,7 +665,6 @@ fn the_workspace_root_line_is_said_once() {
             .count()
     };
     assert_eq!(said(&own), 1, "{}", own.join("\n"));
-    assert_eq!(said(&plugins), 1);
     assert!(
         own.iter().any(|l| l.contains("other projects (1)")),
         "{}",

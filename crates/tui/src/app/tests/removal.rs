@@ -287,12 +287,14 @@ fn removing_a_parent_takes_its_children_off_the_list() {
     );
     // And the project's count is the count of what it DRAWS, not of what it holds.
     let line = a
-        .session_rows()
-        .iter()
-        .find(|r| r.idx.is_none() && r.depth == 0)
-        .map(|r| r.node.title())
+        .picker_lines(100)
+        .into_iter()
+        .find(|l| l.contains("letibot ("))
         .expect("the project's line");
-    assert_eq!(line, "letibot (1)", "a count that lies is worse than none");
+    assert!(
+        line.contains("letibot (1)"),
+        "a count that lies is worse than none: {line:?}"
+    );
 }
 
 /// Landing on a row you removed brings it back. `/switch <name>` searches every session the daemon
@@ -349,42 +351,24 @@ fn a_removal_above_here_is_not_a_removal_at_all() {
     );
 }
 
-/// The two drawings agree about a removed row, and the LAYER is one of them: it draws from
-/// `App::sessions_feed`, so a removal has to be applied there - and this asks the layer, with a real
-/// `Host` over the modules this binary carries, not the head's own fallback dressed as one.
+/// A removed row is off the one list, and off the FEED the layer draws from: the layer cannot draw
+/// a row the feed does not carry, and this asks the layer, over the modules this binary carries.
 #[test]
-fn the_heads_list_and_the_layers_list_both_drop_the_removed_row() {
+fn a_removed_row_is_not_drawn_and_the_feed_does_not_carry_it() {
     let mut a = a_head(vec![
         in_tree("s-habr", "the habr article", false),
         in_tree("s-rust", "the rust rewrite", false),
     ]);
     with_the_layer(&mut a);
     assert!(
-        a.sessions_list(100).is_some(),
+        a.sessions_list(100, 40).is_some(),
         "the built-in `sessions` layer answers in this process"
     );
     a.picker_sel = row_of(&a, "s-rust");
     a.key(Key::Delete);
     a.key(Key::Delete);
-    let head: Vec<String> = a
-        .session_rows()
-        .iter()
-        .filter_map(|r| r.idx.map(|i| a.sessions[i].session_id.clone()))
-        .collect();
-    assert_eq!(head, vec!["s-habr"], "the head's own walk");
-    // The layer's answer, not the fallback's - `sessions_list` is `Some` above, so these rows
-    // came through the guest, the feed and the tree block it answers.
-    let layer: Vec<String> = a
-        .sessions_list(100)
-        .expect("the layer answers")
-        .rows
-        .iter()
-        .filter_map(|r| r.session.map(|i| a.sessions[i].session_id.clone()))
-        .collect();
-    assert_eq!(
-        layer, head,
-        "and the layer's, which is what the person sees"
-    );
+    let drawn = drawn_ids(&a);
+    assert_eq!(drawn, vec!["s-habr"], "the row is off the one list");
     // And the feed itself says so, which is the mechanism: the layer cannot draw a row the
     // feed does not carry.
     let feed = a.sessions_feed();

@@ -22,6 +22,7 @@ pub mod notice;
 pub mod pane;
 pub mod push;
 pub mod review;
+pub mod sessions;
 pub mod steer;
 pub mod tool_call;
 pub mod tool_result;

@@ -589,14 +589,15 @@ fn show_the_sessions_pane_tree() {
         "collapsed — 104 roots, and this one has two children folded into it",
         &a,
     );
-    a.expanded.push("s-child-a".into());
+    a.set_row_fold("s-child-a", true);
     show("s-child-a expanded — the grandchild at depth 2", &a);
-    a.expanded.push("s-root".into());
+    a.set_row_fold("s-root", true);
     show(
         "the root expanded too — both children, then the grandchild",
         &a,
     );
-    a.expanded.clear();
+    a.set_row_fold("s-child-a", false);
+    a.set_row_fold("s-root", false);
     a.session_id = "s-grand".into();
     show(
         "standing IN the grandchild — the family view, not the daemon",

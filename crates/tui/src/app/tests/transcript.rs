@@ -1794,9 +1794,9 @@ fn the_family_views_fold_glyph_says_open_because_its_rows_are_shown() {
         parent.contains('-'),
         "the parent is not drawn open over its own visible children (fold `-`): {parent}"
     );
-    // And nothing was expanded to make that true - the rule is the view's, not the
+    // And nothing was folded open to make that true - the rule is the view's, not the
     // operator's act.
-    assert!(a.expanded.is_empty());
+    assert!(a.picker_folds.is_empty());
     // The conversation's own children are folded under it, and the glyph is what says they
     // exist. Before the tree they were in a `subagents` group beside the conversation and the row
     // carried no glyph at all - the tree keeps them where the operator looks for them.

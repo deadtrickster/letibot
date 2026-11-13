@@ -21,17 +21,22 @@ impl App {
     /// [`App::picker_layout`] for the row spans as well.
     #[cfg(test)]
     pub(crate) fn picker_lines(&self, w: usize) -> Vec<String> {
-        self.picker_layout(w).0
+        // A stated height: the picture does not depend on it, and a test that also presses a key
+        // leaves the same size behind for the keys to ask about.
+        self.picker_layout(w, 40).0
     }
 
     /// The picker's rows, and the rows each session row `k` (an index into
     /// [`App::session_rows`], the order `picker_sel` counts in) was drawn on. rano draws two
     /// lines per session, so a click maps through its stop rows rather than counting rows.
-    pub(crate) fn picker_layout(&self, w: usize) -> (Vec<String>, Vec<std::ops::Range<usize>>) {
-        // The list is the plugin's when there is one (`app::sessions_pane`, the built-in
-        // `sessions` layer); the head's own tree is the way out, and it draws through the same
-        // primitive with the same frame - one door, `App::picker_list`.
-        let content = self.picker_list(w).content;
+    pub(crate) fn picker_layout(
+        &self,
+        w: usize,
+        h: usize,
+    ) -> (Vec<String>, Vec<std::ops::Range<usize>>) {
+        // The list is the plugin's - the built-in `sessions` layer answers it and this head draws
+        // the answer, one drawing. While the stack is being built the pane is one line about it.
+        let content = self.picker_list(w, h).content;
         let stops = &content.stop_rows;
         let spans = stops
             .iter()

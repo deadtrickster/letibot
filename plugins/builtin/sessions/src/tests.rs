@@ -66,6 +66,7 @@ fn feed(sessions: Vec<Session>, here: &str) -> Feed {
         sessions,
         fleet: Vec::new(),
         unlisted: None,
+        more: 0,
         here: here.to_string(),
         home: "/home/dead".into(),
     }
@@ -431,6 +432,26 @@ fn two_projects_are_drawn_in_the_order_the_feed_gives_them() {
             "s-b"
         ]
     );
+}
+
+/// The feed's own cap is stated on the list, as a line no key can enter: a list that stops at 250
+/// and says nothing is a list that lies by omission. The row has no id for that reason.
+#[test]
+fn a_feed_the_host_cut_says_how_many_are_not_shown() {
+    let mut f = feed(vec![session("s-a", "one")], "s-a");
+    f.more = 42;
+    let drawn = draw(&f, &[]);
+    assert_eq!(drawn.last().expect("the list is not empty").id, "");
+    assert_eq!(
+        drawn.last().expect("a last row").cells[0].text,
+        "42 more sessions not shown — the list carries 250 at a time",
+        "the number is the feed's, and the cap is the SDK's"
+    );
+    // And a feed that was not cut says nothing about it - not a row with a zero on it.
+    assert_eq!(words(&draw(&feed(vec![session("s-a", "one")], "s-a"), &[])), vec![
+        "[letibot (1)]",
+        "s-a"
+    ]);
 }
 
 /// The synthetic first frame a daemon asks every built-in pane at a session's door

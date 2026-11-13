@@ -997,7 +997,7 @@ impl App {
                 // A window that keeps the cursor's session on the screen, and a record of which row is which
                 // session's: a list cut at `room` with no scrolling would move arrows past the cut onto a
                 // cursor nobody could see. The click is read off the rows this frame drew.
-                let (rows, spans) = self.picker_layout(w);
+                let (rows, spans) = self.picker_layout(w, room);
                 let sel = self.picker_sel.min(spans.len().saturating_sub(1));
                 let skip = spans.get(sel).map_or(0, |s| s.end.saturating_sub(room));
                 let rows: Vec<String> = rows.into_iter().skip(skip).take(room).collect();
