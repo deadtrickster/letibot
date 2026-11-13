@@ -641,6 +641,32 @@ impl Capture {
         Ok(self.output_file().expect("the spill was just set"))
     }
 
+    /// Keep appending to a file an earlier daemon spilled into, for a job adopted after a restart.
+    /// The window starts empty at the file's end, so offsets stay those of the job's whole output.
+    pub fn resume_spill(&mut self, path: impl Into<std::path::PathBuf>) -> Result<(), String> {
+        let path = path.into();
+        let file = std::fs::File::options()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let bytes = file
+            .metadata()
+            .map_err(|e| format!("{}: {e}", path.display()))?
+            .len();
+        self.produced = bytes;
+        self.dropped = bytes;
+        self.buf.clear();
+        self.spill = Some(Spill {
+            path,
+            file: Some(file),
+            from: 0,
+            bytes,
+            problem: None,
+        });
+        Ok(())
+    }
+
     /// The last byte is in, so the descriptor goes and the file stays: called where the drains
     /// have joined, and from [`Capture::release`]. The path, offset and byte count stay,
     /// because every reader of a settled job is still owed the place.
@@ -860,6 +886,9 @@ pub struct Job {
     /// `start:<n>` of the leader at spawn or adoption: what tells this process from a later one
     /// with its number. Empty when unread.
     identity: Mutex<String>,
+    /// The raw output file and exit status of a job that can outlive this daemon. `None` for a
+    /// job whose output comes through pipes, which dies with the daemon that reads them.
+    follow: Option<Arc<super::detach::Follow>>,
 }
 
 /// The cap a job was started under, as three different facts: nobody asked, capped, and asked
@@ -903,7 +932,18 @@ impl Job {
             memory_cap: MemoryCap::NotAsked,
             memory_used: Mutex::new(None),
             identity: Mutex::new(String::new()),
+            follow: None,
         }
+    }
+
+    /// The job, writing to a file of its own rather than to this daemon's pipes.
+    pub fn with_follow(mut self, follow: Arc<super::detach::Follow>) -> Job {
+        self.follow = Some(follow);
+        self
+    }
+
+    pub fn follow(&self) -> Option<&Arc<super::detach::Follow>> {
+        self.follow.as_ref()
     }
 
     pub fn set_identity(&self, identity: String) {

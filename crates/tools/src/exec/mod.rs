@@ -8,6 +8,7 @@ pub mod confine;
 pub mod console;
 #[cfg(target_os = "macos")]
 pub mod darwin;
+pub mod detach;
 pub mod fence;
 pub mod github;
 pub mod host;

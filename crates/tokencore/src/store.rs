@@ -202,7 +202,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 48;
+pub const SCHEMA_VERSION: i64 = 49;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -2497,6 +2497,22 @@ impl Store {
                 self.conn().execute_batch(owners::OWNERS_SQL)?;
             }
         }
+        if from < 49 {
+            // v49: a job kept across a daemon restart keeps its cgroup directory on its process
+            // row. Additive and NULL everywhere, which is true: nothing was ever kept.
+            let has = |sql: &str| -> bool {
+                self.conn()
+                    .prepare(sql)
+                    .and_then(|mut st| st.exists([]))
+                    .unwrap_or(false)
+            };
+            if has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'process'")
+                && !has("SELECT 1 FROM pragma_table_info('process') WHERE name = 'cgroup'")
+            {
+                self.conn()
+                    .execute_batch("ALTER TABLE process ADD COLUMN cgroup TEXT")?;
+            }
+        }
         Ok(())
     }
 
@@ -3676,7 +3692,10 @@ impl Store {
     /// The jobs of this session that ENDED and were never delivered: what a daemon that stopped
     /// while holding a result left for the next one to say. A `running` row is not one of them.
     pub fn undelivered_jobs(&self, session_id: &str) -> Result<Vec<JobRecord>> {
-        self.jobs_where(session_id, "AND state <> 'running' AND delivered = 0")
+        self.jobs_where(
+            session_id,
+            "AND state NOT IN ('running', 'detached') AND delivered = 0",
+        )
     }
 
     /// The highest `jN` handle any job in this store was given, across every session - what a

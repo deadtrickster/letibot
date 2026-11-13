@@ -507,3 +507,31 @@ fn the_default_owner_root_is_not_inside_the_store() {
         super::data_dir().display()
     );
 }
+
+/// A job a restart kept is a holding of its owner while no daemon runs it: `holds` names it
+/// detached, the owner is busy, and a live owner keeps it.
+#[test]
+fn a_job_kept_across_a_restart_is_a_detached_holding_of_its_owner() {
+    use letibot_tokencore::store::{ProcState, ProcessRecord};
+    let stub = Stub::new("detached");
+    let store = stub.store();
+    let owner = stub.owner();
+    register(&store, &stub.places, &owner).expect("the owner");
+    store
+        .put_process(&ProcessRecord {
+            state: ProcState::Detached,
+            identity: "start:42".into(),
+            command: "./fuzz.sh".into(),
+            cgroup: Some("/sys/fs/cgroup/x/job-j7".into()),
+            ..ProcessRecord::starting(&stub.sid, "j7", None, 4343)
+        })
+        .expect("the kept job's row");
+    let plan = plan(&store, &stub.places, None, now_ms()).expect("a plan");
+    let o = &plan.owners[0];
+    let line = o.holds_line(now_ms());
+    assert!(line.contains("job j7 detached"), "{line}");
+    let job = o.holds.iter().find(|h| h.handle == "j7").expect("listed");
+    assert!(!job.verdict.reaps(), "a live owner's kept job was reaped");
+    assert!(job.stamp.contains("pid 4343 start:42"), "{}", job.stamp);
+    assert!(reap::activity(&store, &owner, &stub.places).kept);
+}

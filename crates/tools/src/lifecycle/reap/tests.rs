@@ -117,6 +117,7 @@ fn activity(busy: bool) -> Activity {
         busy,
         parent: None,
         daemon: None,
+        kept: false,
     }
 }
 
@@ -208,6 +209,27 @@ fn a_record_with_no_process_behind_it_closes_the_owner() {
     };
     let why = close_due(&o, &a, now_ms()).expect("its daemon is gone");
     assert!(why.contains("daemon"), "{why}");
+}
+
+/// A daemon that restarted keeping a job is not a daemon that is gone: the owner stays live for
+/// the next one, and its hard TTL still applies.
+#[test]
+fn a_kept_job_holds_its_owner_across_the_restart_and_the_hard_ttl_still_closes_it() {
+    let mut o = package("s-1", 0, 60 * 60 * 1000);
+    let a = Activity {
+        daemon: Some(false),
+        kept: true,
+        ..activity(true)
+    };
+    assert!(
+        close_due(&o, &a, now_ms()).is_none(),
+        "the restart closed it"
+    );
+    o.hard_ttl_ms = Some(3_600_000);
+    assert!(
+        close_due(&o, &a, 3_600_000).is_some(),
+        "the hard TTL did not"
+    );
 }
 
 // ---------------------------------------------------------------- the hands

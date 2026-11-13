@@ -407,6 +407,24 @@ pub trait ProcessHost: Send + Sync {
             .filter_map(|id| self.kill_job_as(id, by).ok())
             .collect()
     }
+    /// The daemon is restarting: keep every background job that runs on its own output file in
+    /// a session or explicit scope, and end the rest as [`ProcessHost::end_running`] does.
+    fn detach_for_restart(&self, by: &str) -> (Vec<super::detach::Detached>, Vec<Reaping>) {
+        (Vec::new(), self.end_running(by))
+    }
+
+    /// Take back a job an earlier daemon detached, on the proof [`super::detach::prove`] finds.
+    /// `Err` is the sentence for a job nothing proves, which is never adopted.
+    fn reattach(
+        &self,
+        d: &super::detach::Detached,
+    ) -> Result<(JobId, super::detach::Reattached), String> {
+        Err(format!(
+            "`{}` cannot be taken back by this backend: only a host with a process tree can",
+            d.handle
+        ))
+    }
+
     /// End a scope: kill everything under it, and record it.
     fn end_scope(&self, scope: &ScopeId) -> Result<Reaping, ExecError>;
 
@@ -1092,6 +1110,9 @@ pub struct HostProcesses {
     /// the OWNER and not on a job (that is `memory.max`), so a runaway test is slowed by the kernel
     /// instead of taking the box, and one session's pressure is not another's (`docs/lifecycle.md` G5).
     owner_memory_high: std::sync::atomic::AtomicU64,
+    /// Jobs kept across a restart: while any is, dropping this host must not end the session
+    /// scope they live in.
+    detached: Mutex<Vec<JobId>>,
 }
 
 /// Distinguishes the scopes two sessions in one process open.
@@ -1277,6 +1298,16 @@ fn release_settled_scope(tree: &dyn ScopeTree, scope: &ScopeId) -> bool {
     true
 }
 
+/// Whether a restart keeps this job: a running background job on its own output file, owned by a
+/// scope that outlives a turn.
+fn keeps_on_restart(job: &Job) -> bool {
+    let life = job.lifetime();
+    job.state().is_running()
+        && job.follow().is_some()
+        && life.background.is_some()
+        && matches!(life.owner.kind, ScopeKind::Session | ScopeKind::Explicit)
+}
+
 /// The same look, remembering a scope that could not be released: the last process in it can leave
 /// long after its leader, and the only other moment this host touches the tree is a spawn.
 fn settle_scope(tree: &dyn ScopeTree, kept: &Mutex<Vec<ScopeId>>, scope: &ScopeId) {
@@ -1406,6 +1437,7 @@ impl HostProcesses {
             kept_scopes: Arc::new(Mutex::new(Vec::new())),
             session_name: unique("s"),
             owner_memory_high: std::sync::atomic::AtomicU64::new(0),
+            detached: Mutex::new(Vec::new()),
         };
         h.protect_self_and_ancestors();
         h
@@ -1524,6 +1556,35 @@ impl HostProcesses {
                 None
             }
         }
+    }
+
+    /// A background job's own output file, opened for the child, and its status path beside it.
+    /// `None` with no scratch directory, or one that cannot be written: the job keeps the pipes.
+    fn follow_for(&self, id: &JobId) -> Option<(Arc<super::detach::Follow>, std::fs::File)> {
+        let dir = self
+            .scratch
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        std::fs::create_dir_all(&dir).ok()?;
+        let raw = super::detach::raw_path(&dir, &id.0);
+        let status = super::detach::status_path(&raw);
+        let _ = std::fs::remove_file(&status);
+        let file = std::fs::File::options()
+            .create(true)
+            .truncate(true)
+            .write(true)
+            .open(&raw)
+            .ok()?;
+        // Append, so the wrapper and the command's own writes never overwrite each other.
+        drop(file);
+        let file = std::fs::File::options().append(true).open(&raw).ok()?;
+        Some((super::detach::Follow::new(raw, status, 0), file))
+    }
+
+    /// Whether a restart would keep this job rather than end it. See [`ProcessHost::detach_for_restart`].
+    pub fn keeps_on_restart(&self, id: &JobId) -> bool {
+        self.find(id).is_some_and(|j| keeps_on_restart(&j))
     }
 
     /// The shell a command is handed to, `/bin/sh -c` unless this says otherwise.
@@ -2054,6 +2115,13 @@ impl ProcessHost for HostProcesses {
             }
             None => req.command.clone(),
         };
+        // A background job writes to a file of its own under the wrapper, so it can outlive this
+        // daemon (`super::detach`). Without a scratch directory it keeps the pipes.
+        let follow = if req.background && !req.tty {
+            self.follow_for(&id)
+        } else {
+            None
+        };
         let mut cmd = std::process::Command::new("/bin/sh");
         // No core dump from this command or anything under it: a run the harness ends for size is
         // an expected ending, and its dump is what filled the unit table (R191, G5).
@@ -2063,6 +2131,14 @@ impl ProcessHost for HostProcesses {
             .arg("letibot-scope")
             .arg(&procs)
             .arg(&token);
+        // After the join and before the boundary: the status file is the host's, not the view's.
+        if let Some((f, _)) = &follow {
+            cmd.arg("/bin/sh")
+                .arg("-c")
+                .arg(super::detach::WRAPPER)
+                .arg(super::detach::WRAPPER_NAME)
+                .arg(f.status());
+        }
         // The order is load-bearing. `join_script` writes `$$` into `cgroup.procs` and only
         // then `exec`s `"$@"`, so the join happens on the HOST before any namespace exists:
         // `/sys/fs/cgroup` is not in the mount view, so joining from inside would fail.
@@ -2119,6 +2195,16 @@ impl ProcessHost for HostProcesses {
                     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
                 }
             }
+        } else if let Some((_, out)) = &follow {
+            let err = out.try_clone().map_err(|e| {
+                let _ = self.tree.end(&cgroup);
+                ExecError::Spawn(format!("the job's output file: {e}"))
+            })?;
+            let out = out.try_clone().map_err(|e| {
+                let _ = self.tree.end(&cgroup);
+                ExecError::Spawn(format!("the job's output file: {e}"))
+            })?;
+            cmd.stdout(out).stderr(err);
         } else {
             cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
         }
@@ -2179,31 +2265,35 @@ impl ProcessHost for HostProcesses {
             (None, None) => super::jobs::Stdin::none(),
         };
 
-        let job = Arc::new(
-            Job::new(
-                id.clone(),
-                req.command.clone(),
-                // The name, decided here and never again. The claim is made where this spawn
-                // can no longer be refused for a reason that leaves no job behind, and fixed on
-                // the record, so a listing an hour later reads the same string.
-                req.slug.as_deref().map(|s| self.claim_slug(s)),
-                Lifetime {
-                    scope: cgroup,
-                    owner: parent.clone(),
-                    // `Asked` only when the model asked. A foreground command starts with
-                    // `None`, and a promotion fills this in, so a job the runtime moved can never
-                    // be read back as one the model requested.
-                    background: req.background.then_some(Backgrounding::Asked),
-                },
-                req.cwd.clone(),
-                pid,
-                self.capture_bytes,
-                stdin,
-            )
-            .with_memory_cap(memory_cap)
-            // Masked as the bytes arrive, so the window and the spill file are one set of bytes.
-            .with_secret_mask(&secret_env),
-        );
+        let job = Job::new(
+            id.clone(),
+            req.command.clone(),
+            // The name, decided here and never again. The claim is made where this spawn
+            // can no longer be refused for a reason that leaves no job behind, and fixed on
+            // the record, so a listing an hour later reads the same string.
+            req.slug.as_deref().map(|s| self.claim_slug(s)),
+            Lifetime {
+                scope: cgroup,
+                owner: parent.clone(),
+                // `Asked` only when the model asked. A foreground command starts with
+                // `None`, and a promotion fills this in, so a job the runtime moved can never
+                // be read back as one the model requested.
+                background: req.background.then_some(Backgrounding::Asked),
+            },
+            req.cwd.clone(),
+            pid,
+            self.capture_bytes,
+            stdin,
+        )
+        .with_memory_cap(memory_cap)
+        // Masked as the bytes arrive, so the window and the spill file are one set of bytes.
+        .with_secret_mask(&secret_env);
+        let job = Arc::new(match &follow {
+            Some((f, _)) => job.with_follow(Arc::clone(f)),
+            None => job,
+        });
+        // The parent's copy of the output file goes: the child holds its own.
+        drop(follow);
         if let Some(p) = super::procs::read(pid) {
             job.set_identity(format!("start:{}", p.start));
         }
@@ -2233,6 +2323,9 @@ impl ProcessHost for HostProcesses {
             Some(m) => drain(Some(m), Arc::clone(&job)),
             None => drain(err, Arc::clone(&job)),
         };
+        let reader = job
+            .follow()
+            .and_then(|f| super::detach::spawn_reader(Arc::clone(&job), Arc::clone(f)));
 
         let waiter = Arc::clone(&job);
         let tree = Arc::clone(&self.tree);
@@ -2249,6 +2342,21 @@ impl ProcessHost for HostProcesses {
                 if let Some(g) = tail_guard {
                     g.release();
                 }
+                // A job on its own file: the wrapper's exit is its last write, so the reader
+                // finishes after it rather than before.
+                #[cfg(not(target_os = "macos"))]
+                let early = waiter.follow().map(|_| child.wait());
+                if let Some(f) = waiter.follow() {
+                    f.finish();
+                }
+                if let Some(h) = reader {
+                    let _ = h.join();
+                }
+                // Kept for the next daemon: its ending is the status file's to tell.
+                if waiter.follow().is_some_and(|f| f.is_detached()) {
+                    let _ = std::fs::remove_file(&token);
+                    return;
+                }
                 if let Some(h) = a {
                     let _ = h.join();
                 }
@@ -2260,7 +2368,10 @@ impl ProcessHost for HostProcesses {
                 // and fifty backgrounded builds must not hold fifty descriptors.
                 waiter.close_spill();
                 #[cfg(not(target_os = "macos"))]
-                let status = child.wait();
+                let status = match early {
+                    Some(s) => s,
+                    None => child.wait(),
+                };
                 // A job already marked `Killed` keeps that: a SIGKILL from a cgroup reap arrives
                 // here as a signal, and reporting the signal would lose the fact that we did it.
                 if !waiter.state().is_running() {
@@ -2268,6 +2379,9 @@ impl ProcessHost for HostProcesses {
                     // launcher's marker is not asked about. Its token goes here too: nothing else
                     // will read it, and a file per killed job is a file per killed job in $TMPDIR.
                     let _ = std::fs::remove_file(&token);
+                    if let Some(f) = waiter.follow() {
+                        f.discard();
+                    }
                     waiter.finished.notify_all();
                     return;
                 }
@@ -2298,6 +2412,9 @@ impl ProcessHost for HostProcesses {
                     waiter.record_memory(used);
                 }
                 waiter.settle(state);
+                if let Some(f) = waiter.follow() {
+                    f.discard();
+                }
                 // The leader is gone, so its own scope is debris unless the command left a
                 // process in it: one directory per command ever run otherwise, and a scope still
                 // holding work is somebody's live process and stays - for the next spawn to look at.
@@ -2697,6 +2814,179 @@ impl ProcessHost for HostProcesses {
         Ok(self.record(r))
     }
 
+    fn detach_for_restart(&self, by: &str) -> (Vec<super::detach::Detached>, Vec<Reaping>) {
+        let running: Vec<JobId> = self
+            .jobs()
+            .into_iter()
+            .filter(|v| v.state.is_running())
+            .map(|v| v.id)
+            .collect();
+        let mut kept = Vec::new();
+        let mut ended = Vec::new();
+        for id in running {
+            let keeps = self
+                .find(&id)
+                .filter(|j| keeps_on_restart(j))
+                .and_then(|j| j.follow().cloned().map(|f| (j, f)));
+            let Some((job, f)) = keeps else {
+                if let Ok(r) = self.kill_job_as(&id, by) {
+                    ended.push(r);
+                }
+                continue;
+            };
+            self.liveness.spare(&id);
+            let life = job.lifetime();
+            let raw_read = f.detach(&job);
+            self.detached
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push(id.clone());
+            kept.push(super::detach::Detached {
+                handle: id.0.clone(),
+                command: job.command.clone(),
+                slug: job.slug.clone(),
+                cwd: job.cwd.clone(),
+                pid: job.pid,
+                identity: job.identity(),
+                scope: life.owner.to_string(),
+                cgroup: life.scope.path.display().to_string(),
+                raw: f.raw().display().to_string(),
+                raw_read,
+            });
+        }
+        (kept, ended)
+    }
+
+    fn reattach(
+        &self,
+        d: &super::detach::Detached,
+    ) -> Result<(JobId, super::detach::Reattached), String> {
+        use super::detach::{Follow, Proof, Reattached};
+        let id = JobId(d.handle.clone());
+        if self.find(&id).is_some() {
+            return Err(format!("`{}` is already this host's job", d.handle));
+        }
+        let proof = super::detach::prove(d);
+        if let Proof::Nothing(why) = proof {
+            return Err(why);
+        }
+        let (kind, name) = scope_kind_of(&d.scope);
+        let owner = ScopeId {
+            kind,
+            name,
+            path: PathBuf::from(d.owner_dir()),
+        };
+        let scope = ScopeId {
+            kind,
+            name: format!("job-{}", d.handle),
+            path: PathBuf::from(&d.cgroup),
+        };
+        self.tree.remember(&owner);
+        self.tree.remember(&scope);
+        let raw = PathBuf::from(&d.raw);
+        let follow = Follow::new(raw.clone(), super::detach::status_path(&raw), d.raw_read);
+        let secret_env = self
+            .secret_env
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
+        let job = Job::new(
+            id.clone(),
+            d.command.clone(),
+            d.slug.clone(),
+            Lifetime {
+                scope: scope.clone(),
+                owner,
+                background: Some(Backgrounding::Asked),
+            },
+            d.cwd.clone(),
+            d.pid,
+            self.capture_bytes,
+            super::jobs::Stdin::none(),
+        )
+        .with_secret_mask(&secret_env)
+        .with_follow(Arc::clone(&follow));
+        job.set_identity(d.identity.clone());
+        // The masked file the old daemon wrote goes on growing from its own end.
+        if let Err(why) = job
+            .capture
+            .lock()
+            .expect("capture")
+            .resume_spill(super::detach::out_path(&raw))
+        {
+            eprintln!(
+                "letibot: `{}`'s output file could not be reopened: {why}",
+                d.handle
+            );
+        }
+        let job = Arc::new(job);
+        if let Some(slug) = &d.slug {
+            self.claimed_slugs
+                .lock()
+                .expect("claimed slugs")
+                .push(slug.clone());
+        }
+        self.by_id
+            .lock()
+            .expect("jobs by id")
+            .insert(id.clone(), Arc::clone(&job));
+        self.jobs.lock().expect("jobs").push(Arc::clone(&job));
+        let reader = super::detach::spawn_reader(Arc::clone(&job), Arc::clone(&follow));
+        if let Proof::Ended(code) = proof {
+            follow.finish();
+            if let Some(h) = reader {
+                let _ = h.join();
+            }
+            job.close_spill();
+            let state = JobState::Exited { code };
+            job.settle(state.clone());
+            follow.discard();
+            settle_scope(self.tree.as_ref(), &self.kept_scopes, &scope);
+            return Ok((id, Reattached::Ended(state)));
+        }
+        self.liveness.watch(Arc::clone(&job));
+        let tree = Arc::clone(&self.tree);
+        let kept = Arc::clone(&self.kept_scopes);
+        let watched = Arc::clone(&job);
+        // The cgroup is the liveness: the wrapper is not this process's child, so nothing can
+        // wait on it, and the job is over when its last process has left.
+        std::thread::Builder::new()
+            .name(format!("letibot-reattached-{}", id.0))
+            .spawn(move || {
+                loop {
+                    if follow.is_detached() || !watched.state().is_running() {
+                        break;
+                    }
+                    if tree.members(&scope).unwrap_or_default().is_empty() {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                follow.finish();
+                if let Some(h) = reader {
+                    let _ = h.join();
+                }
+                if follow.is_detached() {
+                    return;
+                }
+                watched.close_spill();
+                if watched.state().is_running() {
+                    if let Some(used) = super::scope::memory_use_of(&scope) {
+                        watched.record_memory(used);
+                    }
+                    let state = match super::detach::read_status(follow.status()) {
+                        Some(code) => JobState::Exited { code },
+                        None => JobState::Dead,
+                    };
+                    watched.settle(state);
+                }
+                follow.discard();
+                settle_scope(tree.as_ref(), &kept, &scope);
+            })
+            .map_err(|e| e.to_string())?;
+        Ok((id, Reattached::Running))
+    }
+
     fn end_scope(&self, scope: &ScopeId) -> Result<Reaping, ExecError> {
         // Marked before the kill, like `kill_job_as`: the waiter would otherwise settle the
         // job as the signal it saw. A job whose processes survive is reopened below.
@@ -2977,7 +3267,14 @@ impl Drop for HostProcesses {
         // look at and would keep the host's `Arc` alive for the process's life.
         self.liveness.close();
         let session = self.session.lock().expect("session scope").clone();
-        if let Some(s) = session {
+        let kept = !self
+            .detached
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty();
+        if let Some(s) = session
+            && !kept
+        {
             let _ = self.tree.end(&s);
         }
         // Then the empty directories: a cgroup holding nothing is not a leak of anything that

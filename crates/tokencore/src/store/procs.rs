@@ -42,6 +42,8 @@ CREATE TABLE IF NOT EXISTS process (
     check_ms      INTEGER,
     check_took_ms INTEGER,
     check_how     TEXT,
+    -- the job's own cgroup directory, for a job kept across a daemon restart (v49)
+    cgroup        TEXT,
     PRIMARY KEY (session_id, handle)
 );
 -- The supervisor's one query is "everything still open", and its teardown's is
@@ -66,6 +68,8 @@ pub enum ProcState {
     Dead,
     /// The host could not be reached to say - the process may still run.
     Lost,
+    /// Kept running by a daemon that restarted, for the next one to take back.
+    Detached,
 }
 
 impl ProcState {
@@ -78,6 +82,7 @@ impl ProcState {
             ProcState::Stopped => "stopped",
             ProcState::Dead => "dead",
             ProcState::Lost => "lost",
+            ProcState::Detached => "detached",
         }
     }
 
@@ -91,6 +96,7 @@ impl ProcState {
             "stopped" => ProcState::Stopped,
             "dead" => ProcState::Dead,
             "lost" => ProcState::Lost,
+            "detached" => ProcState::Detached,
             _ => return None,
         })
     }
@@ -100,7 +106,7 @@ impl ProcState {
     pub fn is_open(self) -> bool {
         matches!(
             self,
-            ProcState::Starting | ProcState::Running | ProcState::Lost
+            ProcState::Starting | ProcState::Running | ProcState::Lost | ProcState::Detached
         )
     }
 
@@ -148,6 +154,9 @@ pub struct ProcessRecord {
     pub check_ms: Option<i64>,
     pub check_took_ms: Option<u64>,
     pub check_how: Option<String>,
+    /// The job's own cgroup directory, written when a restart detaches it: with the stamp it is
+    /// what proves the job to the next daemon.
+    pub cgroup: Option<String>,
 }
 
 impl ProcessRecord {
@@ -178,6 +187,7 @@ impl ProcessRecord {
             check_ms: None,
             check_took_ms: None,
             check_how: None,
+            cgroup: None,
         }
     }
 
@@ -225,7 +235,7 @@ impl Check {
 
 const COLUMNS: &str = "session_id, handle, host, pid, pgid, identity, command, cwd, scope, \
                        started_ms, deadline_ms, state, exit, log_path, log_read, check_ms, \
-                       check_took_ms, check_how";
+                       check_took_ms, check_how, cgroup";
 
 fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ProcessRecord> {
     let state: String = r.get(11)?;
@@ -251,6 +261,7 @@ fn row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ProcessRecord> {
         check_ms: r.get(15)?,
         check_took_ms: r.get::<_, Option<i64>>(16)?.map(|v| v as u64),
         check_how: r.get(17)?,
+        cgroup: r.get(18)?,
     })
 }
 
@@ -263,8 +274,9 @@ impl Store {
         self.exec(
             "INSERT INTO process (session_id, handle, host, pid, pgid, identity, command, cwd,
                                   scope, started_ms, deadline_ms, state, exit, log_path, log_read,
-                                  check_ms, check_took_ms, check_how)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                                  check_ms, check_took_ms, check_how, cgroup)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
+                     ?19)
              ON CONFLICT(session_id, handle) DO UPDATE SET
                host = excluded.host, pid = excluded.pid, pgid = excluded.pgid,
                identity = excluded.identity, command = excluded.command, cwd = excluded.cwd,
@@ -272,7 +284,7 @@ impl Store {
                deadline_ms = excluded.deadline_ms, state = excluded.state, exit = excluded.exit,
                log_path = excluded.log_path, log_read = excluded.log_read,
                check_ms = excluded.check_ms, check_took_ms = excluded.check_took_ms,
-               check_how = excluded.check_how",
+               check_how = excluded.check_how, cgroup = excluded.cgroup",
             params![
                 p.session,
                 p.handle,
@@ -292,6 +304,7 @@ impl Store {
                 p.check_ms,
                 p.check_took_ms.map(|v| v as i64),
                 p.check_how,
+                p.cgroup,
             ],
         )?;
         Ok(())
@@ -326,6 +339,15 @@ impl Store {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    /// This session's jobs a restarting daemon kept running, for the opener to take back.
+    pub fn detached_processes_of(&self, session_id: &str) -> Result<Vec<ProcessRecord>> {
+        Ok(self
+            .processes_of(session_id)?
+            .into_iter()
+            .filter(|p| p.state == ProcState::Detached)
+            .collect())
     }
 
     /// One record, by its two keys. `None` for a handle this store never supervised.

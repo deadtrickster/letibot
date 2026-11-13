@@ -107,6 +107,9 @@ pub struct Activity {
     /// Its daemon: `None` no record at all, `Some(true)` a process at the recorded pid,
     /// `Some(false)` a record whose daemon is gone.
     pub daemon: Option<bool>,
+    /// A restart kept one of its jobs running for the next daemon: the daemon being gone is
+    /// the restart, not the end of the owner.
+    pub kept: bool,
 }
 
 impl Activity {
@@ -149,6 +152,7 @@ pub fn close_due(o: &OwnerRow, a: &Activity, now_ms: i64) -> Option<String> {
     }
     if o.kind != OwnerKind::Session
         && let Some(false) = a.daemon
+        && !a.kept
     {
         return Some(
             "its daemon's record is there and no process is behind it: nothing is running it"
@@ -345,6 +349,9 @@ pub fn activity(store: &Store, o: &OwnerRow, places: &Places) -> Activity {
         busy: busy(store, o),
         parent,
         daemon: daemon_state(o, places),
+        kept: store
+            .detached_processes_of(&o.id)
+            .is_ok_and(|v| !v.is_empty()),
     }
 }
 
