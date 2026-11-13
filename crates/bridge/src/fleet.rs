@@ -268,8 +268,13 @@ mod tests {
                 held.push(c);
             }
         });
-        let later = now_ms() + 3 * STOPPED_WINDOW_MS;
+        // The daemon's share of a scan is the attach, timed alone: the store read beside it can
+        // stall for seconds on a loaded disk. The bound only has to tell a timeout from a hang.
         let t = std::time::Instant::now();
+        let asked = briefs(&socket, "s-hung", Duration::from_secs(1));
+        assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
+        assert_eq!(asked.err().as_deref(), Some("timed out after 1s"));
+        let later = now_ms() + 3 * STOPPED_WINDOW_MS;
         let fleet = scan_in(
             &db,
             Path::new("/w/here"),
@@ -278,8 +283,6 @@ mod tests {
             Duration::from_secs(1),
         )
         .expect("scan");
-        // One timeout plus the store read; the bound only has to tell a timeout from a hang.
-        assert!(t.elapsed() < Duration::from_secs(10), "{:?}", t.elapsed());
         assert_eq!(fleet.rows.len(), 1, "{:?}", fleet.rows);
         assert_eq!(fleet.rows[0].id, "s-hung");
         assert_eq!(
