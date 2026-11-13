@@ -230,6 +230,11 @@ fn a_job_row_outlives_its_job_and_the_captures_do_not() {
     );
     // And the scopes: a job that ended by itself released its own, so what is open afterwards is
     // the session's alone. A cgroup directory per command ever run is debris the host can drop.
+    // The scope is released after the settle `wait_job` returns on, so the last one is waited for.
+    let began = std::time::Instant::now();
+    while host.scopes().len() > 1 && began.elapsed() < Duration::from_secs(60) {
+        std::thread::sleep(Duration::from_millis(20));
+    }
     let scopes = host.scopes().len();
     println!("  {scopes} scope(s) open for {rows} row(s)");
     assert_eq!(
