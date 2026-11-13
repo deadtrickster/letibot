@@ -1039,6 +1039,13 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // A bound the daemon relies on to keep its memory flat did not hold. The same shape as
     // `memory_high` and reported beside it: the harness, not the session, is what is failing.
     ("memory_bound_broken", Class::Failure, Action::Developer),
+    // The session's own temp directory could not be made under its owner root, so its `/tmp` is
+    // on the runtime tmpfs: the session runs, and a big one can fill RAM for every other session.
+    (
+        "owner_root_absent",
+        Class::Failure,
+        Action::Do("make the `[gc] root` directory writable"),
+    ),
     // A tool call somebody DECIDED to refuse - the head's `denied:<request id>` note, looked
     // up under `denied` for every id. The call did not happen and only the operator can lift it.
     (
