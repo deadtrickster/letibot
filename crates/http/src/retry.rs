@@ -8,8 +8,10 @@ use crate::HttpError;
 
 /// The statuses a provider uses to say not now, and the whole of the list. `408` is
 /// here with the 5xx and the `429` because the server is saying the request did not
-/// get through this time; a `429` naming money is [`Policy::states_a_refusal`]'s.
-pub const TRY_AGAIN: &[u16] = &[408, 429, 500, 502, 503, 504];
+/// get through this time; a `429` naming money is [`Policy::states_a_refusal`]'s. `529`
+/// is Anthropic's `overloaded_error` - the same fact as a `429` and, unlike the 5xx it is
+/// grouped with, it lifts on its own (<https://platform.claude.com/docs/en/api/errors>).
+pub const TRY_AGAIN: &[u16] = &[408, 429, 500, 502, 503, 504, 529];
 
 /// The default number of retries - calls after the first. See [`Policy::standard`].
 pub const STANDARD_RETRIES: u32 = 5;
@@ -157,7 +159,9 @@ impl Policy {
                     // Money, whatever the status says: the provider's own words are the instrument,
                     // and a 400 naming an unpaid balance is the same fact as a 429 that does.
                     Some(Trouble::Quota)
-                } else if *code == 429 || *code == 408 {
+                } else if *code == 429 || *code == 408 || *code == 529 {
+                    // A 529 is Anthropic's `overloaded_error`: not now, and it lifts on its own,
+                    // which is the rate limit's fact rather than a broken server's.
                     Some(Trouble::RateLimit)
                 } else {
                     None
