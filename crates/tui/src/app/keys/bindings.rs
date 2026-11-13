@@ -95,6 +95,9 @@ pub(crate) enum Act {
     Cursor,
     /// Move the surface's window - a line for an arrow, a page for a page key, a notch.
     Scroll,
+    /// A page of stops: for a list whose window is drawn around its cursor (the session list), a
+    /// page key bound to a scroll moved the cursor nowhere and the reader saw nothing move.
+    Page,
     /// The row's act: switch, open, read, change.
     Open,
     /// The todos pane's second act on the row (Tab).
@@ -242,8 +245,12 @@ const PICKER: &[Binding] = &[
         Act::Undo,
         Text("brings the last removed back"),
     ),
-    // Short, and its cursor keeps itself in view: a page key moves nothing under it.
-    b(&[On::Page, On::Wheel], Always, Act::Swallow, Nothing),
+    // A page of rows at a time: the list's window follows the cursor, so a page IS a cursor move.
+    // It clamps at the last stop rather than wrapping, because a page that wrapped would jump
+    // from the bottom of the list to its top.
+    b(&[On::Page], Always, Act::Page, Text("pages")),
+    // A notch is three rows of the same walk, like every other list's.
+    b(&[On::Wheel], Always, Act::Page, Nothing),
 ];
 const CONFIG: &[Binding] = &[
     LIST,

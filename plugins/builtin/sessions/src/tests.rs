@@ -25,6 +25,8 @@ fn session(id: &str, title: &str) -> Session {
         workspace: String::new(),
         waits_on: 0,
         nags_paused: false,
+        moved_ms: 0,
+        age: None,
         project: PROJECT.into(),
         project_name: "letibot".into(),
         // The head decides which top-level group a project is in; `own` is the one every test
@@ -191,8 +193,9 @@ fn a_reviewer_nests_inside_its_group() {
     );
 }
 
-/// A session's row says everything a row can say: the slug, `WAITING ON YOU`, paused nags, and a
-/// fact column.
+/// A session's row says everything a row can say in one line: the gutter's mark, the name, and the
+/// right-hand column of rows and age. The waiting is a mark now, not words in the name - a person
+/// scanning the list reads the column, and a name is what they are looking for.
 #[test]
 fn a_row_says_what_it_is() {
     let mut s = session("s-a", "the habr article");
@@ -201,22 +204,72 @@ fn a_row_says_what_it_is() {
     s.stored = 412;
     s.heads = 2;
     s.running = true;
+    s.moved_ms = 600_000;
+    s.age = Some("10m".into());
     let f = feed(vec![s], "s-a");
     let row = &draw(&f, &[])[1];
     assert_eq!(
-        row.cells[0].text,
-        "habr · the habr article · WAITING ON YOU (2)"
+        row.cells[0].text, "?",
+        "the gutter says somebody is waiting"
     );
     assert_eq!(
-        row.facts[0].text, "generating · 412 rows · 2 heads · qwen",
-        "the fact column, in the order a reader scans it"
+        row.cells[0].role,
+        Some(Role::Attention),
+        "and it is the Attention role, not a word in the name"
+    );
+    assert_eq!(row.cells[1].text, "habr · the habr article");
+    assert_eq!(
+        row.facts[0].text, "412 rows · 10m",
+        "the fact column: how much conversation, how long ago it moved"
     );
     assert_eq!(
         row.facts[0].role,
-        Some(Role::Pending),
-        "a running turn is lit"
+        Some(Role::Faint),
+        "a fact is a fact, whatever the row is doing"
+    );
+    assert_eq!(
+        row.under.len(),
+        1,
+        "one faint line, drawn for the cursor only"
+    );
+    assert!(
+        row.under[0].contains("qwen") && row.under[0].contains("2 heads"),
+        "the detail line carries what the row cannot: {}",
+        row.under[0]
     );
     assert_eq!(row.enter, Some(Act::switch("s-a")));
+}
+
+/// The gutter's other mark: a turn that is generating. It is the row's, not its parent's - but a
+/// parent whose child is generating says so too, because a folded parent whose child is working is
+/// a row that would otherwise read as idle.
+#[test]
+fn the_gutter_says_a_turn_is_running_even_under_a_folded_parent() {
+    let parent = session("s-a", "the parent");
+    let mut child = session("s-c", "the child");
+    child.parent = Some("s-a".into());
+    child.running = true;
+    let f = feed(vec![parent, child], "s-a");
+    let rows = draw(&f, &[]);
+    let parent_row = &rows[1];
+    assert_eq!(parent_row.id, "s-a");
+    assert_eq!(
+        parent_row.cells[0].text, "~",
+        "the child's turn lights the parent's row"
+    );
+    assert_eq!(parent_row.cells[0].role, Some(Role::Pending));
+}
+
+/// A session that says nothing draws a blank gutter rather than one column less: a name's column
+/// is a function of its depth, never of its state.
+#[test]
+fn a_quiet_row_keeps_the_gutter_column() {
+    let f = feed(vec![session("s-a", "one"), session("s-b", "two")], "s-a");
+    let rows = draw(&f, &[]);
+    for row in rows.iter().filter(|r| r.number.is_some()) {
+        assert_eq!(row.cells.len(), 2, "a mark and a name, always: {}", row.id);
+        assert_eq!(row.cells[0].text, " ");
+    }
 }
 
 /// A number is the n-th session - a node's line takes none, because a number is something you type
@@ -330,13 +383,17 @@ fn a_row_whose_child_is_on_the_path_is_drawn_open_though_it_was_folded() {
     );
 }
 
-/// A workspace under the head's home is drawn as `~/…`, and the full id sits under every row.
+/// A workspace under the head's home is drawn as `~/…`, and every row carries the detail line - the
+/// id, the path, the model and the heads - which the head draws for the row under the cursor only.
 #[test]
 fn a_row_under_is_the_id_and_a_shortened_path() {
     let mut s = session("s-a", "a");
     s.workspace = "/home/dead/Projects/letibot".into();
     let f = feed(vec![s], "s-a");
-    assert_eq!(draw(&f, &[])[1].under[0], "s-a  ~/Projects/letibot");
+    assert_eq!(
+        draw(&f, &[])[1].under[0],
+        "s-a  ~/Projects/letibot · qwen · 1 head"
+    );
 }
 
 /// A box with several projects draws every project's line and NO session row under the ones the
@@ -410,9 +467,10 @@ fn the_chain_to_here_is_drawn_though_every_fold_is_shut() {
 }
 
 /// The head's own project's line says where you are when two projects would read alike - the name is
-/// the head's to resolve, and this layer draws whatever it was handed.
+/// the head's to resolve, and this layer draws whatever it was handed. Two projects that moved in
+/// the same instant keep the order the feed gave them, because a recency sort is stable.
 #[test]
-fn two_projects_are_drawn_in_the_order_the_feed_gives_them() {
+fn two_projects_are_drawn_in_the_order_the_feed_gives_them_when_nobody_moved() {
     let mut other = session("s-b", "b");
     other.project = "/home/dead/Projects/other/letibot".into();
     other.project_name = "~/Projects/other/letibot".into();
@@ -432,6 +490,96 @@ fn two_projects_are_drawn_in_the_order_the_feed_gives_them() {
             "s-b"
         ]
     );
+}
+
+/// The projects a box holds are sorted by when they last moved, not by when the store listed them:
+/// a list in first-seen order buries the project somebody is working on behind every one that has
+/// been idle since the last reboot.
+#[test]
+fn the_projects_are_sorted_by_when_they_last_moved() {
+    let mut stale = session("s-stale", "a conversation from last week");
+    stale.project = "/home/dead/Projects/stale".into();
+    stale.project_name = "stale".into();
+    stale.bucket = "older".into();
+    stale.moved_ms = 1_000;
+    let mut busy = session("s-busy", "the one being worked on");
+    busy.project = "/home/dead/Projects/busy".into();
+    busy.project_name = "busy".into();
+    busy.bucket = "older".into();
+    busy.moved_ms = 5_000;
+    // The feed lists the stale one first - the daemon's order, not the reader's.
+    let f = feed(vec![stale, busy, session("s-here", "here")], "s-here");
+    assert_eq!(
+        words(&draw(&f, &[("groups/older", true)])),
+        vec![
+            "[letibot (1)]",
+            "s-here",
+            "[older (2)]",
+            "[busy (1)]",
+            "[stale (1)]"
+        ],
+        "the project that moved last is drawn first"
+    );
+}
+
+/// A folded group shows how many of the sessions inside it are waiting on the operator or
+/// generating - the facts a fold would otherwise hide, and the reason a person has to open every
+/// group to find out who is stuck.
+#[test]
+fn a_folded_group_says_what_is_waiting_inside_it() {
+    let mut asking = session("s-asking", "a child nobody can see");
+    asking.parent = Some("s-a".into());
+    asking.waits_on = 2;
+    let mut working = session("s-working", "a child that is running");
+    working.parent = Some("s-a".into());
+    working.running = true;
+    let f = feed(vec![session("s-a", "the parent"), asking, working], "s-a");
+    // The parent is folded, so neither child is drawn.
+    let rows = draw(&f, &[("s-a", false)]);
+    assert_eq!(ids(&rows), vec![format!("[{PROJECT}]"), "s-a".into()]);
+    let project = &rows[0];
+    assert_eq!(
+        project
+            .facts
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["1 waiting", "1 generating"],
+        "the project's line says what is inside it, folded away or not"
+    );
+    assert_eq!(
+        project.facts[0].role,
+        Some(Role::Attention),
+        "waiting is the Attention role here too"
+    );
+    assert_eq!(project.facts[1].role, Some(Role::Pending));
+    // A group of the `system` branch is a line of its own, and it carries the same rollup - a
+    // reviewer waiting on a person inside a branch nobody opened is exactly the row that used to
+    // be invisible.
+    let mut gatekeeper = session("s-gatekeeper-0123456789ab", "the review queue");
+    gatekeeper.system = Some("gatekeepers".into());
+    let mut reviewer = session("s-gatekeeper-0123456789ab-sub-1", "review it");
+    reviewer.system = Some("reviewers".into());
+    reviewer.parent = Some("s-gatekeeper-0123456789ab".into());
+    reviewer.waits_on = 1;
+    let f = feed(vec![session("s-a", "a"), gatekeeper, reviewer], "s-a");
+    let rows = draw(&f, &[]);
+    let branch = rows
+        .iter()
+        .find(|r| r.id == format!("{PROJECT}/system"))
+        .expect("the system branch is a line");
+    assert_eq!(
+        branch
+            .facts
+            .iter()
+            .map(|c| c.text.as_str())
+            .collect::<Vec<_>>(),
+        vec!["1 waiting"],
+        "and the branch above the group says it too"
+    );
+    // A group with nothing to report carries no empty fact back to the host.
+    let quiet = draw(&feed(vec![session("s-a", "a")], "s-a"), &[]);
+    assert!(quiet[0].facts.is_empty(), "nothing to say is nothing drawn");
 }
 
 /// The feed's own cap is stated on the list, as a line no key can enter: a list that stops at 250

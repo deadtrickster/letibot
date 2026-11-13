@@ -19,9 +19,10 @@ use super::*;
 use letibot_sessionlog::{NagPause, SessionOrigin};
 
 /// A daemon with one of every kind of row, and sessions that say every word a row can say: a
-/// slug, `WAITING ON YOU`, paused nags, another model, children at two depths.
+/// slug, a question for the operator, paused nags, another model, children at two depths, and ages.
 fn the_daemon() -> App {
     let queue = letibot_sessionlog::gatekeeper_session_for_key("0123456789ab");
+    let now = letibot_sessionlog::registry::now_ms();
     let mut a = app();
     // The head's home is the FIXTURE's, not the runner's: paths are drawn as `~/…` against the home
     // the head holds (`App::home`, which production reads from the environment once), so a picture
@@ -31,9 +32,12 @@ fn the_daemon() -> App {
     habr.slug = "habr".into();
     habr.stored_items = 412;
     habr.status.heads = 2;
+    // An age is a bucket, so a fixture ten minutes back says `10m` for as long as the run takes.
+    habr.moved_ms = now.saturating_sub(10 * 60_000);
     let mut rust = brief("s-rust", "the rust rewrite", false);
     rust.live = false;
     rust.waits_on_operator = 2;
+    rust.moved_ms = now.saturating_sub(2 * 86_400_000);
     rust.wiring = letibot_sessionlog::SessionWiring {
         model: "glm-coding/glm-4.7".into(),
         ..wiring()
@@ -81,7 +85,6 @@ const HOME: &str = "/home/dead";
 fn drawn(a: &App, w: usize) -> String {
     a.picker_lines(w).join("\n")
 }
-
 /// What `data/<name>` holds, or - under `LETIBOT_BLESS` - whatever is drawn now, written down.
 fn golden(name: &str, now: String) -> String {
     let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -138,7 +141,9 @@ fn the_session_list_looks_like_this_with_every_fold_open() {
 /// the defect that made these tests green here and red in the gate, where `HOME` was `/home/dead`.
 #[test]
 fn the_workspace_is_shortened_against_the_heads_own_home() {
-    let a = the_daemon();
+    let mut a = the_daemon();
+    // The detail line is the cursor's, and the first stop is the project's line.
+    a.picker_sel = 1;
     let text = drawn(&a, 100);
     assert!(
         text.contains("s-habr  ~/Projects/letibot"),
@@ -150,6 +155,7 @@ fn the_workspace_is_shortened_against_the_heads_own_home() {
     );
     // A workspace OUTSIDE that home is drawn whole - the other half of the rule.
     let mut a = the_daemon();
+    a.picker_sel = 1;
     a.home = "/somewhere/else".into();
     assert!(
         drawn(&a, 100).contains("s-habr  /home/dead/Projects/letibot"),
@@ -260,8 +266,14 @@ fn the_family_of_a_keeper_is_drawn() {
 fn a_control_character_in_a_row_is_drawn_as_a_space() {
     let mut nasty = brief("s-nasty", "the\u{7}bell\u{1b}[31mred", false);
     nasty.wiring.workspace = "/home/dead/Projects/letibot/letibot\u{7}".into();
-    let a = standing_in("s-nasty", vec![nasty]);
+    let mut a = standing_in("s-nasty", vec![nasty]);
+    // The cursor on the session's own row, so its title AND its detail line are drawn.
+    a.picker_sel = 1;
     let own = stops(&a);
+    assert!(
+        own.iter().any(|l| l.contains("s-nasty")),
+        "the detail line is on the screen: {own:#?}"
+    );
     assert!(
         !own.iter().any(|l| l.chars().any(char::is_control)),
         "and no control character reaches the screen:\n{}",
@@ -485,6 +497,13 @@ fn packages_of_other_daemons_are_listed_with_folder_and_state() {
     ];
     // The group's fold key is the layer's: a path or `groups/…` for a node, `fleet/packages` here.
     a.set_row_fold("fleet/packages", true);
+    // A fleet row's folder is its identity line, drawn for the row under the cursor: the cursor is
+    // put on the one whose daemon is down, which is the row a person needs the path of.
+    a.picker_sel = a
+        .picker_rows()
+        .iter()
+        .position(|r| r.id == "s-far-2")
+        .expect("the fleet row is on the list");
     let own = stops(&a);
     let text = own.join("\n");
     assert!(text.contains("packages in other daemons (2)"), "{text}");
@@ -524,7 +543,8 @@ fn the_packages_group_ends_with_how_many_older_stopped_ones_are_not_listed() {
 }
 
 /// The header and the tree lead with a session's name and keep the id for the details line under
-/// the row. A session with no name keeps its short id as its label.
+/// the row - the row the cursor is on, because a person reads one row's identity at a time. A
+/// session with no name keeps its short id as its label.
 #[test]
 fn the_header_and_the_tree_lead_with_the_name_and_keep_the_id_in_details() {
     let mut a = app();
@@ -544,7 +564,13 @@ fn the_header_and_the_tree_lead_with_the_name_and_keep_the_id_in_details() {
     );
     a.push_surface(Surface::Picker);
     open_everything(&mut a);
-    // The one drawing leads a named session with its name and keeps the id for the line under it.
+    // The one drawing leads a named session with its name, and the id is the line under it - once
+    // the cursor is on that row.
+    a.picker_sel = a
+        .picker_rows()
+        .iter()
+        .position(|r| r.id == "s-1793000000000000007")
+        .expect("the named session is a row");
     let own = stops(&a);
     let at = own
         .iter()
@@ -557,8 +583,15 @@ fn the_header_and_the_tree_lead_with_the_name_and_keep_the_id_in_details() {
     );
     assert!(
         own[at + 1].contains("s-1793000000000000007"),
-        "the id is in the details under the row: {}",
+        "the id is in the details under the row the cursor is on: {}",
         own[at + 1]
+    );
+    // And under no other row: the same list with the cursor on the project line draws no id at all.
+    a.picker_sel = 0;
+    let none = stops(&a);
+    assert!(
+        !none.iter().any(|l| l.contains("s-1793000000000000007")),
+        "a row nobody is on is one line and nothing else: {none:#?}"
     );
 }
 
@@ -597,10 +630,12 @@ fn node_titles(a: &App) -> Vec<String> {
         .filter(|(r, _)| r.session.is_none())
         .filter_map(|(_, span)| {
             lines.get(span.start).map(|l| {
-                // The fold column is the renderer's: the row's own words start after it.
-                l.trim_start_matches(|c: char| !c.is_alphanumeric() && c != '~' && c != '/')
-                    .trim()
-                    .to_string()
+                // The fold column is the renderer's, and the right column is pushed to the edge
+                // behind a run of spaces: a node's words are what is left once both are cut.
+                let words = l
+                    .trim_start_matches(|c: char| !c.is_alphanumeric() && c != '~' && c != '/')
+                    .trim();
+                words.split("  ").next().unwrap_or_default().to_string()
             })
         })
         .collect()
@@ -670,4 +705,127 @@ fn the_workspace_root_line_is_said_once() {
         "{}",
         own.join("\n")
     );
+}
+
+/// `n` sessions in one project, the newest first, each moved `i + 1` minutes ago - the list a busy
+/// box draws, and the ages it draws them with.
+fn a_busy_box(n: usize) -> App {
+    let now = letibot_sessionlog::registry::now_ms();
+    let sessions: Vec<SessionBrief> = (0..n)
+        .map(|i| {
+            let mut b = brief(
+                &format!("s-{i:02}"),
+                &format!("conversation number {i}"),
+                false,
+            );
+            b.moved_ms = now.saturating_sub((i as u64 + 1) * 60_000);
+            b
+        })
+        .collect();
+    standing_in("s-00", sessions)
+}
+
+/// Thirty sessions at a hundred columns: ONE row each, and every row says how long ago it moved. A
+/// list that spent two lines a session could not be scanned, and one without an age could not answer
+/// *is that one stuck?* - which is what a session list is read for.
+#[test]
+fn thirty_sessions_at_a_hundred_columns_are_one_row_each_with_an_age() {
+    let a = a_busy_box(30);
+    let (lines, spans) = a.picker_layout(100, 40);
+    assert_eq!(
+        spans.len(),
+        31,
+        "the project's line and thirty sessions: {:?}",
+        a.picker_rows()
+            .iter()
+            .map(|r| r.id.clone())
+            .collect::<Vec<_>>()
+    );
+    for (k, span) in spans.iter().enumerate().skip(1) {
+        assert_eq!(
+            span.len(),
+            1,
+            "row {k} takes one line: {:?}",
+            &lines[span.clone()]
+        );
+        let line = &lines[span.start];
+        assert!(
+            line.chars().count() <= 100,
+            "and it fits the pane: {line:?}"
+        );
+        // Session `k-1` moved `k` minutes ago.
+        let age = format!("{k}m");
+        assert!(
+            line.trim_end().ends_with(&age),
+            "row {k} ends with its age ({age}): {line:?}"
+        );
+    }
+}
+
+/// A name too long for the row is cut before the facts are: rano draws the right-hand column only
+/// when both halves fit, so an over-long title used to cost the row its age silently.
+#[test]
+fn a_long_name_is_cut_before_the_facts_are_dropped() {
+    let now = letibot_sessionlog::registry::now_ms();
+    let mut long = brief(
+        "s-long",
+        &"a title nobody would ever type in full, said at length ".repeat(3),
+        false,
+    );
+    long.moved_ms = now.saturating_sub(10 * 60_000);
+    let mut a = standing_in("s-long", vec![long]);
+    a.picker_sel = 1;
+    let (lines, spans) = a.picker_layout(60, 40);
+    let row = &lines[spans[1].start];
+    assert!(
+        row.trim_end().ends_with("10m"),
+        "the age survives a name that does not fit: {row:?}"
+    );
+    assert!(
+        row.chars().count() <= 60,
+        "and the row is cut to the pane: {row:?}"
+    );
+    assert!(row.contains('…'), "the cut says it was a cut: {row:?}");
+}
+
+/// PgDn moves a page of the list. The window is drawn around the cursor, so a page key bound to a
+/// scroll moved nothing a reader could see; and the title says where the cursor stands, because the
+/// window has nowhere else to say how long the list is.
+#[test]
+fn pgdn_moves_one_page_of_the_session_list() {
+    let mut a = a_busy_box(30);
+    // The height the pane is drawn at, which is the page's own unit.
+    let _ = a.picker_layout(100, 10);
+    assert_eq!(a.picker_sel, 0, "the list opens on its first stop");
+    let (lines, _) = a.picker_layout(100, 10);
+    assert!(
+        lines[0].contains("(1/31)"),
+        "the title says where the cursor is: {:?}",
+        lines[0]
+    );
+    assert_eq!(a.key(Key::PageDown), None);
+    assert_eq!(
+        a.picker_sel, 9,
+        "a page is the window less one row of context"
+    );
+    let (lines, _) = a.picker_layout(100, 10);
+    assert!(
+        lines[0].contains("(10/31)"),
+        "and the title says so: {:?}",
+        lines[0]
+    );
+    a.key(Key::PageUp);
+    assert_eq!(a.picker_sel, 0);
+    a.key(Key::PageUp);
+    assert_eq!(a.picker_sel, 0, "a page clamps at the first stop");
+    for _ in 0..10 {
+        a.key(Key::PageDown);
+    }
+    assert_eq!(
+        a.picker_sel, 30,
+        "and at the last: a page that wrapped would jump from the bottom of the list to its top"
+    );
+    // A notch of the wheel is three rows of the same walk.
+    a.key(Key::WheelUp);
+    assert_eq!(a.picker_sel, 27);
 }

@@ -99,10 +99,12 @@ fn node_text(a: &App, id: &str) -> String {
         .and_then(|k| spans.get(k))
         .and_then(|s| lines.get(s.start))
         .map(|l| {
-            // The fold column is the renderer's: the row's own words start after it.
-            l.trim_start_matches(|c: char| !c.is_alphanumeric() && c != '~' && c != '/')
-                .trim()
-                .to_string()
+            // The fold column is the renderer's, and the right column is pushed to the edge behind
+            // a run of spaces: a node's words are what is left once both are cut.
+            let words = l
+                .trim_start_matches(|c: char| !c.is_alphanumeric() && c != '~' && c != '/')
+                .trim();
+            words.split("  ").next().unwrap_or_default().to_string()
         })
         .unwrap_or_default()
 }
@@ -218,12 +220,13 @@ fn a_child_sits_under_its_parent_and_a_grandchild_under_it() {
     );
 }
 
-/// A `task_start` child's row names the worktree it runs in - the one fact that tells two
-/// children of one parent apart, and it is the row's own second line.
+/// A `task_start` child's identity line names the worktree it runs in - the one fact that tells two
+/// children of one parent apart - and it is drawn for the row under the cursor.
 #[test]
 fn a_task_starts_child_names_the_worktree_it_runs_in() {
     let mut a = a_daemon_with_two_projects();
     a.set_row_fold("s-habr", true);
+    a.picker_sel = row_of(&a, "s-sub-1");
     let screen = a.screen(100, 48).join("\n");
     assert!(
         screen.contains("~/Projects/letibot/worktrees/agent-read-it"),

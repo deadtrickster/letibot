@@ -2688,11 +2688,16 @@ fn the_picker_marks_a_session_waiting_on_the_operator() {
     ));
     a.push_surface(Surface::Picker);
     let lines = a.picker_lines(120).join("\n");
-    assert!(
-        lines.contains("the asking one · WAITING ON YOU (2)"),
-        "{lines}"
-    );
-    assert!(!lines.contains("the quiet one · WAITING"), "{lines}");
+    // The mark is the gutter's, not the name's: a person scanning the list reads the column.
+    let row = |name: &str| {
+        lines
+            .lines()
+            .find(|l| l.contains(name))
+            .unwrap_or_else(|| panic!("{name} is drawn: {lines}"))
+            .to_string()
+    };
+    assert!(row("the asking one").contains("?"), "{lines}");
+    assert!(!row("the quiet one").contains('?'), "{lines}");
 }
 
 /// The model taking its wait on the person back takes the card down: a `detach` removes the question from the row,

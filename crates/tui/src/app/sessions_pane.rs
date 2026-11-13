@@ -21,6 +21,7 @@ use rano::agent::tree_list::{
 use serde_json::{Value, json};
 
 use crate::app::*;
+use crate::ui::render::{trim_to, visible_width};
 
 /// The hook this pane answers under.
 pub(crate) const HOOK: &str = "pane_sessions";
@@ -867,7 +868,7 @@ impl App {
             return None;
         }
         // A view with no tree is valid as a document and still not a list this pane can draw.
-        let Some((rows, empty)) = tree_of(&view, &self.picker_folds) else {
+        let Some((mut rows, empty)) = tree_of(&view, &self.picker_folds, self.picker_sel) else {
             host.complain(
                 HOOK,
                 "the session list's layer answered a view this head will not draw: it holds no \
@@ -877,8 +878,16 @@ impl App {
             return None;
         };
         let width = w.max(20);
+        fit_facts(&mut rows, width);
+        // Where the cursor stands in the list, in the title: the window is drawn around the cursor,
+        // so a page key has nowhere else to say how far down the list a reader has got.
+        let stops = rows.iter().filter(|r| r.id.is_some()).count();
+        let title = match stops {
+            0 => sdk::TITLE.to_string(),
+            n => sdk::counter(self.picker_sel.min(n - 1) + 1, n),
+        };
         let list = TreeList {
-            title: sdk::TITLE.to_string(),
+            title,
             rows,
             selected: Some(self.picker_sel),
             empty,
@@ -1268,17 +1277,34 @@ fn fleet_under(f: &letibot_sessionlog::FleetRow, home: &str) -> String {
     format!("{}  {ws}", f.id)
 }
 
-/// The tree block a sessions view answers with, and its empty sentence.
-fn tree_of(view: &pv::View, folds: &BTreeMap<String, bool>) -> Option<(Vec<TreeRow>, String)> {
+/// The tree block a sessions view answers with, and its empty sentence. A row's faint detail line is
+/// its identity - the id, the path, the model - and it is drawn for the row under the cursor and
+/// for no other: an identity line under every session doubled the list for facts a person reads one
+/// row at a time.
+fn tree_of(
+    view: &pv::View,
+    folds: &BTreeMap<String, bool>,
+    cursor: usize,
+) -> Option<(Vec<TreeRow>, String)> {
     let tree = view.panels.iter().find_map(|p| {
         p.shown().iter().find_map(|b| match b {
             pv::Block::Tree(t) => Some(t),
             _ => None,
         })
     })?;
+    let walked: Vec<(usize, &pv::Row)> = pv::rows_deep(&tree.rows);
+    // rano's cursor is `selected.min(stops - 1)`, and the head's is clamped the same way: a row
+    // folded or removed under the cursor can leave it past the end of the list.
+    let stops = walked.iter().filter(|(_, r)| !r.id().is_empty()).count();
+    let at = cursor.min(stops.saturating_sub(1));
     let mut rows = Vec::new();
-    for (base, row) in pv::rows_deep(&tree.rows) {
+    let mut stop = 0;
+    for (base, row) in walked {
         let id = row.id().to_string();
+        let picked = !id.is_empty() && stop == at;
+        if !id.is_empty() {
+            stop += 1;
+        }
         // The host's fold state wins over the plugin's, which is what makes a fold instant: the
         // press changes this map and the next draw, and the layer remembers nothing. Three rows it
         // does not reach: a leaf, a `fixed` group, and one the map was never asked about.
@@ -1297,7 +1323,14 @@ fn tree_of(view: &pv::View, folds: &BTreeMap<String, bool>) -> Option<(Vec<TreeR
             role: row.role.map(|r| crate::ui::severity::role(Some(r))),
             cells: row.cells.iter().map(cell_of).collect(),
             facts: row.facts.iter().map(cell_of).collect(),
-            detail: row.under.clone(),
+            // A group's line explains itself always, and there are four of those. A session's faint
+            // line is its identity, drawn for the cursor's row alone: an id and a path under every row
+            // doubled the list for facts read one row at a time. A group folds and takes no number.
+            detail: if picked || (row.open.is_some() && row.number.is_none()) {
+                row.under.clone()
+            } else {
+                Vec::new()
+            },
             detail_column: None,
             actions: row
                 .actions
@@ -1312,6 +1345,97 @@ fn tree_of(view: &pv::View, folds: &BTreeMap<String, bool>) -> Option<(Vec<TreeR
         });
     }
     Some((rows, tree.empty.clone()))
+}
+
+/// Room for a row's facts. rano draws the right-hand column only when both halves fit and otherwise
+/// draws the left alone (`rano::agent::pane::split_row`) - so a long title silently cost a row its
+/// age, the fact the row is read for. The name gives way instead.
+fn fit_facts(rows: &mut [TreeRow], w: usize) {
+    // Cutting one row can leave another's arithmetic alone, so the measurement is taken again after
+    // the cuts; two rounds is the common case, and four is the bound a frame will pay.
+    for _ in 0..4 {
+        let left = left_widths(rows);
+        let mut cut = false;
+        for (i, row) in rows.iter_mut().enumerate() {
+            let Some(&lw) = left.get(i) else {
+                continue;
+            };
+            let facts = facts_width(&row.facts);
+            if facts == 0 {
+                continue;
+            }
+            let over = (lw + facts + 2).saturating_sub(w);
+            if over > 0 {
+                cut |= shorten(&mut row.cells, over);
+            }
+        }
+        if !cut {
+            return;
+        }
+    }
+}
+
+/// The width the left half is MEASURED at - wider than any pane, so a name longer than the screen is
+/// measured whole instead of being reported as the screen's width.
+const PROBE_W: usize = 4096;
+
+/// What rano draws on the left of each row, measured by rano: the same rows with no facts and no
+/// detail line. The indent, the cursor mark, the fold column and the number field are rano's
+/// arithmetic, and a second copy of it here would be a second opinion about where a name starts.
+fn left_widths(rows: &[TreeRow]) -> Vec<usize> {
+    let probe = TreeList {
+        title: String::new(),
+        rows: rows
+            .iter()
+            .map(|r| TreeRow {
+                facts: Vec::new(),
+                detail: Vec::new(),
+                ..r.clone()
+            })
+            .collect(),
+        selected: None,
+        empty: String::new(),
+        fold_column: true,
+        detail_column: 0,
+        margin: 0,
+        hint: Vec::new(),
+        notes: Vec::new(),
+    };
+    probe
+        .content(PROBE_W)
+        .lines
+        .iter()
+        .map(|l| l.width())
+        .collect()
+}
+
+/// The columns a row's facts take, their ` · ` separators included.
+fn facts_width(facts: &[TreeCell]) -> usize {
+    let text: usize = facts.iter().map(|c| visible_width(&c.text)).sum();
+    text + 2 * facts.len().saturating_sub(1)
+}
+
+/// Cut `over` columns out of a row's widest cells, so the facts keep their room. `false` when there
+/// was nothing left to cut - which is how a row with no name stops the loop.
+fn shorten(cells: &mut [TreeCell], over: usize) -> bool {
+    let mut left = over;
+    let mut cut = false;
+    while left > 0 {
+        let widest = cells
+            .iter()
+            .enumerate()
+            .map(|(i, c)| (i, visible_width(&c.text)))
+            .max_by_key(|&(_, width)| width);
+        let Some((i, width)) = widest.filter(|&(_, width)| width > 0) else {
+            break;
+        };
+        let take = left.min(width);
+        let cut_text = trim_to(&cells[i].text, width - take);
+        cells[i].text = cut_text;
+        left -= take;
+        cut = true;
+    }
+    cut
 }
 
 /// The column a row is drawn at. A row with children is NESTED and its depth is the walk's own; a

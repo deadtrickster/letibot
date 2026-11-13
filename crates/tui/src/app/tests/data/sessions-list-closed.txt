@@ -1,17 +1,12 @@
-sessions in this daemon
+sessions in this daemon (1/7)
 
-▸- letibot (10)
+▸- letibot (10)                                                             1 waiting · 1 generating
       a workspace root, and every session that runs in it
-   +  1  habr · the habr article               generating · 412 rows · 2 heads · qwen-3.8-flash-next
-      s-habr  ~/Projects/letibot
-      2  the rust rewrite · WAITING ON YOU (2)        on disk · 6 rows · 1 head · glm-coding/glm-4.7
-      s-rust  ~/Projects/letibot
-      3  a conversation with a quiet board · nags paused
-      s-paused  ~/Projects/letibot
-      4  make me a landing page                                6 rows · 1 head · qwen-3.8-flash-next
-      s-pkg-1  ~/Projects/letibot
-      5  one prompt, one answer                                6 rows · 1 head · qwen-3.8-flash-next
-      s-shot-1  ~/Projects/letibot
+   +  1  ~ habr · the habr article                                                    412 rows · 10m
+      2  ? the rust rewrite                                                    on disk · 6 rows · 2d
+      3    a conversation with a quiet board                          on disk · nags paused · 6 rows
+      4    make me a landing page                                                             6 rows
+      5    one prompt, one answer                                                             6 rows
    + system (2)
       the sessions the harness runs for itself
 

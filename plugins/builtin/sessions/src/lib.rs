@@ -6,7 +6,7 @@ use letibot_guest_abi as abi;
 use letibot_plugin::pane::{Act, Cell, Fold, Role};
 use letibot_plugin::sessions::{EMPTY, TITLE, clean, more, short_id};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 /// The groups under a project's `system` branch, in the order the list draws them - the words, and
 /// the sentence under each line. Which session is in which is not decided here: the rule needs the
@@ -126,6 +126,14 @@ struct Session {
     /// The operator has paused its idle plan-check.
     #[serde(default)]
     nags_paused: bool,
+    /// When it last moved, for the recency sort - the head decides the bucket, this list decides
+    /// which project a reader sees first.
+    #[serde(default)]
+    moved_ms: u64,
+    /// The same fact as one word (`3h`) - the right-hand column's last fact. Bucketed by the head,
+    /// so an idle frame asks this layer for nothing.
+    #[serde(default)]
+    age: Option<String>,
     /// The project this session is drawn under - the key its row's project line is folded by, and the
     /// name that line says. Both come from the head, which is where the rule lives.
     #[serde(default)]
@@ -300,16 +308,64 @@ impl<'a> Ctx<'a> {
             .is_some_and(|p| self.in_branch(p, Some((project, system))))
     }
 
-    /// The projects this feed holds, in the order it lists them - the key and the name to draw.
+    /// The projects this feed holds, the one that moved most recently first - the key and the name
+    /// to draw. First-seen order is the daemon's, and it buries the project somebody is working on
+    /// behind whatever the store listed first; a tie keeps that order, because a stable sort is the
+    /// only thing that can.
     fn projects(&self, bucket: &str) -> Vec<(&str, &str)> {
-        let mut out: Vec<(&str, &str)> = Vec::new();
-        let mut seen: HashSet<&str> = HashSet::new();
+        let mut out: Vec<(&str, &str, u64)> = Vec::new();
+        let mut at: HashMap<&str, usize> = HashMap::new();
         for s in self.sessions.iter().filter(|s| s.bucket == bucket) {
-            if seen.insert(s.project.as_str()) {
-                out.push((&s.project, &s.project_name));
+            match at.get(s.project.as_str()) {
+                Some(&i) => out[i].2 = out[i].2.max(s.moved_ms),
+                None => {
+                    at.insert(&s.project, out.len());
+                    out.push((&s.project, &s.project_name, s.moved_ms));
+                }
             }
         }
-        out
+        out.sort_by_key(|p| std::cmp::Reverse(p.2));
+        out.into_iter().map(|(key, name, _)| (key, name)).collect()
+    }
+
+    /// How many of these rows are waiting on the operator, and how many are generating - the
+    /// rollup a group's line carries, so a session waiting inside a folded group is not invisible.
+    fn tally(&self, ids: &[usize]) -> (usize, usize) {
+        let mut waiting = 0;
+        let mut generating = 0;
+        for &i in ids {
+            let Some(s) = self.sessions.get(i) else {
+                continue;
+            };
+            waiting += usize::from(s.waits_on > 0);
+            generating += usize::from(s.running);
+        }
+        (waiting, generating)
+    }
+
+    /// Whether this session - or anything it spawned - is generating. A folded parent whose child
+    /// is working is a row that would otherwise read as idle, and opencode's spinner counts the
+    /// children for exactly that reason.
+    fn generating(&self, id: &str) -> bool {
+        let mut stack = vec![id];
+        // A feed cannot cycle (a child names one parent), but a malformed one must not spin: the
+        // walk is capped by the rows there are.
+        let mut seen = 0;
+        while let Some(id) = stack.pop() {
+            seen += 1;
+            if seen > self.sessions.len() + 1 {
+                break;
+            }
+            if let Some(&i) = self.index.get(id)
+                && self.sessions[i].running
+            {
+                return true;
+            }
+            if let Some(kids) = self.kids.get(id) {
+                stack.extend(kids.iter().map(|&k| self.sessions[k].id.as_str()));
+            }
+        }
+        false
     }
 
     /// The places a project's members hold, in feed order.
@@ -431,12 +487,18 @@ fn rows_of_the_branches(ctx: &Ctx<'_>) -> Vec<Out> {
             continue;
         }
         let open = ctx.node_open(key);
+        // What is inside every project of this group, folded away or not.
+        let inside: Vec<usize> = group
+            .iter()
+            .flat_map(|(p, _)| ctx.members(p).iter().copied())
+            .collect();
         out.push(node_row(
             key.to_string(),
             0,
             format!("{title} ({})", group.len()),
             legend,
             open,
+            ctx.tally(&inside),
         ));
         if open {
             for p in group {
@@ -446,12 +508,15 @@ fn rows_of_the_branches(ctx: &Ctx<'_>) -> Vec<Out> {
     }
     if !ctx.fleet.is_empty() || ctx.unlisted.is_some() {
         let open = ctx.node_open(PACKAGES_KEY);
+        // Another daemon's rows are not in this feed, so this line rolls up nothing rather than
+        // counting what it cannot see.
         out.push(node_row(
             PACKAGES_KEY.to_string(),
             0,
             format!("packages in other daemons ({})", ctx.fleet.len()),
             "package sessions of other folders' daemons - enter says how to attach",
             open,
+            (0, 0),
         ));
         if open {
             for f in ctx.fleet {
@@ -509,6 +574,7 @@ fn push_project(
         format!("{name} ({})", members.len()),
         legend,
         open,
+        ctx.tally(members),
     ));
     if !open {
         return;
@@ -548,6 +614,7 @@ fn push_project(
         format!("system ({})", system.len()),
         "the sessions the harness runs for itself",
         open,
+        ctx.tally(&system),
     ));
     if !open {
         return;
@@ -569,6 +636,7 @@ fn push_project(
             format!("{group} ({})", group_members.len()),
             group_legend,
             open,
+            ctx.tally(&group_members),
         ));
         if !open {
             continue;
@@ -595,15 +663,24 @@ fn push_project(
     }
 }
 
-/// One node's line: what it is, how many rows it holds, how it folds and what Enter does to it.
-fn node_row(key: String, depth: usize, title: String, legend: &str, open: bool) -> Out {
+/// One node's line: what it is, how many rows it holds, how many of them are asking for somebody,
+/// how it folds and what Enter does to it. `tally` is what is inside it - the two counts a fold
+/// would hide, which is why a folded group must still say them.
+fn node_row(
+    key: String,
+    depth: usize,
+    title: String,
+    legend: &str,
+    open: bool,
+    tally: (usize, usize),
+) -> Out {
     Out {
         id: key,
         depth: depth.min(MAX_INDENT),
         number: None,
         // A project's line is a path, which is somebody's too - the same rule as a row's words.
         cells: vec![Cell::role(clean(&title), Role::Strong)],
-        facts: Vec::new(),
+        facts: rollup(tally),
         under: if legend.is_empty() {
             Vec::new()
         } else {
@@ -614,26 +691,63 @@ fn node_row(key: String, depth: usize, title: String, legend: &str, open: bool) 
     }
 }
 
-/// One session's row.
+/// One session's row: a gutter mark, the name, the facts a reader scans for - ONE line, so thirty
+/// sessions are thirty rows and not sixty.
 fn session_row(ctx: &Ctx<'_>, at: usize, depth: usize, number: usize, open: Option<Fold>) -> Out {
     let s = &ctx.sessions[at];
     Out {
         id: s.id.clone(),
         depth: depth.min(MAX_INDENT),
         number: Some(number),
-        cells: vec![Cell::role(
-            name_of(s),
-            if s.id == ctx.here {
-                Role::Strong
-            } else {
-                Role::Plain
-            },
-        )],
+        cells: vec![
+            mark_of(ctx, s),
+            Cell::role(
+                name_of(s),
+                if s.id == ctx.here {
+                    Role::Strong
+                } else {
+                    Role::Plain
+                },
+            ),
+        ],
         facts: facts_of(s),
+        // What tells two sessions of one title apart. The head draws it under the row the cursor
+        // is on, and nowhere else (`App::tree_of`): an id and a path under every row doubled the
+        // list's length for facts a person reads one row at a time.
         under: vec![under_of(s, ctx.home)],
         open,
         enter: Some(Act::switch(s.id.clone())),
     }
+}
+
+/// The one column before a row's name: `?` for a session waiting on the operator - opencode's
+/// gutter, and the reason `WAITING ON YOU` is not spelled into the name any more - `~` for a turn
+/// that is running, its children's included. The column is reserved on every row, or a name's
+/// column would be a function of its state.
+fn mark_of(ctx: &Ctx<'_>, s: &Session) -> Cell {
+    if s.waits_on > 0 {
+        return Cell::role("?", Role::Attention);
+    }
+    if ctx.generating(&s.id) {
+        return Cell::role("~", Role::Pending);
+    }
+    Cell::role(" ", Role::Faint)
+}
+
+/// The two counts a group's line carries, in the order a reader acts on them: somebody waiting on
+/// the operator first, work in progress second, and nothing at all for a group with neither.
+fn rollup((waiting, generating): (usize, usize)) -> Vec<Cell> {
+    let mut facts = Vec::new();
+    if waiting > 0 {
+        facts.push(Cell::role(format!("{waiting} waiting"), Role::Attention));
+    }
+    if generating > 0 {
+        facts.push(Cell::role(
+            format!("{generating} generating"),
+            Role::Pending,
+        ));
+    }
+    facts
 }
 
 /// Whether this row has a fold, and which way - about the tree *inside the branch it is drawn in*:
@@ -682,9 +796,9 @@ fn children(
     }
 }
 
-/// A session's name - its title, or a short id when it has none - with the three things a row says
-/// before anything else: the slug its parent and its branch call it by, `WAITING ON YOU`, and
-/// paused nags.
+/// A session's name - its title, or a short id when it has none - with the slug its parent and its
+/// branch call it by. What the row is waiting for is the gutter's and the facts', not the name's: a
+/// name is what a person is looking for, and a mark inside it hides the word they scan for.
 fn name_of(s: &Session) -> String {
     let name = if s.title.is_empty() {
         short_id(&s.id)
@@ -696,44 +810,30 @@ fn name_of(s: &Session) -> String {
     } else {
         format!("{} · {name}", s.slug)
     };
-    // A session waiting on you says so, louder and first: a person who is being waited on has to see
-    // it from the list rather than by attaching to every session to find out.
-    let name = match s.waits_on {
-        0 => name,
-        1 => format!("{name} · WAITING ON YOU"),
-        n => format!("{name} · WAITING ON YOU ({n})"),
-    };
-    let name = if s.nags_paused {
-        format!("{name} · nags paused")
-    } else {
-        name
-    };
     // A title is somebody's, and a control character in it would be measured one way and drawn
     // another - the same rule the under line is drawn with.
     clean(&name)
 }
 
-/// The right-hand column: what the row IS, in one run of facts.
+/// The right-hand column: how much conversation there is and how long ago it moved - the two facts
+/// a row is read for, and the last of them flush with the edge where the eye finds it. A running
+/// turn is the gutter's, and the id, the path and the model are the detail line's.
 fn facts_of(s: &Session) -> Vec<Cell> {
     // One string with ` · ` between the facts that are there, not a `Vec<String>` joined at the
     // end: a join is a second copy of the row's whole right column, once per row, and this is a
     // list of them.
     let mut facts = String::new();
-    if s.running {
-        push_fact(&mut facts, format_args!("generating"));
-    }
     if !s.live {
         // The whole difference between a row that costs one keystroke and a row that costs a
         // resume.
         push_fact(&mut facts, format_args!("on disk"));
     }
+    if s.nags_paused {
+        push_fact(&mut facts, format_args!("nags paused"));
+    }
     let rows = if s.stored > 0 { s.stored } else { s.items };
     if rows > 0 {
         push_fact(&mut facts, format_args!("{rows} rows"));
-    }
-    if s.heads > 0 {
-        let plural = if s.heads == 1 { "" } else { "s" };
-        push_fact(&mut facts, format_args!("{} head{plural}", s.heads));
     }
     // What it has been told and its model has not been shown: invisible on every other column.
     if s.held > 0 {
@@ -742,20 +842,13 @@ fn facts_of(s: &Session) -> Vec<Cell> {
     if let Some(role) = s.role.as_deref().filter(|r| !r.is_empty()) {
         push_fact(&mut facts, format_args!("{role}"));
     }
-    if !s.model.is_empty() {
-        push_fact(&mut facts, format_args!("{}", s.model));
+    if let Some(age) = s.age.as_deref().filter(|a| !a.is_empty()) {
+        push_fact(&mut facts, format_args!("{}", clean(age)));
     }
     if facts.is_empty() {
         return Vec::new();
     }
-    vec![Cell::role(
-        facts,
-        if s.running {
-            Role::Pending
-        } else {
-            Role::Faint
-        },
-    )]
+    vec![Cell::role(facts, Role::Faint)]
 }
 
 /// One fact, after the ` · ` that separates it - written into the row's own string, so a fact costs
@@ -768,15 +861,24 @@ fn push_fact(into: &mut String, fact: std::fmt::Arguments<'_>) {
     let _ = into.write_fmt(fact);
 }
 
-/// The faint line under every row: the full id, and the workspace when there is one - for a stored
-/// session the only thing on the row that says what the conversation was about.
+/// The faint line under a row - the full id, the workspace, the model and the heads: what tells two
+/// sessions of one title apart and where a session actually runs. Every row carries it and the head
+/// draws it for the row under the cursor alone.
 fn under_of(s: &Session, home: &str) -> String {
-    let id = clean(&s.id);
-    if s.workspace.is_empty() {
-        id
-    } else {
-        format!("{id}  {}", tilde(&clean(&s.workspace), home))
+    let mut line = clean(&s.id);
+    if !s.workspace.is_empty() {
+        line.push_str("  ");
+        line.push_str(&tilde(&clean(&s.workspace), home));
     }
+    if !s.model.is_empty() {
+        line.push_str(" · ");
+        line.push_str(&clean(&s.model));
+    }
+    if s.heads > 0 {
+        let plural = if s.heads == 1 { "" } else { "s" };
+        line.push_str(&format!(" · {} head{plural}", s.heads));
+    }
+    line
 }
 
 /// `$HOME` written as `~` - the head's own shortening, done here because the row's text is this
@@ -851,9 +953,10 @@ fn answer(bytes: &[u8]) -> Option<String> {
         }],
         legend: BTreeMap::from([
             (
-                "WAITING ON YOU",
+                "?",
                 "this session has a question for you — attach to it to answer",
             ),
+            ("~", "a turn is running in it, or in something it spawned"),
             (
                 "on disk",
                 "the daemon is not holding it; switching to it resumes it",

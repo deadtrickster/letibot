@@ -50,6 +50,13 @@ pub fn more(count: usize) -> String {
     )
 }
 
+/// The list's title with where the cursor stands in it - `sessions in this daemon (3/14)`. A list
+/// longer than the screen has to say how long it is and where on it a reader is, or a page key is
+/// a key with no answer on the screen.
+pub fn counter(at: usize, of: usize) -> String {
+    format!("{TITLE} ({at}/{of})")
+}
+
 /// A session id cut to the tail a person recognises: `…` then the last eight characters, because
 /// ids are minted `s-<nanos>` and two made the same afternoon share a prefix. Short ids are kept
 /// whole.
@@ -115,5 +122,13 @@ mod tests {
         assert_eq!(age_word(86_400_000), "1d");
         assert_eq!(age_word(2_592_000_000), "1mo");
         assert_eq!(age_word(15 * 86_400_000), "15d");
+    }
+
+    /// The counter is the title and the position together, so a reader knows how long the list is
+    /// and where on it they are.
+    #[test]
+    fn the_counter_is_the_title_and_the_position() {
+        assert_eq!(counter(3, 14), format!("{TITLE} (3/14)"));
+        assert_eq!(counter(1, 1), format!("{TITLE} (1/1)"));
     }
 }

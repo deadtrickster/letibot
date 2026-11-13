@@ -22,6 +22,20 @@ fn upward(k: &Key) -> bool {
     matches!(k, Key::Up | Key::PageUp | Key::WheelUp | Key::Left)
 }
 
+/// Where a page key lands: `by` stops on from `at`, clamped to the list's last stop. It does not
+/// wrap - a page that wrapped would jump from the bottom of a list to its top, where an arrow, one
+/// row at a time, wraps without costing anybody their place.
+fn page(at: usize, n: usize, up: bool, by: usize) -> usize {
+    if up {
+        at.saturating_sub(by)
+    } else {
+        (at + by).min(n - 1)
+    }
+}
+
+/// Rows a notch of the wheel moves: three, as on every other list here.
+const WHEEL_STOPS: usize = 3;
+
 impl App {
     /// The keys of the surface in front, and of no other: the stack's top, which is the same value
     /// `main_area` draws. The key is looked up in that surface's table; a key it does not name falls
@@ -98,6 +112,9 @@ impl App {
                 ControlFlow::Break(None)
             }
             Act::Cursor => self.cursor_act(s, up),
+            // A page key on a list whose window is drawn around its cursor: a scroll moves the
+            // picture, and the picture is a function of the cursor - so the page is a cursor move.
+            Act::Page => self.page_act(s, k),
             Act::Roster => self.rooms_toggle_roster(),
             Act::DismissSend => self.rooms_dismiss_send(),
             // Enter on an empty composer in `/rooms` reads the message under the cursor first - its
@@ -207,6 +224,30 @@ impl App {
                 ControlFlow::Break(None)
             }
         }
+    }
+
+    /// A page key on a list: the cursor moves a page of stops, so the window that follows it moves
+    /// too. Only the session list is such a list - every other surface scrolls its window and leaves
+    /// the cursor where it was (`Act::Scroll`).
+    fn page_act(&mut self, s: Surface, k: &Key) -> ControlFlow<Option<Action>> {
+        match s {
+            Surface::Picker => {
+                let n = self.picker_rows().len();
+                if n == 0 {
+                    return ControlFlow::Continue(());
+                }
+                // A page is the window less one row: the row above the new page is the context a
+                // reader keeps track of where they are with.
+                let by = match k {
+                    Key::WheelUp | Key::WheelDown => WHEEL_STOPS,
+                    _ => self.picker_height().saturating_sub(1).max(1),
+                };
+                self.picker_seat_pending = false;
+                self.picker_sel = page(self.picker_sel.min(n - 1), n, upward(k), by);
+            }
+            _ => return ControlFlow::Continue(()),
+        }
+        ControlFlow::Break(None)
     }
 
     /// Up/down on a list: the cursor moves through the list's ONE enumeration of stops - the same

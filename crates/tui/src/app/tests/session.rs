@@ -1880,20 +1880,31 @@ fn a_click_picks_the_row_under_the_pointer_and_enter_still_switches() {
         Hub::new("s").snapshot(),
     ));
     assert_eq!(a.key(Key::CtrlS), Some(Action::ListSessions));
-    let frame = a.screen(110, 24);
-    let at = |needle: &str| {
+    // A row's identity line is drawn under the cursor's row only, so the rows BELOW it move by one
+    // when the cursor does - the frame is read again before every click.
+    fn row_of(a: &mut App, needle: &str) -> u16 {
+        let frame = a.screen(110, 24);
         frame
             .iter()
             .position(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("{needle} is drawn: {frame:#?}")) as u16
-    };
-    // The header takes row 0, the title and blank two more, then the project's line and legend, so two rows per
-    // session: that is the arithmetic the handler must get right. The first row is found by its number.
-    assert_eq!(at("two"), at("1  one") + 2, "{frame:#?}");
-    a.key(Key::Click {
-        x: 10,
-        y: at("two"),
-    });
+    }
+    // The header takes row 0, the title and blank two more, then the project's line and its legend -
+    // and ONE row a session, which is the arithmetic the handler must get right. The first row is
+    // found by its mark and its words; the identity line under the cursor's own row is the one
+    // extra line on the screen.
+    assert_eq!(
+        row_of(&mut a, "two"),
+        row_of(&mut a, "~ one") + 2,
+        "the row, and the cursor's identity line under it"
+    );
+    assert_eq!(
+        row_of(&mut a, "three"),
+        row_of(&mut a, "two") + 1,
+        "and every row the cursor is not on is one line"
+    );
+    let two = row_of(&mut a, "two");
+    a.key(Key::Click { x: 10, y: two });
     assert_eq!(a.picker_sel, 2, "that row is the second session's");
     let row = a
         .screen(110, 24)
@@ -1904,30 +1915,24 @@ fn a_click_picks_the_row_under_the_pointer_and_enter_still_switches() {
         row.contains('▸'),
         "the mark moved to the clicked row: {row}"
     );
-    // The id line under a session picks THAT session, not the next one.
-    a.key(Key::Click { x: 8, y: at("s3") });
-    assert_eq!(a.picker_sel, 3, "a click on three's id line picks three");
-    a.key(Key::Click {
-        x: 0,
-        y: at("1  one"),
-    });
+    // The identity line under a session picks THAT session, not the next one - and it is the cursor's
+    // own, which is where it is now drawn.
+    let id = row_of(&mut a, "s2");
+    a.key(Key::Click { x: 8, y: id });
+    assert_eq!(a.picker_sel, 2, "a click on two's id line picks two");
+    let one = row_of(&mut a, "~ one");
+    a.key(Key::Click { x: 0, y: one });
     assert_eq!(a.picker_sel, 1);
     // A click on the footer, or on a line of it that is nobody's row, moves nothing.
-    a.key(Key::Click {
-        x: 4,
-        y: at("enter switches"),
-    });
+    let hint = row_of(&mut a, "enter switches");
+    a.key(Key::Click { x: 4, y: hint });
     assert_eq!(a.picker_sel, 1);
-    a.key(Key::Click {
-        x: 4,
-        y: at("switching does not stop anything"),
-    });
+    let note = row_of(&mut a, "switching does not stop anything");
+    a.key(Key::Click { x: 4, y: note });
     assert_eq!(a.picker_sel, 1);
     // Select and confirm stay two acts: the click only moves the mark.
-    a.key(Key::Click {
-        x: 4,
-        y: at("three"),
-    });
+    let three = row_of(&mut a, "three");
+    a.key(Key::Click { x: 4, y: three });
     assert_eq!(a.picker_sel, 3);
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s3".into())));
 }

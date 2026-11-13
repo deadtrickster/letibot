@@ -1801,12 +1801,19 @@ fn the_picker_marks_a_paused_session() {
     ));
     a.push_surface(Surface::Picker);
     let lines = a.picker_lines(96).join("\n");
+    let row = |name: &str| {
+        lines
+            .lines()
+            .find(|l| l.contains(name))
+            .unwrap_or_else(|| panic!("{name} is drawn: {lines}"))
+            .to_string()
+    };
     assert!(
-        lines.contains("the quiet one · nags paused"),
+        row("the quiet one").contains("nags paused"),
         "the paused session says so on its row: {lines}"
     );
     assert!(
-        !lines.contains("the loud one · nags paused"),
+        !row("the loud one").contains("nags paused"),
         "and only that one: {lines}"
     );
 }
