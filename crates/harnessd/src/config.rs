@@ -442,7 +442,10 @@ pub struct Config {
     /// `low` / `medium` / `high` / `xhigh`, interpreted per dialect. It is prefix
     /// bytes, so changing it mid-session re-prefills everything.
     pub effort: Option<String>,
+    /// The local server's sampling. A cloud provider reads its own model's profile instead.
     pub sampling: Value,
+    /// The `providers.toml` a provider's key, URL and profile are read from; `None` is the box's.
+    pub providers_file: Option<std::path::PathBuf>,
     /// Where this project sits, as a named point ([`letibot_tools::mode::Mode`]). Read from
     /// the per-project store, never chosen here. A separate field from [`Config::seat`] because a
     /// role says which tools are seated and a mode says what each one costs to approve.
@@ -1660,6 +1663,7 @@ impl Config {
             // Deterministic by default: a harness whose own measurements move
             // between runs cannot tell a regression from a sample.
             sampling: json!({"temperature": 0.0, "top_k": 1, "seed": 7}),
+            providers_file: None,
             // Nothing widens by default: this is exactly what an invocation got
             // before roles were reachable. `the_default_seat_is_what_shipped_before`
             // is the test that keeps it true.

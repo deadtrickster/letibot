@@ -3327,7 +3327,7 @@ impl Harness {
             None => None,
             Some(pc) => match build_provider(
                 pc,
-                &cfg.sampling,
+                cfg.providers_file.as_deref(),
                 provider_notes(&hub),
                 cfg.deadlines_for(Some(pc)),
                 cfg.effort.as_deref(),
@@ -4122,22 +4122,24 @@ pub(crate) fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) ->
 /// means the same thing whichever protocol it lands on.
 pub fn build_provider(
     pc: &crate::config::ProviderConfig,
-    sampling: &serde_json::Value,
+    profiles: Option<&std::path::Path>,
     notes: letibot_provider::openai::Notes,
     deadlines: crate::leticode_config::Deadlines,
     effort: Option<&str>,
 ) -> Result<Box<dyn letibot_backend::MessagesBackend>, String> {
     let preset = letibot_provider::Preset::parse(&pc.name)?;
-    let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), None)
+    let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), profiles)
         .map_err(|e| format!("provider {}: {e}", pc.name))?;
+    let sampling = cloud_sampling(preset, pc, profiles, &notes);
     match preset.protocol {
         letibot_provider::Protocol::ChatCompletions => {
             let mut p = letibot_provider::OpenAiProvider::new(preset, pc.model.as_deref(), creds)
                 .with_notes(notes)
+                .with_effort(effort)
                 .with_first_byte(deadlines.first_byte)
                 .with_response_timeout(deadlines.answer);
             p.thinking = pc.thinking;
-            p.sampling = provider_sampling(sampling);
+            p.sampling = sampling;
             Ok(Box::new(p))
         }
         letibot_provider::Protocol::AnthropicMessages => {
@@ -4147,7 +4149,7 @@ pub fn build_provider(
                     .with_first_byte(deadlines.first_byte)
                     .with_response_timeout(deadlines.answer);
             p.thinking = pc.thinking;
-            p.sampling = provider_sampling(sampling);
+            p.sampling = sampling;
             Ok(Box::new(p))
         }
         letibot_provider::Protocol::Responses => {
@@ -4158,7 +4160,7 @@ pub fn build_provider(
                     .with_first_byte(deadlines.first_byte)
                     .with_response_timeout(deadlines.answer);
             p.thinking = pc.thinking;
-            p.sampling = provider_sampling(sampling);
+            p.sampling = sampling;
             Ok(Box::new(p))
         }
         letibot_provider::Protocol::GenAi => {
@@ -4169,7 +4171,7 @@ pub fn build_provider(
                     .with_response_timeout(deadlines.answer)
                     .with_effort(effort);
             p.thinking = pc.thinking;
-            p.sampling = provider_sampling(sampling);
+            p.sampling = sampling;
             Ok(Box::new(p))
         }
     }
@@ -4209,6 +4211,38 @@ pub(crate) fn provider_notes(
     std::sync::Arc::new(move |said: String| {
         hub.warn("model_refused_images", said);
     })
+}
+
+/// A cloud model's sampling: its own `[model."<id>"]` profile, then `[model."<preset>/<id>"]` over
+/// it, else nothing. Never the session's, which is the local server's. Keys the door fixes are
+/// dropped, and the operator is told which.
+pub(crate) fn cloud_sampling(
+    preset: &letibot_provider::Preset,
+    pc: &crate::config::ProviderConfig,
+    profiles: Option<&std::path::Path>,
+    notes: &letibot_provider::openai::Notes,
+) -> serde_json::Value {
+    let model = pc
+        .model
+        .clone()
+        .unwrap_or_else(|| preset.default_model(&letibot_provider::catalogue::Catalogue::load()));
+    let scoped = format!("{}/{model}", preset.name);
+    let profile = letibot_provider::keys::model_profile(&model, &scoped, profiles);
+    let serde_json::Value::Object(mut sampling) =
+        provider_sampling(&serde_json::Value::Object(profile.sampling))
+    else {
+        return serde_json::json!({});
+    };
+    let dropped = preset.drop_fixed_sampling(&mut sampling);
+    if !dropped.is_empty() {
+        notes(format!(
+            "{}/{model}: not sending {} from providers.toml - this door fixes those keys and \
+             refuses any other value",
+            preset.name,
+            dropped.join(" ")
+        ));
+    }
+    serde_json::Value::Object(sampling)
 }
 
 /// The sampling the operator configured, as a provider's body fields. The local

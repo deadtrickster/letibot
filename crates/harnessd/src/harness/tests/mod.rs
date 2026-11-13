@@ -36,6 +36,7 @@ mod cheap_wake;
 mod children;
 mod citations;
 mod clear;
+mod cloud_sampling;
 mod context;
 mod delivery;
 mod fallback;

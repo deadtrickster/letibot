@@ -5231,7 +5231,7 @@ mod endpoint_retry {
         let hub = letibot_sessionlog::hub::Hub::new("deadline-cfg");
         let built = crate::harness::open::build_provider(
             &glm,
-            &serde_json::json!({}),
+            None,
             crate::harness::open::provider_notes(&hub),
             d,
             None,
@@ -5258,7 +5258,7 @@ mod endpoint_retry {
         let hub = letibot_sessionlog::hub::Hub::new("gemini-fork");
         let built = crate::harness::open::build_provider(
             &pc,
-            &serde_json::json!({}),
+            None,
             crate::harness::open::provider_notes(&hub),
             crate::leticode_config::Deadlines {
                 slow_notice: std::time::Duration::from_secs(15),

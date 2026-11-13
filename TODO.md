@@ -123,7 +123,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | T3 | Report the minja scoping bug upstream | Needs the operator | the operator files it; the writeup is `docs/chat-templates.md` section 2 and no upstream link or issue number is recorded |
 | T6 | Workstreams not started, from `docs/workstreams.md` | Needs the operator | install `pytest` (W1/W2 are blocked on it); this entry's list is stale and needs rewriting from `docs/workstreams.md` |
 | R120 | One seat and a working automode, instead of roles | Parked | the automode half, until a model passes the etalon oracle corpus; the roles half is answered by R203 (a role is a profile that only narrows) |
-| R216 | Kimi's coding plan as a provider: two presets, and what its endpoint needs beyond OpenAI | Needs the operator | built: `kimi-code`/`kimi-code-global` with `KIMI_API_KEY`, `k3`, Kimi's `thinking` field, `""` on an assistant tool-call message that recorded no thought, `prompt_cache_key`, `letibot/<version>` in `User-Agent`, a 403 that says the client gate refused it and a quota 429 that is not retried; left: **no turn has been sent to Moonshot — the operator verifies against the real endpoint with their key** (the guest has none and no route), and with it whether that UA is admitted, whether `max_tokens` is accepted and whether `content: null` on a tool-call message is |
+| R216 | Kimi's coding plan as a provider: two presets, and what its endpoint needs beyond OpenAI | Code work | nothing left - settle and delete on merge. Live-verified on both global doors with the operator's key: UA admitted, `max_tokens` and `content: null` accepted; `k3.1-pro` default, fixed sampling dropped, effort as `reasoning_effort` |
 | R84a | Worktrees and landing trees beside the checkout (`wt/`, `landing/`) | Parked | three behaviour changes the operator has not ruled on, then rebasing the parked branch |
 
 ---
@@ -3377,13 +3377,22 @@ named pytest`).
 
 ## R216 - Kimi's coding plan as a provider: two presets, and what its endpoint needs beyond OpenAI
 
-**Status:** built, 2026-11-13. left: **no request has ever been sent to Moonshot.** The guest has no
-key and no route to it, so every test is against a loopback fake; the operator verifies against the
-real endpoint with their own key, and that check settles three things this box cannot: whether
-`letibot/<version>` is admitted at all (a 403 is what says it is not, and the refusal now says so in
-those words), whether `max_tokens` is accepted where Kimi Code itself sends `max_completion_tokens`,
-and whether `content: null` on an assistant tool-call message is accepted where Kimi's own client
-drops the key.
+**Status:** built, live-verified 2026-11-13. `crates/provider/tests/kimi_live.rs` (`KIMI_LIVE=1`,
+`--ignored`) sent a tool-call round trip on `k3.1-pro` to both global doors with the operator's key,
+and every request answered 200. The three open questions, answered by that run and by direct probes:
+`User-Agent: letibot/<version>` is admitted on both doors (a `Python-urllib` UA is a 403
+`error code: 1010`); `max_tokens` is accepted, and so is `max_completion_tokens`; `content: null` on
+an assistant tool-call message is accepted, with the model's `reasoning_content` replayed and with
+the filled `""`. Also measured: `thinking: {"type": "enabled"}` is accepted on the plan endpoint (the
+platform docs' "not supported on K3" is about the Open Platform), `disabled` is a 400 on K3.1 Pro
+only, `reasoning_effort` low/high/max is accepted, and an unknown id is a 400 naming `k3`,
+`k3.1-pro` and `k3.1-pro-highspeed` rather than a silent fallback. Every plan model answers a
+temperature other than 1 with `400 invalid temperature: only 1 is allowed for this model`, and
+`top_p` (0.95), `presence_penalty` (0), `n` (1) the same way; the Messages door ignores them.
+Fixed after the live run: the presets' `fallback_model` is `k3.1-pro` (`vendor_pick`, since the
+catalogue's rule picks `k3`), `fixed_sampling` drops the plan's fixed keys with one note,
+`--effort` rides `reasoning_effort`, and a cloud provider no longer inherits the local server's
+sampling (`harness::open::cloud_sampling`).
 
 Moonshot's Kimi Code plan (`https://www.kimi.com/code/docs/en/`, read from MoonshotAI/kimi-code at
 `1364ab47` - the package brief is not in this repository). The endpoint speaks OpenAI chat
@@ -3394,8 +3403,9 @@ Platform: the two products' keys and URLs are not interchangeable.
 `kimi-code-plan-cn`) and `KIMI_CODE_GLOBAL` (`api.kimi.ai/coding/v1/chat/completions`,
 `kimi-code-plan-global`), the same split as `glm-coding`/`glm-coding-cn` because one key answers on
 one region's host only. `key_env: KIMI_API_KEY`, `alt_envs: KIMI_CODE_API_KEY` (never
-`MOONSHOT_API_KEY`, which belongs to the other product), `fallback_model: k3`, `thinking_field:
-Some("thinking")`, and an effort rides the operator's own `sampling = {reasoning_effort = "high"}`.
+`MOONSHOT_API_KEY`, which belongs to the other product), `fallback_model: k3.1-pro` with
+`vendor_pick`, `thinking_field: Some("thinking")`, `fixed_sampling` for the plan's fixed keys, and
+`--effort` as `reasoning_effort` (`Preset::effort`).
 Aliases `kimi`, `kimi-coding`, `moonshot-coding`; opencode's `auth.json` ids too. The
 parse refusal now names every preset rather than a count, so the next door added cannot leave it
 claiming a number that is no longer true.

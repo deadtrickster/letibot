@@ -556,7 +556,7 @@ impl Harness {
             Some(pc) => {
                 let p = build_provider(
                     &pc,
-                    &self.cfg.sampling,
+                    self.cfg.providers_file.as_deref(),
                     provider_notes(&self.hub),
                     self.cfg.deadlines_for(Some(&pc)),
                     self.cfg.effort.as_deref(),
