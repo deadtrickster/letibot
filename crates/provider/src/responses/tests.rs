@@ -898,9 +898,9 @@ fn the_openai_door_is_the_responses_protocol_and_names_its_own_key() {
     assert_eq!(preset.key_env, "OPENAI_API_KEY");
     assert!(preset.url.contains(&format!("/{}", "responses")));
     assert!(ALL.contains(&&crate::presets::OPENAI), "listed for /models");
-    // The other doors are untouched: this change added a protocol, not a rewrite.
+    // No other door speaks it: the protocol is the preset's, not read off a path.
     for p in ALL.iter().filter(|p| p.name != "openai") {
-        assert_eq!(p.protocol, Protocol::ChatCompletions, "{}", p.name);
-        assert!(p.url.contains("/chat/completions"), "{}", p.name);
+        assert_ne!(p.protocol, Protocol::Responses, "{}", p.name);
+        assert!(!p.url.contains("/responses"), "{}", p.name);
     }
 }

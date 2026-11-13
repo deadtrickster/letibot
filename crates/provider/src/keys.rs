@@ -284,6 +284,11 @@ fn opencode_key(provider: &str) -> Option<String> {
         // keys are read from: a lookup that only knew the family name would miss the key.
         "glm-coding" => &["zai-coding-plan", "zai", "zhipuai-coding-plan", "zhipuai"],
         "glm-coding-cn" => &["zhipuai-coding-plan", "zhipuai", "zai-coding-plan", "zai"],
+        // The plan's two regions are ids of their own in `auth.json`, where a login lands under
+        // the models.dev provider id rather than under the name this build calls the door.
+        "kimi-code" => &["kimi-code-plan-cn"],
+        "kimi-code-global" => &["kimi-code-plan-global", "kimi-code-plan-cn"],
+        "kimi-coding" => &["kimi-code-plan-global", "kimi-code-plan-cn"],
         _ => &[],
     };
     for id in ids {

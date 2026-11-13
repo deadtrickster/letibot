@@ -70,6 +70,228 @@
    }
   }
  },
+ "kimi-code-plan-cn": {
+  "models": {
+   "k3": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
+    }
+   },
+   "k3-256k": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 262144,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
+    }
+   },
+   "k3.1-pro": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
+    }
+   },
+   "k3.1-pro-highspeed": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
+    }
+   },
+   "kimi-for-coding": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
+    }
+   },
+   "kimi-for-coding-highspeed": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 262144,
+     "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
+    }
+   }
+  }
+ },
+ "kimi-code-plan-global": {
+  "models": {
+   "k3": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
+    }
+   },
+   "k3-256k": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 262144,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image"
+     ]
+    }
+   },
+   "k3.1-pro": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
+    }
+   },
+   "k3.1-pro-highspeed": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 131072
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
+    }
+   },
+   "kimi-for-coding": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 1048576,
+     "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
+    }
+   },
+   "kimi-for-coding-highspeed": {
+    "cost": {
+     "cache_read": 0,
+     "input": 0,
+     "output": 0
+    },
+    "limit": {
+     "context": 262144,
+     "output": 32768
+    },
+    "modalities": {
+     "input": [
+      "text",
+      "image",
+      "video"
+     ]
+    }
+   }
+  }
+ },
  "xai": {
   "models": {
    "grok-4.20-0309-non-reasoning": {

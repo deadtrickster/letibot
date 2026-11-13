@@ -555,6 +555,8 @@ mod tests {
             "zai-coding-plan",
             "zhipuai-coding-plan",
             "xai",
+            "kimi-code-plan-cn",
+            "kimi-code-plan-global",
         ] {
             assert!(
                 !c.model_names(provider).is_empty(),
@@ -610,7 +612,7 @@ mod tests {
     #[test]
     fn the_fallback_models_are_real_on_the_floor_alone() {
         let cat = Catalogue::snapshot();
-        // The five fallbacks as `crate::presets` spells them, read from the presets rather
+        // The fallbacks as `crate::presets` spells them, read from the presets rather
         // than re-typed, so a fallback change moves this test with it.
         for (preset, provider) in [
             (crate::presets::DEEPSEEK, "deepseek"),
@@ -618,6 +620,8 @@ mod tests {
             (crate::presets::GLM_CODING, "zai-coding-plan"),
             (crate::presets::GLM_CODING_CN, "zhipuai-coding-plan"),
             (crate::presets::GROK, "xai"),
+            (crate::presets::KIMI_CODE, "kimi-code-plan-cn"),
+            (crate::presets::KIMI_CODE_GLOBAL, "kimi-code-plan-global"),
         ] {
             assert!(
                 cat.model_names(provider)

@@ -41,6 +41,9 @@ pub struct OpenAiProvider {
     /// rather than a hub, because this crate stays below the session log and who hears it is the
     /// caller's business.
     notes: Option<Notes>,
+    /// `prompt_cache_key`, for Kimi's implicit cache: one provider instance is one session, and no
+    /// session id reaches this crate, so the instance's own name is the key. `None` elsewhere.
+    cache_key: Option<String>,
 }
 
 /// Where a provider says something a person has to read. `Arc<dyn Fn>` because the
@@ -68,6 +71,7 @@ impl OpenAiProvider {
             thinking: false,
             sampling: json!({}),
             notes: None,
+            cache_key: crate::kimi::is_kimi(preset.name).then(crate::kimi::cache_key),
         }
     }
 
@@ -180,11 +184,19 @@ impl OpenAiProvider {
         if carries_tools {
             body["tools"] = Value::Array(tools);
         }
+        // Kimi's implicit cache is keyed by this, and it is a hint: a miss costs a re-prefill.
+        if let Some(key) = &self.cache_key {
+            body["prompt_cache_key"] = json!(key);
+        }
         let thinking = req.thinking.unwrap_or(self.thinking);
+        // Kimi's K3.1 Pro answers `disabled` with a 400, so there the field is left out and the
+        // model's own default stands (see `crate::kimi::may_switch_thinking_off`).
         if let Some(field) = self.preset.thinking_field {
             if thinking {
                 body[field] = json!({"type": "enabled"});
-            } else if req.thinking == Some(false) {
+            } else if req.thinking == Some(false)
+                && crate::kimi::may_switch_thinking_off(self.preset.name, &self.model)
+            {
                 body[field] = json!({"type": "disabled"});
             }
         }
@@ -198,6 +210,11 @@ impl OpenAiProvider {
         if let Some(n) = req.max_output_tokens {
             let set = body["max_tokens"].as_u64().unwrap_or(u64::MAX);
             body["max_tokens"] = json!(set.min(u64::from(n)));
+        }
+        // Last, because it repairs the messages the conversion above produced: Kimi refuses an
+        // assistant tool-call message with no `reasoning_content` field at all.
+        if crate::kimi::is_kimi(self.preset.name) {
+            crate::kimi::fill_absent_thoughts(&mut body);
         }
         Ok(body)
     }
@@ -463,14 +480,18 @@ impl OpenAiProvider {
         // answer has been read, so ask again rather than report a signal as an unreachable model.
         let mut retried = 0u32;
         let resp = loop {
-            match self
+            let mut posted = self
                 .agent
                 .post(&self.url)
                 .header("Authorization", &format!("Bearer {}", self.creds.key))
                 .header("Content-Type", "application/json")
-                .header("Accept", "text/event-stream")
-                .send(payload.as_bytes())
-            {
+                .header("Accept", "text/event-stream");
+            // An endpoint that admits clients by name must be told ours, and never another
+            // agent's: Moonshot documents a rewritten User-Agent as a violation.
+            if crate::kimi::is_kimi(self.preset.name) {
+                posted = posted.header("User-Agent", crate::kimi::USER_AGENT);
+            }
+            match posted.send(payload.as_bytes()) {
                 Ok(resp) => break resp,
                 Err(e) if ask_again(&e, &mut retried) => {}
                 Err(e) => {
@@ -514,6 +535,12 @@ impl OpenAiProvider {
             }) {
                 Some(code) if !message.contains(code) => format!("{message} ({code})"),
                 _ => message,
+            };
+            // What a 403 from the coding plan most often is, said where the operator reads the
+            // refusal: the body may name nothing at all.
+            let message = match crate::kimi::explain_a_403(self.preset.name, status) {
+                Some(note) => format!("{message} — {note}"),
+                None => message,
             };
             // What was SENT, when what was sent was refused: the shape of it and never the
             // content, so the next unexplained refusal is read off this record rather than guessed
@@ -663,6 +690,11 @@ impl Accumulator {
             return out;
         };
         for choice in choices {
+            // Kimi may put the whole usage object inside a CHOICE of its last chunk rather than at
+            // the top level, and a reader that looks only above `choices` bills that turn as free.
+            if let Some(u) = choice.get("usage").filter(|u| !u.is_null()) {
+                self.usage = Some(u.clone());
+            }
             if let Some(fr) = choice.get("finish_reason").and_then(|f| f.as_str()) {
                 self.finish = Some(match fr {
                     "stop" => Finish::Stop,
@@ -1020,6 +1052,34 @@ mod tests {
         );
     }
 
+    /// Kimi's last chunk may carry the usage inside its choice rather than beside `choices`, and a
+    /// reader that looked only above that key billed the turn as nothing.
+    #[test]
+    fn a_usage_inside_a_choice_is_read_rather_than_dropped() {
+        let mut a = Accumulator::default();
+        a.absorb(&json!({"choices":[{"delta":{"content":"hi"}}]}));
+        a.absorb(&json!({"choices":[{"delta":{},"finish_reason":"stop",
+                                      "usage":{"prompt_tokens":30,"completion_tokens":4,
+                                                "prompt_tokens_details":{"cached_tokens":10}}}]}));
+        let creds = Credentials {
+            key: "k".into(),
+            from: "test".into(),
+            prices: Default::default(),
+            url: None,
+        };
+        let done = a.finish(
+            "k3",
+            &creds,
+            5,
+            &crate::presets::KIMI_CODE,
+            &crate::catalogue::Catalogue::default(),
+        );
+        assert_eq!(done.cost.prompt_tokens, 30);
+        assert_eq!(done.cost.cached_tokens, 10);
+        assert_eq!(done.cost.generated_tokens, 4);
+        assert_eq!(done.text, "hi");
+    }
+
     /// The authority is the host the request actually goes to, including when the operator's key
     /// file moved it: `creds.url` wins over the preset, so a version that read the preset would
     /// name DeepSeek while the request went to a proxy.
@@ -1236,5 +1296,75 @@ mod tests {
         p.thinking = false;
         let plain = p.body(&req(None, None)).expect("a body");
         assert!(plain.get("thinking").is_none(), "{plain}");
+    }
+
+    /// K3.1 Pro answers `thinking: {"type": "disabled"}` with a 400, so a cheap turn on it asks
+    /// for silence by leaving the field out: absent is the server's default, and a refusal would
+    /// cost the turn. Its cache key and its empty thought ride the same body.
+    #[test]
+    fn a_cheap_turn_on_a_model_that_refuses_disabled_leaves_the_switch_out() {
+        use letibot_transcript::{ToolCall, TranscriptItem, UserPart};
+        let creds = Credentials {
+            key: "k".into(),
+            from: "test".into(),
+            prices: Default::default(),
+            url: None,
+        };
+        let items = vec![
+            TranscriptItem::User {
+                speaker: Default::default(),
+                parts: vec![UserPart::Text { text: "hi".into() }],
+            },
+            TranscriptItem::Assistant {
+                text: String::new(),
+                tool_calls: vec![ToolCall {
+                    id: "c1".into(),
+                    name: "read".into(),
+                    arguments: "{}".into(),
+                }],
+                truncated: false,
+            },
+        ];
+        let cheap = |model: &str| {
+            let p = OpenAiProvider::new(&crate::presets::KIMI_CODE, Some(model), creds.clone());
+            p.body(&TurnRequest {
+                system: "",
+                tools_json: &[],
+                items: &items,
+                tail: &[],
+                max_output_tokens: Some(128),
+                thinking: Some(false),
+            })
+            .expect("a body")
+        };
+        let pro = cheap("k3.1-pro");
+        assert!(
+            pro.get("thinking").is_none(),
+            "K3.1 Pro refuses `disabled`: {pro}"
+        );
+        assert_eq!(pro["messages"][1]["reasoning_content"], "");
+        assert!(pro["prompt_cache_key"].is_string(), "{pro}");
+
+        let k3 = cheap("k3");
+        assert_eq!(k3["thinking"], json!({"type": "disabled"}));
+
+        // And another door is untouched: no cache key, no empty thought, the plain GLM body.
+        let glm = OpenAiProvider::new(&crate::presets::GLM, Some("glm-5.3"), creds.clone());
+        let body = glm
+            .body(&TurnRequest {
+                system: "",
+                tools_json: &[],
+                items: &items,
+                tail: &[],
+                max_output_tokens: None,
+                thinking: Some(false),
+            })
+            .expect("a body");
+        assert!(body.get("prompt_cache_key").is_none(), "{body}");
+        assert_eq!(body["thinking"], json!({"type": "disabled"}));
+        assert!(
+            body["messages"][1].get("reasoning_content").is_none(),
+            "{body}"
+        );
     }
 }

@@ -8,6 +8,7 @@ pub mod anthropic;
 pub mod catalogue;
 pub mod gemini;
 pub mod keys;
+pub mod kimi;
 pub mod marks;
 pub mod messages;
 pub mod openai;

@@ -181,16 +181,17 @@ pub const GLM_ANTHROPIC: Preset = Preset {
 /// <https://www.kimi.com/code/docs/en/third-party-tools/claude-code>
 ///
 /// The key variable is not `ANTHROPIC_API_KEY`: a box may hold both doors' keys at once, and one
-/// variable for two providers is one provider's key silently sent to the other.
+/// variable for two providers is one provider's key silently sent to the other. The plan and its
+/// models are [`KIMI_CODE_GLOBAL`]'s, so it is priced and windowed by that catalogue id.
 pub const KIMI_CODING: Preset = Preset {
     name: "kimi-coding",
     url: "https://api.kimi.ai/coding/v1/messages",
     key_env: "KIMI_API_KEY",
     protocol: Protocol::AnthropicMessages,
     alt_envs: &["MOONSHOT_API_KEY"],
-    fallback_model: "k3.1-pro",
+    fallback_model: "k3",
     thinking_field: None,
-    catalogue_id: "moonshotai",
+    catalogue_id: "kimi-code-plan-global",
 };
 
 /// OpenAI itself, on its own protocol. `gpt-6-astra` is the id the API reference's own
@@ -234,6 +235,42 @@ pub const GEMINI: Preset = Preset {
     catalogue_id: "google",
 };
 
+/// Kimi's coding plan (Moonshot): OpenAI chat completions on the plan's own host. Not the
+/// pay-per-token Open Platform (`api.moonshot.ai/v1`, `$MOONSHOT_API_KEY`): the two products'
+/// keys and URLs are not interchangeable.
+///
+/// ```text
+/// POST https://api.kimi.com/coding/v1/chat/completions
+/// Authorization: Bearer sk-kimi-...
+/// {"model":"k3", "thinking":{"type":"enabled"}, "prompt_cache_key":"..."}
+/// ```
+///
+/// An effort rides `sampling = {reasoning_effort = "high"}` in the operator's file, which the
+/// endpoint takes as the top-level field.
+pub const KIMI_CODE: Preset = Preset {
+    name: "kimi-code",
+    url: "https://api.kimi.com/coding/v1/chat/completions",
+    key_env: "KIMI_API_KEY",
+    protocol: Protocol::ChatCompletions,
+    alt_envs: &["KIMI_CODE_API_KEY"],
+    fallback_model: "k3",
+    thinking_field: Some("thinking"),
+    catalogue_id: "kimi-code-plan-cn",
+};
+
+/// The same plan on the global host. One key works on one region's host only, so this is a
+/// preset of its own rather than a base-URL override: the window follows the catalogue id.
+pub const KIMI_CODE_GLOBAL: Preset = Preset {
+    name: "kimi-code-global",
+    url: "https://api.kimi.ai/coding/v1/chat/completions",
+    key_env: "KIMI_API_KEY",
+    protocol: Protocol::ChatCompletions,
+    alt_envs: &["KIMI_CODE_API_KEY"],
+    fallback_model: "k3",
+    thinking_field: Some("thinking"),
+    catalogue_id: "kimi-code-plan-global",
+};
+
 pub const ALL: &[&Preset] = &[
     &DEEPSEEK,
     &GLM,
@@ -246,6 +283,8 @@ pub const ALL: &[&Preset] = &[
     &KIMI_CODING,
     &OPENAI,
     &GEMINI,
+    &KIMI_CODE,
+    &KIMI_CODE_GLOBAL,
 ];
 
 impl Preset {
@@ -279,7 +318,17 @@ impl Preset {
             "glm-coding" | "zai-coding" | "coding-plan" => Ok(&GLM_CODING),
             "glm-coding-cn" | "zhipu-coding" | "bigmodel-coding" => Ok(&GLM_CODING_CN),
             "grok" | "xai" | "x.ai" => Ok(&GROK),
-            "kimi-coding" | "kimi" | "moonshot" => Ok(&KIMI_CODING),
+            // The same vendors over the Messages wire. Their own names, because a base URL moved
+            // onto another protocol is a different door: one answers `tool_result` and the other
+            // `tool` messages, and a preset is what that choice is written down as.
+            "anthropic" | "claude" => Ok(&ANTHROPIC),
+            "deepseek-anthropic" | "deepseek-messages" => Ok(&DEEPSEEK_ANTHROPIC),
+            "glm-anthropic" | "zai-anthropic" | "glm-messages" => Ok(&GLM_ANTHROPIC),
+            // The plan over Messages. `moonshot` alone would be a guess between the plan and the
+            // metered Open Platform, and the two keys are not interchangeable.
+            "kimi-coding" | "kimi-anthropic" => Ok(&KIMI_CODING),
+            "kimi-code" | "kimi" | "moonshot-coding" => Ok(&KIMI_CODE),
+            "kimi-code-global" | "kimi-global" => Ok(&KIMI_CODE_GLOBAL),
             "openai" => Ok(&OPENAI),
             "gemini" | "google" | "genai" => Ok(&GEMINI),
             // Read from `ALL` rather than typed again: a provider added to one list and not
@@ -347,6 +396,34 @@ mod tests {
         assert_eq!(GEMINI.protocol, Protocol::GenAi);
     }
 
+    /// The plan's two hosts, its own key and its thinking switch: the facts a reader of the
+    /// table above cannot check without calling Moonshot with a key.
+    #[test]
+    fn the_kimi_presets_are_the_coding_plans_two_hosts() {
+        assert_eq!(
+            KIMI_CODE.url,
+            "https://api.kimi.com/coding/v1/chat/completions"
+        );
+        assert_eq!(
+            KIMI_CODE_GLOBAL.url,
+            "https://api.kimi.ai/coding/v1/chat/completions"
+        );
+        for p in [&KIMI_CODE, &KIMI_CODE_GLOBAL] {
+            assert_eq!(p.key_env, "KIMI_API_KEY", "{}", p.name);
+            assert_eq!(p.alt_envs, &["KIMI_CODE_API_KEY"], "{}", p.name);
+            assert_eq!(p.fallback_model, "k3", "{}", p.name);
+            assert_eq!(p.thinking_field, Some("thinking"), "{}", p.name);
+            // The metered Open Platform's key is a different product's.
+            assert!(!p.key_env.contains("MOONSHOT"), "{}", p.name);
+        }
+        assert_eq!(Preset::parse("kimi").unwrap().name, "kimi-code");
+        assert_eq!(Preset::parse("Moonshot-Coding").unwrap().name, "kimi-code");
+        assert_eq!(
+            Preset::parse("kimi-code-global").unwrap().name,
+            "kimi-code-global"
+        );
+    }
+
     /// Every `fallback_model` must be a name the catalogue carries in its shortest form,
     /// because a longer alias for the same window and price makes a box with a catalogue
     /// choose differently from one without. The account's own list is what a script sees.
@@ -368,6 +445,9 @@ mod tests {
             (&GLM_CODING, "zai-coding-plan"),
             (&GLM_CODING_CN, "zhipuai-coding-plan"),
             (&GROK, "xai"),
+            (&KIMI_CODE, "kimi-code-plan-cn"),
+            (&KIMI_CODE_GLOBAL, "kimi-code-plan-global"),
+            (&KIMI_CODING, "kimi-code-plan-global"),
         ] {
             let Some(facts) = cat.model(catalogue_id, preset.fallback_model) else {
                 panic!(
