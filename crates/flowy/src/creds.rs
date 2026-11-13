@@ -159,7 +159,7 @@ impl std::fmt::Display for CredError {
             CredError::NoToken { agent, looked } => write!(
                 f,
                 "no token for seat `{agent}`: looked at {}. Mint one with `flowy mint \
-                 --handle {agent}` and put it there, or pass --flowy-token-file",
+                 --handle {agent}` and put it there, or set $FLOWY_TOKEN",
                 looked
                     .iter()
                     .map(|p| p.display().to_string())

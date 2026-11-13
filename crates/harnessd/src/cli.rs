@@ -40,6 +40,10 @@
 
 use std::path::PathBuf;
 
+mod help;
+
+use help::{config_notice, knows, removed, usage};
+
 use crate::config::{
     AdjudicatorChoice, Config, Disclosure, Reviewers, Seat, SpillPolicy, SpillStorage,
 };
@@ -281,224 +285,6 @@ fn unreachable_models(
     out
 }
 
-fn usage() -> String {
-    "harnessd [--workspace DIR] [--socket PATH] [--store DIR|FILE] [--project KEY]\n\
-     \x20        [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]\n\
-     \x20        [--vocab GGUF] [--system TEXT|--system-file FILE]\n\
-     \x20        [--effort low|medium|high|xhigh]\n\
-     \x20        [--spill-inline BYTES] [--spill-dir DIR]\n\
-     \x20        [--max-tool-rounds N|off] [--stall-rounds N] [--session ID] [--title NAME] [--prompt TEXT ...] [--slash VERB ...]\n\
-     \n\
-     what this session may do — every one of these is off unless you pass it:\n\
-     \x20 --role NAME               orchestrator (default, read-only) | planner |\n\
-     \x20                           researcher | coder (write+edit) | runner (exec)\n\
-     \x20 --bash                    seat `bash` under --role runner. OFF even behind\n\
-     \x20                           the role: the transcript choke point does not\n\
-     \x20                           exist yet, so the boundary keeps secret bytes out\n\
-     \x20                           of the VIEW and nothing stops a tool result\n\
-     \x20                           carrying them into the transcript\n\
-     \x20 --max-subagent-depth 3    how deep a subagent tree may go, in levels below\n\
-     \x20                           the root. `task` is seated on every subagent, so\n\
-     \x20                           a call past this depth is refused BY NAME rather\n\
-     \x20                           than withdrawn -- a capability that exists but is\n\
-     \x20                           hidden manufactures the workaround. 0 refuses\n\
-     \x20                           every `task` call\n\
-     \x20 --restore-within 3600     seconds the daemon may have been down for a\n\
-     \x20                           session's subagents and monitors to be restored on\n\
-     \x20                           their own at the next start; past it the model is\n\
-     \x20                           only reminded of what was running\n\
-     \x20 --idle-exit 3600          seconds with no head, turn, job, subagent, monitor\n\
-     \x20                           or queue work after which the daemon exits; its\n\
-     \x20                           sessions stay in the store. 0 never exits\n\
-      \x20 --parent-seat cc@proj     this daemon's sessions are children of that\n\
-      \x20                           Claude Code seat, not top-level services: they\n\
-      \x20                           do not join the box's room\n\
-      \x20 --no-queue                serve NO merge or review queue: no lease is\n\
-      \x20                           claimed, no target gated and no branch landed\n\
-      \x20                           here, and this daemon's sessions are told no\n\
-      \x20                           queue news (a package worker must not be set\n\
-      \x20                           to fixing a `main` nobody asked it about). The\n\
-      \x20                           store watcher stays, so a head still moves\n\
-     \x20 --room                    be the BOX'S ROOM COORDINATOR: a whole daemon\n\
-     \x20                           whose only job is the room -- its own socket\n\
-     \x20                           under the data directory, NO store, no project,\n\
-     \x20                           and one session of its own (`s-room-<host>`,\n\
-     \x20                           reachable as `--session host`) that arbitrates\n\
-     \x20                           the queues. One per box: a second is refused by\n\
-     \x20                           a lease that names the live holder, and it will\n\
-     \x20                           not start without a model to arbitrate with\n\
-     \x20                           (`--model`, deepseek by default)\n\
-     \x20 --reviewers host|vm     where this daemon's REVIEWERS run. `host` (the\n\
-     \x20                           default) is a reviewer child on this machine, in\n\
-     \x20                           a checkout of the head it judges -- as the\n\
-     \x20                           subagents that author the branches already run;\n\
-     \x20                           `vm` is each reviewer in a firecode microVM,\n\
-     \x20                           which asks nobody for anything and costs a guest\n\
-     \x20                           exec per read. The project's `[queue] reviewers`\n\
-     \x20                           says the same thing, and this flag overrides it\n\
-     \x20 --gate-host NAME         run this daemon's MERGE GATE on a machine the\n\
-     \x20                           operator declared in hosts.toml, instead of on\n\
-     \x20                           this box. The landing tree goes over that host's\n\
-     \x20                           own key and root and the steps run there with\n\
-     \x20                           their build cache; the merge itself stays here.\n\
-     \x20                           Unset -- the default -- is this machine. The\n\
-     \x20                           project's `[queue] gate_host` says the same\n\
-     \x20                           thing, and this flag overrides it;\n\
-     \x20                           `--gate-host local` (or an empty name) puts\n\
-     \x20                           it back on this machine\n\
-     \x20 --reviewers-at-once N how many reviewers this daemon's queues run at ONCE.\n\
-     \x20                           The default belongs to the placement: `vm` keeps\n\
-     \x20                           the box's VM slots, and `host` runs as many as the\n\
-     \x20                           machines it may use can take (four per machine, one\n\
-     \x20                           per four spare cores). The project's\n\
-     \x20                           `[queue] reviewers_at_once` says the same thing\n\
-     \x20 --reviewer-hosts LIST   the machines a reviewer may be placed on, comma\n\
-     \x20                           separated: names from the operator's hosts.toml,\n\
-     \x20                           `local` for this machine, or `*` for every\n\
-     \x20                           declared host. The default is this machine only\n\
-     \x20 --adjudicator console     who decides a gated call, and the default for any\n\
-     \x20                           role that can reach the gate. Reads this daemon's\n\
-     \x20                           own stdin, so it works in the foreground and an\n\
-     \x20                           attached head cannot answer it (T25/D10). There is\n\
-     \x20                           no `none`: a role with nobody to decide refuses to\n\
-     \x20                           start, because --role orchestrator is the honest\n\
-     \x20                           spelling of a session that cannot write\n\
-     \x20 --oracle HOST:PORT        layer B: a llama.cpp /completion endpoint that\n\
-     \x20                           answers `did the operator ask for this`. Its own\n\
-     \x20                           flag, not --endpoint: the guard need not be the\n\
-     \x20                           model doing the work. Required by\n\
-     \x20                           --adjudicator model and by /supervise;\n\
-     \x20                           both refuse by name without it\n\
-     \x20 --supervise               start with the guard model consulted on every\n\
-     \x20                           gated call: it answers, then you do, and both\n\
-     \x20                           verdicts land on one corpus row. `/supervise`\n\
-     \x20                           turns it on and off mid-session -- this is only\n\
-     \x20                           the starting value. Needs --oracle\n\
-     \x20 --oracle-question verdict what the guard is asked: `verdict` (ALLOW/DENY/\n\
-     \x20                           UNSURE) or `scores` (FIT and CLAIM 0-10, the\n\
-     \x20                           thresholds derive the verdict; TraceGuard §4)\n\
-     \x20 --oracle-max-tokens 120   how many output tokens the guard may spend on its\n\
-     \x20                           answer. A reply stopped at this ceiling before its\n\
-     \x20                           verdict is reported as *ran out of room* and NOT as\n\
-     \x20                           an unreadable answer -- it is the one unsure whose\n\
-     \x20                           response is this number\n\
-     \x20 --oracle-budget-ms 400    how long the gate waits for that answer before\n\
-     \x20                           giving up and failing closed. 400 was measured\n\
-     \x20                           against a 4B on THIS box's CPU and says nothing\n\
-     \x20                           about an oracle across the LAN -- measure before\n\
-     \x20                           raising it, and know that every gated call blocks\n\
-     \x20                           for up to this long\n\
-     \x20 --intent-prose            also read the assistant's prose for commitments\n\
-     \x20                           it did not act on. The tool-declared half is\n\
-     \x20                           always on; this half has false positives\n\
-     \x20 --flowy                   hold a flowy seat: messages for it wake the\n\
-     \x20                           session as firings of the `flowy` monitor, and\n\
-     \x20                           the `flowy` tool speaks as it. The seat comes\n\
-     \x20                           from the usual path ($FLOWY_AGENT, else the only\n\
-     \x20                           token under ~/.config/flowy/agents/) unless\n\
-     \x20                           --flowy-seat NAME says which. Never the\n\
-     \x20                           operator's own ~/.config/flowy/token\n\
-     \x20 --flowy-seat NAME         which seat (implies --flowy)\n\
-     \x20 --flowy-addr URL          the node, else $FLOWY_ADDR, else the seat's env\n\
-     \x20                           file, else http://127.0.0.1:8787\n\
-     \x20 --flowy-token-file PATH   the token, else the seat's file\n\
-     \x20 --provider NAME           send the turns to a cloud provider instead of the\n\
-     \x20                           local server: deepseek | glm | glm-coding |\n\
-     \x20                           glm-coding-cn | grok. --model names\n\
-     \x20                           the provider's model (default: the preset's).\n\
-     \x20                           The key: $DEEPSEEK_API_KEY / $ZHIPUAI_API_KEY /\n\
-     \x20                           $XAI_API_KEY, --api-key, or [NAME] key= in\n\
-     \x20                           ~/.config/letibot/providers.toml, which also\n\
-     \x20                           prices models. METERED; the prefix check skips\n\
-     \x20 --api-key KEY             the provider's key, for a one-off\n\
-     \x20 --thinking                ask the provider to think out loud where it has\n\
-     \x20                           a switch (GLM)\n\
-     \x20 --flowy-new-reader        declare the inbox reader at the head of the log.\n\
-     \x20                           Never implied: `no inbox reader` is also what a\n\
-     \x20                           SWITCHED token says, and re-declaring there loses\n\
-     \x20                           every message since the switch\n\
-     \x20 --where host|firecode     where this session's tools run. firecode runs them\n\
-     \x20                           in a VM, the boundary: everything is allowed inside.\n\
-     \x20                           On a Mac the workspace itself is mounted read-write\n\
-     \x20                           (every repository in it; nothing else of the host),\n\
-     \x20                           joining a VM already up for it; elsewhere it is a\n\
-     \x20                           COPY, delivered as a sibling directory at the end\n\
-     \x20 --vm-copy                 a copy even on a Mac, as before\n\
-     \x20 --vm-arg ARG              passed to `firecode up` verbatim, repeatable:\n\
-     \x20                           --vm-arg --mem --vm-arg 8192 --vm-arg --add-dir\n\
-     \x20                           --vm-arg ~/.rustup (a toolchain the guest lacks)\n\
-     \x20 --host NAME               where this session's TOOLS run: on the ssh host\n\
-     \x20                           NAME, declared by the operator under [host.NAME]\n\
-     \x20                           in ~/.config/letibot/hosts.toml. The model, the\n\
-     \x20                           store and the gate stay here; bash, read, write,\n\
-     \x20                           jobs and the rest run there, and the repository's\n\
-     \x20                           HEAD goes over as a checkout (branch remote/<id>)\n\
-     \x20                           whose commits come back as remote/NAME/<id>. A\n\
-     \x20                           remote session is NOT in a VM unless --where\n\
-     \x20                           firecode says so, and the pair is a VM THERE:\n\
-     \x20                           the host's own `firecode` boots the guest over\n\
-     \x20                           this session's ssh link, the guest holds a copy\n\
-     \x20                           of the checkout at the same path and IS the\n\
-     \x20                           boundary, and what it commits is collected onto\n\
-     \x20                           the checkout when the VM stops, then fetched home\n\
-     \x20                           as remote/NAME/<id>. A host with no firecode or\n\
-     \x20                           no /dev/kvm is refused by name, once per host\n\
-     \x20                           (the launcher spells the pair `--host NAME --vm`)\n\
-     \x20 --web-search brave        attach a provider behind `web_search`. Without\n\
-     \x20                           it the tool refuses and says so\n\
-     \x20 --brave-key KEY           for this run; else $BRAVE_API_KEY, else\n\
-     \x20                           [brave] key= in ~/.config/letibot/providers.toml\n\
-     \x20 --web-fetch             attach `curl` egress behind `web_fetch`: the page\n\
-     \x20                           is reader-mode extracted and rendered as\n\
-     \x20                           markdown before it reaches the model\n\
-     \x20 --no-project-config      ignore the project's own `leticode.toml`: its\n\
-     \x20                           `main_model`, `subagent_model`,\n\
-     \x20                           `gatekeeper_model` and `[roles]` overrides are\n\
-     \x20                           not read, and the session runs on the daemon's\n\
-     \x20                           own. Otherwise the nearest file at or above\n\
-     \x20                           --workspace is found by walking up, read, and\n\
-     \x20                           disclosed at startup; a file that does not parse\n\
-     \x20                           is reported and the session still starts\n\
-     \x20 the model, and which level decided it:\n\
-     \x20                           command line > project `leticode.toml` > user\n\
-     \x20                           `~/.config/letibot/leticode.toml` > built-in. The\n\
-     \x20                           user file is the same keys as the project's, read\n\
-     \x20                           once for the whole box, so a `main_model` line\n\
-     \x20                           there decides what a session runs on without a\n\
-     \x20                           flag. `--provider` is the flag that\n\
-     \x20                           outranks both; `--model` alone names the LOCAL\n\
-     \x20                           alias the daemon tokenises with, and does not\n\
-     \x20                           suppress the files. Startup names the level that won,\n\
-     \x20                           and names a model this box cannot reach\n\
-     \n\
-     store queries (no socket, no model):\n\
-     \x20 --list-sessions [--tsv]   what is on disk, GROUPED: mine first, then the\n\
-     \x20                           harness's own work (subagents, the review queue,\n\
-     \x20                           packages, one-shots) with a count each. `--tsv` is\n\
-     \x20                           the plain five-column data form, unchanged. A session put\n\
-      \x20                           out of sight is NOT in it: `--archived` lists it\n\
-      \x20                           beside the rest, `--archived-only` alone\n\
-     \x20 --latest-session          the id of the newest one, scoped by --workspace\n\
-     \x20 --find-session NAME      a session by name under --scope, else in any folder;\n\
-     \x20                           prints `here` or `there` rows (see the launcher)\n\
-     \x20 --rename ID TITLE         name a session, or clear it with an empty title\n\
-     \x20 --delete ID               remove a session that has no rows\n\
-      \x20 --archive ID [REASON]     put a session out of sight and KEEP it: the rows\n\
-      \x20                           stay, `--session ID` opens it again (and puts\n\
-      \x20                           it back in the list). No delete path is added\n\
-      \x20 --unarchive ID            put it back in the list\n\
-      \n\
-     \n\
-     claude code, both directions (no socket, no model):\n\
-     \x20 --list-claude [--tsv]     what Claude Code has on this box: the id `--session\n\
-     \x20                           cc-<id>` takes, the model, and the first thing said\n\
-     \x20 --handover SESSION DIR    write that session out as a transcript\n\
-     \x20                           `claude --resume <path>` opens, plus a Markdown copy\n\
-     \x20 --note TRANSCRIPT TEXT    append one line to a transcript, with a backup first\n\
-     \x20 --revert TRANSCRIPT BAK   put a transcript back from that backup, byte for byte"
-        .into()
-}
-
 /// One scripted step, in the order the flags were given.
 enum Step {
     Prompt(String),
@@ -575,6 +361,21 @@ fn session_fallback(cfg: &mut Config) {
             }
         }
     );
+}
+
+/// One flag, against the table: refused by name when this release removed it, unknown when the
+/// parser never read it, and otherwise a config-backed one says the key it moved to.
+fn check_known(arg: &str) -> Result<(), String> {
+    if let Some(why) = removed(arg) {
+        return Err(format!("{arg} is not a flag any more: {why}"));
+    }
+    if !knows(arg) {
+        return Err(format!("unknown argument {arg}\n\n{}", usage()));
+    }
+    if let Some(notice) = config_notice(arg) {
+        eprintln!("harnessd: {notice}");
+    }
+    Ok(())
 }
 
 pub fn run(args: &[String]) -> Result<i32, String> {
@@ -716,6 +517,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     let mut it = args.iter().cloned();
     while let Some(arg) = it.next() {
         let mut next = || it.next().ok_or_else(|| format!("{arg} needs a value"));
+        // **THE TABLE IS THE PARSER'S LIST, so the help cannot disagree with it.** A removed
+        // flag is refused by name with its replacement, and a config-backed one still works for
+        // this release while saying the key it moved to.
+        check_known(&arg)?;
         match arg.as_str() {
             "--list-sessions" => query = Some(Query::List),
             // What Claude Code has on this box (Package H) - the ids `--session cc-<id>` takes
@@ -869,15 +674,6 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                     .parse()
                     .map_err(|e| format!("--max-subagent-depth: {e}"))?
             }
-            // How long the daemon may have been down for a session's work to come back on its
-            // own - see `crate::restart`. Seconds, because it is a span an operator types.
-            "--restore-within" => {
-                cfg.restore_within = std::time::Duration::from_secs(
-                    next()?
-                        .parse()
-                        .map_err(|e| format!("--restore-within: {e}"))?,
-                )
-            }
             // How long the daemon stays up with nothing to do - see `Config::idle_exit_after`.
             // Seconds, and `0` for never, because a daemon an operator wants kept is one flag.
             "--idle-exit" => {
@@ -929,7 +725,6 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 cfg.oracle_question = crate::oracle::Question::parse(&v)
                     .ok_or_else(|| format!("--oracle-question: `{v}` is not verdict or scores"))?;
             }
-            "--intent-prose" => cfg.intent_prose = true,
             "--provider" => {
                 cfg.provider.get_or_insert_with(Default::default).name = next()?;
                 cli_main_model = true;
@@ -940,18 +735,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--api-key" => {
                 cfg.provider.get_or_insert_with(Default::default).api_key = Some(next()?);
             }
-            "--thinking" => {
-                cfg.provider.get_or_insert_with(Default::default).thinking = true;
-            }
             "--flowy" => {
                 cfg.flowy.get_or_insert_with(Default::default);
             }
             "--flowy-seat" => cfg.flowy.get_or_insert_with(Default::default).seat = Some(next()?),
-            "--flowy-addr" => cfg.flowy.get_or_insert_with(Default::default).addr = Some(next()?),
-            "--flowy-token-file" => {
-                cfg.flowy.get_or_insert_with(Default::default).token_file =
-                    Some(PathBuf::from(next()?));
-            }
             "--flowy-new-reader" => {
                 cfg.flowy.get_or_insert_with(Default::default).new_reader = true;
             }

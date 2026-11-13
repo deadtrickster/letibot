@@ -43,6 +43,7 @@ struct Args {
     demo: bool,
     no_tty: bool,
     budget: Budget,
+    /// The name this head draws as: `$USER`, and no flag - nothing ever passed another.
     identity: String,
     /// Headless shutdown helper: interrupt every session whose turn is running,
     /// wait for the turns to end, exit. `letibot --stop --force` runs this
@@ -55,9 +56,6 @@ struct Args {
     /// `-h`/`--help`: print the usage and exit 0. It used to be answered as an error, so a
     /// help request left with a typo's status and a wrapper could not tell the two apart.
     help: bool,
-    theme_template: bool,
-    /// How long `--interrupt-all` waits for the turns to end.
-    wait: u64,
     /// What the interrupt is recorded as (`--reason`): the command that sent it, so a plain
     /// `letibot --stop` is not written into the transcript as a forced one.
     reason: String,
@@ -87,8 +85,6 @@ fn parse(args: &[String]) -> Result<Args, String> {
         list_sessions: false,
         version: false,
         help: false,
-        theme_template: false,
-        wait: 30,
         reason: "letibot-tui --interrupt-all".into(),
         probe: false,
         models: None,
@@ -96,6 +92,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
     let mut it = args.iter().cloned();
     while let Some(arg) = it.next() {
         let mut next = || it.next().ok_or_else(|| format!("{arg} needs a value"));
+        // **THE TABLE IS THE PARSER'S LIST**: a removed flag is refused by name with its
+        // replacement, and one this head never read is not read now either.
+        if let Some((name, why)) = REMOVED.iter().find(|(n, _)| *n == arg) {
+            return Err(format!("{name} is not a flag any more: {why}"));
+        }
+        if find(&arg).is_none() {
+            return Err(format!("unknown argument {arg}\n\n{}", usage()));
+        }
         match arg.as_str() {
             "--socket" => a.socket = next()?.into(),
             "--session" => a.session = next()?,
@@ -103,16 +107,6 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--new-session" => a.new_session = Some(next()?),
             "--since" => a.since = next()?.parse().map_err(|e| format!("--since: {e}"))?,
             "--replay" => a.replay = Some(next()?),
-            "--identity" => a.identity = next()?,
-            // The buffer size is configurable rather than hardcoded.
-            "--body-lines" => {
-                a.budget.body_lines = next()?.parse().map_err(|e| format!("--body-lines: {e}"))?
-            }
-            "--reasoning-lines" => {
-                a.budget.reasoning_lines = next()?
-                    .parse()
-                    .map_err(|e| format!("--reasoning-lines: {e}"))?
-            }
             "--demo" => a.demo = true,
             "--no-tty" => a.no_tty = true,
             "--probe" => a.probe = true,
@@ -120,7 +114,6 @@ fn parse(args: &[String]) -> Result<Args, String> {
             // Print this daemon's live sessions, one per line, and exit. For
             // `letibot --ls`, which draws the byobu-shaped view across folders.
             "--list-sessions" => a.list_sessions = true,
-            "--wait" => a.wait = next()?.parse().map_err(|e| format!("--wait: {e}"))?,
             // The name is the whole of the flag: a daemon sent a bare `/models` answers a
             // LISTING, which is not a switch, so an empty one never reaches the socket.
             "--models" => {
@@ -132,9 +125,6 @@ fn parse(args: &[String]) -> Result<Args, String> {
             }
             "--reason" => a.reason = next()?,
             "-V" | "--version" => a.version = true,
-            // Every role with its default look, as a theme file reads them: the starting point
-            // for `~/.config/letibot/themes/NAME.toml`. See `rano::theme`.
-            "--theme-template" => a.theme_template = true,
             "-h" | "--help" => a.help = true,
             other => return Err(format!("unknown argument {other}\n\n{}", usage())),
         }
@@ -142,14 +132,141 @@ fn parse(args: &[String]) -> Result<Args, String> {
     Ok(a)
 }
 
+/// One flag: its spellings, the placeholder for the word it consumes, and its help line.
+struct Flag {
+    names: &'static [&'static str],
+    value: Option<&'static str>,
+    about: &'static str,
+}
+
+/// **Every flag this head parses, in one table, and the help is generated from it** — so the help
+/// cannot offer a flag the parser refuses, or omit one it reads.
+const FLAGS: &[Flag] = &[
+    Flag {
+        names: &["--socket"],
+        value: Some("PATH"),
+        about: "the daemon's socket (default: this folder's)",
+    },
+    Flag {
+        names: &["--session"],
+        value: Some("ID"),
+        about: "attach to that session instead of the daemon's own",
+    },
+    Flag {
+        names: &["--resume"],
+        value: Some("ID"),
+        about: "resume it out of the store and switch to it",
+    },
+    Flag {
+        names: &["--new-session"],
+        value: Some("TITLE"),
+        about: "create a session and switch to it",
+    },
+    Flag {
+        names: &["--since"],
+        value: Some("SEQ"),
+        about: "replay from that row",
+    },
+    Flag {
+        names: &["--replay"],
+        value: Some("FILE"),
+        about: "draw a recorded envelope file, no daemon",
+    },
+    Flag {
+        names: &["--demo"],
+        value: None,
+        about: "draw the fixture: no daemon, no store",
+    },
+    Flag {
+        names: &["--no-tty"],
+        value: None,
+        about: "write no escape sequences and no final id",
+    },
+    Flag {
+        names: &["--probe"],
+        value: None,
+        about: "answer whether a daemon is here, and exit",
+    },
+    Flag {
+        names: &["--interrupt-all"],
+        value: None,
+        about: "interrupt every running turn, wait, exit (`--stop --force`)",
+    },
+    Flag {
+        names: &["--reason"],
+        value: Some("TEXT"),
+        about: "what `--interrupt-all` records the interrupt as",
+    },
+    Flag {
+        names: &["--list-sessions"],
+        value: None,
+        about: "this daemon's live sessions, one per line, and exit",
+    },
+    Flag {
+        names: &["--models"],
+        value: Some("NAME"),
+        about: "the daemon's `/models NAME`, its answer, and exit",
+    },
+    Flag {
+        names: &["-V", "--version"],
+        value: None,
+        about: "the version, for an installer",
+    },
+    Flag {
+        names: &["-h", "--help"],
+        value: None,
+        about: "this page",
+    },
+];
+
+/// **What `--help` no longer offers, and what replaced it.** A removed flag is refused by NAME: a
+/// flag read as a prompt is a turn answering something nobody asked.
+const REMOVED: &[(&str, &str)] = &[
+    ("--identity", "the head draws as $USER"),
+    ("--body-lines", "nothing to set - a body is 40 lines"),
+    ("--reasoning-lines", "nothing to set - a thought is 8 lines"),
+    ("--wait", "nothing to set - --interrupt-all waits 30s"),
+    (
+        "--theme-template",
+        "copy ~/.config/letibot/themes/NAME.toml from a box you like",
+    ),
+];
+
+/// The row for a spelling, if this head reads it.
+fn find(name: &str) -> Option<&'static Flag> {
+    FLAGS.iter().find(|f| f.names.contains(&name))
+}
+
 fn usage() -> String {
-    "letibot-tui [--socket PATH] [--session ID] [--resume ID] [--new-session TITLE]\n\
-     \x20           [--since SEQ] [--identity NAME]\n\
-     \x20           [--replay FILE.jsonl] [--demo] [--no-tty]\n\
-     \x20           [--body-lines N] [--reasoning-lines N]\n\
-     \x20           [--interrupt-all [--wait SECS] [--reason TEXT]] [--list-sessions]\n\
-     \x20           [--models NAME] [--theme-template]"
-        .into()
+    let mut out = String::from(
+        "letibot-tui — the head: the terminal interface, attached to a daemon.\n\nEVERY FLAG:\n",
+    );
+    let width = FLAGS
+        .iter()
+        .map(|f| {
+            let mut l = f.names.join(", ");
+            if let Some(v) = f.value {
+                l.push(' ');
+                l.push_str(v);
+            }
+            l.chars().count()
+        })
+        .max()
+        .unwrap_or(20)
+        + 2;
+    for f in FLAGS {
+        let mut label = f.names.join(", ");
+        if let Some(v) = f.value {
+            label.push(' ');
+            label.push_str(v);
+        }
+        out.push_str(&format!("  {:width$}{}\n", label, f.about, width = width));
+    }
+    out.push_str("\nREMOVED IN THIS RELEASE — refused by name, with what replaced each\n");
+    for (name, why) in REMOVED {
+        out.push_str(&format!("  {name}: {why}\n"));
+    }
+    out
 }
 
 /// Run the head over `args`, returning the process exit code. `args` is what followed the program name, so the
@@ -186,11 +303,6 @@ pub fn run_with(args: &[String], fleet: Option<letibot_sessionlog::FleetReader>)
 
     if args.version {
         println!("letibot-tui {}", env!("CARGO_PKG_VERSION"));
-        return 0;
-    }
-
-    if args.theme_template {
-        print!("{}", rano::theme::Theme::template());
         return 0;
     }
 
@@ -443,15 +555,16 @@ fn one_line(title: &str) -> String {
     }
 }
 
+/// How long `--interrupt-all` waits for the turns to end. A constant, not a flag: nothing passed
+/// one, and the operator quits a session in tens of seconds or not at all.
+const INTERRUPT_WAIT: Duration = Duration::from_secs(30);
+
 /// `--interrupt-all`: [`interrupt_turns`], said on stdout the way `scripts/letibot` has
 /// always read it.
 fn interrupt_all(args: &Args) -> Result<(), Box<dyn std::error::Error>> {
-    match interrupt_turns(
-        &args.socket,
-        Duration::from_secs(args.wait.max(1)),
-        &args.reason,
-        |id| println!("  {id} · interrupted"),
-    )? {
+    match interrupt_turns(&args.socket, INTERRUPT_WAIT, &args.reason, |id| {
+        println!("  {id} · interrupted")
+    })? {
         Interrupted::NoSessions => println!("the daemon holds no sessions"),
         Interrupted::NoneRunning => println!("no turns in flight"),
         Interrupted::Ended(_) => println!("all turns stopped"),
@@ -1068,8 +1181,6 @@ mod probe_tests {
             list_sessions: false,
             version: false,
             help: false,
-            theme_template: false,
-            wait: 30,
             reason: "test".into(),
             probe: true,
             models: None,
@@ -1321,4 +1432,67 @@ fn read_routed(term: &Terminal, app: &mut App) -> (Vec<crate::app::Key>, Vec<u8>
     // rano's work between events, before the frame - rano's rule for a host.
     app.editor_tick(Instant::now());
     (keys, raw)
+}
+
+#[cfg(test)]
+mod flag_tests {
+    use super::*;
+
+    /// **Every row the table holds is one this parser reads, and the help prints it.** The help
+    /// and the `match` were two hand-kept lists; the table is now the only one, and these are the
+    /// tests that say so in either direction.
+    #[test]
+    fn the_help_lists_every_flag_the_table_holds() {
+        let help = usage();
+        for f in FLAGS {
+            for name in f.names {
+                assert!(
+                    help.contains(name),
+                    "the help does not print {name}, which this head reads"
+                );
+                let mut args = vec![(*name).to_string()];
+                for _ in 0..f.value.map(|v| v.split_whitespace().count()).unwrap_or(0) {
+                    args.push("x".into());
+                }
+                if let Err(e) = parse(&args) {
+                    assert!(
+                        !e.contains("unknown argument"),
+                        "{name} is in the table and the parser has no arm for it: {e}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A removed flag is refused BY NAME, with what replaced it — not read as something else.
+    #[test]
+    fn a_removed_flag_is_refused_by_name_with_its_replacement() {
+        for (name, why) in REMOVED {
+            let e = parse(&[(*name).to_string()])
+                .err()
+                .expect("a removed flag is refused");
+            assert!(e.contains(name), "{name}: {e}");
+            assert!(e.contains(why), "{name} must name its replacement: {e}");
+            assert!(!e.contains("unknown argument"), "{name}: {e}");
+            assert!(usage().contains(name), "the help should say {name} is gone");
+        }
+    }
+
+    /// No spelling appears in two rows: a name that means two flags resolves by table order.
+    #[test]
+    fn no_flag_appears_twice() {
+        let mut seen: Vec<&str> = Vec::new();
+        for f in FLAGS {
+            for name in f.names {
+                assert!(!seen.contains(name), "{name} appears twice in the table");
+                seen.push(name);
+            }
+        }
+        for (name, _) in REMOVED {
+            assert!(
+                !seen.contains(name),
+                "{name} is removed and still in the table"
+            );
+        }
+    }
 }

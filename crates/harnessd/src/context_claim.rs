@@ -17,7 +17,7 @@
 //!    wall it is true and nothing is said; an unknown window is not a measurement either. 3. Once per claim per user turn - a model that repeats the excuse after being told is a
 //!    finding for the operator ([`REPEATED`]), not a second slap.
 //!
-//! Always on, not behind `--intent-prose`: this one is gated by a measurement, so a false positive
+//! Always on, with no flag of its own: this one is gated by a measurement, so a false positive
 //! costs one line telling the model the truth about its own fill. Every claim found is logged to
 //! [`LOG`], so the floor is tuned from what happened.
 //!

@@ -196,12 +196,12 @@ HEAD="${LETIBOT_HEAD:-$BIN/letibot-tui}"
 # repo, not a second one), else the directory you are standing in. Its daemon
 # lives at a socket named by the workspace's path, and a small record beside the
 # socket says what it is - pid, role, model, when it started - so `--status`,
-# `--stop` and `--daemons` act on THIS folder's daemon by pid, never on every
+# `--stop` and `--ls` act on THIS folder's daemon by pid, never on every
 # harnessd on the box.
 #
 #   letibot                     connect to this folder's daemon, or start one
 #   letibot --attach [DIR]      connect only; refuse to start one
-#   letibot --daemons           every folder's daemon on this box, live or stale
+#   letibot --ls                every folder's daemon and the live sessions inside it
 #   letibot --stop [--all]      this folder's daemon (or all of them)
 WORKSPACE="${LETIBOT_WORKSPACE:-$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
 # `cd` into it to normalise, but a FAILED cd must not leave this empty: an empty
@@ -495,7 +495,7 @@ die() {
 # `LETIBOT_INVOKED_AS`; a bare `letibot` names nothing and `$0` is already right.
 ME="${LETIBOT_INVOKED_AS:-$(basename "$0")}"
 
-# **`--glm`/`--flash`/`--dense` are CONSUMED by the flag loop and never reach
+# **`--glm`/`--dense` are CONSUMED by the flag loop and never reach
 # `EXTRA_ARGS`.** No other check in this script can see that a model was asked for —
 # which is how a warning about swallowed flags came to say nothing about the one flag
 # that picks the model, and how `leticode --glm` against a daemon bound to another
@@ -695,18 +695,6 @@ letibot --ls
     letibot --ls
 EOF
       ;;
-    --daemons)
-      cat <<'EOF'
-letibot --daemons
-  Which folders have a daemon on this box, and whether anything is listening on each
-  one's socket — the one-line answer to "what is running here".
-
-  no arguments; `--ls` adds the live sessions inside each daemon, numbered
-
-  example:
-    letibot --daemons
-EOF
-      ;;
     --where)
       cat <<'EOF'
 letibot --where [FOLDER] [--ensure] [--json]
@@ -820,95 +808,144 @@ EOF
 # prompted; a one-shot prompt whose first word begins with `--` is rare enough
 # that refusing it with a name of the mistake is the honest trade.
 
-# **THE FLAGS THIS PARSER READS, IN ONE LIST.** `=VALUE` marks one that consumes the next
-# word, which is also what keeps a value like `--mem` from being read as a flag of ours.
-# The guard below reads this list and nothing else, and `tests/launcher.sh` fails if `--help`
-# names a flag it lacks: the guard used to hold a second, hand-kept copy, and five flags that
-# were documented and had arms (`--web-fetch`, `--no-web-fetch`, `--effort`, `--vm-copy`,
-# `--listen`) died "unknown flag" before their arm could run. A new flag is added HERE first.
-KNOWN_FLAGS='
---help
-  -h
-  help
---continue
-  -c
---sessions
---list
---tsv
---list-claude
---claude-sessions
---handover
---note
---note-continued
---revert
---new
-  -n
---rename=VALUE
---delete=VALUE
---archive=VALUE
---unarchive=VALUE
---archived
---archived-only
---migrate
---reattach
---to=VALUE
---copy-keys
---stop
---force
---all
---room
---status
---ls
---list-all
---where
---ensure
---json
---daemons
---attach
---listen
---read-only
---bash
---no-bash
---ask
---writes
---web-fetch
---no-web-fetch
---effort=VALUE
---mode=VALUE
---supervise
---vm
---vm-copy
---vm-arg=VALUE
---host=VALUE
---provider=VALUE
---web-search=VALUE
---brave-key=VALUE
---model=VALUE
---oracle=VALUE
---oracle-budget-ms=VALUE
---glm
---flash
---dense
---session=VALUE
-  -s=VALUE
-'
+# **THE FLAGS THIS PARSER READS, IN ONE LIST, AND THE HELP IS GENERATED FROM IT.**
+#
+# One row per flag: `NAME[,NAME…]|TIER|VALUE|NOTE`.
+#   NAME   every spelling, space separated; the first is the one the help prints
+#   TIER   daily   `letibot --help` — the seven a person types, and nothing else
+#          more    `letibot --help all`
+#          config  the setting lives in a file; using the flag prints the key to set
+#   VALUE  the placeholder for the word it consumes, or empty when it takes none (which is
+#          also what keeps a value like `--mem` from being read as a flag of ours)
+#   NOTE   one line: what it is for, or for `config`, the key and the file
+#
+# The guard below reads this list and nothing else, and `tests/launcher.sh` walks both the
+# daily help and `--help all` and asks this parser for every flag it finds: the guard used to
+# hold a second, hand-kept copy, and five flags that were documented and had arms
+# (`--web-fetch`, `--no-web-fetch`, `--effort`, `--vm-copy`, `--listen`) died "unknown flag"
+# before their arm could run. A new flag is added HERE first.
+flags_table() {
+  cat <<'EOF'
+--help -h help         |daily |       |this page; `--help all` for every other flag
+-c --continue          |daily |       |reopen the newest session in THIS workspace
+--stop                 |daily |N/DIR  |stop this folder's daemon; `--force` kills one that stays, `--all` every folder
+--status               |daily |       |is it up, and on what
+--ls                   |daily |       |every folder's daemon and the live sessions inside it, numbered
+--no-bash              |daily |       |seat no shell (the shell is on by default)
+--sessions --list      |more  |       |what is on disk, grouped: yours first, then the harness's own work
+--tsv                  |more  |       |a listing in its plain form, one line each with no grouping
+--list-claude --claude-sessions |more |  |what Claude Code has on this box, and the id `--session cc-<id>` takes
+--handover             |more  |SESSION DIR |write a session out as a `claude --resume` transcript, plus Markdown
+--note                 |more  |TRANSCRIPT TEXT |append one line to a Claude Code transcript, after a backup
+--note-continued       |more  |SESSION FILE |the same line, composed, plus the Markdown handover
+--revert               |more  |TRANSCRIPT BACKUP |put that transcript back from the backup, byte for byte
+--new -n               |more  |       |start a fresh session in the running daemon (`--new TITLE` names it)
+--rename               |more  |ID     |name a stored session (an empty title clears it)
+--delete               |more  |ID     |remove a stored session that has no rows
+--archive              |more  |ID     |put a stored session out of sight and KEEP it (`--archive ID REASON`)
+--unarchive            |more  |ID     |put it back in the list
+--archived             |more  |       |list the archived ones beside the rest
+--archived-only        |more  |       |list nothing but the archived ones
+--migrate              |more  |       |move a session's whole daemon to a host: `--migrate ID --to HOST`
+--reattach             |more  |ID     |re-establish a moved session's daemon and forwarded socket
+--to                   |more  |HOST   |where `--migrate` goes; `--to local` brings it back
+--copy-keys            |more  |       |with `--migrate`: send providers.toml too (mode 600, never printed)
+--force                |more  |       |with `--stop`/`--room --stop`: SIGKILL one still there after 5s
+--all                  |more  |       |with `--stop`: every folder's daemon, not this one
+--room                 |more  |       |the BOX'S ROOM coordinator, one per box (`--room --stop` stops it)
+--list-all             |more  |       |`--ls` under its long name
+--where                |more  |[FOLDER] |the socket this folder's daemon listens on, and whether it is up
+--ensure               |more  |       |with `--where`: start the daemon when none is running
+--json                 |more  |       |with `--where`: one object - socket, live, project, folder
+--attach               |more  |[N/DIR] |connect only, never start: this folder's daemon, or another's by number
+--listen               |more  |[WORDS] |which repositories of this folder's sessions hear gate news
+--read-only            |more  |       |no write tools at all (the orchestrator seat)
+--ask                  |more  |       |every write asks, every time, and the answer settles that one call
+--web-fetch            |more  |       |seat `web_fetch`: curl egress, reader-mode extracted
+--no-web-fetch         |more  |       |the same, off
+--mode                 |more  |NAME   |read-only / always-ask / writes-allowed / automode / automode-edits / allow-all
+--supervise            |more  |       |start with the guard model consulted on every gated call (needs `--oracle`)
+--vm                   |more  |       |run the session - and its subagents - in a firecode VM, which is the boundary
+--vm-copy              |more  |       |with `--vm`: a copy even on a Mac
+--vm-arg               |more  |ARG    |passed to the VM's own launch, repeatable
+--host                 |more  |NAME   |run this session's TOOLS on that machine over ssh (a `[host.NAME]` block)
+--web-search           |more  |NAME   |attach a provider behind `web_search` (`brave` is the one there is)
+--glm                  |more  |       |GLM's dialect, vocabulary and endpoint, when the daemon STARTS
+--dense                |more  |       |the Qwen 27B dense model, when the daemon STARTS
+--session -s           |more  |ID/NAME |reopen a particular session; `--session host` is the box's own agent
+--provider             |config|NAME   |`[default] provider` in ~/.config/letibot/providers.toml
+--model                |config|NAME   |`[default] model` in ~/.config/letibot/providers.toml
+--effort               |config|LEVEL  |`effort = "high"` in that model's `[model._]` block, providers.toml
+--brave-key            |config|KEY    |`[brave] key` in ~/.config/letibot/providers.toml
+--oracle               |config|HOST:PORT |`[gatekeeper] endpoint` in ~/.config/letibot/providers.toml
+--oracle-budget-ms     |config|MS     |`[gatekeeper] budget_ms` in ~/.config/letibot/providers.toml
+EOF
+}
+
+# **WHAT THIS RELEASE TOOK AWAY, and what replaced it.** A removed flag is refused BY NAME
+# with its replacement, rather than read as a prompt: `--daemons` used to fall through to the
+# one-shot and hand the model a sentence nobody asked it.
+removed_flags_table() {
+  cat <<'EOF'
+--daemons  |`--ls` - the same listing, numbered, and it is the one `--stop N` takes
+--writes   |nothing: writes-allowed is the default. `--mode writes-allowed` says it out loud
+--bash     |nothing: the shell is on by default, and `--no-bash` is how you seat none
+--flash    |`[default] model` in ~/.config/letibot/providers.toml (Qwen Flash-Next is the default)
+EOF
+}
+
+flag_field() { # flag_field WORD FIELD -- one field of WORD's row (2 tier, 3 value, 4 note)
+  flags_table | while IFS='|' read -r names tier value note; do
+    case " $names " in
+      *" $1 "*)
+        case "$2" in
+          2) printf '%s' "$tier" ;;
+          3) printf '%s' "$value" ;;
+          4) printf '%s' "$note" ;;
+        esac
+        return 0
+        ;;
+    esac
+  done
+}
 
 known_flag() { # known_flag WORD -- is WORD one of the flags this parser reads?
-  local entry
-  for entry in $KNOWN_FLAGS; do
-    [ "${entry%%=*}" = "$1" ] && return 0
-  done
-  return 1
+  [ -n "$(flag_field "$1" 2)" ]
 }
 
 flag_takes_value() { # flag_takes_value WORD -- does it consume the word after it?
-  local entry
-  for entry in $KNOWN_FLAGS; do
-    case "$entry" in
-      "$1="*) return 0 ;;
-    esac
+  [ -n "$(flag_field "$1" 3)" ]
+}
+
+removed_flag() { # removed_flag WORD -- the replacement, when WORD is one this release removed
+  removed_flags_table | while IFS='|' read -r name why; do
+    name=$(printf '%s' "$name" | tr -d ' ') # the column is padded
+    [ "$name" = "$1" ] || continue
+    printf '%s' "$why"
+    return 0
   done
-  return 1
+}
+
+pad() { # pad STRING WIDTH -- STRING in a column, one trailing space at least
+  _p="$1 "
+  while [ ${#_p} -lt "$2" ]; do _p="$_p "; done
+  printf '%s' "$_p"
+}
+
+flag_lines() { # flag_lines TIER -- one line per row of that tier
+  want="$1"    # a variable: the loop below reassigns `$1` with `set --`
+  flags_table | while IFS='|' read -r names tier value note; do
+    tier=$(printf '%s' "$tier" | tr -d ' ') # the column is padded; the tier word is not
+    [ "$tier" = "$want" ] || continue
+    # Every spelling, so a page that lists `-c` also names `--continue`: an alias the help
+    # omits is an alias a person cannot find.
+    label=""
+    for n in $names; do
+      label="${label:+$label, }$n"
+    done
+    [ -n "$value" ] && label="$label $value"
+    printf '  %s%s\n' "$(pad "$label" 27)" "$note"
+  done
 }
 
 usage() {
@@ -916,152 +953,95 @@ usage() {
 letibot — one command to start chatting: brings up harnessd if it is not
 already up, then attaches the TUI head to it.
 
-  letibot                     attach to this folder's daemon — starting one on a NEW session
-                              if none is up. It never resumes by itself: the sessions on disk
-                              are `--continue`'s, and ctrl-s in the head shows them all.
-  letibot --continue          reopen the newest session in THIS workspace — the only verb that
-                              reopens anything without being asked which. It takes NO argument;
-                              `--continue s-…` is read as `--session s-…` and says so
-  letibot --session ID|NAME   reopen a particular one (a NAME is a /rename title; this folder
-                              first, then any folder, asked before moving there)
-  letibot --sessions          what is on disk, grouped: your conversations first, then the
-                              harness's own work (subagents, the review queue, packages,
-                              one-shots) one line each with a count. `--tsv` is the plain form
-  letibot --list-claude       what Claude Code has on this box: the id `--session cc-<id>`
-                              takes, its model, its directory and its first line. Reading
-                              one in makes it an ordinary session, so --continue works on it
-  letibot --handover ID DIR   write a session out as a transcript `claude --resume <path>`
-                              opens, plus a Markdown copy a person can read
-  letibot --note FILE TEXT    append one line to a Claude Code transcript, after a backup
-  letibot --note-continued ID FILE [DIR]
-                              the same, with the line composed: "session continued in letibot
-                              from … to …, detail at DIR/session.md, git branch @ sha" — the
-                              shape chosen over a full transcript, and it writes that handover
-  letibot --revert FILE BAK   put that transcript back from the backup, byte for byte
-  letibot --new [TITLE]       start a fresh session in the running daemon (with none up, the
-                              one the plain start opens IS this fresh session)
-  letibot --rename ID TITLE   name a stored session
-  letibot --delete ID         remove a stored session that has no rows
-  letibot --archive ID [REASON]   put a stored session out of sight and KEEP it: the rows stay,
-                              --sessions leaves it out, and --session ID opens it again (which
-                              puts it back in the list). No delete path is added
-  letibot --unarchive ID      put it back in the list
-  letibot --migrate ID --to HOST   move this session's WHOLE DAEMON to a host — its rows, its
-                              checkout and a harnessd there — leaving a marked copy here.
-                              `--to local` brings it back; `--to OTHER` moves it on from
-                              wherever it lives now. --copy-keys sends providers.toml too
-                              (mode 600, never printed). docs/remote-hosts.md RH4
-  letibot --reattach ID       re-establish a moved session's daemon and forwarded socket
-  letibot attach github S     the GitHub reviewer SEAT on an org (`stroppy-io`) or one repository
-                              (`stroppy-io/letibot`): poll the open pull requests, one letibot
-                              session per PR, one review per push, a mention answered by that
-                              PR's session. Nothing is posted until `[github] post = true` and
-                              `token_path` name a token file at mode 0600 — until then a review
-                              is a draft on the seat's own row
+  letibot                     attach to this folder's daemon, starting one on a NEW session
+                              if none is up; it never resumes by itself
   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
-  letibot --glm               GLM's dialect+vocab; providers.toml names the address
-  letibot --stop              stop the daemon
-  letibot --stop [N|DIR] [--force]   interrupt its turns, stop it; --force SIGKILLs one still there after 5s
-  letibot --stop --all [--force]     the same for every folder's daemon
-  letibot --room              the BOX'S ROOM: start its coordinator if none is serving, and say
-                              what it is. One per box, not one per folder — every run makes
-                              sure one exists before it opens a session. `--room --stop` stops
-                              it (`--force` SIGKILLs one still there)
-  letibot --listen [WORDS]    which repositories of this folder's sessions hear gate news:
-                              `all`, `only REPO`, `-REPO`, `+REPO`; no words lists the state
-                              and exits (the words run to the next flag)
-  letibot rooms [VERB]        the room under socket activation: install, uninstall, start,
-                              stop, restart, off, on, status, logs (docs/room.md)
+  letibot -c                  reopen the newest session in THIS workspace
+  letibot --stop [N|DIR]      stop this folder's daemon (`--force`, `--all`)
   letibot --status            is it up, and on what
-  letibot --ls                every folder's daemon and the live sessions inside it, numbered: the
-                              number is what `--stop N` and `--attach N` take
-  letibot --daemons           which folders have a daemon, and whether anything is listening on it
-  letibot --where [FOLDER] [--ensure] [--json]   the socket this folder's daemon listens on — what
-                              `bridge::daemon::resolve` computes — and whether one is live. A
-                              program that drives letibot (rano's editor panel) asks this instead
-                              of hashing the path itself; `--ensure` starts it when none is running
-  letibot --attach [N|DIR]    connect to this folder's daemon — or another folder's, by its number
-                              from `--ls` or by directory — and never start one
-
-  Every verb above also answers to its long alias: `--list` is `--sessions`, `--list-all`
-  is `--ls`, `--claude-sessions` is `--list-claude`, and `--bash` is what `--no-bash`
-  turns off (the shell is already on).
-
-  letibot                     the leticode seat: opencode's tools and bash, on this host
-                              (LETIBOT_ROLE=coder for the namespace-confined seat, Linux)
-  letibot --read-only         no write tools at all (orchestrator seat)
-  letibot --ask               the old behaviour: every write asks, every time
-  letibot --writes            approve a class once, for the session (default)
-  letibot --web-fetch         seat `web_fetch`: curl egress, reader-mode extracted
-                              (already the default under `leticode`; --no-web-fetch off)
-  letibot --effort L          how hard it thinks: low | high | max, and qwen also takes
-                              medium and xhigh (absent = max, the template's own default)
-  letibot --mode N            read-only | always-ask | writes-allowed | automode |
-                              automode-edits | allow-all
-  letibot --supervise         start supervised: the guard model answers every gated
-                              call before you do, and both verdicts land on one
-                              corpus row. `/supervise` does the same mid-session and
-                              is the usual way. The guard's address is config, not a
-                              flag: [gatekeeper] endpoint in providers.toml
+  letibot --ls                every folder's daemon and the live sessions inside it, numbered
   letibot --no-bash           seat no shell (the shell is on by default)
-  letibot --vm                run the session - and its subagents - in a firecode VM:
-                              the VM is the boundary, everything allowed inside. On a
-                              Mac the workspace folder is mounted read-write (all its
-                              repositories, nothing else of the host) and a VM already
-                              up for it is joined; elsewhere it is a copy, delivered as
-                              a sibling directory when it ends
-  letibot --vm-copy           with --vm: a copy even on a Mac
-  letibot --vm-arg ARG        passed to `firecode up`, repeatable (--mem, --vcpu, --add-dir)
-  letibot --host NAME         run the session's TOOLS on that machine over ssh, while the
-                              model, the store and the gate stay here. NAME is declared by
-                              you, never by a project: [host.NAME] in
-                              ~/.config/letibot/hosts.toml (hostname, user, key, root).
-                              The repository's HEAD goes over as a checkout on the branch
-                              remote/<id>; what it commits comes back as remote/NAME/<id>
-                              when the session ends. Not a boundary -- it is your machine
-                              with your files, so the gate is the same one
-  letibot --provider NAME     turns go to a cloud provider (deepseek | glm | grok), metered.
-                              Optional: with no model reachable, letibot asks on the
-                              first message and saves the answer as the default
-  letibot --web-search brave  attach Brave behind `web_search` (else the tool refuses).
-                              Key: --brave-key, $BRAVE_API_KEY, or [brave] key= in
-                              ~/.config/letibot/providers.toml
-  letibot --model M           the provider's model (default: the preset's)
-  letibot --oracle H:P        the guard model under `--supervise`: a llama.cpp
-                              /completion endpoint answering "did the operator ask
-                              for this". Its own endpoint, not the model's -
-                              the guard need not be the model doing the work.
-                              `--supervise` refuses by name without it rather
-                              than falling back to a person, so a session cannot
-                              silently be weaker than the mode it printed
-  letibot --oracle-budget-ms N  how long the gate waits for that answer before
-                              failing closed (default 400). Measured against a
-                              4B on THIS box's CPU; a remote oracle needs its
-                              own number
-  LETIBOT_MODE=writes-allowed letibot        the same, by env
+
+  letibot --help all          every flag this command takes: sessions, migration, the seat,
+                              the model, remote hosts, the room, the VM
+  letibot <verb> --help       a verb's own page: stats, boundary, notes, browser, rooms,
+                              holds, gc, where, migrate, fb, attach
+  letibot --help removed      what this release took away, and what replaced it
+
+Every setting that lives in a file stays in a file: ~/.config/letibot/providers.toml for
+the model, the keys and the guard, the project's leticode.toml for the rest. A flag that has
+a config key says so when it is used.
+EOF
+}
+
+usage_all() {
+  cat <<'EOF'
+letibot — every flag this command takes, and the file each setting can live in.
+
+  letibot                     attach to this folder's daemon, starting one on a NEW session
+  letibot "some prompt"       one-shot: run it, print, exit (no TUI)
+
+WHAT YOU TYPE EVERY DAY
+EOF
+  flag_lines daily
+  cat <<'EOF'
+
+WHEN YOU NEED IT
+EOF
+  flag_lines more
+  cat <<'EOF'
+
+SETTINGS THAT LIVE IN A FILE (using the flag prints the key to set)
+EOF
+  flag_lines config
+  cat <<'EOF'
+
+VERBS
+  stats, boundary, notes, browser, rooms, holds, gc, where, migrate, fb, attach
+  `letibot <verb> --help` is that verb's own page; a verb with no page prints this list.
 
 Env overrides: LETIBOT_BIN LETIBOT_SOCKET LETIBOT_WORKSPACE LETIBOT_STORE
 LETIBOT_LOG LETIBOT_PROVIDERS LETIBOT_DIALECT LETIBOT_MODEL LETIBOT_VOCAB
 LETIBOT_ROLE LETIBOT_ADJUDICATOR LETIBOT_MODE LETIBOT_BASH LETIBOT_WEB_FETCH
-LETIBOT_GRANTS_RO LETIBOT_ORACLE LETIBOT_ORACLE_BUDGET_MS
-LETIBOT_ENDPOINT — the manual override: the address for this run's model server,
-                   winning over the [model."…"] lookup in providers.toml
+LETIBOT_GRANTS_RO LETIBOT_ORACLE LETIBOT_ORACLE_BUDGET_MS LETIBOT_ENDPOINT
 
-The daemon logs to ~/logs/harnessd-<folder hash>.log (one per folder; each start
-is named in ~/logs/harnessd.log). The model server's address comes from
-providers.toml — the [model."…"] block whose model matches this run's (the flag,
-or the default); LETIBOT_ENDPOINT overrides it by hand. Model choice is detected
-from what that server has loaded (letibot --status reports it); explicit
---glm/--flash/--dense choose a model only when the daemon STARTS.
+`letibot --help removed` lists the flags this release deleted, and what replaced each.
+EOF
+}
+
+usage_removed() {
+  cat <<'EOF'
+letibot — flags this release removed, and what replaced each.
+
+EOF
+  removed_flags_table | while IFS='|' read -r name why; do
+    name=$(printf '%s' "$name" | tr -d ' ')
+    [ -n "$name" ] || continue
+    printf '  %s%s\n' "$(pad "$name" 12)" "$why"
+  done
+  cat <<'EOF'
+
+A removed flag is refused by name rather than read as a prompt: `letibot --daemons` exits 2
+saying `use --ls`, so a script that still passes one learns where it went.
 EOF
 }
 
 # **`--help` AFTER A VERB IS THAT VERB'S** (see `verb_help`): the wall above answers *what can I
 # run*, and a person who typed `--delete --help` asked a narrower question. Only a first word that
 # IS a verb is read this way, so `letibot 'x' --help` still runs the prompt.
+# The three pages, and one place that picks between them: `--help` is the daily set,
+# `--help all` is every flag, `--help removed` is what this release took away.
+show_help() { # show_help [all|removed]
+  case "${1:-}" in
+    all) usage_all ;;
+    removed) usage_removed ;;
+    *) usage ;;
+  esac
+}
+
 case "${1:-}" in
   --help | -h | help)
-    usage
+    show_help "${2:-}"
     exit 0
     ;;
   --* | -c | -s | -n | attach)
@@ -1083,7 +1063,7 @@ esac
 for a in "$@"; do
   case "$a" in
     --help | -h | help)
-      usage
+      show_help
       exit 0
       ;;
     --*) : ;;
@@ -1102,8 +1082,20 @@ for a in "$@"; do
     --*) ;;
     *) break ;; # the prompt starts here; nothing after it is a flag
   esac
+  # **A REMOVED FLAG IS REFUSED BY NAME, WITH ITS REPLACEMENT.** Falling through to the
+  # one-shot is how `letibot --halp` used to become a billed turn.
+  why="$(removed_flag "$a")"
+  if [ -n "$why" ]; then
+    die "$a is not a flag any more: $why
+         ('$ME --help removed' lists what this release took away)"
+  fi
   known_flag "$a" || die "unknown flag: $a
          ('$ME --help' lists the flags; a bare prompt needs no flag)"
+  # **A SETTING WITH A CONFIG KEY SAYS WHICH KEY.** One line, once per use, on stderr: the
+  # flag still works for this release, and the file is where it belongs from the next one.
+  if [ "$(flag_field "$a" 2)" = config ]; then
+    printf '%s: %s\n' "$ME" "$(flag_field "$a" 4)" >&2
+  fi
   if flag_takes_value "$a"; then
     skip=1
   fi
@@ -1141,7 +1133,7 @@ ADJ="${LETIBOT_ADJUDICATOR:-head}"
 # `writes-allowed` is the point whose grant scope is `Session`. It is the one to start
 # in if you want to approve edits once and be left alone.
 #
-#   letibot --writes            approve a class once, for the session
+#   --mode writes-allowed       approve a class once, for the session (the default)
 #   LETIBOT_MODE=writes-allowed letibot        the same, by env
 #
 # The mode is a property of the DAEMON, decided when it starts -- like the model and
@@ -1317,7 +1309,7 @@ model_home() { # model_home ALIAS — matching blocks, `name<TAB>host:port` each
 # systemd `Conflicts=` with one another, so exactly one is up at a time -- glm on
 # one port, the Qwen dense on another, the flash on a third, one port each since
 # the split of 2026-10-07. Two questions follow, answered in order below: WHICH
-# model this run wants (the env vars, a --glm/--flash/--dense flag, or the server
+# model this run wants (the env vars, a --glm/--dense flag, or the server
 # itself over /props), and WHERE that model lives (the [model."…"] block in
 # providers.toml that carries its alias -- nothing here hard-codes an address).
 #
@@ -1350,7 +1342,7 @@ model_by_path() {
 # The model this run starts from, before any flag or server has spoken: the three
 # env vars, else the Qwen flash default, which is what this box serves most of the
 # time. Both Qwen models ship a byte-identical template, so the one dialect covers
-# Flash-Next and the 27B dense; only the vocab differs between them. --glm/--flash/
+# Flash-Next and the 27B dense; only the vocab differs between them. --glm/--dense/
 # --dense overwrite all three in the flag loop below, and /props detection refines
 # them only when neither the env nor a flag has spoken.
 DIALECT="${LETIBOT_DIALECT:-qwen}"
@@ -1404,14 +1396,6 @@ while [ $# -gt 0 ]; do
     --read-only)
       ROLE=orchestrator
       ADJ=""
-      shift
-      ;;
-    --writes)
-      MODE=writes-allowed
-      shift
-      ;;
-    --bash)
-      BASH_ON=1
       shift
       ;;
     --no-bash)
@@ -1528,14 +1512,6 @@ while [ $# -gt 0 ]; do
       MODEL_FROM="--glm"
       shift
       ;;
-    --flash)
-      DIALECT=qwen
-      MODEL=qwen-3.8-flash-next
-      VOCAB="$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf"
-      MODEL_FLAG="--flash"
-      MODEL_FROM="--flash"
-      shift
-      ;;
     --dense)
       DIALECT=qwen
       MODEL=qwen-3.8-27b
@@ -1568,7 +1544,7 @@ done
 # served twice on the fleet -- `[model."dense78"]` (192.168.1.78, another box)
 # and `[model."local.qwe"]` (127.0.0.1, this one) both carry it, and the file
 # itself warns about exactly this. First-match-in-file-order would take dense78,
-# which is on another machine, while --glm/--flash/--dense and the default all
+# which is on another machine, while --glm/--dense and the default all
 # name THIS box's servers (the units are `systemctl --user` ones). So among
 # blocks that carry the model, one whose address is on this box wins -- a
 # loopback address is "this box" by definition, not by the entry's naming
@@ -1620,7 +1596,7 @@ if [ -z "$ENDPOINT" ]; then
         if [ "$n_all" -gt 1 ]; then
           echo "letibot: '$LOOKUP_MODEL' is listed at more than one address in $PROVIDERS -- $listed." >&2
           echo "         Taking ${onbox%%$'\t'*} (${ENDPOINT}): its address is on this box, which is what" >&2
-          echo "         --glm/--flash/--dense and the default name." >&2
+          echo "         --glm/--dense and the default name." >&2
         fi
       elif [ "$n_onbox" -eq 0 ] && [ "$n_all" -eq 1 ]; then
         while IFS=$'\t' read -r n a; do [ -n "$n" ] && {
@@ -1691,7 +1667,7 @@ EOF
 # endpoint, so it runs after the resolution above -- and the flag loop sits
 # between them for the same reason: a flag changes which model is wanted, and the
 # endpoint follows the model. It refines DIALECT/MODEL/VOCAB only when nothing
-# else has spoken (none of the three env vars, no --glm/--flash/--dense), and it
+# else has spoken (none of the three env vars, no --glm/--dense), and it
 # is skipped entirely when no endpoint resolved: there is nothing to ask, and
 # the refusal above is what this run meets at the gates that need an address.
 # When the server names a model other than the one looked up, the server wins
@@ -1800,12 +1776,12 @@ PROBE=""
 # from the killed command even though the last one succeeded. Measured: `--attach` said
 # *"no harnessd"* for a live daemon about one run in ten, on a socket list long enough
 # that `ss` had more left to write than `grep` needed to read. The same shape sat at the
-# `--ls` and `--daemons` checks, where it shows up as a live daemon labelled STALE.
+# `--ls` checks, where it shows up as a live daemon labelled STALE.
 #
 # So both readers below run `ss` to completion and match the string in the shell: no
 # pipe, no signal, and an answer that does not depend on what followed the match.
 #
-# One implementation for both callers, because `--ls` and `--daemons` check *every*
+# One implementation, because `--ls` checks *every*
 # record rather than this folder's, and a fix applied to one caller and forgotten in the
 # other is exactly how this class of bug survives.
 # **The folder's claim, read from the KERNEL rather than from this launcher's record.**
@@ -1885,7 +1861,7 @@ refuse_detached() {
   if [ -n "$_stuck_pid" ]; then
     echo "         letibot --stop            # or: kill $_stuck_pid" >&2
   else
-    echo "         letibot --stop            # the pid could not be read; --daemons lists what is here" >&2
+    echo "         letibot --stop            # the pid could not be read; --ls lists what is here" >&2
   fi
   exit 1
 }
@@ -1922,7 +1898,7 @@ version_skew_or_continue() {
 }
 
 # The record beside the socket: what this folder's daemon is. Written by the
-# launcher when it starts one; read by --status, --stop, --daemons and the
+# launcher when it starts one; read by --status, --stop, --ls and the
 # attach banner. The pid in it is how the daemon is stopped - a name is how
 # every harnessd on the box gets stopped.
 record_write() {
@@ -2105,7 +2081,7 @@ EOF
 #
 # Measured 2026-09-16: a daemon wedged on a `llama-server` that had gone away swallowed
 # SIGTERM, `--stop` printed "stopped", deleted the record, and left an orphan holding the
-# store and the GPU that `--daemons` could no longer see. So "stopped" is said after the
+# store and the GPU that `--ls` could no longer see. So "stopped" is said after the
 # process is gone and never after the signal is sent. `--stop --all` had the other half of
 # that defect until now: it echoed `stopped` straight off `kill`'s exit status.
 wait_gone() { # wait_gone PID [TENTHS]
@@ -2349,7 +2325,7 @@ room_start() {
   done
   return 1
 }
-# The record `--daemons`, `--ls` and `--stop` read: the same flat JSON the folder daemons get, with
+# The record `--ls` and `--stop` read: the same flat JSON the folder daemons get, with
 # `role: room` as what tells the two apart (a folder's record names the seat its daemon serves, and
 # nothing serves `room`). R102's shape — the launcher writes the record of what it started, so the
 # launcher's own tools can see it.
@@ -2373,7 +2349,7 @@ room_ensure() {
     room_stale_line >&2
     # **And the record is a note this launcher keeps true.** A room started by hand (`harnessd
     # --room` in a terminal), or one whose record a tidy-up removed, is still the box's room — and
-    # `--daemons` and `--stop --all` are how a person sees it and stops it.
+    # `--ls` and `--stop --all` are how a person sees it and stops it.
     if [ ! -f "$ROOM_RECORD" ]; then
       p="$(room_pid || true)"
       [ -n "$p" ] && room_record_write "$p"
@@ -2446,7 +2422,7 @@ warn_swallowed_flags() {
     # **One advice line for both mismatches, and it comes AFTER the model check.**
     # The first version put this block before it, so a MODEL mismatch set `mism` and
     # then nothing printed it: a warning with no way out. MEASURED 2026-10-07 by
-    # running `leticode --flash` against this folder's glm daemon and reading the
+    # running `leticode --dense` against this folder's glm daemon and reading the
     # output — one line, and it ended there.
     if [ "$mism" = 1 ]; then
       echo "         The seat and the model are fixed when harnessd STARTS; attaching to a running one cannot change either."
@@ -2687,7 +2663,7 @@ case "${1:-}" in
   --ls | --list-all)
     # **The byobu view: every folder's daemon, and what is live inside it.**
     #
-    # `--daemons` answers "which folders have one"; `--sessions` answers "what is
+    # `--ls` answers "which folders have one"; `--sessions` answers "what is
     # on disk, here". Neither answers the question an operator actually has with
     # three of these running — what is going on, everywhere — and neither gives a
     # handle to act on. This does both: one numbered list, and the number is what
@@ -2737,26 +2713,6 @@ SESSIONS_EOF
     else
       echo "no daemons recorded under $RUNDIR"
     fi
-    exit 0
-    ;;
-  --daemons)
-    # Every folder's daemon: the records, each checked against a live listener.
-    found=0
-    for r in "$RUNDIR"/*.json; do
-      [ -f "$r" ] || continue
-      found=1
-      ws="$(json_str workspace "$r")"
-      sock="$(json_str socket "$r")"
-      pid="$(json_num pid "$r")"
-      if socket_is_listening "$sock"; then state="up (pid $pid)"; else state="STALE (nothing listens on its socket)"; fi
-      # The room's record is `role: room` — the box's daemon, not a folder's (see `--ls`).
-      if [ "$(json_str role "$r")" = room ]; then
-        echo "the box's room  $state  $sock"
-      else
-        echo "$ws  $state  $sock"
-      fi
-    done
-    [ "$found" = 1 ] || echo "no daemons recorded under $RUNDIR"
     exit 0
     ;;
   --room)
@@ -2999,7 +2955,7 @@ SESSIONS_EOF
       # sent, and the record is removed only then. Measured 2026-09-16: a daemon
       # wedged on a llama-server that had gone away swallowed SIGTERM, this
       # printed "stopped", deleted the record, and left an orphan holding the
-      # store and the GPU that `--daemons` could no longer see.
+      # store and the GPU that `--ls` could no longer see.
       #
       # **And the wait is the daemon's own bound, not a guess at it** (2026-10-26): its orderly
       # stop joins the merge queues, brings the VMs down and waits up to five seconds for subagent
@@ -3014,7 +2970,7 @@ SESSIONS_EOF
         exit 1
       fi
     else
-      echo "no daemon for $WORKSPACE (letibot --daemons lists the others)"
+      echo "no daemon for $WORKSPACE (letibot --ls lists the others)"
     fi
     exit 0
     ;;
@@ -3164,7 +3120,7 @@ SESSIONS_EOF
     # message below. Probing would be a head process to re-ask a question `live` just
     # answered. (When one IS listening, the probe above runs — see the note there.)
     echo "letibot: no harnessd for $WORKSPACE - run \`letibot\` there to start one" >&2
-    echo "         (letibot --daemons lists the folders that have one)" >&2
+    echo "         (letibot --ls lists the folders that have one)" >&2
     exit 1
     ;;
 esac
@@ -3381,7 +3337,7 @@ if live && [ -n "$ENDPOINT" ]; then
     echo "letibot: the daemon on $SOCKET is bound to '$BOUND' but $ENDPOINT is serving '$SERVING'." >&2
     echo "         A daemon submits token ids, so the vocabs must match; every turn would come" >&2
     echo "         back http 400 \"Prompt contains invalid tokens\"." >&2
-    echo "         --glm/--flash/--dense choose a model only when the daemon STARTS. They" >&2
+    echo "         --glm/--dense choose a model only when the daemon STARTS. They" >&2
     echo "         cannot rebind one that is already running, and neither can autodetection." >&2
     echo "" >&2
     echo "         Fix:  $(restart_advice)" >&2

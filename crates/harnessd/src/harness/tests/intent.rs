@@ -344,8 +344,8 @@ fn the_prose_heuristic_is_off_unless_it_is_asked_for() {
         None,
         "the deterministic half must not read prose"
     );
-    let with_prose =
-        steer_for_turn(&l, true, "t2", &items).expect("the prose half is what --intent-prose buys");
+    let with_prose = steer_for_turn(&l, true, "t2", &items)
+        .expect("the prose half is what the caller's `prose` bool buys");
     assert!(with_prose.contains("check the file"), "{with_prose}");
 }
 

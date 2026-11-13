@@ -319,6 +319,26 @@ out="$(run "$DEFAULT_ONLY" --halp)"
                                      rc=$?
 refusal "an unknown flag is named, not run as a prompt" "$rc" "$out" \
   "^letibot: unknown flag: --halp" "letibot --help"
+
+# **A REMOVED FLAG FAILS NAMING ITS REPLACEMENT** (item 1.26): the four this release deleted.
+# Dying here rather than falling through to the one-shot is the difference between a script
+# learning where the flag went and a billed turn answering a sentence nobody asked.
+for spec in "--daemons|--ls" "--flash|\[default\] model" "--writes|writes-allowed" "--bash|--no-bash"; do
+  flag="${spec%%|*}"
+                     want="${spec#*|}"
+  out="$(run "$DEFAULT_ONLY" "$flag")"
+                                        rc=$?
+  refusal "$flag is refused by name, with what replaced it" "$rc" "$out" \
+    "^letibot: $flag is not a flag any more" "$want"
+done
+
+# **A SETTING WITH A CONFIG KEY SAYS WHICH KEY** — one line on stderr, and the flag still works
+# for this release. `--provider` with no value is the cheapest way to read the notice.
+out="$(run "$DEFAULT_ONLY" --provider)"
+expect "--provider names the key it now lives at" "$out" \
+  "\[default\] provider.*providers\.toml"
+expect "  ...and --help all lists it under the settings that live in a file" \
+  "$(run "$DEFAULT_ONLY" --help all)" "SETTINGS THAT LIVE IN A FILE"
 out="$(run "$DEFAULT_ONLY" --stop /no/such/folder)"
                                                      rc=$?
 refusal "--stop with a directory that is not there says so" "$rc" "$out" \
@@ -335,7 +355,7 @@ for spec in "--delete|letibot --delete ID" "--session|letibot --session ID" \
   "--rename|letibot --rename ID" "--migrate|--to HOST" "--reattach|letibot --reattach SESSION" \
   "--stop|--force" "--room|--stop" "--handover|letibot --handover SESSION DIR" \
   "--note-continued|letibot --note-continued" "--list-claude|letibot --list-claude" \
-  "--ls|letibot --ls" "--daemons|letibot --daemons" "--attach|letibot --attach" \
+  "--ls|letibot --ls" "--attach|letibot --attach" \
   "--status|letibot --status" "--where|letibot --where [FOLDER]" "attach|letibot attach github"; do
   verb="${spec%%|*}"
                       want="${spec#*|}"
@@ -360,18 +380,18 @@ for spec in "--delete|letibot --delete ID" "--session|letibot --session ID" \
 done
 
 # --- and the wall itself lists every verb it answers for ----------------------------------
-# The list is also the five flags the guard used to refuse and the four aliases: a flag this
-# parser reads and the wall never names is the same disagreement from the other side.
-out="$(run "$DEFAULT_ONLY" --help)"
+# **`--help` IS THE DAILY SET; `--help all` IS THE REST** (item 1.26), so both pages are walked:
+# a flag this parser reads and no page names is the same disagreement from the other side.
+out="$(run "$DEFAULT_ONLY" --help all)"
 for verb in --continue --session --sessions --new --rename --delete --migrate --reattach \
   --handover --note --note-continued --revert --list-claude --stop --room --status \
-  --ls --daemons --attach --glm --provider --host --vm --tsv \
+  --ls --attach --glm --provider --host --vm --tsv \
   --web-fetch --no-web-fetch --effort --vm-copy --listen --where \
-  --list --list-all --claude-sessions --bash; do
+  --list --list-all --claude-sessions --no-bash; do
   if printf '%s\n' "$out" | grep -q -- "$verb"; then
-                                                     echo "ok   --help names $verb"
+                                                     echo "ok   --help all names $verb"
   else
-       echo "FAIL --help does not name $verb, which the launcher accepts"
+       echo "FAIL --help all does not name $verb, which the launcher accepts"
                                                                            fails=$((fails + 1))
   fi
 done
@@ -1311,10 +1331,8 @@ STUB
   fi
 
   # **The launcher's own tools see it** — R102's complaint, one daemon over: a daemon the
-  # operator's tools cannot see is a daemon they cannot stop.
-  out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --daemons)"
-  expect "--daemons names the box's room" "$out" "^the box's room  up"
-  expect "  ...with the socket it serves" "$out" "$ROOM_SOCK"
+  # operator's tools cannot see is a daemon they cannot stop. `--ls` is where that shows: one
+  # numbered row for the box's room, as for any folder's daemon.
   out="$(RUN_WS="$T/roomws" run "$DEFAULT_ONLY" --ls)"
   expect "--ls numbers it as the box's room" "$out" "the box's room +up"
 
@@ -1444,18 +1462,21 @@ out="$(run "$DEFAULT_ONLY" --sessions --tsv)"
 expect "--sessions --tsv hands --tsv on to the listing" "$out" \
   "^harnessd --store \S+ --list-sessions --tsv$"
 
-# **EVERY FLAG `--help` NAMES IS ONE THIS PARSER READS.** The guard and the help were two
-# hand-kept lists, and five flags that were documented and had arms died "unknown flag" before
-# their arm could run: `--web-fetch`, `--no-web-fetch`, `--effort`, `--vm-copy` and `--listen`.
-# So the help is walked and the launcher asked for each flag it offers, which is the rule the
-# survey's item names: the help is the list the parser reads. A `--` word in this text is not
-# always this launcher's, though: `--vm-arg`'s line quotes what `firecode up` takes and
-# `--handover`'s quotes what `claude` takes. Those are the exclusions, and the rule behind them
-# is that each one is ANOTHER PROGRAM's flag - not that checking it was inconvenient.
+# **`--help` FITS ON A SCREEN, AND EVERY FLAG IT NAMES PARSES.** The two are the item's own bar:
+# a person asking for help reads seven lines, and neither page may offer a flag the parser
+# refuses. The walk covers both pages (`--help` and `--help all`), so a flag that only reaches
+# one of them is still asked for.
 #
 # It runs LAST: several flags here start and stop a daemon, and a record left behind would be
 # read by the cases above.
-flags="$(run "$DEFAULT_ONLY" --help | grep -oE -- '--[a-z][a-z-]*' | sort -u)"
+lines=$(run "$DEFAULT_ONLY" --help | wc -l | tr -d ' ')
+if [ "$lines" -le 25 ]; then
+  echo "ok   --help fits in 25 lines ($lines)"
+else
+  echo "FAIL --help is $lines lines, and the item allows 25"
+  fails=$((fails + 1))
+fi
+flags="$( (run "$DEFAULT_ONLY" --help; run "$DEFAULT_ONLY" --help all) | grep -oE -- '--[a-z][a-z-]*' | sort -u)"
 if [ -z "$flags" ]; then
   echo "FAIL every flag --help names parsed: --help printed no flag at all"
   fails=$((fails + 1))

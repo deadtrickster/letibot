@@ -1084,18 +1084,20 @@ fn continue_skips_the_queues_own_session_by_id() {
     assert_eq!(latest.hidden, 1, "the queue's session is counted as hidden");
 }
 
-/// The usage is drawn by hand, so a continuation that loses its `\n` welds two flags onto one
-/// line: `--room`'s sentence ran into `--reviewers`' for as long as it took somebody to read it.
-/// Every line of the flag section therefore starts its own flag and fits a terminal.
+/// **The help is one line per flag, and a line fits a terminal.** A continuation that loses its
+/// `\n` welds two flags onto one line: `--room`'s sentence ran into `--reviewers`' for as long as it
+/// took somebody to read it.
 #[test]
 fn the_usage_keeps_one_flag_per_line() {
     let text = usage();
-    let body: Vec<&str> = text
-        .lines()
-        .skip_while(|l| !l.contains("what this session may do"))
-        .skip(1)
-        .collect();
-    assert!(body.len() > 20, "the flag section is there: {}", body.len());
+    assert!(text.contains("EVERY FLAG THIS PARSER READS"), "{text}");
+    let body: Vec<&str> = text.lines().filter(|l| l.starts_with("  -")).collect();
+    assert!(
+        body.len() >= help::FLAGS.len(),
+        "one line per flag: {} lines for {} flags",
+        body.len(),
+        help::FLAGS.len()
+    );
     for line in &body {
         assert!(
             line.chars().count() <= 100,
@@ -1154,4 +1156,93 @@ fn the_queue_session_is_never_the_conversation_to_continue() {
     );
     assert_eq!(latest.pick.as_ref().map(|s| s.id.as_str()), Some("s-mine"));
     assert_eq!(latest.hidden, 1, "the queue's session is counted as hidden");
+}
+
+// --- the flag table, and the help generated from it ------------------------------------------
+// The survey's item: `--help` listed fewer flags than the parser read, because one was a
+// hand-kept list and the other was a `match`. Both are now the table, and these are the tests
+// that say so in each direction.
+
+/// **Every row the table holds is one this parser reads**, and the help prints it.
+#[test]
+fn the_help_lists_every_flag_the_table_holds() {
+    let help = help::usage();
+    for f in help::FLAGS {
+        for name in f.names {
+            assert!(
+                help.contains(name),
+                "the help does not print {name}, which this parser reads"
+            );
+            check_known(name).unwrap_or_else(|e| panic!("{name} is in the table: {e}"));
+        }
+    }
+    // One line per row, so a row that is in the table cannot be missing from the page.
+    let listed = help
+        .lines()
+        .filter(|l| l.starts_with("  -") || l.starts_with("  harnessd"))
+        .count();
+    assert!(
+        listed >= help::FLAGS.len(),
+        "the help has {listed} lines for {} flags",
+        help::FLAGS.len()
+    );
+}
+
+/// **Every flag the help names reaches an arm of the parser.** The table decides what is
+/// accepted, so a row with no arm would be accepted here and refused there; asking for `--help`
+/// after each one is what proves the arm exists without opening a store, a socket or a model.
+#[test]
+fn every_flag_the_help_names_reaches_an_arm() {
+    for f in help::FLAGS {
+        for name in f.names {
+            let mut args: Vec<String> = vec![(*name).to_string()];
+            // One dummy word per placeholder: `--handover SESSION DIR` consumes two.
+            let words = f.value.map(|v| v.split_whitespace().count()).unwrap_or(0);
+            for _ in 0..words {
+                args.push("/nonexistent".into());
+            }
+            args.push("--help".into());
+            if let Err(e) = run(&args) {
+                assert!(
+                    !e.contains("unknown argument"),
+                    "{name} is in the table and the help, and the parser has no arm for it: {e}"
+                );
+            }
+        }
+    }
+}
+
+/// **A removed flag is refused BY NAME, with what replaced it** — not read as a prompt, and not
+/// left to look like a typo.
+#[test]
+fn a_removed_flag_is_refused_by_name_with_its_replacement() {
+    for (name, why) in help::REMOVED {
+        let e = check_known(name).expect_err("a removed flag is refused");
+        assert!(e.contains(name), "{name}: {e}");
+        assert!(e.contains(why), "{name} must name its replacement: {e}");
+        assert!(!e.contains("unknown argument"), "{name}: {e}");
+        // And the page a person is pointed at names it too.
+        assert!(
+            help::usage().contains(name),
+            "the help should say {name} is gone"
+        );
+    }
+}
+
+/// No spelling appears in two rows: a name that means two flags resolves by table order.
+#[test]
+fn no_flag_appears_twice() {
+    let mut seen: Vec<&str> = Vec::new();
+    for f in help::FLAGS {
+        for name in f.names {
+            assert!(!seen.contains(name), "{name} appears twice in the table");
+            seen.push(name);
+        }
+    }
+    for (name, _) in help::REMOVED {
+        assert!(
+            !seen.contains(name),
+            "{name} is removed and still in the table"
+        );
+    }
 }
