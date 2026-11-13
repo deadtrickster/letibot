@@ -1,9 +1,25 @@
 //! OpenAI's own protocol: `POST /v1/responses`, streamed.
 //!
-//! Every field below is off the API reference's OpenAPI document
-//! (`openai/openai-openapi`, `openapi.yaml`, read 2026-11) - the create request
-//! (`CreateResponse`) and its `input` item list (`InputItem`), the SSE events, and
-//! `ResponseUsage`. The parts a `messages` API does not have at all:
+//! Every field below is off the API reference's OpenAPI document, fetched 2026-11:
+//!
+//! ```text
+//! https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml
+//! ```
+//!
+//! - the create request: `CreateResponse` = `ModelResponseProperties` (`temperature`,
+//!   `top_p`) + `ResponseProperties` + a block of its own (`input`, `include`,
+//!   `instructions`, `store`, `stream`, `stream_options`, `max_output_tokens`,
+//!   `reasoning`, `tools`);
+//! - its `input` items: `InputItem` → `EasyInputMessage` (`user|assistant|system|developer`,
+//!   `input_text|input_image|output_text`), `FunctionToolCall`,
+//!   `FunctionCallOutputItemParam`, `ReasoningItem`;
+//! - the stream: `ResponseTextDeltaEvent`, `ResponseReasoningSummaryTextDeltaEvent`,
+//!   `ResponseFunctionCallArguments{Delta,Done}Event`, `ResponseOutputItem{Done}`,
+//!   `ResponseCompleted|Incomplete|FailedEvent`, `ResponseErrorEvent`, `ResponseUsage`;
+//! - `FunctionTool` (flat, `strict` required) and `ReasoningEffort`
+//!   (`none|minimal|low|medium|high|xhigh|max`).
+//!
+//! The parts a `messages` API does not have at all:
 //!
 //! - `input` is a list of ITEMS, not turns: a message, a `function_call`, a
 //!   `function_call_output`, and a `reasoning` item each stand on their own, and a
@@ -21,6 +37,10 @@
 //!                                             statelessly (like when the store parameter is
 //!                                             set to false …)"
 //! ```
+//!
+//! and `ReasoningItem`'s own description: "Be sure to include these items in your `input`
+//! to the Responses API for subsequent turns of a conversation if you are manually managing
+//! context".
 //!
 //! Where the record lives is the one decision this module makes that the transcript
 //! does not: the row's `ReasoningField` keeps an Anthropic signature, which any key for
