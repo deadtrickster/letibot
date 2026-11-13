@@ -480,6 +480,9 @@ pub struct Config {
     /// Where this session's tools run: the host (its own boundary), or a firecode VM - a
     /// subagent's `where`. `Host` for every session the operator opened.
     pub placement: letibot_tools::builtins::task::Placement,
+    /// The bound on one arranging step of an ssh placement. `None` is `PLACE_STEP_BOUND`; a test on
+    /// a loaded box raises it, since its subject is what the placement does, not how fast.
+    pub place_bound: Option<std::time::Duration>,
     /// Extra arguments for `firecode up` when the placement is a VM - the
     /// operator's `--vm-arg`, verbatim, inherited by every subagent placed in a
     /// VM under this session.
@@ -1698,6 +1701,7 @@ impl Config {
             wall: crate::wall::WallControl::default(),
             nags_paused: None,
             placement: letibot_tools::builtins::task::Placement::Host,
+            place_bound: None,
             vm_args: Vec::new(),
             vm_source: None,
             vm_attach: None,

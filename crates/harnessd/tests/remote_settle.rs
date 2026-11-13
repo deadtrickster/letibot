@@ -128,6 +128,8 @@ fn config_for(rig: &Rig) -> Config {
     cfg.context_window = Some(32_768);
     cfg.socket = rig.dir.join("daemon.sock");
     cfg.placement = Placement::Remote("fake".into());
+    // The fake host is this box's disk: a git fetch there can stall past the minute under load.
+    cfg.place_bound = Some(std::time::Duration::from_secs(600));
     cfg
 }
 

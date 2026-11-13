@@ -1234,7 +1234,7 @@ impl Harness {
                 bound: None,
                 // The bound an arranging step carries ([`PLACE_STEP_BOUND`], a minute): these run
                 // while that machine may be building, and four placements died at 20 s there.
-                place_bound: None,
+                place_bound: cfg.place_bound,
                 egress: letibot_tools::exec::seat::network_rule(&cfg.mode, &host.name),
                 // Ask the host, which is what production always does. A placement probes once
                 // per host (cached), and a host that cannot answer runs unconfined with the reason
