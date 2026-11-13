@@ -323,8 +323,20 @@ fn control_seat(
                 client_request_id,
                 title,
                 workspace,
+                id,
             }) => {
-                let id = mint_session_id(&registry);
+                let id = match named_id(id, &registry) {
+                    Ok(id) => id,
+                    Err(why) => {
+                        writer.lock().unwrap().write(&ServerFrame::Rejected {
+                            client_request_id,
+                            reason: why,
+                            expected_seq: 0,
+                            actual_seq: 0,
+                        })?;
+                        continue;
+                    }
+                };
                 let wiring = SessionWiring {
                     workspace,
                     ..SessionWiring::default()
@@ -1086,11 +1098,24 @@ pub fn serve_conn_rooted(
                 client_request_id,
                 title,
                 workspace,
+                id,
             }) => {
-                // The id is the daemon's to mint: two heads racing to create "scratch" would
-                // otherwise get one success and one confusing refusal, and neither of them
-                // asked for a name collision.
-                let id = mint_session_id(&registry);
+                // The id is the daemon's to mint unless the caller has already written it down -
+                // a package's owner row and branch are named by it. A name collision is refused
+                // by that caller's own error, in words, rather than half-created.
+                let id = match named_id(id, &registry) {
+                    Ok(id) => id,
+                    Err(why) => {
+                        let f = ServerFrame::Rejected {
+                            client_request_id,
+                            reason: why,
+                            expected_seq: 0,
+                            actual_seq: seat.hub.head_seq(),
+                        };
+                        writer.lock().unwrap().write(&f)?;
+                        continue;
+                    }
+                };
                 let mut wiring = registry.wiring(&seat.hub.session_id());
                 // The head's tree, when it named one. The model, dialect and endpoint stay the
                 // daemon's: those are what it is talking to, and a head does not get to change
@@ -2288,6 +2313,30 @@ fn leave(seat: &mut Seat) {
     seat.hub.detach(&seat.head_id);
     if let Some(p) = seat.pump.take() {
         let _ = p.join();
+    }
+}
+
+/// The id a `NewSession` asked for, or a fresh one. A caller that names an id has already written
+/// something down under it (a package's owner row, its worktree, the branch `pk/<sid8>/<name>`),
+/// so a taken id is refused rather than quietly replaced.
+fn named_id(want: Option<String>, registry: &Arc<Registry>) -> Result<String, String> {
+    match want.map(|w| w.trim().to_string()).filter(|w| !w.is_empty()) {
+        Some(id) => {
+            if registry.get(&id).is_some() {
+                return Err(format!(
+                    "`{id}` is already a session of this daemon: an id another session holds is \
+                     not one a second can be opened on"
+                ));
+            }
+            if !id.starts_with("s-") || id.len() > 64 {
+                return Err(format!(
+                    "`{id}` is not a session id: ids are `s-` and then their mint, and a caller \
+                     that names one is taken at its word"
+                ));
+            }
+            Ok(id)
+        }
+        None => Ok(mint_session_id(registry)),
     }
 }
 

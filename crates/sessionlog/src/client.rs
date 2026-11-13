@@ -785,11 +785,24 @@ impl HeadClient {
     /// directory. Empty leaves it to the daemon, which is what a head that has no
     /// opinion sends.
     pub fn new_session(&mut self, title: &str, workspace: &str) -> Result<String, ClientError> {
+        self.new_session_with_id(title, workspace, None)
+    }
+
+    /// The same, with the id the caller has already written down: a package's owner row and the
+    /// branch it works on are named by the id, so both exist before the session does. The daemon
+    /// takes the id it is handed and refuses one already in use.
+    pub fn new_session_with_id(
+        &mut self,
+        title: &str,
+        workspace: &str,
+        id: Option<&str>,
+    ) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::NewSession {
             client_request_id: client_request_id.clone(),
             title: title.to_string(),
             workspace: workspace.to_string(),
+            id: id.map(str::to_string),
         })?;
         Ok(client_request_id)
     }

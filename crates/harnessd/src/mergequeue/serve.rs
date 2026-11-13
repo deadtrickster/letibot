@@ -3291,6 +3291,19 @@ impl RepoQueue {
                 .set("pushed", pushed_text)
                 .set("gate_steps_json", rows_json(&all_steps)),
         )?;
+        // And the OWNER of that branch: a landed branch means its work is on the target, which is
+        // the proof the lifecycle's landed grace rests on (`docs/lifecycle.md` d.2's `landed_sha`,
+        // G3's settle trigger). Only a recorded owner is written; a queue entry that names nobody
+        // is nobody's.
+        if let Err(e) = letibot_tools::lifecycle::set_landed(&self.store, &row.owner, rebased) {
+            self.raise(
+                "queue_owner_landing",
+                format!(
+                    "`{}` landed at {rebased}, and its owner `{}` could not be told: {e}",
+                    row.branch, row.owner
+                ),
+            );
+        }
         // The gate passed on exactly this tree, so the target is green at it - not gated again. Through
         // `target_is_green`, like any green : a pending review of a red tip is withdrawn and an
         // alarm that stood is said to be over.

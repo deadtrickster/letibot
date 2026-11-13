@@ -275,7 +275,13 @@ fn daemon_binary() -> Result<PathBuf, String> {
 /// The daemon's flags, as the `leticode` wrapper passes them. A seat, an approval point and
 /// a shell are what make a session answerable at all. `--no-queue` because a package worker is
 /// not the repository's queue holder, and without it the daemon runs the queue itself.
-fn daemon_args(d: &Daemon, model: Option<&str>, mode: &str, placement: &Placement) -> Vec<String> {
+fn daemon_args(
+    d: &Daemon,
+    model: Option<&str>,
+    mode: &str,
+    placement: &Placement,
+    session: Option<&str>,
+) -> Vec<String> {
     let mut args: Vec<String> = vec![
         "--workspace".into(),
         d.workspace.display().to_string(),
@@ -299,6 +305,13 @@ fn daemon_args(d: &Daemon, model: Option<&str>, mode: &str, placement: &Placemen
         "--parent-seat".into(),
         crate::rooms::handle(),
     ];
+    // The id the daemon's own first session must have. A package's owner row, its worktree and the
+    // branch `pk/<sid8>/<name>` are all named by it, and all three exist before the session does, so
+    // the daemon is told which id to open rather than minting one of its own.
+    if let Some(id) = session.filter(|s| !s.trim().is_empty()) {
+        args.push("--session".into());
+        args.push(id.into());
+    }
     if let Some(host) = placement.host() {
         args.push("--host".into());
         args.push(host.into());
@@ -348,6 +361,7 @@ fn start(
     model: Option<&str>,
     mode: &str,
     placement: &Placement,
+    session: Option<&str>,
 ) -> Result<std::process::Child, String> {
     if let Some(dir) = d.log.parent() {
         std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -364,7 +378,7 @@ fn start(
         .try_clone()
         .map_err(|e| format!("{}: {e}", d.log.display()))?;
     let mut cmd = Command::new(binary);
-    cmd.args(daemon_args(d, model, mode, placement))
+    cmd.args(daemon_args(d, model, mode, placement, session))
         // The daemon links libllama for its TOKENIZER, and ggml registers every backend at
         // load - 1.1 GB of a card for ops it never runs. `scripts/letibot` blindfolds it
         // with the same variable, for the same reason and for harnessd only.
@@ -415,14 +429,16 @@ fn reap(mut child: std::process::Child) {
 /// This folder's daemon started, detached, and reaped when it exits - the pid the answer
 /// names and nothing else about the child. The binary is the caller's so that the start path a
 /// test drives is the one a daemon start really takes; resolving it is `ensure`'s business.
+#[allow(clippy::too_many_arguments)]
 fn spawn(
     binary: &Path,
     d: &Daemon,
     model: Option<&str>,
     mode: &str,
     placement: &Placement,
+    session: Option<&str>,
 ) -> Result<u32, String> {
-    let child = start(binary, d, model, mode, placement)?;
+    let child = start(binary, d, model, mode, placement, session)?;
     let pid = child.id();
     reap(child);
     Ok(pid)
@@ -486,22 +502,46 @@ pub fn ensure(
     mode: &str,
     placement: &Placement,
 ) -> Result<Daemon, String> {
+    ensure_with(worktree, model, mode, placement, None)
+}
+
+/// [`ensure`], with the id the daemon's own first session must carry: a package's owner row and the
+/// worktree and branch it names exist before the session does (`docs/lifecycle.md` G3), so the id is
+/// the caller's to name and the daemon opens the session it is told to.
+pub fn ensure_with(
+    worktree: &Path,
+    model: Option<&str>,
+    mode: &str,
+    placement: &Placement,
+    session: Option<&str>,
+) -> Result<Daemon, String> {
     let d = resolve(worktree)?;
     // Not in `ensure_here`: that is the shape a test drives with a stub binary, and it must not
     // start a real coordinator.
     if !is_up(&d.socket) {
         ensure_host_room();
     }
-    ensure_here(d, model, mode, placement)
+    ensure_here_with(d, model, mode, placement, session)
 }
 
 /// [`ensure`] for a daemon already resolved - the shape a test drives, with a socket it bound
 /// itself and no folder to hash.
 pub fn ensure_here(
+    d: Daemon,
+    model: Option<&str>,
+    mode: &str,
+    placement: &Placement,
+) -> Result<Daemon, String> {
+    ensure_here_with(d, model, mode, placement, None)
+}
+
+/// [`ensure_here`] with the id the daemon's first session must carry - see [`ensure_with`].
+pub fn ensure_here_with(
     mut d: Daemon,
     model: Option<&str>,
     mode: &str,
     placement: &Placement,
+    session: Option<&str>,
 ) -> Result<Daemon, String> {
     if is_up(&d.socket) {
         if d.placement.as_ref() == Some(placement) {
@@ -512,7 +552,7 @@ pub fn ensure_here(
     // A second daemon for one folder is what corrupts a transcript, and the refusal that
     // catches it is harnessd's own folder claim. So the start is attempted, and a refusal
     // reaches the caller as the log tail rather than being pre-empted by a guess.
-    let pid = spawn(&daemon_binary()?, &d, model, mode, placement)?;
+    let pid = spawn(&daemon_binary()?, &d, model, mode, placement, session)?;
     for _ in 0..60 {
         if is_up(&d.socket) {
             d.started = true;

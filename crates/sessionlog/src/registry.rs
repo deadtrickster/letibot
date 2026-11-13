@@ -412,6 +412,18 @@ fn mint_instance() -> String {
     )
 }
 
+/// A fresh session id in the shape every id here has: `s-<unix nanos>`. Minting one OUTSIDE the
+/// daemon is what lets a caller write an owner row, and the worktree and branch named by it, before
+/// the session exists - a package (`docs/lifecycle.md` G3). The daemon takes an id it is handed and
+/// refuses one already in use, so uniqueness is still the registry's.
+pub fn new_id() -> String {
+    let base = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!("s-{base}")
+}
+
 /// The last eight characters of a session id, with a leading ellipsis. Ids are minted `s-<nanos>`,
 /// so two made the same afternoon share a prefix. The rule lives in the plugin SDK, because the
 /// `sessions` layer draws the same id and a guest cannot call this crate.

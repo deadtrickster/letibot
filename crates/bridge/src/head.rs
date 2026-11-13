@@ -2550,6 +2550,20 @@ pub fn create_session(d: &Daemon, title: &str) -> Result<String, String> {
 /// The same, with the tree the session is about named: a review's session stands in the pull
 /// request's own worktree, which is not the daemon's workspace.
 pub fn create_session_in(d: &Daemon, title: &str, workspace: &str) -> Result<String, String> {
+    create_session_as(d, title, workspace, None, "")
+}
+
+/// The same, with the id the caller already wrote down (a package's owner row and the branch
+/// `pk/<sid8>/<name>` are named by it, and both exist before the session does), and with the name
+/// a state that fails says - *it was opened* is a different sentence for a package than for a
+/// review's tree.
+pub fn create_session_as(
+    d: &Daemon,
+    title: &str,
+    workspace: &str,
+    id: Option<&str>,
+    what: &str,
+) -> Result<String, String> {
     // A daemon whose last session closed stays up holding none, and serves this bare attach as a
     // control connection: no seat, and only the frames that give it one (R178). This socket claims
     // no session, so it cannot break the rule that a head's socket is its session's from frame one.
@@ -2572,7 +2586,7 @@ pub fn create_session_in(d: &Daemon, title: &str, workspace: &str) -> Result<Str
         .spawn(move || pump(reader, tx))
         .ok();
     client
-        .new_session(title, workspace)
+        .new_session_with_id(title, workspace, id)
         .map_err(|e| e.to_string())?;
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
@@ -2585,6 +2599,14 @@ pub fn create_session_in(d: &Daemon, title: &str, workspace: &str) -> Result<Str
                 let _ = client.detach();
                 return created
                     .ok_or_else(|| "the daemon answered a new-session with no id".to_string());
+            }
+            Ok(Inbound::Frame(ServerFrame::Rejected { reason, .. })) => {
+                let _ = client.detach();
+                return Err(if what.is_empty() {
+                    reason
+                } else {
+                    format!("{what}: {reason}")
+                });
             }
             Ok(Inbound::Frame(ServerFrame::Bye { reason })) => {
                 return Err(format!("the daemon closed the connection: {reason}"));

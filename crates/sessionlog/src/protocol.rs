@@ -12,7 +12,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 73;
+pub const PROTOCOL_VERSION: u32 = 74;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -855,6 +855,11 @@ pub enum ClientFrame {
         /// The tree this session is about, from the head that asked. Empty means wherever the daemon is,
         /// and it is here because the daemon's working directory is not the head's.
         workspace: String,
+        /// The id the caller already wrote down, when it has: a package's owner row and the branch
+        /// `pk/<sid8>/<name>` are named by it, and both exist before the session does. `None` lets
+        /// the daemon mint one, which is what every head that has nothing recorded sends.
+        #[serde(default)]
+        id: Option<String>,
     },
     /// Bring a session that is in the store but not in this daemon back to life. Separate from
     /// [`ClientFrame::NewSession`] because this one NAMES an existing session.

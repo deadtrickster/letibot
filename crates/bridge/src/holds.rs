@@ -13,7 +13,7 @@ use crate::tools::Bridge;
 
 /// The store this bridge reads its folder's owners from: the one a test named, else the store of
 /// the daemon serving the working directory - resolved the way every other bridge read does.
-fn store_of(bridge: &Bridge) -> Result<std::path::PathBuf, String> {
+pub(crate) fn store_of(bridge: &Bridge) -> Result<std::path::PathBuf, String> {
     if let Some((store, _)) = bridge.names_source() {
         return Ok(store);
     }

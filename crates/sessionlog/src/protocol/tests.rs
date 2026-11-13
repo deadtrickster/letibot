@@ -157,8 +157,13 @@ fn every_frame_is_accounted_for_at_this_version() {
     let _ = event;
     let _ = server;
     assert_eq!(
-        PROTOCOL_VERSION, 73,
-        "the match above was last reconciled with the frame list at 73. 73 added \
+        PROTOCOL_VERSION, 74,
+        "the match above was last reconciled with the frame list at 74. 74 gave \
+             `ClientFrame::NewSession` an `id`: a package's owner row and its branch are named by \
+             the session id before the session exists, so the caller sends the id it wrote down. \
+             `serde(default)`, so a version-73 daemon parses the frame and mints its own id - which \
+             is why the number moves: the row and the branch would name a session that never \
+             existed. 73 added \
              `SessionEvent::HeldResults`'s `room` and `SessionStatus`'s `held_rooms`: what a session \
              has been TOLD and its model has not been shown - a room line nothing rang for, held \
              until its quiet window passes and then said as one digest (R204). Both are \
@@ -655,6 +660,7 @@ fn every_frame_round_trips() {
             client_request_id: "r4".into(),
             title: "the cache question".into(),
             workspace: "/home/dead/Projects/letibot".into(),
+            id: None,
         },
         ClientFrame::ResumeSession {
             client_request_id: "r5".into(),

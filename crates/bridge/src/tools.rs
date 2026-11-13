@@ -349,20 +349,61 @@ impl Bridge {
         mode: &str,
         host: Option<&str>,
         vm: bool,
+        package: Option<&str>,
     ) -> Result<Value, String> {
         if brief.trim().is_empty() {
             return Err("`brief` is empty: a session with no brief runs no turn".into());
         }
+        // A package is its own worktree and its own branch, made HERE and row first: the owner row
+        // and its root are written before anything exists to leak, and the session is opened on
+        // the id already written down (`docs/lifecycle.md` G3).
+        let prepared = match package {
+            Some(name) => Some(self.package_worktree(worktree, name)?),
+            None => None,
+        };
+        let worktree = match &prepared {
+            Some(p) => p.path.display().to_string(),
+            None => worktree.to_string(),
+        };
+        let id = prepared.as_ref().map(|p| p.id.clone());
         // The host is checked before anything is done: a name this file does not declare is
         // refused by the operator's rule, listing the names it does, and no daemon is started
         // for it.
         let placement = placement_arg(host, vm, &Hosts::load())?;
-        let d = daemon::ensure(Path::new(worktree), model, mode, &placement)?;
+        let d = daemon::ensure_with(Path::new(&worktree), model, mode, &placement, id.as_deref())?;
         let (session, opened) = if d.started {
+            // The daemon opened its own first session, and a package's was told which id to use.
             (head::open_default(&d)?, "daemon")
         } else {
-            (head::create_session(&d, "")?, "new")
+            let title = prepared
+                .as_ref()
+                .map(|p| p.name.clone())
+                .unwrap_or_default();
+            (
+                head::create_session_as(&d, &title, &worktree, id.as_deref(), "")?,
+                "new",
+            )
         };
+        if let Some(want) = &id
+            && &session != want
+        {
+            // A daemon from a build that ignores the id would write the transcript under a name
+            // nothing of this package is recorded against: said, not papered over.
+            let branch = letibot_tools::lifecycle::branch_name(
+                want,
+                prepared
+                    .as_ref()
+                    .map(|p| p.name.as_str())
+                    .unwrap_or_default(),
+            );
+            return Err(format!(
+                "the daemon on {} opened `{session}` and this package is recorded as `{want}`: \
+                 its owner row, its worktree and the branch `{branch}` are named by the id, so a \
+                 daemon that mints its own is one this call cannot use. Its log is {}.",
+                d.socket.display(),
+                d.log.display()
+            ));
+        }
         let h = Arc::new(Head::attach(&d, &session)?);
         if let Err(why) = placed_as_asked(&placement, h.placement.as_ref()) {
             // Held and briefless: a VM session whose tools would run here must not start work.
@@ -464,6 +505,58 @@ impl Bridge {
             });
         }
         Ok(answer)
+    }
+
+    /// A package's own worktree, row first: the owner row and its root are written, then the branch
+    /// `pk/<sid8>/<name>` and the tree, stamped with both. The id is minted here because the row,
+    /// the tree and the branch are all named by it and all three exist before the session does.
+    /// (`docs/lifecycle.md` G3, d.4's naming table.)
+    fn package_worktree(&self, source: &str, name: &str) -> Result<Prepared, String> {
+        use letibot_tokencore::store::OwnerKind;
+        let repo = letibot_tools::git::repo_of_worktree(Path::new(source)).ok_or_else(|| {
+            format!(
+                "`package` makes a worktree of the repository `worktree` names, and {source} is \
+                 not in one"
+            )
+        })?;
+        let store_at = crate::holds::store_of(self)?;
+        let store = crate::store::open(&store_at, "owner", Some(&repo))
+            .map_err(|e| format!("a package is recorded before it exists, and {e}"))?;
+        let places = letibot_tools::lifecycle::Places::here();
+        let id = letibot_sessionlog::registry::new_id();
+        let now = letibot_tools::lifecycle::now_ms();
+        let row = letibot_tools::lifecycle::owner_for_open(
+            &store,
+            &id,
+            OwnerKind::Package,
+            Some(repo.display().to_string()),
+            now,
+        )
+        .map_err(|e| format!("no owner row for {id}: {e}"))?;
+        // THE ROW FIRST: a row with no resource is harmless, a resource with no row is the leak
+        // this whole lifecycle exists to stop.
+        letibot_tools::lifecycle::register(&store, &places, &row)
+            .map_err(|e| format!("no root for {id}: {e}"))?;
+        let made = match letibot_tools::lifecycle::make_worktree(&places, &id, &repo, name, "HEAD")
+        {
+            Ok(made) => made,
+            Err(why) => {
+                store
+                    .set_owner_state(
+                        &id,
+                        letibot_tokencore::store::OwnerState::Closed,
+                        &format!("the worktree could not be made: {why}"),
+                        now,
+                    )
+                    .ok();
+                return Err(why);
+            }
+        };
+        Ok(Prepared {
+            id,
+            name: letibot_tools::lifecycle::package_dir(name)?,
+            path: made.path,
+        })
     }
 
     fn hold(&self, h: &Arc<Head>) {
@@ -1188,6 +1281,7 @@ pub fn list() -> Value {
                     "model": { "type": "string", "description": "What answers THIS session's turns: a provider name (`deepseek`, `glm`, `grok`), `provider/model`, or a local model alias. Omitted: the daemon's own choice. It is set on the session, so it holds over a daemon already serving another provider, and a name this box cannot serve is refused before the brief is sent." },
                     "mode": { "type": "string", "description": "The approval point. Default `writes-allowed`: writes go through, commands and the network ask. `allow-all` needs the operator's confirmation and is refused by the daemon without it." },
                     "host": { "type": "string", "description": "Where this session's TOOLS run: a machine the operator declared in `~/.config/letibot/hosts.toml` — call the `hosts` tool or read that file for the names. Then bash, read, write, edit and jobs run there while the model, the store and the gate stay here. Omitted: on this box. An undeclared name is refused before anything starts." },
+                    "package": { "type": "string", "description": "Make this a PACKAGE: a worktree of the repository `worktree` names, under this box's owner root, on the branch `pk/<short id>/<name>` — created here, with the owner recorded first. Omitted: the session runs in `worktree` as it is." },
                     "vm": { "type": "boolean", "description": "Run this session's tools inside a firecode VM. With `host`, the VM is booted on THAT machine by its own firecode, over this session's ssh link, on a copy of the checkout; the guest is the boundary, so builds and tests run there without asking. Omitted: false. A host with no firecode, or no `/dev/kvm` this connection's user may open, is refused by name." }
                 },
                 "required": ["worktree", "brief"]
@@ -1624,6 +1718,14 @@ fn leticode_names() -> Vec<&'static str> {
     ]
 }
 
+/// A package whose worktree was just made: the id its owner row, tree and branch are named by, the
+/// package's own name on disk, and where the tree is.
+struct Prepared {
+    id: String,
+    name: String,
+    path: std::path::PathBuf,
+}
+
 /// A string argument, or a refusal naming the field.
 fn arg_str(args: &Value, key: &str) -> Result<String, String> {
     match args.get(key) {
@@ -1677,6 +1779,7 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             let mode = arg_opt_str(args, "mode")?.unwrap_or_else(|| DEFAULT_MODE.to_string());
             let host = arg_opt_str(args, "host")?;
             let vm = arg_bool(args, "vm", false)?;
+            let package = arg_opt_str(args, "package")?;
             bridge.start(
                 &worktree,
                 &brief,
@@ -1684,6 +1787,7 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
                 &mode,
                 host.as_deref(),
                 vm,
+                package.as_deref(),
             )
         }
         "leticode_attach" => {
