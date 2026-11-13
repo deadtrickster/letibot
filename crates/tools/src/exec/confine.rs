@@ -1742,6 +1742,12 @@ pub trait Confinement: Send + Sync {
         false
     }
 
+    /// Whether the command runs on another machine whose own RAM bounds it, so a cgroup cap here
+    /// would bound only the client that carries it there.
+    fn memory_is_elsewhere(&self) -> bool {
+        false
+    }
+
     /// Is this path outside the view? `false` when there is no view, because
     /// "outside" is meaningless then and answering `true` would produce a note
     /// claiming a boundary that is not there.

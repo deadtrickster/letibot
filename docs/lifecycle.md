@@ -702,7 +702,7 @@ the kill and what survived").
 | branch (owner namespace or proved) | work | letibot or agent | settle | archive ref, then `git branch -D` | archive ref |
 | fetch branches (`remote/<host>/<id>`, `x-vm-*`) | work | collect | settle | moved to the archive namespace | archive ref |
 | VM copy-out (`~/.cache/letibot/firecode/<sid>-<ts>`) | work | firecode | settle | fetch its commits and commit its dirty tree into the archive namespace of the source repo, then remove | archive ref |
-| booted copy (`cache/<sid>`) | cache | `FirecodeBackend::up` | VM down with a recorded copy-out (`done` or `none`) | remove; kept when the copy-out failed, as today | it is the only copy then: becomes `work` |
+| booted copy (`cache/<sid>`) | cache | `FirecodeBackend::up` | VM down with a recorded copy-out (`done` or `none`) | remove, unless it holds a HEAD no source ref contains or content the source lacks; kept when the copy-out failed | it is the only copy then: becomes `work`. The guest's commits and dirty tree go to `cache/<sid>.rescue.bundle` before `down`, kept unless the delivered tree has the guest's HEAD |
 | target dir in the owner root | cache | cargo | close | remove | none |
 | shared target (`target-landing*`, queue targets) | cache | queue | quota | owner is the queue; removed whole when over quota or unused for 3 days, under the build lock `rrun-runner` already takes | none |
 | tmp, confined home | cache | tools | close | remove | none |

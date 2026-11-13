@@ -11,6 +11,7 @@ use crate::backend::{BackendError, Command, DirEntry, ExecBackend, Output};
 use crate::exec::{Boundary, ConfinePlan, Confinement, ExecError, HostProcesses};
 
 pub mod held;
+pub mod keep;
 
 /// Where the `firecode` CLI is. `$FIRECODE_BIN`, else `firecode` on `PATH`.
 pub fn firecode_bin() -> PathBuf {
@@ -281,6 +282,10 @@ impl Confinement for FirecodeConfinement {
     fn wrap(&self, plan: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError> {
         Ok(self.prefix(plan.cwd))
     }
+
+    fn memory_is_elsewhere(&self) -> bool {
+        true
+    }
 }
 
 /// One VM, one project copy, for the life of the backend.
@@ -322,6 +327,14 @@ pub struct FirecodeBackend {
     /// over, because `firecode in` carries no stdin and no descriptor to hand a secret's value on.
     env: Vec<(String, String)>,
     env_secrets: Vec<(String, String)>,
+    /// The source's HEAD when the copy was made: a guest HEAD past it is work.
+    base: Option<String>,
+    /// [`FirecodeSpec::exclude`]: a path the copy left out is not a change in it.
+    exclude: Vec<String>,
+    /// What [`Self::rescue`] carried out of the guest before `down`, or why it could not.
+    rescued: std::sync::Mutex<Option<Result<keep::Rescue, String>>>,
+    /// Why the booted copy was kept instead of removed.
+    kept: std::sync::Mutex<Option<String>>,
 }
 
 impl std::fmt::Debug for FirecodeBackend {
@@ -707,7 +720,7 @@ impl FirecodeBackend {
             run: run.clone(),
             mounted,
         });
-        let b = FirecodeBackend {
+        let mut b = FirecodeBackend {
             bin,
             project,
             source: spec.source.clone(),
@@ -724,7 +737,15 @@ impl FirecodeBackend {
             guest_timeout: GUEST_TIMEOUT,
             env: Vec::new(),
             env_secrets: Vec::new(),
+            base: None,
+            exclude: Vec::new(),
+            rescued: std::sync::Mutex::new(None),
+            kept: std::sync::Mutex::new(None),
         };
+        if !mounted {
+            b.base = keep::git_head(&spec.source);
+            b.exclude = spec.exclude.clone();
+        }
         // Prove the door works before handing the backend over: a VM that came
         // up and cannot take a command is a boot, not a backend.
         b.guest("true")
@@ -779,6 +800,10 @@ impl FirecodeBackend {
             guest_timeout: GUEST_TIMEOUT,
             env: Vec::new(),
             env_secrets: Vec::new(),
+            base: None,
+            exclude: Vec::new(),
+            rescued: std::sync::Mutex::new(None),
+            kept: std::sync::Mutex::new(None),
         };
         // The parent's VM has to be up and taking commands, or there is nothing to run in.
         b.guest("true").map_err(|e| {
@@ -809,6 +834,10 @@ impl FirecodeBackend {
             guest_timeout: GUEST_TIMEOUT,
             env: Vec::new(),
             env_secrets: Vec::new(),
+            base: None,
+            exclude: Vec::new(),
+            rescued: std::sync::Mutex::new(None),
+            kept: std::sync::Mutex::new(None),
         }
     }
 
@@ -999,9 +1028,16 @@ impl FirecodeBackend {
         if !self.owns {
             return;
         }
-        LIVE.lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .retain(|vm| vm.project != self.project);
+        let was_live = {
+            let mut live = LIVE.lock().unwrap_or_else(|e| e.into_inner());
+            let n = live.len();
+            live.retain(|vm| vm.project != self.project);
+            live.len() != n
+        };
+        // Once only, while the guest still answers: a second `down` finds nothing live.
+        if was_live {
+            self.rescue();
+        }
         let before = siblings(&self.project);
         // Bounded: `down` is a client waiting on a reply, and a teardown that never returns holds
         // the daemon's worker. A `down` killed at its deadline changes nothing about the answer
@@ -1029,8 +1065,9 @@ impl FirecodeBackend {
                     }
                 }
                 Some(r) if r.starts_with("done ") => {
-                    *self.landed.lock().unwrap_or_else(|e| e.into_inner()) =
-                        Some(PathBuf::from(r["done ".len()..].trim()));
+                    let landed = PathBuf::from(r["done ".len()..].trim());
+                    self.drop_rescue_held_by(&landed);
+                    *self.landed.lock().unwrap_or_else(|e| e.into_inner()) = Some(landed);
                     self.remove_copy();
                     return;
                 }
@@ -1061,9 +1098,117 @@ impl FirecodeBackend {
     /// The copy the VM was booted on, gone once its work has landed - and never a mounted
     /// worktree, which is the operator's own and is where the work landed.
     fn remove_copy(&self) {
-        if !self.mounted {
-            let _ = std::fs::remove_dir_all(&self.project);
+        if self.mounted {
+            return;
         }
+        if let Some(why) = keep::holds_work(&self.project, &self.source, &self.exclude) {
+            eprintln!("letibot: keeping {}: {why}", self.project.display());
+            *self.kept.lock().unwrap_or_else(|e| e.into_inner()) = Some(why);
+            return;
+        }
+        let _ = std::fs::remove_dir_all(&self.project);
+    }
+
+    /// Where a rescue bundle is kept: beside the copy, so removing the copy never takes it.
+    fn rescue_path(&self) -> PathBuf {
+        let name = self
+            .project
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "copy".into());
+        self.project.with_file_name(format!("{name}.rescue.bundle"))
+    }
+
+    /// The guest's commits and dirty tree, carried out as a bundle before the VM goes down.
+    /// firecode's copy-out is the delivery; this is what survives when the copy-out is wrong.
+    fn rescue(&self) {
+        if self.mounted {
+            return;
+        }
+        let project = shell_quote(&self.project.display().to_string());
+        let said = match self.guest(&keep::guest_stage(&project, self.base.as_deref())) {
+            Ok((bytes, 0)) => String::from_utf8_lossy(&bytes).into_owned(),
+            Ok((bytes, code)) => {
+                return self.rescued_as(Err(format!(
+                    "staging the guest's work failed (exit {code}): {}",
+                    String::from_utf8_lossy(&bytes).trim()
+                )));
+            }
+            Err(e) => return self.rescued_as(Err(format!("the guest did not answer: {e}"))),
+        };
+        let Some((head, commits, dirty)) = said.lines().find_map(keep::parse_stage) else {
+            return;
+        };
+        let size = self
+            .guest(&format!("wc -c < {}", keep::GUEST_BUNDLE))
+            .ok()
+            .and_then(|(b, _)| String::from_utf8_lossy(&b).trim().parse::<u64>().ok());
+        if size.is_some_and(|n| n > keep::MAX_BUNDLE) {
+            return self.rescued_as(Err(format!(
+                "the guest's work is a bundle of {}, over the {} read out",
+                human(size.unwrap_or(0)),
+                human(keep::MAX_BUNDLE)
+            )));
+        }
+        let bytes = match self.read(keep::GUEST_BUNDLE) {
+            Ok(b) => b,
+            Err(e) => return self.rescued_as(Err(format!("reading the bundle out: {e}"))),
+        };
+        let bundle = self.rescue_path();
+        if let Err(e) = std::fs::write(&bundle, &bytes) {
+            return self.rescued_as(Err(format!("{}: {e}", bundle.display())));
+        }
+        self.rescued_as(Ok(keep::Rescue {
+            bundle,
+            head,
+            commits,
+            dirty,
+        }));
+    }
+
+    fn rescued_work(&self) -> bool {
+        matches!(
+            *self.rescued.lock().unwrap_or_else(|e| e.into_inner()),
+            Some(Ok(_))
+        )
+    }
+
+    fn rescued_as(&self, r: Result<keep::Rescue, String>) {
+        *self.rescued.lock().unwrap_or_else(|e| e.into_inner()) = Some(r);
+    }
+
+    /// A delivered tree that has the guest's HEAD holds what the bundle holds, short of a dirty
+    /// tree, which the copy-out delivers as files.
+    fn drop_rescue_held_by(&self, landed: &Path) {
+        let mut g = self.rescued.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(Ok(r)) = g.as_ref()
+            && keep::git_head(landed).as_deref() == Some(r.head.as_str())
+        {
+            let _ = std::fs::remove_file(&r.bundle);
+            *g = None;
+        }
+    }
+
+    /// What close says about work carried out of the guest that the copy-out did not deliver.
+    fn rescue_sentence(&self) -> Option<String> {
+        let g = self.rescued.lock().unwrap_or_else(|e| e.into_inner());
+        Some(match g.as_ref()? {
+            Ok(r) => format!(
+                "Before the VM went down the guest held {} past {}. firecode's copy-out did not \
+                 deliver them, so they were saved to {}: {}",
+                r.what(),
+                self.base
+                    .as_deref()
+                    .map(|b| b.get(..12).unwrap_or(b))
+                    .unwrap_or("the base"),
+                r.bundle.display(),
+                r.fetch_line()
+            ),
+            Err(why) => format!(
+                "The guest's work could not be carried out before the VM went down ({why}); \
+                 firecode's copy-out is the only record of it"
+            ),
+        })
     }
 }
 
@@ -1344,6 +1489,11 @@ impl ExecBackend for FirecodeBackend {
                         .map(|d| d.join("copy_out").display().to_string())
                         .unwrap_or_else(|| "firecode's runs/<run>/copy_out".into())
                 ),
+                Some(r) if r == "none" && self.rescued_work() => format!(
+                    "the subagent's VM stopped and firecode recorded that it changed nothing in \
+                     its copy of {}, which is wrong: the guest held work when it went down",
+                    self.source.display()
+                ),
                 Some(r) if r == "none" => format!(
                     "the subagent's VM finished normally and changed nothing in its copy of {}, \
                      so firecode wrote no result directory",
@@ -1363,6 +1513,16 @@ impl ExecBackend for FirecodeBackend {
                 ),
             },
         };
+        let mut work = work;
+        if let Some(r) = self.rescue_sentence() {
+            work = format!("{work}.\n\n{r}");
+        }
+        if let Some(why) = self.kept.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            work = format!(
+                "{work}.\n\nThe copy at {} was kept, not removed: {why}",
+                self.project.display()
+            );
+        }
         Some(match self.verdict() {
             Some(v) => format!("{work}.\n\n{v}"),
             None => work,

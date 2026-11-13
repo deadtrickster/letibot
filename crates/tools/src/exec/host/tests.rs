@@ -1995,3 +1995,51 @@ fn the_model_server_is_found_by_what_it_is_and_not_by_its_port() {
     let _ = job.wait();
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A command carried into a VM by a host-side client: the client is what runs here.
+struct Carried;
+
+impl Confinement for Carried {
+    fn describe(&self) -> String {
+        "a VM the client below carries the command into".into()
+    }
+
+    fn boundary(&self) -> Option<&super::super::confine::Boundary> {
+        None
+    }
+
+    fn wrap(&self, _: &ConfinePlan<'_>) -> Result<Vec<String>, ExecError> {
+        Ok(vec!["env".into()])
+    }
+
+    fn memory_is_elsewhere(&self) -> bool {
+        true
+    }
+}
+
+/// A VM job's memory is the guest's: a host cap on the client said UNCAPPED for every call in a
+/// firecode session, and the model read that as running on the host.
+#[test]
+fn a_command_carried_into_a_vm_is_not_capped_on_the_host() {
+    let root = std::env::temp_dir().join(format!("letibot-carried-{}", std::process::id()));
+    std::fs::create_dir_all(&root).expect("a root");
+    let h = HostProcesses::with_tree(&root, PlainTree::over(root.join("tree")))
+        .with_confinement(Box::new(Carried));
+    let id = h
+        .spawn(&SpawnRequest {
+            command: "true".into(),
+            slug: None,
+            cwd: "/".into(),
+            scope: ScopeKind::Turn,
+            scope_name: None,
+            background: false,
+            env: vec![],
+            tty: false,
+            memory: Some(64 << 20),
+            env_trailer: false,
+        })
+        .expect("a job runs");
+    let cap = h.job(&id).expect("the job").memory_cap;
+    assert_eq!(cap, MemoryCap::NotAsked, "{cap:?}");
+    let _ = std::fs::remove_dir_all(&root);
+}

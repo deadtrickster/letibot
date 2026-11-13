@@ -1946,6 +1946,9 @@ impl ProcessHost for HostProcesses {
         // runs, and its result says UNCAPPED and why ([`MemoryCap::Uncapped`]).
         let memory_cap = match req.memory {
             None => MemoryCap::NotAsked,
+            // The guest's RAM is the bound: capping the host-side client would report a cap
+            // on the wrong process, or UNCAPPED for a command that never ran here.
+            Some(_) if confined.memory_is_elsewhere() => MemoryCap::NotAsked,
             Some(bytes) => match self.tree.cap_memory(&cgroup, bytes) {
                 Ok(()) => MemoryCap::Capped(bytes),
                 Err(why) => MemoryCap::Uncapped { asked: bytes, why },

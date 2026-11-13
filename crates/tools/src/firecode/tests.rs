@@ -804,6 +804,7 @@ fn the_confinement_wraps_a_job_as_firecode_in_with_the_cwd() {
     );
     assert!(c.describe().contains("NOT confined"));
     assert!(c.boundary().is_none());
+    assert!(c.memory_is_elsewhere(), "the guest's RAM bounds a VM job");
 }
 
 #[test]
@@ -1121,4 +1122,106 @@ fn a_close_brings_down_the_vm_its_session_holds_from_any_thread() {
         "a second close claimed a VM that was gone"
     );
     let _ = std::fs::remove_dir_all(&root);
+}
+
+fn git_in(dir: &Path, args: &[&str]) -> String {
+    let o = std::process::Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args([
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .output()
+        .expect("git runs");
+    assert!(o.status.success(), "git {args:?}: {o:?}");
+    String::from_utf8_lossy(&o.stdout).trim().to_string()
+}
+
+/// A source repository with one commit, and the stub's `down` running `then` in the copy
+/// before it records `none`: what a guest that worked and a copy-out that saw nothing look like.
+fn none_after(name: &str, then: &str, guest: bool) -> (PathBuf, PathBuf, FirecodeBackend) {
+    let root = tmp(name);
+    let src = root.join("src");
+    file(&src.join("a.txt"), 10);
+    git_in(&src, &["init", "-q"]);
+    git_in(&src, &["add", "-A"]);
+    git_in(&src, &["commit", "-qm", "base"]);
+    let guest_arm = if guest {
+        "in) cd \"$5\" && sh -c \"$6\" ;;"
+    } else {
+        ""
+    };
+    let arms = format!(
+        "{HAPPY}\n{guest_arm}\n\
+         down) (cd \"$3\" && {then}) >/dev/null 2>&1; mkdir -p \"$ROOT/runs/r1\"; \
+         echo none > \"$ROOT/runs/r1/copy_out\"; exit 0 ;;"
+    );
+    let bin = stub_firecode(&root.join("fc"), &arms);
+    let b = FirecodeBackend::up(&spec_with(&src, &root.join("cache"), &bin)).unwrap();
+    (src, root.join("cache").join("child"), b)
+}
+
+const COMMIT: &str = "git -c user.name=t -c user.email=t@t -c commit.gpgsign=false \
+                      commit -q --allow-empty -m work";
+
+/// The booted copy is removed only when it holds nothing the source lacks: a commit no ref of
+/// the source contains keeps it, whatever the copy-out said.
+#[test]
+fn a_copy_holding_a_commit_the_source_lacks_is_kept() {
+    let (_src, copy, b) = none_after("keep-commit", COMMIT, false);
+    let answer = b.close().unwrap();
+    assert!(
+        copy.exists(),
+        "a copy with an unreachable commit was removed"
+    );
+    assert!(answer.contains("was kept, not removed"), "{answer}");
+    assert!(answer.contains("in no ref of"), "{answer}");
+}
+
+#[test]
+fn a_copy_with_changes_the_source_lacks_is_kept() {
+    let (_src, copy, b) = none_after("keep-dirty", "echo new > b.txt", false);
+    let answer = b.close().unwrap();
+    assert!(copy.exists(), "a dirty copy was removed");
+    assert!(answer.contains("`b.txt`"), "{answer}");
+}
+
+#[test]
+fn a_copy_with_nothing_of_its_own_is_removed() {
+    let (_src, copy, b) = none_after("keep-clean", "true", false);
+    let answer = b.close().unwrap();
+    assert!(!copy.exists(), "an untouched copy was kept: {answer}");
+    assert!(!answer.contains("was kept"), "{answer}");
+}
+
+/// The guest's commits are carried out before `down`, so a copy-out that reports `none` for a
+/// guest that committed cannot lose them: the jail held the only copy of the drive it wrote.
+#[test]
+fn the_guests_commits_are_carried_out_when_the_copy_out_says_none() {
+    let (src, copy, b) = none_after("rescue", "true", true);
+    git_in(
+        &copy,
+        &["commit", "-q", "--allow-empty", "-m", "guest work"],
+    );
+    let head = git_in(&copy, &["rev-parse", "HEAD"]);
+    let answer = b.close().unwrap();
+    assert!(answer.contains("which is wrong"), "{answer}");
+    let bundle = copy.with_file_name("child.rescue.bundle");
+    assert!(answer.contains(&bundle.display().to_string()), "{answer}");
+    git_in(
+        &src,
+        &[
+            "fetch",
+            "-q",
+            &bundle.display().to_string(),
+            "refs/letibot/rescue:refs/heads/rescued",
+        ],
+    );
+    assert_eq!(git_in(&src, &["rev-parse", "rescued"]), head);
 }
