@@ -44,7 +44,44 @@ pub struct Preset {
     /// call it by: we say `glm` and `grok`, the catalogue says `zhipuai` and `xai`. The
     /// facts are read from there rather than written down here.
     pub catalogue_id: &'static str,
+    /// The catalogue's rule (window, price, plainest name) cannot see a vendor's flagship. When
+    /// set, `fallback_model` is the default wherever the catalogue still carries it.
+    pub vendor_pick: bool,
+    /// Sampling keys this door fixes and refuses any other value for. A configured one is
+    /// dropped before the request, and the operator is told once.
+    pub fixed_sampling: &'static [&'static str],
+    /// The top-level body field that carries `--effort`, and the door's own words for it.
+    pub effort: Option<EffortField>,
 }
+
+/// An effort switch as one body field: `words` maps the operator's word to the door's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffortField {
+    pub field: &'static str,
+    pub words: &'static [(&'static str, &'static str)],
+}
+
+/// Kimi's plan fixes these on every model it serves; another value is a 400.
+const KIMI_FIXED_SAMPLING: &[&str] = &[
+    "temperature",
+    "top_p",
+    "n",
+    "presence_penalty",
+    "frequency_penalty",
+];
+
+/// The plan's `reasoning_effort` takes low/high/max, and its docs map the rest onto those.
+const KIMI_EFFORT: EffortField = EffortField {
+    field: "reasoning_effort",
+    words: &[
+        ("minimal", "low"),
+        ("low", "low"),
+        ("medium", "high"),
+        ("high", "high"),
+        ("xhigh", "max"),
+        ("max", "max"),
+    ],
+};
 
 pub const DEEPSEEK: Preset = Preset {
     name: "deepseek",
@@ -55,6 +92,9 @@ pub const DEEPSEEK: Preset = Preset {
     fallback_model: "deepseek-flash",
     thinking_field: None,
     catalogue_id: "deepseek",
+    vendor_pick: false,
+    fixed_sampling: &[],
+    effort: None,
 };
 
 pub const GLM: Preset = Preset {
@@ -68,6 +108,9 @@ pub const GLM: Preset = Preset {
     // provider sends it when the operator asks for a reasoning turn.
     thinking_field: Some("thinking"),
     catalogue_id: "zhipuai",
+    vendor_pick: false,
+    fixed_sampling: &[],
+    effort: None,
 };
 
 /// The coding plan: same vendor, a different path (`/api/coding/paas/v4`), its own
@@ -95,6 +138,9 @@ pub const GLM_CODING: Preset = Preset {
     fallback_model: "glm-5.3",
     thinking_field: Some("thinking"),
     catalogue_id: "zai-coding-plan",
+    vendor_pick: false,
+    fixed_sampling: &[],
+    effort: None,
 };
 
 /// Zhipu's coding plan: the mainland host of the same product as [`GLM_CODING`].
@@ -107,6 +153,9 @@ pub const GLM_CODING_CN: Preset = Preset {
     fallback_model: "glm-5.3",
     thinking_field: Some("thinking"),
     catalogue_id: "zhipuai-coding-plan",
+    vendor_pick: false,
+    fixed_sampling: &[],
+    effort: None,
 };
 
 pub const GROK: Preset = Preset {
@@ -118,6 +167,9 @@ pub const GROK: Preset = Preset {
     fallback_model: "grok-4.3",
     thinking_field: None,
     catalogue_id: "xai",
+    vendor_pick: false,
+    fixed_sampling: &[],
+    effort: None,
 };
 
 /// Anthropic's own API, speaking Messages. The key is the console's `x-api-key`, which is the one
@@ -138,6 +190,9 @@ pub const ANTHROPIC: Preset = Preset {
     fallback_model: "claude-opus-5-5",
     thinking_field: None,
     catalogue_id: "anthropic",
+    vendor_pick: false,
+    fixed_sampling: &[],
+    effort: None,
 };
 
 /// DeepSeek's Anthropic-compatible door: the same models as [`DEEPSEEK`], the Messages wire, and a
@@ -157,6 +212,9 @@ pub const DEEPSEEK_ANTHROPIC: Preset = Preset {
     fallback_model: "deepseek-flash",
     thinking_field: None,
     catalogue_id: "deepseek",
+    vendor_pick: false,
+    fixed_sampling: &[],
+    effort: None,
 };
 
 /// Z.ai's Anthropic-compatible door, which is the one their Claude Code instructions point at:
@@ -172,6 +230,9 @@ pub const GLM_ANTHROPIC: Preset = Preset {
     fallback_model: "glm-5.3",
     thinking_field: None,
     catalogue_id: "zai-coding-plan",
+    vendor_pick: false,
+    fixed_sampling: &[],
+    effort: None,
 };
 
 /// Moonshot's Kimi Code plan, whose Claude Code instructions give the base URL
@@ -190,9 +251,12 @@ pub const KIMI_CODING: Preset = Preset {
     protocol: Protocol::AnthropicMessages,
     // Not `MOONSHOT_API_KEY`: that is the metered Open Platform's key, another product's.
     alt_envs: &["KIMI_CODE_API_KEY"],
-    fallback_model: "k3",
+    fallback_model: "k3.1-pro",
     thinking_field: None,
     catalogue_id: "kimi-code-plan-global",
+    vendor_pick: true,
+    fixed_sampling: KIMI_FIXED_SAMPLING,
+    effort: None,
 };
 
 /// OpenAI itself, on its own protocol. `gpt-6-astra` is the id the API reference's own
@@ -215,6 +279,9 @@ pub const OPENAI: Preset = Preset {
     // table's shape: `openai::thinking_field` is the chat-completions spelling.
     thinking_field: None,
     catalogue_id: "openai",
+    vendor_pick: false,
+    fixed_sampling: &[],
+    effort: None,
 };
 
 /// Google's Gemini, whose wire is nothing like the others: `contents` of `user`/`model` parts,
@@ -234,6 +301,9 @@ pub const GEMINI: Preset = Preset {
     fallback_model: "gemini-4-hydrogen",
     thinking_field: None,
     catalogue_id: "google",
+    vendor_pick: false,
+    fixed_sampling: &[],
+    effort: None,
 };
 
 /// Kimi's coding plan (Moonshot): OpenAI chat completions on the plan's own host. Not the
@@ -243,20 +313,23 @@ pub const GEMINI: Preset = Preset {
 /// ```text
 /// POST https://api.kimi.com/coding/v1/chat/completions
 /// Authorization: Bearer sk-kimi-...
-/// {"model":"k3", "thinking":{"type":"enabled"}, "prompt_cache_key":"..."}
+/// {"model":"k3.1-pro", "thinking":{"type":"enabled"}, "reasoning_effort":"high",
+///  "prompt_cache_key":"..."}
 /// ```
 ///
-/// An effort rides `sampling = {reasoning_effort = "high"}` in the operator's file, which the
-/// endpoint takes as the top-level field.
+/// <https://www.kimi.com/code/docs/kimi-code/models.html>
 pub const KIMI_CODE: Preset = Preset {
     name: "kimi-code",
     url: "https://api.kimi.com/coding/v1/chat/completions",
     key_env: "KIMI_API_KEY",
     protocol: Protocol::ChatCompletions,
     alt_envs: &["KIMI_CODE_API_KEY"],
-    fallback_model: "k3",
+    fallback_model: "k3.1-pro",
     thinking_field: Some("thinking"),
     catalogue_id: "kimi-code-plan-cn",
+    vendor_pick: true,
+    fixed_sampling: KIMI_FIXED_SAMPLING,
+    effort: Some(KIMI_EFFORT),
 };
 
 /// The same plan on the global host. One key works on one region's host only, so this is a
@@ -267,9 +340,12 @@ pub const KIMI_CODE_GLOBAL: Preset = Preset {
     key_env: "KIMI_API_KEY",
     protocol: Protocol::ChatCompletions,
     alt_envs: &["KIMI_CODE_API_KEY"],
-    fallback_model: "k3",
+    fallback_model: "k3.1-pro",
     thinking_field: Some("thinking"),
     catalogue_id: "kimi-code-plan-global",
+    vendor_pick: true,
+    fixed_sampling: KIMI_FIXED_SAMPLING,
+    effort: Some(KIMI_EFFORT),
 };
 
 pub const ALL: &[&Preset] = &[
@@ -303,8 +379,33 @@ impl Preset {
     /// The model to use when the operator names none: the catalogue's pick by
     /// rule, else this build's frozen fallback. See [`Preset::fallback_model`].
     pub fn default_model(&self, cat: &crate::catalogue::Catalogue) -> String {
+        if self.vendor_pick && cat.model(self.catalogue_id, self.fallback_model).is_some() {
+            return self.fallback_model.to_string();
+        }
         cat.default_model(self.catalogue_id)
             .unwrap_or_else(|| self.fallback_model.to_string())
+    }
+
+    /// Remove the keys this door fixes from `sampling`, returning each as `key=value`.
+    pub fn drop_fixed_sampling(
+        &self,
+        sampling: &mut serde_json::Map<String, serde_json::Value>,
+    ) -> Vec<String> {
+        self.fixed_sampling
+            .iter()
+            .filter_map(|k| sampling.remove(*k).map(|v| format!("{k}={v}")))
+            .collect()
+    }
+
+    /// `--effort` as this door's body field and word, or `None` where it has no switch or no
+    /// word for it: the model's own default then stands.
+    pub fn effort_for(&self, effort: Option<&str>) -> Option<(&'static str, &'static str)> {
+        let e = self.effort?;
+        let asked = effort?.trim().to_ascii_lowercase();
+        e.words
+            .iter()
+            .find(|(w, _)| *w == asked)
+            .map(|(_, door)| (e.field, *door))
     }
 
     /// Names this build knows, with the aliases each answers to; anything else is an error naming
@@ -412,8 +513,9 @@ mod tests {
         for p in [&KIMI_CODE, &KIMI_CODE_GLOBAL] {
             assert_eq!(p.key_env, "KIMI_API_KEY", "{}", p.name);
             assert_eq!(p.alt_envs, &["KIMI_CODE_API_KEY"], "{}", p.name);
-            assert_eq!(p.fallback_model, "k3", "{}", p.name);
+            assert_eq!(p.fallback_model, "k3.1-pro", "{}", p.name);
             assert_eq!(p.thinking_field, Some("thinking"), "{}", p.name);
+            assert_eq!(p.effort.map(|e| e.field), Some("reasoning_effort"));
             // The metered Open Platform's key is a different product's.
             assert!(!p.key_env.contains("MOONSHOT"), "{}", p.name);
         }
@@ -461,6 +563,12 @@ mod tests {
                     cat.model_names(catalogue_id),
                 );
             };
+            // A vendor's pick is the default on both boxes, so a shorter name with the same
+            // facts cannot make them disagree. That is what the check below protects.
+            if preset.vendor_pick {
+                assert_eq!(preset.default_model(&cat), preset.fallback_model);
+                continue;
+            }
             // No shorter name may name the same window and price, or the fallback is a
             // longer spelling of what the catalogue's own rule already picks.
             if let Some(shorter) =
@@ -474,5 +582,59 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The plan's model ids, as its models page lists them, on both catalogue ids the Kimi doors
+    /// read: the card offers what the catalogue carries.
+    #[test]
+    fn the_kimi_catalogue_carries_the_plans_model_ids() {
+        let cat = crate::catalogue::Catalogue::snapshot();
+        for id in ["kimi-code-plan-cn", "kimi-code-plan-global"] {
+            let names = cat.model_names(id);
+            for m in [
+                "k3.1-pro",
+                "k3.1-pro-highspeed",
+                "k3",
+                "k3-256k",
+                "kimi-for-coding",
+                "kimi-for-coding-highspeed",
+            ] {
+                assert!(names.contains(&m.to_string()), "{id} lacks {m}: {names:?}");
+            }
+        }
+        for p in [&KIMI_CODE, &KIMI_CODE_GLOBAL, &KIMI_CODING] {
+            assert_eq!(p.default_model(&cat), "k3.1-pro", "{}", p.name);
+        }
+    }
+
+    /// A fixed key is dropped and named; a key the door leaves free stays.
+    #[test]
+    fn the_kimi_doors_drop_the_sampling_they_fix() {
+        let mut s =
+            serde_json::json!({"temperature": 0.7, "top_p": 0.9, "seed": 7, "max_tokens": 9})
+                .as_object()
+                .unwrap()
+                .clone();
+        let dropped = KIMI_CODE_GLOBAL.drop_fixed_sampling(&mut s);
+        assert_eq!(dropped, ["temperature=0.7", "top_p=0.9"]);
+        assert_eq!(s.keys().collect::<Vec<_>>(), ["max_tokens", "seed"]);
+        let mut d = serde_json::json!({"temperature": 0.7})
+            .as_object()
+            .unwrap()
+            .clone();
+        assert!(DEEPSEEK.drop_fixed_sampling(&mut d).is_empty());
+        assert!(d.contains_key("temperature"));
+    }
+
+    #[test]
+    fn the_kimi_effort_is_low_high_or_max() {
+        let e = |w| KIMI_CODE.effort_for(Some(w)).map(|(_, v)| v);
+        assert_eq!(e("low"), Some("low"));
+        assert_eq!(e("medium"), Some("high"));
+        assert_eq!(e("High"), Some("high"));
+        assert_eq!(e("xhigh"), Some("max"));
+        assert_eq!(e("bogus"), None);
+        assert_eq!(KIMI_CODE.effort_for(None), None);
+        assert_eq!(DEEPSEEK.effort_for(Some("high")), None);
     }
 }

@@ -44,6 +44,8 @@ pub struct OpenAiProvider {
     /// `prompt_cache_key`, for Kimi's implicit cache: one provider instance is one session, and no
     /// session id reaches this crate, so the instance's own name is the key. `None` elsewhere.
     cache_key: Option<String>,
+    /// `--effort`, sent only where the preset names a field for it.
+    effort: Option<String>,
 }
 
 /// Where a provider says something a person has to read. `Arc<dyn Fn>` because the
@@ -72,6 +74,7 @@ impl OpenAiProvider {
             sampling: json!({}),
             notes: None,
             cache_key: crate::kimi::is_kimi(preset.name).then(crate::kimi::cache_key),
+            effort: None,
         }
     }
 
@@ -123,6 +126,13 @@ impl OpenAiProvider {
         catalogue: std::sync::Arc<crate::catalogue::Catalogue>,
     ) -> Self {
         self.catalogue = catalogue;
+        self
+    }
+
+    /// The operator's `--effort`, which reaches the wire only on a door that names a field for it
+    /// ([`crate::presets::Preset::effort`]).
+    pub fn with_effort(mut self, effort: Option<&str>) -> Self {
+        self.effort = effort.map(str::to_string);
         self
     }
 
@@ -199,6 +209,12 @@ impl OpenAiProvider {
             {
                 body[field] = json!({"type": "disabled"});
             }
+        }
+        // A turn that switched thinking off has no effort to spend.
+        if req.thinking != Some(false)
+            && let Some((field, word)) = self.preset.effort_for(self.effort.as_deref())
+        {
+            body[field] = json!(word);
         }
         if let Some(obj) = self.sampling.as_object() {
             for (k, v) in obj {
@@ -1296,6 +1312,45 @@ mod tests {
         p.thinking = false;
         let plain = p.body(&req(None, None)).expect("a body");
         assert!(plain.get("thinking").is_none(), "{plain}");
+    }
+
+    /// The plan's `reasoning_effort` carries `--effort` in its own words; a door with no such
+    /// field sends nothing, and a turn with thinking off spends no effort.
+    #[test]
+    fn effort_reaches_the_kimi_body_as_reasoning_effort() {
+        let creds = Credentials {
+            key: "k".into(),
+            from: "test".into(),
+            prices: Default::default(),
+            url: None,
+        };
+        let items = vec![letibot_transcript::TranscriptItem::User {
+            speaker: Default::default(),
+            parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
+        }];
+        let req = |thinking| TurnRequest {
+            system: "",
+            tools_json: &[],
+            items: &items,
+            tail: &[],
+            max_output_tokens: None,
+            thinking,
+        };
+        let kimi = OpenAiProvider::new(
+            &crate::presets::KIMI_CODE_GLOBAL,
+            Some("k3.1-pro"),
+            creds.clone(),
+        )
+        .with_effort(Some("xhigh"));
+        let body = kimi.body(&req(None)).expect("a body");
+        assert_eq!(body["reasoning_effort"], "max", "{body}");
+        assert_eq!(body["model"], "k3.1-pro");
+        let off = kimi.body(&req(Some(false))).expect("a body");
+        assert!(off.get("reasoning_effort").is_none(), "{off}");
+        let glm = OpenAiProvider::new(&crate::presets::GLM, Some("glm-5.3"), creds)
+            .with_effort(Some("high"));
+        let body = glm.body(&req(None)).expect("a body");
+        assert!(body.get("reasoning_effort").is_none(), "{body}");
     }
 
     /// K3.1 Pro answers `thinking: {"type": "disabled"}` with a 400, so a cheap turn on it asks
