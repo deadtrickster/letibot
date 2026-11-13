@@ -204,11 +204,11 @@ fn attach_changes(
         wrote(spelling, edit.after.as_bytes());
         inv.edits.push(edit.clone());
     }
-    inv.notes
-        .push(changed_note(&found.changed, inv.edits.len()));
-    if let Some(note) = writes_with.after_a_command() {
-        inv.notes.push(note.to_string());
-    }
+    let changed = changed_note(&found.changed, inv.edits.len());
+    inv.notes.push(match writes_with.after_a_command() {
+        Some(advice) => format!("{changed}. {advice}"),
+        None => changed,
+    });
 }
 
 /// How many changed files are drawn - the sweep's own cap, named here because the note below speaks of

@@ -93,6 +93,13 @@ fn a_python_inline_program_that_rewrites_a_tracked_file_draws_its_diff() {
         "{:?}",
         inv.notes
     );
+    // One note: the change and the tools that would have judged it are one sentence.
+    assert_eq!(inv.notes.len(), 1, "{:?}", inv.notes);
+    assert!(
+        inv.notes[0].contains("judge a change before it lands"),
+        "{:?}",
+        inv.notes
+    );
     // The ledger and the provenance sink both learned whose bytes these are.
     assert_eq!(
         files.whole_of("fuzz/list.inc"),

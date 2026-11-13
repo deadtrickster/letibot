@@ -327,23 +327,13 @@ impl WritesWith {
         }
     }
 
-    /// The same advice, said after a command already wrote the file: the row can show the change,
-    /// but nothing judged it before it landed and nothing says a tool made it.
+    /// The same advice as a clause for the command's change note: the row shows the change, but
+    /// nothing judged it before it landed.
     pub fn after_a_command(&self) -> Option<&'static str> {
         match (self.edit, self.write) {
-            (true, true) => Some(
-                "a command that writes a file is not adjudicated as an edit, and the row says the \
-                 diff was detected rather than made: `edit` and `write` are the two that judge a \
-                 change before it lands.",
-            ),
-            (false, true) => Some(
-                "a command that writes a file is not adjudicated as an edit: `write` is the one \
-                 that judges a change before it lands.",
-            ),
-            (true, false) => Some(
-                "a command that writes a file is not adjudicated as an edit: `edit` is the one \
-                 that judges a change before it lands.",
-            ),
+            (true, true) => Some("`edit` and `write` judge a change before it lands"),
+            (false, true) => Some("`write` judges a change before it lands"),
+            (true, false) => Some("`edit` judges a change before it lands"),
             (false, false) => None,
         }
     }
