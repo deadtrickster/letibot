@@ -1085,6 +1085,8 @@ pub struct HostProcesses {
     /// Bytes retained per job. Beyond this the ring drops from the front and says so
     /// ([`super::jobs::OutputSlice::denominator`]).
     capture_bytes: usize,
+    /// How long a spawn waits for its process to show up in its scope before killing it.
+    join_deadline: Duration,
     /// Where a run with no deadline's output keeps going: the session's scratch directory.
     /// Behind a lock because the daemon sets it after the host is built and the host is shared
     /// with every tool. `None` on a host nobody wired one to, which spills nothing.
@@ -1430,6 +1432,7 @@ impl HostProcesses {
             monitors: Arc::new(Monitors::new()),
             protected: Mutex::new(Vec::new()),
             capture_bytes: DEFAULT_CAPTURE_BYTES,
+            join_deadline: Duration::from_secs(5),
             scratch: Mutex::new(None),
             shell: vec!["/bin/sh".into(), "-c".into()],
             console_shell: super::console::shell(),
@@ -1512,6 +1515,12 @@ impl HostProcesses {
 
     pub fn with_capture_bytes(mut self, bytes: usize) -> Self {
         self.capture_bytes = bytes;
+        self
+    }
+
+    /// A test on a loaded box raises this so a slow join script is not read as an orphan.
+    pub fn with_join_deadline(mut self, deadline: Duration) -> Self {
+        self.join_deadline = deadline;
         self
     }
 
@@ -2425,7 +2434,7 @@ impl ProcessHost for HostProcesses {
         // Do not return until the process is IN its cgroup, or is finished. Without it, a
         // background run followed by `job_kill` reads an empty cgroup and kills nothing. The loop
         // ends on either half because a fast command can finish before it is ever a member.
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now() + self.join_deadline;
         let joined = loop {
             if self
                 .tree
@@ -2455,8 +2464,9 @@ impl ProcessHost for HostProcesses {
             // is still a job whose evidence file must not outlive it.
             let _ = std::fs::remove_file(&token_path);
             return Err(ExecError::Spawn(format!(
-                "pid {pid} started but was still not a member of its cgroup after 5s; \
-                 it was killed rather than left running outside any scope"
+                "pid {pid} started but was still not a member of its cgroup after {:?}; \
+                 it was killed rather than left running outside any scope",
+                self.join_deadline
             )));
         }
 

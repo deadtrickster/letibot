@@ -151,11 +151,13 @@ impl ScopeTree for PlainDirectories {
     }
 }
 
+/// The join bound is raised because the subject is the table, not how fast a loaded box runs the
+/// join script: at the default a slow `sh` fails the spawn before there is a table to measure.
 fn a_host(dir: &TempDir) -> Arc<HostProcesses> {
-    Arc::new(HostProcesses::with_tree(
-        &dir.path,
-        PlainDirectories::over(dir.path.join("scopes")),
-    ))
+    Arc::new(
+        HostProcesses::with_tree(&dir.path, PlainDirectories::over(dir.path.join("scopes")))
+            .with_join_deadline(Duration::from_secs(120)),
+    )
 }
 
 fn spawn(host: &dyn ProcessHost, command: &str) -> JobId {
