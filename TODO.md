@@ -85,6 +85,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R172 | The extension is a head: a chat panel on the session's stream | Code work | all of it, after R170 |
 | R173 | A firecode child ends its turn with a job running, and the VM closes under it | Code work | items 1-4 built, the end-to-end pair passes on a box with cgroup v2; left: a run against a real `firecode` |
 | R149 | A placement caps a package's build width from the host's free cores | Code work | all of it; postponed by the operator on 2026-11-07 |
+| R203 | rano's editor head is checked against a real daemon, and its subset is written down | Code work | built: `docs/socket.md`'s "the editor head" and `crates/tui/tests/rano_editor_head.rs`, which drives `rano::letibot::Client` through attach, prompt, stream, a card's answer and an interrupt against a real `Hub`; left: nothing that reads a MARK (the pinned client speaks protocol 70 and sends no `context`, so chips, mark fences and quick asks wait for rano's R8), and a head on another protocol number is the daemon's log line rather than a test |
 | R153 | Placing a session on a busy host times out at 20 s | Needs the operator | the live proof on a loaded lab2x1: a placement there while the host is building, and a session's `job_wait` against it; the minute-long arranging budget, the one connection per host and the round a timed-out status query is not are landed |
 | T16 | W9's open questions | Needs the operator | an answer to item 6: does RAGFlow signal "no coverage" in a field |
 | R150 | Plugin extension points: the harness and head open to plugins | Needs the operator | the operator's answers to the 13 questions in `docs/plugin-extension-points-wide.md` §8 (each has a default and is built on it meanwhile); H0, P5, P6 and K1-K11 are landed |
@@ -765,6 +766,49 @@ The DAEMON renders it (`crates/harnessd/src/editor_context.rs::part`), once, aft
 In the head, `alt-s` adds a chip and inserts no text: `[context 1 · notes.txt:11-12 · unsaved]` is drawn on the composer's bottom edge - the row `/` completions already use, so it costs no row and moves nothing - and the prompt carries the refs. `reference()` and the pasted-envelope branch are deleted.
 
 Tests. `crates/sessionlog/src/protocol/tests.rs`: the version's own reconciliation, at 71. `crates/harnessd/src/editor_context.rs`: `a_prompt_with_an_unsaved_ref_becomes_a_user_item_holding_the_block` (a real `Hub::submit`, and the user item's parts: the words first, then the block), `a_selection_becomes_one_numbered_quarantined_block`, `a_fence_opener_in_the_selection_is_neutralised`, `a_bare_place_names_the_line_and_says_there_is_no_selection`, `the_open_buffers_are_one_capped_line`, `the_ask_and_the_outcomes_are_sentences`, `an_empty_context_adds_nothing`. `crates/tui/src/app/context.rs`: `the_label_names_the_range_and_its_unsaved_state`. `crates/tui/src/app/tests/editor.rs`: `alt_s_lands_as_a_chip_and_inserts_no_text`, `a_send_with_a_selection_carries_the_range_and_the_text`.
+
+## R203 - rano's editor head is checked against a real daemon, and its subset is written down
+
+**Status:** built, 2026-11-13. left: nothing that reads a MARK - the client rano pins today was
+written against protocol 70, so its `Prompt` carries no `context` and no frame of the subset
+exercises chips, mark fences or a quick ask (L4 and L7 put those on this side, rano's R8 on the
+other); and a head speaking another protocol number is the daemon's own log line rather than a
+test, because that number is only ever read out loud.
+
+`docs/rano-integration.md` §3.2 decided that rano talks to this daemon through a client of its own
+(`rano::letibot`) instead of linking `letibot-sessionlog`: the two repositories would pin each
+other, and a typed client fails on a variant it has never heard of in the middle of a turn. The
+frames rano parses are therefore a SECOND spelling of this crate's types, and nothing on rano's
+side can fail when one of them moves. That is the gap this row closes.
+
+**Built.** `docs/socket.md` has a section, "the editor head": what a standalone rano panel sends
+(`Attach`, `ListSessions`, `NewSession`, `Switch`, `FetchRows`, `Prompt`, `Answer` /
+`AnswerQuestion`, `Interrupt`, `Ack`, `Resync`, `Detach`) and what it reads (`Hello`, `Sessions`,
+`RowsFetched`, `Accepted` / `Rejected`, `Event` with `turn_started`, `delta`, `tool_started`,
+`tool_finished`, `turn_finished`, `turn_interrupted`, `turn_failed`, `citations` and
+`decision_requested`, `resync`, `Bye`), with the rules that keep the table true: the field NAMES
+are the contract, because rano reads a missing field as its empty value and a rename is therefore
+a blank in the panel rather than an error; a new variant or enum word moves `PROTOCOL_VERSION`
+while an added defaulted field does not (71 is `Prompt.context`, which a 70 client omits); what the
+panel does not know it counts and skips (`Client::skipped`); and a seat that may answer a card
+attaches `can_decide: true`, which is what makes the daemon route one to it at all.
+
+**Tests.** `crates/tui/tests/rano_editor_head.rs` runs `rano::letibot::Client` against a real `Hub`
+on a real socket (`Registry` + `serve_registry`, with an `AnswerSink` where a blocked tool call
+would be). `the_editor_head_attaches_prompts_streams_answers_and_interrupts` walks the row's bar on
+one connection: the `Hello`'s protocol number, session, head id, snapshot seq and picker row; an
+`Ack` landing on that head's mark; a `Prompt` whose words arrive whole on the session's queue with
+no context; deltas folding into prose and thinking apart, a call's start, its word and its reason,
+and an ending that says whether the prompt is over; a card's `req_id`, kind, summary, target,
+ladder and labels; the `Answer` reaching whoever is blocked on it, attributed to this head; and an
+`Interrupt` whose `reason` is what the queue and the cancelled waiter are given. Every assertion
+is a FIELD's value and not a frame's tag, because a tag is the one thing a rename does not change.
+`an_event_the_editor_does_not_know_is_counted_and_the_stream_carries_on` publishes `Explain` - a
+real event with no reader in an editor - and asserts it is named and counted, draws nothing, and
+the delta after it still folds.
+
+Done when: a test drives `rano::letibot::Client` against a real `Hub` through attach, prompt,
+stream, a decision's answer and an interrupt, and fails if a subset frame changes shape.
 
 ## R162 - A granted directory does not cover what is under it, and every subagent asks again
 
