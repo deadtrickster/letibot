@@ -168,8 +168,15 @@ impl App {
         } else if self.editor_focused() {
             // rano's own sentence for this focus is a hand-written list, and a hand-written list is
             // what drifts: the table both programs bind from is the one that cannot. The composer's
-            // half stays, since the pair's "esc again to interrupt" lives there.
-            let tail = crate::app::shared_keys::bar_tail();
+            // half stays, since the pair's "esc again to interrupt" lives there. rano's live keys
+            // follow the shared ones - the bar keeps its head, so a narrow row loses the pane's own
+            // keys before it loses the four both programs promise.
+            let shared = crate::app::shared_keys::pane_tail();
+            let own = self.editor_key_words();
+            let tail = match own.is_empty() {
+                true => shared,
+                false => format!("{shared} · {own}"),
+            };
             return crate::ui::render::row(
                 &HintBar {
                     editor,

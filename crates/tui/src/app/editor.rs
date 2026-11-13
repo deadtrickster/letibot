@@ -128,9 +128,14 @@ pub struct EditorPane {
     /// The file whose marks the pane has been handed, by canonical name: a switch to another file
     /// is what makes the conversation's marks arrive in the gutter. See [`App::mark_the_shown_file`].
     pub(crate) marked: Option<PathBuf>,
+    /// The theme the pane draws under: the operator's own rano theme, resolved once when the pane is
+    /// made. `None` inherits the head's, which is the look a pane with no rano theme already had.
+    pub(crate) theme: Option<rano::theme::Theme>,
     /// Image ids the terminal holds for this pane, read off the bytes rano emitted: rano offers
     /// no way to free a markdown view's pictures, and the pane's end must not leak them.
     held: std::collections::BTreeSet<u32>,
+    /// What rano's own theme file could not be used for, said once when the pane opens.
+    theme_notices: Vec<String>,
 }
 
 /// Keeps `held` in step with a kitty command stream: `a=t` uploads an id, `d=I` frees it.
@@ -149,6 +154,17 @@ fn track_graphics(held: &mut std::collections::BTreeSet<u32>, bytes: &[u8]) {
     }
 }
 
+/// The theme the operator's own rano config names, resolved the way rano's binary resolves it, so
+/// the same file looks the same in both programs. What cannot be used comes back to be said.
+#[cfg(not(test))]
+fn rano_theme(cfg: &rano::config::Config) -> (Option<rano::theme::Theme>, Vec<String>) {
+    let dir = rano::config::config_path()
+        .parent()
+        .map(|d| d.join("themes"))
+        .unwrap_or_default();
+    rano::theme::resolve(&dir, cfg.theme.as_deref(), &cfg.colors)
+}
+
 impl EditorPane {
     fn new(proto: rano::term::Proto) -> EditorPane {
         // The operator's own rano config in a live head, so the pane is the editor they
@@ -157,20 +173,23 @@ impl EditorPane {
         let config = rano::config::load();
         #[cfg(test)]
         let config = rano::config::Config::default();
+        #[cfg(not(test))]
+        let (theme, problems) = rano_theme(&config);
+        #[cfg(test)]
+        let (theme, problems) = (None, Vec::new());
         let mut ed = Rano::new(rano::buffer::Buffer::new(), config);
-        // No nano chrome: the head frames the pane in its own look - the file in the top edge,
-        // rano's keys in the bottom one (`App::editor_rows`) - so rano draws only the text and its
-        // status row.
+        // No chrome of its own: the head frames the pane and carries its keys on its one hint row,
+        // so rano draws the text, and a status row only while it has a prompt or a flash.
         ed.set_chrome(rano::editor::Chrome::BARE);
         ed.set_pictures(proto);
         // One spelling per screen: rano gains a third notation beside emacs and nano - `ctrl-x`,
-        // `alt-x` - and the head sets it, so the pane's own key edge comes back in the spelling the
-        // rest of the frame uses. Standalone rano keeps whatever the operator configured.
+        // `alt-x` - and the head sets it, so the keys it hands the hint row come back in the spelling
+        // the rest of the frame uses. Standalone rano keeps whatever the operator configured.
         ed.config.notation = rano::keymap::Notation::Words;
         let mut keys = Keymap::new("letibot");
         keys.bind(CROSS, TO_COMPOSER);
-        // Bound first, so `where_is("exit")` names it on the pane's bottom edge: the two reach the
-        // same command and only one of them is worth teaching.
+        // Bound first, so `where_is("exit")` names it in `key_hints`: the two reach the same command
+        // and only one of them is worth teaching.
         keys.bind(CLOSE, "exit");
         keys.bind(CLOSE_LEGACY, "exit");
         ed.push_keymap(keys);
@@ -180,7 +199,7 @@ impl EditorPane {
             queue.borrow_mut().push(e.clone());
             Ok("Sent to letibot's composer".into())
         }));
-        EditorPane {
+        let mut pane = EditorPane {
             ed,
             focused: true,
             hidden: false,
@@ -192,8 +211,24 @@ impl EditorPane {
             dirty: true,
             palette: None,
             marked: None,
+            theme: None,
+            theme_notices: problems,
             held: Default::default(),
-        }
+        };
+        pane.set_theme(theme);
+        pane
+    }
+
+    /// Draw the pane under `theme` from the next frame: the operator's rano theme, or a test's. A
+    /// theme with no roles is no override, so the pane keeps the head's look.
+    pub(crate) fn set_theme(&mut self, theme: Option<rano::theme::Theme>) {
+        self.theme = theme;
+        self.dirty = true;
+    }
+
+    /// What rano's own theme file could not be used for, drained once by whoever made the pane.
+    fn theme_problems(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.theme_notices)
     }
 
     /// What rano queued for the terminal, tracked and handed over in write order.
@@ -422,6 +457,19 @@ impl App {
                 self.say(&format!("cannot open {}: {why}", path.display()));
             }
         }
+        self.say_editor_theme();
+    }
+
+    /// What the operator's rano theme could not be used for, said once: the pane draws under that
+    /// theme, so a line it cannot read is a look they expect and would not get.
+    fn say_editor_theme(&mut self) {
+        let Some(p) = self.edit_pane.as_mut() else {
+            return;
+        };
+        let said = p.theme_problems();
+        if !said.is_empty() {
+            self.say(&said.join(" · "));
+        }
     }
 
     /// Close the pane: the conversation has its rectangle back and the composer its keys.
@@ -504,6 +552,7 @@ impl App {
         }
         pane.focused = true;
         pane.dirty = true;
+        self.say_editor_theme();
     }
 
     /// The newest file this conversation changed, for `ctrl-]`: the live turn's finished
@@ -785,6 +834,33 @@ impl App {
         self.say(&format!(
             "{shown}{more} — ctrl-s writes it; ctrl-c twice asks about leaving again"
         ));
+    }
+
+    /// The file the pane is showing, as every path this head draws: relative to the session's
+    /// workspace, keeping rano's `[i/n] ` in front of it when several buffers are open. `None` with
+    /// no pane; empty when the pane has no file.
+    pub(crate) fn editor_name(&self) -> Option<String> {
+        let full = self.edit_pane.as_ref()?.ed.frame_title().name;
+        if full.is_empty() {
+            return Some(String::new());
+        }
+        let (count, path) = match full.split_once("] ") {
+            Some((n, rest)) if full.starts_with('[') => (format!("{n}] "), rest.to_string()),
+            _ => (String::new(), full),
+        };
+        Some(format!(
+            "{count}{}",
+            self.workspace_relative(Path::new(&path))
+        ))
+    }
+
+    /// rano's live key hints as the head's hint row says them. Generated from the maps rano is
+    /// dispatching from, so the row cannot name a key that does nothing.
+    pub(crate) fn editor_key_words(&self) -> String {
+        self.edit_pane
+            .as_ref()
+            .map(|p| crate::ui::editor::pane_keys(&p.ed.key_hints()))
+            .unwrap_or_default()
     }
 
     /// `p` relative to the workspace when it is inside it, as it is otherwise. Both sides are

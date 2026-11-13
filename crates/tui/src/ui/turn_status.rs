@@ -4,7 +4,7 @@ use crate::app::*;
 use crate::ui::render::{row, trim_to, visible_width};
 use letibot_sessionlog::activity::Waiting;
 use rano::agent::turn_status::{Prefill, SLOW_AFTER_MS, TurnStatus};
-use rano::render::{Line, Role};
+use rano::render::{Line, Role, Span};
 
 /// The fewest columns a transient is cut to before the status row drops it instead: below
 /// this a cut sentence is an ellipsis with a word in front of it, which says nothing.
@@ -140,11 +140,47 @@ impl App {
         }
     }
 
+    /// Where the cursor is, while the editor pane has the keys: the head owns the one status row,
+    /// so the whole of what rano's own `Ln/Col` line said - `file · line:col · modified`.
+    fn editor_place(&self) -> Option<Line> {
+        let p = self.edit_pane.as_ref().filter(|_| self.editor_focused())?;
+        let title = p.ed.frame_title();
+        let at = p.ed.position();
+        let file = match self.editor_name().unwrap_or_default() {
+            name if name.is_empty() => "no file".to_string(),
+            name => name,
+        };
+        let line = match at.line {
+            Some(n) => format!("{n}:{}", at.column),
+            None => format!("col {}", at.column),
+        };
+        let mut out = Line::new(vec![
+            Span::role(file, Role::Strong),
+            Span::raw(" · "),
+            Span::role(line, Role::Faint),
+        ]);
+        if title.read_only {
+            out.spans.push(Span::role(" · view only", Role::Faint));
+        } else if title.modified {
+            out.spans.push(Span::role(" · modified", Role::Pending));
+        }
+        Some(out)
+    }
+
     /// The status row whole - the turn's words, then a progress, then the transients - and what a
     /// click opens when the row left something out. The fit ladder reserves this row whether or
     /// not a turn runs, so the transients are drawn IN it and the transcript loses no line.
     pub(crate) fn status_row(&self, w: usize) -> (String, Option<(String, String)>) {
-        let turn = self.turn_line(w);
+        let mut turn = self.turn_line(w);
+        // The pane's place leads the row while it has the keys: one status row on the screen, and
+        // rano's own line is quiet unless it has a prompt or a flash to show.
+        if let Some(mut place) = self.editor_place() {
+            if turn.width() > 0 {
+                place.spans.push(Span::role(" · ", Role::Faint));
+                place.spans.extend(turn.spans);
+            }
+            turn = rano::render::text::truncate_owned(place, w);
+        }
         let progress = self.progress_shown();
         let Some((forms, detail, more)) = progress else {
             let (line, cut, _) = self.with_transients(turn, w);

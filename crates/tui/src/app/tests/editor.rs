@@ -681,7 +681,7 @@ fn the_pane_takes_the_conversations_rectangle_and_the_composer_stays() {
         text.contains('╭') && text.contains('╰'),
         "the composer's box: {text}"
     );
-    assert!(text.contains("ctrl-] cross focus"), "{text}");
+    assert!(text.contains("ctrl-] chat"), "{text}");
     assert_eq!(a.cursor(), None, "no caret over the review");
 
     a.route(vec![key(KeyCode::Esc, Mods::NONE)]);
@@ -1177,8 +1177,8 @@ fn ctrl_bracket_with_nothing_changed_points_at_ctrl_e() {
 }
 
 /// The pane is framed in the head's own look, not nano's: no `rano 0.x` title row and no two-row
-/// function bar. The file sits in the top edge, rano's keys faint in the bottom one, and a change
-/// says `modified` there.
+/// function bar. The file sits in the top edge, a change says `modified` there, and the bottom edge
+/// is plain - the keys are on the head's one hint row, and the place on its one status row.
 #[test]
 fn the_editor_pane_wears_the_heads_frame_not_nanos() {
     let ws = workspace("frame");
@@ -1197,29 +1197,30 @@ fn the_editor_pane_wears_the_heads_frame_not_nanos() {
         .find(|l| l.contains('╭') && l.contains("notes.txt"))
         .unwrap_or_else(|| panic!("no top edge naming the file: {flat}"));
     assert!(!top.contains("modified"), "{top}");
+    // The frame's bottom edge says nothing: one row says what the keys do, and it is the head's.
+    for edge in screen.iter().filter(|l| l.contains('╰')) {
+        assert!(
+            !edge.contains("ctrl-") && !edge.contains("alt-"),
+            "a frame edge still advertises keys: {edge:?}"
+        );
+    }
+    // Wide enough for the pane's own keys to follow the four shared chords.
+    let bar = a.hint_bar(120);
     assert!(
-        screen
-            .iter()
-            .any(|l| l.contains('╰') && l.contains("write out")),
-        "rano's keys in the bottom edge: {flat}"
+        bar.contains("ctrl-x exit"),
+        "the close chord on the row: {bar}"
     );
-    // The close chord is the one the edge names, and the older one still closes the pane without
-    // being advertised anywhere (`rano_exit_closes_the_pane_and_never_the_head` has both).
-    let edge = screen
-        .iter()
-        .find(|l| l.contains('╰') && l.contains("write out"))
-        .expect("the bottom edge");
+    assert!(bar.contains("write out"), "rano's own keys there: {bar}");
     assert!(
-        edge.contains("ctrl-x exit"),
-        "the close chord on the edge: {edge:?}"
+        !bar.contains("ctrl-q") && !bar.contains("C-q"),
+        "the old chord is not advertised: {bar}"
     );
-    assert!(
-        !edge.contains("ctrl-q") && !edge.contains("C-q"),
-        "the old chord is not advertised: {edge:?}"
-    );
-    // The text is inside the frame, and the cursor's place is still said.
+    // The text is inside the frame, and the cursor's place is on the head's status row. rano's own
+    // row is up here because opening the file flashed `Read 30 lines`, which is rano's news - the
+    // steady state, where the head's is the only status row, is
+    // `a_focused_pane_leaves_one_key_row_one_status_row_and_its_own_theme`.
     assert!(flat.contains("line 11"), "{flat}");
-    assert!(flat.contains("Ln 11"), "{flat}");
+    assert!(flat.contains("11:1"), "the head's status row: {flat}");
     // Typing into the file says so in the edge.
     route_text(&mut a, "z");
     settle(&mut a);
@@ -1230,6 +1231,125 @@ fn the_editor_pane_wears_the_heads_frame_not_nanos() {
             .any(|l| l.contains('╭') && l.contains("notes.txt") && l.contains("modified")),
         "{}",
         screen.join("\n")
+    );
+}
+
+/// One key row and one status row, and the pane drawn in the operator's own rano theme while the
+/// conversation beside it stays in the head's - the whole of "one chrome" over two programs' looks.
+#[test]
+fn a_focused_pane_leaves_one_key_row_one_status_row_and_its_own_theme() {
+    let ws = workspace("one-status");
+    let mut a = edited(&ws);
+    a.cfg.color = true;
+    a.open_in_editor(&FileRef::file(FILE));
+    settle(&mut a);
+    assert!(a.editor_focused(), "the pane has the keys");
+
+    // ONE KEY ROW, in the zoomed frame: there the pane's own bottom edge is a row of its own, so
+    // the proof is that it carries no key and the head's row - a different row - carries both the
+    // four chords the two programs share and rano's own live keys.
+    let zoom = a.screen(110, 30);
+    let keyed: Vec<usize> = a
+        .hint_rows
+        .iter()
+        .enumerate()
+        .filter(|(_, r)| !r.hints.is_empty())
+        .map(|(y, _)| y)
+        .collect();
+    assert_eq!(keyed.len(), 1, "one row says what the keys do: {zoom:#?}");
+    let bar = a.hint_rows[keyed[0]].text().to_string();
+    for key in [
+        "esc back",
+        "ctrl-] chat",
+        "alt-k ask",
+        "alt-s attach",
+        "ctrl-x exit",
+        "write out",
+    ] {
+        assert!(bar.contains(key), "{key} is not on the one key row: {bar}");
+    }
+    for edge in zoom.iter().filter(|r| r.contains('╰')) {
+        let text: String = keyhints::cells(edge).into_iter().collect();
+        assert!(
+            !text.contains("ctrl-") && !text.contains("alt-"),
+            "a frame row of its own advertises keys: {text:?}"
+        );
+    }
+
+    // ONE STATUS ROW, in the split frame: the head's, saying where the cursor is. rano's own row is
+    // quiet unless it has a prompt or a flash to show, so let the read's flash - "Read 30 lines" -
+    // expire the way the clock does, and then look.
+    if let Some(p) = a.edit_pane.as_mut() {
+        if let Some(f) = p.ed.status.as_mut() {
+            f.until = Instant::now() - Duration::from_secs(1);
+        }
+        p.dirty = true;
+    }
+    a.editor_tick(Instant::now());
+    let frame = a.screen(160, 40);
+    assert!(
+        a.editor_offset() > 40,
+        "the pane is a column here, not the whole rectangle"
+    );
+    let plain: Vec<String> = frame
+        .iter()
+        .map(|r| keyhints::cells(r).into_iter().collect())
+        .collect();
+    let place = plain
+        .iter()
+        .filter(|r| r.contains("notes.txt · 1:1"))
+        .count();
+    assert_eq!(place, 1, "one row says where the cursor is: {plain:#?}");
+    assert!(
+        !plain.iter().any(|r| r.contains("Ln ")),
+        "rano drew a status row of its own: {plain:#?}"
+    );
+    // And the pane's edge on the hint row's own line names no key either.
+    let left: String = keyhints::cells(&frame[39])
+        .into_iter()
+        .take(a.editor_offset())
+        .collect();
+    assert!(
+        !left.contains("ctrl-") && !left.contains("alt-"),
+        "the pane's bottom edge advertises keys: {left:?}"
+    );
+
+    // THE THEME: the rano theme is scoped to the pane's draw, so its cells take its colours and the
+    // conversation beside them keeps the head's. `Faint` is the role both sides use - the pane's
+    // line numbers, and whatever the head dims - so one role showing two looks is the proof that
+    // the scope is a draw's and not the process's.
+    const MAGENTA: &str = "38;2;255;0;255";
+    let mut theme = rano::theme::Theme {
+        name: "test".into(),
+        roles: Vec::new(),
+    };
+    theme.roles.push((
+        rano::style::Role::Faint,
+        rano::style::Look::parse("fg:#ff00ff").expect("a look"),
+    ));
+    a.edit_pane
+        .as_mut()
+        .expect("just opened")
+        .set_theme(Some(theme));
+    let themed = a.screen(160, 40);
+    // One row holds both columns, so the split is the border between them: the pane's cells on the
+    // left take the theme, and nothing right of it does.
+    let mut coloured = 0;
+    for row in &themed {
+        let Some((pane, rest)) = row.split_once('│') else {
+            continue;
+        };
+        if pane.contains(MAGENTA) {
+            coloured += 1;
+        }
+        assert!(
+            !rest.contains(MAGENTA),
+            "the conversation took the pane's theme: {rest:?}"
+        );
+    }
+    assert!(
+        coloured > 3,
+        "the pane's cells are not in the rano theme: {themed:#?}"
     );
 }
 

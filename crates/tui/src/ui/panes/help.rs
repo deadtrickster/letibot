@@ -143,9 +143,9 @@ pub(crate) fn help_lines(
             "the editor",
             "the pane opens on the newest file this conversation changed, on the change — a click \
              on an edit or write row opens that one in the diff popup first. In the pane, the \
-             keys both programs share are the table above and its own are on its bottom edge: \
-             alt-p shows the change again, and ctrl-q or ^X closes it, asking first about unsaved \
-             edits",
+             hint row leads with the four chords above and then the pane's own keys, and where the \
+             cursor is rides the status row: alt-p shows the change again, and ctrl-q or ^X closes \
+             it, asking first about unsaved edits",
         ),
         (
             "ctrl-p",

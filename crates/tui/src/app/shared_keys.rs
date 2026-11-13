@@ -38,7 +38,39 @@ pub(crate) fn rows() -> Vec<(String, String)> {
 
 /// The hint row's tail: the same rows, ranked, each as much of its hint as a bar can hold.
 pub(crate) fn bar_tail() -> String {
-    let mut ranked: Vec<(usize, &Shared)> = SHARED
+    ranked()
+        .iter()
+        .map(|r| row_words(r))
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// The head of the row while the editor pane has the keys: the four shared chords that act on the
+/// pair rather than on the text, with the two-word names `docs/rano-integration.md` §7.1 gives them.
+/// The CHORD is read from the table, so a rebound key cannot lie here; only the abbreviation is the
+/// head's, because the table's sentences are written for a help page and this row has to leave room
+/// for the pane's own keys after them. `/help` still lists every row.
+const PANE: &[(&str, &str)] = &[
+    ("deactivate-mark", "back"),
+    ("host-focus", "chat"),
+    ("ask", "ask"),
+    ("send-position", "attach"),
+];
+
+/// [`bar_tail`]'s head for a focused pane: `esc back · ctrl-] chat · alt-k ask · alt-s attach`.
+pub(crate) fn pane_tail() -> String {
+    PANE.iter()
+        .filter_map(|(action, name)| {
+            let row = SHARED.iter().find(|r| r.action == *action)?;
+            Some(format!("{} {name}", chord(row)))
+        })
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// The table's rows, ranked: the actions [`RANK`] names first, in its order.
+fn ranked() -> Vec<&'static Shared> {
+    let mut at: Vec<(usize, &Shared)> = SHARED
         .iter()
         .map(|r| {
             let at = RANK
@@ -49,12 +81,13 @@ pub(crate) fn bar_tail() -> String {
         })
         .collect();
     // Stable, so the rows a rank does not name stay in the table's order.
-    ranked.sort_by_key(|(at, _)| *at);
-    ranked
-        .iter()
-        .map(|(_, r)| format!("{} {}", chord(r), words(r.hint)))
-        .collect::<Vec<_>>()
-        .join(" · ")
+    at.sort_by_key(|(n, _)| *n);
+    at.into_iter().map(|(_, r)| r).collect()
+}
+
+/// One row as a bar segment: its chord, and as much of its hint as a bar can hold.
+fn row_words(r: &Shared) -> String {
+    format!("{} {}", chord(r), words(r.hint))
 }
 
 /// A hint as the bar says it: its first clause. The table's hint is written for a help page,
@@ -99,5 +132,21 @@ mod tests {
             tail.starts_with("ctrl-] cross focus"),
             "the bar leads with {tail}"
         );
+    }
+
+    /// The focused pane's head is read from the table: every action it abbreviates is a row of it, so
+    /// a row rano renames cannot leave a chord here that nobody binds.
+    #[test]
+    fn the_panes_head_names_rows_the_table_carries() {
+        for (action, name) in PANE {
+            let row = SHARED
+                .iter()
+                .find(|r| r.action == *action)
+                .unwrap_or_else(|| panic!("{action} is not a row of the shared table"));
+            assert!(
+                pane_tail().contains(&format!("{} {name}", chord(row))),
+                "{action} is missing from the pane's head"
+            );
+        }
     }
 }
