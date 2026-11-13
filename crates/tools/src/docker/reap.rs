@@ -598,10 +598,7 @@ fn rfc3339_ms(s: &str) -> Option<i64> {
     let y: i64 = d.next()?.parse().ok()?;
     let m: i64 = d.next()?.parse().ok()?;
     let day: i64 = d.next()?.parse().ok()?;
-    let clock = rest
-        .trim_end_matches('Z')
-        .splitn(2, |c: char| c == '+' || c == '-')
-        .next()?;
+    let clock = rest.trim_end_matches('Z').split(['+', '-']).next()?;
     let mut c = clock.split(':');
     let hh: i64 = c.next()?.parse().ok()?;
     let mm: i64 = c.next()?.parse().ok()?;
