@@ -364,6 +364,13 @@ impl Bridge {
             (head::create_session(&d, "")?, "new")
         };
         let h = Arc::new(Head::attach(&d, &session)?);
+        if let Err(why) = placed_as_asked(&placement, h.placement.as_ref()) {
+            // Held and briefless: a VM session whose tools would run here must not start work.
+            self.hold(&h);
+            return Err(format!(
+                "`{session}` was opened and no brief was sent: {why}"
+            ));
+        }
         let mut answer = json!({
             "session": session,
             "worktree": d.workspace.display().to_string(),
@@ -1116,10 +1123,30 @@ fn placement_json(placement: Option<&Placement>) -> Value {
     }
 }
 
+/// A start that asked for a VM is refused when the daemon's own record says its tools run
+/// anywhere else.
+fn placed_as_asked(asked: &Placement, recorded: Option<&Placement>) -> Result<(), String> {
+    if asked.is_vm() && !recorded.is_some_and(Placement::is_vm) {
+        return Err(format!(
+            "a VM was asked for (`{}`) and the daemon records `{}`, so its tools would not run \
+             in a VM",
+            asked.as_str(),
+            recorded
+                .map(Placement::as_str)
+                .unwrap_or_else(|| "nothing".into())
+        ));
+    }
+    Ok(())
+}
+
 /// The same fact as a sentence, for the answer a model reads: where the work happens, and what
 /// stayed on this box.
 fn tools_run(placement: Option<&Placement>) -> String {
     match placement {
+        Some(Placement::Firecode) => "inside a firecode VM on this box: this session's bash, \
+             read, write, edit and jobs run in the guest, on a copy of the tree, while its model, \
+             the store and the gate stay outside it. What it commits comes back when the VM stops"
+            .to_string(),
         Some(Placement::RemoteVm(host)) => format!(
             "inside a firecode VM on `{host}`: this session's bash, read, write, edit and jobs \
              run in the guest while its model, the store and the gate stay here. What it commits \
@@ -2093,6 +2120,19 @@ mod tests {
         assert!(remote.contains("on `lab2x1`"), "{remote}");
         assert!(remote.contains("stay here"), "{remote}");
         assert_eq!(tools_run(Some(&Placement::Host)), "on this box");
+        let vm = tools_run(Some(&Placement::Firecode));
+        assert!(vm.contains("inside a firecode VM"), "{vm}");
+    }
+
+    /// A start asking for a VM on a daemon whose record is not one is refused, not answered
+    /// with tools running on this box.
+    #[test]
+    fn a_vm_start_on_a_daemon_that_is_not_one_is_refused() {
+        let e = placed_as_asked(&Placement::Firecode, Some(&Placement::Host)).unwrap_err();
+        assert!(e.contains("would not run in a VM"), "{e}");
+        assert!(placed_as_asked(&Placement::Firecode, None).is_err());
+        assert!(placed_as_asked(&Placement::Firecode, Some(&Placement::Firecode)).is_ok());
+        assert!(placed_as_asked(&Placement::Host, Some(&Placement::Host)).is_ok());
     }
 
     /// A missing or mistyped argument is refused by field name, before anything is sent.
