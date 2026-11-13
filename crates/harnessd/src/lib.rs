@@ -65,6 +65,7 @@ pub mod leases;
 // reads is a leticode decision, and it lives in `crates/leticode-config` outside the
 // daemon. This binding keeps every `crate::leticode_config::…` path below compiling.
 pub use leticode_config;
+pub mod kept_jobs;
 pub mod m1;
 pub mod memory_high;
 pub mod memwatch;

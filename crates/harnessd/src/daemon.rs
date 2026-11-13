@@ -95,7 +95,12 @@ fn bring_guests_down() {
 /// What one signal does and what a second one does, on its own thread because `Hub::close`
 /// takes a mutex and a handler may not. The first names itself and closes the registry
 /// which interrupts the turn before it kills the runs holding it
-fn stop_on_signal(registry: Arc<Registry>, fd: std::os::fd::RawFd, one_shot: bool) {
+fn stop_on_signal(
+    registry: Arc<Registry>,
+    fd: std::os::fd::RawFd,
+    one_shot: bool,
+    marker: Option<std::path::PathBuf>,
+) {
     let mut buf = [0u8; 1];
     // Blocks. No timer, no poll: the byte arrives or it does not. An EINTR is not the end.
     loop {
@@ -115,17 +120,34 @@ fn stop_on_signal(registry: Arc<Registry>, fd: std::os::fd::RawFd, one_shot: boo
         libc::SIGTERM => "SIGTERM",
         _ => "a signal",
     };
-    eprintln!("harnessd: {what} — interrupting the turn and stopping; a second one exits now");
+    // `letibot --restart` leaves the marker before its signal; taking it makes this stop keep the
+    // host jobs. An older daemon never looks, so the launcher can tell it ended them.
+    let restart = marker.is_some_and(|m| std::fs::remove_file(m).is_ok());
+    if restart {
+        eprintln!(
+            "harnessd: {what} for a restart - interrupting the turn and stopping, keeping the host \
+             jobs for the next daemon; a second one exits now"
+        );
+    } else {
+        eprintln!("harnessd: {what} — interrupting the turn and stopping; a second one exits now");
+    }
     // On its own thread: a close that blocks on a wedged session must not keep this one from
     // the grace and the second signal.
     let started = std::time::Instant::now();
     let closing = registry.clone();
+    let close = move |r: &Registry| {
+        if restart {
+            r.close_for_restart()
+        } else {
+            r.close()
+        }
+    };
     if std::thread::Builder::new()
         .name("harnessd-close".into())
-        .spawn(move || closing.close())
+        .spawn(move || close(&closing))
         .is_err()
     {
-        registry.close();
+        close(&registry);
     }
     loop {
         let mut pfd = libc::pollfd {
@@ -183,6 +205,14 @@ fn stop_on_signal(registry: Arc<Registry>, fd: std::os::fd::RawFd, one_shot: boo
             std::process::exit(130);
         }
     }
+}
+
+/// The file `letibot --restart` leaves beside the socket before it signals: the stop it asks for
+/// keeps the host jobs ([`Registry::close_for_restart`]).
+pub fn restart_marker(socket: &std::path::Path) -> std::path::PathBuf {
+    let mut name = socket.as_os_str().to_os_string();
+    name.push(".restart");
+    std::path::PathBuf::from(name)
 }
 
 /// A running daemon.
@@ -261,9 +291,10 @@ impl Daemon {
 
         let registry = self.registry().clone();
         let rfd = read.as_raw_fd();
+        let marker = Some(restart_marker(self.socket()));
         std::thread::Builder::new()
             .name("harnessd-signal".into())
-            .spawn(move || stop_on_signal(registry, rfd, one_shot))?;
+            .spawn(move || stop_on_signal(registry, rfd, one_shot, marker))?;
         self._pipe = Some((read, write));
         Ok(())
     }

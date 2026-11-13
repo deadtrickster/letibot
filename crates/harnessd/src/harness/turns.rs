@@ -955,7 +955,15 @@ impl Harness {
             && !store
                 .tell_once(&format!("restart:{sid}:{me}"), back_ms)
                 .unwrap_or(true);
-        if runs.is_empty() && monitors.is_empty() && jobs.is_empty() && settled.is_empty() {
+        // The jobs a restart kept, as this open found them: said once, in this notice.
+        let kept = std::mem::take(&mut self.kept_jobs);
+        let kept_block = crate::kept_jobs::block(&kept);
+        if runs.is_empty()
+            && monitors.is_empty()
+            && jobs.is_empty()
+            && settled.is_empty()
+            && kept_block.is_none()
+        {
             if retire_helpers {
                 let _ = self.subagents.resume_recorded(RestoreMode::Remind);
             }
@@ -1129,16 +1137,33 @@ impl Harness {
             let _ = store.deliver_job(&sid, &job.handle);
         }
 
-        let outcome = match (restore, restored_any) {
+        for t in &kept {
+            use crate::kept_jobs::Fate;
+            restored_any |= t.fate == Fate::Reattached;
+            said.push(match t.fate {
+                Fate::Reattached => crate::restart::said::job_reattached(&t.handle),
+                Fate::Ended => crate::restart::said::job_ended_detached(&t.handle),
+                Fate::Lost => crate::restart::said::job_lost(&t.handle),
+            });
+        }
+        let only_kept = lines.is_empty() && kept_block.is_some();
+        let outcome = match (restore || only_kept, restored_any) {
             (true, true) => crate::restart::Outcome::Restored,
             (true, false) => crate::restart::Outcome::NothingRestorable,
             (false, _) => crate::restart::Outcome::Reminded,
         };
-        let text = crate::restart::notice(
-            &crate::restart::header(&stop, back_ms, opened_ms, self.cfg.restore_within, outcome),
-            &lines,
-            outcome,
-        );
+        let header =
+            crate::restart::header(&stop, back_ms, opened_ms, self.cfg.restore_within, outcome);
+        // Kept jobs are proved, not timed: alone they are the list under the header, and beside
+        // other things they follow the closing, which is about the things above it.
+        let text = match &kept_block {
+            Some(block) if only_kept => format!("{header}\n{block}"),
+            Some(block) => format!(
+                "{}\nKept across the restart:\n{block}",
+                crate::restart::notice(&header, &lines, outcome)
+            ),
+            None => crate::restart::notice(&header, &lines, outcome),
+        };
         for line in &said {
             eprintln!("  {sid} · restart: {line}");
         }

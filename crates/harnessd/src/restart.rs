@@ -903,6 +903,18 @@ pub mod said {
         format!("monitor `{name}`: not re-armed — owned by the scope `{scope}`; the model is told")
     }
 
+    pub fn job_reattached(handle: &str) -> String {
+        format!("job `{handle}`: still running, reattached")
+    }
+
+    pub fn job_ended_detached(handle: &str) -> String {
+        format!("job `{handle}`: ended while detached, its result delivered")
+    }
+
+    pub fn job_lost(handle: &str) -> String {
+        format!("job `{handle}`: lost, nothing proves what became of it")
+    }
+
     pub fn job_settled(handle: &str) -> String {
         format!("job `{handle}`: had ended, its result not yet delivered — said now")
     }

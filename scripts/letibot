@@ -38,6 +38,8 @@
 #   letibot --listen WORDS      mute or unmute a folder project's repositories before the start:
 #                               -REPO, +REPO, only REPO|this, all (then the usual command runs)
 #   letibot --stop              stop the daemon
+#   letibot --restart           stop it keeping its host background jobs, start a new one on
+#                               the newest session, and let that one take the jobs back
 #   letibot --room              the BOX'S ROOM: start its coordinator if none is serving, and say
 #                               what it is (`--room --stop` stops it). One per box, not one per
 #                               folder: a run makes sure one exists before it opens a session
@@ -658,6 +660,20 @@ letibot --stop [N|DIR] [--all] [--force]
     letibot --stop
 EOF
       ;;
+    --restart)
+      cat <<'EOF'
+letibot --restart
+  Restart this folder's daemon, to pick up a new build, without ending its background
+  jobs: the stopping daemon leaves its host jobs running, and the new one takes them back
+  when it opens the session (`--continue` here; another session on its own reopening).
+  A VM's jobs cannot outlive the VM and end, as with `--stop`.
+
+  no arguments
+
+  example:
+    letibot --restart
+EOF
+      ;;
     --room)
       cat <<'EOF'
 letibot --room [--stop [--force]]
@@ -829,6 +845,7 @@ flags_table() {
 --help -h help         |daily |       |this page; `--help all` for every other flag
 -c --continue          |daily |       |reopen the newest session in THIS workspace
 --stop                 |daily |N/DIR  |stop this folder's daemon; `--force` kills one that stays, `--all` every folder
+--restart              |daily |       |restart this folder's daemon keeping its background jobs, then reopen the newest session
 --status               |daily |       |is it up, and on what
 --ls                   |daily |       |every folder's daemon and the live sessions inside it, numbered
 --no-bash              |daily |       |seat no shell (the shell is on by default)
@@ -958,6 +975,7 @@ already up, then attaches the TUI head to it.
   letibot "some prompt"       one-shot: run it, print, exit (no TUI)
   letibot -c                  reopen the newest session in THIS workspace
   letibot --stop [N|DIR]      stop this folder's daemon (`--force`, `--all`)
+  letibot --restart           restart it on a new build, keeping its background jobs
   letibot --status            is it up, and on what
   letibot --ls                every folder's daemon and the live sessions inside it, numbered
   letibot --no-bash           seat no shell (the shell is on by default)
@@ -2797,6 +2815,25 @@ SESSIONS_EOF
     echo "  queues  ${ROOM_SOCKET%.sock}.items (items, leases and questions survive a restart)"
     exit 0
     ;;
+  --restart)
+    # **A restart keeps the host jobs** (docs/lifecycle.md, "Jobs across a restart"). The marker
+    # beside the socket makes the daemon's stop leave them running; one still there after the
+    # stop was never read, so the daemon predates this and ended them as a plain stop does.
+    [ $# -eq 1 ] || die "--restart takes nothing after it"
+    if daemon_pid >/dev/null; then
+      marker="$SOCKET.restart"
+      : >"$marker"
+      if ! LETIBOT_STOP_REASON="letibot --restart" "$0" --stop; then
+        rm -f "$marker"
+        exit 1
+      fi
+      if [ -e "$marker" ]; then
+        rm -f "$marker"
+        echo "letibot: that daemon predates --restart, so it ended its jobs as --stop does" >&2
+      fi
+    fi
+    exec "$0" --continue
+    ;;
   --stop)
     # `--stop N` and `--stop DIR` reach another folder's daemon; `--stop` alone is
     # still this one's. Numbering comes from `--ls`. **The flags go anywhere after it**
@@ -2818,7 +2855,7 @@ SESSIONS_EOF
     [ "$STOP_ALL" = 1 ] || retarget "$STOP_AT"
     room_stale_line >&2
     # What the interrupt is recorded as in each session's transcript: this command.
-    STOP_REASON="letibot --stop"
+    STOP_REASON="${LETIBOT_STOP_REASON:-letibot --stop}"
     [ "$STOP_ALL" = 1 ] && STOP_REASON="$STOP_REASON --all"
     [ "$FORCE" = 1 ] && STOP_REASON="$STOP_REASON --force"
     [ -n "$STOP_AT" ] && STOP_REASON="$STOP_REASON $STOP_AT"

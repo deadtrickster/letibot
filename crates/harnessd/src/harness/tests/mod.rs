@@ -44,6 +44,7 @@ mod firings;
 mod import_rows;
 mod intent;
 mod jobs;
+mod kept_jobs;
 mod marks;
 mod misc;
 mod notice_door;

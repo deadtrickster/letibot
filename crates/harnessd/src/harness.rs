@@ -404,6 +404,8 @@ pub struct Harness {
     /// line per child that was resumed or could not be. Filled by `restore_after_restart` at open and
     /// said by the next turn the session takes.
     restart_notices: Vec<String>,
+    /// The jobs a restart kept and this open took back or found lost, for the restart notice.
+    kept_jobs: Vec<crate::kept_jobs::Taken>,
     /// Whether this harness has said its workspace is gone - once, at the first wake
     /// that found it so.
     workspace_gone_said: bool,

@@ -719,6 +719,44 @@ Two rules worth stating once:
 - **Nothing of class `work` is removed unless its `archive` column was written in the same
   pass and the archive was read back.** A failed archive is `stuck`, not a delete.
 
+#### Jobs across a restart
+
+`letibot --restart` restarts a folder's daemon to pick up a new build without ending its host
+background jobs. The launcher leaves `<socket>.restart` and sends SIGTERM; the daemon takes the
+marker and its stop keeps every running background job that writes its own output file and is
+owned by a `session` or `explicit` scope. Everything else ends as a plain `--stop` ends it. A
+daemon that predates this never takes the marker, and the launcher says its jobs ended.
+
+- **Wrapper.** A background job runs as
+  `sh -c JOIN letibot-scope <procs> <token> sh -c WRAPPER letibot-job <status> <boundary…> <shell> <command>`.
+  Its stdout and stderr are `job-<id>.raw` in the session's scratch directory, opened for append;
+  the wrapper pipes the command through `cat`, so the job ends when the last writer of its output
+  is gone, as with a pipe to the daemon. When the command exits it writes the code (`$?`, so a
+  signal is `128+n`) to `job-<id>.status.tmp`, renamed to `job-<id>.status` once the pipe has
+  closed. The daemon follows the raw file into the job's capture, which masks secrets and spills
+  to `job-<id>.out` as before.
+- **Detach.** The daemon stops reading, flushes the capture, and writes the `process` row
+  `detached` with the job's cgroup directory (`cgroup`, schema 49), the stamp (wrapper pid and
+  `start:<n>`) and `log_read`, the raw bytes already in `job-<id>.out`. The `job` row reads
+  `detached`. The host's drop does not end its session scope while it holds a detached job.
+- **Adopt.** The daemon that opens the session next proves each `detached` row:
+  - cgroup populated and stamp matching: re-attached. The row goes back to `running`, the
+    reader continues the raw file from `log_read` and appends to the same `job-<id>.out`, a
+    watcher ends the job when its cgroup empties and reads the status file, and the restart
+    notice says `still running, reattached`.
+  - a status file: the job ended while detached. Its output is read to the end and its ending
+    is delivered as any settled job's, with the wrapper's code.
+  - neither, or a populated cgroup whose stamp does not match: `lost: no proof`, said in the
+    restart notice. Nothing is guessed and nothing is adopted.
+- **Lifecycle.** A detached job is a holding of its session: `letibot holds` lists it as
+  `job <handle> detached`, `busy` counts it, and a gone daemon does not close an owner that holds
+  one. Its hard TTL still applies, and a closing owner's reap ends it by `(pid, start)`.
+- **VM.** A VM's jobs cannot outlive the VM. A restart of a VM-placed session ends them, as a
+  plain stop does, and says so in one sentence on the log and the status line.
+
+Each kept job costs its output twice on disk while it runs (raw and masked). The raw file is
+removed when the job settles.
+
 ### d.6 The orphan sweep
 
 One program, `letibot gc`, run three ways: by a daemon when one of its owners changes state

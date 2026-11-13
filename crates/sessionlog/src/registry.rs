@@ -915,6 +915,8 @@ pub struct Registry {
     started_ms: u64,
     /// See [`Registry::is_stopping`].
     stopping: std::sync::atomic::AtomicBool,
+    /// See [`Registry::is_restarting`].
+    restarting: std::sync::atomic::AtomicBool,
     /// The names of the subagents this daemon spawned, by session id - see
     /// [`Registry::set_slug`].
     slugs: Mutex<std::collections::HashMap<String, String>>,
@@ -1055,6 +1057,7 @@ impl Registry {
             instance: mint_instance(),
             started_ms: now_ms(),
             stopping: std::sync::atomic::AtomicBool::new(false),
+            restarting: std::sync::atomic::AtomicBool::new(false),
             slugs: Mutex::new(std::collections::HashMap::new()),
             store_older: Mutex::new(None),
         })
@@ -2512,6 +2515,19 @@ impl Registry {
         // The order this must keep is one closer's to keep: every run it ends is named before any
         // hub says `Bye`, and a caller that merely waits cannot break that. See the field.
         self.close_once.call_once(|| self.close_hubs_and_runs());
+    }
+
+    /// [`Registry::close`] for a restart: each session's run ender keeps the host jobs that can
+    /// outlive this daemon, for the next one to take back.
+    pub fn close_for_restart(&self) {
+        self.restarting
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.close();
+    }
+
+    /// This stop is a restart ([`Registry::close_for_restart`]).
+    pub fn is_restarting(&self) -> bool {
+        self.restarting.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// The body of [`Registry::close`], run by exactly one thread; every other caller waits for it

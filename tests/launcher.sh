@@ -354,7 +354,7 @@ refusal "--attach with no daemon says so and names the command that starts one" 
 # --- a verb's own page, not the wall ------------------------------------------------------
 for spec in "--delete|letibot --delete ID" "--session|letibot --session ID" \
   "--rename|letibot --rename ID" "--migrate|--to HOST" "--reattach|letibot --reattach SESSION" \
-  "--stop|--force" "--room|--stop" "--handover|letibot --handover SESSION DIR" \
+  "--stop|--force" "--restart|letibot --restart" "--room|--stop" "--handover|letibot --handover SESSION DIR" \
   "--note-continued|letibot --note-continued" "--list-claude|letibot --list-claude" \
   "--ls|letibot --ls" "--attach|letibot --attach" \
   "--status|letibot --status" "--where|letibot --where [FOLDER]" "attach|letibot attach github"; do
@@ -385,7 +385,7 @@ done
 # a flag this parser reads and no page names is the same disagreement from the other side.
 out="$(run "$DEFAULT_ONLY" --help all)"
 for verb in --continue --session --sessions --new --rename --delete --migrate --reattach \
-  --handover --note --note-continued --revert --list-claude --stop --room --status \
+  --handover --note --note-continued --revert --list-claude --stop --restart --room --status \
   --ls --attach --glm --provider --host --vm --tsv \
   --web-fetch --no-web-fetch --effort --vm-copy --listen --where \
   --list --list-all --claude-sessions --no-bash; do

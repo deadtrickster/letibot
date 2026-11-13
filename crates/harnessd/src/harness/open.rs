@@ -1188,6 +1188,25 @@ impl Harness {
             // file lands in this daemon's scratch directory, where the model's `read` can open it.
             if let Some(h) = fc.host_processes() {
                 h.set_scratch_dir(&scratch);
+                // A VM's jobs cannot outlive the VM, so a restart says so and ends them; a plain
+                // stop leaves them to the VM's own teardown, as before.
+                let running = Arc::clone(h);
+                let registry = Arc::downgrade(session_registry);
+                let sid = cfg.session_id.clone();
+                let said = hub.clone();
+                session_registry.watch_runs(
+                    &cfg.session_id,
+                    Arc::new(move || {
+                        if !registry.upgrade().is_some_and(|r| r.is_restarting()) {
+                            return;
+                        }
+                        let Some(sentence) = crate::kept_jobs::end_in_vm(running.as_ref()) else {
+                            return;
+                        };
+                        eprintln!("  stopping: {sid} {sentence}");
+                        said.warn("restart_vm_jobs", sentence);
+                    }),
+                );
             }
             let described = fc.describe();
             let writable = fc.is_writable();
@@ -1310,21 +1329,37 @@ impl Harness {
                 // comes before the `Bye` a kill that takes seconds would otherwise follow.
                 {
                     let host = Arc::clone(h);
+                    let registry = Arc::downgrade(session_registry);
                     session_registry.name_runs(
                         &id,
                         Arc::new(move || {
+                            // A restart names only what it ends: the jobs it keeps go on.
+                            let restarting = registry.upgrade().is_some_and(|r| r.is_restarting());
                             host.jobs()
                                 .into_iter()
                                 .filter(|v| v.state.is_running())
+                                .filter(|v| !(restarting && host.keeps_on_restart(&v.id)))
                                 .map(|v| format!("`{}` (`{}`)", v.command, v.id))
                                 .collect()
                         }),
                     );
                 }
                 let running = Arc::clone(h);
+                let registry = Arc::downgrade(session_registry);
+                let store_at = cfg.store_at();
+                let sid = id.clone();
                 session_registry.watch_runs(
                     &id,
                     Arc::new(move || {
+                        if registry.upgrade().is_some_and(|r| r.is_restarting()) {
+                            let (kept, _) = running.detach_for_restart("the daemon stopping");
+                            crate::kept_jobs::keep_for_the_next_daemon(
+                                store_at.as_ref(),
+                                &sid,
+                                &kept,
+                            );
+                            return;
+                        }
                         // The reason travels into the run's own state and out onto the row a
                         // head would have drawn: `killed by the daemon stopping`. What the stop
                         // says out loud was named before this ran - see `name_runs` above.
@@ -2973,9 +3008,25 @@ impl Harness {
         // And the jobs a daemon that died was still running: the record is what outlived it, and adopting it puts
         // the job back in this host's table so every reader works as before. A job whose process is already gone
         // settles as `Dead`, never as an exit of zero. A record this backend cannot adopt is left alone.
+        let mut kept_jobs = Vec::new();
         if let (Some(procs), Some(store)) = (processes.as_ref(), store.as_ref()) {
+            // The jobs a restart kept first: each is taken back on its own proof, or said lost.
+            let (taken, watch) = crate::kept_jobs::take_back(
+                procs.as_ref(),
+                store,
+                &cfg.session_id,
+                session_registry.instance(),
+            );
+            if let Some(w) = &job_watch {
+                for handle in watch {
+                    w.watch(handle);
+                }
+            }
+            kept_jobs = taken;
             for rec in store.processes_of(&cfg.session_id).unwrap_or_default() {
-                if !rec.state.is_open() {
+                if !rec.state.is_open()
+                    || rec.state == letibot_tokencore::store::ProcState::Detached
+                {
                     continue;
                 }
                 let adopted = letibot_tools::exec::Adopted {
@@ -3477,6 +3528,7 @@ impl Harness {
             claude: parts.claude.clone(),
             gatekeepers: Default::default(),
             restart_notices: Vec::new(),
+            kept_jobs,
             workspace_gone_said: false,
             cheap_turn: false,
             monitors_seen_live: Vec::new(),
