@@ -425,15 +425,17 @@ fn start(
 /// Every child this process starts is waited for - the tree's rule: *any process letibot
 /// starts is supervised*. A `Child` is not waited for on drop, so a bridge that dropped it at
 /// the pid left every exited daemon `<defunct>`. Waiting is not owning: the child is `setsid`'d.
-fn reap(mut child: std::process::Child) {
+fn reap(mut child: std::process::Child) -> Exited {
     let pid = child.id();
+    let exited = Exited::default();
+    let flag = exited.clone();
     let spawned = std::thread::Builder::new()
         .name(format!("reap-{pid}"))
         .spawn(move || {
-            // The status is not this thread's business: *did the daemon come up* is answered by
-            // the socket, with the log's tail behind it. What is owed here is the wait itself,
-            // and an error from it is the same fact as success.
+            // The status is not this thread's business: the log's tail says why. That it ended
+            // is, because the start wait gives up on an exited daemon at once.
             let _ = child.wait();
+            flag.0.store(true, std::sync::atomic::Ordering::Release);
         });
     if let Err(e) = spawned {
         // Said rather than silent, and the daemon is not harmed by it: the only thing lost
@@ -445,6 +447,7 @@ fn reap(mut child: std::process::Child) {
              is unaffected and outlives this bridge."
         );
     }
+    exited
 }
 
 /// This folder's daemon started, detached, and reaped when it exits - the pid the answer
@@ -458,11 +461,56 @@ fn spawn(
     mode: &str,
     placement: &Placement,
     session: Option<&str>,
-) -> Result<u32, String> {
+) -> Result<(u32, Exited), String> {
     let child = start(binary, d, model, mode, placement, session)?;
     let pid = child.id();
-    reap(child);
-    Ok(pid)
+    let exited = reap(child);
+    Ok((pid, exited))
+}
+
+/// Set once a started daemon has exited and been reaped.
+#[derive(Clone, Default)]
+struct Exited(std::sync::Arc<std::sync::atomic::AtomicBool>);
+
+impl Exited {
+    fn yes(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// How long a started daemon that is still running gets to bind its socket. Long, because on a
+/// loaded box its store opens queue behind other daemons' writes; an exited daemon fails at once.
+pub const START_PATIENCE: std::time::Duration = std::time::Duration::from_secs(300);
+
+/// What the start wait saw: the socket, the daemon gone, or the patience spent.
+#[derive(Debug, PartialEq, Eq)]
+enum Came {
+    Up,
+    Exited,
+    TimedOut,
+}
+
+/// Poll `up` until it answers, the daemon exits, or `patience` runs out.
+fn wait_up(
+    up: impl Fn() -> bool,
+    exited: &Exited,
+    patience: std::time::Duration,
+    step: std::time::Duration,
+) -> Came {
+    let deadline = std::time::Instant::now() + patience;
+    loop {
+        if up() {
+            return Came::Up;
+        }
+        // Read after `up`, so a daemon that bound and then exited is not called gone.
+        if exited.yes() {
+            return if up() { Came::Up } else { Came::Exited };
+        }
+        if std::time::Instant::now() >= deadline {
+            return Came::TimedOut;
+        }
+        std::thread::sleep(step);
+    }
 }
 
 /// The launcher that starts a coordinator: `$LETIBOT_ROOM_SUPERVISOR`, else `letibot` on `PATH`.
@@ -573,32 +621,42 @@ pub fn ensure_here_with(
     // A second daemon for one folder is what corrupts a transcript, and the refusal that
     // catches it is harnessd's own folder claim. So the start is attempted, and a refusal
     // reaches the caller as the log tail rather than being pre-empted by a guess.
-    let pid = spawn(&daemon_binary()?, &d, model, mode, placement, session)?;
-    for _ in 0..60 {
-        if is_up(&d.socket) {
-            d.started = true;
-            // The record the launcher's own verbs read: `--ls`,
-            // `--stop N` and the attach banner all read `<key>.json` beside the socket, so a
-            // daemon started here must leave one. A record that cannot be written is said.
-            if let Err(e) = write_record(&d, pid, model) {
-                eprintln!(
-                    "  harnessd pid {pid} came up and its record could not be written: {e}. \
-                     `letibot --ls` will not list it until a launcher starts this folder's \
-                     daemon itself."
-                );
-            }
-            // The daemon's own record, read back rather than echoed: what it wrote is what a
-            // later head will read. The flags this call passed are the fallback for a daemon
-            // whose build predates the record.
-            d.placement = letibot_sessionlog::placement::read(&d.socket)
-                .and_then(|s| Placement::parse(&s).ok())
-                .or_else(|| Some(placement.clone()));
-            return Ok(d);
+    let (pid, exited) = spawn(&daemon_binary()?, &d, model, mode, placement, session)?;
+    let came = wait_up(
+        || is_up(&d.socket),
+        &exited,
+        START_PATIENCE,
+        std::time::Duration::from_millis(500),
+    );
+    if came == Came::Up {
+        d.started = true;
+        // The record the launcher's own verbs read: `--ls`,
+        // `--stop N` and the attach banner all read `<key>.json` beside the socket, so a
+        // daemon started here must leave one. A record that cannot be written is said.
+        if let Err(e) = write_record(&d, pid, model) {
+            eprintln!(
+                "  harnessd pid {pid} came up and its record could not be written: {e}. \
+                 `letibot --ls` will not list it until a launcher starts this folder's \
+                 daemon itself."
+            );
         }
-        std::thread::sleep(std::time::Duration::from_millis(500));
+        // The daemon's own record, read back rather than echoed: what it wrote is what a
+        // later head will read. The flags this call passed are the fallback for a daemon
+        // whose build predates the record.
+        d.placement = letibot_sessionlog::placement::read(&d.socket)
+            .and_then(|s| Placement::parse(&s).ok())
+            .or_else(|| Some(placement.clone()));
+        return Ok(d);
     }
+    let how = match came {
+        Came::Exited => "it exited before anything was accepting on".to_string(),
+        _ => format!(
+            "it is still running, and nothing was accepting within {}s on",
+            START_PATIENCE.as_secs()
+        ),
+    };
     Err(format!(
-        "the daemon for {} (pid {pid}) did not come up: nothing is accepting on {}.\n\
+        "the daemon for {} (pid {pid}) did not come up: {how} {}.\n\
          Its log is {} and its last lines are:\n{}",
         d.workspace.display(),
         d.socket.display(),
@@ -648,6 +706,55 @@ fn tail(path: &Path, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A daemon still starting is waited for past the old fixed 30 s; a slow store at boot held
+    /// one for 40 s and the bridge gave up on a daemon that came up moments later.
+    #[test]
+    fn a_daemon_still_running_is_waited_for_past_thirty_seconds() {
+        assert!(START_PATIENCE >= std::time::Duration::from_secs(120));
+        let polls = std::sync::atomic::AtomicU32::new(0);
+        let came = wait_up(
+            || polls.fetch_add(1, std::sync::atomic::Ordering::Relaxed) >= 80,
+            &Exited::default(),
+            START_PATIENCE,
+            std::time::Duration::ZERO,
+        );
+        assert_eq!(
+            came,
+            Came::Up,
+            "60 polls was the old limit; this one bound on the 81st"
+        );
+    }
+
+    /// A daemon that exited is not waited for at all: the caller gets the log tail now.
+    #[test]
+    fn an_exited_daemon_fails_the_wait_at_once() {
+        let exited = Exited::default();
+        exited.0.store(true, std::sync::atomic::Ordering::Release);
+        let t = std::time::Instant::now();
+        let came = wait_up(
+            || false,
+            &exited,
+            START_PATIENCE,
+            std::time::Duration::from_millis(500),
+        );
+        assert_eq!(came, Came::Exited);
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            t.elapsed()
+        );
+        assert_eq!(
+            wait_up(
+                || false,
+                &Exited::default(),
+                std::time::Duration::ZERO,
+                std::time::Duration::ZERO
+            ),
+            Came::TimedOut,
+            "and a running daemon still has a ceiling"
+        );
+    }
 
     #[test]
     fn an_unsplit_data_dir_hands_the_daemon_its_sessions_db() {
@@ -803,7 +910,7 @@ mod tests {
             placement: None,
             started: false,
         };
-        let pid = spawn(&script, &d, None, "writes-allowed", &Placement::Host, None)
+        let (pid, _) = spawn(&script, &d, None, "writes-allowed", &Placement::Host, None)
             .expect("the script starts");
         let pid = pid as libc::pid_t;
 
