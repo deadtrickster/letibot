@@ -73,6 +73,7 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
             nags_paused: None,
             waits_on_operator: 0,
             slug: String::new(),
+            role: String::new(),
             origin: letibot_sessionlog::SessionOrigin::Operator,
         },
         StoredBrief {
@@ -88,6 +89,7 @@ fn start(tag: &str) -> (Arc<Registry>, ServerHandle) {
             nags_paused: None,
             waits_on_operator: 0,
             slug: String::new(),
+            role: String::new(),
             origin: letibot_sessionlog::SessionOrigin::Operator,
         },
     ]))));
@@ -448,6 +450,7 @@ fn a_resumed_session_carries_its_origin_from_its_row_onto_the_entry() {
         nags_paused: None,
         waits_on_operator: 0,
         slug: String::new(),
+        role: String::new(),
         origin: letibot_sessionlog::SessionOrigin::Package,
     }]))));
     let server = serve_registry(r.clone(), socket_path("origin")).expect("bind");
@@ -493,6 +496,7 @@ fn a_resumed_subagent_carries_its_parent_on_the_entry() {
         nags_paused: None,
         waits_on_operator: 0,
         slug: String::new(),
+        role: String::new(),
         origin: letibot_sessionlog::SessionOrigin::Operator,
     }]))));
     let server = serve_registry(r.clone(), socket_path("resume-child")).expect("bind");

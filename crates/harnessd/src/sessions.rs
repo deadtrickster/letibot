@@ -744,7 +744,9 @@ impl<'a> Sessions<'a> {
         // from `prompts.toml`, the standing notes and the fabric. Message 0 is written
         // from it and never rewritten after - see `Config::compose_for_seat`.
         let mut cfg = cfg;
-        cfg.seat_prompt = Some(crate::config::SeatPrompt::default());
+        // Composed at open, and the ROLE survives: `--role explore` set this before the session
+        // existed, and a fresh default here would seat the seat's whole table and forget the name.
+        cfg.seat_overlay.get_or_insert_with(Default::default);
         let cfg = sessions.with_fabric(cfg, cond.is_some());
         let mut harness =
             Harness::open_with_registry(parts, cfg, hub, None, tool, registry.clone())?;
@@ -762,6 +764,11 @@ impl<'a> Sessions<'a> {
             },
         );
         sessions.fabric_opened(&id, &harness);
+        // The role the daemon's own first session is seated as - read off the harness it just
+        // opened, since a profile is resolved there.
+        sessions
+            .registry
+            .set_role(&id, &crate::profiles::role_name(harness.config()));
         // A `--continue` resumes the session on the model it was switched to. The first session is
         // the common resume
         harness.restore_provider_choice();
@@ -1614,7 +1621,7 @@ impl<'a> Sessions<'a> {
             return cfg;
         }
         let (part, line) = self.fabric_block(seat);
-        cfg.seat_prompt.get_or_insert_with(Default::default).fabric = Some(part);
+        cfg.seat_overlay.get_or_insert_with(Default::default).fabric = Some(part);
         cfg.fabric = Some(line);
         cfg
     }
@@ -1624,10 +1631,10 @@ impl<'a> Sessions<'a> {
     /// for again.
     fn fabric_opened(&mut self, session_id: &str, h: &Harness) {
         let cfg = h.config();
-        let (Some(prompt), Some(facts)) = (&cfg.seat_prompt, &cfg.seat_facts) else {
+        let (Some(overlay), Some(facts)) = (&cfg.seat_overlay, &cfg.seat_facts) else {
             return;
         };
-        let Some(part) = &prompt.fabric else {
+        let Some(part) = &overlay.fabric else {
             return;
         };
         let reach = facts.fabric_reach();
@@ -1837,7 +1844,13 @@ impl<'a> Sessions<'a> {
                         hub.warn("open_note", note.clone());
                     }
                 }
+                // Read off the harness BEFORE the registry is touched: the profile was resolved at
+                // the session's open, and `h`'s borrow ends with this line.
+                let role = crate::profiles::role_name(h.config());
                 self.publish_title(session_id);
+                // And the role it is seated as, which the picker's row shows: a profile's name, or
+                // its seat's.
+                self.registry.set_role(session_id, &role);
                 // And who this session is for - written now that its row exists. Three answers
                 self.registry.record_origin(
                     session_id,
@@ -1966,11 +1979,12 @@ impl<'a> Sessions<'a> {
             let (tool, cond) = self.seat_tool(session_id);
             // The system prompt is composed at open, for the tools the seat actually holds - the
             // same rule as the first session - and the paragraph only THIS session is given goes
-            // after the notes, part of the same frozen prefix.
-            cfg.seat_prompt = Some(crate::config::SeatPrompt {
-                own: prompt,
-                fabric: None,
-            });
+            // after the notes, part of the same frozen prefix. The ROLE the daemon was started with
+            // rode in through `self.base` and must not be thrown away by a fresh overlay.
+            let mut overlay = cfg.seat_overlay.take().unwrap_or_default();
+            overlay.own = prompt;
+            overlay.fabric = None;
+            cfg.seat_overlay = Some(overlay);
             let cfg = self.with_fabric(cfg, cond.is_some());
             let mut h = match Harness::open_with_registry(
                 &self.parts,
@@ -5160,13 +5174,25 @@ impl SessionSource for StoreSessions {
                     .collect::<Vec<_>>()
             })
             .collect();
+        // And every child's ROLE, from the same records: a child's row shows what it was seated as,
+        // and its run record is where that survives a restart.
+        let roles: std::collections::HashMap<String, String> = by_parent
+            .values()
+            .flat_map(|runs| {
+                runs.iter()
+                    .map(|r| r.child_id.clone())
+                    .zip(crate::subagent_record::recorded_roles(runs))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
         g.list_sessions()
             .unwrap_or_default()
             .into_iter()
             .map(|s| {
                 let waits = waiting.get(&s.id).copied().unwrap_or(0);
                 let slug = slugs.get(&s.id).cloned().unwrap_or_default();
-                self.brief_of(s, waits, slug)
+                let role = roles.get(&s.id).cloned().unwrap_or_default();
+                self.brief_of(s, waits, slug, role)
             })
             .collect()
     }
@@ -5180,18 +5206,24 @@ impl SessionSource for StoreSessions {
     fn children_of(&self, parent_id: &str) -> Vec<StoredBrief> {
         let g = self.store.lock().unwrap_or_else(|e| e.into_inner());
         let kids = g.children_of(parent_id).unwrap_or_default();
-        // One parent, so one run list names every child's slug.
+        // One parent, so one run list names every child's slug and its role.
         let runs = g.subagent_runs_of(parent_id).unwrap_or_default();
         let slugs: std::collections::HashMap<String, String> = runs
             .iter()
             .map(|r| r.child_id.clone())
             .zip(crate::subagent_record::recorded_slugs(&runs))
             .collect();
+        let roles: std::collections::HashMap<String, String> = runs
+            .iter()
+            .map(|r| r.child_id.clone())
+            .zip(crate::subagent_record::recorded_roles(&runs))
+            .collect();
         kids.into_iter()
             .map(|s| {
                 let slug = slugs.get(&s.id).cloned().unwrap_or_default();
+                let role = roles.get(&s.id).cloned().unwrap_or_default();
                 let waits = Self::waits_of(&g, &s.id);
-                self.brief_of(s, waits, slug)
+                self.brief_of(s, waits, slug, role)
             })
             .collect()
     }
@@ -5207,20 +5239,24 @@ impl StoreSessions {
     /// A row with its two off-row facts read by key: the board of this session, and the run
     /// list of its parent.
     fn keyed_brief(&self, g: &Store, s: letibot_tokencore::store::StoredSession) -> StoredBrief {
-        let slug = s
+        // A child's name and its role are both in its parent's run record - two derivations of one
+        // read, so a row cannot show a name from one place and a role from another.
+        let (slug, role) = s
             .parent_session_id
             .as_deref()
             .and_then(|p| {
                 let runs = g.subagent_runs_of(p).ok()?;
-                runs.iter()
-                    .map(|r| r.child_id.clone())
-                    .zip(crate::subagent_record::recorded_slugs(&runs))
-                    .find(|(c, _)| *c == s.id)
-                    .map(|(_, slug)| slug)
+                let at = runs.iter().position(|r| r.child_id == s.id)?;
+                let slugs = crate::subagent_record::recorded_slugs(&runs);
+                let roles = crate::subagent_record::recorded_roles(&runs);
+                Some((
+                    slugs.get(at).cloned().unwrap_or_default(),
+                    roles.get(at).cloned().unwrap_or_default(),
+                ))
             })
             .unwrap_or_default();
         let waits = Self::waits_of(g, &s.id);
-        self.brief_of(s, waits, slug)
+        self.brief_of(s, waits, slug, role)
     }
 
     fn brief_of(
@@ -5228,10 +5264,19 @@ impl StoreSessions {
         s: letibot_tokencore::store::StoredSession,
         waits: usize,
         slug: String,
+        role: String,
     ) -> StoredBrief {
+        // The role a row shows: the PROFILE a child's run record names, else the SEAT its own row
+        // kept - which is what a resume re-seats on, and all a root has.
+        let role = if role.is_empty() {
+            s.role.clone().unwrap_or_default()
+        } else {
+            role
+        };
         StoredBrief {
             waits_on_operator: waits,
             slug,
+            role,
             // Who it is for, off its own row - `None` is a row written before the
             // column existed, and every row was the operator's then.
             origin: s

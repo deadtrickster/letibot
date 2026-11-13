@@ -407,7 +407,7 @@ pub struct Config {
     /// Compose [`Config::system`] at open, for the tools this session seats. `Some` for every
     /// session the daemon opens; `None` keeps `system` exactly as given, which is a test's fixture
     /// or the operator's `--system`.
-    pub seat_prompt: Option<SeatPrompt>,
+    pub seat_overlay: Option<SeatOverlay>,
     /// What the prompt was composed from, set at open from the seated tools -
     /// `None` before. The fabric's later refreshes render for the same doors.
     pub seat_facts: Option<SeatFacts>,
@@ -1040,12 +1040,22 @@ pub fn default_system(f: &SeatFacts) -> String {
     Prompts::default().compose("", f)
 }
 
-/// What only some sessions are told, composed at open with the rest - see
-/// [`Config::seat_prompt`].
+/// What a session is given ON TOP of its seat, composed at open with the rest - see
+/// [`Config::seat_overlay`].
 #[derive(Debug, Clone, Default)]
-pub struct SeatPrompt {
+pub struct SeatOverlay {
+    /// The role profile this session is seated as, when it has one of its own: `--role explore`,
+    /// or a `task {role}` child. Its overlay is appended to the prompt (below), and its `tools`
+    /// narrow the seat's table ([`crate::harness::open::role_for`]). `None` is a session whose
+    /// role is nothing but its seat's own name, which is every session that had none before.
+    pub profile: Option<std::sync::Arc<letibot_tools::Profile>>,
+    /// The tools the PARENT of this session had, closed over them and never widened: a profile's
+    /// allowlist is applied to this as well, so a role cannot hand a child a tool its parent
+    /// lacks. `None` for a session with no parent, which is every root.
+    pub parent_tools: Option<Vec<String>>,
     /// The paragraph only this session is given (the review queue's), appended after
-    /// the standing notes. `None` for every session the operator started.
+    /// the standing notes and after the role's overlay. `None` for every session the operator
+    /// started.
     pub own: Option<String>,
     /// The fabric block, for a root session holding a seat - rendered at open, when
     /// the session's tools are known, so it names only the doors it has.
@@ -1611,9 +1621,9 @@ impl Config {
             title: String::new(),
             owner: std::env::var("USER").unwrap_or_else(|_| "operator".into()),
             // A seat with no tools: nothing in it claims a tool. Every session the daemon
-            // opens is composed for its seat at open instead (`seat_prompt`).
+            // opens is composed for its seat at open instead (`seat_overlay`).
             system: default_system(&SeatFacts::default()),
-            seat_prompt: None,
+            seat_overlay: None,
             seat_facts: None,
             // No fallback until `run` reads `[fallback]`: an empty list is the old behaviour
             // exactly, so a test that wants the fallback path sets this field by hand.
@@ -1969,15 +1979,29 @@ impl Config {
     }
 
     /// Compose `system` for this session's seat. Once, at session open. The sections from
-    /// `prompts.toml`, then the standing notes, then the session's own paragraph and fabric block. After
-    /// it, `system` is message 0 for the session's whole life; `/reseat` is the remedy.
-    pub fn compose_for_seat(&mut self, seat: &SeatFacts, prompt: &SeatPrompt, notes: Option<&str>) {
+    /// `prompts.toml`, then the standing notes, then the role's overlay, the session's own
+    /// paragraph and its fabric block. After it, `system` is message 0 for the session's whole
+    /// life; `/reseat` is the remedy.
+    pub fn compose_for_seat(
+        &mut self,
+        seat: &SeatFacts,
+        overlay: &SeatOverlay,
+        notes: Option<&str>,
+    ) {
         let name = self.prompt_model_name();
         let mut system = crate::standing_notes::replace(&self.prompts.compose(&name, seat), notes);
-        if let Some(own) = &prompt.own {
+        // The role's own words, after the operator's standing material and before the paragraph
+        // only this session gets: a role says what the WORK is, and a session's paragraph says
+        // what THIS one was asked for.
+        if let Some(profile) = &overlay.profile
+            && !profile.overlay.is_empty()
+        {
+            system = format!("{}\n\n{}", system.trim_end(), profile.overlay.trim());
+        }
+        if let Some(own) = &overlay.own {
             system.push_str(own);
         }
-        if let Some(fabric) = &prompt.fabric {
+        if let Some(fabric) = &overlay.fabric {
             system = format!(
                 "{}\n\n{}",
                 system.trim_end(),

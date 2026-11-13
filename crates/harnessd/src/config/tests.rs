@@ -1218,7 +1218,7 @@ fn compose_for_seat_uses_the_session_model_name() {
     let mut cfg = Config::for_this_box("/tmp");
     cfg.model = "qwen-3.8-flash-next".into();
     assert_eq!(cfg.prompt_model_name(), "qwen-3.8-flash-next");
-    cfg.compose_for_seat(&seat(), &SeatPrompt::default(), None);
+    cfg.compose_for_seat(&seat(), &SeatOverlay::default(), None);
     assert_eq!(cfg.system, default_system(&seat()));
 
     // A metered session: the model name is `provider/model`.
@@ -1241,7 +1241,7 @@ fn compose_for_seat_uses_the_session_model_name() {
         .collect(),
         ..Prompts::default()
     };
-    cfg.compose_for_seat(&seat(), &SeatPrompt::default(), None);
+    cfg.compose_for_seat(&seat(), &SeatOverlay::default(), None);
     assert_eq!(
         cfg.system,
         format!("{}\n\nfor flash", default_system(&seat()))
@@ -1308,9 +1308,10 @@ fn compose_for_seat_puts_the_notes_after_system_extra_and_before_the_own_paragra
         ..Prompts::default()
     };
     let notes = "[standing-notes-begin]\nnonce-notes-order\n[standing-notes-end]";
-    let prompt = SeatPrompt {
+    let prompt = SeatOverlay {
         own: Some("\nOWN PARAGRAPH".into()),
         fabric: Some(FabricPart::Unreachable("FABRIC BLOCK".into())),
+        ..SeatOverlay::default()
     };
     cfg.compose_for_seat(&seat(), &prompt, Some(notes));
     let at = |what: &str| {

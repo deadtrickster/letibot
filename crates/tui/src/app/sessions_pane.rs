@@ -1046,6 +1046,7 @@ impl App {
                     "held": s.status.held_rooms,
                     "items": s.status.items,
                     "stored": s.stored_items,
+                    "role": s.role,
                     "model": s.wiring.model,
                     "workspace": s.wiring.workspace,
                     "waits_on": s.waits_on_operator,

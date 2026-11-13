@@ -511,6 +511,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // after: the operator who asked for a copy must never get the folder itself read-write.
     let mut vm_copy = false;
 
+    // `--role`'s word, resolved after the loop: a profile is a file in the workspace this line
+    // names, and the workspace may be named after the role.
+    let mut role_name: Option<String> = None;
+
     let mut vm_asked = false;
     let mut host_asked: Option<String> = None;
 
@@ -657,7 +661,11 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--effort" => cfg.effort = Some(next()?),
             // The four flags that make anything reachable, and all four are
             // opt-in. Nothing here changes what an invocation without them gets.
-            "--role" => cfg.seat = Seat::parse(&next()?)?,
+            // A role profile by name (`explore`, `coder`), a seat's name, or a seat's alias (`m1`).
+            // Resolved AFTER the loop, because a profile is a file in this session's workspace and
+            // `--workspace` may come after it on the line - and because a profile may name the seat
+            // it is seated on, which is the one table both this flag and `task {role}` read.
+            "--role" => role_name = Some(next()?),
             // The approval policy, separate from the role. `Config::mode` has existed since the two
             // were split, but nothing set it, so every session ran at `UNSEEN_PROJECT`.
             "--mode" => cfg.mode = letibot_tools::mode::Mode::parse(&next()?)?,
@@ -982,6 +990,17 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     cfg.one_shot = !steps.is_empty();
     if cfg.one_shot {
         cfg.serve_queues = false;
+    }
+
+    // The role, now that the workspace is known: a profile's file is read from it, its `seat:` is
+    // what seats this session, and its overlay is message zero's role paragraph.
+    if let Some(name) = role_name {
+        let table = crate::profiles::table(&cfg);
+        let profile = crate::profiles::resolve(&table, &name)?;
+        cfg.seat = Seat::parse(profile.seat())?;
+        if !profile.overlay.is_empty() || profile.tools.is_some() {
+            cfg.seat_overlay = crate::profiles::overlay(Some(profile), None);
+        }
     }
 
     // Where this session's tools run - one answer from the two asks, and the pair this

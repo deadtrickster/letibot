@@ -679,6 +679,7 @@ fn brief(id: &str, title: &str, running: bool) -> SessionBrief {
         slug: String::new(),
         origin: letibot_sessionlog::SessionOrigin::Operator,
         moved_ms: 0,
+        role: String::new(),
     }
 }
 

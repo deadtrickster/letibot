@@ -2343,12 +2343,22 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 .iter()
                 .any(|(h, _)| h == id)
         });
-        // The seat is checked NOW: a role this build does not know is a fact
-        // about the call, and answering it from a thread would report "started"
-        // for something that never could.
+        // The role is checked NOW: a role this build does not know, or one this seat's profile does
+        // not let it start, is a fact about the call - answering it from a thread would report
+        // "started" for something that never could. The same list `task`'s description carries is
+        // the one enforced here (`crate::profiles::reach`), and this is the door every spawn takes,
+        // the tool's own check or not: `task_start`, a resume and the queue's reviewers all land
+        // here.
         let role = spec.role.as_str();
-        if !(role.is_empty() || role == "coder") {
-            Seat::parse(role)?;
+        {
+            let name = if role.is_empty() { "coder" } else { role };
+            let table = crate::profiles::table(&self.base);
+            let reach = crate::profiles::reach(&self.base, &table);
+            reach.may_start(name)?;
+            // And the SEAT its file names: a profile that names a seat this build has not is a
+            // refusal here, where nothing has started yet, rather than a thread that dies after the
+            // row said `started`.
+            Seat::parse(crate::profiles::resolve(&table, name)?.seat())?;
         }
         // Recorded before the thread exists, so a daemon that dies while this child is opening knows it had
         // one. And the child's name, unique among this session's children: the caller's slug, else the
@@ -3467,9 +3477,17 @@ impl HarnessTaskRunner {
         use letibot_tools::builtins::task::Placement;
         let role = spec.role.as_str();
         // The downgrade is a union: whatever this session was denied, its
-        // children are denied, plus what this call asks. A downgraded session
-        // cannot spawn a wider child by naming a wider role.
-        let downgrade = self.base.downgrade.and(&spec.downgrade);
+        // children are denied, plus what this call asks, plus what the ROLE itself refuses
+        // (`access:` in its file). A downgraded session cannot spawn a wider child by naming a
+        // wider role.
+        let profile = crate::profiles::resolve(
+            &crate::profiles::table(&self.base),
+            if role.is_empty() { "coder" } else { role },
+        )?;
+        let downgrade = match &profile.access {
+            Some(access) => self.base.downgrade.and(&spec.downgrade).and(access),
+            None => self.base.downgrade.and(&spec.downgrade),
+        };
         let (placement, vm_copy) = self.child_placement(spec)?;
         // A subagent is a real session: its id was minted by `start` and is unique because `mint_sub_id` made
         // it so, with a nanosecond so a restart cannot collide with a persisted child and an ordinal so two
@@ -3477,22 +3495,22 @@ impl HarnessTaskRunner {
         let spawned = std::time::Instant::now();
         let sub_id = sub_id.to_string();
         let title = subagent_title(prompt);
-        // The subagent seats the role it was asked for, and coder when none was named. A role this build does
-        // not know is refused by name rather than seated as coder, since that would be a subagent with more
-        // than it was meant to have.
-        let seat = if role.is_empty() || role == "coder" {
-            Seat::Coder
-        } else {
-            Seat::parse(role)?
-        };
+        // The subagent seats the seat its PROFILE names, and coder when no role was named. The
+        // name has already been checked against this seat's own list by `start`, and a name this
+        // build does not know is refused rather than seated as coder, since that would be a
+        // subagent with more than it was meant to have.
+        let seat = Seat::parse(profile.seat())?;
         let parent = self.base.session_id.clone();
 
         // Publish the state on the parent's hub, so a head attached there sees the spawn and the finish. Every
         // spawn goes through the model door, the absent `model:` case included, which must not keep the PARENT's
-        // window while the daemon's own server answered: the call's word, then the seat's, then the parent's.
+        // window while the daemon's own server answered: the call's word, then the ROLE's, then the
+        // seat's, then the parent's - a profile may name the model its work runs on, and a call that
+        // names one has said what it wants.
         let named = spec
             .model
             .as_deref()
+            .or(profile.model.as_deref())
             .or_else(|| self.base.leticode.spawn_model(seat.as_str()));
         // And measure the local window when nobody remembered one: `retune_window` fills it only on the way
         // out to a first provider, so a session that STARTED on one never measured its own server. `served_ctx`
@@ -3719,9 +3737,15 @@ impl HarnessTaskRunner {
         }
         // The child's prompt is composed for ITS seat at its open, not inherited: the parent's finished prompt
         // carried its own-session paragraph and named doors a child does not hold. A parent running on a prompt
-        // it was GIVEN hands that prompt down as before.
-        if sub_cfg.seat_prompt.is_some() {
-            sub_cfg.seat_prompt = Some(crate::config::SeatPrompt::default());
+        // it was GIVEN hands that prompt down as before. What rides in instead is the child's ROLE: its overlay,
+        // and the parent's own tool table closed over it, so a profile can only narrow what this session holds.
+        // A config with no overlay composes no prompt (a fixture's own `system`), and gets no role overlay for
+        // the same reason: there is no message zero to put one in.
+        if sub_cfg.seat_overlay.is_some() {
+            sub_cfg.seat_overlay = crate::profiles::overlay(
+                Some(profile),
+                Some(crate::harness::open::role_for(&self.base).tools),
+            );
         }
         sub_cfg.seat_facts = None;
         Self::seat_the_child(
@@ -3863,6 +3887,10 @@ impl HarnessTaskRunner {
                      `mint_sub_id` — rather than the reply written off."
                 ))
             })?;
+        // The role it is seated as, for the picker's row: the PROFILE's name (`explore`, `coder`),
+        // which is the word the parent asked for and the row's own reader can act on.
+        self.registry
+            .set_role(&sub_id, &crate::profiles::role_name(sub.config()));
         // From here every exit of this thread closes the session and takes it out of the registry, through this
         // one guard: before it, three exits left the hub registered with nobody reading it. Declared
         // AFTER `sub`, so it drops first, before the harness and whatever holds its `HostProcesses`.

@@ -58,7 +58,7 @@ fn opened(
     cfg.leticode =
         letibot_harnessd::leticode_config::LeticodeConfig::load(&workspace.join("leticode.toml"))
             .expect("the project's file parses");
-    cfg.seat_prompt = Some(letibot_harnessd::config::SeatPrompt::default());
+    cfg.seat_overlay = Some(letibot_harnessd::config::SeatOverlay::default());
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     let hub = Hub::new(id);

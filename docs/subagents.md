@@ -11,8 +11,8 @@ it has no operator to ask. `task` takes:
 
 ```
 task(prompt, role?, access?, where?, verify?, repo?)
-  role    any seat this build knows (coder default; researcher, planner, ...);
-          an unknown one is refused by name, not seated as coder
+  role    a role profile THIS seat may start (coder default). The description lists them, with the
+          one line each; a name that is not one of them is refused with the list
   access  read-only | no-write, no-exec, no-network (comma-separated)
   where   host (default) | firecode | host:NAME | host:NAME:vm
   verify  with a VM only: a shell command firecode runs after the child, before its VM stops
@@ -34,6 +34,56 @@ the role. Three properties, each a type rather than a check:
    name whether seated or not (`downgraded_ruleset`), which wins by opencode's last-rule so a tool
    registered outside the role later is refused rather than admitted for want of a rule. The disclosure
    names it: `downgrade: no write, no exec, no network`.
+
+### A role is a profile, in a file
+
+`role` names a **profile**: a markdown file whose frontmatter is the policy and whose body is the
+prompt overlay the child is given (`crates/tools/src/profiles.rs`). It is the whole role - a role in
+a match arm could carry a tool list and never an instruction.
+
+```md
+---
+description: reads a change and reports what is wrong with it; never fixes it
+seat: coder              # which seat this is seated on (defaults to the profile's own name)
+access: no-write         # unions into the child's downgrade; only ever removes
+tools: [read, grep, glob, bash, read_spill, recall]   # a filter over the seat's table
+subagents: []            # the profiles this one may start; absent is coder/explore/reviewer
+model: glm/glm-4.6       # when the call names none, before the seat's own
+guidance: [crates/tools] # directories whose AGENTS.md arrive with message zero
+---
+
+You review, and you do not repair. ...
+```
+
+Four properties, and they are why this fits *one seat, a role only narrows*:
+
+1. **A profile only narrows.** Its `tools:` filters the seat's table AND the parent's own (the spawn
+   closes over `Config::seat_overlay.parent_tools`), so a role can never hand a child a tool its
+   parent does not have. `access:` is the same rule one layer down, and `model:` chooses an answerer,
+   never a permission.
+2. **It cannot reach the daemon's seats.** No built-in profile names `gatekeeper` or `notes_keeper`
+   in `subagents:`, and `crate::profiles::reach` - which is both the list `task`'s description prints
+   and the check every spawn makes - refuses a name it does not hold. The queue's own session is the
+   one door onto `gatekeeper`.
+3. **One table answers both doors.** `--role explore` and `task {role: "explore"}` read the same
+   files: this build ships one per seat in `roles/`, so a seat's own name is a profile over its own
+   table. A name that is not a file and not a seat is refused with both lists.
+4. **A user's file replaces a built-in.** `<workspace>/.letibot/roles/*.md` beats `~/.config/letibot/
+   roles/*.md` beats `roles/*.md`, as a skill's roots do; a malformed profile is refused by name where
+   it is asked for, and never loaded half-way.
+
+The role is shown on a child's row (`SessionBrief::role`) and in the head's subagent pane, so
+`explore` and `coder` are two rows rather than one seat with two names.
+
+### A child reads the tree's instructions where it works
+
+A root session reads the workspace's `AGENTS.md` into its standing notes at open, and its prompt is
+frozen. A CHILD is opened to do one thing in one directory, so `crate::harness::guidance` hands it a
+directory's `AGENTS.md` the first time one of its calls names that directory - `read`, `write`, `edit`,
+`grep`, `glob`, `outline` and `lsp` all spell a path `path` - once each, at the round boundary and
+through the mid-turn queue, so nothing lands between a tool call and its result. `bash` is not guessed
+at: a shell line's targets are not a path, and a wrong guess hands a child a file about a directory it
+never entered. A profile's `guidance:` makes that eager instead: those files are in message zero.
 
 ## 2. Placement: host or a VM
 

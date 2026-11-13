@@ -97,10 +97,9 @@ struct Session {
     #[serde(default)]
     #[allow(dead_code)]
     origin: String,
-    /// The seat the session's row records, when the head has it. Kept for the same reason as
-    /// `origin`: this layer does not read it, a layer above this one may.
+    /// The role (profile) the session is seated as: drawn on its row, so `explore` and `coder`
+    /// children are two rows rather than one title and one model twice.
     #[serde(default)]
-    #[allow(dead_code)]
     role: Option<String>,
     #[serde(default)]
     live: bool,
@@ -739,6 +738,9 @@ fn facts_of(s: &Session) -> Vec<Cell> {
     // What it has been told and its model has not been shown: invisible on every other column.
     if s.held > 0 {
         push_fact(&mut facts, format_args!("{} held", s.held));
+    }
+    if let Some(role) = s.role.as_deref().filter(|r| !r.is_empty()) {
+        push_fact(&mut facts, format_args!("{role}"));
     }
     if !s.model.is_empty() {
         push_fact(&mut facts, format_args!("{}", s.model));

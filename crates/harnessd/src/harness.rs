@@ -345,6 +345,10 @@ pub struct Harness {
     /// What the next step boundary will inject: intent findings, monitor firings.
     /// Shared with the session's [`HubSteering`].
     injected: Arc<Mutex<VecDeque<String>>>,
+    /// A subagent's per-directory `AGENTS.md`, handed over the first time a tool touches that
+    /// directory (`crate::harness::guidance`). This session's own reading and never shared: it is
+    /// one tree read by one child, and a root session reads none of it this way.
+    guidance: crate::harness::guidance::Guidance,
     /// What a round handed back to its steering, shared with every `HubSteering` this harness builds,
     /// so a message handed back by a failed or interrupted round outlives the round.
     handed_back: Arc<Mutex<VecDeque<SteeringMessage>>>,
@@ -1644,6 +1648,8 @@ mod estate;
 pub use estate::{Estate, estate_said, settle_estate};
 mod deliveries;
 mod error;
+// A subagent's per-directory `AGENTS.md`, handed over the first time a tool touches it.
+pub(crate) mod guidance;
 mod hub_io;
 mod job_window;
 mod jobs;

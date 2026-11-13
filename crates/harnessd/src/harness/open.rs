@@ -2250,13 +2250,10 @@ impl Harness {
             // final, and `skill` reads a skill's `requires` against exactly that list.
             seat_cell.clone(),
             parts.lsp.clone(),
-            // The queue's own session reads and corrects the reviewers it was handed, and the
-            // runner behind these two verbs will address any live session in the daemon.
-            if crate::sessions::gatekeeper::is_the_queue_session(&cfg) {
-                letibot_tools::builtins::task::TaskReach::OwnChildren
-            } else {
-                letibot_tools::builtins::task::TaskReach::Anywhere
-            },
+            // What this seat may reach through the `task` family: the roles its profile lets it
+            // start - listed in `task`'s description and enforced at the spawn - and, for the
+            // queue's own session, the reviewers it was handed and no other session.
+            crate::profiles::reach(&cfg, &crate::profiles::table(&cfg)),
         )
         .map_err(|e| HarnessError::Setup(format!("registering the todo tool: {e}")))?;
         registry
@@ -3165,10 +3162,24 @@ impl Harness {
             }
         }
         let declared = crate::standing_notes::preloaded(parts.skills.as_ref(), &cfg.skills);
+        // The directories this session's ROLE names in `guidance:`, normalised once: they are read
+        // into the prompt here AND closed over below, so a later tool call in one of them says
+        // nothing twice.
+        let named_guidance = crate::harness::guidance::named(
+            &cfg.seat_overlay
+                .as_ref()
+                .and_then(|o| o.profile.as_ref())
+                .map(|p| p.guidance.clone())
+                .unwrap_or_default(),
+        );
+        // Read before the session is built, because `cfg` moves into it: a child reads the tree's
+        // instruction files as it touches them, and a root session does not.
+        let reads_guidance = cfg.parent_session_id.is_some();
         // Through the backend the session's tools use: a placed session's instruction files are on
         // that host, and this is the first prompt they have to reach.
         let notes_files = crate::standing_notes::Reader::new(&*runtime.backend, &cfg.workspace)
-            .with_notes(cfg.project_notes());
+            .with_notes(cfg.project_notes())
+            .with_guidance(named_guidance.clone());
         let standing = crate::standing_notes::section_with_skills(
             &notes_files,
             &cfg.global_notes(),
@@ -3178,10 +3189,10 @@ impl Harness {
             declared.as_deref(),
         );
         // And the base prompt is composed here when the session asked for it: for the tools just seated, with the
-        // notes, the session's own paragraph and its fabric block in that order. A config without it keeps the `system`
-        // it was given.
-        match cfg.seat_prompt.clone() {
-            Some(prompt) => cfg.compose_for_seat(&seat_facts, &prompt, standing.as_deref()),
+        // notes, the role's overlay, the session's own paragraph and its fabric block in that order. A config without
+        // it keeps the `system` it was given.
+        match cfg.seat_overlay.clone() {
+            Some(overlay) => cfg.compose_for_seat(&seat_facts, &overlay, standing.as_deref()),
             None => cfg.system = crate::standing_notes::replace(&cfg.system, standing.as_deref()),
         }
         cfg.seat_facts = Some(seat_facts);
@@ -3400,6 +3411,11 @@ impl Harness {
             meter: Default::default(),
             intent,
             injected,
+            // A SUBAGENT'S per-directory `AGENTS.md`, and never a root's: the operator's ruling is
+            // that the tree's instructions are gold for the children. What the role already put in
+            // the prompt is closed over here, so a tool call in one of those directories says
+            // nothing twice.
+            guidance: crate::harness::guidance::Guidance::new(reads_guidance, named_guidance),
             handed_back: Default::default(),
             stopped: Default::default(),
             unsaved: Default::default(),
@@ -4359,6 +4375,20 @@ pub(crate) fn role_for(cfg: &Config) -> Role {
 /// which is a daemon-wide flag and deliberately not per session: a shell is not the session's to record.
 pub(crate) fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     let mut r = base_role_for_seat(seat, cfg);
+    // A role profile NARROWS the seat's own table and nothing else - never the harness's universal
+    // doors added below, which are the session's own verbs and not the role's. The parent's table
+    // is a second ceiling, so a profile cannot hand a child a tool its parent lacks: the spawn
+    // closed over what its parent had, and that is what `parent_tools` is.
+    if let Some(profile) = cfg.seat_overlay.as_ref().and_then(|o| o.profile.as_ref()) {
+        let ceiling = cfg
+            .seat_overlay
+            .as_ref()
+            .and_then(|o| o.parent_tools.as_deref());
+        r.tools = profile.narrow(&r.tools, ceiling);
+        if r.max_tools > r.tools.len() {
+            r.max_tools = r.tools.len();
+        }
+    }
     // The model's own verbs on its own session (X24), on every seat that runs a conversation -
     // a child's included, since a subagent that overran its window is the case the operator named.
     // Native, so no seat can be without them: a session told its prompt moved with no verb to act on

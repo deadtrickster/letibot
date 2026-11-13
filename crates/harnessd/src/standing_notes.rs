@@ -35,6 +35,9 @@ pub struct Reader<'a> {
     root: PathBuf,
     /// The project's notes, in the notes checkout on this box. `None` reads no project notes.
     notes: Option<PathBuf>,
+    /// The directories a role names in `guidance:`, relative to the workspace - see
+    /// [`Reader::with_guidance`]. Empty for every session with no role profile, and every root.
+    guidance: Vec<String>,
 }
 
 impl<'a> Reader<'a> {
@@ -49,6 +52,7 @@ impl<'a> Reader<'a> {
             backend,
             root,
             notes: None,
+            guidance: Vec::new(),
         }
     }
 
@@ -57,6 +61,22 @@ impl<'a> Reader<'a> {
     pub fn with_notes(mut self, dir: PathBuf) -> Reader<'a> {
         self.notes = (!dir.as_os_str().is_empty()).then_some(dir);
         self
+    }
+
+    /// The directories a ROLE names in `guidance:`: a child told to start in a directory gets that
+    /// directory's `AGENTS.md` at message zero, with the rest of the standing material, rather than
+    /// waiting for a tool call that may never name it. A root session is never given any.
+    pub fn with_guidance(mut self, dirs: Vec<String>) -> Reader<'a> {
+        self.guidance = dirs;
+        self
+    }
+
+    /// One directory's instruction file, as the merge gate spells the name (three cases), read the
+    /// way every other note is. `None` is no file there, which is the ordinary case.
+    pub(crate) fn agents_in(&self, dir: &str) -> Option<String> {
+        crate::harness::guidance::NAMES
+            .iter()
+            .find_map(|name| self.read(&self.root.join(dir).join(name)))
     }
 
     /// The workspace as this reader spells it - the backend's own path for it.
@@ -136,6 +156,14 @@ pub fn gather(
         .find_map(|path| reader.read(&path).map(|text| (path, text)))
     {
         out.push((agents, text));
+    }
+    // And the directories this session's ROLE names, read here so they arrive with the rest of the
+    // standing material: a child told to start in `crates/tools` gets that directory's rules at
+    // message zero. The rest of the tree's files arrive by being touched (`harness::guidance`).
+    for dir in &reader.guidance {
+        if let Some(text) = reader.agents_in(dir) {
+            out.push((workspace.join(dir).join("AGENTS.md"), text));
+        }
     }
     for path in leticode_config::instructions(workspace, box_dirs) {
         if let Some(text) = reader.read(&path) {

@@ -292,7 +292,7 @@ fn a_note_written_between_two_opens_is_not_a_stale_prefix() {
     .expect("fixture AGENTS.md");
     // Composed at open, for the seated tools, the way `Sessions` opens every session.
     let mut first = base.clone();
-    first.seat_prompt = Some(letibot_harnessd::config::SeatPrompt::default());
+    first.seat_overlay = Some(letibot_harnessd::config::SeatOverlay::default());
     let was_system = {
         let (mut h, _registry) = opened(&first, &parts);
         assert!(
@@ -310,7 +310,7 @@ fn a_note_written_between_two_opens_is_not_a_stale_prefix() {
     )
     .expect("edited AGENTS.md");
     let mut second = base.clone();
-    second.seat_prompt = Some(letibot_harnessd::config::SeatPrompt::default());
+    second.seat_overlay = Some(letibot_harnessd::config::SeatOverlay::default());
 
     let (h, registry) = opened(&second, &parts);
     assert_ne!(

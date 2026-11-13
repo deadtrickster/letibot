@@ -196,11 +196,11 @@ pub fn from_text(name: &str, text: &str, source: ProfileSource) -> Result<Profil
             "description" | "purpose" => profile.purpose = unquote(value),
             "seat" => profile.seat = Some(unquote(value)),
             "tools" => {
-                let list = names(value);
-                if list.is_empty() {
+                // `tools:` with nothing after it opens a block list; `tools: []` is an explicit
+                // empty allowlist and means the role keeps none of the seat's tools.
+                profile.tools = Some(names(value));
+                if !value.trim_start().starts_with('[') {
                     open = Open::Tools;
-                } else {
-                    profile.tools = Some(list);
                 }
             }
             "subagents" => {

@@ -275,6 +275,14 @@ fn every_row() -> Vec<(&'static str, Facts, &'static str)> {
             },
             "the operator answered `which database?` on `land the release`: postgres",
         ),
+        (
+            "a directory's AGENTS.md, handed to a subagent (guidance)",
+            Facts::Guidance {
+                path: "crates/tools/AGENTS.md".into(),
+                lines: 2,
+            },
+            "[guidance] `crates/tools/AGENTS.md` — the operator's rules for that directory",
+        ),
     ]
 }
 

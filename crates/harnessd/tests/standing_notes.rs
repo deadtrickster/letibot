@@ -41,7 +41,7 @@ fn no_box(scratch: &std::path::Path) -> letibot_harnessd::leticode_config::BoxDi
 }
 
 /// A session over a workspace with a nonce in its `AGENTS.md`, composed the way `Sessions`
-/// composes one: `seat_prompt` set, so the harness composes the prompt at open for its
+/// composes one: `seat_overlay` set, so the harness composes the prompt at open for its
 /// seated tools, notes included. The store's directory comes back with the harness
 fn opened(workspace: &std::path::Path, nonce: &str) -> (Harness, TempDir) {
     opened_over(
@@ -73,7 +73,7 @@ fn opened_over(
     let parts = Parts::load(&cfg).expect("the vocabulary must load");
     std::fs::write(workspace.join("AGENTS.md"), format!("note-{nonce}-one\n"))
         .expect("fixture AGENTS.md");
-    cfg.seat_prompt = Some(letibot_harnessd::config::SeatPrompt::default());
+    cfg.seat_overlay = Some(letibot_harnessd::config::SeatOverlay::default());
     let hub = Hub::new(&cfg.session_id);
     (
         Harness::open(&parts, cfg, hub).expect("the session must open"),

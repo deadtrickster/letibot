@@ -1167,7 +1167,7 @@ fn seat_facts_are_the_seated_tools() {
             let mut cfg = seat_config(seat);
             cfg.allow_bash = bash;
             cfg.session_id = format!("seat-facts-{}-{bash}", seat.as_str());
-            cfg.seat_prompt = Some(letibot_harnessd::config::SeatPrompt::default());
+            cfg.seat_overlay = Some(letibot_harnessd::config::SeatOverlay::default());
             let p = parts(&cfg);
             let hub = Hub::new(&cfg.session_id);
             let h = Harness::open_with(&p, cfg, hub, Some(Box::new(Attached)), None)

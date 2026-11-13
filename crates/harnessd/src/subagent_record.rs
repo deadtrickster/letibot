@@ -72,6 +72,22 @@ pub fn is_helper(run: &SubagentRun) -> bool {
         || letibot_tools::builtins::digest::is_part_reader_brief(&run.prompt)
 }
 
+/// Every recorded child's role, in the store's order - the word its spec carries, and `coder` for
+/// a record from before a role was a profile (`task`'s own default). This is what a sessions list
+/// shows for a child that is on disk: its role is in its RECORD, and the session's own row keeps
+/// the seat it will be re-seated on.
+pub fn recorded_roles(runs: &[SubagentRun]) -> Vec<String> {
+    runs.iter()
+        .map(|r| {
+            RecordedSpec::from_json(&r.spec_json)
+                .ok()
+                .map(|s| s.role)
+                .filter(|r| !r.trim().is_empty())
+                .unwrap_or_else(|| "coder".to_string())
+        })
+        .collect()
+}
+
 /// Every recorded child's name, unique among its parent's children, in the store's order. A
 /// name the record CARRIES is kept - it was made unique when the child was spawned. A name
 /// DERIVED for an older record is made unique the way a fresh spawn's is (`-2`, `-3`, …)

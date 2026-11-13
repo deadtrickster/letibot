@@ -56,6 +56,10 @@ pub const STALL: &str = "stall";
 pub const CONTEXT_CLAIM: &str = "context_claim";
 /// The operator's answer to a row's question, as the model reads it.
 pub const ANSWER: &str = "answer";
+/// A directory's own `AGENTS.md`, handed to a SUBAGENT the first time a tool touches that
+/// directory. Its own kind because the notice IS an instruction file: a layer may reword it and may
+/// not drop it, and one that saw only `nudge` could not tell the two apart.
+pub const GUIDANCE: &str = "guidance";
 
 /// Every kind the host composes. A hook name outside this list is one nothing ever asks for, and
 /// `plugin_hooks` says so rather than leaving a layer that answers silence.
@@ -80,6 +84,7 @@ pub const KINDS: &[&str] = &[
     STALL,
     CONTEXT_CLAIM,
     ANSWER,
+    GUIDANCE,
 ];
 
 /// The kinds whose notice may not be dropped, only reworded - the host's set, not the plugin's.
@@ -100,6 +105,7 @@ pub const MUST_SEE: &[&str] = &[
     FALLBACK,
     PARENT,
     ANSWER,
+    GUIDANCE,
 ];
 
 /// The export name for one notice kind.
@@ -194,6 +200,10 @@ pub enum Facts {
     ContextClaim { resident: u64, window: u64 },
     /// The operator's answer, and the row's question it settled.
     Answer { row: String, question: String },
+    /// A directory's `AGENTS.md`, handed to a subagent: its path and the lines it holds. The text
+    /// itself is in the sentence - a layer that rewords this is re-inserting an instruction file,
+    /// and must see it whole.
+    Guidance { path: String, lines: usize },
 }
 
 impl Facts {
@@ -220,6 +230,7 @@ impl Facts {
             Facts::Stall { .. } => STALL,
             Facts::ContextClaim { .. } => CONTEXT_CLAIM,
             Facts::Answer { .. } => ANSWER,
+            Facts::Guidance { .. } => GUIDANCE,
         }
     }
 
@@ -291,6 +302,10 @@ impl Facts {
             Facts::Answer {
                 row: "land the release".into(),
                 question: "which database?".into(),
+            },
+            Facts::Guidance {
+                path: "crates/tools/AGENTS.md".into(),
+                lines: 12,
             },
         ]
     }

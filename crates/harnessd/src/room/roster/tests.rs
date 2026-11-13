@@ -328,6 +328,7 @@ mod cached {
             nags_paused: None,
             waits_on_operator: 0,
             slug: String::new(),
+            role: String::new(),
             origin: Default::default(),
         }
     }

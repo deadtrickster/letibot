@@ -303,6 +303,11 @@ pub struct SessionBrief {
     /// none. `created_ms` never changes and answers a different question.
     #[serde(default)]
     pub moved_ms: u64,
+    /// The role this session was seated as - a profile's name (`explore`, `reviewer`), or the seat
+    /// it was seated on. For a live session the daemon writes it at open; for one on disk it is the
+    /// profile its run record names, else the seat the row kept. Empty for a row older than either.
+    #[serde(default)]
+    pub role: String,
 }
 
 /// How long the operator has paused a session's idle plan-check. Wall-clock and not a duration,
@@ -423,6 +428,9 @@ pub struct StoredBrief {
     /// Who this session is for, off its own row - see [`SessionBrief::origin`]. `Operator` for a
     /// row written before the column existed, which is what every row was then.
     pub origin: SessionOrigin,
+    /// The role the daemon seated it as, when the row is a CHILD's and its record still says - see
+    /// [`SessionBrief::role`].
+    pub role: String,
 }
 
 /// A live entry as `Registry::assemble` needs it. A named type rather than a seven-tuple: a
@@ -522,6 +530,9 @@ struct Entry {
     /// Who this session is for. Set by the door that knows: a head's `NewSession`, the daemon's
     /// queue, or a one-shot.
     origin: SessionOrigin,
+    /// The role this session was seated as - a profile's name, or its seat's own. Set by the daemon
+    /// once the session is open: a role is what a daemon seated, and nothing about a hub.
+    role: String,
 }
 
 struct Inner {
@@ -1061,6 +1072,7 @@ impl Registry {
                     stale_prefix: None,
                     stale_for_model: None,
                     origin: SessionOrigin::Operator,
+                    role: String::new(),
                 },
             );
         }
@@ -1123,6 +1135,7 @@ impl Registry {
                 stale_prefix: None,
                 stale_for_model: None,
                 origin: SessionOrigin::Operator,
+                role: String::new(),
             },
         );
         drop(g);
@@ -1177,6 +1190,7 @@ impl Registry {
                 stale_prefix: None,
                 stale_for_model: None,
                 origin: SessionOrigin::Operator,
+                role: String::new(),
             },
         );
         Ok(())
@@ -1612,6 +1626,29 @@ impl Registry {
         if let Some(src) = self.source() {
             src.set_origin(session_id, origin);
         }
+    }
+
+    /// The role a session was seated as, as a row shows it: a profile's name, or its seat's own.
+    ///
+    /// Written by the daemon once the session is OPEN - a child is adopted after its own open, so
+    /// the door that knows the role is the one that comes after it. A live row reads it from here;
+    /// a session on disk reads the store's half, which the daemon fills from the child's own run
+    /// record.
+    pub fn set_role(&self, session_id: &str, role: &str) {
+        let mut g = self.lock();
+        if let Some(e) = g.entry_mut(session_id) {
+            e.role = role.to_string();
+            g.roster_changes += 1;
+        }
+    }
+
+    /// What [`Registry::set_role`] was given: empty for a session nobody has seated yet, and for
+    /// one on disk - see the method for why the store is not asked.
+    pub fn role_of(&self, session_id: &str) -> String {
+        self.lock()
+            .entry(session_id)
+            .map(|e| e.role.clone())
+            .unwrap_or_default()
     }
 
     /// The session's title as this registry holds it: the name it was created or adopted with, or
@@ -2217,6 +2254,9 @@ impl Registry {
                         // When it last moved, off the row - and the creation time only for a
                         // session no store knows about yet, which has moved nowhere.
                         moved_ms: on_disk.map(|d| d.last_activity_ms).unwrap_or(created_ms),
+                        // The role this daemon seated, off its own entry - never the store's: a
+                        // role is a live seating and the store keeps the seat.
+                        role: self.role_of(&session_id),
                         session_id,
                     }
                 },
@@ -2245,6 +2285,7 @@ impl Registry {
                 slug: d.slug,
                 origin: d.origin,
                 moved_ms: d.last_activity_ms,
+                role: d.role,
             });
         }
         out
@@ -2526,6 +2567,7 @@ mod stored_end_wire {
             slug: String::new(),
             origin: crate::SessionOrigin::Operator,
             moved_ms: 0,
+            role: String::new(),
         };
         let mut v = serde_json::to_value(&b).unwrap();
         assert_eq!(

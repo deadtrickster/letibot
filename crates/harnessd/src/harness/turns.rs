@@ -2439,7 +2439,33 @@ impl Harness {
             results.push(item);
         }
         results.extend(asked);
+        self.hand_over_guidance(calls);
         (results, backgrounded)
+    }
+
+    /// The `AGENTS.md` of every directory this round's calls touched, for a SUBAGENT and once -
+    /// `crate::harness::guidance` says why it is a child's and what it costs. Said through the
+    /// mid-turn queue, which the loop drains at its own step boundary: a row appended here would
+    /// land between a tool call and its result.
+    fn hand_over_guidance(&mut self, calls: &[letibot_transcript::ToolCall]) {
+        if calls.is_empty() {
+            return;
+        }
+        let root = self
+            .runtime
+            .backend
+            .workspace_path()
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| self.cfg.workspace.clone());
+        let taken = self.guidance.take(&*self.runtime.backend, &root, calls);
+        for (path, text) in taken {
+            let lines = text.lines().filter(|l| !l.trim().is_empty()).count();
+            let facts = Facts::Guidance {
+                path: path.clone(),
+                lines,
+            };
+            self.say_mid_turn(&facts, &crate::harness::guidance::notice(&path, &text));
+        }
     }
 
     /// What a round's own failure means. Two arms carry a notice the model answers and the

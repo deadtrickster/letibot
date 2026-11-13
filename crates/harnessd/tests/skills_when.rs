@@ -65,7 +65,7 @@ fn config(store: &Path, workspace: &Path, id: &str) -> Config {
     cfg.leticode =
         letibot_harnessd::leticode_config::LeticodeConfig::load(&workspace.join("leticode.toml"))
             .expect("the project's file parses");
-    cfg.seat_prompt = Some(letibot_harnessd::config::SeatPrompt::default());
+    cfg.seat_overlay = Some(letibot_harnessd::config::SeatOverlay::default());
     cfg
 }
 

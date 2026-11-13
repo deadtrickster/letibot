@@ -78,6 +78,7 @@ pub mod oracle;
 pub mod perimeter;
 pub mod plugins;
 pub mod pr_watch;
+pub mod profiles;
 pub mod progress;
 pub mod prompt;
 pub mod reap_pass;
