@@ -19,12 +19,14 @@ use letibot_tokencore::store::{
 use crate::exec::scope::{self, ScopeUse};
 
 mod plan;
+mod reap;
 #[cfg(test)]
 mod tests;
 pub use plan::{
     HoldingView, LANDED_GRACE_MS, OwnerView, Plan, Stranger, UNLANDED_GRACE_MS, Verdict, judge,
     plan, stamp_of,
 };
+pub use reap::{Act, Activity, Ended, NOTICE_LEAD_MS, Ops, Pass, close_due, notice_at, reap_pass};
 /// The file an owner root carries: the owner id, this box, the kind and the lease. It is what a
 /// reaper with no store reads, and the one thing that tells letibot's root from a directory that
 /// merely sits beside it.
@@ -303,7 +305,7 @@ pub fn register(store: &Store, places: &Places, owner: &OwnerRow) -> StoreResult
 /// the pass a daemon runs; `letibot gc` runs [`discover`] and writes nothing.
 pub fn refresh(store: &Store, owner: &OwnerRow, places: &Places) -> StoreResult<Vec<HoldingRow>> {
     let now = now_ms();
-    let found = discover(owner, places);
+    let found = discover_all(store, owner, places);
     let mut written = Vec::with_capacity(found.len());
     for f in &found {
         let row = f.row(now);
@@ -336,6 +338,43 @@ pub fn discover(owner: &OwnerRow, places: &Places) -> Vec<Found> {
     out.extend(from_daemon(owner, places));
     out.extend(scopes_of(owner, places));
     out.extend(from_firecode(owner, places));
+    out
+}
+
+/// [`discover`], plus the cgroup subtrees a row already in the store still names.
+///
+/// The scope walk starts from the DAEMON's `/proc` entry, so a daemon that died takes the
+/// evidence with it while the cgroup it delegated can still hold every process the owner
+/// started - the case R201 was filed on. A row written while the daemon was alive is the second
+/// witness, and it is re-checked against the kernel before it is believed.
+pub fn discover_all(store: &Store, owner: &OwnerRow, places: &Places) -> Vec<Found> {
+    let mut out = discover(owner, places);
+    for row in store.holdings_of(&owner.id).unwrap_or_default() {
+        if row.kind != SCOPE || row.state == HoldingState::Gone {
+            continue;
+        }
+        if out
+            .iter()
+            .any(|f| f.kind == row.kind && f.handle == row.handle)
+        {
+            continue;
+        }
+        let path = PathBuf::from(&row.handle);
+        let Some(use_) = scope::use_at(&path) else {
+            continue;
+        };
+        out.push(Found {
+            owner: owner.id.clone(),
+            kind: SCOPE.to_string(),
+            host: row.host.clone(),
+            handle: row.handle.clone(),
+            class: HoldingClass::Compute,
+            stamp: format!("the kernel's own directory, {}", path.display()),
+            bytes: use_.memory_current,
+            why: Some(scope_clause(&use_)),
+            use_: Some(use_),
+        });
+    }
     out
 }
 
@@ -388,16 +427,22 @@ fn from_root(owner: &OwnerRow, places: &Places) -> Vec<Found> {
     out
 }
 
-/// The daemon that serves this owner: its record under the rundir, and the process the record
-/// names. A record whose workspace is not this owner's is another folder's daemon.
-fn from_daemon(owner: &OwnerRow, places: &Places) -> Vec<Found> {
-    let Some(repo) = owner.repo.as_deref() else {
-        return Vec::new();
-    };
+/// One daemon's runtime record: what the launcher wrote under `$RUNDIR` when it started it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonRec {
+    pub path: PathBuf,
+    /// The pid the launcher started. Not trusted alone (d.4): the record is the proof of whose it
+    /// is, and the pid read now with its start time is the identity a signal is sent to.
+    pub pid: Option<u32>,
+    pub socket: String,
+}
+
+/// Every runtime record that names a workspace, in the runtime directory. A room or a forward is
+/// a record of its own kind and names a directory nobody works in, so it is not here.
+pub fn daemon_records(places: &Places) -> Vec<(PathBuf, String, Option<u32>, String)> {
     let Ok(entries) = std::fs::read_dir(&places.rundir) else {
         return Vec::new();
     };
-    let wanted = std::fs::canonicalize(repo).unwrap_or_else(|_| PathBuf::from(repo));
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
@@ -410,28 +455,57 @@ fn from_daemon(owner: &OwnerRow, places: &Places) -> Vec<Found> {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
             continue;
         };
-        // A room or a forward is a record of its own kind and names a directory nobody works in.
         if v.get("room").is_some() || v.get("forward").is_some() {
             continue;
         }
         let Some(workspace) = v.get("workspace").and_then(|w| w.as_str()) else {
             continue;
         };
-        let here = std::fs::canonicalize(workspace).unwrap_or_else(|_| PathBuf::from(workspace));
-        if here != wanted {
-            continue;
-        }
-        let pid = v.get("pid").and_then(|p| p.as_u64());
-        let alive = pid.is_some_and(|p| crate::firecode::held::alive(&places.proc_root, p as u32));
-        let handle = match pid {
-            Some(p) => format!("pid:{p}"),
-            None => path.display().to_string(),
-        };
+        let pid = v
+            .get("pid")
+            .and_then(|p| p.as_u64())
+            .and_then(|p| u32::try_from(p).ok())
+            .filter(|p| *p > 0);
         let socket = v
             .get("socket")
             .and_then(|s| s.as_str())
             .unwrap_or_default()
             .to_string();
+        out.push((path, workspace.to_string(), pid, socket));
+    }
+    out
+}
+
+/// The records of the daemons serving this owner's repository.
+pub fn daemons_of(owner: &OwnerRow, places: &Places) -> Vec<DaemonRec> {
+    let Some(repo) = owner.repo.as_deref() else {
+        return Vec::new();
+    };
+    let wanted = std::fs::canonicalize(repo).unwrap_or_else(|_| PathBuf::from(repo));
+    daemon_records(places)
+        .into_iter()
+        .filter(|(_, workspace, _, _)| {
+            std::fs::canonicalize(workspace).unwrap_or_else(|_| PathBuf::from(workspace)) == wanted
+        })
+        .map(|(path, _, pid, socket)| DaemonRec { path, pid, socket })
+        .collect()
+}
+
+/// The daemon that serves this owner: its record under the rundir, and the process the record
+/// names. A record whose workspace is not this owner's is another folder's daemon.
+fn from_daemon(owner: &OwnerRow, places: &Places) -> Vec<Found> {
+    let Some(repo) = owner.repo.as_deref() else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for rec in daemons_of(owner, places) {
+        let alive = rec
+            .pid
+            .is_some_and(|p| crate::firecode::held::alive(&places.proc_root, p));
+        let handle = match rec.pid {
+            Some(p) => format!("pid:{p}"),
+            None => rec.path.display().to_string(),
+        };
         out.push(Found {
             owner: owner.id.clone(),
             kind: DAEMON.to_string(),
@@ -440,16 +514,16 @@ fn from_daemon(owner: &OwnerRow, places: &Places) -> Vec<Found> {
             class: HoldingClass::Compute,
             stamp: format!(
                 "{} and {}",
-                path.display(),
+                rec.path.display(),
                 places.proc_root.join("pid").display()
             ),
             bytes: None,
             why: Some(if alive {
-                format!("serving {} on {}", repo, socket)
+                format!("serving {} on {}", repo, rec.socket)
             } else {
                 format!(
                     "the record is here and no process is at {}: its daemon is gone",
-                    pid.map(|p| p.to_string()).unwrap_or_default()
+                    rec.pid.map(|p| p.to_string()).unwrap_or_default()
                 )
             }),
             use_: None,
@@ -516,35 +590,10 @@ fn cgroup_bases(owner: &OwnerRow, places: &Places) -> Vec<PathBuf> {
 
 /// The pids this owner's daemons are recorded at, from the rundir records.
 fn daemon_pids(owner: &OwnerRow, places: &Places) -> Vec<u32> {
-    let Some(repo) = owner.repo.as_deref() else {
-        return Vec::new();
-    };
-    let wanted = std::fs::canonicalize(repo).unwrap_or_else(|_| PathBuf::from(repo));
-    let Ok(entries) = std::fs::read_dir(&places.rundir) else {
-        return Vec::new();
-    };
-    let mut out = Vec::new();
-    for entry in entries.flatten() {
-        let Ok(text) = std::fs::read_to_string(entry.path()) else {
-            continue;
-        };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
-            continue;
-        };
-        let Some(workspace) = v.get("workspace").and_then(|w| w.as_str()) else {
-            continue;
-        };
-        let here = std::fs::canonicalize(workspace).unwrap_or_else(|_| PathBuf::from(workspace));
-        if here != wanted {
-            continue;
-        }
-        if let Some(pid) = v.get("pid").and_then(|p| p.as_u64())
-            && pid > 0
-        {
-            out.push(pid as u32);
-        }
-    }
-    out
+    daemons_of(owner, places)
+        .into_iter()
+        .filter_map(|r| r.pid)
+        .collect()
 }
 
 /// firecode's own records: the live run (its `owner` file, written at `up`), the copy it was booted

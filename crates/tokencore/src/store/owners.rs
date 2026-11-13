@@ -403,6 +403,11 @@ pub enum ReapAct {
     Keep,
     Stuck,
     Restore,
+    /// An owner's compute is gone and it is `closed` - the state change itself, which is what
+    /// `letibot gc --log` has to answer with when the question is "why is this session closed".
+    Close,
+    /// And the other way: a resume, or `leticode_send` to a closed owner.
+    Reopen,
 }
 
 impl ReapAct {
@@ -417,6 +422,8 @@ impl ReapAct {
             ReapAct::Keep => "keep",
             ReapAct::Stuck => "stuck",
             ReapAct::Restore => "restore",
+            ReapAct::Close => "close",
+            ReapAct::Reopen => "reopen",
         }
     }
 }
@@ -559,6 +566,37 @@ impl Store {
                               closed_why = COALESCE(closed_why, ?4)
                WHERE id = ?1",
             params![id, state.word(), now_ms, why],
+        )?;
+        Ok(())
+    }
+
+    /// Renew an owner's lease: the clock every idle TTL is measured from. Called where activity
+    /// happens (a turn, a message), never by a head being attached - an attached head that renews
+    /// is how a finished package holds its daemon for ever (`docs/lifecycle.md` d.3).
+    pub fn touch_owner(&self, id: &str, now_ms: i64) -> Result<()> {
+        self.exec(
+            "UPDATE owner SET lease_ms = MAX(lease_ms, ?2) WHERE id = ?1",
+            params![id, now_ms],
+        )?;
+        Ok(())
+    }
+
+    /// The operator's hold: `None` releases it, `Some(0)` holds for ever, `Some(t)` until `t`.
+    /// A hold stops every automatic trigger and is the only opt-out there is.
+    pub fn hold_owner(&self, id: &str, until_ms: Option<i64>) -> Result<()> {
+        self.exec(
+            "UPDATE owner SET held_until_ms = ?2 WHERE id = ?1",
+            params![id, until_ms],
+        )?;
+        Ok(())
+    }
+
+    /// Move an owner back to `live` with a fresh lease - what a resume of a closed owner is. The
+    /// close's own clock stays: a reopen does not rewrite the fact that it was closed once.
+    pub fn reopen_owner(&self, id: &str, now_ms: i64) -> Result<()> {
+        self.exec(
+            "UPDATE owner SET state = 'live', lease_ms = ?2 WHERE id = ?1",
+            params![id, now_ms],
         )?;
         Ok(())
     }
@@ -766,6 +804,36 @@ mod tests {
             log.iter().map(|e| e.act.as_str()).collect::<Vec<_>>(),
             ["plan", "remove"]
         );
+    }
+
+    /// The lease only moves forward (a late reader cannot undo a turn), the hold is set and
+    /// released, and a reopen leaves the first close on the row.
+    #[test]
+    fn a_lease_renews_a_hold_bites_and_a_reopen_keeps_the_first_close() {
+        let s = store();
+        s.put_owner(&OwnerRow::live("s-1", OwnerKind::Package, None, 500))
+            .expect("the owner");
+        s.touch_owner("s-1", 900).expect("renewed");
+        assert_eq!(s.owner("s-1").unwrap().unwrap().lease_ms, 900);
+        s.touch_owner("s-1", 700).expect("an older reading");
+        assert_eq!(
+            s.owner("s-1").unwrap().unwrap().lease_ms,
+            900,
+            "a lease that went backwards would close an owner that had just spoken"
+        );
+
+        s.hold_owner("s-1", Some(0)).expect("held for ever");
+        assert!(s.owner("s-1").unwrap().unwrap().held(0));
+        s.hold_owner("s-1", None).expect("released");
+        assert!(!s.owner("s-1").unwrap().unwrap().held(0));
+
+        s.set_owner_state("s-1", OwnerState::Closed, "idle 30m", 1_000)
+            .expect("closed");
+        s.reopen_owner("s-1", 2_000).expect("reopened");
+        let back = s.owner("s-1").unwrap().unwrap();
+        assert_eq!(back.state, OwnerState::Live);
+        assert_eq!(back.lease_ms, 2_000);
+        assert_eq!(back.closed_ms, Some(1_000));
     }
 
     /// A word this build does not know is read as the conservative value, not as corruption: the

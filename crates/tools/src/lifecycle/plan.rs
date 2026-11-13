@@ -10,7 +10,7 @@ use letibot_tokencore::store::{
     HoldingClass, HoldingState, OwnerKind, OwnerRow, OwnerState, Result as StoreResult, Store,
 };
 
-use super::{Found, Places, discover, human_bytes, human_millis, unowned};
+use super::{Found, Places, discover_all, human_bytes, human_millis, unowned};
 
 /// How long a closed owner's work is kept once the queue proved it landed (`docs/lifecycle.md`
 /// d.3's settle triggers).
@@ -362,10 +362,11 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
     };
     for owner in &owners {
         let rows = store.holdings_of(&owner.id)?;
-        let found: BTreeMap<(String, Option<String>, String), Found> = discover(owner, places)
-            .into_iter()
-            .map(|f| ((f.kind.clone(), f.host.clone(), f.handle.clone()), f))
-            .collect();
+        let found: BTreeMap<(String, Option<String>, String), Found> =
+            discover_all(store, owner, places)
+                .into_iter()
+                .map(|f| ((f.kind.clone(), f.host.clone(), f.handle.clone()), f))
+                .collect();
         let mut holds: Vec<HoldingView> = Vec::new();
         for row in &rows {
             let key = (row.kind.clone(), row.host.clone(), row.handle.clone());
