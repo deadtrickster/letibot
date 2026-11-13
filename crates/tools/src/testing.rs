@@ -636,7 +636,7 @@ fn build_ext(
         Arc::new(crate::builtins::skill::SkillRegistry::default()),
         crate::builtins::skill::Seat::new(),
         Arc::new(crate::builtins::lsp::LspConfig::default()),
-        crate::builtins::task::TaskReach::Anywhere,
+        crate::builtins::task::TaskReach::anywhere(),
     )
     .expect("todo_write registers");
     // And the notes tool, over a scope of this fixture's own: a temp dir per harness, so a test

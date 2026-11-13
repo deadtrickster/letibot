@@ -2319,11 +2319,11 @@ fn a_seat_that_may_reach_only_its_children_refuses_every_other_session() {
     });
     let mut reg = Registry::new();
     reg.register(Box::new(
-        TaskResultTool::new(runner.clone()).with_reach(TaskReach::OwnChildren),
+        TaskResultTool::new(runner.clone()).with_reach(TaskReach::own_children()),
     ))
     .unwrap();
     reg.register(Box::new(
-        TaskMessageTool::new(runner.clone()).with_reach(TaskReach::OwnChildren),
+        TaskMessageTool::new(runner.clone()).with_reach(TaskReach::own_children()),
     ))
     .unwrap();
     let d = crate::backend::tempdir::TempDir::new();
@@ -2407,7 +2407,7 @@ fn a_seat_that_may_reach_only_its_children_refuses_every_other_session() {
     // And each description says what its seat will do about a stranger, so no model is promised a
     // door that refuses it.
     let narrow = TaskMessageTool::new(runner.clone())
-        .with_reach(TaskReach::OwnChildren)
+        .with_reach(TaskReach::own_children())
         .schema();
     assert!(
         narrow
@@ -2426,7 +2426,7 @@ fn a_seat_that_may_reach_only_its_children_refuses_every_other_session() {
         wide.description
     );
     let narrow = TaskResultTool::new(runner)
-        .with_reach(TaskReach::OwnChildren)
+        .with_reach(TaskReach::own_children())
         .schema();
     assert!(
         narrow
@@ -2704,5 +2704,106 @@ fn a_child_finished_over_a_killed_job_is_not_answered_as_a_finish() {
             .contains("the sleep was still going when I stopped"),
         "the child's own words go with it: {}",
         said.payload
+    );
+}
+
+/// The roles a seat may start are LISTED, with the one line each, so a model chooses one instead of
+/// finding out from a refusal - and a name that is not on the list is refused WITH the list, because
+/// a refusal that says only "no" leaves the model guessing at a word it cannot have.
+#[test]
+fn the_roles_this_seat_may_start_are_listed_and_anything_else_is_refused_with_them() {
+    use crate::runtime::{Registry, ToolRuntime};
+    use letibot_transcript::ToolCall;
+
+    let runner = Arc::new(Echo::default());
+    let mut reg = Registry::new();
+    reg.register(Box::new(TaskTool::new(runner.clone()).with_roles(vec![
+        RoleOffer {
+            name: "coder".into(),
+            purpose: "writes, edits and runs code".into(),
+        },
+        RoleOffer {
+            name: "explore".into(),
+            purpose: "surveys the tree read-only".into(),
+        },
+    ])))
+    .unwrap();
+    let d = crate::backend::tempdir::TempDir::new();
+    let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+    let rt = ToolRuntime::new(reg, Box::new(backend));
+    let mut sink = crate::NullToolSink;
+    let schema = rt
+        .registry
+        .schemas()
+        .into_iter()
+        .find(|s| s.name == "task")
+        .unwrap();
+    // The description names both profiles and what each is for...
+    for want in [
+        "coder — writes, edits and runs code",
+        "explore — surveys the tree read-only",
+        "defaults to `coder`",
+    ] {
+        assert!(
+            schema.description.contains(want),
+            "`{want}`: {}",
+            schema.description
+        );
+    }
+    // ...and so does the argument's own description, which is what a model reads when it fills it.
+    let role_arg = schema.parameters["properties"]["role"]["description"]
+        .as_str()
+        .expect("a description")
+        .to_string();
+    assert!(role_arg.contains("explore"), "{role_arg}");
+
+    // A name that is not on the list never reaches the runner, and the sentence carries the list.
+    let refused = rt.invoke(
+        "t1",
+        &ToolCall {
+            id: "c1".into(),
+            name: "task".into(),
+            arguments: r#"{"prompt": "have a look", "role": "gatekeeper"}"#.into(),
+        },
+        &mut sink,
+    );
+    let said = match &refused.outcome {
+        letibot_transcript::ToolOutcome::Failed { reason } => reason.clone(),
+        other => panic!("a role this seat may not start must be refused, not {other:?}"),
+    };
+    assert!(said.contains("gatekeeper"), "{said}");
+    assert!(
+        refused.payload.contains("coder, explore"),
+        "the refusal names the roles it could have had: {}",
+        refused.payload
+    );
+    assert!(
+        runner.answers.lock().unwrap().is_empty(),
+        "nothing was spawned"
+    );
+
+    // A role ON the list starts, and the spec carries the word the caller used.
+    let started = rt.invoke(
+        "t1",
+        &ToolCall {
+            id: "c2".into(),
+            name: "task".into(),
+            arguments: r#"{"prompt": "have a look", "role": "explore"}"#.into(),
+        },
+        &mut sink,
+    );
+    assert!(
+        matches!(
+            started.outcome,
+            letibot_transcript::ToolOutcome::Backgrounded { .. }
+        ),
+        "{:?} — {}",
+        started.outcome,
+        started.payload
+    );
+    assert!(
+        runner.answers.lock().unwrap()[0].1.starts_with("explore"),
+        "{:?}",
+        runner.answers.lock().unwrap()
     );
 }

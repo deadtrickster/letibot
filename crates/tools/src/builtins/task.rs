@@ -997,6 +997,10 @@ pub struct TaskTool {
     /// test built by hand: a call that names one is then refused rather than spawned with a
     /// list nothing could vouch for.
     skills: Option<Arc<crate::builtins::skill::SkillRegistry>>,
+    /// The roles this seat may start, with the one line each. The description lists them, so a
+    /// role the model cannot have is a name it never asks for; empty is a registry built without
+    /// a daemon behind it, where no list is written into the prompt.
+    roles: Vec<RoleOffer>,
 }
 
 impl TaskTool {
@@ -1006,7 +1010,15 @@ impl TaskTool {
             firecode_bin: None,
             hosts: None,
             skills: None,
+            roles: Vec::new(),
         }
+    }
+
+    /// The profiles this seat may start - the same list [`TaskReach`] enforces, said in the
+    /// description so the model chooses from it rather than learning it from a refusal.
+    pub fn with_roles(mut self, roles: Vec<RoleOffer>) -> Self {
+        self.roles = roles;
+        self
     }
 
     /// Read a call's `skills` against `skills` rather than refusing the argument outright.
@@ -1036,10 +1048,33 @@ const WAKE_ARG: &str = "`later` says you do not need waking for it: the answer i
 
 impl Tool for TaskTool {
     fn schema(&self) -> ToolSchema {
+        // The roles are the SEAT's, and a list in the description is the difference between a
+        // model choosing one and a model finding out from a refusal (`pkg/kimi-code.md` §5.6).
+        // A description is prompt bytes, so nothing is written when the registry has no daemon
+        // behind it - a fixture's `task` then refuses every name, which is the truth there.
+        let roles = if self.roles.is_empty() {
+            String::new()
+        } else {
+            let rows: Vec<String> = self
+                .roles
+                .iter()
+                .map(|r| format!("{} — {}", r.name, r.purpose))
+                .collect();
+            format!(
+                " The roles this seat may start, and what each is for: {}. `role` defaults to \
+                 `{}`.",
+                rows.join("; "),
+                self.roles
+                    .iter()
+                    .find(|r| r.name == "coder")
+                    .map(|r| r.name.as_str())
+                    .unwrap_or(self.roles[0].name.as_str())
+            )
+        };
         ToolSchema::new(
             "task",
             "Start a subtask in a subagent. Give `prompt` (the subtask); optionally \
-             `role` to pick the subagent's toolset (defaults to coder), `access` to \
+             `role` to pick the subagent's profile, `access` to \
              narrow it BELOW your own permissions (`read-only` for a survey that must \
              not write; or `no-write`, `no-exec`, `no-network`), `where` (`host`, \
              the default, or `firecode` for a VM), and `model` to run the child on a \
@@ -1051,6 +1086,7 @@ impl Tool for TaskTool {
              work and this call does not wait for it, so the rest of your calls run \
              while it does. "
                 .to_string()
+                + &roles
                 + super::DELIVERED
                 + " `task_result` shows its state or re-reads its answer. **A child that \
              writes code must be told, in its prompt, to END with \
@@ -1064,7 +1100,7 @@ impl Tool for TaskTool {
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "description": "The subtask for the subagent."},
-                    "role": {"type": "string", "description": "The subagent's role. Defaults to coder."},
+                    "role": {"type": "string", "description": role_arg(&self.roles)},
                     "access": {"type": "string", "description": "Narrow the subagent below your own permissions: `read-only` (no write, exec or network), or any of `no-write`, `no-exec`, `no-network`, comma-separated. Omit to inherit yours unchanged. Cannot widen. **`read-only` removes `bash`, so a child asked to review a branch cannot run `git status` or `git diff` and judges from the files alone — for a reviewer pass `no-write` instead**, which keeps the shell and takes only the pen."},
                     "where": {"type": "string", "description": "`host` (the default: your own boundary), `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody), or `host:NAME` — a machine the operator declared for this box, where the child's tools (bash, read, write, jobs) run over ssh while its model connection stays here. Call `hosts` to see which machines are declared, and `hosts {probe: true}` to see which is least loaded. Placement never changes permissions."},
                     "verify": {"type": "string", "description": "With `where: firecode`: a shell command firecode runs in the child's project AFTER the child finishes and before its VM stops - the e2e or test command that says whether the work is done. Its exit status is the verdict, reported in the child's answer with its log; the child is told nothing it can fake. Refused without `where: firecode`."},
@@ -1093,6 +1129,12 @@ impl Tool for TaskTool {
             );
         };
         let role = args.get("role").and_then(|v| v.as_str()).unwrap_or("coder");
+        // The role is checked HERE, against this seat's own list, before anything is composed: an
+        // unknown name is a fact about the call, and the answer names the roles it could have had.
+        // The spawn checks it again - this door is not the only one (`task_start`, a resume).
+        if let Some(refused) = role_refusal(&self.roles, role) {
+            return refused;
+        }
         let downgrade = match args.get("access").and_then(|v| v.as_str()) {
             None => Downgrade::none(),
             Some(a) => match Downgrade::parse(a) {
@@ -1458,6 +1500,8 @@ pub struct TaskStartTool {
     /// The skills corpus a call's `skills` names are checked against - see
     /// [`TaskTool::with_skills`].
     skills: Option<Arc<crate::builtins::skill::SkillRegistry>>,
+    /// The roles this seat may start - see [`TaskTool::with_roles`].
+    roles: Vec<RoleOffer>,
 }
 
 impl TaskStartTool {
@@ -1467,7 +1511,14 @@ impl TaskStartTool {
             firecode_bin: None,
             hosts: None,
             skills: None,
+            roles: Vec::new(),
         }
+    }
+
+    /// The profiles this seat may start - see [`TaskTool::with_roles`].
+    pub fn with_roles(mut self, roles: Vec<RoleOffer>) -> Self {
+        self.roles = roles;
+        self
     }
 
     /// Check `where: firecode` against `bin` rather than the host's `$FIRECODE_BIN`/PATH.
@@ -1515,7 +1566,7 @@ impl Tool for TaskStartTool {
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "description": "The subtask for the subagent."},
-                    "role": {"type": "string", "description": "The subagent's role. Defaults to coder."},
+                    "role": {"type": "string", "description": role_arg(&self.roles)},
                     "access": {"type": "string", "description": "Narrow the subagent below your own permissions: `read-only` (no write, exec or network), or any of `no-write`, `no-exec`, `no-network`, comma-separated. Omit to inherit yours unchanged. Cannot widen. **`read-only` removes `bash`, so a child asked to review a branch cannot run `git status` or `git diff` and judges from the files alone — for a reviewer pass `no-write` instead**, which keeps the shell and takes only the pen."},
                     "where": {"type": "string", "description": "`host` (the default: your own boundary), `firecode` (a VM: a copy of this workspace, permission checks off inside, so a child there asks nobody), or `host:NAME` — a machine the operator declared for this box, where the child's tools (bash, read, write, jobs) run over ssh while its model connection stays here. Call `hosts` to see which machines are declared, and `hosts {probe: true}` to see which is least loaded. Placement never changes permissions."},
                     "verify": {"type": "string", "description": "With `where: firecode`: a shell command firecode runs in the child's project AFTER the child finishes and before its VM stops - the e2e or test command that says whether the work is done. Its exit status is the verdict, reported in the child's answer with its log; the child is told nothing it can fake. Refused without `where: firecode`."},
@@ -1546,6 +1597,10 @@ impl Tool for TaskStartTool {
             );
         };
         let role = args.get("role").and_then(|v| v.as_str()).unwrap_or("coder");
+        // Same list, same refusal: `task_start` is `task` with a worktree arranged first.
+        if let Some(refused) = role_refusal(&self.roles, role) {
+            return refused;
+        }
         let downgrade = match args.get("access").and_then(|v| v.as_str()) {
             None => Downgrade::none(),
             Some(a) => match Downgrade::parse(a) {
@@ -1839,26 +1894,137 @@ impl Tool for TaskStartTool {
     }
 }
 
-/// What a seat's `task_result` and `task_message` may reach. The daemon's runner addresses any live
+/// What a seat may reach through the `task` family: the children `task_result` and `task_message`
+/// address, and the roles `task` may start. The daemon's runner addresses any live
 /// session by id, which is right for a seat a person is in and wrong for the review queue's: it was
 /// handed its reviewers and holds nothing else in the daemon.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum TaskReach {
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TaskReach {
+    pub scope: Reach,
+    /// The roles this seat may start, with the one line each. Empty is a registry built without a
+    /// daemon behind it: no list is written into the description, and every name is unknown.
+    pub roles: Vec<RoleOffer>,
+}
+
+/// How far a seat's `task_result` and `task_message` reach.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Reach {
     /// Any child this session started, and - for a message - any live session's id.
+    #[default]
     Anywhere,
     /// Only the children this session's runner holds: the review queue's own reviewers.
     OwnChildren,
 }
 
-/// The refusal for a handle a [`TaskReach::OwnChildren`] seat may not address - the handle the
+/// One role a seat may start, as the description lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoleOffer {
+    pub name: String,
+    /// The profile's one line, so the model chooses a role instead of finding out from a refusal.
+    pub purpose: String,
+}
+
+impl TaskReach {
+    /// Anywhere, with the roles a caller hands in.
+    pub fn anywhere() -> TaskReach {
+        TaskReach::default()
+    }
+
+    /// The review queue's: its own children only.
+    pub fn own_children() -> TaskReach {
+        TaskReach {
+            scope: Reach::OwnChildren,
+            roles: Vec::new(),
+        }
+    }
+
+    /// The same scope with the roles this seat may start.
+    pub fn with_roles(mut self, roles: Vec<RoleOffer>) -> TaskReach {
+        self.roles = roles;
+        self
+    }
+
+    /// Whether this seat may start `role`, and the sentence when it may not.
+    pub fn may_start(&self, role: &str) -> Result<(), String> {
+        if self.roles.iter().any(|r| r.name == role) {
+            return Ok(());
+        }
+        let here = self.names();
+        if here.is_empty() {
+            return Err(format!(
+                "`{role}` is not a role this seat can start: it starts none. Nothing was spawned."
+            ));
+        }
+        Err(format!(
+            "`{role}` is not a role this seat can start. The roles it can: {here}. Nothing was \
+             spawned."
+        ))
+    }
+
+    /// The names, comma-separated, for a refusal.
+    pub fn names(&self) -> String {
+        self.roles
+            .iter()
+            .map(|r| r.name.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+}
+
+impl Default for RoleOffer {
+    fn default() -> RoleOffer {
+        RoleOffer {
+            name: "coder".into(),
+            purpose: String::new(),
+        }
+    }
+}
+
+/// The refusal for a role this seat may not start, or `None` when it may. Asked by both spawn
+/// tools, so `task` and `task_start` cannot answer one name two ways; the SPAWN asks it again,
+/// because a tool is not the only door into a child.
+fn role_refusal(roles: &[RoleOffer], role: &str) -> Option<Invocation> {
+    if roles.is_empty() || roles.iter().any(|r| r.name == role) {
+        return None;
+    }
+    let here: Vec<&str> = roles.iter().map(|r| r.name.as_str()).collect();
+    Some(Invocation::failed(
+        format!("`{role}` is not a role this seat can start"),
+        format!(
+            "the roles it can: {}. Nothing was spawned.",
+            here.join(", ")
+        ),
+    ))
+}
+
+/// The `role` argument's description: the list of what this seat may start, or nothing to say.
+fn role_arg(roles: &[RoleOffer]) -> String {
+    if roles.is_empty() {
+        return "The subagent's role. This registry seats no role list, so a name here is refused."
+            .into();
+    }
+    let names: Vec<&str> = roles.iter().map(|r| r.name.as_str()).collect();
+    let default = if names.contains(&"coder") {
+        "coder"
+    } else {
+        names[0]
+    };
+    format!(
+        "The subagent's role: {}. Defaults to `{default}`; a name that is not one of these is \
+         refused with the list.",
+        names.join(", ")
+    )
+}
+
+/// The refusal for a handle a [`Reach::OwnChildren`] seat may not address - the handle the
 /// caller named, after names and slugs have resolved, so the sentence quotes what it asked with.
 fn outside_its_children(
-    reach: TaskReach,
+    reach: &TaskReach,
     runner: &dyn TaskRunner,
     handle: &str,
     verb: &str,
 ) -> Option<Invocation> {
-    if reach == TaskReach::Anywhere || runner.children().iter().any(|c| c.handle == handle) {
+    if reach.scope == Reach::Anywhere || runner.children().iter().any(|c| c.handle == handle) {
         return None;
     }
     let did = if verb == "task_message" {
@@ -1886,7 +2052,7 @@ impl TaskResultTool {
     pub fn new(runner: Arc<dyn TaskRunner>) -> Self {
         TaskResultTool {
             runner,
-            reach: TaskReach::Anywhere,
+            reach: TaskReach::anywhere(),
         }
     }
 
@@ -1901,9 +2067,9 @@ impl Tool for TaskResultTool {
     fn schema(&self) -> ToolSchema {
         // A seat handed only its own children is told so: a description naming what the seat will
         // refuse is the prompt contradicting the tool, which is what this pair was seated to end.
-        let only_its_own = match self.reach {
-            TaskReach::Anywhere => "",
-            TaskReach::OwnChildren => {
+        let only_its_own = match self.reach.scope {
+            Reach::Anywhere => "",
+            Reach::OwnChildren => {
                 " Only the children this session started may be read: it holds the reviewers it was \
                  handed and no other session, and a handle that is not one is refused by name."
             }
@@ -1993,7 +2159,7 @@ impl Tool for TaskResultTool {
         };
         let handle = handle.as_str();
         if let Some(refused) =
-            outside_its_children(self.reach, self.runner.as_ref(), handle, "task_result")
+            outside_its_children(&self.reach, self.runner.as_ref(), handle, "task_result")
         {
             return refused;
         }
@@ -2208,7 +2374,7 @@ impl TaskMessageTool {
     pub fn new(runner: Arc<dyn TaskRunner>) -> Self {
         TaskMessageTool {
             runner,
-            reach: TaskReach::Anywhere,
+            reach: TaskReach::anywhere(),
         }
     }
 
@@ -2223,9 +2389,9 @@ impl Tool for TaskMessageTool {
     fn schema(&self) -> ToolSchema {
         // Same rule as `task_result`'s: the seat that may address only its own children says so in
         // its own description, instead of promising a door onto every session and refusing it.
-        let (who, only_its_own) = match self.reach {
-            TaskReach::Anywhere => ("the id of any live session", ""),
-            TaskReach::OwnChildren => (
+        let (who, only_its_own) = match self.reach.scope {
+            Reach::Anywhere => ("the id of any live session", ""),
+            Reach::OwnChildren => (
                 "the handle of one of this session's children",
                 " Only the children this session started may be addressed: it holds the reviewers \
                  it was handed and no other session, and any other handle is refused by name.",
@@ -2283,7 +2449,7 @@ impl Tool for TaskMessageTool {
         };
         let handle = handle.as_str();
         if let Some(refused) =
-            outside_its_children(self.reach, self.runner.as_ref(), handle, "task_message")
+            outside_its_children(&self.reach, self.runner.as_ref(), handle, "task_message")
         {
             return refused;
         }

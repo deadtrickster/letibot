@@ -79,7 +79,7 @@ fn registering_these_does_not_move_an_existing_sessions_prompt() {
         std::sync::Arc::new(letibot_tools::builtins::skill::SkillRegistry::default()),
         letibot_tools::builtins::skill::Seat::new(),
         std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default()),
-        letibot_tools::builtins::task::TaskReach::Anywhere,
+        letibot_tools::builtins::task::TaskReach::anywhere(),
     )
     .unwrap()
     .resolve_role(&roles::m1_orchestrator())
@@ -99,7 +99,7 @@ fn registering_these_does_not_move_an_existing_sessions_prompt() {
             std::sync::Arc::new(letibot_tools::builtins::skill::SkillRegistry::default()),
             letibot_tools::builtins::skill::Seat::new(),
             std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default()),
-            letibot_tools::builtins::task::TaskReach::Anywhere,
+            letibot_tools::builtins::task::TaskReach::anywhere(),
         )
         .unwrap(),
         &ExternalBackends::unattached(),

@@ -52,6 +52,7 @@ pub mod mode;
 pub mod notes_keeper;
 pub mod notes_repo;
 pub mod permission;
+pub mod profiles;
 pub mod project_code;
 pub mod provenance;
 pub mod recall;
@@ -96,6 +97,7 @@ pub use intent::{
     ALWAYS_ASK, AlwaysAskRule, Baseline, BaselineVerdict, Intent, Region, ScopedIntent, SecretFlow,
     ShellTrust, Surroundings,
 };
+pub use profiles::{Profile, ProfileSource, Profiles};
 pub use recall::{Evicted, Recall};
 pub use result::{Envelope, Propagation, ToolResult, propagate};
 pub use runtime::{
@@ -171,25 +173,29 @@ pub fn with_session_tools(
     ))?;
     reg.register(Box::new(builtins::lsp::LspTool::new(lsp)))?;
     reg.register(Box::new(
-        builtins::task::TaskTool::new(task_runner.clone()).with_skills(skills.clone()),
+        builtins::task::TaskTool::new(task_runner.clone())
+            .with_skills(skills.clone())
+            .with_roles(reach.roles.clone()),
     ))?;
     // `task_result` is seated with `task` and never without it: a handle that nothing can
     // collect is worse than no handle. `reach` is the SEAT's: the queue's own session reads and
     // corrects its reviewers, and no session it did not start.
     reg.register(Box::new(
-        builtins::task::TaskResultTool::new(task_runner.clone()).with_reach(reach),
+        builtins::task::TaskResultTool::new(task_runner.clone()).with_reach(reach.clone()),
     ))?;
     // So is `task_message`: a seat that can start a child, read it and stop it but not
     // correct it has only two remedies when the child goes wrong, wait out a wrong answer
     // or throw the work away with `job_kill`.
     reg.register(Box::new(
-        builtins::task::TaskMessageTool::new(task_runner.clone()).with_reach(reach),
+        builtins::task::TaskMessageTool::new(task_runner.clone()).with_reach(reach.clone()),
     ))?;
     // And so is `task_start`, with the same runner as `task` because it is the same spawn
     // with the placement arranged first: a second runner would hand out handles that
     // `task_result` cannot collect.
     reg.register(Box::new(
-        builtins::task::TaskStartTool::new(task_runner).with_skills(skills),
+        builtins::task::TaskStartTool::new(task_runner)
+            .with_skills(skills)
+            .with_roles(reach.roles),
     ))?;
     // The merge queue, read: what a repository's queue runs before landing and what its
     // files suggest. Read-only, because the agent writes the `AGENTS.md` section with `edit`
@@ -344,7 +350,7 @@ mod tests {
             std::sync::Arc::new(builtins::skill::SkillRegistry::default()),
             builtins::skill::Seat::new(),
             std::sync::Arc::new(builtins::lsp::LspConfig::default()),
-            builtins::task::TaskReach::Anywhere,
+            builtins::task::TaskReach::anywhere(),
         )
         .expect("todo_write registers");
         // The ceiling binds what a SESSION is given, not what the registry holds: this one
