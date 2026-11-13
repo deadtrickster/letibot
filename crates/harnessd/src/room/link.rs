@@ -1405,6 +1405,9 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
             room: chat_room(&s("room")),
         },
         "rooms" => Request::Rooms,
+        "roster" => Request::Roster {
+            room: chat_room(&s("room")),
+        },
         "leave" => Request::Leave {
             room: s("room"),
             session: Some(s("session")).filter(|x| !x.is_empty()),
@@ -1413,8 +1416,8 @@ fn request_of(verb: &str, args: &serde_json::Value) -> Result<Request, String> {
             return Err(format!(
                 "`{other}` is not a room verb — the verbs are post, claim, claim_item, beat, \
                  waiting, done, abandon, dispute, rule, queue, item, holding, reminders, \
-                 questions, say, ask, read, invite, leave, answer, decline, asks, rooms, archive, \
-                 unarchive and signals"
+                 questions, say, ask, read, invite, leave, answer, decline, asks, rooms, roster, \
+                 archive, unarchive and signals"
             ));
         }
     })
@@ -1652,17 +1655,7 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             ),
             None => format!("`{room}` is back in the room lists"),
         },
-        Response::Roster { room, rows } => format!(
-            "in `{room}`: {}",
-            rows.iter()
-                .map(|p| if p.label == "guest" {
-                    format!("{} (guest)", p.name)
-                } else {
-                    p.name.clone()
-                })
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
+        Response::Roster { room, rows } => roster_sentence(room, rows),
         Response::Inbox { rows, skipped, .. } => {
             format!("{} message(s), {skipped} left out", rows.len())
         }
@@ -1750,6 +1743,35 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             if *last { ", and that is all of it" } else { "" }
         ),
     })
+}
+
+/// One row per member, offline ones included: the name in backticks is what `to` takes.
+fn roster_sentence(room: &str, rows: &[letibot_room::chat::Presence]) -> String {
+    let mut s = format!(
+        "in `{room}`, {} member(s); `to` takes the name in backticks:",
+        rows.len()
+    );
+    for p in rows {
+        let mut row = format!(
+            "\n  `{}` - {}, {}",
+            p.name,
+            p.kind.word(),
+            if p.connected { "connected" } else { "offline" }
+        );
+        if !p.project.is_empty() {
+            row.push_str(&format!(", project {}", p.project));
+        }
+        if p.label == "guest" {
+            row.push_str(", guest");
+        } else if !p.label.is_empty() && p.label != p.name {
+            row.push_str(&format!(", \"{}\"", p.label));
+        }
+        if !p.id.is_empty() && p.id != p.name {
+            row.push_str(&format!(" ({})", p.id));
+        }
+        s.push_str(&row);
+    }
+    s
 }
 
 fn describe(item: &letibot_room::Item) -> String {

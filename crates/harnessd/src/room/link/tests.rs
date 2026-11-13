@@ -243,6 +243,58 @@ fn an_answer_becomes_a_reply_and_its_sentence_names_the_ask() {
     assert!(list.contains("which port?"), "{list}");
 }
 
+/// `roster` is a frame naming the room, and its sentence is one row per member: the name `to`
+/// takes, the kind, connected or offline, the project, and the title where there is one.
+#[test]
+fn roster_is_a_frame_and_its_sentence_names_every_member() {
+    assert!(matches!(
+        request_of("roster", &json!({"room": "host"})).expect("a frame"),
+        Request::Roster { room } if room == "host"
+    ));
+    assert!(matches!(
+        request_of("roster", &json!({})).expect("a frame"),
+        Request::Roster { room } if room.is_empty()
+    ));
+    let row = |name: &str, id: &str, kind, connected, label: &str| letibot_room::chat::Presence {
+        name: name.into(),
+        id: id.into(),
+        kind,
+        connected,
+        project: "aaaaaaaaaaaa".into(),
+        label: label.into(),
+        seat: None,
+    };
+    let said = answer_sentence(
+        &Response::Roster {
+            room: "project/aaaaaaaaaaaa".into(),
+            rows: vec![
+                row("rano", "s-rano", letibot_room::Seat::Session, true, "Rano"),
+                row(
+                    "s-plain",
+                    "s-plain",
+                    letibot_room::Seat::Session,
+                    false,
+                    "ws 1a2b",
+                ),
+                row("cc@mac", "cc@mac", letibot_room::Seat::External, true, ""),
+            ],
+        },
+        "s-me",
+    )
+    .expect("a sentence");
+    assert!(
+        said.starts_with("in `project/aaaaaaaaaaaa`, 3 member(s)"),
+        "{said}"
+    );
+    for want in [
+        "`rano` - session, connected, project aaaaaaaaaaaa, \"Rano\" (s-rano)",
+        "`s-plain` - session, offline, project aaaaaaaaaaaa, \"ws 1a2b\"",
+        "`cc@mac` - external, connected",
+    ] {
+        assert!(said.contains(want), "`{want}` missing: {said}");
+    }
+}
+
 #[test]
 fn a_hand_without_a_target_is_refused_here_and_never_sent() {
     let e = request_of("rule", &json!({"question": 1, "decision": "hand"})).unwrap_err();

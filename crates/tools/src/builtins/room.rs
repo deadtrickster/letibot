@@ -79,8 +79,8 @@ impl Tool for RoomTool {
                  arbiter's. `say`: `to` a dm, `@name` a mention; both wake; an `fyi` wakes only \
                  whom it names. Answer a dm in the dm. `ask` a `path`/`topic`; `answer`/`decline` \
                  settle it. `own` a scope; edits renew; `hand` waits for `accept`. `status` is your \
-                 line; it expires. `rooms` lists them; `archive`/`unarchive` puts a project room \
-                 away or back. `cc@...` is a seat. `host` takes `@name` or `kind: announce`; a \
+                 line; it expires. `rooms` lists them; `archive`/`unarchive` puts one away or \
+                 back. `roster` lists who is in a room and their handles. `cc@...` is a seat. `host` takes `@name` or `kind: announce`; a \
                  refusal is etiquette. {beat} {STANDING_RULE}"
             ),
             json!({
@@ -92,8 +92,8 @@ impl Tool for RoomTool {
                             "post", "claim", "claim_item", "beat", "waiting", "done", "abandon",
                             "dispute", "rule", "queue", "item", "holding", "reminders", "questions",
                             "say", "ask", "read", "invite", "leave", "asks", "answer", "decline",
-                            "own", "hand", "accept", "release", "status", "rooms", "archive",
-                            "unarchive"
+                            "own", "hand", "accept", "release", "status", "rooms", "roster",
+                            "archive", "unarchive"
                         ],
                         "description": "`post` tag+body; `claim`/`queue` tag; `item` reads a row; an item verb an item; `rule` question+decision; `say`/`ask` text; `answer`/`decline` ask+text; `own`/`hand`/`accept`/`release` scope."
                     },
@@ -135,7 +135,7 @@ impl Tool for RoomTool {
                     },
                     "to": {
                         "type": "string",
-                        "description": "`say`: a principal. `ask`: a session or `path`/`topic`. `rule`/`hand`: the holder."
+                        "description": "`say`: a handle or title (`roster`). `ask`: a session or `path`/`topic`. `rule`/`hand`: the holder."
                     },
                     "path": {
                         "type": "string",
@@ -197,7 +197,7 @@ impl Tool for RoomTool {
                     "kind": {
                         "type": "string",
                         "enum": ["post", "fyi", "ask", "blocker", "decision", "announce"],
-                        "description": "`say`: `fyi` wakes only whom it names; `ask` needs `to`, `blocker` flags operator, `decision` ranks"
+                        "description": "`say`: `ask` needs `to`, `blocker` flags operator, `decision` ranks"
                     }
                 },
                 "required": ["verb"]
@@ -378,7 +378,13 @@ fn dispatch(
             if args.get("kind").and_then(|v| v.as_str()).map(str::trim) == Some("ask")
                 && !nonempty(args, "to") =>
         {
-            Some("to")
+            // The kind is what needs `to`, not `say`: a model told "`say` needs `to`" never
+            // learns a plain line would have posted.
+            return Err(Invocation::failed(
+                "an ask (`kind: ask`) needs `to`",
+                "an ask (`kind: ask`) needs `to` - the one who owes the answer; to post a line to \
+                 the room, drop `kind`; `roster` lists who is here. Nothing was sent to the room.",
+            ));
         }
         "own" | "accept" | "release" | "hand" if !nonempty(args, "scope") => Some("scope"),
         "hand" if !nonempty(args, "to") => Some("to"),
@@ -900,6 +906,51 @@ mod tests {
                 "{kind} is in the schema"
             );
         }
+    }
+
+    /// `roster` is how a session learns a handle without first being written to: it is in the
+    /// schema, the description says so, and it reaches the room with the room named.
+    #[test]
+    fn roster_is_a_verb_the_description_names_and_it_reaches_the_room() {
+        let s = RoomTool::new(Arc::new(NoRoom)).schema();
+        let verbs = s.parameters["properties"]["verb"]["enum"].to_string();
+        assert!(verbs.contains("\"roster\""), "{verbs}");
+        assert!(
+            s.description
+                .contains("`roster` lists who is in a room and their handles"),
+            "{}",
+            s.description
+        );
+        let link = Recorder::new(Ok("in `host`, 2 member(s)"));
+        let (ok, text) = invoke(link.clone(), json!({"verb": "roster", "room": "host"}));
+        assert!(ok, "{text}");
+        let seen = link.seen.lock().unwrap();
+        assert_eq!(seen[0].0, "roster");
+        assert_eq!(seen[0].1["room"], "host");
+    }
+
+    /// An ask with no `to` is refused for its kind, and the refusal says a plain `say` would have
+    /// posted: the model that read "`say` needs `to`" took it for the verb's rule.
+    #[test]
+    fn an_ask_without_to_names_the_kind_and_the_plain_say() {
+        let link = Recorder::new(Ok("never"));
+        let (ok, text) = invoke(
+            link.clone(),
+            json!({"verb": "say", "text": "which port?", "kind": "ask", "room": "host"}),
+        );
+        assert!(!ok, "{text}");
+        for want in [
+            "an ask (`kind: ask`) needs `to` - the one who owes the answer",
+            "to post a line to the room, drop `kind`",
+            "`roster` lists who is here",
+        ] {
+            assert!(text.contains(want), "`{want}` missing: {text}");
+        }
+        assert!(!text.contains("`say` needs `to`"), "{text}");
+        assert!(
+            link.seen.lock().unwrap().is_empty(),
+            "the room was not asked"
+        );
     }
 
     #[test]
