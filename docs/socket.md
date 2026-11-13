@@ -64,6 +64,54 @@ what was attempted and which process attempted it.
   in the tree attaches as a head that way; the rule is stated so a future reader does not discover it
   as a surprise.
 
+## The editor head
+
+A connection is either a tool call or a head, as above. One head is rano's standalone panel:
+`rano::letibot`, a client written against this wire and living in another repository. It cannot
+link `letibot-sessionlog` — the two projects would pin each other, and a typed client fails on a
+variant it has never heard of in the middle of a turn — so it reads each line as JSON and acts on
+a subset. `rano-integration.md` §3.2 has the reasoning; this is the subset itself, and the table is
+a contract in both directions.
+
+| need | the panel sends | the daemon answers |
+|---|---|---|
+| attach | `Attach {protocol_version, session_id, since_seq, kind: "editor", identity, caps}` | `Hello {protocol_version, session_id, head_id, dropped, snapshot.seq, sessions[]}` — always first, and once per attach |
+| sessions | `ListSessions`; `NewSession {client_request_id, title, workspace}`; `Switch {session_id, since_seq}` | `Sessions {sessions, current, created}` |
+| history | `FetchRows {session_id, from, count}` | `RowsFetched {session_id, from, rows}` |
+| prompt | `Prompt {client_request_id, expected_seq, text, attachments}` | `Accepted {client_request_id, seq, note}`, or `Rejected {client_request_id, reason, expected_seq, actual_seq}` |
+| stream | — | `Event {seq, event}` carrying `turn_started`, `delta`, `tool_started`, `tool_finished`, `turn_finished`, `turn_interrupted`, `turn_failed` and `citations` |
+| cards | `Answer {client_request_id, req_id, option_id, pattern, note}`; `AnswerQuestion {client_request_id, req_id, answer}` | `decision_requested {req_id, kind, call_id, summary, target, options, choices, because, deadline}`, then `Accepted` |
+| interrupt | `Interrupt {client_request_id, expected_seq, reason}` | `Accepted` with the note `interrupt requested` |
+| mark | `Ack {seq, rendered, filtered}`, sent *after* the batch is drawn | nothing: the mark is applied to this head's seat |
+| resync | `Resync` | `resync {reason, dropped, snapshot}` — the panel resets to the snapshot and carries on, which is a normal outcome and not an error |
+
+What keeps that table true:
+
+- **The field names are the contract, not the types.** The panel reads a missing field as its
+  empty value — an empty string, zero, `false` — so a renamed field is a blank in the editor and
+  never an error. A frame the *daemon* cannot read is the opposite and is loud: the connection is
+  closed with a `Bye` saying what could not be read and which protocol this daemon speaks
+  (`server.rs`). And `crates/tui/tests/rano_editor_head.rs` runs `rano::letibot::Client` against a
+  real `Hub`: it attaches, prompts, folds a stream, answers a card and interrupts, and asserts each
+  field's *value* — which is the only way a rename in the quiet direction is caught here rather
+  than in a user's editor.
+- **A new variant, or a new word in a closed enum, moves `PROTOCOL_VERSION`; an added
+  `#[serde(default)]` field does not.** `Prompt.context` is the second kind (70 to 71): a panel
+  written against 70 sends none, and the daemon renders nothing for it. A differing number is served
+  rather than refused — the daemon says so on its own log, because nobody can tell which side is
+  wrong — so the number is a FACT to read, not a gate: the panel takes the daemon's from `Hello` and
+  compares it to the one it was written against (the client pinned today says 70). What a panel then
+  refuses to offer is the panel's business; this side promises only that the newer field is defaulted.
+- **What it does not know, it counts and skips.** An unknown `frame` or `event` tag is delivered
+  as `Unknown` and counted (`Client::skipped`), never fatal: a newer daemon must not blank the
+  pane, and an event folded into the reply would be drawn as prose. Everything the rest of this
+  file's sections describe — rooms, todos, panes, settings, the subagent tree — is in that set.
+  The panel is one conversation.
+- **A seat that may decide says so.** The panel attaches with `kind: "editor"`, `can_decide: true`
+  and `features: ["editor_v1"]` — rano's `Seat::default()`. That bit is the client's to set, and it
+  is what makes an answer land: a head that attached `can_decide: false` has its card answers refused
+  by name (`this head declared can_decide: false`) instead of being sent a question it cannot answer.
+
 ## Why not a per-head token
 
 Because there is nothing to put it in that a command cannot read. A head is a process the operator
