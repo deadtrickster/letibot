@@ -31,7 +31,7 @@ mod disks;
 use crate::exec::procs::{self, Signal};
 use crate::exec::scope;
 use crate::firecode::held::{self, Patience};
-pub use disks::{BoxHands, Hands};
+pub use disks::{BoxHands, COPY_OUT_DEADLINE_MS, Hands};
 
 /// How long before an idle close the owner is told (`docs/lifecycle.md` d.9). It is a heads-up and
 /// nothing depends on it: the close happens whether or not anybody read it.

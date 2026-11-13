@@ -41,7 +41,8 @@ pub use plan::{
     plan, stamp_of,
 };
 pub use reap::{
-    Act, Activity, BoxHands, Ended, Hands, NOTICE_LEAD_MS, Ops, Pass, close_due, notice_at, pass,
+    Act, Activity, BoxHands, COPY_OUT_DEADLINE_MS, Ended, Hands, NOTICE_LEAD_MS, Ops, Pass,
+    close_due, notice_at, pass,
 };
 pub use remote::{
     Bundle, HostPass, LeaseKeeper, LeaseRenewer, RENEW_MS, RemoteLeases, RemoteOwner,

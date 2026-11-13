@@ -695,6 +695,154 @@ fn a_lease_is_renewed_on_the_host_and_only_once_a_minute() {
     assert_eq!(back[0].lease_ms, 50_000 + RENEW_MS);
 }
 
+/// A closed owner's run, its booted copy and a rescue bundle beside it, with `copy_out` saying
+/// `state` - the shape firecode leaves while `down` is still copying the project out.
+fn copy_out_fixture(f: &Fixture, id: &str, run: &str, state: &str) -> (PathBuf, PathBuf, PathBuf) {
+    f.file(&format!("runs/{run}/project"), 16);
+    std::fs::write(f.0.join(format!("runs/{run}/owner")), id).unwrap();
+    std::fs::write(
+        f.0.join(format!("runs/{run}/copy_out")),
+        format!("{state}\n"),
+    )
+    .unwrap();
+    f.file(&format!("cache/{id}/src/lib.rs"), 64);
+    let bundle = f.file(&format!("cache/{id}.rescue.bundle"), 128);
+    (
+        f.0.join("runs").join(run),
+        f.0.join("cache").join(id),
+        bundle,
+    )
+}
+
+/// **The incident of 2026-11-13**: a sweep one second after close retired the run and removed the
+/// copy while firecode was still copying it out. A `pending` copy-out keeps all of it.
+#[test]
+fn a_pending_copy_out_keeps_the_run_and_the_copy() {
+    let f = Fixture::new("copyout-pending");
+    let places = f.places();
+    let run = "firecode-20261113-083420-2574138";
+    let (dir, copy, bundle) = copy_out_fixture(&f, "s-7", run, "pending");
+    let dest = f.at("cache/s-7-20261113-083420");
+    let store = f.store();
+    let owner = f.owner(&places, "s-7", OwnerState::Closed);
+    store.put_owner(&owner).unwrap();
+    refresh(&store, &owner, &places).expect("discovered");
+    let hands = Arc::new(StubHands::new(|_| Err("no `gc --run` here".into())));
+    let report = pass(&store, &places, &hands, now_ms(), Some("s-7")).expect("a pass");
+    assert!(dir.is_dir(), "the run dir stays: {:#?}", report.acts);
+    assert!(copy.is_dir(), "the copy stays: {:#?}", report.acts);
+    assert!(dest.is_dir(), "the copy-out destination stays");
+    assert!(bundle.is_file(), "the rescue bundle stays");
+    assert!(
+        report
+            .kept
+            .iter()
+            .any(|k| k.contains("kept: copy-out still running")),
+        "{:#?}",
+        report.kept
+    );
+    assert!(
+        !report
+            .acts
+            .iter()
+            .any(|a| a.kind == "copy" || a.kind == "vm"),
+        "{:#?}",
+        report.acts
+    );
+}
+
+/// The same with the launcher alive and the deadline long past: a live process is still copying.
+#[test]
+fn a_live_launcher_keeps_the_copy_past_the_deadline() {
+    let f = Fixture::new("copyout-live");
+    let places = f.places();
+    let run = "firecode-20261113-083420-77";
+    let (dir, copy, _) = copy_out_fixture(&f, "s-8", run, "pending");
+    std::fs::write(f.0.join(format!("runs/{run}/launcher")), "4242\n").unwrap();
+    let stat = f.file("proc/4242/stat", 0);
+    std::fs::write(stat, "4242 (firecode) S 1 1 1").unwrap();
+    let store = f.store();
+    let owner = OwnerRow {
+        closed_ms: Some(now_ms() - 2 * COPY_OUT_DEADLINE_MS),
+        ..f.owner(&places, "s-8", OwnerState::Closed)
+    };
+    store.put_owner(&owner).unwrap();
+    refresh(&store, &owner, &places).expect("discovered");
+    let hands = Arc::new(StubHands::new(|_| Err("no `gc --run` here".into())));
+    let report = pass(&store, &places, &hands, now_ms(), Some("s-8")).expect("a pass");
+    assert!(dir.is_dir() && copy.is_dir(), "{:#?}", report.acts);
+    assert!(
+        report.kept.iter().any(|k| k.contains("pid 4242 alive")),
+        "{:#?}",
+        report.kept
+    );
+}
+
+/// A finished copy-out lets the run be retired and the copy go; the rescue bundle beside the copy
+/// is not the disk half's to remove.
+#[test]
+fn a_done_copy_out_lets_the_run_and_the_copy_go() {
+    let f = Fixture::new("copyout-done");
+    let places = f.places();
+    let run = "firecode-20261113-083420-78";
+    let (dir, copy, bundle) =
+        copy_out_fixture(&f, "s-9", run, "done /tmp/elsewhere/s-9-20261113-083420");
+    let store = f.store();
+    let owner = f.owner(&places, "s-9", OwnerState::Closed);
+    store.put_owner(&owner).unwrap();
+    refresh(&store, &owner, &places).expect("discovered");
+    let hands = Arc::new(StubHands::new(|_| Err("no `gc --run` here".into())));
+    let report = pass(&store, &places, &hands, now_ms(), Some("s-9")).expect("a pass");
+    assert!(!dir.exists(), "the run is retired: {:#?}", report.kept);
+    assert!(!copy.exists(), "the copy is gone: {:#?}", report.kept);
+    assert!(bundle.is_file(), "the rescue bundle stays");
+}
+
+/// `pending` past the deadline with nothing alive is a failed copy-out: the copy stays, both rows
+/// are `stuck`, and the journal says so once.
+#[test]
+fn a_pending_copy_out_past_its_deadline_is_stuck_and_keeps_the_copy() {
+    let f = Fixture::new("copyout-stuck");
+    let places = f.places();
+    let run = "firecode-20261113-083420-79";
+    let (dir, copy, bundle) = copy_out_fixture(&f, "s-10", run, "pending");
+    let store = f.store();
+    let owner = OwnerRow {
+        closed_ms: Some(now_ms() - COPY_OUT_DEADLINE_MS - 1000),
+        ..f.owner(&places, "s-10", OwnerState::Closed)
+    };
+    store.put_owner(&owner).unwrap();
+    refresh(&store, &owner, &places).expect("discovered");
+    let hands = Arc::new(StubHands::new(|_| Err("no `gc --run` here".into())));
+    for _ in 0..2 {
+        let report = pass(&store, &places, &hands, now_ms(), Some("s-10")).expect("a pass");
+        assert!(
+            dir.is_dir() && copy.is_dir() && bundle.is_file(),
+            "{:#?}",
+            report.acts
+        );
+        assert!(
+            report
+                .kept
+                .iter()
+                .any(|k| k.contains("copy-out did not finish")),
+            "{:#?}",
+            report.kept
+        );
+    }
+    for kind in ["copy", "vm"] {
+        let row = holding(&store, "s-10", kind).expect("a row");
+        assert_eq!(row.state, HoldingState::Stuck, "{kind}: {row:?}");
+    }
+    let stuck = store
+        .reap_events_of("s-10")
+        .unwrap()
+        .into_iter()
+        .filter(|e| e.act == "stuck")
+        .count();
+    assert_eq!(stuck, 2, "one `stuck` per holding, not one per pass");
+}
+
 /// Every holding of one owner in the store, for a test that wants to look at one.
 #[allow(dead_code)]
 fn holding(store: &Store, owner: &str, kind: &str) -> Option<HoldingRow> {

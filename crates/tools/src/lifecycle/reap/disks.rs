@@ -16,7 +16,7 @@ use letibot_tokencore::store::{
 use super::{Act, Ops, Pass};
 use crate::lifecycle::archive::{self, Kept};
 use crate::lifecycle::remote::{self, HostPass};
-use crate::lifecycle::{COPY, COPY_OUT, Places, discover, human_bytes, stamp_of};
+use crate::lifecycle::{COPY, COPY_OUT, Places, STATE, VM, discover, human_bytes, stamp_of};
 
 /// What a pass reaches through. One trait rather than direct calls so a test can point the pass at
 /// a fixture: the lock is a real `flock` in this process, `firecode` is a stub script, and `host`
@@ -66,7 +66,9 @@ pub(super) fn reap_owner(
     report: &mut Pass,
 ) -> StoreResult<()> {
     let rows = store.holdings_of(&owner.id)?;
-    for found in discover(owner, places) {
+    let found_all = discover(owner, places);
+    let copy_out = copy_out_of(places, owner, &found_all, now);
+    for found in found_all {
         if found.host.is_some() {
             // A remote holding is that host's own pass's business: this box cannot see it.
             continue;
@@ -76,6 +78,24 @@ pub(super) fn reap_owner(
             .find(|r| r.kind == found.kind && r.handle == found.handle && r.host == found.host)
             .cloned()
             .unwrap_or_else(|| found.row(now));
+        if let Some(why) = copy_out.keeps(&found.kind) {
+            if let CopyOut::Stuck(_) = &copy_out
+                && matches!(found.kind.as_str(), VM | COPY)
+                && row.state != HoldingState::Stuck
+            {
+                journal(store, ops, &row.owner_id, &row, ReapAct::Stuck, &why, now)?;
+                store.put_holding(&HoldingRow {
+                    state: HoldingState::Stuck,
+                    why: Some(why.clone()),
+                    checked_ms: Some(now),
+                    ..row.clone()
+                })?;
+            }
+            report
+                .kept
+                .push(format!("{} {}: {why}", owner.id, found.handle));
+            continue;
+        }
         let kept = match (found.class.word(), found.kind.as_str()) {
             ("cache", kind) if CACHE_KINDS.contains(&kind) => {
                 remove_cache(store, ops, owner, &row, now, report)?
@@ -103,6 +123,106 @@ pub(super) fn reap_owner(
         }
     }
     Ok(())
+}
+
+/// How long a closed owner's copy-out may stay `pending` with no process left to finish it.
+pub const COPY_OUT_DEADLINE_MS: i64 = 30 * 60 * 1000;
+
+/// Where an owner's VM copy-outs stand. A run whose copy-out is not finished is still compute: the
+/// launcher reads the copy and writes into the run dir and the destination beside it.
+#[derive(Debug)]
+enum CopyOut {
+    Finished,
+    Running(String),
+    Stuck(String),
+}
+
+impl CopyOut {
+    /// Why a holding of `kind` stays this pass, or `None` when the copy-out does not hold it.
+    fn keeps(&self, kind: &str) -> Option<String> {
+        if !matches!(kind, VM | COPY | COPY_OUT | STATE) {
+            return None;
+        }
+        match self {
+            CopyOut::Finished => None,
+            CopyOut::Running(why) => Some(format!("kept: copy-out still running ({why})")),
+            CopyOut::Stuck(why) => Some(format!(
+                "kept: copy-out did not finish ({why}), so the copy and its run stay until the \
+                 operator looks"
+            )),
+        }
+    }
+}
+
+/// The owner's runs read off their `copy_out` record (`pending`, `done <path>`, `none`, `failed
+/// <why>`) and the processes that may still write it. Any running run outranks a stuck one.
+fn copy_out_of(
+    places: &Places,
+    owner: &OwnerRow,
+    found: &[crate::lifecycle::Found],
+    now: i64,
+) -> CopyOut {
+    let Some(runs) = places.firecode_runs.as_deref() else {
+        return CopyOut::Finished;
+    };
+    let fires = crate::firecode::held::firecrackers(&places.proc_root);
+    let mut stuck = None;
+    for f in found.iter().filter(|f| f.kind == VM && f.host.is_none()) {
+        let dir = runs.join(&f.handle);
+        let record = dir.join("copy_out");
+        let state = std::fs::read_to_string(&record)
+            .ok()
+            .map(|s| s.trim().to_string());
+        let state_word = state.as_deref().unwrap_or("not written");
+        if state_word == "none" || state_word.starts_with("done") {
+            continue;
+        }
+        let launcher = std::fs::read_to_string(dir.join("launcher"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok())
+            .filter(|p| crate::firecode::held::alive(&places.proc_root, *p));
+        let fire = fires.iter().find(|(r, _)| *r == f.handle).map(|(_, p)| *p);
+        if let Some(pid) = launcher.or(fire) {
+            return CopyOut::Running(format!(
+                "run {}: copy_out `{state_word}`, pid {pid} alive",
+                f.handle
+            ));
+        }
+        if state_word.starts_with("failed") {
+            stuck.get_or_insert(format!("run {}: copy_out `{state_word}`", f.handle));
+            continue;
+        }
+        if state.is_none() {
+            // No record and nothing alive: the run never reached its copy-out.
+            continue;
+        }
+        let since = owner.closed_ms.or_else(|| {
+            std::fs::metadata(&record)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_millis() as i64)
+        });
+        let past = since.is_some_and(|t| now.saturating_sub(t) >= COPY_OUT_DEADLINE_MS);
+        if !past {
+            return CopyOut::Running(format!(
+                "run {}: copy_out `{state_word}` and no process left yet; it counts as failed {} \
+                 min after close",
+                f.handle,
+                COPY_OUT_DEADLINE_MS / 60_000
+            ));
+        }
+        stuck.get_or_insert(format!(
+            "run {}: copy_out still `{state_word}` {} min after close and no process left to \
+             finish it",
+            f.handle,
+            COPY_OUT_DEADLINE_MS / 60_000
+        ));
+    }
+    match stuck {
+        Some(why) => CopyOut::Stuck(why),
+        None => CopyOut::Finished,
+    }
 }
 
 /// Remove one cache and verify it is absent. A cache is rebuilt, so a failed removal costs bytes
