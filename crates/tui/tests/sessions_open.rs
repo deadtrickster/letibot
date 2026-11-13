@@ -63,7 +63,9 @@ fn the_picker_says_it_is_building_and_never_swaps_one_list_for_another() {
     let mut building_at: Option<usize> = None;
     let mut answer_at: Option<usize> = None;
     let mut frames: Vec<String> = Vec::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    // Generous: a debug build compiles the layers' wasm here, and under a workspace test run that
+    // alone took over a minute. The test is about the order of frames, not the time.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(240);
     while std::time::Instant::now() < deadline {
         // A fast read: this test is about the frames BEFORE the answer, and a settled one is the
         // answer already. The demo is paced, so a few of these land inside the build.

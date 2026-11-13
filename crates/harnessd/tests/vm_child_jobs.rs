@@ -798,8 +798,21 @@ fn a_vm_childs_turn_does_not_end_its_vm_while_its_job_runs() {
         "a job that ended before the VM closed was reported as killed: {said}"
     );
 
-    // The parent's own reading says the same thing through the tool a parent collects with.
-    let result = task_result(&sessions, &scene.parent, &child);
+    // The parent's own reading says the same thing through the tool a parent collects with. The
+    // runner settles after the row, on a wake of its own, so a loaded box can read it running once.
+    let began = Instant::now();
+    let result = loop {
+        let read = task_result(&sessions, &scene.parent, &child);
+        if !read.contains("has not answered yet") || began.elapsed() > PATIENCE {
+            break read;
+        }
+        if let WorkOrIdle::Work(Work::Woken(id)) = scene
+            .registry
+            .next_work_until(Some(Instant::now() + Duration::from_millis(20)))
+        {
+            let _ = sessions.wake(&id);
+        }
+    };
     assert!(
         !result.contains("killed under it") && !result.contains("lost with its VM"),
         "`task_result` reads a clean finish as a kill: {result}"
