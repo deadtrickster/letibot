@@ -143,18 +143,24 @@ fn excluded(path: &str, exclude: &[String]) -> bool {
 /// The guest command that says whether the tree holds work past `base`, and if so stages it as
 /// a bundle at [`GUEST_BUNDLE`]. Prints `CLEAN`, or `WORK <head> <commits|-> <dirty 0|1>`.
 pub fn guest_stage(project: &str, base: Option<&str>) -> String {
+    guest_stage_into(project, base, GUEST_BUNDLE)
+}
+
+/// Untracked `pkg/` is the package brief the host wrote into the copy, not the guest's work: the
+/// wip commit leaves it out, and a tree with nothing else changed is clean.
+fn guest_stage_into(project: &str, base: Option<&str>, bundle: &str) -> String {
     let base = base.unwrap_or("");
     format!(
         "cd {project} 2>/dev/null || exit 0\n\
          head=$(git rev-parse -q --verify HEAD 2>/dev/null) || exit 0\n\
          base='{base}'\n\
-         dirty=0; [ -n \"$(git status --porcelain --untracked-files=normal 2>/dev/null | head -c1)\" ] && dirty=1\n\
+         dirty=0; [ -n \"$(git status --porcelain --untracked-files=normal -- . ':(exclude)pkg' 2>/dev/null | head -c1)\" ] && dirty=1\n\
          if [ \"$dirty\" = 0 ] && {{ [ -z \"$base\" ] || [ \"$head\" = \"$base\" ]; }}; then echo CLEAN; exit 0; fi\n\
          tip=$head\n\
          if [ \"$dirty\" = 1 ]; then\n\
            idx=$(mktemp); rm -f \"$idx\"\n\
            GIT_INDEX_FILE=$idx git read-tree HEAD || exit 3\n\
-           GIT_INDEX_FILE=$idx git add -A || exit 3\n\
+           GIT_INDEX_FILE=$idx git add -A -- . ':(exclude)pkg' || exit 3\n\
            tree=$(GIT_INDEX_FILE=$idx git write-tree) || exit 3\n\
            rm -f \"$idx\"\n\
            tip=$(git -c user.name=letibot -c user.email=letibot@localhost commit-tree -p HEAD \
@@ -170,7 +176,7 @@ pub fn guest_stage(project: &str, base: Option<&str>) -> String {
          fi\n\
          echo \"WORK $head $n $dirty\"",
         r = Rescue::REF,
-        b = GUEST_BUNDLE,
+        b = bundle,
     )
 }
 
@@ -190,4 +196,72 @@ pub fn parse_stage(line: &str) -> Option<(String, Option<u64>, bool)> {
     let commits = w.next()?.parse().ok();
     let dirty = w.next()? == "1";
     Some((head, commits, dirty))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(dir: &Path, prog: &str, args: &[&str]) -> String {
+        let out = std::process::Command::new(prog)
+            .current_dir(dir)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_SYSTEM", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "fixture")
+            .env("GIT_AUTHOR_EMAIL", "fixture@letibot.invalid")
+            .env("GIT_COMMITTER_NAME", "fixture")
+            .env("GIT_COMMITTER_EMAIL", "fixture@letibot.invalid")
+            .args(args)
+            .output()
+            .expect(prog);
+        assert!(
+            out.status.success(),
+            "{prog} {args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        String::from_utf8_lossy(&out.stdout).into_owned()
+    }
+
+    /// The package brief alone is no work to rescue, and beside real work it stays out of the wip.
+    #[test]
+    fn the_rescue_wip_leaves_the_package_brief_out() {
+        let root = std::env::temp_dir().join(format!("letibot-keep-pkg-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let tree = root.join("tree");
+        std::fs::create_dir_all(tree.join("pkg")).unwrap();
+        run(&tree, "git", &["init", "-q", "-b", "main"]);
+        std::fs::write(tree.join("a.txt"), "one\n").unwrap();
+        run(&tree, "git", &["add", "-A"]);
+        run(&tree, "git", &["commit", "-q", "-m", "one"]);
+        let base = run(&tree, "git", &["rev-parse", "HEAD"]).trim().to_string();
+        std::fs::write(tree.join("pkg/BRIEF.md"), "the brief\n").unwrap();
+        let bundle = root.join("rescue.bundle");
+        let script = guest_stage_into(
+            tree.to_str().unwrap(),
+            Some(&base),
+            bundle.to_str().unwrap(),
+        );
+        assert_eq!(run(&root, "sh", &["-c", &script]).trim(), "CLEAN");
+
+        std::fs::write(tree.join("a.txt"), "one\ntwo\n").unwrap();
+        let said = run(&root, "sh", &["-c", &script]);
+        assert!(said.starts_with("WORK "), "{said}");
+        let back = root.join("back");
+        std::fs::create_dir_all(&back).unwrap();
+        run(&back, "git", &["init", "-q"]);
+        run(
+            &back,
+            "git",
+            &[
+                "fetch",
+                "-q",
+                tree.to_str().unwrap(),
+                &format!("{}:refs/heads/r", Rescue::REF),
+            ],
+        );
+        let files = run(&back, "git", &["ls-tree", "-r", "--name-only", "r"]);
+        assert!(files.contains("a.txt"), "{files}");
+        assert!(!files.contains("pkg/"), "the brief was swept in: {files}");
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }
