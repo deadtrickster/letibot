@@ -158,9 +158,13 @@ fn a_project_line_per_workspace_root() {
     // By NAME, not by path - the operator's own words, and the reason a project's line is
     // readable at 80 columns.
     let screen = a.screen(100, 48).join("\n");
-    assert!(screen.contains("letibot (6)"), "{screen}");
+    // The header names the session's folder, and how depends on $HOME, so only the line is read.
+    let line = screen
+        .lines()
+        .find(|l| l.contains("letibot (6)"))
+        .unwrap_or_else(|| panic!("{screen}"));
     assert!(
-        !screen.contains("/home/dead/Projects/letibot/letibot"),
+        !line.contains("Projects/letibot/letibot"),
         "the project's line is its name, not its path:\n{screen}"
     );
 }
