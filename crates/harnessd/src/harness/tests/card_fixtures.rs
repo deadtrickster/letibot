@@ -3,8 +3,8 @@
 //! `LETIBOT_BLESS_RESTART_CARD=1`, and teach the card the new shape if a part it keys on moved.
 
 use crate::restart::{
-    Outcome, RESTORE_WITHIN, Stopped, header, job_line, monitor_rearmed_line,
-    monitor_reminded_line, notice, said, warning_detail,
+    Outcome, Owed, RESTORE_WITHIN, Rows, Stopped, header, job_line, monitor_rearmed_line,
+    monitor_reminded_line, nothing_running_but, notice, said, warning_detail,
 };
 use crate::subagent_record::{parent_reminded_line, parent_resumed_line};
 use letibot_tokencore::store::{JobRecord, StoredMonitor};
@@ -194,6 +194,25 @@ fn the_tuis_restart_card_fixtures_are_what_the_daemon_writes() {
     );
     pin("restart_nothing_notice.txt", &text);
     pin("restart_nothing_warning.txt", &warning_detail(&text, &[]));
+
+    // Nothing running, but owed work: the card's label names what the turn is for.
+    let promise = Owed {
+        promise: true,
+        ..Owed::default()
+    };
+    pin(
+        "restart_owed_promise_notice.txt",
+        &nothing_running_but(&quick, BACK, &promise),
+    );
+    let mut work = promise.clone();
+    work.mid_turn = true;
+    work.settlements = 2;
+    work.due = Rows::of(["deploy, once the gate is green"].into_iter());
+    work.plan = Rows::of(["finish the migration", "then update the notes"].into_iter());
+    pin(
+        "restart_owed_work_notice.txt",
+        &nothing_running_but(&quick, BACK, &work),
+    );
 }
 
 /// The `prefix_stale` sentence pg-noop's head drew as a wall - seated 09-20 17:51, a tool

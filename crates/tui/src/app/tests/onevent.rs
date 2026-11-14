@@ -28,7 +28,7 @@ const CLEARED_SAID: &str = "conversation cleared: tr-1 → tr-2. The new convers
                             zero plus a 12-line orientation";
 
 /// The model's row for a daemon restart (`restart::notice`), one row.
-const RESTART_ROW: &str = "[restart] The daemon restarted (down 1s). Nothing was running.";
+const RESTART_ROW: &str = "[restart] The daemon restarted (down ~1s). Nothing was running.";
 /// The `restart_restored` warning's own sentence.
 const RESTART_SAID: &str = "restarted (down 1s); nothing was running";
 
@@ -137,7 +137,7 @@ fn a_daemon_restart_is_the_notice_row_and_no_other() {
         notice(RESTART_ROW),
         "restart_restored",
         RESTART_SAID,
-        "restarted, stopped by operator · down 1s",
+        "crashed, down ~1s",
     );
 }
 

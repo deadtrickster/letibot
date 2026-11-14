@@ -7,6 +7,7 @@
 //! crashed, stop time unknown · reminded: 1 job · click for details
 //! restarted, stopped by operator · down 1s · click for details
 //! session · restarted, stopped by operator · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 job · click for details
+//! session · restarted · carrying on: your promise, 2 open todo rows · click for details
 //! ```
 //!
 //! The counts come from the hub warning or the session notice, whichever opened the row; an unrecognised line is `None` and the popup keeps the text.
@@ -96,6 +97,8 @@ pub(crate) struct Restart {
     pub(crate) restored: Counts,
     pub(crate) reminded: Counts,
     pub(crate) not_restored: Counts,
+    /// What a restart that woke the session asks of it, short: `your promise, 2 open todo rows`.
+    pub(crate) owed: Option<String>,
 }
 
 impl Restart {
@@ -108,8 +111,19 @@ impl Restart {
         }
     }
 
-    /// `restarted, stopped by operator · down 4m12s` - or the crash's own two words.
+    /// `restarted, stopped by operator · down 4m12s` - or the crash's own two words. A restart
+    /// that owes work leads with the work: the operator knows they restarted it.
     fn head(&self) -> String {
+        if let Some(owed) = &self.owed {
+            return match self.orderly() {
+                true => format!("restarted · carrying on: {owed}"),
+                false => format!("{} · carrying on: {owed}", self.bare_head()),
+            };
+        }
+        self.bare_head()
+    }
+
+    fn bare_head(&self) -> String {
         match &self.down {
             Down::Known { span, .. } if self.orderly() => {
                 format!("restarted, stopped by operator · down {span}")
@@ -215,7 +229,92 @@ fn empty(down: Down) -> Restart {
         restored: Counts::default(),
         reminded: Counts::default(),
         not_restored: Counts::default(),
+        owed: None,
     }
+}
+
+/// What `restart::Owed::clause` and `nothing_running_but` said, short - `None` for a notice that
+/// asks nothing. Read off the daemon's fixed words; a todo row's own words are never matched.
+fn owed_of(text: &str) -> Option<String> {
+    let rest = text.split_once(NOTHING_RUNNING)?.1;
+    if rest.starts_with(" This turn is what you told the operator you would do once they restarted")
+    {
+        return Some("your promise".into());
+    }
+    let rest = rest.strip_prefix(" This session owes work — ")?;
+    let (work, tail) = rest.split_once(". Carry on with that work now")?;
+    let mut said: Vec<String> = Vec::new();
+    let mut work = work;
+    if let Some(r) = work.strip_prefix("a turn was in flight when the rows stopped") {
+        said.push("a turn cut off".into());
+        work = r.strip_prefix(", ").unwrap_or(r);
+    }
+    let count = |work: &str, one: &str, many: &str| -> Option<usize> {
+        if work.starts_with(&format!("1 {one}")) {
+            return Some(1);
+        }
+        let (n, r) = work.split_once(' ')?;
+        r.starts_with(many).then(|| n.parse().ok()).flatten()
+    };
+    let n_of = |n: usize, word: &str| match n {
+        1 => format!("1 {word}"),
+        n => format!("{n} {word}s"),
+    };
+    if let Some(n) = count(
+        work,
+        "a settlement nobody has been told about",
+        "settlements nobody has been told about",
+    ) {
+        said.push(n_of(n, "undelivered result"));
+        work = work.split_once(", ").map_or("", |(_, r)| r);
+    }
+    if let Some(n) = count(
+        work,
+        "a todo row whose condition is met",
+        "todo rows whose condition is met",
+    ) {
+        said.push(n_of(n, "due todo row"));
+        // The row contents follow, so the next clause is found by its own fixed words.
+        work = work
+            .find(" todo row still owed")
+            .or_else(|| work.find(" todo rows still owed"))
+            .map_or("", |i| {
+                let start = work[..i].rfind(", ").map_or(0, |c| c + 2);
+                &work[start..]
+            });
+    }
+    if let Some(n) = count(work, "a todo row still owed", "todo rows still owed") {
+        said.push(n_of(n, "open todo row"));
+    }
+    if tail.starts_with(", including what you told the operator you would do") {
+        said.push("your promise".into());
+    }
+    (!said.is_empty()).then(|| said.join(", "))
+}
+
+/// The operator's own restart that asked nothing of the session: the one sentence and no
+/// list. Drawn only at `loud` - the operator knows they restarted it.
+pub(crate) fn quiet_operator_restart(text: &str) -> bool {
+    let t = text.trim();
+    if t.lines().count() != 1 {
+        return false;
+    }
+    let Some(r) = notice_restart(t) else {
+        return false;
+    };
+    let empty = r.restored == Counts::default()
+        && r.reminded == Counts::default()
+        && r.not_restored == Counts::default();
+    if !(r.orderly() && empty && r.owed.is_none()) {
+        return false;
+    }
+    if let Some((_, tail)) = t.split_once(NOTHING_RUNNING) {
+        return tail.is_empty()
+            || tail
+                .strip_prefix(" The stop is older than the ")
+                .is_some_and(|w| w.ends_with(" restore window.") && !w.contains(". "));
+    }
+    t.starts_with(CAME_BACK) && t.trim_end_matches('.').ends_with(": nothing was running")
 }
 
 /// A `restart_restored` / `restart_reminded` / `restart_nothing` warning's detail, read.
@@ -261,6 +360,7 @@ pub(crate) fn warning_restart(detail: &str) -> Option<Restart> {
 pub(crate) fn notice_restart(text: &str) -> Option<Restart> {
     let mut lines = text.lines();
     let mut r = empty(down_of(lines.next()?)?);
+    r.owed = owed_of(text);
     // Inside a `[task]` group the restart carries (`SESSION.carries`): the children it handed
     // over, one bullet each - what the warning says as `had finished … delivering it`.
     let mut handed_over = false;

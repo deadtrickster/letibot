@@ -24,6 +24,9 @@ const JOBS_ONLY_WARNING: &str = include_str!("fixtures/restart_jobs_only_warning
 /// running. Its own code (`restart_nothing`) because it is its own sentence.
 const NOTHING_NOTICE: &str = include_str!("fixtures/restart_nothing_notice.txt");
 const NOTHING_WARNING: &str = include_str!("fixtures/restart_nothing_warning.txt");
+/// Nothing running, but a turn owed: the promise alone, and every clause `Owed` can say.
+const OWED_PROMISE_NOTICE: &str = include_str!("fixtures/restart_owed_promise_notice.txt");
+const OWED_WORK_NOTICE: &str = include_str!("fixtures/restart_owed_work_notice.txt");
 /// The operator's paste, as the daemon before this build wrote it - *"down for 0s …
 /// estimated from nothing (no record said when)"*. A head attached to an older daemon still
 /// reads it; not pinned, because no daemon from this build writes it.
@@ -258,6 +261,7 @@ fn the_restart_notice_is_one_session_line_and_opens_whole() {
 #[test]
 fn an_empty_restart_notice_is_one_session_line() {
     let mut a = with_notice(NOTHING_NOTICE);
+    a.visibility = Visibility::of(Profile::LOUD);
     let screen = a.screen(200, 40);
     let joined = screen.join("\n");
     assert_eq!(
@@ -687,4 +691,63 @@ fn a_restart_with_a_job_beside_its_deliveries_keeps_the_job() {
         "{joined}"
     );
     assert!(!joined.contains("you-are-reading-part"), "{joined}");
+}
+
+/// The operator's own restart that owed nothing is drawn only at `loud`. The model still has the
+/// row; a crash, an unknown stop or owed work is drawn at every rung.
+#[test]
+fn an_operators_restart_owing_nothing_is_drawn_only_at_loud() {
+    let line = "session · restarted, stopped by operator · down 4s · click for details";
+    for p in [Profile::CONVERSATION, Profile::TERSE, Profile::NORMAL] {
+        let mut a = with_notice(NOTHING_NOTICE);
+        a.visibility = Visibility::of(p);
+        let screen = a.screen(200, 40);
+        assert!(
+            rows_with(&screen, "restarted").is_empty(),
+            "{}: {}",
+            p.name,
+            screen.join("\n")
+        );
+    }
+    let mut a = with_notice(NOTHING_NOTICE);
+    a.visibility = Visibility::of(Profile::LOUD);
+    assert_eq!(rows_with(&a.screen(200, 40), line).len(), 1);
+    for (notice, line) in [
+        (
+            "[restart] The daemon restarted (down ~4s). Nothing was running.",
+            "session · crashed, down ~4s · click for details",
+        ),
+        (
+            "[restart] The daemon restarted (stop time unknown). Nothing was running.",
+            "session · crashed, stop time unknown · click for details",
+        ),
+        (
+            OWED_PROMISE_NOTICE,
+            "session · restarted · carrying on: your promise · click for details",
+        ),
+    ] {
+        let mut a = with_notice(notice);
+        let screen = a.screen(200, 40);
+        assert_eq!(rows_with(&screen, line).len(), 1, "{}", screen.join("\n"));
+    }
+}
+
+/// A restart that owes work says what it asks, not that the operator restarted it.
+#[test]
+fn an_owed_restart_names_what_it_asks() {
+    let r = notice_restart(OWED_WORK_NOTICE).expect("the owed notice reads");
+    assert_eq!(
+        r.owed.as_deref(),
+        Some(
+            "a turn cut off, 2 undelivered results, 1 due todo row, 2 open todo rows, your promise"
+        ),
+        "{OWED_WORK_NOTICE}"
+    );
+    assert!(
+        r.line()
+            .starts_with("restarted · carrying on: a turn cut off, "),
+        "{}",
+        r.line()
+    );
+    assert_eq!(notice_restart(NOTHING_NOTICE).unwrap().owed, None);
 }

@@ -188,8 +188,16 @@ fn session_texts() -> Vec<(&'static str, String)> {
 
 #[test]
 fn every_session_card_opens_on_a_click_whichever_row_carried_it() {
+    // `loud`, which draws every card - the operator's quiet restart included.
+    let loud = |mut a: App| {
+        a.visibility = Visibility::of(Profile::LOUD);
+        a
+    };
     for (name, text) in session_texts() {
-        every_legend_opens(with_item(agent(&text)), &format!("{name} (agent row)"));
+        every_legend_opens(
+            loud(with_item(agent(&text))),
+            &format!("{name} (agent row)"),
+        );
         every_legend_opens(
             with_item(TranscriptItem::Notice {
                 kind: NoticeKind::Monitor,

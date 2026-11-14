@@ -1,0 +1,1 @@
+[restart] The daemon restarted (down 4s). Nothing was running. This turn is what you told the operator you would do once they restarted; a restart is not the answer to a question you asked, so an open one stays open. Do that one thing now, and report it. If there is nothing left to do after all, answer with an empty reply — no words at all — and this session goes idle.

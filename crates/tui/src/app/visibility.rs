@@ -642,6 +642,10 @@ impl Visibility {
         if is_edit_card(item) {
             return self.shows(Show::Edits);
         }
+        // The model still reads it; below `loud` the operator is not shown their own restart.
+        if quiet_restart(item) {
+            return self.rung() == Verbosity::Loud;
+        }
         self.rung().keeps(item)
     }
 
@@ -678,6 +682,20 @@ impl Visibility {
         }
         Some(Show::Thinking)
     }
+}
+
+/// Is this row the harness's note of an operator's restart that owed the session nothing.
+fn quiet_restart(item: &letibot_transcript::TranscriptItem) -> bool {
+    use letibot_transcript::{Speaker, TranscriptItem as T, UserPart};
+    let T::User {
+        speaker: Speaker::Agent,
+        parts,
+    } = item
+    else {
+        return false;
+    };
+    matches!(parts.as_slice(), [UserPart::Text { text }]
+        if crate::ui::transcript::restart_card::quiet_operator_restart(text))
 }
 
 /// Is this row the act of the person at the keyboard - the one fact verbosity may not hide.
