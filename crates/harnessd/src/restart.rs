@@ -629,6 +629,9 @@ pub struct Owed {
     /// Being merely ACTIVE before the stop is not this and is not owed: the model was owed
     /// nothing, and a turn spent finding that out is a generation nobody asked for.
     pub promise: bool,
+    /// The last turn's final answer announced work and nothing ran after it - the same check
+    /// and per-model switch as the turn-end nudge.
+    pub announced: Option<String>,
 }
 
 impl Owed {
@@ -636,6 +639,7 @@ impl Owed {
     pub fn any(&self) -> bool {
         self.mid_turn
             || self.promise
+            || self.announced.is_some()
             || self.settlements > 0
             || !self.due.is_empty()
             || !self.plan.is_empty()
@@ -654,6 +658,11 @@ impl Owed {
         let mut parts: Vec<String> = Vec::new();
         if self.mid_turn {
             parts.push("a turn was in flight when the rows stopped".into());
+        }
+        if let Some(said) = &self.announced {
+            parts.push(format!(
+                "your last turn ended saying \"{said}\" and ran nothing after it"
+            ));
         }
         if self.settlements > 0 {
             parts.push(rows(
@@ -1546,6 +1555,28 @@ mod tests {
              — 2 todo rows still owed: finish the migration; then update the notes. Carry on with \
              that work now and report it. If there is nothing left to do after all, answer with an \
              empty reply — no words at all — and this session goes idle."
+        );
+    }
+
+    /// An unkept announcement is owed work, quoted, so a restart wakes the turn it never ran.
+    #[test]
+    fn an_unkept_announcement_is_owed_and_quoted() {
+        let stop = Stopped::At {
+            at_ms: AT,
+            estimated_from: None,
+        };
+        let owed = Owed {
+            announced: Some("Fixing it properly: the ptys are drained on Editor::tick.".into()),
+            ..Owed::default()
+        };
+        assert!(owed.any(), "an announcement is a turn on its own");
+        assert_eq!(
+            nothing_running_but(&stop, AT + 1_000, &owed),
+            "[restart] The daemon restarted (down 1s). Nothing was running. This session owes work \
+             — your last turn ended saying \"Fixing it properly: the ptys are drained on \
+             Editor::tick.\" and ran nothing after it. Carry on with that work now and report it. \
+             If there is nothing left to do after all, answer with an empty reply — no words at \
+             all — and this session goes idle."
         );
     }
 

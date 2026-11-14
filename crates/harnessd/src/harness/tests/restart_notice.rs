@@ -160,7 +160,12 @@ fn stage_last_rows(dir: &Scratch, id: &str, items: &[TranscriptItem]) {
 /// a restart is here: the previous one is dropped first, because a session has ONE writer and the
 /// store refuses a second open while the first still holds its claim (`crate::writer`).
 fn reopened(dir: &Scratch, id: &str) -> Harness {
+    reopened_with(dir, id, |_| {})
+}
+
+fn reopened_with(dir: &Scratch, id: &str, set: impl FnOnce(&mut Config)) -> Harness {
     let mut cfg = Config::for_this_box(&dir.0);
+    set(&mut cfg);
     cfg.dialect = crate::Dialect::Qwen;
     cfg.store = Some(dir.store());
     cfg.session_id = id.into();
@@ -565,6 +570,66 @@ fn a_prompt_nobody_answered_makes_the_restart_a_turn() {
         "{:?}",
         h.restart_notices
     );
+}
+
+/// A turn that ended announcing work it never ran is woken with the sentence quoted, when the
+/// model's nudge is on. With it off the same row is a finished answer and owes nothing.
+#[test]
+fn an_unkept_announcement_makes_the_restart_a_turn_when_the_nudge_is_on() {
+    let dir = Scratch::new("restart-owed-announced");
+    let id = "s-restart-owed-announced";
+    let Some(h) = opened_by_a_later_daemon(&dir, id) else {
+        return;
+    };
+    stage_a_last_row(
+        &dir,
+        id,
+        TranscriptItem::Assistant {
+            text: "Found the hang. Fixing it properly: the ptys are drained on Editor::tick."
+                .into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    );
+    age_session(&Store::open(&dir.store()).unwrap(), id, 5 * 3_600_000);
+    drop(h);
+    let mut h = reopened_with(&dir, id, |c| {
+        c.nudge = [("*".to_string(), true)].into_iter().collect();
+    });
+    let text = h.restore_after_restart().expect("a restart is said");
+    assert!(
+        text.contains(
+            "your last turn ended saying \"Fixing it properly: the ptys are drained on \
+             Editor::tick.\" and ran nothing after it"
+        ),
+        "{text}"
+    );
+    assert_eq!(h.restart_notices, vec![text.clone()]);
+}
+
+#[test]
+fn an_announcement_the_operator_interrupted_is_not_owed() {
+    let dir = Scratch::new("restart-owed-interrupted");
+    let id = "s-restart-owed-interrupted";
+    let Some(h) = opened_by_a_later_daemon(&dir, id) else {
+        return;
+    };
+    stage_a_last_row(
+        &dir,
+        id,
+        TranscriptItem::Assistant {
+            text: "Fixing it properly: the ptys are".into(),
+            tool_calls: Vec::new(),
+            truncated: true,
+        },
+    );
+    age_session(&Store::open(&dir.store()).unwrap(), id, 5 * 3_600_000);
+    drop(h);
+    let mut h = reopened_with(&dir, id, |c| {
+        c.nudge = [("*".to_string(), true)].into_iter().collect();
+    });
+    let text = h.restore_after_restart().expect("a restart is said");
+    assert!(!text.contains("your last turn ended saying"), "{text}");
 }
 
 /// A session whose last row is a finished answer owes nothing, and keeps the row - the cost

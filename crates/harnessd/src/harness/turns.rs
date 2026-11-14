@@ -1347,6 +1347,33 @@ impl Harness {
                     .map(|r| r.content.as_str()),
             ),
             promise: false,
+            announced: self.announced_at_the_end(),
+        }
+    }
+
+    /// The last turn's unkept announcement: its final row is a finished text-only answer whose
+    /// words promise work, and only harness rows came after it. A turn the operator interrupted
+    /// is truncated, and one they answered has their row after it, so neither counts.
+    fn announced_at_the_end(&self) -> Option<String> {
+        if !self.cfg.prose_nudge(&self.model_name()).0 {
+            return None;
+        }
+        let last = self.items().iter().rev().find(|i| {
+            !matches!(
+                i,
+                TranscriptItem::User {
+                    speaker: letibot_transcript::Speaker::Agent,
+                    ..
+                }
+            )
+        })?;
+        match last {
+            TranscriptItem::Assistant {
+                text,
+                tool_calls,
+                truncated: false,
+            } if tool_calls.is_empty() => intent_tools::commitments(text).into_iter().next(),
+            _ => None,
         }
     }
 
