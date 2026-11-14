@@ -1266,19 +1266,23 @@ fn a_bridge_holds_a_session_over_the_gate_and_wakes_a_caller() {
         "the session and its rows outlive the bridge: {briefs:?}"
     );
 
-    // --- attach to a folder with no daemon: refused, and nothing is started ---
-    // The one thing an attach must never do. Nothing listening means a refusal naming the
-    // socket, and no socket file appears where `leticode_start` would have made one.
+    // --- attach to a folder with no daemon and an id it never stored: refused, nothing started ---
+    // A stored id is reopened by starting the daemon on it (`tests/reopen.rs`); an unknown one
+    // must not start a daemon that opens a new session under it.
     let gone = world.dir.path().join("no-daemon-here.sock");
     // SAFETY: this test binary runs one test, and no other thread reads the override between
     // these two lines: every head it could reach already holds an open socket.
     unsafe { std::env::set_var("LETIBOT_SOCKET", &gone) };
     let refused = bridge
-        .attach(&world.worktree.display().to_string(), &session, true)
-        .expect_err("a folder with no daemon is not one this can attach to");
+        .attach(
+            &world.worktree.display().to_string(),
+            "s-never-stored",
+            true,
+        )
+        .expect_err("a folder with no daemon and no such session is not one this can attach to");
     assert!(
-        refused.contains("never starts one"),
-        "the refusal says which tool starts a daemon: {refused}"
+        refused.contains("leticode_start"),
+        "the refusal says which tool starts a session: {refused}"
     );
     assert!(refused.contains("no-daemon-here.sock"), "{refused}");
     assert!(

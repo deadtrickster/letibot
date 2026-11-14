@@ -638,7 +638,7 @@ fn note_idle_close(
     }
     let said = format!(
         "closing in {} for idleness; `letibot hold {}` keeps it. Nothing is lost: the rows stay and \
-         `leticode_send` reopens it.",
+         `leticode_attach` or `leticode_send` on its id reopens it.",
         human_millis((closes_at - at_ms).max(0) as u64),
         owner.id
     );

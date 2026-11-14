@@ -78,10 +78,13 @@ pub struct Bridge {
     rules: Mutex<Option<Arc<crate::push::Rules>>>,
 }
 
-/// A session dropped because its daemon ended it.
+/// A session dropped because its daemon ended it, with what a reopen needs.
 struct Gone {
     said: String,
     outbox: Option<Arc<crate::push::Outbox>>,
+    worktree: std::path::PathBuf,
+    placement: Option<Placement>,
+    watch_only: bool,
 }
 
 impl Default for Bridge {
@@ -635,6 +638,9 @@ impl Bridge {
                 Gone {
                     said: last_state(&me),
                     outbox: outbox.clone(),
+                    worktree: me.worktree.clone(),
+                    placement: me.placement.clone(),
+                    watch_only: me.watch_only,
                 },
             );
             // `me` outlives the watcher's last pass; its drop then closes the socket.
@@ -710,24 +716,47 @@ impl Bridge {
         crate::queue::watch(&store, &folder, socket.as_deref(), tx);
     }
 
-    /// Join a session this bridge did not start - `leticode_attach`. It joins a running
-    /// daemon and never starts one, and `watch_only` is the default: the session keeps the head
-    /// that holds it, and this one only watches - no prompt, no answer, no interrupt.
+    /// Join a session this bridge did not start - `leticode_attach`. With the folder's daemon
+    /// down it starts it only to reopen a session the store has for this folder. `watch_only` is
+    /// the default: the session keeps the head that holds it, and this one only watches.
     pub fn attach(&self, worktree: &str, session: &str, watch_only: bool) -> Result<Value, String> {
+        self.attach_placed(worktree, session, watch_only, None)
+    }
+
+    /// [`Bridge::attach`], reopening a stored session of this folder when its daemon is down:
+    /// the daemon is started on that id and resumes its transcript. `placement` is the one the
+    /// session last ran under, when this bridge held it.
+    fn attach_placed(
+        &self,
+        worktree: &str,
+        session: &str,
+        watch_only: bool,
+        placement: Option<&Placement>,
+    ) -> Result<Value, String> {
         // The daemon first, because the name `gatekeeper` resolves against ITS workspace key:
         // the review queue's session id is per folder, so a name resolved to a constant would
         // join whichever daemon spelled it rather than the one this call is about.
-        let d = daemon::resolve(Path::new(worktree))?;
+        let mut d = daemon::resolve(Path::new(worktree))?;
         let session = session_name(session, &d.key)?;
         if !daemon::is_up(&d.socket) {
-            return Err(format!(
-                "no daemon is up for {}: nothing is accepting on {}. `leticode_attach` joins a \
-                 running daemon and never starts one — a second daemon for one folder is how \
-                 two processes come to interleave rows into one transcript. `leticode_start` \
-                 is the tool that starts a daemon",
-                d.workspace.display(),
-                d.socket.display()
-            ));
+            if !stored_here(&d, &session) {
+                return Err(format!(
+                    "no daemon is up for {}: nothing is accepting on {}, and the store has no \
+                     session `{session}` of this folder to reopen. `leticode_start` opens a new \
+                     one",
+                    d.workspace.display(),
+                    d.socket.display()
+                ));
+            }
+            // One daemon per folder is harnessd's own folder claim, so a start that races
+            // another one is refused there and not here.
+            d = daemon::ensure_with(
+                Path::new(worktree),
+                None,
+                DEFAULT_MODE,
+                placement.unwrap_or(&Placement::Host),
+                Some(&session),
+            )?;
         }
         // A second attach to a session this bridge already holds is refused. The map is keyed
         // by session id, so a second entry would silently replace the first: the socket that
@@ -754,9 +783,7 @@ impl Bridge {
             "session": session,
             "worktree": d.workspace.display().to_string(),
             "socket": d.socket.display().to_string(),
-            // `resolve` never starts anything, so this is the field's own answer and not a
-            // constant written into a reply: an attach that had started a daemon would be
-            // the bug this tool exists to not have.
+            // True only when the folder's daemon was down and was started to reopen this id.
             "daemon_started": d.started,
             "watch_only": watch_only,
             "can_decide": !watch_only,
@@ -786,9 +813,38 @@ impl Bridge {
         if text.trim().is_empty() {
             return Err("`text` is empty: an empty prompt starts no turn".into());
         }
-        let h = self.head(session)?;
+        let h = match self.head(session) {
+            Ok(h) => h,
+            Err(_) if self.is_gone(session) => self.reopen_gone(session)?,
+            Err(why) => return Err(why),
+        };
         h.prompt(text)?;
         Ok(json!({ "queued": true, "session": session }))
+    }
+
+    fn is_gone(&self, session: &str) -> bool {
+        self.gone
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .contains_key(session)
+    }
+
+    /// Reopen a session this bridge held until its daemon ended it, as the head it had.
+    fn reopen_gone(&self, session: &str) -> Result<Arc<Head>, String> {
+        let (worktree, placement, watch_only) = {
+            let g = self.gone.lock().unwrap_or_else(|e| e.into_inner());
+            let gone = g
+                .get(session)
+                .ok_or_else(|| format!("no session `{session}` was held by this bridge"))?;
+            (
+                gone.worktree.display().to_string(),
+                gone.placement.clone(),
+                gone.watch_only,
+            )
+        };
+        self.attach_placed(&worktree, session, watch_only, placement.as_ref())
+            .map_err(|e| format!("`{session}` was dropped and reopening it failed: {e}"))?;
+        self.head(session)
     }
 
     /// What the session is doing, in the words the orchestrator branches on.
@@ -1232,6 +1288,19 @@ impl Bridge {
     }
 }
 
+/// Is `session` one of this folder's stored sessions? A reopen starts a daemon on the id, and a
+/// typo'd id must not start one that opens a new session under it.
+fn stored_here(d: &daemon::Daemon, session: &str) -> bool {
+    let Ok(store) = crate::store::open_read(&d.store, "session", Some(&d.workspace)) else {
+        return false;
+    };
+    let Ok(Some(row)) = store.session(session) else {
+        return false;
+    };
+    let root = Path::new(&row.workspace_root);
+    root == d.workspace || daemon::workspace_of(root).is_ok_and(|w| w == d.workspace)
+}
+
 /// A head's last known state, in the sentence a call naming its ended session is answered with.
 fn last_state(h: &Head) -> String {
     let s = h.snapshot();
@@ -1400,10 +1469,10 @@ pub fn list() -> Value {
             "leticode_attach",
             "Join a session that is already running — this folder's review queue, a \
               package a person resumed, any session a folder's daemon holds — and hold it \
-              the way `leticode_start` holds one, without a brief. It JOINS a running daemon and \
-              never starts one: with nothing listening on that folder's socket it refuses and \
-              says so, because a second daemon for one folder is how two processes come to \
-              interleave rows into one transcript. `watch_only` (the default) makes this a \
+              the way `leticode_start` holds one, without a brief. With nothing listening on that \
+              folder's socket it starts the folder's daemon only to reopen a session the store \
+              has for that folder, on its id and with its transcript, and refuses any other \
+              id. `watch_only` (the default) makes this a \
               WATCHING head: it reads the turn, the last message, the todos, the pending asks \
               and the progress ring, and `leticode_send`, `leticode_answer` and `leticode_stop` \
               then refuse, because the head that holds the session is somebody else's. Its \
@@ -1424,7 +1493,8 @@ pub fn list() -> Value {
             "leticode_send",
             "Send an operator line into a running session. Queued behind a running turn as \
               the head's own prompt, so it never loses a race with what the model is doing; \
-              the daemon starts a turn for it when the current one ends.",
+              the daemon starts a turn for it when the current one ends. A session this bridge \
+              held until its daemon stopped is reopened first.",
             json!({
                 "type": "object",
                 "properties": {

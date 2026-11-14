@@ -586,11 +586,13 @@ Close triggers. Any one is enough, and none is an agent's action:
 | Its daemon is gone: `stopped_ms` set, or beat stale and no `harnessd` at that pid | all but an interactive session with a live head elsewhere | box reaper, `vm_reap::daemon_of` reused |
 | Lease not renewed (remote host) | holdings on that host | host-local reaper |
 
-An attached bridge head does not renew a lease. What renews it: a turn starting or ending, a
-tool call returning, a message from the operator or the caller (`leticode_send`), an explicit
-`letibot hold`. A package that reported completion and is not spoken to closes 30 minutes
-later, its VM comes down with its copy-out, and its daemon exits. Nothing is lost by that:
-`leticode_send` to a closed session reopens it.
+What renews a lease: a turn starting or ending, a tool call returning, a message from the
+operator or the caller (`leticode_send`), an explicit `letibot hold`, and, on every sweep of the
+owner's own daemon, an open job or a head attached to a package that has not landed. A landed
+package's head does not count, so it closes 30 minutes after it last did anything, its VM comes
+down with its copy-out, and its daemon exits. Only the owner's own daemon judges idleness while
+it is up: a reaper in another process reads none of its heads, turns or jobs. Nothing is lost by
+a close: `leticode_attach` or `leticode_send` on the id starts the folder's daemon and reopens it.
 
 Settle triggers:
 
