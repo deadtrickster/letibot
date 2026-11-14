@@ -35,6 +35,7 @@ libc = "0.2"
 # warning codes and the switches are this process's vocabulary - and the file keeps the line the
 # refusal names.
 leticode-config.workspace = true
+letibot-config-ref.workspace = true
 # The incremental markdown engine (`rano::syntax::Stream`). Same deliberate absolute
 # path and the same reasoning as `crates/ui/Cargo.toml`: rano is the operator-local
 # tree-sitter hub, and a second tree-sitter integration in this process is the thing

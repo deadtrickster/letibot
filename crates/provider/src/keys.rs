@@ -591,6 +591,8 @@ fn write_section(
     if let Some(dir) = file.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
+    // The reference block is regenerated on every write; what is outside it is kept.
+    let out = letibot_config_ref::splice(&out, &letibot_config_ref::files::PROVIDERS)?;
     let tmp = file.with_extension("toml.tmp");
     std::fs::write(&tmp, out).map_err(|e| e.to_string())?;
     #[cfg(unix)]
@@ -1211,5 +1213,128 @@ mod tests {
             "the fault quotes what was written and what a list looks like: {}",
             e.why
         );
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use std::collections::BTreeSet;
+
+    use letibot_config_ref::{files::PROVIDERS, probe};
+
+    use super::*;
+
+    fn fixture(name: &str, text: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("letibot-provref-{}-{name}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("providers.toml");
+        std::fs::write(&f, text).unwrap();
+        f
+    }
+
+    /// The whole table at `path` as one section, from its examples.
+    fn section(path: &str, header: &str) -> String {
+        let mut s = format!("[{header}]\n");
+        for k in PROVIDERS.table(path).unwrap().keys {
+            s.push_str(&format!("{} = {}\n", k.key, k.example));
+        }
+        s
+    }
+
+    /// Every `.get("key")` the readers here make is a listed key or table. `type` is opencode's
+    /// auth.json, not this file.
+    #[test]
+    fn every_key_read_by_name_is_listed() {
+        let src = include_str!("keys.rs");
+        let src = &src[..src.find("#[cfg(test)]").unwrap()];
+        let mut listed: BTreeSet<&str> = PROVIDERS.keys().map(|(_, k)| k.key).collect();
+        listed.extend(PROVIDERS.tables.iter().map(|t| t.path));
+        listed.insert("type");
+        let mut unlisted = Vec::new();
+        for (i, _) in src.match_indices(".get(\"") {
+            let rest = &src[i + 6..];
+            let key = &rest[..rest.find('"').unwrap()];
+            if !listed.contains(key) {
+                unlisted.push(key.to_string());
+            }
+        }
+        assert!(
+            unlisted.is_empty(),
+            "read but not in the reference: {unlisted:?}"
+        );
+    }
+
+    /// A write regenerates the block and keeps every other line.
+    #[test]
+    fn a_write_regenerates_the_reference_block() {
+        let mine = "# my comment\n[glm]\nurl = \"https://example.invalid\" # odd\n";
+        let f = fixture("write", mine);
+        store_key(Some(&f), "deepseek", "sk-x").unwrap();
+        let first = std::fs::read_to_string(&f).unwrap();
+        assert!(first.starts_with(letibot_config_ref::BEGIN), "{first}");
+        assert!(
+            letibot_config_ref::strip(&first).starts_with(mine),
+            "{first}"
+        );
+        set_default(Some(&f), "deepseek", None).unwrap();
+        let second = std::fs::read_to_string(&f).unwrap();
+        assert_eq!(
+            second.matches(letibot_config_ref::BEGIN).count(),
+            1,
+            "{second}"
+        );
+        assert_eq!(resolve_file_key(&f), Some("sk-x".to_string()));
+    }
+
+    fn resolve_file_key(f: &Path) -> Option<String> {
+        parse_file(f)
+            .ok()?
+            .sections
+            .get("deepseek")?
+            .get("key")
+            .cloned()
+    }
+
+    #[test]
+    fn the_model_table_is_the_profile_reader() {
+        let sampling: BTreeSet<&str> = SAMPLING_KEYS.iter().map(|(k, _)| *k).collect();
+        let listed = probe::keys_of(PROVIDERS.table("model.<name>").unwrap());
+        assert!(
+            sampling.is_subset(&listed),
+            "{:?}",
+            sampling.difference(&listed)
+        );
+        let f = fixture("model", &section("model.<name>", "model.\"probe\""));
+        let p = model_profile("", "probe", Some(&f));
+        assert!(p.unknown.is_empty(), "listed but not read: {:?}", p.unknown);
+        assert_eq!(p.sampling.len(), sampling.len());
+        assert!(p.effort.is_some() && p.url.is_some() && p.model.is_some());
+        assert!(p.window.is_some() && p.dialect.is_some());
+    }
+
+    #[test]
+    fn every_listed_section_key_is_read() {
+        let text = [
+            section("memory", "memory"),
+            section("metrics", "metrics"),
+            section("gatekeeper", "gatekeeper"),
+            section("default", "default"),
+            section("fallback", "fallback"),
+            section("prices.<model>", "prices.\"probe\""),
+        ]
+        .concat();
+        let f = fixture("sections", &text);
+        let m = memory(Some(&f));
+        assert!(m.default.is_some() && m.ceiling.is_some() && m.daemon_high.is_some());
+        assert!(m.gate.is_some() && m.owner_high.is_some() && m.slice_high.is_some());
+        let x = metrics(Some(&f));
+        assert!(x.enabled.is_some() && x.keep_days.is_some() && x.snippets.is_some());
+        assert!(x.rate_per_sec.is_some() && x.max_mb.is_some());
+        let g = gatekeeper(Some(&f));
+        assert!(g.endpoint.is_some() && g.model.is_some() && g.budget_ms.is_some());
+        assert!(!g.intents.is_empty() && g.max_scope.is_some() && !g.tools.is_empty());
+        assert!(default_choice(Some(&f)).unwrap().is_some());
+        assert!(!fallback_models(Some(&f)).unwrap().is_empty());
+        assert!(prices(Some(&f)).contains_key("probe"));
     }
 }

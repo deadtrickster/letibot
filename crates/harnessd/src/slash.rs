@@ -1320,7 +1320,7 @@ mod tests {
             "the key is written: {on_disk}"
         );
         assert!(
-            !on_disk.contains("[default]"),
+            !letibot_config_ref::strip(&on_disk).contains("[default]"),
             "and the standing choice is not: {on_disk}"
         );
 

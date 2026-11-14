@@ -443,6 +443,8 @@ pub fn save(path: &Path, p: &HeadPrefs) -> Result<(), String> {
     }
     let mut body = out.join("\n");
     body.push('\n');
+    // The reference block is regenerated on every write; what is outside it is kept.
+    let body = letibot_config_ref::splice(&body, &letibot_config_ref::files::HEAD)?;
     // Through a temporary file, then one rename: `fs::write` truncates and then writes, so a
     // second process reading at the wrong moment sees a PARTIAL list - and a head that loaded a
     // partial `retired` would save it back. A rename is atomic, so a reader sees one file.
@@ -620,7 +622,10 @@ mod tests {
         )
         .unwrap();
         let text = std::fs::read_to_string(&p).unwrap();
-        assert!(text.starts_with("# mine\n"), "{text}");
+        assert!(
+            letibot_config_ref::strip(&text).starts_with("# mine\n"),
+            "{text}"
+        );
         assert!(text.contains("diff = \"split\""), "{text}");
         assert!(text.contains("future_key = \"x\""), "{text}");
         assert_eq!(text.matches("diff =").count(), 1, "{text}");
@@ -685,5 +690,85 @@ mod tests {
             "the file's keys survived a head that never saw them"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn load_text(name: &str, text: &str) -> Vec<String> {
+        let p = tmp(name);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, text).unwrap();
+        let (_, notes) = load(&p);
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+        notes
+    }
+
+    /// Every key the reference lists loads its example without a note.
+    #[test]
+    fn every_listed_key_is_read() {
+        let f = &letibot_config_ref::files::HEAD;
+        for (_, key) in f.keys() {
+            let line = format!(
+                "{} = {}\n",
+                letibot_config_ref::probe::concrete(key.key),
+                key.example
+            );
+            let notes = load_text("ref-listed", &line);
+            assert!(notes.is_empty(), "{line}: {notes:?}");
+        }
+    }
+
+    /// No literal in this parser's source is a key it reads and the reference does not list.
+    #[test]
+    fn every_read_key_is_listed() {
+        let f = &letibot_config_ref::files::HEAD;
+        let mut unlisted = Vec::new();
+        for c in letibot_config_ref::probe::literals(include_str!("prefs.rs")) {
+            if f.keys()
+                .any(|(_, k)| letibot_config_ref::probe::matches(k.key, &c))
+            {
+                continue;
+            }
+            let notes = load_text("ref-unlisted", &format!("{c} = \"x\"\n"));
+            if !notes
+                .iter()
+                .any(|n| n.contains("is not a key this head knows"))
+            {
+                unlisted.push(c);
+            }
+        }
+        assert!(
+            unlisted.is_empty(),
+            "read but not in the reference: {unlisted:?}"
+        );
+    }
+
+    /// A save writes the reference block on top and regenerates it in place, keeping the
+    /// operator's comments and unknown lines.
+    #[test]
+    fn a_save_regenerates_the_reference_block() {
+        let p = tmp("ref-block");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "# mine\nfuture_key = \"v\"\n").unwrap();
+        save(&p, &HeadPrefs::default()).unwrap();
+        let first = std::fs::read_to_string(&p).unwrap();
+        assert!(first.starts_with(letibot_config_ref::BEGIN), "{first}");
+        assert!(first.contains("#   diff: "), "{first}");
+        assert!(first.contains("# mine\nfuture_key = \"v\"\n"), "{first}");
+        save(&p, &HeadPrefs::default()).unwrap();
+        let second = std::fs::read_to_string(&p).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(second.matches(letibot_config_ref::BEGIN).count(), 1);
+        let _ = std::fs::remove_dir_all(p.parent().unwrap());
+    }
+
+    /// The theme reference lists exactly rano's roles.
+    #[test]
+    fn every_theme_role_is_listed() {
+        let roles: std::collections::BTreeSet<String> =
+            rano::style::Role::ALL.iter().map(|r| r.name()).collect();
+        let listed: std::collections::BTreeSet<String> = letibot_config_ref::files::THEME
+            .keys()
+            .map(|(_, k)| k.key.to_string())
+            .collect();
+        assert_eq!(roles, listed);
     }
 }

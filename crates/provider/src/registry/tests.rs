@@ -204,3 +204,23 @@ fn a_usage_endpoint_is_declared_cleared_or_refused() {
     let why = r.find("badplan").unwrap_err();
     assert!(why.contains("[provider.badplan] usage"), "{why}");
 }
+
+/// `[provider.<name>]` in the reference is exactly `KEYS`, and an entry setting every listed
+/// key is a door.
+#[test]
+fn the_provider_table_is_listed() {
+    use letibot_config_ref::{files::PROVIDERS, probe};
+    let t = PROVIDERS.table("provider.<name>").unwrap();
+    let keys: std::collections::BTreeSet<&str> = KEYS.iter().copied().collect();
+    assert_eq!(keys, probe::keys_of(t));
+    let mut body = String::from("[provider.probe]\n");
+    for k in t.keys {
+        body.push_str(&format!("{} = {}\n", k.key, k.example));
+    }
+    let f = file("reference", &body);
+    assert!(
+        lookup("probe", Some(&f)).is_ok(),
+        "{:?}",
+        lookup("probe", Some(&f)).err()
+    );
+}
