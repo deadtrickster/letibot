@@ -62,6 +62,19 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R224 | Incident 2026-11-13: VM work written into the jail copy and lost on copy-out | Code work | done: firecode 7761c3f (jail beside the state, a copied writable drive refused, a commit alone counts as work) and letibot fix-vm-hostrun a055978d, 2fd044bd (on landing-35); left: none |
 | R225 | The idle reaper closed a live session mid tool call | Code work | done: landing-34, `reap_pass::LeaseBeat` (20d52787) renews the owner's lease on a clock while a turn runs; left: none |
 | R226 | `/models` is one flat list of 89 rows with no search of its own: about 70 off screen, two lines a model, a typed query landing in the composer, and a loose subsequence putting the wrong model on top | Code work | built: the card has two levels (the model answering now, the recent ones, one row per provider; a provider opens onto its models with the window and both rates in columns), a search field of its own at the top that ranks across every provider (exact, prefix, word start, substring, and a scattering only when nothing else matches), and doors that serve one catalogue are one provider row whose door Tab chooses; left: nothing in this package |
+| R227 | /build filled to 100%: every gate and package kept its own 190-300G target dir | Code work | left: nothing removes or reuses a target dir after landing, and a gate starts a link with no free-space check, so a full disk shows as `ld terminated with signal 7 [Bus error]` |
+| R228 | Remote hosts keep every placed session's home, jobs ledger and fanout dirs | Code work | left: the reaper's remote pass bundles an owner's work and never removes the home; `.letibot-jobs/<id>` and `fanout-<call>` have no reaper at all; removal needs `chmod u+w` for read-only Go module caches |
+| R229 | Gates ran tests with the operator's real HOME, and the launcher's store ignores XDG_DATA_HOME | Code work | bridge store resolution and read-only opens landed (abd03a3d); left: no in-tree gate script isolates HOME/XDG, and `scripts/letibot`'s `STORE` ignores `XDG_DATA_HOME` while the bridge follows it |
+| R230 | One slow store open blocks every open in the process, and unladdered writes sleep 30 s holding the connection | Code work | left: `Store::open_sharing` holds `shared_stores()` across pragmas and migrate, and `connection()`/`connection_of()` writes sleep up to `BUSY_TIMEOUT` (30 s) in the busy handler |
+| R231 | A room protocol bump refused every older client | Code work | fixed for 11 by `OLDEST_CLIENT = 11` (fc69dcb2); left: a rule that each bump states whether older clients are served, and a test per bump |
+| R232 | Kimi's usage endpoint is asked only on a refusal | Code work | left: a background poll of the preset's `usage_url`, cached like `listed_models`, and the model card / status row showing it (`5h 44% · resets 07:07`) |
+| R233 | Rate-limit decisions as config values or a fuel-capped wasm call | Needs the operator | not started; left: the operator's shape for the hook record (which decisions, value or plugin, what the call is given and answers) |
+| R234 | VMs do not boot at load 100-240, and packages fall back to host subagents | Code work | left: a measurement of boot time against load, then a queue or an admission rule |
+| R235 | A Claude Code session starts a new `until [ -s ... ]` wait loop every few minutes and never stops the old ones | Needs the operator | an observation about Claude Code's waiters, not a letibot defect; left: the operator's call on whether letibot's own docs or skills warn about it |
+| R236 | `sudo_ask` failed once under load: a run judged unreadable because "one of its processes belongs to another user" | Code work | left: find the race in the process walk (likely a pid gone or reused between the cgroup read and `/proc`, see R221), fix it, prove it under load |
+| R237 | `daemon_takes_a_new_session` missed its 60 s turn deadline once under load | Code work | left: find why; the fake provider thread `unwrap`s every read, so one bad connection may stop it counting (unverified) |
+| R238 | jobwatch measured 103 ms for a `sleep 0.3` job once under load | Code work | left: find whether the elapsed stamp starts late or ends early; the test was not loosened |
+| R239 | db-fuzz's plugin-pane study: what the S1 and plugin-pane landings left open | Code work | findings 1-3, 5, 6, 8 fixed (12eb3f2e, ef008d36, 03cfc2af, 3db3108f); left: #4 (a `~/.claude` HTML skill still beats plugin-pane on "dashboard"), #7 (the room thread's wrong claim), #9 (a room flood makes tool results look lost), #10 (the session's own note) |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -786,6 +799,145 @@ firecode 7761c3f: the jail lives beside the state, so the link cannot cross a fi
 **Status:** done, 2026-11-13. Fixed in landing-34 by `reap_pass::LeaseBeat` (20d52787). left: none.
 
 The idle reaper closed live session `s-1794545823208400466` in the middle of a tool call. The owner's lease was renewed once per round, and one tool call inside a round outlasted the idle TTL, so the pass read the owner as idle. `LeaseBeat` renews the lease on a clock - a quarter of the idle TTL apart, on its own store connection - for as long as a turn runs, so a turn in flight is never idle.
+
+## R227 - /build filled to 100%: every gate and package kept its own 190-300G target dir
+
+**Status:** open, 2026-11-14. left: target dirs are never reused or removed after a landing, and a gate does not check free space before it builds.
+
+On 2026-11-14 `/build` on lab2x1 reached 100%. Every gate run and every package build used a `CARGO_TARGET_DIR` of its own under `/build`, each one 190-300G, and about 35 of them had accumulated. Nothing removed a target dir once its branch landed or its package closed. With the disk full, gates failed at the link step with `ld terminated with signal 7 [Bus error]`, which reads like a toolchain or memory fault and says nothing about the disk. The space was freed by hand.
+
+Two changes. First, the gate script and the package tooling reuse a target dir (one per worktree that is reused across gate runs, or a small pool) or remove it when the landing or the package ends; the lifecycle reaper's disk half (`disks::reap_owner`, see R223) is the natural owner of the removal. Second, a gate checks free space on the target's filesystem before it builds and, below a floor, stops with a sentence naming the filesystem, its free space and the floor, rather than starting a link that will die.
+
+**Still open?** `ls -d /build/*target* /build/**/target 2>/dev/null | wc -l` after a few landings, and `grep -rn 'df\|statvfs\|free space' scripts/` for a gate check.
+
+**Done when:** a landed branch's or closed package's target dir is gone (or reused by the next run) without a hand step, and a gate run on a filesystem below the floor exits with the free-space sentence before compiling.
+
+## R228 - Remote hosts keep every placed session's home, jobs ledger and fanout dirs
+
+**Status:** open, 2026-11-14. left: the remote pass of the lifecycle reaper removes a closed session's remote dirs.
+
+Found on 2026-11-14. Under `~/letibot-remote/` on the fleet hosts: `.letibot-home/<id>` had 356 dirs and about 297G on lubuntu1, one of them a 154G tmp; `.letibot-jobs/<id>` ledgers; `fanout-call_*` work dirs, 858 on lubuntu1 and 3131 removed on lubuntu3; and old worktree copies (`wt-r121env` alone was 111G). Nothing removes any of them when a placed session ends. Cleaned by hand the same day: lubuntu1 97% to 74%, lubuntu2 81% to 76%, lubuntu3 74% to 60%.
+
+What the code does today. The host-local pass (`crates/tools/src/lifecycle/remote.rs`) reads `<root>/.letibot-home/<owner>/owner.json` and, when the lease is stale, ends the owner's processes, removes its caches and BUNDLES its work, by design never deleting the home. The jobs ledger (`<root>/.letibot-jobs/<short id>`, `remote.rs:3509`) and the fanout work dir (`<host root>/fanout-<call>`, `builtins/fanout.rs:160`) are not owned by any pass. A home with no `owner.json` (written by an older build) is not seen at all.
+
+Fix: once an owner's bundle has been fetched home (or there was no work to bundle), the remote pass removes its `.letibot-home/<id>`, its `.letibot-jobs/<id>` and every `fanout-<call>` that session made. Go's module cache is written read-only, so the removal runs `chmod -R u+w` first or `rm -rf` fails half way. This rides the same sweep as R223, so its cost belongs in that measurement.
+
+**Still open?** on a fleet host, `ls ~/letibot-remote/.letibot-home | wc -l` against the sessions placed there that are still open, and `ls -d ~/letibot-remote/fanout-call_* | wc -l`.
+
+**Done when:** a test against the fake remote (`crates/tools/tests/support/fake_remote.rs`) places a session, runs a fanout, closes the session, runs the pass past the grace, and finds no home, ledger or fanout dir left, including one that holds a read-only module cache.
+
+## R229 - Gates ran tests with the operator's real HOME, and the launcher's store ignores XDG_DATA_HOME
+
+**Status:** partly fixed, 2026-11-14. left: an in-tree gate script with HOME/XDG isolation, and `scripts/letibot` following `XDG_DATA_HOME`.
+
+On 2026-11-13 the scratchpad gate script (`gate-at.sh`, not in the repo) ran the test suite with the operator's real `HOME`. A bridge started by a test opened `~/.local/share/letibot/shared.db` writable and migrated it to schema 49 before the build carrying that schema had landed, so the live daemons were running against a store newer than their code.
+
+Fixed: the bridge resolves its store through `XDG_DATA_HOME` before `HOME` (`crates/bridge/src/daemon.rs:98-100`) and opens what it only reads read-only (07ac82b6 era, landed in abd03a3d), and the scratchpad gate now sets its own `HOME` and `XDG_*`. Left: the isolation lives only in that out-of-tree script, so the next gate written from the repo's instructions starts without it. And `scripts/letibot` sets `STORE="${LETIBOT_STORE:-$HOME/.local/share/letibot}"` (about line 437) with no `XDG_DATA_HOME`, while the bridge and the room data path (`scripts/letibot:2226`) follow it, so with `XDG_DATA_HOME` set the launcher and the bridge open different stores.
+
+**Still open?** `grep -n 'STORE=' scripts/letibot` and `ls scripts/ | grep -i gate`.
+
+**Done when:** the repo has a gate script (or a documented gate block in `AGENTS.md`) that runs tests under a temporary `HOME` and `XDG_DATA_HOME`/`XDG_CONFIG_HOME`/`XDG_RUNTIME_DIR`, and `scripts/letibot` resolves `STORE` from `XDG_DATA_HOME` first, with a check that the launcher and the bridge name the same directory.
+
+## R230 - One slow store open blocks every open in the process, and unladdered writes sleep 30 s holding the connection
+
+**Status:** open, 2026-11-14. left: both halves.
+
+`Store::open_sharing` (`crates/tokencore/src/store.rs` about line 1643) takes the process-wide `shared_stores()` lock and holds it across a fresh `Connection::open` plus `from_connection`, which runs the pragmas and the migration. The comment says this stops two threads opening one file twice, but it also serialises opens of DIFFERENT files: one slow open (a migration, a file on a busy disk) blocks every other open in the process. In the suite, opens of 7-10 s have been seen behind it.
+
+Second half: writes that go through the busy ladder sleep at most `LADDER_ATTEMPT` (250 ms) per attempt in the handler, but writes made through `connection()` / `connection_of()` (`store.rs` about lines 4116-4124) are not laddered, so `busy::on_busy` sleeps up to `BUSY_TIMEOUT` (30 s, `store.rs:1730`) with the Shared mutex held, and every other thread in the process waits on that one connection meanwhile.
+
+Fix: hold the registry lock only for the lookup and the insert, with a per-key in-progress slot (a `OnceLock` or a condvar) so a second opener of the same file waits for the first and openers of other files do not; and either ladder the raw-connection writes or cap the handler's sleep for them the same way.
+
+**Still open?** read `open_sharing` for where the `shared_stores()` guard is dropped, and `grep -n 'fn connection\b\|fn connection_of' crates/tokencore/src/store.rs` for whether they go through the ladder.
+
+**Done when:** a test opens one store whose migration is held (a hook or a slow file) and opens a second, different store from another thread in well under the first one's time, and a test with a held write lock shows a raw-connection write leaving the handler within the ladder's attempt budget.
+
+## R231 - A room protocol bump refused every older client
+
+**Status:** fixed for protocol 11, 2026-11-14. left: the rule and a test per bump.
+
+When the room coordinator was restarted onto protocol 12 (R206's archive frames), it refused every protocol-11 client. db-fuzz could not be restarted onto the new build while its fuzz jobs ran, so its seat was out of the rooms. Fixed by `OLDEST_CLIENT = 11` (fc69dcb2, `crates/room/src/wire.rs:23`, checked at `wire.rs:29`).
+
+Left: nothing makes the next bump ask the question. A rule in `docs/socket.md` (or wherever the room wire is documented): every `ROOM_PROTOCOL_VERSION` bump says in its commit and in the code beside the constant whether `OLDEST_CLIENT` moves, and if it does not, a test attaches a client speaking `OLDEST_CLIENT` to a coordinator on the current version and exercises the frames it knows.
+
+**Still open?** `grep -n 'OLDEST_CLIENT\|ROOM_PROTOCOL_VERSION' crates/room/src/wire.rs` and look for a test that attaches at `OLDEST_CLIENT`.
+
+**Done when:** the rule is written down beside the constant, and a test attaches an `OLDEST_CLIENT` client to the current coordinator and passes; bumping the constant without touching the test fails it.
+
+## R232 - Kimi's usage endpoint is asked only on a refusal
+
+**Status:** open, 2026-11-14. left: all of it.
+
+The Kimi presets carry a `usage_url` (`crates/provider/src/registry.rs:203`), and `crates/provider/src/usage.rs` reads it, but the only caller is `harness/usage.rs:45`, which asks `exhausted_reset_ms` after a limit refusal to park the session until the reset. Before that the operator has no view of how much of the window is spent.
+
+Idea: a background poll of the usage endpoint, cached the way `listed_models` (`registry.rs:459`) is cached, and the model card's provider row and the status row showing it as `5h 44% · resets 07:07`. The poll should be slow (minutes) and stop while the preset is not in use.
+
+**Still open?** `grep -rn 'usage::' crates --include=*.rs` shows only the refusal path.
+
+**Done when:** with a Kimi preset active, the status row and the model card show the window's use and reset from a cached poll, a test against a fake endpoint checks the rendering and the cache, and no poll runs for a preset with no `usage_url`.
+
+## R234 - VMs do not boot at load 100-240, and packages fall back to host subagents
+
+**Status:** open, 2026-11-14. left: the measurement, then a queue or admission rule.
+
+During db-fuzz's 48 h fuzz campaign (from 2026-11-12) the box ran at load 100-240, and firecode VMs did not boot there: packages asked for a VM and fell back to host subagents, so work meant to run isolated ran on the host. Nothing measured how boot time grows with load, and nothing holds a VM start until there is room for it or tells the caller why it did not come up.
+
+First measure: boot time (start to guest ready) at idle and at a range of loads, to find the load where boot passes `leticode_start`'s budget (R195). Then pick one: a VM start queue that waits for room under a stated budget, or an admission rule that refuses with the load and the floor named, instead of a silent fallback.
+
+**Still open?** start a firecode package on a loaded box (`uptime` load over 100) and see whether it boots or falls back.
+
+**Done when:** the measurement is recorded in the entry or a findings file, and a VM start under load either queues and boots or is refused with a sentence naming the load, never a silent fallback to the host.
+
+## R236 - `sudo_ask` failed once under load: a run judged unreadable because "one of its processes belongs to another user"
+
+**Status:** open, 2026-11-14. left: find the race, fix it, prove it under load.
+
+`the_password_ask_is_served_while_the_operators_run_is_blocked` (`crates/letibot/tests/sudo_ask.rs:227`, the assertion block around line 339) failed once under load. The run was judged unreadable with the sentence `one of its processes belongs to another user` (`crates/harnessd/src/prompt.rs:170`), so the card the test waits for was not raised. The run has no process of another user, so the walk read a pid that was not the run's: most likely a pid that exited between the cgroup listing and the `/proc/<pid>/fd/0` read (`ENOENT`, which R221 describes) or one reused by another process in that window. This is probably R221's cause showing in this test; R221's design question (what stands in for an unreadable process in `a_process_that_could_not_be_looked_at_is_not_a_no`) still decides the fix.
+
+**Still open?** `grep -n 'Unreadable' crates/tools/src/exec/ask.rs` and see whether a failed `read_link` still maps to `Unreadable` regardless of errno.
+
+**Done when:** the walk skips a vanished pid (and re-checks a pid's start time or cgroup before trusting its owner, if reuse is the case), and the test passes in a loop under load (for example 50 runs with `stress-ng --cpu` at the box's core count).
+
+## R237 - `daemon_takes_a_new_session` missed its 60 s turn deadline once under load
+
+**Status:** open, 2026-11-14. left: find why.
+
+`a_daemon_whose_only_session_closed_takes_a_new_one_and_runs_it` (`crates/harnessd/tests/daemon_takes_a_new_session.rs`) failed once under load at its 60 s deadline (`the new session never ran a turn, so it never opened`, about line 241); the turn normally reaches the fake provider in about 5 s. One possible cause, not verified: the fake provider's thread (`fake()`, lines 17-50) `unwrap`s every `read_line` and `read_exact`, so one connection that is reset or short (a health probe, a retried request) panics that thread and nothing is counted after it, which looks like a turn that never ran.
+
+**Still open?** read `fake()` for `unwrap` on reads.
+
+**Done when:** the fake skips a bad connection instead of panicking (and the test says so if its thread died), and the test passes in a loop under load; if it still misses, the daemon's side of the delay is found and filed.
+
+## R238 - jobwatch measured 103 ms for a `sleep 0.3` job once under load
+
+**Status:** open, 2026-11-14. left: find whether the stamp is wrong.
+
+`a_backgrounded_result_through_the_sink_publishes_the_jobs_settlement` (`crates/harnessd/src/jobwatch/tests.rs:221`) asserts `(250..5_000).contains(&elapsed_ms)` (line 256) for a `sleep 0.3` job. Once under load it measured `elapsed_ms` 103, SHORTER than the job ran. Load can make a job look longer, never shorter, so this points at the stamp: the start taken late (at the watcher's first look rather than the spawn) or the end taken from a clock that is not the start's. The bound was not loosened, because loosening it would hide exactly this.
+
+**Still open?** find where jobwatch sets the start and end of `elapsed_ms` and whether both come from the same clock and the same moment of the job's life.
+
+**Done when:** the start is the spawn's own instant (or the defect is shown to be elsewhere), with a test that delays the watcher's first look and still reads at least the job's run time.
+
+## R239 - db-fuzz's plugin-pane study: what the S1 and plugin-pane landings left open
+
+**Status:** mostly fixed, 2026-11-14. left: findings 4, 7, 9 and 10.
+
+The study is `docs/findings/db-fuzz-plugins-2026-11-13.md`, kept verbatim: ten findings from the db-fuzz session (`s-1792687430252160872`) trying to build and edit a plugin pane on 2026-11-07 and 2026-11-11..13, with rowids into its project store. Each finding below, with what landed on main.
+
+1. The model could not edit its own pane's source because `bash` cannot see the store, and nothing said so; it scanned `/` with `find` and then faked the pane's numbers in the status file. Fixed: ef008d36 (a `bash` failure on a store path names the file tools), 3db3108f (`FILE_TOOLS_ONLY` in the scaffold and already-exists messages, the skill says the directory is reached by `read`/`edit`/`write` only). The db-fuzz status file's faked `cov`/`execs` lines are that session's, not this repo's.
+2. A "dashboard" request built an HTTP server instead of a pane; no skill offer fired. Fixed: 12eb3f2e (S1 - the operator's prompt is scored alone against keywords, and an untaken offer can be earned again), and plugin-pane's `when_to_use` (9b7d3305).
+3. "Add it as a pane" went to the `screen` tool. Fixed: 03cfc2af (the screen is the agent's own pty, the plugin description says a pane is the dashboard the OPERATOR sees, with a test).
+4. It loaded the Claude Code user skill `instrument-dashboard` (an HTML style guide) over plugin-pane on "dashboard". Partly fixed: S1 and plugin-pane's new keywords (`harness`, `operator`, `tui`, 3db3108f). Open: a `~/.claude` skill whose output is HTML still competes on "dashboard" in a seat with a pane head; the study's option is to demote such skills there.
+5. It never checked for an existing pane before scaffolding, leaving four plugin dirs, two abandoned. Fixed: 3db3108f (`plugin stack` prints each layer's source dir; the skill's step 0 is "stack first, EXTEND it", with a test on the order).
+6. The first pane's live read failed for about two hours: `test` refused an unloaded layer and the scaffold declared no capability. Fixed: 9ee05c42 (read path), 3db3108f (`test` asks a built, unloaded layer on a copy; a purpose that reads a file scaffolds `capabilities = ["read"]`).
+7. It told the room a plugin cannot add a model-callable tool. Fixed in code by 58087ac8. Open: the room thread (#572-#600) still carries the wrong claim; a correction in that room, or nothing if the thread is out of every window.
+8. It designed around "a pane never runs a program" without knowing `read:<path>` and `~/` looks. Fixed: 3db3108f (the pane contract and the skill document the three spellings and `read:<path>`, with a test). The study's "exec look for panes" stays an SDK gap, not filed as work.
+9. About 30 room messages interleaved with tool results made a successful scaffold look failed, and the retry left an orphan layer. Open: out of scope for plugins; it is a room-flood problem (R169's quiet rule and R187's ordering are the related entries).
+10. The session's own note (`.letibot/notes/libfuzzer-go-and-pgfuzz-foreign-targets.md:177` in the db-fuzz project) does not record that `bash` is blind to the plugin dir. Open: a note in another project, for that session or the operator to amend; nothing in this repo.
+
+**Still open?** for 4, ask a fresh session with `instrument-dashboard` installed for "a dashboard of the fuzz run" and see which skill it loads; for 7, read the room thread.
+
+**Done when:** finding 4 is decided (demote or leave, with the reason here), and 7, 9 and 10 are either done or moved to their own entries; then delete this entry.
 
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
@@ -2189,6 +2341,30 @@ From the tool runtime, in descending order of consequence.
 A decision, an account, a live run on real hosts, or an install. Do not start these from an agent seat.
 
 ---
+
+## R233 - Rate-limit decisions as config values or a fuel-capped wasm call
+
+**Status:** needs the operator, 2026-11-14. Not started. left: the shape of the hook record.
+
+Operator idea, 2026-11-13. Decisions the provider layer makes on a rate limit today are fixed in code: whether to wait out a limit whose reset is near (`wait_if_within`) and which fallback model or provider to take. The idea is config keys that take either a value or a plugin call, a wasm module run fuel-capped like the other plugin hooks, so an operator can say "wait if the reset is within 10 minutes, else fall back to X" or hand the choice to code.
+
+Question for the operator: which decisions get a hook (wait/fallback only, or retry count and backoff too); what one call is given (the refusal, the window's use from R232, the session, the candidates) and what it answers; whether a hook's failure or fuel exhaustion falls back to the fixed default; and where the record lives (`leticode.toml`, the preset, or a plugin manifest).
+
+**Still open?** `grep -rn 'wait_if_within' crates` for a hook.
+
+**Done when:** the operator has given the record's shape and this entry is moved to Code work with it.
+
+## R235 - A Claude Code session starts a new `until [ -s ... ]` wait loop every few minutes and never stops the old ones
+
+**Status:** needs the operator, 2026-11-14. An observation, not a letibot defect. left: the operator's call on whether to act.
+
+Seen 2026-11-13: the stroppy-io Claude Code session started a new `until [ -s .../tasks/bn6ywzozx.output ]; do sleep 30; done` loop about every 3 minutes, waiting on the same background task's output file, and never stopped the earlier ones; 15 were running at once. Each costs little, but they never end if the file never fills, and the pattern is the one the operator's global rules already warn against (a waiter belongs in one Monitor, not in a loop started again each turn).
+
+This is Claude Code's waiter behaviour, not something letibot started. Recorded so the next time a box shows dozens of `sleep 30` shells the cause is known. Question for the operator: leave it as an observation, or add a sentence to the skills letibot ships to Claude Code seats (`claude-plugin/`) saying to wait once, through a Monitor, and never start a second waiter for the same file.
+
+**Still open?** `ps -eo pid,etime,args | grep -c 'until \[ -s'` on a box running Claude Code sessions.
+
+**Done when:** the operator decides; if a sentence is wanted, it is in the seat's skill and a session's waits are seen not to pile up.
 
 ## R126 - Reviewers fan out to the declared hosts, opt-in
 
