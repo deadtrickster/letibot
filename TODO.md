@@ -939,6 +939,19 @@ The study is `docs/findings/db-fuzz-plugins-2026-11-13.md`, kept verbatim: ten f
 
 **Done when:** finding 4 is decided (demote or leave, with the reason here), and 7, 9 and 10 are either done or moved to their own entries; then delete this entry.
 
+## R240 - Config parser bugs the config reference found
+
+**Status:** open, 2026-11-14. Found by the `config-reference` landing (93bff507..09d880ec), whose drift tests read every parser.
+
+1. `load_user()` (`crates/leticode-config/src/lib.rs:328`) loads the user file tagged as the project level, so user `[perimeter.*] grants_ro`, `grants_rw`, `docker = true` and `secrets` would be refused through `cfg.leticode.perimeters`.
+2. `[perimeter.NAME] docker` merges with the user's value first, so a project cannot narrow it.
+3. `letibot --listen` offline reads `[queue] mute` from the project file only; every other reader joins both levels.
+4. The hosts tool error at `hosts.rs:141` names 5 of the 9 keys a host block takes.
+5. providers.toml: a `#` inside a quoted value truncates the value, and `[provider.zhipu] key` is never found.
+6. Readers that ignore unknown keys, so a typo is silent and the reference test cannot check them in reverse: providers.toml `[default]`, `[fallback]`, `[memory]`, `[metrics]`, `[gatekeeper]`, `[prices.*]`, `[<preset>]`, `[brave]` (covered only by a `.get()` scan, which misses dynamic keys); leticode.toml `[provider.NAME]` (`first_byte_secs` typo is ignored) and `[queue]` on the leticode-config side. `[keys]`, `[boundary.env]` and `[perimeter.NAME.env]` are open by design.
+
+The intent nudge's per-model key (branch `intent-per-model`) needs one `k(...)` line in `crates/config-ref/src/files/providers.rs`; its drift test fails until it is there.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.
