@@ -65,16 +65,16 @@ impl ShadowConfig {
     /// The model `job` runs on for a session on `watched`: its own line, then `provider/*`, then
     /// `*`, then `[default]`. `None` when the job is off.
     pub fn model_for(&self, job: Job, watched: &str) -> Option<String> {
-        if !self.is_on(job) {
-            return None;
-        }
-        Some(
-            self.models
-                .get(&job)
-                .and_then(|t| crate::leticode_config::by_model(t, watched))
-                .cloned()
-                .unwrap_or_else(|| self.default.clone()),
-        )
+        self.is_on(job).then(|| self.model_line(job, watched))
+    }
+
+    /// [`ShadowConfig::model_for`] whether or not the job is on: what a replay judges with.
+    pub fn model_line(&self, job: Job, watched: &str) -> String {
+        self.models
+            .get(&job)
+            .and_then(|t| crate::leticode_config::by_model(t, watched))
+            .cloned()
+            .unwrap_or_else(|| self.default.clone())
     }
 
     /// One line per job that is on, for the shadow session's first row and `--status`.

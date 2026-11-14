@@ -3575,6 +3575,8 @@ impl Harness {
             limit_return: None,
             limit_row: Default::default(),
             shadow: Default::default(),
+            shadow_held: None,
+            shadow_counted: (0, 0),
         };
         h.announce_the_open(stale, stale_for_model);
         h.import_the_foreign_conversation();

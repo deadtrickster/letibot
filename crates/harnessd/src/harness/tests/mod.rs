@@ -57,6 +57,7 @@ mod questions;
 mod recall;
 mod restart_notice;
 mod roles;
+mod shadow_turn_end;
 mod steer_door;
 mod store_writes;
 mod workspace;

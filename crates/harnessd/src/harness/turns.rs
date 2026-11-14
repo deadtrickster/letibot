@@ -437,6 +437,9 @@ impl Harness {
             },
             emergency,
         ));
+        // And what a shadow turn_end verdict decided: its templated reminder, or the held regex nudge.
+        let shadow = self.shadow_notices();
+        notices.extend(self.say_all(&Facts::Steer, shadow));
         let queue_n = notices.len();
         let cursor_before = self.monitor_cursor.load(Ordering::SeqCst);
         // A firing is a delivery and not one more sentence among the settlements: it gets a row
@@ -1355,6 +1358,12 @@ impl Harness {
     /// words promise work, and only harness rows came after it. A turn the operator interrupted
     /// is truncated, and one they answered has their row after it, so neither counts.
     fn announced_at_the_end(&self) -> Option<String> {
+        // A shadow that judged this very answer replaces the regex, or confirms it with its quote.
+        match self.shadow_on_the_last_answer() {
+            Some((word, promise)) if word == "owed" => return promise,
+            Some((word, _)) if word == "none" => return None,
+            _ => {}
+        }
         if !self.cfg.prose_nudge(&self.model_name()).0 {
             return None;
         }
@@ -2265,6 +2274,12 @@ impl Harness {
                         intent = (nudges_left > 0)
                             .then(|| self.close_the_turn(&ok.turn_id, &appended))
                             .flatten();
+                        // The shadow's turn_end job, when on and answering, decides after the turn:
+                        // the regex nudge is held for it and goes out only if the shadow falls back.
+                        if self.shadow_takes_turn_end() {
+                            self.shadow_held = intent.take();
+                            self.submit_turn_end(&text);
+                        }
                         native = intent.clone();
                         if intent.is_some() {
                             // The one continuation a turn has, spent where it always was.
@@ -4001,16 +4016,6 @@ impl Harness {
         self.persist_reporting(&mut |_, _| {})?;
         self.tend_shadow();
         Ok(())
-    }
-
-    /// Open the shadow once the session is stored, and move its position stamp to the rows written.
-    fn tend_shadow(&mut self) {
-        if matches!(self.shadow, crate::shadow::Slot::NotYet) {
-            self.shadow = crate::shadow::open_for(&self.cfg, &self.model_name());
-        }
-        if let Some(s) = self.shadow.get() {
-            s.advance(self.session.items.len() as u64);
-        }
     }
 
     /// A wait on the store, said on this session and on every other one this daemon holds: the

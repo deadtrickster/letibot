@@ -1859,6 +1859,9 @@ impl<'a> Sessions<'a> {
                     session_id,
                     if own_session {
                         SessionOrigin::Queue
+                    } else if role == letibot_sessionlog::SHADOW_SEAT {
+                        // A shadow's record reopened in a head is still the shadow's.
+                        SessionOrigin::Shadow
                     } else if self.base.one_shot {
                         SessionOrigin::OneShot
                     } else if self.base.parent_seat.is_some() {

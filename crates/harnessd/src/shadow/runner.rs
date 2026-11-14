@@ -326,7 +326,9 @@ impl Inner {
         let started = Instant::now();
         let got = if self.inflight.swap(true, Ordering::SeqCst) {
             // The last call is still running past its deadline: this one is a miss, not a pile-up.
-            Err(mpsc::RecvTimeoutError::Timeout)
+            Ok(Err(
+                "the previous call is still running past its deadline".to_string()
+            ))
         } else {
             let (tx, rx) = mpsc::channel();
             let (judge, system, u, busy) = (
@@ -402,6 +404,15 @@ impl Inner {
             self.system,
             checks.join("\n"),
         );
+        // The promise, apart, for a reader that acts on the record later (the restart check).
+        let mut body = body;
+        if let Outcome::Verdict(Verdict::TurnEnd {
+            reminder: verdict::Reminder::Owed { promise, .. },
+            ..
+        }) = &outcome
+        {
+            body.push_str(&format!("--- promise\n{promise}\n"));
+        }
         self.recorder.row(&title, &body);
         outcome
     }

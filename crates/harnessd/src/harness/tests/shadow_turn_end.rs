@@ -1,0 +1,206 @@
+//! R243 stage 2 end to end, on the byte vocabulary: a turn that announced work and stopped is held
+//! for the shadow's turn_end verdict, and the verdict decides what the next wake says.
+
+use super::*;
+use crate::shadow::{self, Job, runner};
+use std::sync::{Arc, Mutex, mpsc};
+use std::time::Duration;
+
+const ANNOUNCED: &str = "I'll run the parser tests next and report back.";
+
+/// A model that always answers with the same announcement.
+struct Says;
+
+impl letibot_backend::MessagesBackend for Says {
+    fn caps(&self) -> letibot_backend::BackendCaps {
+        letibot_backend::BackendCaps::METERED_API
+    }
+    fn name(&self) -> &str {
+        "deepseek"
+    }
+    fn model(&self) -> &str {
+        "fake"
+    }
+    fn authority(&self) -> String {
+        "a fake provider".into()
+    }
+    fn complete(
+        &self,
+        _req: &letibot_backend::TurnRequest<'_>,
+        _on_delta: &mut dyn FnMut(&letibot_backend::Delta) -> letibot_backend::StreamFlow,
+    ) -> Result<letibot_backend::Completion, letibot_backend::BackendError> {
+        Ok(letibot_backend::Completion {
+            text: ANNOUNCED.into(),
+            reasoning: String::new(),
+            tool_calls: Vec::new(),
+            finish: letibot_backend::Finish::Stop,
+            cost: letibot_backend::TurnCost {
+                meter: letibot_backend::Meter::Metered,
+                prompt_tokens: 10,
+                cached_tokens: 0,
+                generated_tokens: 1,
+                wall_ms: 1,
+                micros_usd: None,
+            },
+            raw_usage: None,
+            thoughts: Vec::new(),
+        })
+    }
+}
+
+/// A shadow model that answers `reply` to every check.
+struct Judges(&'static str);
+
+impl shadow::judge::Judge for Judges {
+    fn label(&self) -> String {
+        "stub/judge".into()
+    }
+    fn judge(&self, _: &str, _: &str) -> Result<String, String> {
+        Ok(self.0.into())
+    }
+}
+
+#[derive(Default)]
+struct Rows(Mutex<Vec<String>>);
+
+impl shadow::record::Recorder for Rows {
+    fn row(&self, title: &str, _body: &str) {
+        self.0.lock().unwrap().push(title.to_string());
+    }
+}
+
+/// A harness with the regex prose nudge on and a shadow whose turn_end model answers `reply`, and
+/// the channel its wake rings on.
+fn a_session(tag: &str, reply: &'static str) -> (Harness, mpsc::Receiver<()>, Arc<Rows>) {
+    let dir = letibot_sessionlog::testing::scratch_root()
+        .join(format!("shadow-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = Config::for_this_box(&dir);
+    cfg.dialect = crate::Dialect::Qwen;
+    cfg.session_id = format!("s-shadow-{tag}");
+    cfg.vocab_gguf = None;
+    cfg.intent_prose = true;
+    cfg.shadow = shadow::config::ShadowConfig::from_lines(
+        letibot_provider::keys::ShadowLines {
+            enabled: vec!["turn_end".into()],
+            ..Default::default()
+        },
+        "local".into(),
+    )
+    .unwrap();
+    let parts = Parts::load(&cfg).expect("the byte vocabulary loads");
+    let mut h = Harness::open(&parts, cfg.clone(), Hub::new(&cfg.session_id)).expect("opens");
+    h.provider = Some(Box::new(Says));
+    let rows = Arc::new(Rows::default());
+    let (tx, rx) = mpsc::channel();
+    let tx = Mutex::new(tx);
+    let events: shadow::Events = Default::default();
+    let ev = events.clone();
+    let on = move |job: Job| -> runner::OnOutcome {
+        let ev = ev.clone();
+        let tx = tx.lock().unwrap().clone();
+        Box::new(move |position, outcome| {
+            if job == Job::TurnEnd && *outcome != runner::Outcome::Superseded {
+                ev.lock().unwrap().push_back(shadow::Event {
+                    job,
+                    position,
+                    outcome: outcome.clone(),
+                });
+                let _ = tx.send(());
+            }
+        })
+    };
+    let s = runner::Shadow::start(
+        &cfg.shadow,
+        "deepseek/fake",
+        None,
+        rows.clone(),
+        &|_, _| Arc::new(Judges(reply)),
+        &runner::Timing::of,
+        &on,
+    )
+    .expect("turn_end is on");
+    h.shadow = shadow::Slot::On {
+        shadow: s,
+        events,
+        recorder: rows.clone(),
+        session_id: shadow::session_id(&cfg.session_id),
+    };
+    (h, rx, rows)
+}
+
+fn said(h: &Harness, what: &str) -> bool {
+    h.session
+        .items
+        .iter()
+        .any(|i| letibot_sessionlog::view::body_of(i).contains(what))
+}
+
+#[test]
+fn an_owed_verdict_reminds_with_the_template_and_the_quote() {
+    let (mut h, rang, rows) = a_session(
+        "owed",
+        r#"{"verdict":"owed","promise":"I'll run the parser tests next"}"#,
+    );
+    h.submit("fix the parser").expect("a turn runs");
+    assert!(!said(&h, "[shadow]"), "the turn ends without waiting");
+    rang.recv_timeout(Duration::from_secs(10))
+        .expect("the verdict rings the wake");
+    h.wake()
+        .expect("the wake runs")
+        .expect("the reminder is a turn");
+    assert!(
+        said(
+            &h,
+            "[shadow] You said \"I'll run the parser tests next\" and the turn ended there."
+        ),
+        "{:?}",
+        h.session.items
+    );
+    let titles = rows.0.lock().unwrap();
+    assert!(
+        titles
+            .iter()
+            .any(|t| t.contains("confirms the regex nudge")),
+        "{titles:?}"
+    );
+}
+
+#[test]
+fn a_none_verdict_replaces_the_regex_nudge_with_silence() {
+    let (mut h, rang, rows) = a_session("none", r#"{"verdict":"none"}"#);
+    h.submit("fix the parser").expect("a turn runs");
+    let before = h.session.items.len();
+    rang.recv_timeout(Duration::from_secs(10))
+        .expect("the verdict rings the wake");
+    assert!(h.wake().expect("the wake runs").is_none(), "nothing to say");
+    assert_eq!(h.session.items.len(), before, "no nudge row and no turn");
+    let titles = rows.0.lock().unwrap();
+    assert!(
+        titles
+            .iter()
+            .any(|t| t.contains("replaces the regex nudge")),
+        "{titles:?}"
+    );
+}
+
+#[test]
+fn an_unsure_verdict_falls_back_to_the_held_regex_nudge() {
+    let (mut h, rang, rows) = a_session("unsure", r#"{"verdict":"unsure"}"#);
+    h.submit("fix the parser").expect("a turn runs");
+    rang.recv_timeout(Duration::from_secs(10))
+        .expect("the verdict rings the wake");
+    assert!(
+        h.wake().expect("the wake runs").is_some(),
+        "the held nudge goes out as a turn"
+    );
+    assert!(!said(&h, "[shadow] You said"));
+    let titles = rows.0.lock().unwrap();
+    assert!(
+        titles
+            .iter()
+            .any(|t| t.contains("the regex nudge goes out")),
+        "{titles:?}"
+    );
+}

@@ -497,6 +497,10 @@ pub struct Harness {
     limit_row: Arc<std::sync::Mutex<Option<String>>>,
     /// The shadow watching this session (R243): off unless providers.toml `[shadow]` turns a job on.
     shadow: crate::shadow::Slot,
+    /// The regex nudge a turn end held back for the shadow's turn_end verdict.
+    shadow_held: Option<String>,
+    /// How far the shadow's position count has read: the index reached and the rows counted.
+    shadow_counted: (usize, u64),
 }
 
 /// A confirmation of `allow-all` waiting for a person: the daemon's half of the card another head's ask
@@ -1656,6 +1660,8 @@ pub use clear::{ClearReport, clear_reply};
 // that a store already in that state needs, so a conversation is not refused for ever. See the
 // module's header for the shape it is, and why only that shape is repaired.
 mod children;
+// The shadow's hooks into a session: its position, the turn_end trigger and what a verdict does.
+mod shadow_seat;
 // Where each open session's own watcher set and slots are, by id - see the module's header.
 pub(crate) mod trees;
 // A session's estate - what it was still holding when it ended, what ended with it, and what

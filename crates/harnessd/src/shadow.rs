@@ -7,7 +7,9 @@ pub mod guard;
 pub mod judge;
 pub mod prompts;
 pub mod record;
+pub mod replay;
 pub mod runner;
+pub mod turn_end;
 pub mod verdict;
 
 #[cfg(test)]
@@ -72,6 +74,19 @@ pub fn session_id(watched: &str) -> String {
     format!("{watched}-shadow")
 }
 
+/// One outcome a watched session acts on, at its next wake.
+#[derive(Debug, Clone)]
+pub struct Event {
+    pub job: Job,
+    pub position: u64,
+    pub outcome: runner::Outcome,
+}
+
+pub type Events = std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<Event>>>;
+
+/// Rings the watched session's wake, so an arrived verdict is acted on between turns.
+pub type Wake = std::sync::Arc<dyn Fn() + Send + Sync>;
+
 /// A harness's shadow, opened on first need: the watched session has to be in the store before
 /// a shadow session can hang from it.
 #[derive(Default)]
@@ -79,13 +94,31 @@ pub enum Slot {
     #[default]
     NotYet,
     Off,
-    On(runner::Shadow),
+    On {
+        shadow: runner::Shadow,
+        events: Events,
+        recorder: std::sync::Arc<dyn record::Recorder>,
+        session_id: String,
+    },
 }
 
 impl Slot {
     pub fn get(&self) -> Option<&runner::Shadow> {
         match self {
-            Slot::On(s) => Some(s),
+            Slot::On { shadow, .. } => Some(shadow),
+            _ => None,
+        }
+    }
+
+    /// The queue verdicts arrive on, the recorder, and the shadow session's id.
+    pub fn parts(&self) -> Option<(Events, std::sync::Arc<dyn record::Recorder>, String)> {
+        match self {
+            Slot::On {
+                events,
+                recorder,
+                session_id,
+                ..
+            } => Some((events.clone(), recorder.clone(), session_id.clone())),
             _ => None,
         }
     }
@@ -93,7 +126,7 @@ impl Slot {
 
 /// The shadow for a session with `cfg`, on `watched_model`. `NotYet` while its row or transcript is
 /// still to be written; `Off` for a session no job watches, which is every session by default.
-pub fn open_for(cfg: &crate::config::Config, watched_model: &str) -> Slot {
+pub fn open_for(cfg: &crate::config::Config, watched_model: &str, wake: Wake) -> Slot {
     let shadow = &cfg.shadow;
     if !shadow.any_on()
         || cfg.parent_session_id.is_some()
@@ -113,14 +146,15 @@ pub fn open_for(cfg: &crate::config::Config, watched_model: &str) -> Slot {
         .enabled()
         .find_map(|j| shadow.model_for(j, watched_model))
         .unwrap_or_default();
-    let recorder = match record::StoreRecorder::open(store, &cfg.session_id, &label) {
-        Ok(r) => std::sync::Arc::new(r),
-        Err(record::OpenError::NotYet(_)) => return Slot::NotYet,
-        Err(record::OpenError::Fault(why)) => {
-            eprintln!("  {} · no shadow: {why}", cfg.session_id);
-            return Slot::Off;
-        }
-    };
+    let recorder: std::sync::Arc<dyn record::Recorder> =
+        match record::StoreRecorder::open(store, &cfg.session_id, &label) {
+            Ok(r) => std::sync::Arc::new(r),
+            Err(record::OpenError::NotYet(_)) => return Slot::NotYet,
+            Err(record::OpenError::Fault(why)) => {
+                eprintln!("  {} · no shadow: {why}", cfg.session_id);
+                return Slot::Off;
+            }
+        };
     let providers = cfg.providers_file.clone();
     let local = cfg.endpoint.clone();
     let judge_for = |job: Job, model: &str| -> std::sync::Arc<dyn judge::Judge> {
@@ -132,16 +166,40 @@ pub fn open_for(cfg: &crate::config::Config, watched_model: &str) -> Slot {
             }),
         }
     };
+    let events: Events = Default::default();
+    let on_outcome = |job: Job| -> runner::OnOutcome {
+        let (events, wake) = (events.clone(), wake.clone());
+        Box::new(move |position, outcome| {
+            // Only turn_end acts; during and permission are observe-only, recorded and no more.
+            if job != Job::TurnEnd || *outcome == runner::Outcome::Superseded {
+                return;
+            }
+            events
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .push_back(Event {
+                    job,
+                    position,
+                    outcome: outcome.clone(),
+                });
+            wake();
+        })
+    };
     match runner::Shadow::start(
         shadow,
         watched_model,
         Some(&cfg.workspace),
-        recorder,
+        recorder.clone(),
         &judge_for,
         &runner::Timing::of,
-        &|_| Box::new(|_, _| {}),
+        &on_outcome,
     ) {
-        Some(s) => Slot::On(s),
+        Some(s) => Slot::On {
+            shadow: s,
+            events,
+            recorder,
+            session_id: session_id(&cfg.session_id),
+        },
         None => Slot::Off,
     }
 }

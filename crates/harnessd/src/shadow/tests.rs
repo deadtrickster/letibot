@@ -630,3 +630,223 @@ fn the_local_model_answers_in_the_schema() {
         c.log
     );
 }
+
+mod turn_end_acting {
+    use super::super::turn_end::{self, Act};
+    use super::*;
+
+    fn owed() -> Outcome {
+        Outcome::Verdict(Verdict::TurnEnd {
+            reminder: Reminder::Owed {
+                promise: "I will run the gate next".into(),
+                evidence: "and report the result".into(),
+            },
+            note: None,
+        })
+    }
+
+    #[test]
+    fn the_shadow_replaces_or_confirms_the_regex_and_falls_back_to_it() {
+        let id = "s-w-shadow";
+        let (act, said) = turn_end::decide(&owed(), Some("regex line"), false, id);
+        assert!(matches!(&act, Act::Remind(t) if t.contains("\"I will run the gate next\"")));
+        assert!(said.unwrap().contains("confirms"));
+        let (act, said) = turn_end::decide(&owed(), None, false, id);
+        assert!(matches!(act, Act::Remind(_)));
+        assert!(said.unwrap().contains("regex was silent"));
+        let none = Outcome::Verdict(Verdict::TurnEnd {
+            reminder: Reminder::None,
+            note: None,
+        });
+        let (act, said) = turn_end::decide(&none, Some("regex line"), false, id);
+        assert_eq!(act, Act::Nothing);
+        assert!(said.unwrap().contains("replaces"));
+        for fallback in [
+            Outcome::Verdict(Verdict::TurnEnd {
+                reminder: Reminder::Unsure,
+                note: None,
+            }),
+            Outcome::Void("quotes".into()),
+            Outcome::TimedOut,
+            Outcome::Failed("refused".into()),
+            Outcome::Paused,
+        ] {
+            let (act, _) = turn_end::decide(&fallback, Some("regex line"), false, id);
+            assert_eq!(act, Act::Regex("regex line".into()), "{fallback:?}");
+            assert_eq!(turn_end::decide(&fallback, None, false, id).0, Act::Nothing);
+        }
+        let stale = Outcome::Stale { judged: 1, now: 2 };
+        assert_eq!(
+            turn_end::decide(&stale, Some("regex line"), false, id).0,
+            Act::Nothing
+        );
+        let (act, said) = turn_end::decide(&owed(), Some("regex line"), true, id);
+        assert_eq!(act, Act::Nothing, "one reminder per operator message");
+        assert!(said.unwrap().contains("withheld"));
+    }
+
+    #[test]
+    fn a_reminder_is_the_template_and_the_quote_and_nothing_the_shadow_wrote() {
+        let (Act::Remind(text), _) = turn_end::decide(&owed(), None, false, "s-w-shadow") else {
+            panic!("owed reminds")
+        };
+        assert_eq!(
+            text,
+            "[shadow] You said \"I will run the gate next\" and the turn ended there. Carry on, \
+             or say why not. (verdict from s-w-shadow)"
+        );
+        assert!(
+            !text.contains("report the result"),
+            "the evidence quote stays in the record"
+        );
+    }
+
+    #[test]
+    fn one_reminder_until_the_operator_speaks_again() {
+        let op = |t: &str| TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Operator,
+            parts: vec![letibot_transcript::UserPart::Text { text: t.into() }],
+        };
+        let agent = |t: &str| TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
+            parts: vec![letibot_transcript::UserPart::Text { text: t.into() }],
+        };
+        let reminded = [
+            op("fix it"),
+            agent(&turn_end::reminder("I will fix it", "s")),
+        ];
+        assert!(turn_end::reminded_since_operator(&reminded));
+        let again = [
+            op("fix it"),
+            agent(&turn_end::reminder("I will fix it", "s")),
+            op("now the docs"),
+        ];
+        assert!(!turn_end::reminded_since_operator(&again));
+        assert_eq!(
+            turn_end::last_operator(&again).as_deref(),
+            Some("now the docs")
+        );
+    }
+
+    #[test]
+    fn a_proposed_note_is_a_row_the_model_never_reads() {
+        let row = turn_end::note_row("the gate needs LETIBOT_REQUIRE_APPARATUS=1", "s-w-shadow");
+        assert!(matches!(
+            &row,
+            TranscriptItem::Offer { kind: letibot_transcript::OfferKind::Shadow, title, body }
+                if title.starts_with("shadow proposes a note") && body.contains("s-w-shadow")
+        ));
+    }
+
+    use letibot_transcript::TranscriptItem;
+
+    fn assistant(t: &str) -> TranscriptItem {
+        TranscriptItem::Assistant {
+            text: t.into(),
+            tool_calls: vec![],
+            truncated: false,
+        }
+    }
+
+    fn operator(t: &str) -> TranscriptItem {
+        TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Operator,
+            parts: vec![letibot_transcript::UserPart::Text { text: t.into() }],
+        }
+    }
+
+    #[test]
+    fn replay_labels_a_turn_end_by_what_the_operator_said_next() {
+        use super::super::replay::{self, Label};
+        let items = vec![
+            operator("fix the parser"),
+            assistant("I'll run the parser tests next."),
+            operator("continue"),
+            assistant("Done: the parser tests pass."),
+            operator("now the docs"),
+            assistant("Should I also update the README?"),
+            operator("go on"),
+            assistant("The README is updated."),
+        ];
+        let cases = replay::cases(&items);
+        let labels: Vec<Label> = cases.iter().map(|c| c.label).collect();
+        assert_eq!(labels, [Label::Owed, Label::None, Label::None]);
+        assert!(cases[0].regex_owed);
+        let judge = Stub::new(|_, user| {
+            Ok(if user.contains("I'll run the parser tests next.") {
+                r#"{"verdict":"owed","promise":"I'll run the parser tests next."}"#.into()
+            } else {
+                r#"{"verdict":"none"}"#.into()
+            })
+        });
+        let r = replay::score(&[("s-1".into(), items)], judge.as_ref());
+        assert_eq!(r.turns, 3);
+        assert_eq!(r.shadow.owed_right, 1);
+        assert_eq!(r.shadow.none_right, 2);
+        assert!((r.acting.accuracy() - 1.0).abs() < 1e-9);
+        assert!(r.said(true).contains("s-1 #1: label Owed"));
+    }
+
+    #[test]
+    fn a_restart_reads_the_last_turn_end_verdict_from_the_record() {
+        use letibot_tokencore::store::{SessionRecord, StablePrefixRecord, Store};
+        let path = dir("restart").join("sessions.db");
+        let store = Store::open(&path).unwrap();
+        store
+            .put_session(&SessionRecord {
+                id: "s-r".into(),
+                title: None,
+                model_id: "glm/x".into(),
+                dialect_sha: "d".into(),
+                workspace_root: "/w".into(),
+                owner: "op".into(),
+                approvers: vec![],
+                role: None,
+                parent_session_id: None,
+            })
+            .unwrap();
+        let prefix = store
+            .put_stable_prefix(&StablePrefixRecord {
+                dialect_sha: "d".into(),
+                system: "sys".into(),
+                tools_json: vec![],
+                tokens: vec![1],
+                h_init: [1; 32],
+                vocab_source: "bytes:test".into(),
+                effort: None,
+            })
+            .unwrap();
+        store.put_transcript("s-r#t0", "s-r", &prefix).unwrap();
+        let rec: Arc<dyn Recorder> = Arc::new(
+            super::super::record::StoreRecorder::open(store, "s-r", "stub/model").unwrap(),
+        );
+        let judge = Stub::new(|_, _| {
+            Ok(r#"{"verdict":"owed","promise":"I will run the gate next"}"#.into())
+        });
+        let (tx, rx) = mpsc::channel();
+        let tx = Mutex::new(tx);
+        let pos = Arc::new(std::sync::atomic::AtomicU64::new(4));
+        let r = JobRunner::start(
+            Job::TurnEnd,
+            judge,
+            rec,
+            pos,
+            fast(),
+            prompts::TURN_END.into(),
+            "builtin".into(),
+            Box::new(move |_, o| {
+                let _ = tx.lock().unwrap().send(o.clone());
+            }),
+        );
+        r.submit(Request::new(4, shown(TURN)));
+        assert!(matches!(
+            rx.recv_timeout(Duration::from_secs(5)).unwrap(),
+            Outcome::Verdict(_)
+        ));
+        let store = Store::open(&path).unwrap();
+        assert_eq!(
+            super::super::record::last_turn_end(&store, "s-r"),
+            Some((4, "owed".into(), Some("I will run the gate next".into())))
+        );
+    }
+}

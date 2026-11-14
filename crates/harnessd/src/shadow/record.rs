@@ -181,3 +181,28 @@ impl Recorder for StoreRecorder {
         let _ = t.store.set_title(&self.session_id, &title);
     }
 }
+
+/// The last turn_end verdict the shadow of `watched` recorded: its position, its word, and the
+/// promise an `owed` quoted. Read from the rows' own titles, so a restart needs no other state.
+pub fn last_turn_end(store: &Store, watched: &str) -> Option<(u64, String, Option<String>)> {
+    let id = super::session_id(watched);
+    let tid = store.current_transcript_id(&id).ok()??;
+    let loaded = store.load_transcript(&tid).ok()?;
+    loaded.items.iter().rev().find_map(|(item, _, _)| {
+        let TranscriptItem::Offer {
+            kind: OfferKind::Shadow,
+            title,
+            body,
+        } = item
+        else {
+            return None;
+        };
+        let rest = title.strip_prefix("turn_end · ")?;
+        let word = rest.split(" · ").next()?.to_string();
+        let position = title.rsplit_once(" at #")?.1.trim().parse().ok()?;
+        let promise = body
+            .split_once("--- promise\n")
+            .map(|(_, p)| p.trim_end_matches('\n').to_string());
+        Some((position, word, promise))
+    })
+}

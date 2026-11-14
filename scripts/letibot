@@ -3123,6 +3123,16 @@ SESSIONS_EOF
         ;;
     esac
     ;;
+  shadow)
+    # Only with its verb after it, so a prompt that starts with the word stays a prompt.
+    case "${2:-}" in
+      replay | --help | -h)
+        [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
+        shift
+        exec "$BIN/letibot" shadow "$@"
+        ;;
+    esac
+    ;;
   attach)
     # **The GitHub reviewer seat**: one long-lived poll of one scope. It drafts until
     # `[github] post` and a token are set, so this verb posts nothing by itself; the seat is the
