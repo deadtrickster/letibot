@@ -2764,6 +2764,10 @@ struct LeticodeConfigFile {
     #[serde(default)]
     #[allow(dead_code)]
     docker: Option<toml::Value>,
+    /// `[firecode]`, read by `letibot_tools::lifecycle::config`; accepted for `[gc]`'s reason.
+    #[serde(default)]
+    #[allow(dead_code)]
+    firecode: Option<toml::Value>,
     /// The `[notes]` table, see [`NotesKeys`].
     #[serde(default)]
     notes: Option<toml::Value>,
@@ -2945,6 +2949,8 @@ pub fn precedence(
     user.map(|m| (m.to_string(), Level::User))
 }
 
+#[cfg(test)]
+mod reference_tests;
 #[cfg(test)]
 #[cfg(test)]
 mod tests;

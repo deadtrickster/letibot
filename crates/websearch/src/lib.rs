@@ -354,3 +354,23 @@ mod tests {
         assert_eq!(text_of(None), "");
     }
 }
+
+#[cfg(test)]
+mod reference_tests {
+    use letibot_config_ref::files::PROVIDERS;
+
+    use super::*;
+
+    /// `[brave]` lists `key` only, and that key is read.
+    #[test]
+    fn the_brave_table_is_read() {
+        let t = PROVIDERS.table("brave").unwrap();
+        assert_eq!(t.keys.len(), 1);
+        let d = std::env::temp_dir().join(format!("letibot-braveref-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("providers.toml");
+        std::fs::write(&f, format!("[brave]\nkey = {}\n", t.keys[0].example)).unwrap();
+        assert_eq!(key_from_file(&f).as_deref(), Some("probe"));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+}

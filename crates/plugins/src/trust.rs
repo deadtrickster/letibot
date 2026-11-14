@@ -1205,3 +1205,29 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 }
+
+#[cfg(test)]
+mod reference_tests {
+    use letibot_config_ref::files::PLUGIN_TRUST;
+
+    use super::*;
+
+    /// A book holding every listed field reads and writes back exactly those fields.
+    #[test]
+    fn the_book_is_the_listed_fields() {
+        let mut doc = serde_json::Map::new();
+        for t in PLUGIN_TRUST.tables {
+            let mut entry = serde_json::Map::new();
+            for k in t.keys {
+                entry.insert(k.key.into(), serde_json::from_str(k.example).unwrap());
+            }
+            doc.insert(
+                t.path.trim_end_matches("[]").into(),
+                serde_json::Value::Array(vec![entry.into()]),
+            );
+        }
+        let text = serde_json::Value::Object(doc.clone()).to_string();
+        let back: serde_json::Value = serde_json::from_str(&Book::parse(&text).to_json()).unwrap();
+        assert_eq!(back, serde_json::Value::Object(doc));
+    }
+}

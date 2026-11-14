@@ -857,3 +857,28 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod reference_tests {
+    use letibot_config_ref::files::PERMISSION;
+
+    use super::*;
+
+    /// The three shapes the reference lists are the three the reader takes.
+    #[test]
+    fn every_listed_shape_is_read() {
+        let t = PERMISSION.table("").unwrap();
+        let ex = |key: &str| t.keys.iter().find(|k| k.key == key).unwrap().example;
+        let doc = format!(
+            "{{\"$comment\": {}, \"read\": {}, \"bash\": {{\"git status*\": {}}}}}",
+            ex("$comment"),
+            ex("<tool>"),
+            ex("<tool>.<pattern>")
+        );
+        let v: serde_json::Value = serde_json::from_str(&doc).unwrap();
+        let rules = config_to_ruleset(v.as_object().unwrap()).unwrap();
+        assert_eq!(rules.len(), 2, "{rules:?}");
+        assert_eq!(rules[0].pattern, "*");
+        assert_eq!(rules[1].pattern, "git status*");
+    }
+}

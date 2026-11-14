@@ -284,3 +284,33 @@ runs = "/build/firecode/runs"
         assert!(bytes("-1G").is_err());
     }
 }
+
+#[cfg(test)]
+mod reference_tests {
+    use std::collections::BTreeSet;
+
+    use letibot_config_ref::{files::LETICODE, probe};
+
+    use super::*;
+
+    fn fields<'de, T: serde::Deserialize<'de>>() -> BTreeSet<&'static str> {
+        probe::serde_fields::<T>()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    fn listed(path: &str) -> BTreeSet<&'static str> {
+        probe::keys_of(LETICODE.table(path).unwrap())
+    }
+
+    #[test]
+    fn gc_and_firecode_tables_are_listed() {
+        let mut gc = listed("gc");
+        gc.extend(["shared", "docker"]);
+        assert_eq!(fields::<GcTable>(), gc);
+        assert_eq!(fields::<SharedTable>(), listed("gc.shared[]"));
+        assert_eq!(fields::<FirecodeTable>(), listed("firecode"));
+    }
+}

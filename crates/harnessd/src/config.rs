@@ -3639,3 +3639,50 @@ mod compaction_trigger_tests {
         assert!(!cfg.room_for_next_turn(0));
     }
 }
+
+#[cfg(test)]
+mod reference_tests {
+    use std::collections::BTreeSet;
+
+    use letibot_config_ref::{files::PROMPTS, probe};
+
+    use super::*;
+
+    #[test]
+    fn prompts_tables_are_listed() {
+        let top: BTreeSet<&str> = probe::serde_fields::<PromptsFile>()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect();
+        let roots: BTreeSet<&str> = PROMPTS
+            .tables
+            .iter()
+            .map(|t| t.path.split('.').next().unwrap())
+            .collect();
+        assert_eq!(top, roots);
+        let sections: BTreeSet<&str> = SECTION_NAMES
+            .iter()
+            .copied()
+            .chain(["system_extra"])
+            .collect();
+        for t in PROMPTS.tables {
+            assert_eq!(probe::keys_of(t), sections, "[{}]", t.path);
+        }
+    }
+
+    /// Every listed key loads in both layers.
+    #[test]
+    fn every_listed_key_loads() {
+        let dir = std::env::temp_dir().join(format!("letibot-promptsref-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("prompts.toml");
+        let paths: Vec<&str> = PROMPTS.tables.iter().map(|t| t.path).collect();
+        let refused = probe::refused_examples(&PROMPTS, &paths, |_, doc| {
+            std::fs::write(&path, doc).unwrap();
+            Prompts::load(&path).map(|_| ())
+        });
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(refused.is_empty(), "{refused:#?}");
+    }
+}

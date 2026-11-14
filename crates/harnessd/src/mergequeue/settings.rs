@@ -815,3 +815,31 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+#[cfg(test)]
+mod reference_tests {
+    use std::collections::BTreeSet;
+
+    use letibot_config_ref::{files::LETICODE, probe};
+
+    use super::*;
+
+    fn fields<'de, T: serde::Deserialize<'de>>() -> BTreeSet<&'static str> {
+        probe::serde_fields::<T>()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn queue_tables_are_listed() {
+        let mut queue = probe::keys_of(LETICODE.table("queue").unwrap());
+        queue.insert("claude");
+        assert_eq!(fields::<QueueTable>(), queue);
+        assert_eq!(
+            fields::<ClaudeTable>(),
+            probe::keys_of(LETICODE.table("queue.claude").unwrap())
+        );
+    }
+}

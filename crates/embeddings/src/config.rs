@@ -695,3 +695,23 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod reference_tests {
+    use letibot_config_ref::{files::LETICODE, probe};
+
+    use super::*;
+
+    #[test]
+    fn the_embeddings_table_is_listed() {
+        let fields: std::collections::BTreeSet<&str> = probe::serde_fields::<Raw>()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect();
+        assert_eq!(
+            fields,
+            probe::keys_of(LETICODE.table("embeddings").unwrap())
+        );
+    }
+}

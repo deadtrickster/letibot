@@ -191,6 +191,14 @@ struct Table {
 struct GcFile {
     #[serde(default)]
     docker: Option<toml::Value>,
+    /// `[gc] root` and `[[gc.shared]]` are `lifecycle::config`'s; accepted so they do not
+    /// make this reader drop the docker settings.
+    #[serde(default)]
+    #[allow(dead_code)]
+    root: Option<toml::Value>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    shared: Option<toml::Value>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -243,5 +251,44 @@ mod tests {
         assert!(why.contains("memry"), "{why}");
         let why = parse("[gc.docker]\nprune_images_unused_for = \"30\"\n").expect_err("no unit");
         assert!(why.contains("names no unit"), "{why}");
+    }
+}
+
+#[cfg(test)]
+mod reference_tests {
+    use std::collections::BTreeSet;
+
+    use letibot_config_ref::{files::LETICODE, probe};
+
+    use super::*;
+
+    fn fields<'de, T: serde::Deserialize<'de>>() -> BTreeSet<&'static str> {
+        probe::serde_fields::<T>()
+            .unwrap()
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    #[test]
+    fn docker_tables_are_listed() {
+        assert_eq!(
+            fields::<Table>(),
+            probe::keys_of(LETICODE.table("docker").unwrap())
+        );
+        assert_eq!(
+            fields::<Prune>(),
+            probe::keys_of(LETICODE.table("gc.docker").unwrap())
+        );
+    }
+
+    /// `[gc] root` and `[[gc.shared]]` beside `[gc.docker]` keep the docker settings.
+    #[test]
+    fn gc_keys_do_not_drop_docker_settings() {
+        let s = Settings::parse(
+            Path::new("/x/leticode.toml"),
+            "[docker]\nmemory = \"4G\"\n[gc]\nroot = \"/b\"\n[[gc.shared]]\npath = \"/t\"\n",
+        );
+        assert!(s.is_ok(), "{s:?}");
     }
 }

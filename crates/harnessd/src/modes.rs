@@ -607,3 +607,20 @@ mod tests {
         assert!(d.contains("will not survive"), "{d}");
     }
 }
+
+#[cfg(test)]
+mod reference_tests {
+    use letibot_config_ref::files::MODES;
+
+    /// Every mode a row may name is in the reference's column type.
+    #[test]
+    fn every_mode_is_listed() {
+        let t = MODES.table("").unwrap();
+        let ty = t.keys[0].ty;
+        for m in letibot_tools::mode::Mode::NAMED {
+            let name = m.name.replace(' ', "-");
+            assert!(ty.split(" | ").any(|w| w == name), "{name} not in `{ty}`");
+        }
+        assert_eq!(t.keys.len(), 3, "import_tsv reads three columns");
+    }
+}

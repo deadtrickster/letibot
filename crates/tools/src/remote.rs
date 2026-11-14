@@ -6206,3 +6206,42 @@ impl ProcessHost for RemoteProcesses {
 #[cfg(test)]
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod reference_tests {
+    use letibot_config_ref::{files::HOSTS, probe};
+
+    use super::*;
+
+    fn known(doc: &str) -> bool {
+        match Hosts::parse(doc) {
+            Ok(_) => true,
+            Err(why) => !(why.contains("is not a key") || why.contains("not a key this")),
+        }
+    }
+
+    #[test]
+    fn every_listed_key_parses() {
+        let refused = probe::refused_examples(&HOSTS, &["host.<name>", "local"], |_, doc| {
+            Hosts::parse(doc).map(|_| ())
+        });
+        assert!(refused.is_empty(), "{refused:#?}");
+        let listed: Vec<&str> = HOST_KEYS.to_vec();
+        assert_eq!(
+            listed
+                .into_iter()
+                .collect::<std::collections::BTreeSet<_>>(),
+            probe::keys_of(HOSTS.table("host.<name>").unwrap())
+        );
+    }
+
+    #[test]
+    fn every_parsed_key_is_listed() {
+        let candidates = probe::literals(include_str!("remote.rs"));
+        let mut unlisted = Vec::new();
+        for t in HOSTS.tables {
+            unlisted.extend(probe::unlisted_accepted(&HOSTS, t, &candidates, known));
+        }
+        assert!(unlisted.is_empty(), "{unlisted:#?}");
+    }
+}
