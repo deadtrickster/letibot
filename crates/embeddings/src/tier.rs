@@ -225,6 +225,15 @@ impl EngineLock {
         }
     }
 
+    /// The model column of the cache. An internal model's key names its pooling, so vectors
+    /// pooled over padding by an older build are never read back.
+    fn cache_key(&self) -> String {
+        match self {
+            EngineLock::Internal(_) => format!("{}#unpadded", self.name()),
+            _ => self.name(),
+        }
+    }
+
     fn kind(&self) -> &'static str {
         match self {
             EngineLock::Internal(_) => "internal",
@@ -379,7 +388,7 @@ impl Embedder {
         now_ms: i64,
     ) -> Result<(Embedded, Filled), TierError> {
         let docs: Vec<(String, String)> = documents.into_iter().collect();
-        let name = self.engine.name();
+        let name = self.engine.cache_key();
         let mut vectors: Vec<Option<Vec<f32>>> = Vec::with_capacity(docs.len());
         let mut misses: Vec<usize> = Vec::new();
         for (i, (_, text)) in docs.iter().enumerate() {
@@ -436,7 +445,7 @@ impl Embedder {
     }
 
     fn embed_or_get(&self, text: &str, now_ms: i64) -> Result<(Vec<f32>, Hit), TierError> {
-        let name = self.engine.name();
+        let name = self.engine.cache_key();
         let hash = crate::cache::key(text);
         if let Some(v) = self.remembered(&hash) {
             return Ok((v, Hit::Cached));

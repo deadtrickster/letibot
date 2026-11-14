@@ -159,6 +159,9 @@ impl Model {
                 why: e.to_string(),
             }
         })?;
+        // A checkpoint's tokenizer may pad every text to a fixed length, and the mean below is over
+        // every id, so padding would pull all vectors toward one another.
+        tokenizer.with_padding(None);
         tokenizer
             .with_truncation(Some(tokenizers::TruncationParams {
                 max_length: MAX_TOKENS,
@@ -398,6 +401,29 @@ mod tests {
             paraphrase > unrelated,
             "a paraphrase scored {paraphrase}, an unrelated line {unrelated}"
         );
+    }
+
+    /// A tokenizer that pads to a fixed length, as the built-in checkpoint's does, makes the same
+    /// vector: padding pooled into the mean pulls every text toward one another.
+    #[test]
+    fn a_tokenizer_that_pads_makes_the_same_vector() {
+        let (_plain_dir, plain) = tiny();
+        let dir = Dir::new("padded");
+        fixture::tiny_bert(dir.path()).expect("write the fixture");
+        let file = dir.path().join("tokenizer.json");
+        let json = std::fs::read_to_string(&file).unwrap().replace(
+            r#""padding": null"#,
+            r#""padding": {"strategy": {"Fixed": 32}, "direction": "Right",
+                "pad_to_multiple_of": null, "pad_id": 0, "pad_type_id": 0, "pad_token": "[PAD]"}"#,
+        );
+        std::fs::write(&file, json).unwrap();
+        let padded = Model::open(dir.path()).expect("open the padded fixture");
+        let texts = ["alpha beta", "kappa lambda mu"];
+        let a = plain.embed(&texts).unwrap();
+        let b = padded.embed(&texts).unwrap();
+        for (x, y) in a.iter().zip(&b) {
+            assert!(cosine(x, y) > 0.9999, "{}", cosine(x, y));
+        }
     }
 
     /// A text whose words the tokenizer does not know is still a vector rather than a
