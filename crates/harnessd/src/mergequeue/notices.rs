@@ -318,6 +318,209 @@ pub fn parked(r: &ReviewRow) -> String {
     }
 }
 
+/// What stopped one entry. The arms are opposite instructions about a branch, so a group never
+/// folds two of them together.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Trouble {
+    /// Handed to this project to gate and land itself ([`handed_over`]).
+    HandedOver,
+    /// A branch's review could not run ([`parked`], `Blocked`).
+    BranchBlocked,
+    /// A branch's reviewer could not decide ([`parked`], `CannotDecide`).
+    BranchNeedsHuman,
+    /// A target's red tip could not be reviewed.
+    TargetBlocked,
+    /// A target's red tip's reviewer could not decide.
+    TargetNeedsHuman,
+}
+
+pub fn trouble_of(r: &ReviewRow) -> Trouble {
+    match (r.kind, r.state) {
+        (ReviewKind::Branch, ReviewState::Blocked) => {
+            if r.evidence.starts_with(super::HANDED_TO_PROJECT) {
+                Trouble::HandedOver
+            } else {
+                Trouble::BranchBlocked
+            }
+        }
+        (ReviewKind::Branch, _) => Trouble::BranchNeedsHuman,
+        (ReviewKind::Target, ReviewState::Blocked) => Trouble::TargetBlocked,
+        (ReviewKind::Target, _) => Trouble::TargetNeedsHuman,
+    }
+}
+
+fn sentence_of(trouble: Trouble, r: &ReviewRow) -> String {
+    match trouble {
+        Trouble::HandedOver => handed_over(r),
+        _ => parked(r),
+    }
+}
+
+/// The row's own reason with its names replaced by `…`: `attempts_spent` embeds the head, so rows
+/// of one refusal differ only in names. A target's `branch` is `main` and is not stripped.
+fn cause_of(r: &ReviewRow) -> String {
+    let trouble = trouble_of(r);
+    let mut reason = if r.failure.trim().is_empty() {
+        r.evidence.clone()
+    } else {
+        r.failure.clone()
+    };
+    // "could not decide" is the same failure for every branch; the deciding sentence is the cause.
+    if matches!(
+        trouble,
+        Trouble::BranchNeedsHuman | Trouble::TargetNeedsHuman
+    ) {
+        let decisive = super::capacity::decisive_reason(&r.reasons);
+        if !decisive.is_empty() {
+            reason = decisive;
+        }
+    }
+    let mut names = vec![
+        r.id.clone(),
+        letibot_sessionlog::registry::short_id(&r.id),
+        r.head_sha.chars().take(7).collect::<String>(),
+        r.head_sha.clone(),
+    ];
+    if r.kind == ReviewKind::Branch {
+        names.push(r.branch.clone());
+    }
+    if let Some(wt) = &r.worktree {
+        names.push(wt.clone());
+    }
+    // Longest first: a short id is a substring of the full one.
+    names.sort_by_key(|n| std::cmp::Reverse(n.chars().count()));
+    for name in names {
+        if name.trim().is_empty() {
+            continue;
+        }
+        reason = reason.replace(&name, "…");
+    }
+    reason.trim().to_string()
+}
+
+/// One message of [`fold`] and the oldest entry it is about.
+pub struct Folded<'a> {
+    pub first: &'a ReviewRow,
+    pub text: String,
+}
+
+/// The entries a pass owes a session, one message per cause, in the order given. A cause with one
+/// entry keeps its own paragraph. Target rows group per repository, so a mute hint fits the group.
+pub fn fold<'a>(owed: &[(Trouble, &'a ReviewRow)]) -> Vec<Folded<'a>> {
+    type Key = (Trouble, String, String);
+    let mut groups: Vec<(Key, Vec<&'a ReviewRow>)> = Vec::new();
+    for &(trouble, r) in owed {
+        let repo = match r.kind {
+            ReviewKind::Target => r.repository.clone(),
+            ReviewKind::Branch => String::new(),
+        };
+        let key = (trouble, repo, cause_of(r));
+        match groups.iter().position(|(k, _)| *k == key) {
+            Some(at) => groups[at].1.push(r),
+            None => groups.push((key, vec![r])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|((trouble, _, cause), rows)| Folded {
+            first: rows[0],
+            text: match rows.as_slice() {
+                [one] => sentence_of(trouble, one),
+                many => group_message(trouble, &cause, many),
+            },
+        })
+        .collect()
+}
+
+/// [`fold`]'s messages alone.
+pub fn one_per_cause(owed: &[(Trouble, &ReviewRow)]) -> Vec<String> {
+    fold(owed).into_iter().map(|f| f.text).collect()
+}
+
+/// The reason once, then one line per entry. Every lead starts `The merge queue ` (with the space),
+/// which is what the head's card reader keys on.
+fn group_message(trouble: Trouble, cause: &str, rows: &[&ReviewRow]) -> String {
+    let n = rows.len();
+    let list = rows
+        .iter()
+        .map(|r| entry_line(trouble, r))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (lead, ways) = match trouble {
+        Trouble::HandedOver => (
+            format!(
+                "The merge queue cannot get a verdict on {n} branches, and they are ONE CAUSE, \
+                 said once:\n\n{cause}"
+            ),
+            "This project merges such branches via its main session (`[queue] merge_via_session`), \
+             so they are yours. Exception to the queue rule: run each target's merge gate (the \
+             `Merge gate` section of its AGENTS.md) in the branch's worktree, and land it on its \
+             target yourself if it is green - the queue sees the landing and withdraws the row. Or \
+             ask the operator with `ask_user_question` whether to `/queue approve ID` instead.",
+        ),
+        Trouble::BranchBlocked => (
+            format!(
+                "The merge queue could not review {n} branches, and they are ONE CAUSE, said \
+                 once:\n\n{cause}"
+            ),
+            "Nothing judged any of them, and nothing lands them until somebody acts. `queue` with \
+             `action: \"restart\"` and the row's `id` asks a reviewer again; the operator's \
+             `/queue approve ID` approves one over the reviewer (the merge gate still runs) - that \
+             verb is the operator's, not yours.",
+        ),
+        Trouble::BranchNeedsHuman => (
+            format!(
+                "The merge queue could not get a decision on {n} branches, for ONE CAUSE, said \
+                 once:\n\n{cause}"
+            ),
+            "The operator is asked about each (`/queue approve ID` or `/queue veto ID WHY`, both \
+             theirs, not yours). If you can answer what the reviewer could not tell, do it in the \
+             branch: a new head goes back to review by itself.",
+        ),
+        Trouble::TargetBlocked => (
+            format!(
+                "The merge queue could not review {n} red tips, and they are ONE CAUSE, said \
+                 once:\n\n{cause}"
+            ),
+            "Nothing reviews them until somebody acts. `queue` with `action: \"restart\"` and the \
+             row's `id` asks again, and a stale row can be withdrawn (`\"withdraw\"`). Once the \
+             cause of the red is gone, `\"regate\"` gates the tip again.",
+        ),
+        Trouble::TargetNeedsHuman => (
+            format!(
+                "The merge queue could not get a decision on {n} red tips, for ONE CAUSE, said \
+                 once:\n\n{cause}"
+            ),
+            "The operator is asked. If you can tell what broke the target, say so with the \
+             evidence; once the cause is gone, `queue` with `action: \"regate\"` gates the tip \
+             again.",
+        ),
+    };
+    format!(
+        "{lead}\n\n{ways}\n\nThe {n} entries:\n{list}\n\nEach entry's full sentence is on its row, \
+         in the queue's overlay and in `queue status`."
+    )
+}
+
+/// Short id, branch, worktree and the one verb that disposes of the entry. The verb carries the
+/// full id, which is what the daemon resolves.
+fn entry_line(trouble: Trouble, r: &ReviewRow) -> String {
+    let verb = match trouble {
+        Trouble::HandedOver | Trouble::BranchNeedsHuman | Trouble::TargetNeedsHuman => {
+            format!("`/queue approve {}`", r.id)
+        }
+        Trouble::BranchBlocked | Trouble::TargetBlocked => {
+            format!("`/queue restart {}`", r.id)
+        }
+    };
+    format!(
+        "  * `{short}` `{branch}` - {tree} - {verb}",
+        short = letibot_sessionlog::registry::short_id(&r.id),
+        branch = r.branch,
+        tree = r.worktree.as_deref().unwrap_or("its worktree"),
+    )
+}
+
 /// `stuck_census` - the count and the age, on the daemon's idle pass (`mergequeue::stuck`
 /// `Harness::stuck_census`, `Sessions::deliver_due_censuses`). Every other sentence here is
 /// about ONE row and says so when that row MOVES.
@@ -985,6 +1188,202 @@ mod tests {
                 "the queue no longer writes what the TUI's review card parses ({})",
                 path.display()
             );
+        }
+    }
+
+    /// One firecode refusal on three rows, composed the daemon's way: the rows differ only in
+    /// names the message lists anyway.
+    fn handed_row(id: &str, branch: &str, head: &str, refusal: &str) -> ReviewRow {
+        let head_sha = format!("{head}0000000000000000000000000000000000");
+        let gists = vec![format!(
+            "the reviewer's VM did not start - firecode: {refusal}"
+        )];
+        ReviewRow {
+            id: id.into(),
+            repository: "/the/repository".into(),
+            target: "main".into(),
+            kind: ReviewKind::Branch,
+            session_id: "s-parent".into(),
+            branch: branch.into(),
+            worktree: Some(format!("/w/worktrees/{branch}")),
+            base_sha: "4be1c07d9a2e5f3b8c6d1e0f7a9b2c4d6e8f0a1b".into(),
+            head_sha: head_sha.clone(),
+            brief: "the ask".into(),
+            priority: letibot_tokencore::store::MergePriority::Subagent,
+            fixes: None,
+            state: ReviewState::Blocked,
+            owner: String::new(),
+            reviewer: None,
+            deadline_ms: None,
+            attempts: 3,
+            failure: attempts_spent(3, &head_sha, &gists, true),
+            verdict: None,
+            verdict_by: None,
+            reviewed_sha: None,
+            reasons: vec![],
+            files: vec![],
+            commands: vec![],
+            evidence: format!(
+                "{}: the review could not run",
+                crate::mergequeue::HANDED_TO_PROJECT
+            ),
+            created_ms: 1,
+            state_ms: 2,
+            updated_ms: 2,
+        }
+    }
+
+    const REFUSAL: &str = "io: refusing to copy /home/dead/Projects/letibot: it weighs 72.8 GiB \
+                           after excluding [target, .claude/worktrees, node_modules, \
+                           .git/worktrees], and the ceiling is 8.0 GiB";
+
+    fn three_of_one_cause() -> Vec<ReviewRow> {
+        vec![
+            handed_row("m-a", "agent/a", "aaaaaaa", REFUSAL),
+            handed_row("m-b", "agent/b", "bbbbbbb", REFUSAL),
+            handed_row("m-c", "agent/c", "ccccccc", REFUSAL),
+        ]
+    }
+
+    #[test]
+    fn three_entries_of_one_cause_are_one_message_that_names_all_three() {
+        let rows = three_of_one_cause();
+        let owed: Vec<(Trouble, &ReviewRow)> = rows.iter().map(|r| (trouble_of(r), r)).collect();
+
+        let messages = one_per_cause(&owed);
+        assert_eq!(messages.len(), 1, "one cause is one message: {messages:#?}");
+        let said = &messages[0];
+        for (id, branch) in [("m-a", "agent/a"), ("m-b", "agent/b"), ("m-c", "agent/c")] {
+            assert!(
+                said.contains(&format!("`/queue approve {id}`")),
+                "`{id}` is named with its verb: {said}"
+            );
+            assert!(
+                said.contains(&format!("`{branch}`"))
+                    && said.contains(&format!("/w/worktrees/{branch}")),
+                "and its branch and worktree: {said}"
+            );
+        }
+        assert_eq!(
+            said.matches("it weighs 72.8 GiB").count(),
+            1,
+            "the shared reason is stated once: {said}"
+        );
+        assert!(
+            said.contains("3 branches") && said.contains("The 3 entries"),
+            "{said}"
+        );
+        assert!(
+            said.contains("merge_via_session") && said.contains("Exception to the queue rule"),
+            "the handover's instruction, not a refusal's: {said}"
+        );
+        assert!(
+            said.contains("in the queue's overlay and in `queue status`"),
+            "{said}"
+        );
+    }
+
+    #[test]
+    fn two_causes_are_two_messages_and_a_lone_entry_keeps_its_paragraph() {
+        let mut rows = three_of_one_cause();
+        rows.push(handed_row(
+            "m-d",
+            "agent/d",
+            "ddddddd",
+            "the gate is red: `cargo test` failed",
+        ));
+        let owed: Vec<(Trouble, &ReviewRow)> = rows.iter().map(|r| (trouble_of(r), r)).collect();
+
+        let messages = one_per_cause(&owed);
+        assert_eq!(messages.len(), 2, "{messages:#?}");
+        assert!(messages[0].contains("3 branches"), "{}", messages[0]);
+        assert_eq!(messages[1], handed_over(&rows[3]));
+    }
+
+    #[test]
+    fn a_lone_entry_keeps_its_full_sentence() {
+        let mut handed = three_of_one_cause();
+        let one = handed.pop().expect("the fixture has rows");
+        assert_eq!(
+            one_per_cause(&[(Trouble::HandedOver, &one)]),
+            vec![handed_over(&one)]
+        );
+
+        let blocked = ReviewRow {
+            state: ReviewState::Blocked,
+            evidence: "the review's worktree is gone".into(),
+            failure: "the review's worktree is gone: /w/x does not exist".into(),
+            ..groupingsets()
+        };
+        let cannot = groupingsets();
+        let red = ReviewRow {
+            kind: ReviewKind::Target,
+            state: ReviewState::Blocked,
+            branch: "main".into(),
+            worktree: None,
+            ..groupingsets()
+        };
+        for r in [&blocked, &cannot, &red] {
+            let said = one_per_cause(&[(trouble_of(r), r)]);
+            assert_eq!(said, vec![parked(r)]);
+        }
+    }
+
+    #[test]
+    fn the_two_kinds_never_fold_together() {
+        let handed = three_of_one_cause().remove(0);
+        let blocked = ReviewRow {
+            evidence: "the review could not run".into(),
+            ..handed.clone()
+        };
+        assert_eq!(trouble_of(&handed), Trouble::HandedOver);
+        assert_eq!(trouble_of(&blocked), Trouble::BranchBlocked);
+
+        let said = one_per_cause(&[
+            (Trouble::HandedOver, &handed),
+            (Trouble::BranchBlocked, &blocked),
+        ]);
+        assert_eq!(said.len(), 2, "{said:#?}");
+        assert!(
+            said[0].contains("Exception to the queue rule"),
+            "{}",
+            said[0]
+        );
+        assert!(said[1].contains("BLOCKED"), "{}", said[1]);
+    }
+
+    #[test]
+    fn red_tips_of_two_repositories_never_fold_together() {
+        let red = |id: &str, repo: &str| ReviewRow {
+            id: id.into(),
+            repository: repo.into(),
+            kind: ReviewKind::Target,
+            state: ReviewState::Blocked,
+            branch: "main".into(),
+            worktree: None,
+            failure: "the gate's VM did not start".into(),
+            ..groupingsets()
+        };
+        let rows = [
+            red("t-a", "/r/one"),
+            red("t-b", "/r/two"),
+            red("t-c", "/r/one"),
+        ];
+        let owed: Vec<(Trouble, &ReviewRow)> = rows.iter().map(|r| (trouble_of(r), r)).collect();
+        let folded = fold(&owed);
+        assert_eq!(folded.len(), 2);
+        assert_eq!(folded[0].first.id, "t-a");
+        assert!(folded[0].text.contains("2 red tips"), "{}", folded[0].text);
+        assert_eq!(folded[1].text, parked(&rows[1]));
+    }
+
+    #[test]
+    fn a_cause_that_grew_says_only_its_new_entries() {
+        let new = handed_row("m-d", "agent/d", "ddddddd", REFUSAL);
+        let said = one_per_cause(&[(trouble_of(&new), &new)]);
+        assert_eq!(said, vec![handed_over(&new)]);
+        for told in ["m-a", "m-b", "m-c", "agent/a", "agent/b", "agent/c"] {
+            assert!(!said[0].contains(told), "`{told}`: {}", said[0]);
         }
     }
 }

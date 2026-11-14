@@ -457,6 +457,39 @@ mod tests {
         );
     }
 
+    /// The queue's message for several entries of one cause (`notices::one_per_cause`) is one
+    /// line, and it opens a notice of its own in a row that joined several.
+    #[test]
+    fn a_grouped_queue_notice_is_one_line() {
+        let text = "The merge queue cannot get a verdict on 3 branches, and they are ONE CAUSE, \
+                    said once:\n\n3 attempts to review it at … ended without a verdict — no \
+                    reviewer judged the branch: (1) the reviewer's VM did not start - firecode: \
+                    io: refusing to copy /repo: it weighs 72.8 GiB, and the ceiling is 8.0 \
+                    GiB.\n\nThis project merges such branches via its main session …\n\nThe 3 \
+                    entries:\n  * `…a` `agent/a` - /w/a - `/queue approve m-a`";
+        let c = session_notice(text);
+        assert_eq!(
+            c.line,
+            "‼ queue · cannot get a verdict on 3 branches… · click for details"
+        );
+        assert!(
+            c.title
+                .starts_with("merge queue · cannot get a verdict on 3 branches")
+        );
+        assert!(opens_notice(text));
+        for lead in [
+            "The merge queue could not review 2 branches, and they are ONE CAUSE, said once:\n\nx",
+            "The merge queue could not get a decision on 2 branches, for ONE CAUSE, said \
+             once:\n\nx",
+            "The merge queue could not review 2 red tips, and they are ONE CAUSE, said once:\n\nx",
+            "The merge queue could not get a decision on 2 red tips, for ONE CAUSE, said \
+             once:\n\nx",
+        ] {
+            let line = session_notice(lead).line;
+            assert!(line.starts_with("‼ queue · "), "{line}");
+        }
+    }
+
     #[test]
     fn a_system_row_and_a_warning_are_one_line_and_say_the_code_once() {
         let summary = format!("This conversation was compacted: {}", "x".repeat(18_650));

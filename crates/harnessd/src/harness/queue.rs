@@ -435,6 +435,9 @@ impl Harness {
             let hint = mute_hint(several, &h.repository);
             out.push(format!("{}{hint}", crate::mergequeue::notices::health(&h)));
         }
+        // One message per cause. The once-only rule stays here, so a cause that grew says only
+        // its new rows.
+        let mut owed = Vec::new();
         for r in &parked {
             let ours = match r.kind {
                 letibot_tokencore::store::ReviewKind::Target => mine.contains(&r.repository),
@@ -453,11 +456,16 @@ impl Harness {
             {
                 continue;
             }
-            let hint = match r.kind {
-                letibot_tokencore::store::ReviewKind::Target => mute_hint(several, &r.repository),
+            owed.push((crate::mergequeue::notices::trouble_of(r), r));
+        }
+        for f in crate::mergequeue::notices::fold(&owed) {
+            let hint = match f.first.kind {
+                letibot_tokencore::store::ReviewKind::Target => {
+                    mute_hint(several, &f.first.repository)
+                }
                 _ => String::new(),
             };
-            out.push(format!("{}{hint}", crate::mergequeue::notices::parked(r)));
+            out.push(format!("{}{hint}", f.text));
         }
         out
     }
@@ -500,20 +508,20 @@ impl Harness {
         let Some(store) = self.store.as_ref() else {
             return Vec::new();
         };
-        let mut out = Vec::new();
         let blocked = store
             .review_rows_in(None, &[letibot_tokencore::store::ReviewState::Blocked])
             .unwrap_or_default();
-        for r in blocked {
+        let mut owed = Vec::new();
+        for r in &blocked {
             if !r.evidence.starts_with(crate::mergequeue::HANDED_TO_PROJECT)
                 || crate::mergequeue::root_session(store, &r.session_id) != me
                 || !told_once(&mut self.gate_told, store, &me, format!("handed:{}", r.id))
             {
                 continue;
             }
-            out.push(crate::mergequeue::notices::handed_over(&r));
+            owed.push((crate::mergequeue::notices::trouble_of(r), r));
         }
-        out
+        crate::mergequeue::notices::one_per_cause(&owed)
     }
 
     /// The reviews this daemon's queues claimed, served by THIS session's runner: the review queue's

@@ -818,6 +818,99 @@ fn a_review_handed_to_the_project_is_told_once_and_a_blocked_one_is_not() {
     assert!(project.handover_notices().is_empty(), "said ONCE");
 }
 
+/// Three rows of one firecode refusal are one notice; a fourth row of the same cause, told after
+/// them, gets its own paragraph and names none of the three.
+#[test]
+fn entries_of_one_cause_are_one_notice_and_a_group_that_grew_says_only_the_new_one() {
+    let Some(f) = Fixture::new("one-cause") else {
+        return;
+    };
+    let s = f.store();
+    let refusal = "io: refusing to copy /home/dead/Projects/letibot: it weighs 72.8 GiB after \
+                   excluding [target, .claude/worktrees, node_modules, .git/worktrees], and the \
+                   ceiling is 8.0 GiB";
+    let hand_over = |id: &str, head: &str| {
+        let head_sha = format!("{head}0000000000000000000000000000000000");
+        s.enqueue_review(
+            &NewReview {
+                id: id.into(),
+                repository: "/the/repository".into(),
+                target: "main".into(),
+                kind: ReviewKind::Branch,
+                session_id: "s-parent".into(),
+                branch: format!("agent/{id}"),
+                worktree: Some(format!("/w/worktrees/{id}")),
+                base_sha: "base".into(),
+                head_sha: head_sha.clone(),
+                brief: "the ask".into(),
+                priority: MergePriority::Subagent,
+                fixes: None,
+                evidence: String::new(),
+            },
+            "test",
+            1,
+        )
+        .expect("the row");
+        let why = format!(
+            "{}: the review could not run",
+            crate::mergequeue::HANDED_TO_PROJECT
+        );
+        let spent = crate::mergequeue::notices::attempts_spent(
+            3,
+            &head_sha,
+            &[format!(
+                "the reviewer's VM did not start - firecode: {refusal}"
+            )],
+            true,
+        );
+        assert!(
+            s.move_review(
+                id,
+                ReviewState::Waiting,
+                ReviewState::Blocked,
+                &Move::new("queue", why).set("failure", spent),
+                2,
+            )
+            .unwrap()
+        );
+    };
+    for (id, head) in [("m-a", "aaaaaaa"), ("m-b", "bbbbbbb"), ("m-c", "ccccccc")] {
+        hand_over(id, head);
+    }
+    let mut sessions = Sessions::open_first(&f.parts, f.cfg.clone(), f.registry.clone())
+        .expect("the session opens");
+    let project = sessions
+        .held("s-parent")
+        .expect("the project's own session");
+    let said = project.handover_notices();
+    assert_eq!(said.len(), 1, "one cause is one notice: {said:#?}");
+    for id in ["m-a", "m-b", "m-c"] {
+        assert!(
+            said[0].contains(&format!("`/queue approve {id}`"))
+                && said[0].contains(&format!("`agent/{id}`")),
+            "`{id}`: {}",
+            said[0]
+        );
+    }
+    assert_eq!(
+        said[0].matches("it weighs 72.8 GiB").count(),
+        1,
+        "{}",
+        said[0]
+    );
+    assert!(project.handover_notices().is_empty(), "said ONCE");
+
+    hand_over("m-d", "ddddddd");
+    let again = project.handover_notices();
+    assert_eq!(again.len(), 1, "{again:#?}");
+    let row = s.review_row("m-d").unwrap().expect("the new row");
+    assert_eq!(again[0], crate::mergequeue::notices::handed_over(&row));
+    for told in ["m-a", "m-b", "m-c"] {
+        assert!(!again[0].contains(told), "`{told}`: {}", again[0]);
+    }
+    assert!(project.handover_notices().is_empty());
+}
+
 /// A red target is told to the project's root session's model once, the failing step and the end of
 /// its output first. The review of the red tip, blocked, is told the same way; a subagent and the
 /// review queue's own session are told nothing.
