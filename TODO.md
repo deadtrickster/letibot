@@ -75,6 +75,8 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R237 | `daemon_takes_a_new_session` missed its 60 s turn deadline once under load | Code work | left: find why; the fake provider thread `unwrap`s every read, so one bad connection may stop it counting (unverified) |
 | R238 | jobwatch measured 103 ms for a `sleep 0.3` job once under load | Code work | left: find whether the elapsed stamp starts late or ends early; the test was not loosened |
 | R239 | db-fuzz's plugin-pane study: what the S1 and plugin-pane landings left open | Code work | findings 1-3, 5, 6, 8 fixed (12eb3f2e, ef008d36, 03cfc2af, 3db3108f); left: #4 (a `~/.claude` HTML skill still beats plugin-pane on "dashboard"), #7 (the room thread's wrong claim), #9 (a room flood makes tool results look lost), #10 (the session's own note) |
+| R241 | The idle reaper SIGTERMs a whole worktree daemon, its attached seat and a running job with it, and nothing reopens the session | Code work | all 14 stroppy worktree-daemon stops on 2026-11-14 (07:40-19:35) were the reaper's `daemon kill`, none an operator stop, binary restart, OOM or crash; left: a foreign reaper that sees the owner's `process` rows and an attached head, a drain before the kill, jobs kept across a stop, and re-attach by session id |
+| R242 | `read` clips a line at 2000 chars and `edit` then refuses it as never shown | Code work | done: a window read with its own `limit` clips at the byte budget (32 KiB) instead, marks the line shown, and the note says so (see the entry); left: a line over 32 KiB is still unreachable to `edit` |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -970,6 +972,55 @@ The study is `docs/findings/db-fuzz-plugins-2026-11-13.md`, kept verbatim: ten f
 6. Readers that ignore unknown keys, so a typo is silent and the reference test cannot check them in reverse: providers.toml `[default]`, `[fallback]`, `[memory]`, `[metrics]`, `[gatekeeper]`, `[prices.*]`, `[<preset>]`, `[brave]` (covered only by a `.get()` scan, which misses dynamic keys); leticode.toml `[provider.NAME]` (`first_byte_secs` typo is ignored) and `[queue]` on the leticode-config side. `[keys]`, `[boundary.env]` and `[perimeter.NAME.env]` are open by design.
 
 The intent nudge's per-model key (branch `intent-per-model`) needs one `k(...)` line in `crates/config-ref/src/files/providers.rs`; its drift test fails until it is there.
+
+## R241 - The idle reaper SIGTERMs a whole worktree daemon, its attached seat and a running job with it, and nothing reopens the session
+
+**Status:** open, 2026-11-14. Reported by the stroppy-conformity seat: its worktree daemons stopped at least 8 times between about 08:35 and 19:30, every open leticode session failed with `the daemon closed this connection: daemon shutting down`, none could be resumed, and the seat opened a new session per worktree each time. Session `s-1794655729593763131` lost job `j3226` (`killed by the daemon stopping`, 42m44s).
+
+**Cause, per stop.** Every stroppy daemon stop that day is a `kill` row in `shared.db` `reap_event`, and each daemon log has exactly as many `harnessd: SIGTERM` lines as there are kills of its key, so no stop is unaccounted for. The stroppy daemons ran inside a tmux scope (`memory caps OFF`), so the journal has no `letibot-harnessd-*.scope` for them. The OOM kills at 02:42 (`c74d1fd17483`, rano) and 09:41 (`defc553f46c3`, etcd) were other daemons. No stop lines up with the harnessd installs at 11:49-13:10. No log has a panic.
+
+Each row is: kill time (CET), session closed, its worktree under `~/Projects/stroppy-io/`, daemon key and pid killed, and the reaper that killed it (`d-<pid>`; `934424` and `1017668` are the rano daemon `c74d1fd17483`).
+
+1. 07:40:57 `s-1794634857432925221` `wt-tools-line-immudb-delete` `44958b6747d5` pid 1542599, by `d-1017668`.
+2. 07:47:59 `s-1794635257707071644` `wt-tools-line-catalog-refused` `1406b8d05bd6` pid 1631060, by `d-2285209` (manticore-finding's daemon).
+3. 07:52:16 `s-1794637151748365235` `wt-tools-line-manticore-finding` `c74c75a345da` pid 2285209, by `d-1017668`.
+4. 08:35:28 `s-1794635881613575534` `wt-tools-line-segmented-crashes` `d4c7a657fdf1` pid 1885277, by `d-1017668` (its own daemon had journalled the close at 08:34:46 and logged `a reaper never reaps itself`).
+5. 09:41:02 `s-1794641949713931263` `wt-tools-line-immudb-delete` `44958b6747d5` pid 3332406, by `d-3747275` (segmented-crashes' daemon).
+6. 09:44:32 `s-1794643578821662575` `wt-tools-line-pooler-ism` `ae032b4b3712` pid 3763516, by `d-96565`.
+7. 09:57:25 `s-1794643553172987933` `wt-tools-line-segmented-crashes` `d4c7a657fdf1` pid 3747275, by `d-96565`.
+8. 12:38:35 `s-1794652817346480939` `wt-tools-line-immudb-delete` `44958b6747d5` pid 371311, by `d-934424`.
+9. 13:14:05 `s-1794655729593763131` `wt-tools-line-segmented-crashes` `d4c7a657fdf1` pid 2588334, by `d-934424`. `j3226` (a `grep -r` over `/build` the runtime had backgrounded, started 12:32:26) was running.
+10. 14:11:06 `s-1794659165808620115` `wt-tools-line-immudb-delete` `44958b6747d5` pid 212204, by `d-934424`.
+11. 17:30:42 `s-1794670647359831945` `wt-tools-line-yugabytedb` `e57ec8279e58` pid 2644495, by `d-934424`.
+12. 17:36:56 `s-1794671781406540813` `wt-tools-line-catalog-narrow` `940f2188a67d` pid 2940077, by `d-934424`.
+13. 19:17:10 `s-1794676960500303909` `wt-tools-line-coregap` `878559101753` pid 4092221, by `d-363667` (immudb-delete's daemon).
+14. 19:35:53 `s-1794678807088653288` `wt-tools-line-immudb-delete` `44958b6747d5` pid 363667, by `d-934424`.
+
+Every close says `idle 30m: no turn, no job and nothing said to it for 30m`. Each session is a `package` owner with a 30m idle TTL, and its daemon log says `idle exit held: <session> has a head attached` - the seat was attached the whole time. Only stop 9 had a job open (`projects/fb645f0b138f.db` `job`/`process`). The other 13 had no turn for 30m, so by the current rule they were idle.
+
+**Why stop 9 was judged idle with a job running.** Every daemon runs the reaper (`harnessd/src/reap_pass.rs` `spawn`, every 60 s) over every owner in `shared.db`, and the first daemon to judge an owner closes it and kills its daemon (`tools/src/lifecycle/reap.rs`, `kill_exact(.., Signal::Term)`, SIGKILL after `DAEMON_GRACE`). `busy()` reads two things. The first is the owner's `scope` holdings, and there were none because the daemon was not in a scope of its own. The second is `store.processes_of(owner)`, and `Store::at("process")` routes that to the REAPING daemon's own project file. So the rano daemon read rano's `process` table, found nothing for a stroppy session, and called it idle. The owner's own daemon could see the row and did not close it. The lease is renewed only while a turn runs (`LeaseBeat`, R225), so a backgrounded job that outlives its turn does not renew it. An attached head counts for nothing in `close_due`.
+
+**What a stop does to the session.** The SIGTERM path (`harnessd: SIGTERM`, the `stopping:` lines) closes every session, brings VMs and placed branches home and marks open jobs `killed by the daemon stopping` (`harnessd/src/restart.rs` `STOPPED_WITH_THE_DAEMON`). Only a restart that hands over (`restart.rs`, detached jobs) keeps a job running. The bridge gets `daemon shutting down` (`sessionlog/src/server.rs`) and reports `failed`. The notice says `leticode_send` reopens it, but from a seat it does not. `leticode_send` answers `no session ... is held by this bridge` because the head was dropped. `leticode_attach` refuses because `no daemon is up` and it never starts one. `leticode_start` always opens a new id. So each stop cost the seat a new session and its context.
+
+**Fix asked for.**
+1. The reaper judges `busy` from the owner's own project file (`processes_of` through the owner's repo key, not the reaper's), and counts an attached head as activity, or only the owner's own daemon closes its owners.
+2. Killing a daemon for an idle owner is a drain, not a SIGTERM: the daemon is asked to close that one session, and it exits only when no other session, head or job is left. A daemon with a head attached is not killed.
+3. Long jobs do not die with the daemon. A job outlives its turn in its own scope or as a detached job the next daemon takes back (the restart path), on every stop and not only a handover.
+4. A closed package session can be re-attached by id: `leticode_attach` (or `leticode_send`) starts the worktree's daemon and reopens the session, which is what the reaper's notice already promises.
+
+**Still open?** the `reap_event` query: `select at_ms, owner_id, handle, act, said, by from reap_event where act = 'kill'` over `shared.db` (read-only). The per-worktree logs are `~/logs/harnessd-<key>.log`.
+
+**Done when:** a test shows a foreign daemon's reaper leaving an owner with a running job in another project's file, a test shows an attached head holding off the close, a SIGTERM with a running job leaves it running for the next daemon, and `leticode_attach` on a reaped package reopens it with its transcript.
+
+## R242 - `read` clips a line at 2000 chars and `edit` then refuses it as never shown
+
+**Status:** fixed, 2026-11-14. left: a line longer than 32 KiB.
+
+Reported by the stroppy-conformity seat on a long markdown table row. `read` clips any line over `Limits::max_read_line_chars` (2000) and does not add a clipped line to the shown-lines ledger (`tools/src/builtins/read.rs`). `edit`'s gate (`unshown_refusal`, `tools/src/builtins/edit.rs`) then refuses with `this session has not been shown lines N-N` and tells the model to `read` that offset and limit, which clips the line again. Nothing could edit the line.
+
+Fixed: a window the call bounds with its own `limit` (the top-level `limit` or a `ranges` entry's) clips at `max_read_bytes` (32 KiB) instead of the character cap. So `read offset=N limit=1` shows the row whole and marks it shown. A read without a limit still clips at 2000, so a minified file does not flood the context, and the note now says to read the line with `limit=1`. Test: `a_long_line_read_with_a_limit_is_shown_whole_and_can_be_edited`.
+
+**Done when:** a line over 32 KiB has an edit path too (an edit whose `old_string` lies inside the displayed prefix, or `bash`), or it is decided that `bash` is that path.
 
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
