@@ -1262,10 +1262,37 @@ impl Harness {
         // Neither publishes a hub warning, which drew the restart twice for one stop.
         if owed.any() {
             self.restart_notices.push(text.clone());
+        } else if crate::restart::is_bare_restart(&text) && self.unanswered_bare_restart() {
+            // Rows are append-only and hash-chained, so the older line stands and this one is not
+            // added: a bare notice starts no turn, and a second one tells the model nothing new.
+            eprintln!("  {sid} · restart: dropped, an unanswered restart row is already last");
+            return None;
         } else if let Err(e) = self.say_without_a_turn(&Facts::Restart { lines: 1 }, &text) {
             eprintln!("  {sid} · restart: the notice was not recorded ({e})");
         }
         Some(text)
+    }
+
+    /// Whether a bare restart row stands after the last turn: walked back over the harness's own
+    /// rows, stopped by the model's answer or by anybody else's message.
+    fn unanswered_bare_restart(&self) -> bool {
+        for item in self.items().iter().rev() {
+            match item {
+                TranscriptItem::User {
+                    speaker: letibot_transcript::Speaker::Agent,
+                    parts,
+                } => {
+                    let bare = parts.iter().any(|p| {
+                        matches!(p, UserPart::Text { text } if crate::restart::is_bare_restart(text))
+                    });
+                    if bare {
+                        return true;
+                    }
+                }
+                _ => return false,
+            }
+        }
+        false
     }
 
     /// Whether the model's last message reads as waiting on a restart (`restart::RESTART_PROMISES`).

@@ -492,6 +492,24 @@ pub fn nothing_running(stop: &Stopped, back_ms: u64) -> String {
     )
 }
 
+/// Whether `text` is [`wake_text`]'s quiet sentence alone: a restart that owed nothing and
+/// asked for no turn. A layer's `say` or an owed clause makes it something else.
+pub fn is_bare_restart(text: &str) -> bool {
+    let Some(rest) = text.strip_prefix("[restart] The daemon restarted (") else {
+        return false;
+    };
+    let Some((_, after)) = rest.split_once(')') else {
+        return false;
+    };
+    let Some(tail) = after.strip_prefix(". Nothing was running.") else {
+        return false;
+    };
+    tail.is_empty()
+        || tail
+            .strip_prefix(" The stop is older than the ")
+            .is_some_and(|w| w.ends_with(" restore window.") && !w.contains(". "))
+}
+
 /// `down 1s`, `down ~1m05s`, `stop time unknown` - the bracket every restart sentence carries,
 /// so the two doors cannot date one stop differently.
 fn down_span(stop: &Stopped, back_ms: u64) -> String {
@@ -1448,6 +1466,37 @@ mod tests {
             nothing_running(&Stopped::Unknown { seen_ms: 0 }, back),
             "[restart] The daemon restarted (stop time unknown). Nothing was running."
         );
+    }
+
+    /// Only the quiet sentence is bare: an owed clause or a layer's words in front are not.
+    #[test]
+    fn a_bare_restart_is_the_quiet_sentence_alone() {
+        let stop = Stopped::At {
+            at_ms: AT,
+            estimated_from: None,
+        };
+        let back = AT + 1_000;
+        assert!(is_bare_restart(&nothing_running(&stop, back)));
+        assert!(is_bare_restart(&nothing_running(
+            &Stopped::Unknown { seen_ms: 0 },
+            back
+        )));
+        assert!(is_bare_restart(&format!(
+            "{} The stop is older than the 30m00s restore window.",
+            nothing_running(&stop, back)
+        )));
+        let owed = Owed {
+            promise: true,
+            ..Owed::default()
+        };
+        assert!(!is_bare_restart(&nothing_running_but(&stop, back, &owed)));
+        assert!(!is_bare_restart(&format!(
+            "A layer speaks. {}",
+            nothing_running(&stop, back)
+        )));
+        assert!(!is_bare_restart(
+            "[restart] The daemon restarted (down 4s). Restored:"
+        ));
     }
 
     /// The empty case is one sentence and nothing else - no list, and none of the closing

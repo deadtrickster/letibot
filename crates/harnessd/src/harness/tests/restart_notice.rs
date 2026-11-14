@@ -615,18 +615,47 @@ fn the_restart_row_it_filed_is_not_work_it_owes() {
     // The next daemon, opening the same session against the row that is now its last.
     drop(h);
     let mut again = reopened(&dir, id);
-    let second = again
-        .restore_after_restart()
-        .expect("the next daemon says it");
+    // Nothing owed, and the unanswered row already says it: no second row.
+    assert_eq!(again.restore_after_restart(), None);
     assert!(
         again.restart_notices.is_empty(),
         "the row it filed is not work it owes: {:?}",
         again.restart_notices
     );
-    assert!(
-        second.ends_with(". Nothing was running."),
-        "no clause, because nothing is owed: {second}"
-    );
+    assert_eq!(restart_rows(&again), vec![first], "{:?}", again.items());
+}
+
+/// Restarts with no turn between them leave one bare row, not one per daemon; a turn in between
+/// makes the next restart news again.
+#[test]
+fn restarts_with_no_turn_between_them_leave_one_bare_row() {
+    let dir = Scratch::new("restart-stacked");
+    let id = "s-restart-stacked";
+    let (mut h, _) = a_restart_with(&dir, id, 5 * 3_600_000, |_| {}, "ok");
+    let first = h
+        .restore_after_restart()
+        .expect("the first restart is said");
+    let reopen = |h: Harness| {
+        drop(h);
+        let cfg = on_bytes(&dir, id);
+        let parts = parts_of(&cfg);
+        Harness::open(&parts, cfg, Hub::new(id)).expect("the session opens again")
+    };
+    let mut h = reopen(h);
+    assert_eq!(h.restore_after_restart(), None, "a second bare row");
+    let mut h = reopen(h);
+    assert_eq!(h.restore_after_restart(), None, "a third bare row");
+    assert_eq!(restart_rows(&h), vec![first.clone()], "{:?}", h.items());
+    // A turn answers it, so the next restart is said again.
+    h.provider = Some(Box::new(Answers {
+        text: "noted",
+        asked: Asked::default(),
+    }));
+    h.submit("carry on").expect("a turn runs");
+    let mut h = reopen(h);
+    let next = h.restore_after_restart().expect("a restart after a turn");
+    assert!(next.ends_with(". Nothing was running."), "{next}");
+    assert_eq!(restart_rows(&h).len(), 2, "{:?}", h.items());
 }
 
 /// **A session active just before the stop is NOT woken on that alone.** It owes nothing a turn
