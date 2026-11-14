@@ -1483,6 +1483,7 @@ impl Harness {
                         tokens: probe.ledger.prefix_tokens().to_vec(),
                         h_init: probe.ledger.h_init(),
                         vocab_source: parts.vocab.source().to_string(),
+                        effort: cfg.effort.clone(),
                     };
                     drop(probe);
                     let new_prefix_id = store
@@ -1776,6 +1777,7 @@ impl Harness {
                         tokens: session.ledger.prefix_tokens().to_vec(),
                         h_init: session.ledger.h_init(),
                         vocab_source: parts.vocab.source().to_string(),
+                        effort: cfg.effort.clone(),
                     };
                     prefix_id = s
                         .put_stable_prefix(&rec)

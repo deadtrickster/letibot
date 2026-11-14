@@ -282,6 +282,7 @@ impl Harness {
             tokens: measured.ledger.prefix_tokens().to_vec(),
             h_init: measured.ledger.h_init(),
             vocab_source: gguf.display().to_string(),
+            effort: self.cfg.effort.clone(),
         };
         drop(measured);
         let next_id = self
@@ -806,6 +807,7 @@ impl Harness {
             tokens: measured.ledger.prefix_tokens().to_vec(),
             h_init: measured.ledger.h_init(),
             vocab_source: own.vocab.source().to_string(),
+            effort: self.cfg.effort.clone(),
         };
         drop(measured);
         let next_id = self

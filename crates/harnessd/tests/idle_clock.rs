@@ -136,6 +136,7 @@ fn seed(path: &Path, parts: &Parts, session_id: &str) {
             tokens: prefix_tokens.clone(),
             h_init: hash_tokens(&prefix_tokens),
             vocab_source: parts.vocab.source().to_string(),
+            effort: None,
         })
         .expect("putting the prefix");
 

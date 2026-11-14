@@ -962,6 +962,7 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
             h_init: letibot_tokencore::hash_tokens(&[1, 2, 3, 4]),
             tokens: vec![1, 2, 3, 4],
             vocab_source: "/models/x.gguf".into(),
+            effort: None,
         })
         .unwrap();
     let a_child_that_stopped_at = |id: &str, title: &str, last: TranscriptItem| {

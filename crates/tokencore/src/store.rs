@@ -694,12 +694,15 @@ pub struct StablePrefixRecord {
     pub tokens: Vec<TokenId>,
     pub h_init: [u8; 32],
     pub vocab_source: String,
+    /// The reasoning effort the tokens were rendered at. Address-only, not a column.
+    pub effort: Option<String>,
 }
 
 impl StablePrefixRecord {
     /// The content address: a hash over dialect, system, tools and the rest. The dialect is in
     /// it because the row stores TOKENS, and two dialects render one text to different ones;
     /// the byte vocabulary is hashed in only for a `bytes:` source, so GGUF ids never move.
+    /// The effort is in it because renderers write it into the system turn; `None` hashes as before.
     pub fn id(&self) -> String {
         let mut h = Sha256::new();
         h.update(self.dialect_sha.as_bytes());
@@ -713,6 +716,11 @@ impl StablePrefixRecord {
         if self.vocab_source.starts_with(crate::vocab::BYTES_SOURCE) {
             h.update(b"vocab\0");
             h.update(self.vocab_source.as_bytes());
+            h.update([0]);
+        }
+        if let Some(effort) = &self.effort {
+            h.update(b"effort\0");
+            h.update(effort.as_bytes());
             h.update([0]);
         }
         crate::ledger::hex(&h.finalize().into())
@@ -2624,6 +2632,9 @@ impl Store {
             tokens: blob_to_tokens(&tokens)?,
             h_init: blob_to_hash(&h_init)?,
             vocab_source,
+            // Not stored, so a read-back record cannot reproduce its id. Callers have the id
+            // already - it is the key the row was fetched by.
+            effort: None,
         })
     }
 
@@ -4821,6 +4832,7 @@ mod prefix_id_tests {
             tokens: vec![1, 2, 3],
             h_init: [0; 32],
             vocab_source: vocab_source.into(),
+            effort: None,
         }
     }
 
@@ -4841,5 +4853,17 @@ mod prefix_id_tests {
             rec("bytes:aaaaaaaaaaaa").id(),
             rec("bytes:bbbbbbbbbbbb").id()
         );
+    }
+
+    /// Two efforts render two system turns, so they are two rows. `None` keeps the old id.
+    #[test]
+    fn two_efforts_are_two_ids() {
+        let base = rec("/m/Qwen.gguf");
+        let at = |e: &str| StablePrefixRecord {
+            effort: Some(e.into()),
+            ..base.clone()
+        };
+        assert_ne!(at("low").id(), at("xhigh").id());
+        assert_ne!(at("low").id(), base.id());
     }
 }

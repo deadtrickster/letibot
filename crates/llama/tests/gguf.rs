@@ -604,6 +604,7 @@ mod tests {
                 h_init: hash_tokens(&prefix_tokens),
                 tokens: prefix_tokens.clone(),
                 vocab_source: v.source().to_string(),
+                effort: None,
             })
             .unwrap();
         store

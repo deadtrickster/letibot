@@ -162,6 +162,7 @@ fn seed(path: &Path) -> String {
         tokens: prefix_tokens.to_vec(),
         h_init: letibot_tokencore::ledger::hash_tokens(&prefix_tokens),
         vocab_source: "/models/x.gguf".into(),
+        effort: None,
     };
     let prefix_id = store.put_stable_prefix(&prefix).expect("a prefix");
     for (id, folder, parent) in [

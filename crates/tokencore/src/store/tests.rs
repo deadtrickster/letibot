@@ -15,6 +15,7 @@ fn prefix() -> StablePrefixRecord {
         h_init: hash_tokens(&tokens),
         tokens,
         vocab_source: "/models/x.gguf".into(),
+        effort: None,
     }
 }
 

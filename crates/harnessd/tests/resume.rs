@@ -140,6 +140,7 @@ fn fixture(tag: &str, parts: &Parts, recorded_under: &str) -> Fixture {
             tokens: prefix_tokens.clone(),
             h_init: hash_tokens(&prefix_tokens),
             vocab_source: parts.vocab.source().to_string(),
+            effort: None,
         })
         .expect("putting the prefix");
 

@@ -48,6 +48,7 @@ fn seed(s: &Store) -> String {
             h_init: hash_tokens(&tokens),
             tokens,
             vocab_source: "/models/x.gguf".into(),
+            effort: None,
         })
         .unwrap();
     s.put_session(&SessionRecord {

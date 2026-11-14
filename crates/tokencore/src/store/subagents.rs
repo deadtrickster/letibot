@@ -662,6 +662,7 @@ mod tests {
                 h_init: hash_tokens(&tokens),
                 tokens,
                 vocab_source: "/models/x.gguf".into(),
+                effort: None,
             })
             .unwrap();
         // A child the record holds, two the record does not, and one that is older than the

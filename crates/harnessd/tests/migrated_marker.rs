@@ -24,6 +24,7 @@ fn store_with_a_moved_session(path: &std::path::Path) -> Store {
         h_init: letibot_tokencore::ledger::hash_tokens(&tokens),
         tokens,
         vocab_source: "bytes".into(),
+        effort: None,
     };
     let prefix_id = store.put_stable_prefix(&prefix).expect("a prefix");
     for (id, on) in [(MOVED, Some("lab2x1")), (HERE, None)] {

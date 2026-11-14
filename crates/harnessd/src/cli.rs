@@ -2564,6 +2564,7 @@ fn run_query(
                     tokens: opened.ledger.prefix_tokens().to_vec(),
                     h_init: opened.ledger.h_init(),
                     vocab_source: parts.vocab.source().to_string(),
+                    effort: cfg.effort.clone(),
                 };
                 // Content-addressed: the id is the hash of the system text and the
                 // schemas, so this is the same row and the write fills it in.

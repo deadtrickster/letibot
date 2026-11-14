@@ -771,6 +771,7 @@ impl Harness {
             tokens: measured.ledger.prefix_tokens().to_vec(),
             h_init: measured.ledger.h_init(),
             vocab_source: self.engine.vocab().source().to_string(),
+            effort: self.cfg.effort.clone(),
         };
         drop(measured);
         let id = self

@@ -175,6 +175,7 @@ impl Fixture {
             h_init: letibot_tokencore::ledger::hash_tokens(&tokens),
             tokens: tokens.clone(),
             vocab_source: "/models/x.gguf".into(),
+            effort: None,
         };
         let prefix_id = store.put_stable_prefix(&prefix).unwrap();
         store

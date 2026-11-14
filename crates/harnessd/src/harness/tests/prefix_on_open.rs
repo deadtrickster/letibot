@@ -105,6 +105,7 @@ fn seed(
             tokens: old_tokens.clone(),
             h_init: hash_tokens(&old_tokens),
             vocab_source: parts.vocab.source().to_string(),
+            effort: None,
         })
         .expect("the old prefix row");
     store
@@ -286,6 +287,7 @@ fn a_transcript_that_does_not_rebuild_is_forked_onto_the_prefix_its_rows_chain_f
             tokens: theirs.clone(),
             h_init,
             vocab_source: parts.vocab.source().to_string(),
+            effort: None,
         })
         .expect("the prefix the rows were written under");
     drop(store);

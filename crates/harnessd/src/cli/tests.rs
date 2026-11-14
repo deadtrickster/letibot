@@ -373,6 +373,7 @@ fn rows_for(store: &Store, id: &str, rows: u32, after_ms: i64) -> i64 {
             tokens: vec![1, 2, 3],
             h_init: [0u8; 32],
             vocab_source: "test".into(),
+            effort: None,
         })
         .expect("prefix");
     let transcript = format!("{id}#t0");

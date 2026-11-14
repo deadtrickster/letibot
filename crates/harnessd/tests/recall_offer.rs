@@ -102,6 +102,7 @@ fn store_with_a_compaction(dir: &Path, workspace: &Path) -> (Store, String, Stri
         tokens: vec![1, 2, 3],
         h_init: [0u8; 32],
         vocab_source: "test".into(),
+        effort: None,
     };
     let prefix_id = store
         .put_stable_prefix(&prefix)

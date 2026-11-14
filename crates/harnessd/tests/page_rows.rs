@@ -61,6 +61,7 @@ fn fixture(tag: &str, n: u32, unreadable: Option<u32>) -> (TempDir, PathBuf) {
             tokens: prefix_tokens.clone(),
             h_init: hash_tokens(&prefix_tokens),
             vocab_source: "test".into(),
+            effort: None,
         })
         .expect("putting the prefix");
     store
