@@ -176,7 +176,10 @@ impl Tool for Read {
         // Two bounds beyond the line count: a line longer than the clip is shown clipped and
         // counted, and the byte budget stops the call under the line cap. `ranges` is the batch,
         // because three lookups would be three round trips and a round trip is a gate decision.
-        let windows: Vec<(usize, usize)> = match args.get("ranges").and_then(|v| v.as_array()) {
+        // A window the call bounded with its own `limit` clips a line at the byte budget rather
+        // than the character cap, so a long line can be read in full, marked shown and edited.
+        let windows: Vec<(usize, usize, bool)> = match args.get("ranges").and_then(|v| v.as_array())
+        {
             Some(rs) if !rs.is_empty() => rs
                 .iter()
                 .map(|r| {
@@ -187,14 +190,13 @@ impl Tool for Read {
                         .map(|n| n as usize)
                         .unwrap_or(1)
                         .min(total.max(1));
-                    let e = match r.get("limit").and_then(|v| v.as_i64()).filter(|n| *n > 0) {
-                        Some(l) => (o - 1 + l as usize).min(total),
-                        None => (o - 1 + ctx.limits.max_read_lines).min(total),
-                    };
-                    (o, e)
+                    match r.get("limit").and_then(|v| v.as_i64()).filter(|n| *n > 0) {
+                        Some(l) => (o, (o - 1 + l as usize).min(total), true),
+                        None => (o, (o - 1 + ctx.limits.max_read_lines).min(total), false),
+                    }
                 })
                 .collect(),
-            _ => vec![(offset, want_end)],
+            _ => vec![(offset, want_end, limit.is_some())],
         };
 
         let mut body = String::new();
@@ -206,8 +208,12 @@ impl Tool for Read {
         // line clipped at the character cap is not added: the model saw a prefix
         // of it, and an edit aimed from that prefix is aimed at a memory.
         let mut shown: Vec<usize> = Vec::new();
-        for (w_offset, w_end) in &windows {
-            let (w_offset, w_end) = (*w_offset, *w_end);
+        for &(w_offset, w_end, named) in &windows {
+            let line_cap = if named {
+                ctx.limits.max_read_bytes
+            } else {
+                ctx.limits.max_read_line_chars
+            };
             // A gap between windows is marked, so two regions are never read as
             // one continuous stretch of the file.
             if !first_window && !byte_capped {
@@ -215,7 +221,7 @@ impl Tool for Read {
             }
             first_window = false;
             for (i, line) in lines[(w_offset - 1).min(total)..w_end].iter().enumerate() {
-                let (shown_line, clipped) = clip(line, ctx.limits.max_read_line_chars);
+                let (shown_line, clipped) = clip(line, line_cap);
                 let chunk = format!("{:>6}| {shown_line}\n", w_offset + i);
                 if !body.is_empty() && body.len() + chunk.len() > ctx.limits.max_read_bytes {
                     byte_capped = true;
@@ -247,10 +253,10 @@ impl Tool for Read {
 
         if truncated > 0 {
             notes.push(format!(
-                "{truncated} line(s) were longer than the {} characters read shows and \
-                 are clipped; a file whose lines do not fit does not page by line — use \
-                 grep on it for the text you need",
-                ctx.limits.max_read_line_chars
+                "{truncated} line(s) were longer than read shows and are clipped; read one \
+                 with offset=N and limit=1 to see it whole (up to {} characters) so it can \
+                 be edited, or grep the file for the text you need",
+                ctx.limits.max_read_bytes
             ));
         }
         if byte_capped {
@@ -567,6 +573,35 @@ mod tests {
         let notes = r.notes.join(" ");
         assert!(notes.contains("clipped"), "{notes}");
         assert!(notes.contains("grep"), "{notes}");
+    }
+
+    #[test]
+    fn a_long_line_read_with_a_limit_is_shown_whole_and_can_be_edited() {
+        let mut h = crate::testing::writable_harness();
+        let row = format!("| {} |", "cell ".repeat(600));
+        h.write_file("t.md", &format!("# t\n{row}\nend\n"));
+
+        let r = h.call("read", r#"{"path":"t.md"}"#);
+        assert!(r.payload.contains("[line clipped at 2000 characters]"));
+        let r = h.call(
+            "edit",
+            r#"{"path":"t.md","old_string":"cell  |","new_string":"last |"}"#,
+        );
+        assert!(
+            !r.is_grounded(),
+            "an edit of a clipped line: {}",
+            r.render()
+        );
+
+        let r = h.call("read", r#"{"path":"t.md","offset":2,"limit":1}"#);
+        assert!(r.payload.contains(&row), "{}", r.payload);
+        assert!(!r.payload.contains("clipped"), "{}", r.payload);
+        let r = h.call(
+            "edit",
+            r#"{"path":"t.md","old_string":"cell  |","new_string":"last |"}"#,
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+        assert!(h.read_file("t.md").contains("cell last |"));
     }
 
     #[test]
