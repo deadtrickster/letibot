@@ -1,0 +1,14 @@
+[package]
+name = "letibot-config-ref"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# The options reference for every file under the config dir: one table per file, rendered as
+# `--config-reference`, as `docs/config/<file>.md` and as a TOML header. Below every parser,
+# so each parser's crate can test itself against its table.
+[dependencies]
+serde.workspace = true
+toml.workspace = true

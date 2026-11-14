@@ -67,6 +67,7 @@ letibot-plugins-rano.workspace = true
 rano = { git = "https://github.com/deadtrickster/rano", rev = "cafb70211145e97dcd75096625c6ae6464fc02ec" }
 
 [dev-dependencies]
+letibot-config-ref.workspace = true
 # **The fixture that writes an executable needs `write_stub`**, which is the one place in this tree
 # that closes the `ETXTBSY` window a written-then-exec'd file has (`crates/tools/src/testing.rs`,
 # and `daemon::tests`' reaper test is the caller). Asking for the feature HERE rather than on the

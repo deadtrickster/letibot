@@ -5,6 +5,8 @@ members = [
     # another crate here, not on one outside. It is a screen model, and a screen model that
     # needed a palette or a session type could not be tested without one.
     "crates/vt",
+    # The config options reference: tables, renderers and the TOML header splice.
+    "crates/config-ref",
     "crates/transcript",
     "crates/dialect",
     "crates/dialect-glm",
@@ -154,6 +156,7 @@ serde_json = "1"
 # reported with.
 toml = "0.8"
 letibot-vt = { path = "crates/vt" }
+letibot-config-ref = { path = "crates/config-ref" }
 letibot-llama = { path = "crates/llama" }
 letibot-transcript = { path = "crates/transcript" }
 letibot-dialect = { path = "crates/dialect" }

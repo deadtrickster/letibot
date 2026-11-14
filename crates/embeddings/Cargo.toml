@@ -46,3 +46,6 @@ candle-transformers = { version = "0.9", features = ["accelerate"] }
 # The tiny BERT a test builds, for a crate that wants the internal path without a
 # 90 MB download: `letibot-embeddings = { path = "../embeddings", features = ["testing"] }`.
 testing = []
+
+[dev-dependencies]
+letibot-config-ref.workspace = true

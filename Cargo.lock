@@ -1403,6 +1403,7 @@ version = "0.6.0"
 dependencies = [
  "letibot-activation",
  "letibot-bridge",
+ "letibot-config-ref",
  "letibot-dialect-glm",
  "letibot-dialect-qwen",
  "letibot-github",
@@ -1418,6 +1419,7 @@ dependencies = [
  "libc",
  "serde_json",
  "sha2",
+ "toml",
 ]
 
 [[package]]
@@ -1453,6 +1455,7 @@ version = "0.6.0"
 dependencies = [
  "letibot-activation",
  "letibot-builtins",
+ "letibot-config-ref",
  "letibot-harnessd",
  "letibot-plugin",
  "letibot-plugins",
@@ -1494,6 +1497,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-config-ref"
+version = "0.6.0"
+dependencies = [
+ "serde",
+ "toml",
+]
+
+[[package]]
 name = "letibot-dialect"
 version = "0.6.0"
 
@@ -1525,6 +1536,7 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "candle-transformers",
+ "letibot-config-ref",
  "letibot-http",
  "letibot-metrics",
  "rusqlite",
@@ -1564,6 +1576,7 @@ dependencies = [
  "letibot-builtins",
  "letibot-claude",
  "letibot-code",
+ "letibot-config-ref",
  "letibot-dialect",
  "letibot-dialect-glm",
  "letibot-dialect-qwen",
@@ -1639,6 +1652,7 @@ dependencies = [
 name = "letibot-plugins"
 version = "0.6.0"
 dependencies = [
+ "letibot-config-ref",
  "letibot-metrics",
  "letibot-plugin",
  "serde_json",
@@ -1661,6 +1675,7 @@ name = "letibot-provider"
 version = "0.6.0"
 dependencies = [
  "letibot-backend",
+ "letibot-config-ref",
  "letibot-http",
  "letibot-transcript",
  "serde",
@@ -1721,6 +1736,7 @@ dependencies = [
  "crc32fast",
  "flate2",
  "letibot-code",
+ "letibot-config-ref",
  "letibot-embeddings",
  "letibot-metrics",
  "letibot-plugin",
@@ -1751,6 +1767,7 @@ name = "letibot-tui"
 version = "0.6.0"
 dependencies = [
  "letibot-builtins",
+ "letibot-config-ref",
  "letibot-http",
  "letibot-metrics",
  "letibot-plugin",
@@ -1814,6 +1831,7 @@ dependencies = [
 name = "letibot-websearch"
 version = "0.6.0"
 dependencies = [
+ "letibot-config-ref",
  "letibot-tools",
  "serde",
  "serde_json",
@@ -1824,6 +1842,7 @@ dependencies = [
 name = "leticode-config"
 version = "0.6.0"
 dependencies = [
+ "letibot-config-ref",
  "letibot-provider",
  "letibot-tools",
  "serde",

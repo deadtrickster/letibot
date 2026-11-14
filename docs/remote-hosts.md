@@ -1,5 +1,7 @@
 # Remote hosts: sessions and children that run on another machine
 
+Every `hosts.toml` key: [config/hosts.toml.md](config/hosts.toml.md) (`letibot --config-reference hosts.toml`).
+
 A remote host is a **placement**, as a firecode VM is (`crates/tools/src/firecode.rs`,
 `Placement::Firecode`): the session's harness, model connection, store rows and gate stay in the local
 daemon, and its **tool calls** - `bash`, `read`, `write`, `edit`, `grep`, `glob`, jobs - run on the remote

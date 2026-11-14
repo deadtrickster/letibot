@@ -1,0 +1,283 @@
+//! The options reference for every file letibot reads from its config dir. Each file is one
+//! static [`File`]; `letibot --config-reference`, `docs/config/<file>.md` and the TOML header
+//! block are all rendered from it, and each parser's crate tests itself against it.
+
+pub mod files;
+pub mod probe;
+
+pub use files::ALL;
+
+/// How a file is written, which decides whether it can carry the header block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Format {
+    Toml,
+    Json,
+    Tsv,
+}
+
+/// One config file.
+#[derive(Debug)]
+pub struct File {
+    /// The file name under the config dir, and the name `--config-reference` takes.
+    pub name: &'static str,
+    pub format: Format,
+    /// Where it is read from.
+    pub location: &'static str,
+    /// One or two sentences: what the file decides.
+    pub about: &'static str,
+    /// Who writes it besides the operator; empty when only the operator does.
+    pub writer: &'static str,
+    pub tables: &'static [Table],
+}
+
+/// One TOML table (or JSON object, or TSV column set). `path` is `""` for the top level and
+/// uses `<name>` for a key the operator chooses, e.g. `provider.<name>`.
+#[derive(Debug)]
+pub struct Table {
+    pub path: &'static str,
+    /// A terse note for the whole table; empty for none.
+    pub note: &'static str,
+    /// TOML lines every probe of this table needs, e.g. a required key.
+    pub needs: &'static str,
+    pub keys: &'static [Key],
+}
+
+/// One option.
+#[derive(Debug)]
+pub struct Key {
+    /// The key; `<name>` for a key the operator chooses.
+    pub key: &'static str,
+    pub ty: &'static str,
+    /// What applies when the key is absent.
+    pub default: &'static str,
+    /// Which level reads it, when the file has levels; empty otherwise.
+    pub level: &'static str,
+    pub meaning: &'static str,
+    /// A value the parser accepts, in the file's own syntax. Probes write it.
+    pub example: &'static str,
+}
+
+/// Shorthand for the tables in `files`.
+pub(crate) const fn k(
+    key: &'static str,
+    ty: &'static str,
+    default: &'static str,
+    level: &'static str,
+    meaning: &'static str,
+    example: &'static str,
+) -> Key {
+    Key {
+        key,
+        ty,
+        default,
+        level,
+        meaning,
+        example,
+    }
+}
+
+pub const BEGIN: &str = "# --- letibot reference (generated; edit below the block) ---";
+pub const END: &str = "# --- end reference ---";
+
+/// The file called `name` (`leticode.toml`, `head.toml`, ...).
+pub fn find(name: &str) -> Option<&'static File> {
+    ALL.iter().copied().find(|f| f.name == name)
+}
+
+impl File {
+    /// Every key with the table it sits in.
+    pub fn keys(&self) -> impl Iterator<Item = (&'static Table, &'static Key)> + '_ {
+        self.tables
+            .iter()
+            .flat_map(|t| t.keys.iter().map(move |k| (t, k)))
+    }
+
+    pub fn key_count(&self) -> usize {
+        self.tables.iter().map(|t| t.keys.len()).sum()
+    }
+
+    /// The table at `path`, by exact path.
+    pub fn table(&self, path: &str) -> Option<&'static Table> {
+        self.tables.iter().find(|t| t.path == path)
+    }
+
+    pub fn doc_path(&self) -> String {
+        format!("docs/config/{}.md", self.name)
+    }
+}
+
+fn heading(path: &str) -> String {
+    if path.is_empty() {
+        "top level".into()
+    } else {
+        format!("[{path}]")
+    }
+}
+
+/// The reference as plain text, for `--config-reference`.
+pub fn text(f: &File) -> String {
+    let mut out = format!("{} - {}\n  {}\n", f.name, f.location, f.about);
+    if !f.writer.is_empty() {
+        out.push_str(&format!("  written by: {}\n", f.writer));
+    }
+    for t in f.tables {
+        out.push_str(&format!("\n{}\n", heading(t.path)));
+        if !t.note.is_empty() {
+            out.push_str(&format!("  {}\n", t.note));
+        }
+        for key in t.keys {
+            out.push_str(&format!("  {} = {}  ({})", key.key, key.ty, key.default));
+            if !key.level.is_empty() {
+                out.push_str(&format!("  [{}]", key.level));
+            }
+            out.push_str(&format!("\n      {}\n", key.meaning));
+        }
+    }
+    out
+}
+
+/// Every file, briefly: the `--config-reference` overview.
+pub fn overview() -> String {
+    let mut out =
+        String::from("letibot config files (letibot --config-reference FILE for one):\n\n");
+    for f in ALL {
+        out.push_str(&format!(
+            "  {:<18} {:>3} keys  {}\n",
+            f.name,
+            f.key_count(),
+            f.location
+        ));
+    }
+    out.push_str("\nalso in the config dir, with no options:\n");
+    for (name, what) in files::OTHERS {
+        out.push_str(&format!("  {name:<22} {what}\n"));
+    }
+    out
+}
+
+fn md_cell(s: &str) -> String {
+    let s = s.replace('|', "\\|");
+    if s.is_empty() { "-".into() } else { s }
+}
+
+/// `docs/config/<file>.md`.
+pub fn markdown(f: &File) -> String {
+    let mut out = format!(
+        "# {}\n\n<!-- generated by `letibot --config-reference --markdown {}`; do not edit -->\n\n",
+        f.name, f.name
+    );
+    out.push_str(&format!("Location: {}\n\n{}\n", f.location, f.about));
+    if !f.writer.is_empty() {
+        out.push_str(&format!("\nWritten by: {}\n", f.writer));
+    }
+    let levels = f.keys().any(|(_, k)| !k.level.is_empty());
+    for t in f.tables {
+        out.push_str(&format!("\n## `{}`\n\n", heading(t.path)));
+        if !t.note.is_empty() {
+            out.push_str(&format!("{}\n\n", t.note));
+        }
+        if levels {
+            out.push_str("| key | type | default | level | meaning |\n|---|---|---|---|---|\n");
+        } else {
+            out.push_str("| key | type | default | meaning |\n|---|---|---|---|\n");
+        }
+        for k in t.keys {
+            out.push_str(&format!(
+                "| `{}` | {} | {} |",
+                k.key,
+                md_cell(k.ty),
+                md_cell(k.default)
+            ));
+            if levels {
+                out.push_str(&format!(" {} |", md_cell(k.level)));
+            }
+            out.push_str(&format!(" {} |\n", md_cell(k.meaning)));
+        }
+    }
+    out
+}
+
+/// The TOML comment block, markers included, one line per key and grouped by table.
+pub fn header(f: &File) -> String {
+    let mut out = format!(
+        "{BEGIN}\n# {} - {}\n# Full reference: {}, or `letibot --config-reference {}`\n#\n",
+        f.name,
+        f.about,
+        f.doc_path(),
+        f.name
+    );
+    for t in f.tables {
+        out.push_str(&format!("# {}\n", heading(t.path)));
+        for k in t.keys {
+            let level = if k.level.is_empty() {
+                String::new()
+            } else {
+                format!(" [{}]", k.level)
+            };
+            out.push_str(&format!(
+                "#   {}: {} = {}{} - {}\n",
+                k.key, k.ty, k.default, level, k.meaning
+            ));
+        }
+    }
+    out.push_str(END);
+    out.push('\n');
+    out
+}
+
+/// `text` with the block replaced, or inserted at the top when it has none. Bytes outside the
+/// markers are kept as they are. A begin marker without an end is refused.
+pub fn splice(text: &str, f: &File) -> Result<String, String> {
+    let block = header(f);
+    let mut at = 0;
+    let mut begin = None;
+    for line in text.split_inclusive('\n') {
+        let bare = line.trim_end_matches(['\n', '\r']);
+        match begin {
+            None if bare.trim() == BEGIN => begin = Some(at),
+            Some(b) if bare.trim() == END => {
+                let end = at + line.len();
+                let mut out = String::with_capacity(text.len() + block.len());
+                out.push_str(&text[..b]);
+                out.push_str(&block);
+                // `header` ends in `\n`; keep the file's own line end and nothing after it.
+                if !line.ends_with('\n') {
+                    out.pop();
+                } else if line.ends_with("\r\n") {
+                    out.pop();
+                    out.push_str("\r\n");
+                }
+                out.push_str(&text[end..]);
+                return Ok(out);
+            }
+            _ => {}
+        }
+        at += line.len();
+    }
+    if begin.is_some() {
+        return Err(format!("`{BEGIN}` has no `{END}` after it"));
+    }
+    Ok(format!("{block}{text}"))
+}
+
+/// `text` with the block and its markers removed: what the operator wrote.
+pub fn strip(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut inside = false;
+    for line in text.split_inclusive('\n') {
+        let bare = line.trim_end_matches(['\n', '\r']).trim();
+        if !inside && bare == BEGIN {
+            inside = true;
+        } else if inside {
+            if bare == END {
+                inside = false;
+            }
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests;

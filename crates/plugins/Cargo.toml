@@ -24,3 +24,6 @@ sha2 = "0.10"
 letibot-plugin.workspace = true
 # The tree's one wall clock: a pin and a layer's stamp are dated by it.
 letibot-metrics.workspace = true
+
+[dev-dependencies]
+letibot-config-ref.workspace = true

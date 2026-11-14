@@ -1,5 +1,7 @@
 # Cloud providers: OpenAI, GLM, DeepSeek, Grok, Kimi, Anthropic, Gemini
 
+Every `providers.toml` key, with its type and default: [config/providers.toml.md](config/providers.toml.md) (`letibot --config-reference providers.toml`).
+
 `crates/provider` (`letibot-provider`) is the one crate in the tree with a TLS stack (ureq +
 rustls); the engine above it stays a state machine with no runtime under it.
 

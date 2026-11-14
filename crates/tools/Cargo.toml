@@ -80,6 +80,7 @@ libc = "0.2"
 testing = []
 
 [dev-dependencies]
+letibot-config-ref.workspace = true
 letibot-tools = { path = ".", features = ["testing"] }
 # A real second tier over a tiny model, so the blend's tests run the crate's own path
 # instead of a fake that agrees with them.

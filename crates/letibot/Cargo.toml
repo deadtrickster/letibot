@@ -63,12 +63,14 @@ letibot-bridge.workspace = true
 # The `[github] post` and `token_path` a seat starts with come from `leticode.toml` at both
 # levels: the user's own file, and the project file that may stop the seat.
 leticode-config.workspace = true
+letibot-config-ref.workspace = true
 # `letibot browser install|start|stop|...`: the agent or units and the verbs that drive them.
 letibot-activation.workspace = true
 # `letibot rooms install` reads the coordinator's lease, so it does not install over a stray.
 letibot-room.workspace = true
 
 [dev-dependencies]
+toml.workspace = true
 # `tests/migrate.rs` hashes a session id the way the launcher's socket key does. Nothing in the
 # binary uses this any more: the socket's key is `letibot_bridge::daemon::key`'s.
 sha2 = "0.10"

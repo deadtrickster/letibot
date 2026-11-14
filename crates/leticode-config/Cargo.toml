@@ -28,3 +28,6 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 # The one TOML the tree parses with a real parser, for the reason the workspace
 # manifest gives: a file that will not parse is reported with its own line.
 toml.workspace = true
+
+[dev-dependencies]
+letibot-config-ref.workspace = true

@@ -1,5 +1,7 @@
 # leticode - opencode-shaped agent on letibot primitives
 
+Every `leticode.toml` key, with its level and default: [config/leticode.toml.md](config/leticode.toml.md) (`letibot --config-reference leticode.toml`).
+
 A letibot session that models itself after opencode: the tool union, plus a verbatim port of
 opencode's permission model, and the seat's own rules on top. `letibot` runs this seat by
 default.

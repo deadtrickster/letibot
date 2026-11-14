@@ -54,6 +54,7 @@ use std::process::ExitCode;
 
 mod boundary;
 mod browser;
+mod config_ref;
 mod gc;
 mod github;
 pub mod migrate;
@@ -319,6 +320,10 @@ fn main() -> ExitCode {
                     // `letibot attach github <org|owner/repo>`: a source and then a scope, checked
                     // before anything is polled so a typo is not a seat on somebody else's repo.
                     github::run(&tail())
+                } else if word == "--config-reference" {
+                    config_ref::reference(&tail())
+                } else if word == "--config-header" {
+                    config_ref::header(&tail())
                 } else if word == "--help" || word == "-h" || word == "help" {
                     print_usage();
                     ExitCode::SUCCESS
@@ -381,6 +386,10 @@ VERBS
   where [FOLDER]              the socket this folder's daemon listens on and whether it is up:
                               `--ensure` starts it, `--json` prints socket, live, project
                               and folder in one object (`letibot --where` is the same verb)
+  --config-reference [FILE]   every option of every config file, or of one; `--markdown`
+                              prints docs/config/FILE.md
+  --config-header FILE        write the reference block into a TOML config file's header
+                              (FILE.bak first; nothing outside the block changes)
   holds [OWNER]               what every owner holds on disk - its cgroup with its process
                               count and memory, its VM, its copies, its worktree and target
   gc [OWNER]                  what would be reaped, why, when; `--log` shows the journal.

@@ -1,0 +1,395 @@
+use crate::{File, Format, Table, k};
+
+const PW: &str = "both, project wins";
+const UW: &str = "both, user wins";
+const U: &str = "user only";
+const P: &str = "project only";
+const UNION: &str = "both, joined";
+
+#[rustfmt::skip]
+pub const LETICODE: File = File {
+    name: "leticode.toml",
+    format: Format::Toml,
+    location: "user: $XDG_CONFIG_HOME/letibot/leticode.toml (else ~/.config/letibot); project: the nearest leticode.toml at or above the workspace",
+    about: "which models answer, and the session, queue, head and sandbox settings, at two levels",
+    writer: "",
+    tables: &[
+        Table {
+            path: "",
+            note: "Order: command line, project file, user file, providers.toml. A key a level does not set falls through.",
+            needs: "",
+            keys: &[
+                k("main_model", "string", "--provider, else providers.toml [default], else local", PW, "model the session's turns go to", "\"deepseek/deepseek-flash\""),
+                k("subagent_model", "string", "the parent's model", PW, "default model for `task` spawns", "\"deepseek/deepseek-flash\""),
+                k("gatekeeper_model", "string", "providers.toml [gatekeeper] model, else the session's", PW, "guard model", "\"deepseek/deepseek-flash\""),
+                k("judge_model", "string", "as gatekeeper_model", PW, "same seat as gatekeeper_model; two different values are refused", "\"deepseek/deepseek-flash\""),
+                k("fallback", "list of models | [fallback] table", "providers.toml [fallback] models", "the level that sets it replaces the other", "models to move to when the session's model is out, in order", "[\"deepseek/deepseek-flash\"]"),
+                k("fallback_after_timeouts", "int >= 1", "3", PW, "consecutive model timeouts before a fallback move", "3"),
+            ],
+        },
+        Table {
+            path: "fallback",
+            note: "Table form of `fallback`: the list for one limited model. Lookup: exact model, then `provider/*`, then `*`.",
+            needs: "",
+            keys: &[k(
+                "<model>",
+                "non-empty list",
+                "none",
+                "as fallback",
+                "list for that model; key is `provider/model`, `provider/*` or `*`",
+                "[\"deepseek/deepseek-flash\"]",
+            )],
+        },
+        Table {
+            path: "provider",
+            note: "Usage limits and model API deadlines.",
+            needs: "",
+            keys: &[
+                k("on_limit", "\"wait\" | \"switch\"", "switch with a fallback, else wait", PW, "on a usage limit: park until the reset, or move to the next fallback", "\"switch\""),
+                k("wait_if_within", "span (45m, 1h30m, 90s, 2d, 0)", "45m", PW, "with switch: a reset this close is waited for anyway; 0 never waits", "\"45m\""),
+                k("fallback", "list of models", "none", "as fallback", "the top-level fallback list; both set to different lists is refused", "[\"deepseek/deepseek-flash\"]"),
+                k("slow_notice_seconds", "int >= 1", "15", PW, "silence before the \"model slow\" notice", "15"),
+                k("first_byte_seconds", "int >= 1", "60", PW, "silence before the first byte that fails the round", "60"),
+                k("answer_seconds", "int >= 1", "600", PW, "budget for the whole answer", "600"),
+            ],
+        },
+        Table {
+            path: "provider.<name>",
+            note: "NAME is a preset or `provider/model`. Resolves per key: model, preset, [provider], built-in.",
+            needs: "",
+            keys: &[
+                k("slow_notice_seconds", "int >= 1", "[provider]'s", PW, "as [provider], for this preset or model", "90"),
+                k("first_byte_seconds", "int >= 1", "[provider]'s", PW, "as [provider], for this preset or model", "120"),
+                k("answer_seconds", "int >= 1", "[provider]'s", PW, "as [provider], for this preset or model", "900"),
+            ],
+        },
+        Table {
+            path: "roles",
+            note: "",
+            needs: "",
+            keys: &[k(
+                "<name>",
+                "string",
+                "none",
+                PW,
+                "shorthand for [roles.<name>] model",
+                "\"deepseek/deepseek-flash\"",
+            )],
+        },
+        Table {
+            path: "roles.<name>",
+            note: "NAME is a seat a spawn uses, or `subagent`, the floor under every spawn. Window and reply-cap keys are refused.",
+            needs: "",
+            keys: &[
+                k("model", "string", "none", PW, "model this role runs on", "\"deepseek/deepseek-flash\""),
+                k("temperature", "number", "0.7", PW, "sampler", "0.7"),
+                k("top_p", "number", "0.8", PW, "sampler", "0.8"),
+                k("top_k", "int", "20", PW, "sampler", "20"),
+                k("min_p", "number", "0", PW, "sampler", "0"),
+                k("presence_penalty", "number", "1.5", PW, "sampler", "1.5"),
+            ],
+        },
+        Table {
+            path: "exec",
+            note: "",
+            needs: "",
+            keys: &[
+                k("auto_background", "bool", "true", PW, "move a call to the background past the threshold", "true"),
+                k("foreground_seconds", "int >= 1", "60", PW, "foreground threshold", "60"),
+                k("job_dead_after_seconds", "int", "1800", PW, "a job with no output and no CPU this long is dead; 0 = check off", "1800"),
+            ],
+        },
+        Table {
+            path: "memory",
+            note: "Amounts: a size (64M, 2G) or a fraction of free memory (0.5, 50%). Over providers.toml [memory].",
+            needs: "",
+            keys: &[
+                k("default", "amount", "providers.toml, else 64M", PW, "cap for a bash call that names none", "\"64M\""),
+                k("ceiling", "amount", "providers.toml, else 0.5", PW, "most a call may take without asking; may only narrow", "\"0.5\""),
+            ],
+        },
+        Table {
+            path: "notes",
+            note: "",
+            needs: "",
+            keys: &[
+                k("repo", "path", "<data dir>/notes", UW, "notes checkout", "\"~/.local/share/letibot/notes\""),
+                k("remote", "string", "none", UW, "push URL for `letibot notes push`", "\"https://example.invalid/notes.git\""),
+            ],
+        },
+        Table {
+            path: "browser",
+            note: "",
+            needs: "",
+            keys: &[
+                k("port", "1-65535", "8790", U, "where `letibot browser` listens; --port wins", "8790"),
+                k("extension_id", "32 letters a-p", "kbaoealgdkldcgaojgdehmdaaekkmffd", U, "the extension it answers", "\"kbaoealgdkldcgaojgdehmdaaekkmffd\""),
+            ],
+        },
+        Table {
+            path: "github",
+            note: "",
+            needs: "",
+            keys: &[
+                k("post", "bool", "false", "user decides; project may only say false", "the reviewer seat posts to GitHub; false keeps drafts", "false"),
+                k("token_path", "path", "none", U, "token file `gh` reads, mode 0600", "\"~/.config/letibot/github.token\""),
+            ],
+        },
+        Table {
+            path: "boundary",
+            note: "What a command's view holds beyond the built-in list.",
+            needs: "",
+            keys: &[
+                k("grants_ro", "list of paths", "[]", UNION, "readable in a command's view", "[\"/opt/data\"]"),
+                k("grants_rw", "list of paths", "[]", "user only, joined", "writable in a command's view", "[\"/run/docker.sock\"]"),
+                k("hide", "list of paths", "[]", UNION, "denied after every grant", "[\"/opt/data/secret\"]"),
+                k("firecode_only", "list of programs", "[]", UNION, "programs allowed only inside firecode", "[\"docker\"]"),
+            ],
+        },
+        Table {
+            path: "boundary.env",
+            note: "",
+            needs: "",
+            keys: &[k(
+                "<name>",
+                "string",
+                "none",
+                UNION,
+                "constant handed to every command",
+                "\"v\"",
+            )],
+        },
+        Table {
+            path: "perimeter.<name>",
+            note: "NAME: `top-level`, `subagent`, or a child perimeter `task` names. Lists join per NAME.",
+            needs: "",
+            keys: &[
+                k("grants_ro", "list of paths", "[]", U, "readable", "[\"/opt/data\"]"),
+                k("grants_rw", "list of paths", "[]", U, "writable", "[\"/opt/out\"]"),
+                k("hide", "list of paths", "[]", UNION, "masked", "[\"/opt/data/secret\"]"),
+                k("docker", "bool", "false", "user only for true; user's value first", "the seat gets a docker socket under its owner root", "false"),
+                k("secrets", "list: github", "top-level: github; others: none", U, "secrets the seat carries", "[\"github\"]"),
+            ],
+        },
+        Table {
+            path: "perimeter.<name>.env",
+            note: "",
+            needs: "",
+            keys: &[k(
+                "<name>",
+                "string | {file=..} | {command=..}",
+                "none",
+                UNION,
+                "env value, computed outside the box",
+                "\"v\"",
+            )],
+        },
+        Table {
+            path: "skills",
+            note: "",
+            needs: "",
+            keys: &[
+                k("pin", "list of skills", "[]", UNION, "skills kept loaded", "[\"fix-report\"]"),
+                k("never_offer", "list of skills", "[]", UNION, "skills never offered", "[\"fix-report\"]"),
+            ],
+        },
+        Table {
+            path: "skills.when.<name>",
+            note: "Overrides the skill's frontmatter. The user's table replaces the project's whole.",
+            needs: "",
+            keys: &[
+                k("requires", "list of capabilities", "frontmatter", UW, "all must be on the seat", "[\"bash\"]"),
+                k("unless", "list of capabilities", "frontmatter", UW, "any one present hides the skill", "[\"bash\"]"),
+            ],
+        },
+        Table {
+            path: "nag",
+            note: "The idle plan-check clock.",
+            needs: "",
+            keys: &[
+                k("after_seconds", "int >= 1", "60", PW, "idle window before the plan-check", "60"),
+                k("floor_seconds", "int >= 1", "10", PW, "shortest re-arm an operator add earns", "10"),
+                k("repeat_cap_seconds", "int >= 1", "1800", PW, "ceiling for the doubled interval", "1800"),
+            ],
+        },
+        Table {
+            path: "room",
+            note: "",
+            needs: "",
+            keys: &[
+                k("tie_breaker", "string", "deepseek/deepseek-flash", PW, "model that arbitrates the room's items", "\"deepseek/deepseek-flash\""),
+                k("held_quiet_seconds", "int >= 1", "600", PW, "how long held room lines wait for their digest turn", "600"),
+            ],
+        },
+        Table {
+            path: "queue",
+            note: "The merge queue reads the project file only, except the three census keys.",
+            needs: "",
+            keys: &[
+                k("stuck_after_seconds", "int >= 1", "900", PW, "a row stuck this long goes into the census", "900"),
+                k("stuck_repeat_seconds", "int >= 1", "7200", PW, "how often the census repeats", "7200"),
+                k("mute", "list of repositories", "[]", UNION, "repositories the session is not woken for", "[\"letibot\"]"),
+                k("target", "string", "main, else master, else checked out", P, "branch this project lands on", "\"main\""),
+                k("merge_via_session", "bool", "false", P, "a review that cannot run goes to the main session", "true"),
+                k("red_target", "\"fix\" | \"raise\"", "fix", P, "what a red target triggers", "\"fix\""),
+                k("gate_carry", "list of paths", "[]", P, "gitignored inputs copied into the landing tree", "[\"config/local.toml\"]"),
+                k("reviewers", "\"host\" | \"vm\"", "host", P, "where reviewers run", "\"host\""),
+                k("gate_host", "hosts.toml name", "this machine", P, "machine the gate runs on", "\"lab\""),
+                k("gate_in", "\"host\" | \"firecode\"", "host", P, "gate steps run in a firecode VM", "\"host\""),
+                k("reviewer_skills", "list of skills", "[]", P, "skills preloaded into reviewers", "[\"code-review\"]"),
+                k("gate_train", "int >= 1", "1", P, "branches judged by one gate", "1"),
+                k("reviewers_at_once", "int >= 1", "placement's", P, "concurrent reviewers", "2"),
+                k("reviewer_hosts", "list; [\"*\"] = all", "[\"local\"]", P, "hosts a host reviewer may use", "[\"local\"]"),
+            ],
+        },
+        Table {
+            path: "queue.claude",
+            note: "Present: this project's reviewers are `claude -p` runs.",
+            needs: "",
+            keys: &[
+                k("binary", "absolute path", "required", P, "the `claude` executable", "\"/usr/local/bin/claude\""),
+                k("allowed_tools", "list", "built-in 7", P, "--allowedTools", "[\"Read\"]"),
+                k("permission_mode", "string", "\"default\"", P, "--permission-mode", "\"default\""),
+                k("timeout_seconds", "int >= 1", "3600", P, "deadline for one review", "3600"),
+            ],
+        },
+        Table {
+            path: "ui",
+            note: "Read by the head.",
+            needs: "",
+            keys: &[
+                k("rooms_sidebar", "bool", "false", PW, "Rooms, Sessions and Queues beside the transcript", "true"),
+                k("rooms_sidebar_width", "columns", "the head's own", PW, "starting width; head.toml's dragged width wins", "30"),
+            ],
+        },
+        Table {
+            path: "warnings",
+            note: "Read by the head. Codes: letibot_sessionlog::warning::TABLE.",
+            needs: "",
+            keys: &[k(
+                "mute",
+                "list of codes or families",
+                "[]",
+                UNION,
+                "warnings filed and never drawn",
+                "[\"memory_high\"]",
+            )],
+        },
+        Table {
+            path: "keys",
+            note: "Read by the head. Surfaces and key words: tui/src/app/keys/bindings.rs.",
+            needs: "",
+            keys: &[k(
+                "<surface>.<key>",
+                "key word",
+                "the built-in binding",
+                PW,
+                "moves that binding to another key",
+                "\"ctrl-x\"",
+            )],
+        },
+        Table {
+            path: "verbosity.<name>",
+            note: "Read by the head. NAME may not be a built-in profile (conversation, read-edits, terse, normal, loud).",
+            needs: "",
+            keys: &[k(
+                "show",
+                "list of SWITCH[=hidden|folded|open]",
+                "required",
+                PW,
+                "what the profile shows; switches: edits, tools, thinking, system, raw-calls",
+                "[\"edits\", \"tools=folded\"]",
+            )],
+        },
+        Table {
+            path: "project",
+            note: "",
+            needs: "",
+            keys: &[k(
+                "repository",
+                "bool",
+                "true",
+                "nearest project file, else user",
+                "false: a folder outside git does not adopt a child repository",
+                "false",
+            )],
+        },
+        Table {
+            path: "embeddings",
+            note: "The project's table if its mode is not off, else the user's, whole.",
+            needs: "",
+            keys: &[
+                k("mode", "off | internal | http://..", "off", PW, "who turns text into vectors", "\"off\""),
+                k("model", "string", "built-in, or text-embedding-3-small over http", PW, "model directory or remote name", "\"m\""),
+                k("download", "bool", "true", PW, "may fetch the built-in model", "true"),
+                k("builtin_repo", "owner/name", "shipped", PW, "where the built-in model comes from", "\"o/n\""),
+                k("builtin_revision", "40 hex", "shipped", PW, "its commit; needs builtin_sha256", "\"0000000000000000000000000000000000000000\""),
+                k("builtin_sha256", "table: file = 64 hex", "shipped", PW, "hash per model file; needs builtin_revision", "{}"),
+            ],
+        },
+        Table {
+            path: "bridge",
+            note: "Read by the Claude Code bridge.",
+            needs: "",
+            keys: &[k(
+                "permission_relay",
+                "bool",
+                "false",
+                U,
+                "relay Claude Code permission prompts to the operator",
+                "true",
+            )],
+        },
+        Table {
+            path: "gc",
+            note: "Read from the user file, or $LETIBOT_GC_SETTINGS.",
+            needs: "",
+            keys: &[k(
+                "root",
+                "path",
+                "the data dir",
+                U,
+                "base for owner roots",
+                "\"/build/owners\"",
+            )],
+        },
+        Table {
+            path: "gc.shared[]",
+            note: "One [[gc.shared]] per shared build target.",
+            needs: "",
+            keys: &[
+                k("path", "path", "required", U, "the shared target", "\"/build/target\""),
+                k("quota", "size (200G)", "none", U, "size above which it is removed", "\"200G\""),
+                k("idle_days", "int", "none", U, "unused this long, it is removed", "7"),
+            ],
+        },
+        Table {
+            path: "gc.docker",
+            note: "Opt-in image prune; off by default.",
+            needs: "",
+            keys: &[
+                k("prune_images_unused_for", "span (30d, 12h)", "never", U, "prune images unused this long", "\"30d\""),
+                k("prune_label", "list; trailing * = prefix", "[]", U, "labels an image must carry to be pruned", "[\"letibot*\"]"),
+            ],
+        },
+        Table {
+            path: "docker",
+            note: "Read from the user file, or $LETIBOT_GC_SETTINGS.",
+            needs: "",
+            keys: &[
+                k("engine", "path", "$DOCKER_HOST, else /run/docker.sock", U, "docker engine socket", "\"/run/docker.sock\""),
+                k("memory", "size", "none", U, "memory limit for a create that names none", "\"4G\""),
+                k("cgroup_parent", "string", "none", U, "cgroup parent for containers", "\"letibot.slice\""),
+            ],
+        },
+        Table {
+            path: "firecode",
+            note: "",
+            needs: "",
+            keys: &[
+                k("state", "path", "none", U, "firecode state dir", "\"/build/firecode/state\""),
+                k("runs", "path", "none", U, "firecode runs dir", "\"/build/firecode/runs\""),
+            ],
+        },
+    ],
+};
