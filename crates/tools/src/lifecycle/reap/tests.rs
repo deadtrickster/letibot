@@ -118,6 +118,7 @@ fn activity(busy: bool) -> Activity {
         parent: None,
         daemon: None,
         kept: false,
+        served_by: None,
     }
 }
 
@@ -535,4 +536,110 @@ fn a_vm_outliving_its_daemon_is_brought_down_and_seen_gone() {
             .any(|a| a.kind == "vm" && a.act == ReapAct::Kill),
         "the VM's end is journaled: {out:?}"
     );
+}
+
+// ---------------------------------------------------------------- R241: whose store, whose daemon
+
+/// A reaper whose own project file has nothing for the owner still finds the owner's running job
+/// in the file of the daemon that ran it, and leaves the owner live.
+#[test]
+fn a_foreign_reaper_leaves_an_owner_whose_job_runs_in_another_project_file() {
+    let b = Box_::new("foreign-file");
+    let places = b.places();
+    let dir = b.at("data");
+    let reaper = Store::open_set(&dir, "aaaaaaaaaaaa").expect("the reaper's set");
+    let theirs = Store::open_set(&dir, "bbbbbbbbbbbb").expect("the owner's set");
+    let now = 10_000_000;
+    reaper
+        .put_owner(&package("s-1", now - 600_000, 60_000))
+        .expect("the owner");
+    theirs
+        .put_process(&ProcessRecord {
+            state: ProcState::Running,
+            ..ProcessRecord::starting("s-1", "j1", None, 4_000_000_000)
+        })
+        .expect("the job row, in the owner's own file");
+    assert!(
+        reaper.processes_of("s-1").unwrap().is_empty(),
+        "the fixture is the bug: the reaper's own file has no row"
+    );
+
+    let out = pass(&reaper, &places, &quick("test"), None, now).expect("a pass");
+    assert_eq!(
+        reaper.owner("s-1").unwrap().unwrap().state,
+        OwnerState::Live,
+        "a running job in the owner's file was judged idle: {out:?}"
+    );
+    assert!(
+        !out.acts.iter().any(|a| a.kind == "notice"),
+        "a busy owner was told it closes: {out:?}"
+    );
+
+    theirs
+        .check_process("s-1", "j1", &Check::new(ProcState::Done, now, 0, "test"))
+        .expect("the job ends");
+    let out = pass(&reaper, &places, &quick("test"), None, now).expect("a pass");
+    assert_ne!(
+        reaper.owner("s-1").unwrap().unwrap().state,
+        OwnerState::Live,
+        "with the job ended the idle close happens: {out:?}"
+    );
+}
+
+/// While the owner's daemon is up in another process, only that daemon judges the owner idle:
+/// another reaper neither notices nor closes it.
+#[test]
+fn an_owner_served_by_another_live_daemon_is_not_closed_for_idleness() {
+    let b = Box_::new("served");
+    let places = b.places();
+    let s = b.store();
+    let mut daemon = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("a sleep");
+    b.daemon_record("k1", Path::new("/w"), daemon.id());
+    let now = 10_000_000;
+    s.put_owner(&package("s-1", now - 600_000, 60_000))
+        .expect("the owner");
+    let out = pass(&s, &places, &quick("test"), None, now).expect("a pass");
+    let state = s.owner("s-1").unwrap().unwrap().state;
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    assert_eq!(state, OwnerState::Live, "{out:?}");
+    assert!(out.acts.is_empty(), "{out:?}");
+}
+
+/// A closing owner's daemon that still serves another live owner is drained, not signalled.
+#[test]
+fn a_daemon_serving_another_live_owner_is_not_stopped() {
+    let b = Box_::new("drain");
+    let places = b.places();
+    let s = b.store();
+    let mut daemon = std::process::Command::new("sleep")
+        .arg("60")
+        .spawn()
+        .expect("a sleep");
+    b.daemon_record("k1", Path::new("/w"), daemon.id());
+    let now = 10_000_000;
+    let mut closing = package("s-1", now, 60_000);
+    closing.state = OwnerState::Closing;
+    closing.closed_why = Some("idle 1m: test".into());
+    s.put_owner(&closing).expect("the closing owner");
+    s.put_owner(&package("s-2", now, 60_000))
+        .expect("a live owner on the same daemon");
+    let out = pass(&s, &places, &quick("test"), Some("s-1"), now).expect("a pass");
+    let alive = procs::read(daemon.id()).is_some_and(|i| procs::alive(daemon.id(), i.start));
+    let _ = daemon.kill();
+    let _ = daemon.wait();
+    assert!(
+        alive,
+        "a daemon with another live owner was stopped: {out:?}"
+    );
+    assert!(
+        out.acts
+            .iter()
+            .any(|a| a.act == ReapAct::Keep && a.said.contains("draining")),
+        "the keep says why: {out:?}"
+    );
+    assert_eq!(s.owner("s-1").unwrap().unwrap().state, OwnerState::Closing);
 }

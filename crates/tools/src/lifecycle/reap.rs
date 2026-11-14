@@ -110,6 +110,9 @@ pub struct Activity {
     /// A restart kept one of its jobs running for the next daemon: the daemon being gone is
     /// the restart, not the end of the owner.
     pub kept: bool,
+    /// The pid of a live daemon serving this owner that is not the one running this pass. Only
+    /// that daemon sees the owner's heads, turns and jobs, so only it judges the owner idle.
+    pub served_by: Option<u32>,
 }
 
 impl Activity {
@@ -159,7 +162,7 @@ pub fn close_due(o: &OwnerRow, a: &Activity, now_ms: i64) -> Option<String> {
                 .to_string(),
         );
     }
-    if a.busy {
+    if a.busy || a.served_by.is_some() {
         return None;
     }
     if o.kind != OwnerKind::Session
@@ -181,7 +184,12 @@ pub fn close_due(o: &OwnerRow, a: &Activity, now_ms: i64) -> Option<String> {
 /// before the close the idle TTL would make. `None` for an owner with no idle TTL, a hold, or a
 /// turn in flight - and for one whose notice is already in the journal.
 pub fn notice_at(o: &OwnerRow, a: &Activity, now_ms: i64) -> Option<i64> {
-    if o.state != OwnerState::Live || o.held(now_ms) || a.busy || o.kind == OwnerKind::Session {
+    if o.state != OwnerState::Live
+        || o.held(now_ms)
+        || a.busy
+        || a.served_by.is_some()
+        || o.kind == OwnerKind::Session
+    {
         return None;
     }
     let ttl = o.idle_ttl_ms?;
@@ -353,7 +361,52 @@ pub fn activity(store: &Store, o: &OwnerRow, places: &Places) -> Activity {
             v.iter()
                 .any(|h| h.kind == super::plan::DETACHED_JOB && h.state != HoldingState::Gone)
         }),
+        served_by: served_elsewhere(o, places),
     }
+}
+
+/// A live daemon for this owner other than this process, by its runtime record.
+fn served_elsewhere(o: &OwnerRow, places: &Places) -> Option<u32> {
+    daemons_of(o, places)
+        .iter()
+        .filter_map(|r| r.pid)
+        .find(|&p| p != std::process::id() && held::alive(&places.proc_root, p))
+}
+
+/// Does any project file of this store's directory hold an open job for `o`? A daemon's store
+/// routes `process` to its own project file, and the owner's rows are in the file of the daemon
+/// that ran them. Read-only, and only asked when a close or a notice is about to be made.
+pub fn open_job_elsewhere(store: &Store, o: &OwnerRow) -> bool {
+    let Some(dir) = store
+        .is_set()
+        .then(|| store.path().and_then(Path::parent))
+        .flatten()
+    else {
+        return false;
+    };
+    let projects = dir.join(letibot_tokencore::store::split::PROJECTS_DIR);
+    let Ok(entries) = std::fs::read_dir(&projects) else {
+        return false;
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().is_some_and(|e| e == "db"))
+        .collect();
+    // The repo's own key first: for most owners it is the file, and the scan stops there.
+    if let Some(repo) = &o.repo {
+        let own = projects.join(format!(
+            "{}.db",
+            letibot_tokencore::migrate_split::project_key(repo)
+        ));
+        files.sort_by_key(|p| *p != own);
+    }
+    files.iter().any(|f| {
+        Store::open_reader(f).is_ok_and(|s| {
+            s.processes_of(&o.id)
+                .is_ok_and(|v| v.iter().any(|p| p.state.is_open()))
+        })
+    })
 }
 
 /// Is a turn in flight or a job running? The cgroup answers it, because the seat's own `ps` cannot
@@ -516,7 +569,12 @@ fn compute(
 ) {
     match owner.state {
         OwnerState::Live => {
-            let a = activity(store, owner, places);
+            let mut a = activity(store, owner, places);
+            if !a.busy
+                && (notice_at(owner, &a, at_ms).is_some() || close_due(owner, &a, at_ms).is_some())
+            {
+                a.busy = open_job_elsewhere(store, owner);
+            }
             if let Some(closes_at) = notice_at(owner, &a, at_ms) {
                 note_idle_close(store, owner, closes_at, ops, at_ms, out);
             }
@@ -614,7 +672,10 @@ fn reap_compute(
         let said = match f.kind.as_str() {
             SCOPE => end_scope(Path::new(&f.handle), ops),
             VM => end_vm(places, ops, &f.handle),
-            DAEMON => end_daemon(places, ops, owner, &f.handle),
+            DAEMON => match drain_refusal(store, places, owner) {
+                Some(why) => Ended::Kept(why),
+                None => end_daemon(places, ops, owner, &f.handle),
+            },
             // A container or a network the label proves: gone by `docker rm -f` / `network rm`
             // through the engine, which is G6's half of compute.
             crate::docker::reap::CONTAINER | crate::docker::reap::NETWORK => {
@@ -1005,6 +1066,39 @@ fn patience(ops: &Ops) -> Patience {
         after_down: ops.after_kill,
         after_kill: ops.after_kill,
     }
+}
+
+/// Why a live daemon of another process is not stopped yet, if it is not. A SIGTERM ends every
+/// session and job the daemon holds, so an idle close waits for its own job, and no close stops a
+/// daemon that still serves another live owner.
+fn drain_refusal(store: &Store, places: &Places, owner: &OwnerRow) -> Option<String> {
+    let pid = served_elsewhere(owner, places)?;
+    let idle = owner
+        .closed_why
+        .as_deref()
+        .is_some_and(|w| w.starts_with("idle"));
+    let job = store
+        .processes_of(&owner.id)
+        .is_ok_and(|v| v.iter().any(|p| p.state.is_open()))
+        || open_job_elsewhere(store, owner);
+    if idle && job {
+        return Some(format!(
+            "draining: `{}` has a job running, so its daemon at pid {pid} is stopped once it ends",
+            owner.id
+        ));
+    }
+    let repo = owner.repo.as_deref()?;
+    let same = |r: &str| {
+        std::fs::canonicalize(r).unwrap_or_else(|_| PathBuf::from(r))
+            == std::fs::canonicalize(repo).unwrap_or_else(|_| PathBuf::from(repo))
+    };
+    let other = store.owners().ok()?.into_iter().find(|o| {
+        o.id != owner.id && o.state == OwnerState::Live && o.repo.as_deref().is_some_and(same)
+    })?;
+    Some(format!(
+        "draining: its daemon at pid {pid} also serves live `{}`, so it is not stopped",
+        other.id
+    ))
 }
 
 /// Stop one daemon by its runtime record: SIGTERM, a grace, then SIGKILL by `(pid, start)`. Never
