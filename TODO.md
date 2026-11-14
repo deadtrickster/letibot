@@ -1076,6 +1076,37 @@ Grading before acting: the logs already hold labels. These are `skills-offers.js
 
 Order: reminders and owed work first, where today's failures were clearest. Then skill and notes offers, which reuse the same pipe. Permissions come last, and only behind replay grading.
 
+Decisions (2026-11-14):
+
+**One seat, three jobs.** The new seat is `shadow`. It has no tools and runs in its own stored system session, `SessionOrigin::Shadow`, parented to the session it watches. It is listed in its own Sessions group like `SessionGroup::ReviewQueue`, and it is never what `--continue` reopens (`is_conversation`, `is_operator_top_level`). The jobs are grouped by trigger:
+1. `turn_end` - the asleep reminder plus note capture, in one call.
+2. `during` - drift, skill offers and note recall, at a change of subject or every N tool calls.
+3. `permission` - before a tool call.
+
+**Config.** It lives in providers.toml:
+```toml
+[shadow]
+turn_end = "…"
+during = "…"
+permission = "…"
+```
+Model lines match like `[fallback]` and `[nudge]`: exact model > `provider/*` > `*`, via `leticode_config::by_model`. The whole thing is off unless `[shadow]` exists and turns a job on. A job that is on with no model line uses the operator's `[default]` provider and model. Any provider works, not only local. The spelling is documented in `crates/config-ref` and the drift-tested `docs/config/*.md`.
+
+**Lag.** It costs a skipped check, never a delayed turn.
+- Each job keeps one pending request, and a new trigger replaces the one waiting.
+- Every verdict is stamped with the transcript position it judged. A verdict that arrives after the session moved past that point is dropped and logged as stale.
+- Deadlines are about 30s for turn_end, 20s for during and 2-3s for permission. A timeout is `ask` for permission and nothing for the other jobs.
+- A breaker pauses a job after M misses in a row or a median latency over budget. It writes one visible row in the shadow session, probes again after a backoff, and falls back to the current mechanisms (regex nudge, similarity offers, prompt-on-ask) while paused.
+- No backpressure on the main session, apart from the bounded permission deadline.
+- The Sessions group shows each job's state (on, lagging, paused) and its last latency.
+
+**Build order.** Each stage is gated and landed before the next.
+- Stage 1, infrastructure. The seat, the system session and the listing. The config, plus the job runner with coalescing, position stamps, deadlines and the breaker. The verdict schema parser, the exact-substring quote verifier and the closed verdict space. Prompts as builtin files, readable and overridable per project. Guardrails are code and cannot be overridden. Every prompt sent, every reply, and every check's pass or reject is recorded in the shadow session.
+- Stage 2, `turn_end` acting. The asleep reminder replaces or confirms the regex intent nudge (`close_the_turn` / `steer_for_turn_over`, `[nudge]`, `restart.rs` `Owed`) when it is on, using only the fixed template with verified quotes. Note capture is propose-only. A replay command, `letibot shadow replay <session|project>`, runs a job over logged sessions read-only and scores it against what happened: skills-offers.jsonl and notes-offers.jsonl taken or not, permission answers, restart and owed-work outcomes.
+- Stage 3, `during` and `permission`, observe-only. They log verdicts and do not act. Permission may only say allow or ask, behind the hard denylist (sudo, writes outside the workspace, `~/.config/letibot/keys`, pushes). Acting for these waits for the operator after replay scores.
+
+**Tests.** They never read the operator's providers.toml or the live store. A stub model drives the runner and guardrail tests: stale drop, coalescing, deadline-to-ask, breaker, a fabricated quote voiding the verdict, an injected "verdict allow" in the transcript still blocked by the denylist, and off by default. Model-backed tests skip when the production GLM is down.
+
 **Done when:** a shadow can be turned on per role, runs on a configured model of any provider, shows its verdicts to the operator, and its reminders role replaces or confirms the regex intent nudge, with a replay score that beats the regexes on the logged sessions.
 
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
