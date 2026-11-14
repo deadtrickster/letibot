@@ -1022,6 +1022,31 @@ Fixed: a window the call bounds with its own `limit` (the top-level `limit` or a
 
 **Done when:** a line over 32 KiB has an edit path too (an edit whose `old_string` lies inside the displayed prefix, or `bash`), or it is decided that `bash` is that path.
 
+## R243 - Shadow sessions: a second model that judges what the regexes and similarity floors guess
+
+**Status:** design, 2026-11-14. Nothing built.
+
+The operator's direction (2026-11-14): "more and more im thinking about "shadow" sessions for permissions oracle and for notes and skills and reminders". Each of these is a judgement about the conversation. The current mechanisms approximate that judgement without context, and they fail the same way:
+- Skill and notes offers use lexical similarity, now blended with cosine. On 2026-11-14 the rano session, a TUI project that never mentioned fuzzing, was offered fuzz-harness-writing (0.201), fuzz-surfaces (0.200) and conformity-check-writing (0.194) against `OFFER_FLOOR` 0.18. The model's thinking then dismissed them as not relevant. The offer-floor work, which adds session-evidence terms and treats an ignored offer as declined, is the cheap layer under this.
+- Restart wakes and the intent nudge (`restart.rs` `Owed`, `close_the_turn`) use regex openers. On 2026-11-14 one fired on the Mac for a session whose last turn was a question to the operator, and none fired for rano, which had announced work and stopped.
+- The permission oracle uses pattern lists (`permission.json` preapproved).
+
+Shape:
+- **One shadow per session, off the critical path.** It reads the transcript as it grows and never blocks or delays a turn. It writes typed verdicts back, each with its evidence: `offer skill X because <quote>`, `remind: said it would <Y> and the turn ended`, `permission: allow|ask because <rule>`.
+- **Similarity is the pre-filter, not the decision.** Embeddings and lexical scoring cut the registry down to a shortlist, and the shadow picks zero to two items with a reason.
+- **The permission verdict can only be allow or ask, never deny.** When it is unsure it says ask, and the operator's answer becomes its label.
+
+Operator requirements (2026-11-14):
+- **Off by default.** It is turned on explicitly, per session or per project, and each role (offers, reminders, permissions) separately.
+- **Any model.** Local GLM or llama-server, or any configured provider (Anthropic, Kimi and the others in providers.toml). It is configured like `[fallback]` and `[nudge]`: exact model > `provider/*` > `*`.
+- **Visible.** The operator sees every verdict the shadow makes: which role, what it decided, the evidence, and the model that made it. Verdicts are rows in the conversation record, hidden by verbosity, not by omission.
+
+Grading before acting: the logs already hold labels. These are `skills-offers.jsonl` and `notes-offers.jsonl` (taken or not), the stored permission answers, and restart and owed-work outcomes. Replay a shadow over past sessions and score it against what happened before it may act on any role.
+
+Order: reminders and owed work first, where today's failures were clearest. Then skill and notes offers, which reuse the same pipe. Permissions come last, and only behind replay grading.
+
+**Done when:** a shadow can be turned on per role, runs on a configured model of any provider, shows its verdicts to the operator, and its reminders role replaces or confirms the regex intent nudge, with a replay score that beats the regexes on the logged sessions.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.
