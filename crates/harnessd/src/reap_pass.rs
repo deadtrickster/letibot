@@ -43,6 +43,9 @@ pub fn pass(store: &Store, registry: Option<&Registry>, by: &str) -> Vec<String>
 pub fn pass_with(store: &Store, registry: Option<&Registry>, ops: &lifecycle::Ops) -> Vec<String> {
     let places = Places::here();
     let now = letibot_metrics::now_ms() as i64;
+    if let Some(registry) = registry {
+        renew_held(store, registry, now);
+    }
     let made = match lifecycle::pass(store, &places, ops, None, now) {
         Ok(made) => made,
         Err(e) => return vec![format!("the pass stopped on the store: {e}")],
@@ -78,6 +81,30 @@ pub fn pass_with(store: &Store, registry: Option<&Registry>, ops: &lifecycle::Op
         }
     }
     said
+}
+
+/// Renew the lease of every owner this daemon serves that a head, a turn or a job still holds:
+/// the lease is in `shared.db`, so every reaper on the box reads it. A landed package's head
+/// does not count, so a finished package still idles out with its seat attached.
+fn renew_held(store: &Store, registry: &Registry, now: i64) {
+    for id in registry.ids() {
+        let Some(hub) = registry.get(&id) else {
+            continue;
+        };
+        let Ok(Some(owner)) = store.owner(&id) else {
+            continue;
+        };
+        if owner.state != letibot_tokencore::store::OwnerState::Live {
+            continue;
+        }
+        let head = hub.attached_heads() > 0 && owner.landed_sha.is_none();
+        let job = store
+            .processes_of(&id)
+            .is_ok_and(|v| v.iter().any(|p| p.state.is_open()));
+        if head || hub.turn_in_flight() || job {
+            let _ = store.touch_owner(&id, now);
+        }
+    }
 }
 
 /// The reaper's thread: a pass at start, then every [`SWEEP`] or sooner when [`look_now`] asks,

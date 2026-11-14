@@ -913,16 +913,16 @@ fn a_turn_whose_tool_call_outlasts_the_idle_ttl_is_not_reaped() {
     d.registry.close();
 }
 
-/// **Done when** a package session left idle with a bridge head attached is `closed` after its
-/// idle TTL, its notice was written first, its daemon has let go of it, and sending to it reopens
-/// it with its transcript intact (`docs/lifecycle.md` G2).
+/// **Done when** a package session is held live while a bridge head is attached, is `closed` after
+/// its idle TTL once the head goes, its notice was written first, its daemon has let go of it, and
+/// sending to it reopens it with its transcript intact (`docs/lifecycle.md` G2, R241).
 ///
 /// The notice is NOT a conversation row, and that is the choice the package made: this pass runs
 /// where no ledger is held, so a row written here would be one whose tokens nobody computed. It
 /// goes to the status line (`idle_closing`) and to the journal, and the conversation keeps exactly
 /// the rows the model was sent - which the last assertion measures.
 #[test]
-fn an_idle_package_with_a_head_attached_is_closed_and_lets_its_daemon_go() {
+fn an_attached_head_holds_a_package_and_it_closes_once_the_head_goes() {
     let _one = serial();
     let d = a_daemon_with_no_model("harnessd-reap-idle");
     let sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
@@ -944,7 +944,7 @@ fn an_idle_package_with_a_head_attached_is_closed_and_lets_its_daemon_go() {
     owner.idle_ttl_ms = Some(ttl);
     store.put_owner(&owner).expect("the owner row");
 
-    // A bridge head is attached, which is the hold that used to keep this daemon up for ever.
+    // A bridge head is attached: the daemon's own pass renews the lease, so no notice and no close.
     let hub = d.registry.get(ROOT).expect("the root's hub");
     let head = hub.attach("letibot-mcp", "test", Caps::default(), 0);
     assert!(hub.attached_heads() > 0);
@@ -958,6 +958,24 @@ fn an_idle_package_with_a_head_attached_is_closed_and_lets_its_daemon_go() {
         .expect("a read")
         .expect("the session row")
         .items;
+    store
+        .put_owner(&letibot_tokencore::store::OwnerRow {
+            lease_ms: now - ttl - 60_000,
+            ..owner.clone()
+        })
+        .expect("a stale lease");
+    let acts = letibot_harnessd::reap_pass::pass(&store, Some(&d.registry), "daemon test");
+    let held = store.owner(ROOT).unwrap().unwrap();
+    assert_eq!(
+        held.state,
+        letibot_tokencore::store::OwnerState::Live,
+        "an attached head did not hold the package: {acts:?}"
+    );
+    assert!(held.lease_ms >= now, "the pass renewed the lease: {acts:?}");
+    hub.detach(&head.head_id);
+    store
+        .put_owner(&owner)
+        .expect("the lease back in the heads-up window");
 
     // The pass inside the heads-up window: the notice, and no close.
     let acts = letibot_harnessd::reap_pass::pass(&store, Some(&d.registry), "daemon test");
@@ -999,8 +1017,7 @@ fn an_idle_package_with_a_head_attached_is_closed_and_lets_its_daemon_go() {
         "the owner row is closed: {acts:?}"
     );
 
-    // Its daemon has let go of it: the session left the registry, and the head that was attached
-    // no longer holds the daemon up.
+    // Its daemon has let go of it: the session left the registry and nothing holds the daemon up.
     assert!(
         d.registry.get(ROOT).is_none(),
         "the daemon still holds the session it closed"
@@ -1008,9 +1025,8 @@ fn an_idle_package_with_a_head_attached_is_closed_and_lets_its_daemon_go() {
     assert_eq!(
         sessions.idle_exit_refusal(),
         None,
-        "a head attached to a closed owner still holds the daemon"
+        "a closed owner still holds the daemon"
     );
-    let _ = head;
 
     // Nothing was deleted: the rows are the ones the model was sent, and the journal says why.
     assert_eq!(

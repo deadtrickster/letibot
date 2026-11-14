@@ -571,8 +571,8 @@ impl Store {
     }
 
     /// Renew an owner's lease: the clock every idle TTL is measured from. Called where activity
-    /// happens (a turn, a message), never by a head being attached - an attached head that renews
-    /// is how a finished package holds its daemon for ever (`docs/lifecycle.md` d.3).
+    /// happens: a turn, a message, an open job, or a head attached to a package that has not
+    /// landed (`docs/lifecycle.md` d.3).
     pub fn touch_owner(&self, id: &str, now_ms: i64) -> Result<()> {
         self.exec(
             "UPDATE owner SET lease_ms = MAX(lease_ms, ?2) WHERE id = ?1",
