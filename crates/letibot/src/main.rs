@@ -375,7 +375,8 @@ VERBS
                               turns, feedback, session ID, sql
   boundary [--mode NAME]      what a command gets: paths, network, env, hidden
   notes path|push             the notes checkout, and the one step that pushes it
-  shadow replay SESSION|DIR   score the shadow's turn_end job against logged sessions, read-only
+  shadow replay SESSION|DIR   score a shadow job against logged sessions, read-only;
+                              --job turn_end|during|permission, --model M
   browser [VERB]              the Chrome extension's bridge on 127.0.0.1 (docs/browser.md):
                               install, start, stop, restart, off, on, status, logs
   rooms [VERB]                the box's room coordinator (docs/room.md): bare runs it in the

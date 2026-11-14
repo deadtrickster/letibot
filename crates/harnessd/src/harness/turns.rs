@@ -2448,6 +2448,7 @@ impl Harness {
             );
         }
         self.persist()?;
+        self.shadow_during_round();
         // The calls of this round have run; if the model revised its plan,
         // the store and the heads hear about it now, at the round boundary  -
         // not when the turn ends, which is after the work the plan describes.

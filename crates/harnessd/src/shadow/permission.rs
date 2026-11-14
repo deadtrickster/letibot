@@ -1,0 +1,140 @@
+//! The `permission` job, observe-only: every call the gate put in front of the operator is judged
+//! by the shadow once the card settles, without waiting, and the operator's answer is the label.
+
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+
+use letibot_tools::authorise::{CorpusRow, CorpusSink, OperatorOverride};
+
+use super::Job;
+use super::guard::Call;
+use super::record::Recorder;
+use super::runner::Shadow;
+use super::verdict::Shown;
+
+/// The shadow a gate built at open reaches once the session's shadow is opened.
+pub type Cell = Arc<Mutex<Option<(Arc<Shadow>, Arc<dyn Recorder>)>>>;
+
+/// The data a permission check is shown: the call, where it runs, the preapproved rules, and the
+/// operator's last words as the stated task. `request` ties the verdict to the operator's answer.
+pub fn shown(
+    request: &str,
+    tool: &str,
+    arguments: &serde_json::Value,
+    rules: &[String],
+    task: Option<&str>,
+    call: Call,
+) -> Shown {
+    let mut d = format!(
+        "request: {request}\ncall: {tool} {}\ncwd: {}\nworkspace: {}\n\npreapproved rules:\n",
+        arguments,
+        call.cwd.display(),
+        call.workspace.display()
+    );
+    if rules.is_empty() {
+        d.push_str("(none)\n");
+    }
+    for r in rules {
+        d.push_str(&format!("- {r}\n"));
+    }
+    d.push_str("\nstated task:\n");
+    d.push_str(task.unwrap_or("(none)").trim());
+    d.push('\n');
+    Shown {
+        data: d,
+        shortlist: Vec::new(),
+        call: Some(call),
+    }
+}
+
+/// The corpus sink with the shadow beside it. The inner sink is unchanged; the shadow only reads.
+pub struct ShadowSink {
+    pub inner: Option<Arc<dyn CorpusSink>>,
+    pub cell: Cell,
+    pub rules: Vec<String>,
+    pub workspace: PathBuf,
+    pub home: PathBuf,
+}
+
+impl ShadowSink {
+    /// One asked call, settled with `effect`: queued for the shadow, never waited on, and the
+    /// operator's answer written beside it as the label.
+    pub fn observe(
+        &self,
+        request: &str,
+        tool: &str,
+        arguments: &serde_json::Value,
+        effect: &str,
+        task: Option<&str>,
+    ) {
+        let Some((shadow, rec)) = self.cell.lock().unwrap_or_else(|e| e.into_inner()).clone()
+        else {
+            return;
+        };
+        let call = Call {
+            tool: tool.to_string(),
+            args: arguments.clone(),
+            cwd: self.workspace.clone(),
+            workspace: self.workspace.clone(),
+            home: self.home.clone(),
+        };
+        let s = shown(request, tool, arguments, &self.rules, task, call);
+        shadow.submit(Job::Permission, s);
+        rec.row(
+            &format!("permission · operator answered {effect} {request}"),
+            "",
+        );
+    }
+}
+
+impl CorpusSink for ShadowSink {
+    fn decided(&self, row: &CorpusRow) {
+        if let Some(i) = &self.inner {
+            i.decided(row);
+        }
+        if !row.asked {
+            return;
+        }
+        let task = row
+            .trail
+            .utterances
+            .iter()
+            .rev()
+            .find(|u| u.speaker == letibot_tools::authorise::Speaker::Operator)
+            .map(|u| u.text.clone());
+        self.observe(
+            &row.request_id,
+            &row.tool,
+            &row.arguments,
+            row.effect,
+            task.as_deref(),
+        );
+    }
+
+    fn ruled(&self, request_id: &str, what: &OperatorOverride) {
+        if let Some(i) = &self.inner {
+            i.ruled(request_id, what);
+        }
+        if let Some((_, rec)) = self.cell.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+            rec.row(
+                &format!("permission · operator {} {request_id}", what.as_str()),
+                "",
+            );
+        }
+    }
+
+    fn decisions_recorded(&self, session_id: &str) -> u64 {
+        self.inner
+            .as_ref()
+            .map_or(0, |i| i.decisions_recorded(session_id))
+    }
+}
+
+/// The preapproved rules, one line each, as a check is shown them.
+pub fn rules_of(rules: &[letibot_tools::permission::Rule]) -> Vec<String> {
+    rules
+        .iter()
+        .filter(|r| r.action == letibot_tools::permission::Action::Allow)
+        .map(|r| format!("{} {}", r.permission, r.pattern))
+        .collect()
+}

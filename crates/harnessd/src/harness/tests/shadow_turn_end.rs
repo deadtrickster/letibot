@@ -122,7 +122,7 @@ fn a_session(tag: &str, reply: &'static str) -> (Harness, mpsc::Receiver<()>, Ar
     )
     .expect("turn_end is on");
     h.shadow = shadow::Slot::On {
-        shadow: s,
+        shadow: Arc::new(s),
         events,
         recorder: rows.clone(),
         session_id: shadow::session_id(&cfg.session_id),

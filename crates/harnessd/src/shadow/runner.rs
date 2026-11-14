@@ -350,7 +350,7 @@ impl Inner {
                 let checked = verdict::check(self.job, &reply, &req.shown);
                 let now = self.position.load(Ordering::SeqCst);
                 let outcome = match checked.verdict {
-                    Ok(_) if now > req.position => Outcome::Stale {
+                    Ok(_) if self.job.acts() && now > req.position => Outcome::Stale {
                         judged: req.position,
                         now,
                     },

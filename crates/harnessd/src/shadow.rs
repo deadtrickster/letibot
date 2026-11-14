@@ -3,8 +3,10 @@
 //! shadow's own stored session, and the guardrails here are code a prompt cannot override.
 
 pub mod config;
+pub mod during;
 pub mod guard;
 pub mod judge;
+pub mod permission;
 pub mod prompts;
 pub mod record;
 pub mod replay;
@@ -59,6 +61,12 @@ impl Job {
         self.deadline() / 2
     }
 
+    /// Whether the job's verdict changes the session. Only turn_end does; the other two are
+    /// observe-only, so a late verdict of theirs is still a measurement and is not dropped as stale.
+    pub fn acts(self) -> bool {
+        self == Job::TurnEnd
+    }
+
     /// What runs while this job is paused or off - said in the row that pauses it.
     pub fn fallback(self) -> &'static str {
         match self {
@@ -95,7 +103,7 @@ pub enum Slot {
     NotYet,
     Off,
     On {
-        shadow: runner::Shadow,
+        shadow: std::sync::Arc<runner::Shadow>,
         events: Events,
         recorder: std::sync::Arc<dyn record::Recorder>,
         session_id: String,
@@ -195,7 +203,7 @@ pub fn open_for(cfg: &crate::config::Config, watched_model: &str, wake: Wake) ->
         &on_outcome,
     ) {
         Some(s) => Slot::On {
-            shadow: s,
+            shadow: std::sync::Arc::new(s),
             events,
             recorder,
             session_id: session_id(&cfg.session_id),

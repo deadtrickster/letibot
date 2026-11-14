@@ -850,3 +850,279 @@ mod turn_end_acting {
         );
     }
 }
+
+mod observe_only {
+    use super::super::during::{self, Clock, Entry};
+    use super::super::permission::{Cell, ShadowSink};
+    use super::super::replay;
+    use super::*;
+    use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};
+
+    fn op(t: &str) -> TranscriptItem {
+        TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Operator,
+            parts: vec![UserPart::Text { text: t.into() }],
+        }
+    }
+
+    fn calls(n: usize, path: &str) -> TranscriptItem {
+        TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: (0..n)
+                .map(|i| ToolCall {
+                    id: format!("c{i}"),
+                    name: "read".into(),
+                    arguments: format!("{{\"path\":\"{path}\"}}"),
+                })
+                .collect(),
+            truncated: false,
+        }
+    }
+
+    fn failed(name: &str) -> TranscriptItem {
+        TranscriptItem::ToolResult {
+            call_id: "c".into(),
+            name: name.into(),
+            outcome: ToolOutcome::Failed { reason: "x".into() },
+            payload: String::new(),
+            edits: vec![],
+            origin: None,
+            media: None,
+        }
+    }
+
+    fn plan() -> TranscriptItem {
+        TranscriptItem::Assistant {
+            text: "I'll fix the parser test first.".into(),
+            tool_calls: vec![],
+            truncated: false,
+        }
+    }
+
+    #[test]
+    fn a_during_check_is_due_at_a_change_of_subject_or_every_n_calls_with_a_plan() {
+        let mut c = Clock::default();
+        let mut items = vec![op("fix the parser")];
+        assert_eq!(c.due(&items, &[]).as_deref(), Some("a new operator prompt"));
+        items.push(calls(3, "src/a.rs"));
+        assert_eq!(c.due(&items, &[]).as_deref(), Some("a new file kind, .rs"));
+        items.push(calls(3, "src/b.rs"));
+        assert_eq!(c.due(&items, &[]), None, "same kind, no plan: nothing");
+        items.push(failed("bash"));
+        assert_eq!(
+            c.due(&items, &[]).as_deref(),
+            Some("a new error class, `bash` failed")
+        );
+        items.push(failed("bash"));
+        assert_eq!(c.due(&items, &[]), None, "the same error class again");
+        items.push(plan());
+        items.push(calls(during::EVERY, "src/c.rs"));
+        assert_eq!(c.due(&items, &[]).as_deref(), Some("8 tool calls"));
+    }
+
+    #[test]
+    fn a_new_or_edited_registry_item_is_a_change_and_the_first_look_is_not() {
+        let v = |pairs: &[(&str, &str)]| {
+            pairs
+                .iter()
+                .map(|(a, b)| (a.to_string(), b.to_string()))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        };
+        let mut c = Clock::default();
+        assert!(
+            c.registry(v(&[("rust", "1"), ("note:build.md", "a")]))
+                .is_empty()
+        );
+        let changed = c.registry(v(&[("rust", "1"), ("note:build.md", "b"), ("fuzz", "1")]));
+        assert_eq!(changed.row(), "registry: +skill fuzz, ~note build.md");
+        assert!(
+            c.registry(v(&[("rust", "1"), ("note:build.md", "b"), ("fuzz", "1")]))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn the_shortlist_is_a_lexical_cut_that_skips_what_is_loaded() {
+        let entries = [
+            Entry {
+                name: "fuzz-harness-writing".into(),
+                about: "write a fuzz harness".into(),
+            },
+            Entry {
+                name: "parser-testing".into(),
+                about: "testing a parser".into(),
+            },
+            Entry {
+                name: "loaded-one".into(),
+                about: "parser".into(),
+            },
+        ];
+        let skip = ["loaded-one".to_string()].into_iter().collect();
+        let s = during::shortlist(&entries, "the parser test fails", &skip);
+        let names: Vec<&str> = s.iter().map(|e| e.name.as_str()).collect();
+        assert_eq!(names, ["parser-testing"]);
+        let shown = during::shown(&[op("x"), plan()], &[], &s, &skip);
+        assert!(
+            shown
+                .data
+                .contains("stated plan:\nI'll fix the parser test first.")
+        );
+        assert!(shown.data.starts_with("operator's last message:\nx"));
+        assert_eq!(shown.shortlist, ["parser-testing"]);
+    }
+
+    fn observing(reply: &'static str, sleep_ms: u64) -> (ShadowSink, Arc<Rows>, Arc<Stub>) {
+        let judge = Stub::new(move |_, _| {
+            std::thread::sleep(Duration::from_millis(sleep_ms));
+            Ok(reply.into())
+        });
+        let rows = Arc::new(Rows::default());
+        let cfg = ShadowConfig::from_lines(
+            letibot_provider::keys::ShadowLines {
+                enabled: vec!["permission".into()],
+                ..Default::default()
+            },
+            "local".into(),
+        )
+        .unwrap();
+        let j = judge.clone();
+        let shadow = Shadow::start(
+            &cfg,
+            "glm/x",
+            None,
+            rows.clone(),
+            &|_, _| j.clone(),
+            &|_| fast(),
+            &|_| Box::new(|_, _| {}),
+        )
+        .unwrap();
+        let cell: Cell = Default::default();
+        *cell.lock().unwrap() = Some((Arc::new(shadow), rows.clone() as Arc<dyn Recorder>));
+        let sink = ShadowSink {
+            inner: None,
+            cell,
+            rules: vec!["bash cargo test*".into()],
+            workspace: "/w/proj".into(),
+            home: "/home/op".into(),
+        };
+        (sink, rows, judge)
+    }
+
+    #[test]
+    fn a_permission_check_never_waits_and_records_the_operators_answer() {
+        let (sink, rows, judge) = observing(r#"{"verdict":"ask"}"#, 400);
+        let started = std::time::Instant::now();
+        sink.observe(
+            "r-1",
+            "bash",
+            &serde_json::json!({"command": "cargo test -p parser"}),
+            "admit",
+            Some("run the tests"),
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(100),
+            "the card is not held"
+        );
+        assert!(
+            rows.titles()
+                .iter()
+                .any(|t| t == "permission · operator answered admit r-1")
+        );
+        std::thread::sleep(Duration::from_millis(700));
+        assert_eq!(judge.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn an_observed_allow_on_the_denylist_is_recorded_as_ask() {
+        let (sink, rows, _) = observing(r#"{"verdict":"allow","rule":"bash cargo test*"}"#, 0);
+        sink.observe(
+            "r-2",
+            "bash",
+            &serde_json::json!({"command": "sudo cargo test"}),
+            "refuse",
+            None,
+        );
+        std::thread::sleep(Duration::from_millis(300));
+        let rows = rows.0.lock().unwrap();
+        let row = rows
+            .iter()
+            .find(|r| r.starts_with("permission · ask"))
+            .expect("the verdict is narrowed to ask");
+        assert!(
+            row.contains("narrow denylist: it raises privilege"),
+            "{row}"
+        );
+    }
+
+    #[test]
+    fn an_observe_only_verdict_is_never_dropped_as_stale() {
+        let judge = Stub::new(|_, _| Ok(r#"{"verdict":"on_plan"}"#.into()));
+        let rows = Arc::new(Rows::default());
+        let (r, pos, rx) = runner(Job::During, judge, rows, fast());
+        pos.store(9, Ordering::SeqCst);
+        r.submit(Request::new(1, shown("plan: x")));
+        assert!(matches!(next(&rx), Outcome::Verdict(_)));
+    }
+
+    #[test]
+    fn the_permission_and_offer_replays_score_against_what_happened() {
+        let judge = Stub::new(|_, user| {
+            Ok(if user.contains("cargo test") {
+                r#"{"verdict":"allow","rule":"bash cargo test*"}"#.into()
+            } else {
+                r#"{"verdict":"ask"}"#.into()
+            })
+        });
+        let asked = [
+            replay::Asked {
+                request: "r-1".into(),
+                tool: "bash".into(),
+                arguments: serde_json::json!({"command": "cargo test"}),
+                admitted: true,
+            },
+            replay::Asked {
+                request: "r-2".into(),
+                tool: "bash".into(),
+                arguments: serde_json::json!({"command": "rm -rf /"}),
+                admitted: false,
+            },
+        ];
+        let (p, _) = replay::score_permission(
+            &asked,
+            &["bash cargo test*".into()],
+            std::path::Path::new("/w"),
+            judge.as_ref(),
+        );
+        assert_eq!((p.allow_right, p.allow_wrong, p.asked), (1, 0, 1));
+
+        let offers_judge = Stub::new(|_, user| {
+            Ok(if user.contains("fix the parser") {
+                r#"{"verdict":"on_plan","offers":[{"name":"parser-testing","quote":"fix the parser"}]}"#.into()
+            } else {
+                r#"{"verdict":"on_plan"}"#.into()
+            })
+        });
+        let offers = [
+            replay::LoggedOffer {
+                at: 10,
+                session: "s".into(),
+                skill: "parser-testing".into(),
+                taken: true,
+            },
+            replay::LoggedOffer {
+                at: 1,
+                session: "s".into(),
+                skill: "parser-testing".into(),
+                taken: false,
+            },
+        ];
+        let rows = [(
+            "s".to_string(),
+            vec![(1u64, op("hello")), (5u64, op("fix the parser please"))],
+        )]
+        .into_iter()
+        .collect();
+        let o = replay::score_offers(&offers, &rows, offers_judge.as_ref());
+        assert_eq!((o.kept_taken, o.dropped_ignored), (1, 1));
+    }
+}

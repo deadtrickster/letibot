@@ -501,6 +501,10 @@ pub struct Harness {
     shadow_held: Option<String>,
     /// How far the shadow's position count has read: the index reached and the rows counted.
     shadow_counted: (usize, u64),
+    /// The shadow as the gate's corpus sink reaches it, filled once the shadow opens.
+    shadow_cell: crate::shadow::permission::Cell,
+    /// What the during job's trigger has seen.
+    shadow_during: crate::shadow::during::Clock,
 }
 
 /// A confirmation of `allow-all` waiting for a person: the daemon's half of the card another head's ask

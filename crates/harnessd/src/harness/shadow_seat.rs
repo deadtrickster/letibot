@@ -4,6 +4,13 @@
 use super::*;
 use crate::shadow::{Job, runner::Mode, turn_end};
 
+/// A registry item for the during job: its entry, content version and file, if it has one.
+type Registered = (
+    crate::shadow::during::Entry,
+    String,
+    Option<std::path::PathBuf>,
+);
+
 impl Harness {
     /// Open the shadow once the session is stored, and move its position to the rows that count:
     /// an operator message or an answer. Harness notices and display rows do not move it.
@@ -13,6 +20,13 @@ impl Harness {
             let id = self.cfg.session_id.clone();
             let wake: crate::shadow::Wake = Arc::new(move || bell.ring_wake(&id));
             self.shadow = crate::shadow::open_for(&self.cfg, &self.model_name(), wake);
+            if let crate::shadow::Slot::On {
+                shadow, recorder, ..
+            } = &self.shadow
+            {
+                *self.shadow_cell.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some((shadow.clone(), recorder.clone()));
+            }
         }
         let Some(s) = self.shadow.get() else {
             return;
@@ -33,6 +47,157 @@ impl Harness {
         }
         self.shadow_counted = (items.len(), n);
         s.advance(n);
+    }
+
+    /// At a round boundary: queue the during check when the subject changed or enough calls ran.
+    /// Observe-only, so nothing here waits or acts.
+    pub(crate) fn shadow_during_round(&mut self) {
+        if !self.shadow.get().is_some_and(|s| s.is_on(Job::During)) {
+            return;
+        }
+        let todos = self.todos.snapshot();
+        let (entries, written) = self.shadow_registry();
+        let versions = entries
+            .iter()
+            .map(|(e, v, _)| (e.name.clone(), v.clone()))
+            .collect();
+        let changed = self.shadow_during.registry(versions);
+        // An item this session wrote is never offered back to it, so its change is no news either.
+        let fresh: std::collections::BTreeSet<String> = changed
+            .names()
+            .into_iter()
+            .filter(|n| !written.contains(n))
+            .collect();
+        if !changed.is_empty()
+            && let Some((_, rec, _)) = self.shadow.parts()
+        {
+            rec.row(&changed.row(), "");
+        }
+        let due = self.shadow_during.due(&self.session.items, &todos);
+        let why = match (due, fresh.is_empty()) {
+            (Some(why), _) => why,
+            (None, false) => changed.row(),
+            (None, true) => return,
+        };
+        let entries: Vec<crate::shadow::during::Entry> = entries
+            .into_iter()
+            .filter(|(e, _, _)| !written.contains(&e.name))
+            .map(|(e, _, _)| e)
+            .collect();
+        self.submit_during(why, entries, fresh, &todos);
+    }
+
+    /// Every skill and project note, with its content version and the set this session wrote.
+    fn shadow_registry(&self) -> (Vec<Registered>, std::collections::BTreeSet<String>) {
+        let wrote: Vec<std::path::PathBuf> = self
+            .session
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                TranscriptItem::Assistant { tool_calls, .. } => Some(tool_calls),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(crate::notes_offer::written_of)
+            .collect();
+        let wrote_under = |dir: &std::path::Path| {
+            wrote.iter().any(|w| match w.is_absolute() {
+                true => w.starts_with(dir),
+                false => w
+                    .parent()
+                    .is_some_and(|p| !p.as_os_str().is_empty() && dir.ends_with(p)),
+            })
+        };
+        let mut out = Vec::new();
+        let mut written = std::collections::BTreeSet::new();
+        for s in self.skills.live_skills() {
+            let dir = s
+                .path
+                .as_deref()
+                .and_then(std::path::Path::parent)
+                .map(|d| d.to_path_buf());
+            if dir.as_deref().is_some_and(wrote_under) {
+                written.insert(s.name.clone());
+            }
+            let v = crate::skills_offer::version_of(&s);
+            out.push((
+                crate::shadow::during::Entry {
+                    about: s.when_to_use.clone().unwrap_or(s.description.clone()),
+                    name: s.name,
+                },
+                v,
+                dir,
+            ));
+        }
+        if let Ok(dir) = std::fs::read_dir(self.cfg.project_notes()) {
+            for e in dir.flatten() {
+                let file = e.file_name().to_string_lossy().into_owned();
+                if !file.ends_with(".md") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(e.path()).unwrap_or_default();
+                let name = format!("note:{file}");
+                if wrote
+                    .iter()
+                    .any(|w| w.file_name() == Some(e.file_name().as_os_str()))
+                {
+                    written.insert(name.clone());
+                }
+                let about = text
+                    .lines()
+                    .find(|l| !l.trim().is_empty())
+                    .unwrap_or("")
+                    .to_string();
+                out.push((
+                    crate::shadow::during::Entry { name, about },
+                    crate::offer_evidence::version(&text),
+                    Some(e.path()),
+                ));
+            }
+        }
+        (out, written)
+    }
+
+    /// Queue one during check. `fresh` registry items go on the shortlist whatever the lexical cut
+    /// says: a new or edited item is checked once against the running session.
+    fn submit_during(
+        &mut self,
+        why: String,
+        entries: Vec<crate::shadow::during::Entry>,
+        fresh: std::collections::BTreeSet<String>,
+        todos: &[letibot_tokencore::store::TodoItem],
+    ) {
+        let loaded: std::collections::BTreeSet<String> = self
+            .session
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                TranscriptItem::Assistant { tool_calls, .. } => Some(tool_calls),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(crate::skills_offer::loaded_of)
+            .collect();
+        let window: String = self
+            .session
+            .items
+            .iter()
+            .rev()
+            .take(12)
+            .map(letibot_sessionlog::view::body_of)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let mut short = crate::shadow::during::shortlist(&entries, &window, &loaded);
+        for e in entries.iter().filter(|e| fresh.contains(&e.name)) {
+            if !short.iter().any(|s| s.name == e.name) {
+                short.push(e.clone());
+            }
+        }
+        let mut shown = crate::shadow::during::shown(&self.session.items, todos, &short, &loaded);
+        shown.data = format!("triggered by: {why}\n\n{}", shown.data);
+        if let Some(s) = self.shadow.get() {
+            s.submit(Job::During, shown);
+        }
     }
 
     /// Whether the turn_end job takes this turn end: on, and not paused by its breaker. A paused

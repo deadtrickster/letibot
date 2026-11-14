@@ -247,6 +247,141 @@ impl Report {
     }
 }
 
+/// The permission replay's tally against the operator's answers. Today's mechanism asks every one
+/// of these, so its row is all `asked`; a shadow allow the operator refused is the costly miss.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Permits {
+    pub allow_right: u32,
+    pub allow_wrong: u32,
+    pub asked: u32,
+    pub fell_back: u32,
+}
+
+/// One asked call as the store kept it: what was called, and whether the operator admitted it.
+#[derive(Debug, Clone)]
+pub struct Asked {
+    pub request: String,
+    pub tool: String,
+    pub arguments: serde_json::Value,
+    pub admitted: bool,
+}
+
+/// Judge every asked call and score the allows against the operator's answers. Read-only.
+pub fn score_permission(
+    asked: &[Asked],
+    rules: &[String],
+    workspace: &Path,
+    judge: &dyn Judge,
+) -> (Permits, Vec<String>) {
+    let mut p = Permits::default();
+    let mut lines = Vec::new();
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    for a in asked {
+        let call = super::guard::Call {
+            tool: a.tool.clone(),
+            args: a.arguments.clone(),
+            cwd: workspace.to_path_buf(),
+            workspace: workspace.to_path_buf(),
+            home: home.clone(),
+        };
+        let shown = super::permission::shown(&a.request, &a.tool, &a.arguments, rules, None, call);
+        let word = match judge.judge(
+            super::prompts::PERMISSION,
+            &super::prompts::fence(&shown.data),
+        ) {
+            Ok(reply) => match verdict::check(Job::Permission, &reply, &shown).verdict {
+                Ok(Verdict::Permission {
+                    decision: verdict::Decision::Allow { .. },
+                    ..
+                }) => "allow",
+                Ok(_) => "ask",
+                Err(_) => "fell back",
+            },
+            Err(_) => "fell back",
+        };
+        match (word, a.admitted) {
+            ("allow", true) => p.allow_right += 1,
+            ("allow", false) => p.allow_wrong += 1,
+            ("ask", _) => p.asked += 1,
+            _ => p.fell_back += 1,
+        }
+        lines.push(format!(
+            "{}: {} {} -> shadow {word}, operator {}",
+            a.request,
+            a.tool,
+            super::during::cut(&a.arguments.to_string(), 80),
+            if a.admitted { "admitted" } else { "refused" }
+        ));
+    }
+    (p, lines)
+}
+
+/// One logged skill or note offer: when, to which session, what, and whether the round took it.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct LoggedOffer {
+    pub at: u64,
+    pub session: String,
+    #[serde(alias = "note", alias = "path")]
+    pub skill: String,
+    #[serde(default)]
+    pub taken: bool,
+}
+
+/// The during replay's tally against what the rounds took: an offer the shadow keeps and the
+/// round loaded is right, one it keeps and the round ignored is noise.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Offers {
+    pub kept_taken: u32,
+    pub kept_ignored: u32,
+    pub dropped_taken: u32,
+    pub dropped_ignored: u32,
+    pub fell_back: u32,
+}
+
+/// Judge every logged offer over the session as it stood when the offer was made. `rows` holds a
+/// session's items with the time each was written. Read-only.
+pub fn score_offers(
+    offers: &[LoggedOffer],
+    rows: &std::collections::BTreeMap<String, Vec<(u64, TranscriptItem)>>,
+    judge: &dyn Judge,
+) -> Offers {
+    let mut o = Offers::default();
+    for off in offers {
+        let Some(all) = rows.get(&off.session) else {
+            continue;
+        };
+        let items: Vec<TranscriptItem> = all
+            .iter()
+            .filter(|(at, _)| *at <= off.at)
+            .map(|(_, i)| i.clone())
+            .collect();
+        let entry = super::during::Entry {
+            name: off.skill.clone(),
+            about: String::new(),
+        };
+        let shown = super::during::shown(&items, &[], &[entry], &Default::default());
+        let kept = match judge.judge(super::prompts::DURING, &super::prompts::fence(&shown.data)) {
+            Ok(reply) => match verdict::check(Job::During, &reply, &shown).verdict {
+                Ok(Verdict::During { offers, .. }) => {
+                    Some(offers.iter().any(|p| p.name == off.skill))
+                }
+                _ => None,
+            },
+            Err(_) => None,
+        };
+        match (kept, off.taken) {
+            (Some(true), true) => o.kept_taken += 1,
+            (Some(true), false) => o.kept_ignored += 1,
+            (Some(false), true) => o.dropped_taken += 1,
+            (Some(false), false) => o.dropped_ignored += 1,
+            (None, _) => o.fell_back += 1,
+        }
+    }
+    o
+}
+
 /// The store read-only: `$LETIBOT_STORE` else this box's data directory, the project file of `key`.
 fn open_reader(key: &str) -> Result<Store, String> {
     let target = std::env::var_os("LETIBOT_STORE")
@@ -276,8 +411,17 @@ fn is_conversation(s: &StoredSession) -> bool {
         && !letibot_sessionlog::is_gatekeeper_session(&s.id)
 }
 
+/// What a replay reads: the sessions in scope with their rows, the watched model, the project, and
+/// the project's store, all read-only.
+struct Scope {
+    sessions: Vec<Logged>,
+    model: String,
+    workspace: String,
+    store: Store,
+}
+
 /// The sessions `what` names: one session id, or every conversation of a project folder.
-fn sessions_of(what: &str) -> Result<(Vec<Logged>, String), String> {
+fn scope_of(what: &str) -> Result<Scope, String> {
     let shared = shared_reader()?;
     let (workspace, ids): (String, Vec<StoredSession>) = if Path::new(what).is_dir() {
         let ws = std::fs::canonicalize(what)
@@ -299,24 +443,97 @@ fn sessions_of(what: &str) -> Result<(Vec<Logged>, String), String> {
     };
     let store = open_reader(&letibot_tokencore::migrate_split::project_key(&workspace))?;
     let model = ids.first().map(|s| s.model_id.clone()).unwrap_or_default();
-    let mut out = Vec::new();
+    let mut sessions = Vec::new();
     for s in ids {
         let Some(tid) = s.transcript_id.clone() else {
             continue;
         };
         if let Ok(t) = store.load_transcript(&tid) {
-            out.push((s.id, t.items.into_iter().map(|(i, _, _)| i).collect()));
+            sessions.push((s.id, t.items.into_iter().map(|(i, _, _)| i).collect()));
         }
     }
-    Ok((out, model))
+    Ok(Scope {
+        sessions,
+        model,
+        workspace,
+        store,
+    })
 }
 
-/// The verb. `--model M` names the model to judge with; else the `[shadow]` turn_end line for the
-/// sessions' model, else `[default]`.
+/// Each session's rows with the time each was written, for an offer judged as of its own moment.
+fn timed_rows(scope: &Scope) -> std::collections::BTreeMap<String, Vec<(u64, TranscriptItem)>> {
+    let mut out = std::collections::BTreeMap::new();
+    for (id, _) in &scope.sessions {
+        let Ok(Some(tid)) = scope.store.current_transcript_id(id) else {
+            continue;
+        };
+        let Ok(rows) = scope.store.rows_json_from(&tid, 0, u32::MAX) else {
+            continue;
+        };
+        let items = rows
+            .into_iter()
+            .filter_map(|(_, _, _, json, at)| Some((at, serde_json::from_str(&json).ok()?)))
+            .collect();
+        out.insert(id.clone(), items);
+    }
+    out
+}
+
+/// The offers the sessions in scope were made, from their take-up logs.
+fn logged_offers(scope: &Scope) -> Vec<LoggedOffer> {
+    let root = std::env::var_os("LETIBOT_LOGS_ROOT")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| crate::mergequeue::git::letibot_data_dir().map(|d| d.join("logs")));
+    let mut out = Vec::new();
+    for (id, _) in &scope.sessions {
+        let dirs = [
+            root.as_ref().map(|r| r.join(id)),
+            Some(Path::new(&scope.workspace).join(".letibot")),
+        ];
+        for dir in dirs.into_iter().flatten() {
+            for log in [crate::skills_offer::LOG, crate::notes_offer::LOG] {
+                let Ok(text) = std::fs::read_to_string(dir.join(log)) else {
+                    continue;
+                };
+                out.extend(
+                    text.lines()
+                        .filter_map(|l| serde_json::from_str::<LoggedOffer>(l).ok())
+                        .filter(|o| &o.session == id),
+                );
+            }
+        }
+    }
+    out
+}
+
+/// The calls the operator was asked about in the sessions in scope, with their answers.
+fn asked_calls(scope: &Scope) -> Vec<Asked> {
+    let ids: std::collections::BTreeSet<&str> =
+        scope.sessions.iter().map(|(id, _)| id.as_str()).collect();
+    scope
+        .store
+        .corpus(false, 100_000)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.asked && ids.contains(r.session_id.as_str()))
+        .map(|r| Asked {
+            request: r.request_id,
+            tool: r.tool,
+            arguments: serde_json::from_str(&r.arguments_json).unwrap_or_default(),
+            admitted: r.effect == "admit",
+        })
+        .collect()
+}
+
+/// The verb. `--job` picks what is replayed (turn_end by default); `--model M` names the model to
+/// judge with, else the job's `[shadow]` line for the sessions' model, else `[default]`.
 pub fn run(args: &[String]) -> ExitCode {
-    let usage = "usage: letibot shadow replay <session-id|project-dir> [--model M] [--verbose]";
+    let usage = "usage: letibot shadow replay <session-id|project-dir> \
+                 [--job turn_end|during|permission] [--model M] [--verbose]";
     let mut what = None;
     let mut model = None;
+    let mut job = Job::TurnEnd;
     let mut verbose = false;
     let mut it = args.iter();
     match it.next().map(String::as_str) {
@@ -329,6 +546,13 @@ pub fn run(args: &[String]) -> ExitCode {
     while let Some(a) = it.next() {
         match a.as_str() {
             "--model" => model = it.next().cloned(),
+            "--job" => match it.next().and_then(|j| Job::parse(j)) {
+                Some(j) => job = j,
+                None => {
+                    eprintln!("{usage}");
+                    return ExitCode::from(2);
+                }
+            },
             "--verbose" | "-v" => verbose = true,
             other if what.is_none() => what = Some(other.to_string()),
             _ => {
@@ -341,7 +565,7 @@ pub fn run(args: &[String]) -> ExitCode {
         eprintln!("{usage}");
         return ExitCode::from(2);
     };
-    let (sessions, watched) = match sessions_of(&what) {
+    let scope = match scope_of(&what) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("letibot shadow replay: {e}");
@@ -351,7 +575,7 @@ pub fn run(args: &[String]) -> ExitCode {
     let model = match model {
         Some(m) => m,
         None => match super::config::ShadowConfig::load(None) {
-            Ok(c) => c.model_line(Job::TurnEnd, &watched),
+            Ok(c) => c.model_line(job, &scope.model),
             Err(e) => {
                 eprintln!("letibot shadow replay: {e}");
                 return ExitCode::FAILURE;
@@ -359,7 +583,7 @@ pub fn run(args: &[String]) -> ExitCode {
         },
     };
     let local = letibot_turn::http::Endpoint::new("127.0.0.1", 8080);
-    let judge = match super::judge::build(&model, Job::TurnEnd, None, &local) {
+    let judge = match super::judge::build(&model, job, None, &local) {
         Ok(j) => j,
         Err(e) => {
             eprintln!("letibot shadow replay: {model}: {e}");
@@ -367,10 +591,49 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     };
     eprintln!(
-        "replaying turn_end on {} over {} session(s), read-only",
+        "replaying {} on {} over {} session(s), read-only",
+        job.as_str(),
         judge.label(),
-        sessions.len()
+        scope.sessions.len()
     );
-    println!("{}", score(&sessions, judge.as_ref()).said(verbose));
+    match job {
+        Job::TurnEnd => println!("{}", score(&scope.sessions, judge.as_ref()).said(verbose)),
+        Job::Permission => {
+            let rules = letibot_tools::permission::file_path()
+                .and_then(|p| letibot_tools::permission::load_file(&p).ok())
+                .map(|r| super::permission::rules_of(&r))
+                .unwrap_or_default();
+            let asked = asked_calls(&scope);
+            let (p, lines) =
+                score_permission(&asked, &rules, Path::new(&scope.workspace), judge.as_ref());
+            println!(
+                "permission replay: {} asked calls; today every one is asked\n\
+                 allow, operator admitted: {}\nallow, operator refused: {}\nask: {}\nfell back: {}",
+                asked.len(),
+                p.allow_right,
+                p.allow_wrong,
+                p.asked,
+                p.fell_back
+            );
+            if verbose {
+                println!("{}", lines.join("\n"));
+            }
+        }
+        Job::During => {
+            let offers = logged_offers(&scope);
+            let o = score_offers(&offers, &timed_rows(&scope), judge.as_ref());
+            println!(
+                "during replay: {} logged offers; today every one is made\n\
+                 kept, taken: {}\nkept, ignored: {}\ndropped, taken: {}\ndropped, ignored: {}\n\
+                 fell back: {}",
+                offers.len(),
+                o.kept_taken,
+                o.kept_ignored,
+                o.dropped_taken,
+                o.dropped_ignored,
+                o.fell_back
+            );
+        }
+    }
     ExitCode::SUCCESS
 }

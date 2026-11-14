@@ -387,6 +387,8 @@ pub(crate) fn latest_box_stop(store: &Store) -> crate::restart::Stopped {
 struct Opening {
     store: Option<Store>,
     corpus_sink: Option<std::sync::Arc<dyn letibot_tools::CorpusSink>>,
+    /// Where the corpus sink finds the shadow once it opens: `Harness::shadow_cell`.
+    shadow_cell: crate::shadow::permission::Cell,
     corpus_counts: Option<letibot_tokencore::store::CorpusCounts>,
     stored: Option<letibot_tokencore::store::StoredSession>,
     writer: Option<crate::writer::Claim>,
@@ -477,6 +479,20 @@ impl Harness {
         let corpus_counts = opened_corpus.as_ref().map(|c| c.counts().0);
         let corpus_sink: Option<std::sync::Arc<dyn letibot_tools::CorpusSink>> =
             opened_corpus.map(|c| c as std::sync::Arc<dyn letibot_tools::CorpusSink>);
+        // The permission job reads what the gate decides, beside the corpus and never instead of it.
+        let shadow_cell: crate::shadow::permission::Cell = Default::default();
+        let corpus_sink = if cfg.shadow.is_on(crate::shadow::Job::Permission) {
+            Some(std::sync::Arc::new(crate::shadow::permission::ShadowSink {
+                inner: corpus_sink,
+                cell: shadow_cell.clone(),
+                rules: crate::shadow::permission::rules_of(&cfg.permission),
+                workspace: cfg.workspace.clone(),
+                home: std::env::var_os("HOME").map(Into::into).unwrap_or_default(),
+            })
+                as std::sync::Arc<dyn letibot_tools::CorpusSink>)
+        } else {
+            corpus_sink
+        };
         let stored = match &store {
             None => None,
             Some(s) => s
@@ -579,6 +595,7 @@ impl Harness {
         Ok(Opening {
             store,
             corpus_sink,
+            shadow_cell,
             corpus_counts,
             stored,
             writer,
@@ -1926,6 +1943,7 @@ impl Harness {
         let Opening {
             store,
             corpus_sink,
+            shadow_cell,
             corpus_counts,
             stored,
             writer,
@@ -3577,6 +3595,8 @@ impl Harness {
             shadow: Default::default(),
             shadow_held: None,
             shadow_counted: (0, 0),
+            shadow_cell,
+            shadow_during: Default::default(),
         };
         h.announce_the_open(stale, stale_for_model);
         h.import_the_foreign_conversation();
