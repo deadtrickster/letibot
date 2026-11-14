@@ -510,10 +510,11 @@ fn down_span(stop: &Stopped, back_ms: u64) -> String {
     }
 }
 
-/// Whether a session's last row is a turn that was still going when its rows stopped - an
-/// `Assistant` with no call after it is a finished turn, and every other row is a turn that
-/// never got its answer.
-pub fn mid_turn(last: Option<&TranscriptItem>) -> bool {
+/// Whether a session's rows stop in a turn that was still going: an `Assistant` with no call is a
+/// finished turn, a harness row of its own is not a turn, and every other row never got its answer.
+/// Display-only rows (offer cards, segment marks) are filed after the answer and are read past.
+pub fn mid_turn(items: &[TranscriptItem]) -> bool {
+    let last = items.iter().rev().find(|i| !display_only(i));
     match last {
         None => false,
         Some(TranscriptItem::Assistant { tool_calls, .. }) => !tool_calls.is_empty(),
@@ -523,6 +524,14 @@ pub fn mid_turn(last: Option<&TranscriptItem>) -> bool {
         }) => false,
         Some(_) => true,
     }
+}
+
+/// A row the model never reads, filed by the harness for the operator.
+pub fn display_only(item: &TranscriptItem) -> bool {
+    matches!(
+        item,
+        TranscriptItem::Offer { .. } | TranscriptItem::SegmentMark { .. }
+    )
 }
 
 /// How many of a board's rows one sentence names before it counts the rest.
@@ -777,10 +786,71 @@ pub const RESTART_PROMISES: &[&str] = &[
 /// the promises so a stray mention of "restart" does not wake a session.
 pub const PROMISE_FLOOR: f64 = 0.4;
 
-/// Whether `text` reads as waiting on a restart: its best sentence against [`RESTART_PROMISES`],
-/// with the box's second tier when it has one.
+/// Words a sentence must hold to be about a restart before it is scored. A tier's cosine is
+/// meaning in general, so the words decide what is a candidate and the score only ranks it.
+const RESTART_WORDS: &[&str] = &["restart", "rebuil", "relaunch", "reboot"];
+const BACK_PHRASES: &[&str] = &[
+    "back up",
+    "is back",
+    "are back",
+    "comes back",
+    "come back",
+    "be back",
+];
+
+fn about_a_restart(sentence: &str) -> bool {
+    let lower = sentence.to_lowercase();
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect();
+    let joined = words.join(" ");
+    words
+        .iter()
+        .any(|w| RESTART_WORDS.iter().any(|r| w.starts_with(r)))
+        || BACK_PHRASES.iter().any(|p| joined.contains(p))
+}
+
+/// `text` cut into sentences, each with whether it ends on a question mark. A `?` inside a word
+/// or a URL does not end one.
+fn sentences(text: &str) -> Vec<(&str, bool)> {
+    let mut out = Vec::new();
+    let mut start = 0;
+    let mut chars = text.char_indices().peekable();
+    while let Some((at, c)) = chars.next() {
+        let next_is_space = chars.peek().is_none_or(|(_, n)| n.is_whitespace());
+        let ends = match c {
+            '\n' => true,
+            '.' | '!' | '?' => next_is_space,
+            _ => false,
+        };
+        if ends {
+            out.push((text[start..at].trim(), c == '?'));
+            start = at + c.len_utf8();
+        }
+    }
+    out.push((text[start..].trim(), false));
+    out.retain(|(s, _)| !s.is_empty());
+    out
+}
+
+/// Whether `text` reads as waiting on a restart: its best sentence about a restart against
+/// [`RESTART_PROMISES`], with the box's second tier when it has one. A message that asks the
+/// operator something waits on their answer, which a restart is not.
 pub fn promises_a_restart(text: &str, tier: Option<&letibot_embeddings::Tier>) -> bool {
     use letibot_tools::similarity::Corpus;
+    let sentences = sentences(text);
+    if sentences.iter().any(|(_, asked)| *asked) {
+        return false;
+    }
+    let candidates: Vec<&str> = sentences
+        .iter()
+        .map(|(s, _)| *s)
+        .filter(|s| about_a_restart(s))
+        .collect();
+    if candidates.is_empty() {
+        return false;
+    }
     let probes: Vec<(PathBuf, String)> = RESTART_PROMISES
         .iter()
         .enumerate()
@@ -788,14 +858,11 @@ pub fn promises_a_restart(text: &str, tier: Option<&letibot_embeddings::Tier>) -
         .collect();
     let corpus = Corpus::of_texts(&probes);
     let _ = corpus.fill(tier);
-    text.split(['.', '!', '?', '\n'])
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .any(|s| {
-            corpus
-                .best_with(s, tier)
-                .is_some_and(|(_, score)| score >= PROMISE_FLOOR)
-        })
+    candidates.iter().any(|s| {
+        corpus
+            .best_with(s, tier)
+            .is_some_and(|(_, score)| score >= PROMISE_FLOOR)
+    })
 }
 
 /// The call that declares a monitor again, as the model would write it.
@@ -1200,6 +1267,110 @@ mod tests {
         ] {
             assert!(!promises_a_restart(t, None), "{t}");
         }
+    }
+
+    /// The last words of sessions woken by mistake, and plain reports like them. A question waits
+    /// on the operator's answer, and a report names no restart.
+    const NOT_PROMISES: &[&str] = &[
+        "It works now — saved as emacs-macos-input-loss-after-sleep.md, with the SIGUSR2 recovery \
+         and the warning that a normal idle spindump does not imply a Lisp loop or large buffer list.",
+        "Can you paste the error you saw, or tell me which provider it was? The \
+         model_endpoint_retry warnings we built would have named the provider and the attempt \
+         count if the daemon was running when it happened.",
+        "Landed and pushed: the parser fix is on main and the gate is green.",
+        "Both fixed and verified on the box, and the todo list is clear.",
+        "After you restart the daemon, does the head still show the old title?",
+    ];
+
+    /// A tier that calls every sentence alike, as a tier whose cosines sit high does.
+    fn a_tier_that_finds_everything_alike(tag: &str) -> letibot_embeddings::Tier {
+        let data =
+            std::env::temp_dir().join(format!("restart-promise-{tag}-{}", std::process::id()));
+        letibot_embeddings::testing::planted(
+            &data,
+            &[&[
+                "i", "you", "it", "the", "me", "and", "daemon", "fixed", "works", "landed",
+            ]],
+        )
+    }
+
+    #[test]
+    fn reports_and_questions_are_not_restart_promises() {
+        use super::promises_a_restart;
+        let tier = a_tier_that_finds_everything_alike("reports");
+        for t in NOT_PROMISES {
+            assert!(!promises_a_restart(t, None), "lexical: {t}");
+            assert!(!promises_a_restart(t, Some(&tier)), "with a tier: {t}");
+        }
+    }
+
+    /// The tier alone would have woken them: without the restart words every report crosses the
+    /// floor, so the words are what holds.
+    #[test]
+    fn the_tier_alone_crosses_the_floor_on_a_report() {
+        use letibot_tools::similarity::Corpus;
+        let tier = a_tier_that_finds_everything_alike("floor");
+        let probes: Vec<(PathBuf, String)> = super::RESTART_PROMISES
+            .iter()
+            .map(|p| (PathBuf::from(*p), (*p).to_string()))
+            .collect();
+        let corpus = Corpus::of_texts(&probes);
+        corpus.fill(Some(&tier)).expect("the planted tier fills");
+        let report = "Both fixed and verified on the box, and the todo list is clear";
+        let (_, score) = corpus.best_with(report, Some(&tier)).expect("a score");
+        assert!(score >= super::PROMISE_FLOOR, "{score:.3}");
+    }
+
+    #[test]
+    fn every_probe_is_a_promise_with_and_without_a_tier() {
+        use super::{RESTART_PROMISES, promises_a_restart};
+        let tier = a_tier_that_finds_everything_alike("probes");
+        for p in RESTART_PROMISES {
+            assert!(promises_a_restart(p, None), "lexical: {p}");
+            assert!(promises_a_restart(p, Some(&tier)), "with a tier: {p}");
+        }
+    }
+
+    /// An offer card is filed after the answer it follows. It is not a turn still going.
+    #[test]
+    fn a_display_only_row_after_an_answer_is_not_mid_turn() {
+        use letibot_transcript::{OfferKind, TranscriptItem};
+        let answer = TranscriptItem::Assistant {
+            text: "Can you paste the error you saw?".into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        };
+        let offer = TranscriptItem::Offer {
+            kind: OfferKind::Note,
+            title: "note offered".into(),
+            body: String::new(),
+        };
+        assert!(!super::mid_turn(&[answer.clone(), offer.clone()]));
+        assert!(!super::mid_turn(&[
+            answer.clone(),
+            offer.clone(),
+            offer.clone()
+        ]));
+        // A room digest delivered after the answer is the harness's row, offer card or not.
+        let digest = TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::Agent,
+            parts: vec![letibot_transcript::UserPart::Text {
+                text: "#7 [host] digest\nask #1 was withdrawn by s-1793291906601242000".into(),
+            }],
+        };
+        assert!(!super::mid_turn(&[answer.clone(), digest.clone()]));
+        assert!(!super::mid_turn(&[answer, digest, offer.clone()]));
+        let call = TranscriptItem::Assistant {
+            text: String::new(),
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: "c".into(),
+                name: "bash".into(),
+                arguments: "{}".into(),
+            }],
+            truncated: false,
+        };
+        assert!(super::mid_turn(&[call, offer.clone()]));
+        assert!(!super::mid_turn(&[offer]));
     }
 
     /// A GitHub watch is recorded with its own default life, so a restart inside it re-arms it.

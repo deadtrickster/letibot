@@ -1299,7 +1299,14 @@ impl Harness {
         use crate::restart::Rows;
         let board = self.todos.snapshot();
         crate::restart::Owed {
-            mid_turn: crate::restart::mid_turn(last),
+            // The store's row is what the daemon wrote last. A display-only row says nothing about
+            // the turn, so the transcript is read back past it.
+            mid_turn: match last {
+                Some(i) if crate::restart::display_only(i) => {
+                    crate::restart::mid_turn(self.items())
+                }
+                last => crate::restart::mid_turn(last.map(std::slice::from_ref).unwrap_or(&[])),
+            },
             settlements,
             due: Rows::of(
                 self.due_todo_rows()

@@ -123,6 +123,11 @@ fn a_row(what: &str, status: TodoStatus) -> TodoItem {
 /// One transcript row, written into the store behind the open harness's back: nothing resumes over this, and it is the
 /// store's own last-row fact that `mid_turn` reads, so staging it stages what a daemon that died mid-turn leaves.
 fn stage_a_last_row(dir: &Scratch, id: &str, item: TranscriptItem) {
+    stage_last_rows(dir, id, &[item]);
+}
+
+/// [`stage_a_last_row`] for several rows, in order.
+fn stage_last_rows(dir: &Scratch, id: &str, items: &[TranscriptItem]) {
     let store = Store::open(&dir.store()).expect("the store");
     let transcript = store
         .current_transcript_id(id)
@@ -136,15 +141,19 @@ fn stage_a_last_row(dir: &Scratch, id: &str, item: TranscriptItem) {
         .get_stable_prefix(&prefix_id)
         .expect("the prefix is readable");
     let tokens: Vec<u32> = vec![7, 8, 9];
-    let row = letibot_tokencore::ledger::LedgerRow {
-        item_id: format!("{transcript}.0"),
-        tok_offset: prefix_tokens.len() as u32,
-        tok_len: tokens.len() as u32,
-        h_k: letibot_tokencore::ledger::chain(&h_init, &tokens),
-    };
-    store
-        .append_item(&transcript, 0, &item, &row, &tokens)
-        .expect("the row is appended");
+    let mut h = h_init;
+    for (seq, item) in items.iter().enumerate() {
+        h = letibot_tokencore::ledger::chain(&h, &tokens);
+        let row = letibot_tokencore::ledger::LedgerRow {
+            item_id: format!("{transcript}.{seq}"),
+            tok_offset: (prefix_tokens.len() + seq * tokens.len()) as u32,
+            tok_len: tokens.len() as u32,
+            h_k: h,
+        };
+        store
+            .append_item(&transcript, seq as u32, item, &row, &tokens)
+            .expect("the row is appended");
+    }
 }
 
 /// The daemon that comes back to that store - a new `Harness` over the same file, which is what
@@ -785,6 +794,42 @@ fn an_old_session_that_promised_to_continue_after_a_restart_is_woken() {
             && text.contains(crate::restart::QUIET_END),
         "one instruction and the quiet end: {text}"
     );
+}
+
+/// A turn that ended on a question owes nothing, with an offer card after it or not: the card is
+/// not a turn in flight and the question is not a promise.
+#[test]
+fn a_question_with_an_offer_card_after_it_is_not_woken() {
+    let dir = Scratch::new("restart-question-offer");
+    let id = "s-restart-question-offer";
+    let Some(h) = opened_by_a_later_daemon(&dir, id) else {
+        return;
+    };
+    stage_last_rows(
+        &dir,
+        id,
+        &[
+            TranscriptItem::Assistant {
+                text: "Can you paste the error you saw, or tell me which provider it was? The \
+                       model_endpoint_retry warnings we built would have named the provider and \
+                       the attempt count if the daemon was running when it happened."
+                    .into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+            TranscriptItem::Offer {
+                kind: letibot_transcript::OfferKind::Note,
+                title: "note offered: provider-retries.md (0.41)".into(),
+                body: String::new(),
+            },
+        ],
+    );
+    age_session(&Store::open(&dir.store()).unwrap(), id, 5 * 3_600_000);
+    drop(h);
+    let mut h = reopened(&dir, id);
+    let text = h.restore_after_restart().expect("a restart is said");
+    assert!(text.ends_with(". Nothing was running."), "{text}");
+    assert!(h.restart_notices.is_empty(), "{:?}", h.restart_notices);
 }
 
 /// A session idle beyond the window with nothing promised keeps today's row and no turn.
