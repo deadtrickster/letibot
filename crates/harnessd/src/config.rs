@@ -74,6 +74,9 @@ pub enum Seat {
     /// tools and `notes`, the one writer that reaches a note. Never a seat a person picks - the
     /// daemon starts it, and the per-workspace clock that will is still deferred.
     NotesKeeper,
+    /// A shadow's record ([`letibot_tools::runtime::roles::shadow`]): no tools at all. Never a seat a
+    /// person picks; the daemon writes it while a shadow job judges the session it is parented to.
+    Shadow,
 }
 
 impl Seat {
@@ -87,6 +90,7 @@ impl Seat {
             Seat::Leticode => "leticode",
             Seat::Gatekeeper => letibot_sessionlog::GATEKEEPER_SEAT,
             Seat::NotesKeeper => "notes_keeper",
+            Seat::Shadow => letibot_sessionlog::SHADOW_SEAT,
         }
     }
 
@@ -103,9 +107,10 @@ impl Seat {
             "leticode" | "opencode" => Ok(Seat::Leticode),
             letibot_sessionlog::GATEKEEPER_SEAT => Ok(Seat::Gatekeeper),
             "notes_keeper" | "keeper" => Ok(Seat::NotesKeeper),
+            letibot_sessionlog::SHADOW_SEAT => Ok(Seat::Shadow),
             other => Err(format!(
                 "unknown role `{other}`; this build has orchestrator, planner, \
-                 researcher, coder, runner, leticode, gatekeeper, notes_keeper"
+                 researcher, coder, runner, leticode, gatekeeper, notes_keeper, shadow"
             )),
         }
     }
@@ -671,6 +676,9 @@ pub struct Config {
     /// providers.toml `[nudge]`: the prose half per model, `true` for `announced`. Picked by
     /// [`crate::leticode_config::by_model`]; `intent_prose` above overrides it for every model.
     pub nudge: std::collections::BTreeMap<String, bool>,
+    /// providers.toml `[shadow]`: which shadow jobs run, on which model. Off unless the file
+    /// turns a job on, and read once at startup so a test's config never reaches the file.
+    pub shadow: crate::shadow::config::ShadowConfig,
     pub spill: SpillPolicy,
     pub spill_storage: SpillStorage,
     /// The backstop, and only the backstop. How many rounds one user turn may take before the
@@ -1756,6 +1764,7 @@ impl Config {
             supervise: false,
             intent_prose: false,
             nudge: Default::default(),
+            shadow: Default::default(),
             spill: SpillPolicy::Unset,
             spill_storage: SpillStorage::Memory,
             // Unbounded on purpose: `stall_rounds` is the stop that measures progress, and a round

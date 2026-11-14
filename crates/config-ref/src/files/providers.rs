@@ -44,6 +44,30 @@ pub const PROVIDERS: File = File {
             )],
         },
         Table {
+            path: "shadow",
+            note: "Shadow jobs: a second model, on any provider, judging a session off the critical path. Off unless `enabled` names a job. A job with no model line runs on [default]'s provider and model.",
+            needs: "",
+            keys: &[
+                k("enabled", "list of turn_end | during | permission", "[] (no job runs)", "", "jobs that run", "[\"turn_end\"]"),
+                k("turn_end", "model", "[default]", "", "model the turn_end job runs on (asleep reminder, note capture); the `*` line of [shadow.turn_end]", "\"deepseek/deepseek-flash\""),
+                k("during", "model", "[default]", "", "model the during job runs on (drift, skill and note offers); observe-only", "\"local\""),
+                k("permission", "model", "[default]", "", "model the permission job runs on (allow or ask, never deny); observe-only", "\"glm-coding/glm-5.3\""),
+            ],
+        },
+        Table {
+            path: "shadow.<job>",
+            note: "Per watched model, which model a job runs on. Lookup: exact model, then `provider/*`, then `*`.",
+            needs: "",
+            keys: &[k(
+                "<model>",
+                "model",
+                "[shadow] JOB, then [default]",
+                "",
+                "model the job runs on for a session on this model; key is `provider/model`, `provider/*` or `*`",
+                "\"local\"",
+            )],
+        },
+        Table {
             path: "<preset>",
             note: "One per built-in preset, by canonical name (deepseek, glm, glm-coding, grok, anthropic, openai, gemini, kimi-code, ...). The preset's env variable wins.",
             needs: "",

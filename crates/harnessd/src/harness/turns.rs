@@ -3993,7 +3993,19 @@ impl Harness {
     }
 
     pub(crate) fn persist(&mut self) -> Result<(), HarnessError> {
-        self.persist_reporting(&mut |_, _| {})
+        self.persist_reporting(&mut |_, _| {})?;
+        self.tend_shadow();
+        Ok(())
+    }
+
+    /// Open the shadow once the session is stored, and move its position stamp to the rows written.
+    fn tend_shadow(&mut self) {
+        if matches!(self.shadow, crate::shadow::Slot::NotYet) {
+            self.shadow = crate::shadow::open_for(&self.cfg, &self.model_name());
+        }
+        if let Some(s) = self.shadow.get() {
+            s.advance(self.session.items.len() as u64);
+        }
     }
 
     /// A wait on the store, said on this session and on every other one this daemon holds: the

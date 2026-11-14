@@ -17,6 +17,7 @@ pub(crate) fn offer_card(kind: OfferKind, title: &str) -> Card {
     let lead = match kind {
         OfferKind::Skill => "skill offered",
         OfferKind::Note => "note offered",
+        OfferKind::Shadow => "shadow",
     };
     let head = title.lines().next().unwrap_or("").trim();
     Card::new(

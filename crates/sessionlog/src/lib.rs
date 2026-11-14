@@ -96,7 +96,7 @@ pub use hub::{
 };
 pub use log::{LogBounds, SessionLog};
 pub use origin::{
-    GroupRow, MCP_IDENTITY, SessionGroup, SessionOrigin, group_of, is_operator_top_level,
+    GroupRow, MCP_IDENTITY, SessionGroup, SessionOrigin, group_of, is_operator_top_level, is_shadow,
 };
 pub use protocol::{
     Ack, AnswerMode, Attachment, AttachmentKind, Caps, ClientFrame, ContextAsk, ContextPos,
@@ -149,6 +149,9 @@ pub const NOTES_KEEPER_TITLE_PREFIX: &str = "You are the notes keeper.";
 /// crate below the daemon groups sessions too, and the mark that says *this row is a review* has to
 /// be one string: `is_conversation` and `crate::origin` both read it.
 pub const GATEKEEPER_SEAT: &str = "gatekeeper";
+
+/// The shadow's seat: no tools, and a session that only records what a second model judged.
+pub const SHADOW_SEAT: &str = "shadow";
 
 /// How every daemon's review-queue session id begins - one workspace's daemon per key
 /// ([`gatekeeper_session`]), and nothing else in the tree starts with this.

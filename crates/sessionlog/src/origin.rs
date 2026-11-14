@@ -32,6 +32,9 @@ pub enum SessionOrigin {
     /// the answers and exits. The session's rows stay, and a run a day for a month is thirty
     /// rows in a list nobody asked for.
     OneShot,
+    /// A shadow's record: a second model judging the session it is parented to. It has no
+    /// tools and no turns of its own, so it is never a conversation to continue.
+    Shadow,
 }
 
 impl SessionOrigin {
@@ -43,6 +46,7 @@ impl SessionOrigin {
             SessionOrigin::Package => "package",
             SessionOrigin::Queue => "queue",
             SessionOrigin::OneShot => "one_shot",
+            SessionOrigin::Shadow => "shadow",
         }
     }
 
@@ -57,6 +61,7 @@ impl SessionOrigin {
             "package" => Some(SessionOrigin::Package),
             "queue" => Some(SessionOrigin::Queue),
             "one_shot" | "one-shot" => Some(SessionOrigin::OneShot),
+            "shadow" => Some(SessionOrigin::Shadow),
             _ => None,
         }
     }
@@ -88,15 +93,18 @@ pub enum SessionGroup {
     Packages,
     /// What a `--prompt` run left behind.
     OneShot,
+    /// The shadows: one per watched session, each judging the session it hangs from.
+    Shadow,
 }
 
 impl SessionGroup {
     /// Every group, in the order a list draws them. `Mine` is not a fold - the rows are drawn
     /// under it - and the four after it are.
-    pub const ALL: [SessionGroup; 5] = [
+    pub const ALL: [SessionGroup; 6] = [
         SessionGroup::Mine,
         SessionGroup::Subagents,
         SessionGroup::ReviewQueue,
+        SessionGroup::Shadow,
         SessionGroup::Packages,
         SessionGroup::OneShot,
     ];
@@ -109,6 +117,7 @@ impl SessionGroup {
             SessionGroup::ReviewQueue => "review queue",
             SessionGroup::Packages => "packages",
             SessionGroup::OneShot => "one-shots",
+            SessionGroup::Shadow => "shadows",
         }
     }
 
@@ -121,6 +130,7 @@ impl SessionGroup {
             SessionGroup::ReviewQueue => "the review queue's session and its reviewers",
             SessionGroup::Packages => "conversations a package started (letim)",
             SessionGroup::OneShot => "what a `--prompt` run left behind",
+            SessionGroup::Shadow => "a second model's verdicts on the session each one watches",
         }
     }
 
@@ -153,6 +163,10 @@ const MAX_DEPTH: usize = 64;
 /// queue's work* is a question about the ROOT of the chain, and for a reviewer parented
 /// straight on the operator's conversation, about the row itself.
 pub fn group_of(rows: &[GroupRow<'_>], id: &str) -> SessionGroup {
+    // A shadow is known by its own row, before the parent edge would call it a subagent.
+    if rows.iter().find(|r| r.id == id).is_some_and(is_shadow) {
+        return SessionGroup::Shadow;
+    }
     // The chain, from this row to its root, looking for the queue on the way.
     let mut cur = id;
     for _ in 0..MAX_DEPTH {
@@ -181,13 +195,22 @@ pub fn group_of(rows: &[GroupRow<'_>], id: &str) -> SessionGroup {
         SessionOrigin::Package => SessionGroup::Packages,
         SessionOrigin::OneShot => SessionGroup::OneShot,
         SessionOrigin::Queue => SessionGroup::ReviewQueue,
+        SessionOrigin::Shadow => SessionGroup::Shadow,
     }
+}
+
+/// Is this row a shadow's record - by its origin, or by its seat for a reader that has one.
+pub fn is_shadow(row: &GroupRow<'_>) -> bool {
+    row.origin == SessionOrigin::Shadow || row.role == Some(crate::SHADOW_SEAT)
 }
 
 /// Is this row one of the operator's own top-level sessions - the ones `--continue` reopens and
 /// a Sessions list shows? One test, so the launcher, the picker and the sidebar cannot differ.
 pub fn is_operator_top_level(row: &GroupRow<'_>) -> bool {
-    row.parent.is_none() && !is_queue_work(row) && row.origin == SessionOrigin::Operator
+    row.parent.is_none()
+        && !is_queue_work(row)
+        && !is_shadow(row)
+        && row.origin == SessionOrigin::Operator
 }
 
 /// Is this row the review queue's work? - three marks, and a row needs one: the
@@ -268,6 +291,30 @@ mod tests {
             .map(|r| r.id)
             .collect();
         assert_eq!(mine, ["s-op"]);
+    }
+
+    #[test]
+    fn a_shadow_is_its_own_group_and_never_the_operators() {
+        let all = [
+            seed("s-a", None, SessionOrigin::Operator),
+            seed("s-a-shadow", Some("s-a"), SessionOrigin::Shadow),
+            seated(
+                seed("s-b-shadow", Some("s-a"), SessionOrigin::Operator),
+                crate::SHADOW_SEAT,
+            ),
+            seed("s-task", Some("s-a"), SessionOrigin::Operator),
+            seed("s-top-shadow", None, SessionOrigin::Shadow),
+        ];
+        let rows = rows(&all);
+        assert_eq!(group_of(&rows, "s-a-shadow"), SessionGroup::Shadow);
+        assert_eq!(group_of(&rows, "s-b-shadow"), SessionGroup::Shadow);
+        assert_eq!(group_of(&rows, "s-task"), SessionGroup::Subagents);
+        assert_eq!(group_of(&rows, "s-top-shadow"), SessionGroup::Shadow);
+        assert!(
+            !rows
+                .iter()
+                .any(|r| r.id.ends_with("shadow") && is_operator_top_level(r))
+        );
     }
 
     #[test]
@@ -421,6 +468,7 @@ mod tests {
             SessionOrigin::Package,
             SessionOrigin::Queue,
             SessionOrigin::OneShot,
+            SessionOrigin::Shadow,
         ] {
             assert_eq!(SessionOrigin::parse(o.as_str()), Some(o));
         }

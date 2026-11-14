@@ -1602,6 +1602,20 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         Ok(table) => cfg.nudge = table,
         Err(why) => eprintln!("  providers.toml: {why}"),
     }
+    // The shadow's jobs, read once the same way. A fault is said and leaves every job off.
+    match crate::shadow::config::ShadowConfig::load(None) {
+        Ok(shadow) => {
+            if shadow.any_on() {
+                let on: Vec<&str> = shadow.enabled().map(|j| j.as_str()).collect();
+                eprintln!(
+                    "  shadow: {} - from [shadow] in providers.toml",
+                    on.join(", ")
+                );
+            }
+            cfg.shadow = shadow;
+        }
+        Err(why) => eprintln!("  providers.toml: {why}"),
+    }
     // A session's own list outranks the box's, because it is the narrower statement: a file in
     // the project says where THIS project's sessions go.
     session_fallback(&mut cfg);
@@ -3195,7 +3209,11 @@ fn is_conversation(s: &letibot_tokencore::store::StoredSession) -> bool {
     // and its title may be re-worded, so neither can tell it from the operator's conversation.
     s.parent_session_id.is_none()
         && !letibot_sessionlog::is_gatekeeper_session(&s.id)
-        && !matches!(s.origin.as_deref(), Some("queue" | "package" | "one_shot"))
+        && !matches!(
+            s.origin.as_deref(),
+            Some("queue" | "package" | "one_shot" | "shadow")
+        )
+        && s.role.as_deref() != Some(letibot_sessionlog::SHADOW_SEAT)
         && s.role.as_deref() != Some(crate::config::Seat::Gatekeeper.as_str())
         && !s
             .title

@@ -291,6 +291,9 @@ impl App {
                     SystemKind::Reviewer
                 });
             }
+            if here && s.origin == SessionOrigin::Shadow {
+                return Some(SystemKind::Shadow);
+            }
             if s.origin == SessionOrigin::Queue {
                 return Some(if here && s.parent_session_id.is_none() {
                     SystemKind::Gatekeeper
@@ -1055,6 +1058,8 @@ pub(crate) enum SystemKind {
     Reviewer,
     /// The notes keeper, which repairs memory and runs nothing.
     Keeper,
+    /// A shadow: a second model's verdicts on the session it is parented to.
+    Shadow,
 }
 
 impl SystemKind {
@@ -1064,6 +1069,7 @@ impl SystemKind {
             SystemKind::Gatekeeper => "gatekeepers",
             SystemKind::Reviewer => "reviewers",
             SystemKind::Keeper => "keepers",
+            SystemKind::Shadow => "shadows",
         }
     }
 }

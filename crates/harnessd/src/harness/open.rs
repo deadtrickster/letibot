@@ -3574,6 +3574,7 @@ impl Harness {
             limited: Default::default(),
             limit_return: None,
             limit_row: Default::default(),
+            shadow: Default::default(),
         };
         h.announce_the_open(stale, stale_for_model);
         h.import_the_foreign_conversation();
@@ -4636,6 +4637,7 @@ pub(crate) fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
         // The notes keeper: the read tools and `notes`, and no exec path at all, so there is no flag to strip. A repair
         // goes through `notes`, the one writer that keeps a note a note, and nothing on this seat can touch code.
         Seat::NotesKeeper => roles::notes_keeper(),
+        Seat::Shadow => roles::shadow(),
         Seat::Leticode => {
             let mut r = roles::leticode();
             if !cfg.allow_bash {

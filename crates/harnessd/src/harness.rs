@@ -495,6 +495,8 @@ pub struct Harness {
     /// The status row's limit words, shared with the activity source: `paused until 21:02:27 UTC`,
     /// or `glm limited until 21:02:27 UTC, on deepseek`.
     limit_row: Arc<std::sync::Mutex<Option<String>>>,
+    /// The shadow watching this session (R243): off unless providers.toml `[shadow]` turns a job on.
+    shadow: crate::shadow::Slot,
 }
 
 /// A confirmation of `allow-all` waiting for a person: the daemon's half of the card another head's ask

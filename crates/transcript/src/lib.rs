@@ -73,6 +73,8 @@ pub enum NoticeKind {
 pub enum OfferKind {
     Skill,
     Note,
+    /// A shadow's record: what a second model was shown, what it answered, and what the checks said.
+    Shadow,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

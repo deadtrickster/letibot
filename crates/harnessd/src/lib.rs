@@ -90,6 +90,7 @@ pub mod restart;
 pub mod room;
 pub mod selfverbs;
 pub mod sessions;
+pub mod shadow;
 pub mod skills_offer;
 pub mod slash;
 pub mod standing_notes;

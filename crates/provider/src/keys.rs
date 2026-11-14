@@ -568,6 +568,130 @@ pub fn nudge(file: Option<&Path>) -> Result<BTreeMap<String, bool>, Unreadable> 
     Ok(out)
 }
 
+/// The shadow's jobs, by the name `[shadow]` spells them. A closed set: a job this build does not
+/// run is a fault in the file, not a line nothing reads.
+pub const SHADOW_JOBS: [&str; 3] = ["turn_end", "during", "permission"];
+
+/// `[shadow]` as the file wrote it: which jobs are on, and per job the model each watched model's
+/// shadow runs on, keyed like `[nudge]`. `[shadow] JOB = "M"` is the `"*"` line of `[shadow.JOB]`.
+///
+/// ```toml
+/// [shadow]
+/// enabled = ["turn_end"]
+/// turn_end = "deepseek/deepseek-flash"
+///
+/// [shadow.turn_end]
+/// "kimi-code-global/*" = "local"
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ShadowLines {
+    /// The jobs that run. Nothing else turns one on, so a file with no `enabled` runs none.
+    pub enabled: Vec<String>,
+    /// Job, then watched-model key (`provider/model`, `provider/*`, `*`), then the model it runs on.
+    pub models: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+/// Read `[shadow]` and `[shadow.JOB]`. `Ok` default is no file or no section, which is every job off.
+pub fn shadow(file: Option<&Path>) -> Result<ShadowLines, Unreadable> {
+    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
+    if !file.is_file() {
+        return Ok(ShadowLines::default());
+    }
+    let parsed = parse_file(&file).map_err(|why| Unreadable {
+        file: file.clone(),
+        why,
+    })?;
+    let fault = |why: String| Unreadable {
+        file: file.clone(),
+        why: format!("{why}. No shadow job runs."),
+    };
+    let known = |job: &str| SHADOW_JOBS.contains(&job);
+    let mut out = ShadowLines::default();
+    if let Some(sec) = parsed.sections.get("shadow") {
+        for (k, v) in sec {
+            if k == "enabled" {
+                let inner = v
+                    .trim()
+                    .strip_prefix('[')
+                    .and_then(|s| s.strip_suffix(']'))
+                    .ok_or_else(|| {
+                        fault(format!(
+                            "[shadow] enabled = {v} is not a list; write `enabled = [\"turn_end\"]`"
+                        ))
+                    })?;
+                for job in inner
+                    .split(',')
+                    .map(|j| j.trim().trim_matches(['"', '\'']).trim())
+                    .filter(|j| !j.is_empty())
+                {
+                    if !known(job) {
+                        return Err(fault(format!(
+                            "[shadow] enabled names `{job}`, and the jobs are {}",
+                            SHADOW_JOBS.join(", ")
+                        )));
+                    }
+                    if !out.enabled.iter().any(|j| j == job) {
+                        out.enabled.push(job.to_string());
+                    }
+                }
+            } else if known(k) {
+                let model = v.trim();
+                if model.is_empty() {
+                    return Err(fault(format!("[shadow] {k} names no model")));
+                }
+                out.models
+                    .entry(k.clone())
+                    .or_default()
+                    .insert("*".into(), model.to_string());
+            } else {
+                return Err(fault(format!(
+                    "[shadow] `{k}` is not a key: the keys are `enabled` and the jobs, {}",
+                    SHADOW_JOBS.join(", ")
+                )));
+            }
+        }
+    }
+    for (name, sec) in &parsed.sections {
+        let Some(job) = name.strip_prefix("shadow.") else {
+            continue;
+        };
+        let job = job.trim_matches('"');
+        if !known(job) {
+            return Err(fault(format!(
+                "[shadow.{job}] is not a job: the jobs are {}",
+                SHADOW_JOBS.join(", ")
+            )));
+        }
+        for (raw, value) in sec {
+            let key = raw.trim_matches(['"', '\'']).to_string();
+            let stem = key.strip_suffix("/*").unwrap_or(&key);
+            if key != "*"
+                && (stem.is_empty() || stem.contains('*') || stem.contains(char::is_whitespace))
+            {
+                return Err(fault(format!(
+                    "[shadow.{job}] {raw} is not a key: write a watched model as `/models` spells \
+                     it, a provider's every model (`provider/*`), or `*`"
+                )));
+            }
+            let model = value.trim();
+            if model.is_empty() {
+                return Err(fault(format!("[shadow.{job}] {raw} names no model")));
+            }
+            let lines = out.models.entry(job.to_string()).or_default();
+            if let Some(was) = lines.get(&key)
+                && was != model
+            {
+                return Err(fault(format!(
+                    "[shadow] {job} = \"{was}\" and [shadow.{job}] \"*\" = \"{model}\" are one line \
+                     written twice"
+                )));
+            }
+            lines.insert(key, model.to_string());
+        }
+    }
+    Ok(out)
+}
+
 /// Record the standing choice. `provider = "local"` records the local server.
 pub fn set_default(
     file: Option<&Path>,
@@ -1285,6 +1409,58 @@ mod tests {
     }
 
     #[test]
+    fn the_shadow_is_off_without_a_section_and_reads_its_lines() {
+        let none = tmp_providers("shadow_absent", "[deepseek]\nkey = \"sk-x\"\n");
+        assert_eq!(shadow(Some(&none)).unwrap(), ShadowLines::default());
+        let f = tmp_providers(
+            "shadow_lines",
+            "[shadow]\nenabled = [\"turn_end\", \"during\"]\nturn_end = \"deepseek/deepseek-flash\"\n\
+             [shadow.turn_end]\n\"kimi-code-global/*\" = \"local\"\n",
+        );
+        let t = shadow(Some(&f)).unwrap();
+        assert_eq!(t.enabled, ["turn_end", "during"]);
+        let lines = &t.models["turn_end"];
+        assert_eq!(lines["*"], "deepseek/deepseek-flash");
+        assert_eq!(lines["kimi-code-global/*"], "local");
+    }
+
+    #[test]
+    fn a_shadow_line_that_means_nothing_is_a_fault() {
+        for (name, text, says) in [
+            (
+                "shadow_job",
+                "[shadow]\nenabled = [\"offers\"]\n",
+                "names `offers`",
+            ),
+            ("shadow_key", "[shadow]\nturn_ends = \"x\"\n", "not a key"),
+            (
+                "shadow_list",
+                "[shadow]\nenabled = \"turn_end\"\n",
+                "not a list",
+            ),
+            (
+                "shadow_table",
+                "[shadow.offers]\n\"*\" = \"x\"\n",
+                "not a job",
+            ),
+            (
+                "shadow_glob",
+                "[shadow.during]\n\"kimi*\" = \"x\"\n",
+                "not a key",
+            ),
+            (
+                "shadow_twice",
+                "[shadow]\nduring = \"a\"\n[shadow.during]\n\"*\" = \"b\"\n",
+                "written twice",
+            ),
+        ] {
+            let f = tmp_providers(name, text);
+            let e = shadow(Some(&f)).unwrap_err();
+            assert!(e.why.contains(says), "{name}: {}", e.why);
+        }
+    }
+
+    #[test]
     fn a_nudge_value_or_key_that_means_nothing_is_a_fault() {
         let f = tmp_providers(
             "nudge_bad_value",
@@ -1395,6 +1571,22 @@ mod reference_tests {
         assert_eq!(p.sampling.len(), sampling.len());
         assert!(p.effort.is_some() && p.url.is_some() && p.model.is_some());
         assert!(p.window.is_some() && p.dialect.is_some());
+    }
+
+    #[test]
+    fn every_listed_shadow_key_is_read() {
+        let text = [
+            section("shadow", "shadow"),
+            section("shadow.<job>", "shadow.during").replace("<model>", "\"kimi/*\""),
+        ]
+        .concat();
+        let f = fixture("shadow", &text);
+        let t = shadow(Some(&f)).expect("the reference's own examples read");
+        assert_eq!(t.enabled, ["turn_end"]);
+        for job in SHADOW_JOBS {
+            assert!(t.models[job].contains_key("*"), "{job}");
+        }
+        assert!(t.models["during"].contains_key("kimi/*"));
     }
 
     #[test]

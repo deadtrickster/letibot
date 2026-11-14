@@ -33,6 +33,25 @@ The prose half of the turn-end intent check, per model. Lookup: exact model, the
 |---|---|---|---|
 | `<model>` | announced \| off | off | nudge a turn whose last text-only round announced work it did not do; key is `provider/model`, `provider/*` or `*` |
 
+## `[shadow]`
+
+Shadow jobs: a second model, on any provider, judging a session off the critical path. Off unless `enabled` names a job. A job with no model line runs on [default]'s provider and model.
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `enabled` | list of turn_end \| during \| permission | [] (no job runs) | jobs that run |
+| `turn_end` | model | [default] | model the turn_end job runs on (asleep reminder, note capture); the `*` line of [shadow.turn_end] |
+| `during` | model | [default] | model the during job runs on (drift, skill and note offers); observe-only |
+| `permission` | model | [default] | model the permission job runs on (allow or ask, never deny); observe-only |
+
+## `[shadow.<job>]`
+
+Per watched model, which model a job runs on. Lookup: exact model, then `provider/*`, then `*`.
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `<model>` | model | [shadow] JOB, then [default] | model the job runs on for a session on this model; key is `provider/model`, `provider/*` or `*` |
+
 ## `[<preset>]`
 
 One per built-in preset, by canonical name (deepseek, glm, glm-coding, grok, anthropic, openai, gemini, kimi-code, ...). The preset's env variable wins.

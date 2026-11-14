@@ -1353,6 +1353,12 @@ pub mod roles {
             &["read", "grep", "glob", "read_spill", "recall", "notes"],
         )
     }
+
+    /// The shadow's seat: no tools. A shadow judges a transcript it is shown and answers in a
+    /// fixed schema, so a tool would only be a way for injected text to act.
+    pub fn shadow() -> Role {
+        Role::new("shadow", &[])
+    }
 }
 
 #[derive(Debug)]

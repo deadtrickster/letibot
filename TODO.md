@@ -1032,7 +1032,7 @@ Fixed: a window the call bounds with its own `limit` (the top-level `limit` or a
 
 ## R243 - Shadow sessions: a second model that judges what the regexes and similarity floors guess
 
-**Status:** design, 2026-11-14. Nothing built.
+**Status:** stage 1 landed 2026-11-14: the `shadow` seat (no tools), `SessionOrigin::Shadow` and `SessionGroup::Shadow` (`shadows` under a project's `system` branch in the head), `[shadow]` in providers.toml, and `crates/harnessd/src/shadow/` - the job runner (coalescing, position stamps, deadlines, breaker), the verdict parser with the quote verifier and the closed verdict space, the permission denylist, builtin prompts overridable at `.letibot/shadow/<job>.md`, and the stored shadow session written by `record::StoreRecorder`. No job has a trigger yet: turning one on opens the shadow session with its first row and the job states in its title, and nothing else. Only top-level sessions get a shadow; subagents and the review queue do not. Next is stage 2.
 
 The operator's direction (2026-11-14): "more and more im thinking about "shadow" sessions for permissions oracle and for notes and skills and reminders". Each of these is a judgement about the conversation. The current mechanisms approximate that judgement without context, and they fail the same way:
 - Skill and notes offers use lexical similarity, now blended with cosine. On 2026-11-14 the rano session, a TUI project that never mentioned fuzzing, was offered fuzz-harness-writing (0.201), fuzz-surfaces (0.200) and conformity-check-writing (0.194) against `OFFER_FLOOR` 0.18. The model's thinking then dismissed them as not relevant. The offer-floor work, which adds session-evidence terms and treats an ignored offer as declined, is the cheap layer under this.
