@@ -2,8 +2,11 @@
 //! prefix (a prefix change re-prefills the conversation) and never a row (a row cannot be un-said).
 //! Earned by a score floor, rare, silent when unsure, never a fetch, and recomposed each round.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
+
+use crate::offer_evidence::{self, DECLINE_ROUNDS, Declines, Pending};
+use letibot_tools::similarity::{self, Evidence};
 
 use letibot_transcript::{Speaker, ToolCall, TranscriptItem, UserPart};
 
@@ -68,6 +71,14 @@ pub struct Offers {
     /// The box's second tier, when it has one: this offer's corpus's vectors, and nothing of
     /// another caller's. `None` is the lexical score exactly, which is the default.
     tier: Option<Tier>,
+    /// The identity words the open offer was let through on.
+    open_hits: Vec<String>,
+    /// Offers not read yet, counting down to a decline. Keyed by the offered path.
+    pending: Vec<Pending>,
+    /// Notes declined this session, with the words each was offered on.
+    declined: HashMap<PathBuf, Vec<String>>,
+    /// This project's declines, which raise a note's floor.
+    declines: Declines,
 }
 
 impl Offers {
@@ -79,6 +90,12 @@ impl Offers {
     /// before the tier existed; the floor is this caller's either way.
     pub fn with_tier(mut self, tier: Option<Tier>) -> Offers {
         self.tier = tier;
+        self
+    }
+
+    /// Count declines against this project's log in `dir`.
+    pub fn with_project(mut self, dir: &Path) -> Offers {
+        self.declines = Declines::read(dir, "note");
         self
     }
 
@@ -96,6 +113,7 @@ impl Offers {
         let Ok(text) = std::fs::read_to_string(logs.join(LOG)) else {
             return;
         };
+        let mut open: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for line in text.lines() {
             let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
@@ -105,8 +123,33 @@ impl Offers {
             }
             if let Some(path) = row.get("path").and_then(|p| p.as_str()) {
                 self.offered.insert(PathBuf::from(path));
+                let hits: Vec<String> = row
+                    .get("hits")
+                    .and_then(|h| h.as_array())
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|v| v.as_str())
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if row.get("taken").and_then(|t| t.as_bool()) == Some(true) {
+                    open.remove(path);
+                } else if row.get("declined").and_then(|t| t.as_bool()) == Some(true) {
+                    self.declined.insert(PathBuf::from(path), hits);
+                    open.remove(path);
+                } else {
+                    open.insert(path.to_string(), hits);
+                }
             }
         }
+        // An offer the last turn left open still has its rounds to be read in.
+        self.pending
+            .extend(open.into_iter().map(|(key, hits)| Pending {
+                key,
+                rounds: DECLINE_ROUNDS - 1,
+                hits,
+            }));
     }
 
     /// Compose this round's offer, or decide to say nothing. `false` is the common case. The
@@ -159,8 +202,23 @@ impl Offers {
         let Some((path, score)) = corpus.best_with(&text, self.tier.as_ref()) else {
             return false;
         };
-        if score < OFFER_FLOOR
-            || self.offered.contains(path)
+        let key = path.display().to_string();
+        // Under the tier the note's title must be in the operator's words or the touched files:
+        // meaning alone finds a neighbour of whatever the session is doing.
+        let hits = match &self.tier {
+            Some(_) => match evidence_of(&files).found(&key, &offer_evidence::seen(items)) {
+                Some(h) => h,
+                None => return false,
+            },
+            None => Vec::new(),
+        };
+        // A declined note comes back only on words the decline was not made on.
+        let renewed = self
+            .declined
+            .get(path)
+            .is_some_and(|before| offer_evidence::new_evidence(&hits, before));
+        if score < self.declines.floor(OFFER_FLOOR, &key)
+            || (self.offered.contains(path) && !renewed)
             || already.contains(path)
             || already.iter().any(|p| same_note(p, path))
             || wrote.iter().any(|p| same_note(p, path))
@@ -168,6 +226,7 @@ impl Offers {
         {
             return false;
         }
+        self.open_hits = hits;
         self.open = Some(Offer {
             path: path.to_path_buf(),
             score,
@@ -190,41 +249,100 @@ impl Offers {
     /// take-up is a `read` of the offered path, or a `notes` read of it, because nothing else puts
     /// the note in the conversation. Logged either way, because the ratio tunes [`OFFER_FLOOR`].
     pub fn settle(&mut self, logs: &Path, session: &str, calls: &[ToolCall]) -> Option<&Offer> {
-        let mut offer = self.open.take()?;
-        let taken = calls.iter().any(|c| {
-            read_of(c)
-                .map(|p| same_note(&p, &offer.path))
-                .unwrap_or(false)
-        });
+        let read = |path: &Path| {
+            calls
+                .iter()
+                .any(|c| read_of(c).map(|p| same_note(&p, path)).unwrap_or(false))
+        };
+        // Earlier offers first: a late read is a take-up, and one never read is a decline.
+        let mut lines = String::new();
+        let mut waiting = Vec::new();
+        for p in std::mem::take(&mut self.pending) {
+            if read(Path::new(&p.key)) {
+                lines.push_str(&format!(
+                    "{{\"at\":{},\"session\":{},\"path\":{},\"taken\":true,\"late\":true}}\n",
+                    now_secs(),
+                    json(session),
+                    json(&p.key)
+                ));
+            } else {
+                waiting.push(p);
+            }
+        }
+        self.pending = waiting;
+        for p in offer_evidence::tick(&mut self.pending) {
+            self.declines.record(session, &p.key, now_secs());
+            lines.push_str(&format!(
+                "{{\"at\":{},\"session\":{},\"path\":{},\"declined\":true,\"hits\":{}}}\n",
+                now_secs(),
+                json(session),
+                json(&p.key),
+                serde_json::json!(p.hits)
+            ));
+            self.declined.insert(PathBuf::from(&p.key), p.hits);
+        }
+        let Some(mut offer) = self.open.take() else {
+            offer_evidence::append(&logs.join(LOG), &lines);
+            return None;
+        };
+        let taken = read(&offer.path);
         offer.taken = taken;
         self.offered.insert(offer.path.clone());
-        let line = format!(
-            "{{\"at\":{},\"session\":{},\"path\":{},\"score\":{:.3},\"taken\":{taken}}}\n",
+        let hits = std::mem::take(&mut self.open_hits);
+        let key = offer.path.display().to_string();
+        if !taken {
+            self.declined.remove(&offer.path);
+            self.pending.push(Pending {
+                key: key.clone(),
+                rounds: DECLINE_ROUNDS - 1,
+                hits: hits.clone(),
+            });
+        }
+        lines.push_str(&format!(
+            "{{\"at\":{},\"session\":{},\"path\":{},\"score\":{:.3},\"taken\":{taken},\"hits\":{}}}\n",
             now_secs(),
             json(session),
-            json(&offer.path.display().to_string()),
-            offer.score
-        );
-        let log = logs.join(LOG);
-        if let Some(dir) = log.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log)
-        {
-            let _ = f.write_all(line.as_bytes());
-        }
+            json(&key),
+            offer.score,
+            serde_json::json!(hits)
+        ));
+        offer_evidence::append(&logs.join(LOG), &lines);
         self.last = Some(offer);
         self.last.as_ref()
+    }
+
+    #[cfg(test)]
+    fn last_open_score(&self) -> f64 {
+        self.open.as_ref().map(|o| o.score).unwrap_or(0.0)
     }
 
     /// The offer the round just settled, for a caller that reports on it.
     pub fn last(&self) -> Option<&Offer> {
         self.last.as_ref()
     }
+}
+
+/// Each note's identity - its title, the file stem with separators opened - weighted by rarity
+/// across the notes' index texts.
+fn evidence_of(files: &[(PathBuf, String)]) -> Evidence {
+    let docs: Vec<(String, String, String)> = files
+        .iter()
+        .map(|(path, text)| {
+            let title = path
+                .file_stem()
+                .map(|s| s.to_string_lossy().replace(['-', '_'], " "))
+                .unwrap_or_default();
+            (
+                path.display().to_string(),
+                title,
+                similarity::index_text(path, text),
+            )
+        })
+        .collect();
+    Evidence::new(
+        docs.iter()
+            .map(|(k, i, f)| (k.as_str(), i.as_str(), f.as_str())),
+    )
 }
 
 /// Whether the prompt already carries this note whole. The injected section writes `### <path>`

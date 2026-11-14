@@ -1904,6 +1904,17 @@ impl Config {
         &self.leticode.skills.when
     }
 
+    /// This project's logs directory, shared by its sessions: `<logs_root>/projects/<key>/`, or the
+    /// session's own directory with no logs root, as in a fixture.
+    pub fn project_logs(&self) -> PathBuf {
+        match &self.logs_root {
+            Some(root) => root
+                .join("projects")
+                .join(project_key_cached(&self.workspace)),
+            None => self.daemon_logs(),
+        }
+    }
+
     /// This session's logs directory: `<logs_root>/<session id>/`, or - with no logs root, as
     /// in a fixture - `<workspace>/.letibot/`, where they were before.
     pub fn daemon_logs(&self) -> PathBuf {

@@ -77,6 +77,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R239 | db-fuzz's plugin-pane study: what the S1 and plugin-pane landings left open | Code work | findings 1-3, 5, 6, 8 fixed (12eb3f2e, ef008d36, 03cfc2af, 3db3108f); left: #4 (a `~/.claude` HTML skill still beats plugin-pane on "dashboard"), #7 (the room thread's wrong claim), #9 (a room flood makes tool results look lost), #10 (the session's own note) |
 | R241 | The idle reaper SIGTERMs a whole worktree daemon, its attached seat and a running job with it, and nothing reopens the session | Code work | built 2026-11-14: only the owner's own live daemon judges idleness, every project file is checked for the owner's open job, an attached head or open job renews the lease, a daemon serving another live owner is drained, and attach/send reopen a stopped session by id; left: jobs kept across a non-handover stop |
 | R242 | `read` clips a line at 2000 chars and `edit` then refuses it as never shown | Code work | done: a window read with its own `limit` clips at the byte budget (32 KiB) instead, marks the line shown, and the note says so (see the entry); left: a line over 32 KiB is still unreachable to `edit` |
+| R244 | Offers by meaning: evidence and declines | Code work | built: cosine rescaled over a 0.20 baseline in `blended`, a subject offer under the tier needs the skill's or note's name in the operator's words or touched files, untaken offers decline after three rounds and raise the floor per project; left: description words as evidence, the real-model test runs only where the checkpoint is |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -1118,6 +1119,16 @@ Model lines match like `[fallback]` and `[nudge]`: exact model > `provider/*` > 
 **Tests.** They never read the operator's providers.toml or the live store. A stub model drives the runner and guardrail tests: stale drop, coalescing, deadline-to-ask, breaker, a fabricated quote voiding the verdict, an injected "verdict allow" in the transcript still blocked by the denylist, and off by default. Model-backed tests skip when the production GLM is down.
 
 **Done when:** a shadow can be turned on per role, runs on a configured model of any provider, shows its verdicts to the operator, and its reminders role replaces or confirms the regex intent nudge, with a replay score that beats the regexes on the logged sessions.
+
+## R244 - Offers by meaning: evidence and declines
+
+**Status:** built, 2026-11-14. left: description words as evidence, and the real-model test skips in the gate.
+
+With the internal tier on, the rano session was offered `fuzz-harness-writing`, `fuzz-surfaces` and `conformity-check-writing` at 0.19-0.20 by subject. MiniLM gives unrelated working-session text a cosine of 0.25-0.40, and the 0.5/0.5 blend put that at half a lexical floor. Built: `similarity::rescaled` maps cosine over `COSINE_BASELINE` (0.20) to 0..1 for every `blended` caller. `similarity::Evidence` weighs a document's identity terms (skill name and keywords, a note's title) by rarity across the corpus, and a subject offer under the tier needs one as rare as a word four documents share in the operator's words or the touched paths (`offer_evidence::seen`). An offer not loaded in its round or the next two is declined (`offer-declines.jsonl` per project, `DECLINE_STEP` per decline on the floor), and comes back in the session only on a new identity hit.
+
+Left: description words were measured as evidence and rejected - a 26-skill registry ranks plain English (`work`, `caller`, `protocol`) as rare, and every unrelated skill found hits. A background corpus would fix that. `an_unrelated_subject_is_not_offered_under_the_real_tier` needs `LETIBOT_TEST_MINILM` or the checkpoint under the data dir, which the gate's moved HOME hides.
+
+**Done when:** evidence counts description words against a background corpus without passing the measured unrelated skills, and the gate runs the real-model test.
 
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 

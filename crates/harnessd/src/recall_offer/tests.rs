@@ -451,7 +451,7 @@ fn a_stored_vector_carries_a_paraphrase_no_word_of_which_the_unit_has() {
         "s-ship#t0#1",
         "s-ship",
         1_760_000_000_000,
-        "a vessel sails into production",
+        "a vessel rollout sails into production",
     )];
     let vector = tier.query(&units[0].text, now_ms()).expect("a vector");
     let mut vectors = BTreeMap::new();

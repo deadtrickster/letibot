@@ -1947,14 +1947,18 @@ impl Harness {
         // The turn's standing-notes offers: per ROUND for the round's own offer and per SESSION for the memory,
         // since a note never read won the same slot turn after turn. `recall` reads back what this session was
         // offered, from the log; the offer lives in the request assembly, because a row cannot be un-said.
-        let mut offers = crate::notes_offer::Offers::new().with_tier(self.cfg.tier());
+        let project_logs = self.cfg.project_logs();
+        let mut offers = crate::notes_offer::Offers::new()
+            .with_tier(self.cfg.tier())
+            .with_project(&project_logs);
         offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
         // The turn's skill offers, by the same delivery and the same memory: a name in the tail, once
         // per session, settled against the round's own `skill` loads.
         let seat_tools = super::open::skill_seat(&self.cfg, &self.prefix.tools_json);
         let mut skill_offers = crate::skills_offer::Offers::new()
             .with_tier(self.cfg.tier())
-            .with_seat(seat_tools.iter(), self.cfg.skills_never_offer().iter());
+            .with_seat(seat_tools.iter(), self.cfg.skills_never_offer().iter())
+            .with_project(&project_logs);
         skill_offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
         // And the tree's open rows, offered when the brief in hand is one of them: a row somebody
         // already holds is a wait, and spawning a child to redo it is what that line saves.
@@ -2042,6 +2046,7 @@ impl Harness {
                 // Score a skill against the prompt, plan and the model's latest text and reasoning, not just the note's subject.
                 // Session contents are re-read each round so an already-loaded body is not offered again.
                 skill_offers.skip_loaded(&self.session.items);
+                skill_offers.observe(&self.session.items);
                 // The person's own newest row scores beside the subject: at the tail of a session a
                 // follow-up names the thing in one word the plan and the tool output have buried.
                 let words = crate::recall_offer::operator_text(&self.session.items);

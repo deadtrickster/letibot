@@ -105,15 +105,15 @@ fn an_unrelated_brief_is_said_nothing() {
     let mut offers = caller(&embedder);
     assert!(!offers.compose(&rows, ELSEWHERE));
     assert!(offers.tail().is_empty());
-    // The row IS the best match and is still under the floor: silence here is the floor's work
-    // and not an empty corpus's.
+    // Under the floor, and not an empty corpus: silence here is the floor's work.
     let docs = corpus(&rows);
     let scored_corpus = Corpus::of_texts(&docs);
     let tier = Tier::over(Arc::clone(&embedder));
     scored_corpus.fill(Some(&tier)).expect("a fill");
-    let (_, scored) = scored_corpus
+    // The rescaled cosine can put an unrelated brief at zero, where nothing is ranked.
+    let scored = scored_corpus
         .best_with(ELSEWHERE, Some(&tier))
-        .expect("a best");
+        .map_or(0.0, |(_, s)| s);
     assert!(scored < OFFER_FLOOR, "{scored} of 1.00 is not silence");
     // An empty brief is nothing to score, and no rows is nothing to score against.
     assert!(!offers.compose(&rows, "  \n "));

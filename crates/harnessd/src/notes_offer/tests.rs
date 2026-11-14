@@ -619,7 +619,9 @@ fn a_tier_that_cannot_answer_leaves_the_offer_as_the_words_scored_it() {
     assert!(said.contains("127.0.0.1:1"), "{said}");
 }
 
-/// A paraphrase sharing no word with its note. Words alone score it zero against every note; the second tier's cosine, over words planted as synonyms, carries it over [`OFFER_FLOOR`]. With no tier the offer is unchanged.
+/// A paraphrase sharing no word with its note. Words alone score it zero against every note; the
+/// second tier's cosine, over words planted as synonyms, carries it over [`OFFER_FLOOR`] - once the
+/// session has named the note somewhere. Meaning alone, with its title never said, offers nothing.
 #[test]
 fn a_paraphrase_with_no_shared_word_is_offered_by_the_second_tier() {
     let f = Fixture::new("paraphrase");
@@ -650,7 +652,19 @@ fn a_paraphrase_with_no_shared_word_is_offered_by_the_second_tier() {
     );
     let mut offers = Offers::new().with_tier(Some(tier));
     assert!(
-        offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &items),
+        !offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &items),
+        "meaning alone, with the note's title never said, is not evidence"
+    );
+    // An earlier prompt named the rollout; the subject is still only the newest one.
+    let mut named = prompt("how is the rollout going");
+    named.push(TranscriptItem::Assistant {
+        text: "on it".into(),
+        tool_calls: Vec::new(),
+        truncated: false,
+    });
+    named.extend(items);
+    assert!(
+        offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &named),
         "the meaning earns the hint"
     );
     let offered = offers.tail();
@@ -773,4 +787,51 @@ fn bulk_edits_with_a_barely_moving_subject_embed_once() {
     let queries: u64 = spent.iter().skip(1).sum::<u64>() + spent[0].saturating_sub(3);
     eprintln!("embeds per round (first includes the corpus): {spent:?}");
     assert!(queries <= 1, "{spent:?}");
+}
+
+/// A note offered and not read in three rounds is declined: logged, counted for the project, and
+/// not offered again this session on the same words.
+#[test]
+fn a_note_not_read_in_three_rounds_is_declined() {
+    let f = Fixture::new("declined");
+    let path = corpus(&f);
+    let project = f.ws.join("project");
+    let mut offers = Offers::new().with_project(&project);
+    assert!(offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &prompt(ABOUT)));
+    for _ in 0..crate::offer_evidence::DECLINE_ROUNDS {
+        offers.settle(&f.ws, "s-1", &[]);
+    }
+    let declined: Vec<_> = log_lines(&f.ws)
+        .into_iter()
+        .filter(|r| r.get("declined").is_some())
+        .collect();
+    assert_eq!(declined.len(), 1, "{declined:?}");
+    let key = path.display().to_string();
+    assert_eq!(declined[0]["path"], serde_json::json!(key));
+    assert_eq!(
+        crate::offer_evidence::Declines::read(&project, "note").count(&key),
+        1
+    );
+    assert!(!offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &prompt(ABOUT)));
+}
+
+/// Declines of a note in this project raise its floor until the score that earned it no longer does.
+#[test]
+fn declines_in_the_project_raise_the_notes_floor() {
+    let f = Fixture::new("raised");
+    let path = corpus(&f);
+    let project = f.ws.join("project");
+    let mut plain = Offers::new().with_project(&project);
+    assert!(plain.compose(&f.reader(), &f.global, &f.box_dirs, "", &prompt(ABOUT)));
+    let score = plain.last_open_score();
+    let needed = ((score - OFFER_FLOOR) / crate::offer_evidence::DECLINE_STEP).floor() as u32 + 1;
+    let mut declines = crate::offer_evidence::Declines::read(&project, "note");
+    for i in 0..needed {
+        declines.record(&format!("s-{i}"), &path.display().to_string(), 0);
+    }
+    let mut raised = Offers::new().with_project(&project);
+    assert!(
+        !raised.compose(&f.reader(), &f.global, &f.box_dirs, "", &prompt(ABOUT)),
+        "{score} under a floor raised by {needed} declines"
+    );
 }

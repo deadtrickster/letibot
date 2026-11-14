@@ -2,8 +2,11 @@
 //! never the prefix (a prefix change re-prefills the conversation) and never a row (a row cannot be
 //! un-said). Earned by a score floor, at most two, silent when unsure, recomposed each round.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
+
+use crate::offer_evidence::{self, DECLINE_ROUNDS, Declines, Pending};
+use letibot_tools::similarity::{Evidence, Seen};
 
 use letibot_tokencore::store::{TodoBy, TodoItem};
 use letibot_tools::builtins::skill::SkillRegistry;
@@ -119,6 +122,16 @@ pub struct Offers {
     /// Skills passed over this session and why, written to the log once each.
     skipped: Vec<(String, String)>,
     skip_logged: HashSet<String>,
+    /// The identity words each open offer was let through on.
+    open_hits: HashMap<String, Vec<String>>,
+    /// Offers not loaded yet, counting down to a decline.
+    pending: Vec<Pending>,
+    /// Skills declined this session, with the words each was offered on.
+    declined: HashMap<String, Vec<String>>,
+    /// This project's declines, which raise a skill's floor.
+    declines: Declines,
+    /// The session's own words. An offer by meaning needs the skill's name among them.
+    seen: Seen,
 }
 
 impl Offers {
@@ -144,11 +157,22 @@ impl Offers {
         self
     }
 
+    /// Count declines against this project's log in `dir`.
+    pub fn with_project(mut self, dir: &Path) -> Offers {
+        self.declines = Declines::read(dir, "skill");
+        self
+    }
+
     /// Score this round against the one subject the loop names for every offer.
     pub fn share_round(&self, text: Option<String>) {
         if let Some(tier) = &self.tier {
             tier.set_round(text);
         }
+    }
+
+    /// Read the session's own words off the transcript, for this round's evidence.
+    pub fn observe(&mut self, items: &[TranscriptItem]) {
+        self.seen = offer_evidence::seen(items);
     }
 
     /// Seed the memory with what this SESSION has already been offered: the log is the memory, so the
@@ -157,6 +181,7 @@ impl Offers {
         let Ok(text) = std::fs::read_to_string(logs.join(LOG)) else {
             return;
         };
+        let mut open: BTreeMap<String, Vec<String>> = BTreeMap::new();
         for line in text.lines() {
             let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
@@ -169,13 +194,27 @@ impl Offers {
             }
             if let Some(name) = row.get("skill").and_then(|p| p.as_str()) {
                 self.offered.insert(name.to_string());
+                let hits = hits_of(&row);
                 // A row that says the round loaded it settles the rule for the rest of the session:
                 // only an offer nobody took may be earned a second time.
                 if row.get("taken").and_then(|t| t.as_bool()) == Some(true) {
                     self.taken.insert(name.to_string());
+                    open.remove(name);
+                } else if row.get("declined").and_then(|t| t.as_bool()) == Some(true) {
+                    self.declined.insert(name.to_string(), hits);
+                    open.remove(name);
+                } else {
+                    open.insert(name.to_string(), hits);
                 }
             }
         }
+        // An offer the last turn left open still has its rounds to be loaded in.
+        self.pending
+            .extend(open.into_iter().map(|(key, hits)| Pending {
+                key,
+                rounds: DECLINE_ROUNDS - 1,
+                hits,
+            }));
     }
 
     /// Skip the skills whose body this session already holds, read off the transcript: a `skill` load
@@ -255,17 +294,44 @@ impl Offers {
             (Some(_), false) => registry.live_skills(),
             _ => Vec::new(),
         };
+        let evidence = match (&self.tier, scored.is_empty()) {
+            (Some(_), false) => Some(evidence_of(registry, scored.keys())),
+            _ => None,
+        };
         let mut kept: Vec<(String, f64, By)> = Vec::new();
-        for (name, row) in scored {
+        self.open_hits.clear();
+        for (name, mut row) in scored {
             // A body in the conversation is never offered; a name said once is said again only when
             // a new prompt's own score earns it, which is the untaken offer the operator asked about.
-            if self.taken.contains(&name) || row.best < OFFER_FLOOR {
+            let floor = self.declines.floor(OFFER_FLOOR, &name);
+            if self.taken.contains(&name) || row.best < floor {
                 continue;
             }
-            let asked_again = fresh && row.prompt.is_some_and(|score| score >= OFFER_FLOOR);
-            if self.offered.contains(&name) && !asked_again {
+            // Meaning finds neighbours of anything the session does, so a subject offer under the
+            // tier also needs the skill's name or keywords in the operator's words or touched files.
+            let mut hits = Vec::new();
+            if let (Some(ev), By::Subject) = (&evidence, row.by) {
+                match ev.found(&name, &self.seen) {
+                    Some(h) => hits = h,
+                    None => match row.prompt.filter(|p| *p >= floor) {
+                        Some(p) => {
+                            row.best = p;
+                            row.by = By::Prompt;
+                        }
+                        None => continue,
+                    },
+                }
+            }
+            let asked_again = fresh && row.prompt.is_some_and(|score| score >= floor);
+            // A decline is final for the session until the session names the skill in new words.
+            let renewed = self
+                .declined
+                .get(&name)
+                .is_some_and(|before| offer_evidence::new_evidence(&hits, before));
+            if self.offered.contains(&name) && !asked_again && !renewed {
                 continue;
             }
+            self.open_hits.insert(name.clone(), hits);
             let why = if self.never.contains(&name) {
                 Some("never_offer".to_string())
             } else {
@@ -315,6 +381,34 @@ impl Offers {
     pub fn settle(&mut self, logs: &Path, session: &str, calls: &[ToolCall]) -> Vec<Offer> {
         let mut open = std::mem::take(&mut self.open);
         let mut lines = String::new();
+        // Earlier offers first: a late load is a take-up, and one never loaded is a decline.
+        let loaded = |name: &str| calls.iter().any(|c| loaded_of(c).as_deref() == Some(name));
+        let mut waiting = Vec::new();
+        for p in std::mem::take(&mut self.pending) {
+            if loaded(&p.key) {
+                self.taken.insert(p.key.clone());
+                lines.push_str(&format!(
+                    "{{\"at\":{},\"session\":{},\"skill\":{},\"taken\":true,\"late\":true}}\n",
+                    now_secs(),
+                    json(session),
+                    json(&p.key)
+                ));
+            } else if !self.taken.contains(&p.key) {
+                waiting.push(p);
+            }
+        }
+        self.pending = waiting;
+        for p in offer_evidence::tick(&mut self.pending) {
+            self.declines.record(session, &p.key, now_secs());
+            lines.push_str(&format!(
+                "{{\"at\":{},\"session\":{},\"skill\":{},\"declined\":true,\"hits\":{}}}\n",
+                now_secs(),
+                json(session),
+                json(&p.key),
+                serde_json::json!(p.hits)
+            ));
+            self.declined.insert(p.key, p.hits);
+        }
         for (name, why) in std::mem::take(&mut self.skipped) {
             if self.skip_logged.insert(name.clone()) {
                 lines.push_str(&format!(
@@ -335,30 +429,28 @@ impl Offers {
                 .any(|c| loaded_of(c).as_deref() == Some(&offer.name));
             offer.taken = taken;
             self.offered.insert(offer.name.clone());
+            let hits = self.open_hits.remove(&offer.name).unwrap_or_default();
             if taken {
                 self.taken.insert(offer.name.clone());
+            } else {
+                self.declined.remove(&offer.name);
+                self.pending.push(Pending {
+                    key: offer.name.clone(),
+                    rounds: DECLINE_ROUNDS - 1,
+                    hits: hits.clone(),
+                });
             }
             lines.push_str(&format!(
-                "{{\"at\":{},\"session\":{},\"skill\":{},\"score\":{:.3},\"by\":{},\"taken\":{taken}}}\n",
+                "{{\"at\":{},\"session\":{},\"skill\":{},\"score\":{:.3},\"by\":{},\"taken\":{taken},\"hits\":{}}}\n",
                 now_secs(),
                 json(session),
                 json(&offer.name),
                 offer.score,
-                json(offer.by.word())
+                json(offer.by.word()),
+                serde_json::json!(hits)
             ));
         }
-        let log = logs.join(LOG);
-        if let Some(dir) = log.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        use std::io::Write;
-        if let Ok(mut f) = std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log)
-        {
-            let _ = f.write_all(lines.as_bytes());
-        }
+        offer_evidence::append(&logs.join(LOG), &lines);
         self.last = open;
         self.last.clone()
     }
@@ -428,6 +520,41 @@ pub fn subject(items: &[TranscriptItem], plan: &[TodoItem]) -> String {
     walked.truncate(cut);
     out.push_str(&walked);
     out
+}
+
+/// The identity words a log row records.
+fn hits_of(row: &serde_json::Value) -> Vec<String> {
+    row.get("hits")
+        .and_then(|h| h.as_array())
+        .map(|a| {
+            a.iter()
+                .filter_map(|v| v.as_str())
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Each scored skill's identity - its name and keywords - weighted by rarity across the registry.
+fn evidence_of<'a>(registry: &SkillRegistry, names: impl Iterator<Item = &'a String>) -> Evidence {
+    let mut docs: Vec<(String, String, String)> = registry
+        .live_skills()
+        .iter()
+        .map(|s| {
+            let identity = format!("{} {}", s.name, s.keywords.join(" "));
+            (s.name.clone(), identity, s.document())
+        })
+        .collect();
+    // A shelf entry is scored on its title alone, which is then its identity too.
+    for name in names {
+        if !docs.iter().any(|(n, _, _)| n == name) {
+            docs.push((name.clone(), name.clone(), name.clone()));
+        }
+    }
+    Evidence::new(
+        docs.iter()
+            .map(|(k, i, f)| (k.as_str(), i.as_str(), f.as_str())),
+    )
 }
 
 /// The calls an assistant row made, for the two walks that read them.

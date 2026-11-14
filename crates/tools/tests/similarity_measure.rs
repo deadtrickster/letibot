@@ -356,3 +356,65 @@ fn a_round_costs_this_much() {
         median(repeats)
     );
 }
+
+/// Every document of a corpus against each subject, three ways: the spread an unrelated subject
+/// scores is the baseline a floor has to clear. A line is `{"label","corpus","subject"}`.
+#[test]
+#[ignore = "bench: needs LETIBOT_R114_SWEEP, LETIBOT_R114_DATA and the checkpoint"]
+fn every_document_against_each_subject() {
+    let (Some(sweep), Some((data, model))) = (std::env::var_os("LETIBOT_R114_SWEEP"), places())
+    else {
+        eprintln!("SKIPPED every_document: LETIBOT_R114_SWEEP or LETIBOT_R114_DATA is unset");
+        return;
+    };
+    let registry = SkillRegistry::load_default();
+    for s in registry.live_skills() {
+        println!(
+            "doc\t{}\t{}\t{}",
+            s.name,
+            s.keywords.join(","),
+            s.document().replace(['\n', '\t'], " ")
+        );
+    }
+    let mut corpora: BTreeMap<String, Corpus> = BTreeMap::new();
+    let text = std::fs::read_to_string(&sweep).expect("the sweep file");
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let case: serde_json::Value = serde_json::from_str(line).expect("a case");
+        let subject = case["subject"].as_str().unwrap_or("");
+        let name = case["corpus"].as_str().unwrap_or("skills").to_string();
+        // A tier per case: one tier answers 30 queries a minute and this bench asks more.
+        let tier = tier(&model, &data);
+        let corpus = corpora.entry(name.clone()).or_insert_with(|| {
+            if name == "skills" {
+                skills(&registry)
+            } else {
+                Corpus::new(&notes(Path::new(&name)))
+            }
+        });
+        corpus.fill(Some(&tier)).expect("the corpus fills");
+        // The loop scores meaning on one shared round text and words on the caller's own subject.
+        let round = case["round"].as_str().map(str::to_string);
+        tier.set_round(round.clone().map(|r| bounded(&r).to_string()));
+        let lexical: BTreeMap<PathBuf, f64> = corpus
+            .ranked_with(subject, usize::MAX, None)
+            .into_iter()
+            .map(|(p, s)| (p.to_path_buf(), s))
+            .collect();
+        let query = tier
+            .query(bounded(round.as_deref().unwrap_or(subject)), now())
+            .expect("query");
+        for (path, blend) in corpus.ranked_with(subject, usize::MAX, Some(&tier)) {
+            let cos = tier
+                .cosine(&path.to_string_lossy(), &query)
+                .unwrap_or(f32::NAN);
+            println!(
+                "sweep label={} doc={} lexical {:.3} cosine {:.3} blended {:.3}",
+                case["label"].as_str().unwrap_or(""),
+                path.display(),
+                lexical.get(path).copied().unwrap_or(0.0),
+                cos,
+                blend
+            );
+        }
+    }
+}

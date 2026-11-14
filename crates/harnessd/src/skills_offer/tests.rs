@@ -107,7 +107,7 @@ fn logs(name: &str) -> PathBuf {
 
 /// A skill asked for in none of its words. `keynote` and `deck` are in no frontmatter here,
 /// so the words score the subject at zero; the second tier's cosine, over the two planted as
-/// synonyms of `beamer` and `slides`, earns the offer - and with no tier nothing is offered.
+/// synonyms of `beamer` and `slides`, earns the offer once the session has named the skill.
 #[test]
 fn a_subject_in_none_of_the_skills_words_is_offered_by_the_second_tier() {
     let registry = SkillRegistry::new(vec![
@@ -141,6 +141,12 @@ fn a_subject_in_none_of_the_skills_words_is_offered_by_the_second_tier() {
     let tier =
         letibot_embeddings::testing::planted(&data, &[&["beamer", "keynote"], &["slides", "deck"]]);
     let mut offers = Offers::new().with_tier(Some(tier));
+    assert!(
+        !offers.compose(&registry, &text, None),
+        "meaning alone, with no word of the skill's name or keywords said, is not evidence"
+    );
+    // The operator said `slides` earlier; the subject is still only the deck outline.
+    offers.observe(&prompt("we need slides for friday"));
     assert!(
         offers.compose(&registry, &text, None),
         "the meaning earns the offer"
@@ -839,4 +845,233 @@ fn tail_text(offers: &Offers) -> String {
         UserPart::Text { text } => text.clone(),
         other => panic!("a text part, not {other:?}"),
     }
+}
+
+/// The latex fixture's subject, as an operator would ask for it.
+fn latex() -> String {
+    subject(&prompt("a latex presentation please"), &[])
+}
+
+/// Rows of one kind in a log, parsed.
+fn rows_with(log: &Path, key: &str) -> Vec<serde_json::Value> {
+    std::fs::read_to_string(log)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|r| r.get(key).is_some())
+        .collect()
+}
+
+/// An offer the model does not load in its own round or the two after it is declined: the
+/// session log says so, the project log counts it, and the session does not hear it again.
+#[test]
+fn an_offer_not_loaded_in_three_rounds_is_declined() {
+    let dir = logs("declined");
+    let project = dir.join("project");
+    let mut offers = Offers::new().with_project(&project);
+    assert!(offers.compose(&registry(), &latex(), None));
+    offers.settle(&dir, "s-1", &[]);
+    offers.settle(&dir, "s-1", &[]);
+    assert!(
+        rows_with(&dir.join(LOG), "declined").is_empty(),
+        "two rounds is not yet"
+    );
+    offers.settle(&dir, "s-1", &[]);
+    let declined = rows_with(&dir.join(LOG), "declined");
+    assert_eq!(declined.len(), 1, "{declined:?}");
+    assert_eq!(declined[0]["skill"], "latex-presentation");
+    let counted = Declines::read(&project, "skill");
+    assert_eq!(counted.count("latex-presentation"), 1);
+    assert!(!offers.compose(&registry(), &latex(), None));
+    // A restart reads the decline back as one, not as an offer still waiting.
+    let mut after = Offers::new().with_project(&project);
+    after.recall(&dir, "s-1");
+    assert!(after.pending.is_empty(), "{:?}", after.pending);
+    assert!(after.declined.contains_key("latex-presentation"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A load one round late is a take-up, logged as one, and never counted as a decline.
+#[test]
+fn a_late_load_is_a_take_up_and_not_a_decline() {
+    let dir = logs("late");
+    let mut offers = Offers::new().with_project(&dir);
+    assert!(offers.compose(&registry(), &latex(), None));
+    offers.settle(&dir, "s-1", &[]);
+    offers.settle(&dir, "s-1", &[a_load("latex-presentation")]);
+    offers.settle(&dir, "s-1", &[]);
+    offers.settle(&dir, "s-1", &[]);
+    let late = rows_with(&dir.join(LOG), "late");
+    assert_eq!(late.len(), 1, "{late:?}");
+    assert!(rows_with(&dir.join(LOG), "declined").is_empty());
+    assert_eq!(Declines::read(&dir, "skill").count("latex-presentation"), 0);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An offer a turn ended on is still waiting in the next turn, which declines it if it is not loaded.
+#[test]
+fn an_offer_left_open_by_a_turn_is_declined_in_the_next() {
+    let dir = logs("carried");
+    let mut first = Offers::new().with_project(&dir);
+    assert!(first.compose(&registry(), &latex(), None));
+    first.settle(&dir, "s-1", &[]);
+    let mut next = Offers::new().with_project(&dir);
+    next.recall(&dir, "s-1");
+    next.settle(&dir, "s-1", &[]);
+    next.settle(&dir, "s-1", &[]);
+    assert_eq!(rows_with(&dir.join(LOG), "declined").len(), 1);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Each decline of a skill in this project raises its floor, so a score that cleared the plain
+/// floor stops clearing it once the model has passed the skill over often enough.
+#[test]
+fn declines_in_the_project_raise_the_skills_floor() {
+    let dir = logs("raised");
+    let mut plain = Offers::new().with_project(&dir);
+    assert!(plain.compose(&registry(), &latex(), None));
+    let score = plain.settle(&dir, "s-0", &[a_load("latex-presentation")])[0].score;
+    let needed = ((score - OFFER_FLOOR) / crate::offer_evidence::DECLINE_STEP).floor() as u32 + 1;
+    let mut declines = Declines::read(&dir, "skill");
+    for i in 0..needed {
+        declines.record(&format!("s-{i}"), "latex-presentation", 0);
+    }
+    let mut raised = Offers::new().with_project(&dir);
+    assert!(
+        !raised.compose(&registry(), &latex(), None),
+        "{score} under a floor raised by {needed} declines"
+    );
+    // Another project's declines are not this one's.
+    let mut elsewhere = Offers::new().with_project(&dir.join("other"));
+    assert!(elsewhere.compose(&registry(), &latex(), None));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A declined skill comes back in the same session only when the session names it in a word it
+/// had not used when the skill was declined.
+#[test]
+fn a_declined_skill_comes_back_on_new_evidence_only() {
+    let dir = logs("renewed");
+    let data = dir.join("data");
+    let tier =
+        letibot_embeddings::testing::planted(&data, &[&["beamer", "keynote"], &["slides", "deck"]]);
+    let mut offers = Offers::new().with_tier(Some(tier)).with_project(&dir);
+    let deck = subject(&prompt("a keynote deck outline"), &[]);
+    offers.observe(&prompt("we need slides for friday"));
+    assert!(offers.compose(&registry(), &deck, None));
+    for _ in 0..DECLINE_ROUNDS {
+        offers.settle(&dir, "s-1", &[]);
+    }
+    assert_eq!(rows_with(&dir.join(LOG), "declined").len(), 1);
+    assert!(
+        !offers.compose(&registry(), &deck, None),
+        "the same evidence again"
+    );
+    let mut more = prompt("we need slides for friday");
+    more.extend(prompt("in beamer, not powerpoint"));
+    offers.observe(&more);
+    assert!(
+        offers.compose(&registry(), &deck, None),
+        "`beamer` is a word the decline was not made on"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The built-in MiniLM checkpoint, from `LETIBOT_TEST_MINILM` or this box's data directory.
+/// `None` skips the test: the suite never downloads a model.
+fn minilm() -> Option<PathBuf> {
+    let dir = std::env::var_os("LETIBOT_TEST_MINILM")
+        .map(PathBuf::from)
+        .or_else(|| {
+            let data = std::env::var_os("XDG_DATA_HOME")
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share"))
+                })?;
+            Some(letibot_embeddings::builtin_dir(&data.join("letibot")))
+        })?;
+    dir.join("model.safetensors").is_file().then_some(dir)
+}
+
+/// The skills the rano session was offered, and two it could have used, as their frontmatter reads.
+fn fleet() -> SkillRegistry {
+    let skill = |name: &str, description: &str| {
+        Skill::new(name, description, "the body", SkillSource::Operator)
+    };
+    SkillRegistry::new(vec![
+        skill(
+            "fuzz-harness-writing",
+            "How to write an in-process fuzz harness for a chosen surface: init versus per-input \
+             work, reset, the real caller's duties, input encoding, seeds, dictionaries, guards.",
+        ),
+        skill(
+            "fuzzing-method",
+            "How to fuzz properly: separate harness bugs from bugs in the system under test, \
+             budget by execution rate, triage crashes, prove a fix.",
+        ),
+        skill(
+            "conformity-check-writing",
+            "How to write a check for a protocol conformity tester: observation, differ, \
+             normalizer, fixtures, deadlines and tests that prove a check can fail.",
+        ),
+        skill(
+            "pane-screenshot",
+            "See a terminal pane the way the operator sees it: render a tmux pane to a PNG with \
+             colours, bold and reverse video, and read the image.",
+        ),
+    ])
+}
+
+/// The rano case on the real model: a TUI session fixing touchpad scroll, with clippy output in
+/// hand, is offered no fuzzing or conformity skill.
+#[test]
+fn an_unrelated_subject_is_not_offered_under_the_real_tier() {
+    let Some(model) = minilm() else {
+        eprintln!("SKIPPED: no MiniLM checkpoint; set LETIBOT_TEST_MINILM");
+        return;
+    };
+    let data = logs("minilm-unrelated");
+    let settings = letibot_embeddings::Settings {
+        mode: letibot_embeddings::Mode::Internal { model: Some(model) },
+        download: false,
+        ..Default::default()
+    };
+    let tier = letibot_embeddings::Tier::open(&settings, &data)
+        .expect("the tier opens")
+        .expect("internal");
+    let mut items = prompt("well my touchpad still doesnt scroll");
+    items.push(reasoning(
+        "Gate green. The full suite ran under the harness with every check passing; commit, land \
+         and push, then tell the operator to restart and try the touchpad.",
+    ));
+    items.push(result(
+        "FMT-OK\n    Checking rano v0.10.1\n    Finished `dev` profile\nrunning 1349 tests\n\
+         test term::tests::alt_screen_restores ... ok\ntest editor::tests::wheel_scrolls_the_bottom \
+         ... ok\ntest pty::tests::a_crash_in_the_child_is_reported ... ok\ntest result: ok. 1349 \
+         passed; 0 failed; 0 ignored\nGATE-OK",
+    ));
+    let mut offers = Offers::new().with_tier(Some(tier));
+    offers.share_round(Some(subject(&items, &[])));
+    offers.observe(&items);
+    offers.compose(&fleet(), &subject(&items, &[]), None);
+    let named: Vec<String> = offers.open.iter().map(|o| o.name.clone()).collect();
+    assert!(
+        named.iter().all(|n| n == "pane-screenshot"),
+        "offered {named:?}"
+    );
+
+    // And the related subject still is: the operator asked for a fuzz harness.
+    let mut asked = prompt("write a fuzz harness for the config parser");
+    asked.push(reasoning(
+        "An LLVMFuzzerTestOneInput that feeds the bytes to the toml loader, resetting state per input.",
+    ));
+    offers.share_round(Some(subject(&asked, &[])));
+    offers.observe(&asked);
+    assert!(offers.compose(&fleet(), &subject(&asked, &[]), None));
+    let named: Vec<String> = offers.open.iter().map(|o| o.name.clone()).collect();
+    assert!(
+        named.contains(&"fuzz-harness-writing".to_string()),
+        "offered {named:?}"
+    );
+    let _ = std::fs::remove_dir_all(&data);
 }

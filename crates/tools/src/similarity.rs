@@ -24,6 +24,9 @@ pub use letibot_embeddings::Tier;
 
 use crate::builtins::notes::abstract_of;
 
+pub mod evidence;
+pub use evidence::{Evidence, Seen};
+
 /// The shortest term this scores on. Two-letter terms here are overwhelmingly English
 /// function words and keeping them would raise the baseline under every score; the cost
 /// is that `id`, `vm`, `ui` and `db` are not terms.
@@ -311,16 +314,25 @@ fn weigh(tf: &BTreeMap<String, f64>, idf: &BTreeMap<String, f64>, unseen: f64) -
 /// whispered would move no floor a caller had tuned.
 pub const SEMANTIC_WEIGHT: f64 = 0.5;
 
+/// Near the cosine MiniLM gives two unrelated texts of a working session, so it maps to zero.
+/// Floors were tuned on lexical scores, where unrelated is near zero, so a raw cosine would lift
+/// every document toward them.
+pub const COSINE_BASELINE: f64 = 0.20;
+
+/// A cosine on the lexical scale: the baseline is zero and 1.0 stays 1.0.
+pub fn rescaled(cosine: f32) -> f64 {
+    (((cosine as f64) - COSINE_BASELINE) / (1.0 - COSINE_BASELINE)).clamp(0.0, 1.0)
+}
+
 /// The one blend, for every caller: a lexical score and, when the second tier answered, the cosine
-/// of the vectors. `None` when the mode is off or the tier could not answer. Each caller adds its
-/// own floor.
+/// of the vectors over [`COSINE_BASELINE`]. `None` when the mode is off or the tier could not
+/// answer. Each caller adds its own floor.
 pub fn blended(lexical: f64, semantic: Option<f32>) -> f64 {
     let lexical = lexical.clamp(0.0, 1.0);
     match semantic {
         None => lexical,
         Some(s) => {
-            let semantic = (s as f64).clamp(0.0, 1.0);
-            ((1.0 - SEMANTIC_WEIGHT) * lexical + SEMANTIC_WEIGHT * semantic).clamp(0.0, 1.0)
+            ((1.0 - SEMANTIC_WEIGHT) * lexical + SEMANTIC_WEIGHT * rescaled(s)).clamp(0.0, 1.0)
         }
     }
 }
@@ -460,6 +472,20 @@ mod tests {
         assert_eq!(blended(0.0, Some(0.0)), 0.0);
         assert_eq!(blended(0.4, None), 0.4);
         assert!((blended(0.4, Some(1.0)) - (0.5 * 0.4 + 0.5)).abs() < 1e-9);
+        assert!((blended(0.4, Some(COSINE_BASELINE as f32)) - 0.2).abs() < 1e-6);
+    }
+
+    /// The rano case: lexical 0.06 and a cosine of 0.40 against a fuzzing skill nobody mentioned.
+    /// Raw, the blend was 0.23, over the skills floor; on the rescaled cosine it is under it.
+    #[test]
+    fn an_unrelated_cosine_cannot_carry_a_floor() {
+        let unrelated = blended(0.063, Some(0.398));
+        assert!(unrelated < 0.18, "{unrelated}");
+        // And the related pairs the bench measured still clear it.
+        for (lexical, cosine) in [(0.138, 0.552), (0.218, 0.375), (0.282, 0.417)] {
+            let related = blended(lexical, Some(cosine));
+            assert!(related >= 0.18, "{lexical} {cosine} -> {related}");
+        }
     }
 
     /// The corpus door and the one function are the same arithmetic: every note's score
@@ -479,7 +505,8 @@ mod tests {
         ];
         let (_m, _d, tier) = tier("scores", &docs);
         let corpus = Corpus::new(&docs);
-        let query = "alpha beta gamma delta";
+        // One shared word: a fixture cosine alone sits under the baseline and would rank nothing.
+        let query = "alpha beta merging delta";
         let attached = tier
             .query(query, letibot_metrics::now_ms() as i64)
             .expect("query");
