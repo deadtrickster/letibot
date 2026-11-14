@@ -2870,13 +2870,25 @@ pub fn fallback_for<'a>(
     star: &'a [String],
     model: &str,
 ) -> &'a [String] {
-    if let Some(list) = table.get(model) {
-        return list;
-    }
+    by_model(table, model).map_or(star, Vec::as_slice)
+}
+
+/// The entry for `model` in a table keyed by model: its own key, then `provider/*`, then `*`.
+/// Shared by `[fallback]` and the providers.toml `[nudge]` table so both pick the same way.
+pub fn by_model<'a, T>(table: &'a BTreeMap<String, T>, model: &str) -> Option<&'a T> {
+    by_model_keyed(table, model).map(|(_, v)| v)
+}
+
+/// [`by_model`] with the key that matched, for a disclosure that names it.
+pub fn by_model_keyed<'a, T>(
+    table: &'a BTreeMap<String, T>,
+    model: &str,
+) -> Option<(&'a str, &'a T)> {
     let provider = model.split_once('/').map_or(model, |(p, _)| p);
-    table
-        .get(&format!("{provider}/*"))
-        .map_or(star, Vec::as_slice)
+    [model.to_string(), format!("{provider}/*"), "*".to_string()]
+        .into_iter()
+        .find_map(|k| table.get_key_value(&k))
+        .map(|(k, v)| (k.as_str(), v))
 }
 
 /// The timeout budget as the file wrote it: a whole number of at least one. Zero is refused

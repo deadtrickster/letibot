@@ -25,6 +25,14 @@ A leticode.toml fallback wins over this one.
 |---|---|---|---|
 | `models` | list of models | [] (the turn fails) | models to move to when the session's model is out, in order |
 
+## `[nudge]`
+
+The prose half of the turn-end intent check, per model. Lookup: exact model, then `provider/*`, then `*`. --intent-prose turns it on for every model.
+
+| key | type | default | meaning |
+|---|---|---|---|
+| `<model>` | announced \| off | off | nudge a turn whose last text-only round announced work it did not do; key is `provider/model`, `provider/*` or `*` |
+
 ## `[<preset>]`
 
 One per built-in preset, by canonical name (deepseek, glm, glm-coding, grok, anthropic, openai, gemini, kimi-code, ...). The preset's env variable wins.

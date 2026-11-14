@@ -234,7 +234,7 @@ impl Finding {
                  measured against it"
             ),
             Finding::ProseCommitment { sentence } => format!(
-                "you said \"{sentence}\" and no tool ran in this turn — do it, or say why not \
+                "you said \"{sentence}\" and no tool ran after it — do it, or say why not \
                  (this line is a text heuristic and can be wrong)"
             ),
             Finding::NoEncoder => "no effect log is attached to this session, so nothing in \
@@ -570,6 +570,18 @@ impl IntentLedger {
     /// `assistant_text` is the turn's prose for the [`commitments`] heuristic; `""` uses only
     /// the deterministic half. Idempotent per turn, so reading twice does not double-count.
     pub fn reconcile(&self, turn_id: &str, assistant_text: &str) -> Reconciliation {
+        self.reconcile_round(turn_id, assistant_text, false)
+    }
+
+    /// [`reconcile`](Self::reconcile) for a turn's last round. `text_only` says that round
+    /// called nothing, so its prose is read even when earlier rounds ran tools: the
+    /// promise was made after the last call and nothing followed it.
+    pub fn reconcile_round(
+        &self,
+        turn_id: &str,
+        assistant_text: &str,
+        text_only: bool,
+    ) -> Reconciliation {
         let mut g = self.lock();
         g.reconciled.insert(turn_id.to_string(), ());
 
@@ -632,10 +644,9 @@ impl IntentLedger {
             }
         }
 
-        // The prose half, and only when the turn ran nothing: a turn that made a commitment
-        // and then ran six tools is not the failure this catches, and firing there is how the
-        // heuristic's false positives start costing more than the true ones save.
-        if !ran_anything {
+        // The prose half, when nothing ran after the words: a promise followed by tool calls is
+        // being kept, and firing there costs more in false positives than it saves.
+        if !ran_anything || text_only {
             for s in commitments(assistant_text) {
                 findings.push(Finding::ProseCommitment { sentence: s });
             }
@@ -798,39 +809,126 @@ const OPENERS: &[&str] = &[
     "let me ",
     "next i'll ",
     "next, i'll ",
+    "next i will ",
+    "next, i will ",
+    "next, let me ",
     "now i'll ",
+    "now i will ",
+    "moving on to ",
 ];
+
+/// Openers that look like a promise and are a request to the reader instead.
+const NOT_OPENERS: &[&str] = &["let me know"];
+
+/// Words ending in `ing` that are not a verb in progress.
+const NOT_PROGRESSIVE: &[&str] = &[
+    "anything",
+    "bring",
+    "ceiling",
+    "during",
+    "corresponding",
+    "evening",
+    "everything",
+    "existing",
+    "failing",
+    "following",
+    "incoming",
+    "interesting",
+    "leading",
+    "matching",
+    "missing",
+    "morning",
+    "nothing",
+    "ongoing",
+    "outgoing",
+    "outstanding",
+    "passing",
+    "pending",
+    "remaining",
+    "resulting",
+    "something",
+    "string",
+    "surrounding",
+    "thing",
+    "trailing",
+    "underlying",
+];
+
+/// `Fixing both now: ...`, `Fixing it properly: ...`, `Running the tests now.`: a verb in
+/// progress opening the sentence and a short head ending in `now` (or `properly` before a
+/// colon). Without a colon three words are required, since `Working now.` is usually a report.
+fn progressive_promise(sentence: &str) -> bool {
+    let (head, colon) = match sentence.split_once(':') {
+        Some((head, _)) => (head, true),
+        None => (sentence.trim_end_matches(['.', '!']), false),
+    };
+    let words: Vec<&str> = head.split_whitespace().collect();
+    let (Some(first), Some(last)) = (words.first(), words.last()) else {
+        return false;
+    };
+    let verb = first.to_lowercase();
+    let tail = last.to_lowercase();
+    verb.len() >= 5
+        && verb.ends_with("ing")
+        && verb.chars().all(|c| c.is_ascii_alphabetic())
+        && !NOT_PROGRESSIVE.contains(&verb.as_str())
+        && words.len() <= 8
+        && match colon {
+            true => tail == "now" || tail == "properly",
+            false => tail == "now" && words.len() >= 3,
+        }
+}
 
 /// Future-tense first-person sentences in the assistant's own text, as a heuristic that
 /// every caller labels as one: a wrong steer costs a few tokens and a silent gap costs more.
-/// Fenced code is skipped, the openers are first-person only, and the result is capped.
+/// Fenced code is skipped, the openers are first-person only, and the result is capped. Text
+/// that ends on a question is waiting for the reader, so it yields nothing.
 pub fn commitments(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut fenced = false;
+    let mut last = String::new();
     for line in text.lines() {
         if line.trim_start().starts_with("```") {
             fenced = !fenced;
+            last = "```".into();
             continue;
         }
         if fenced {
             continue;
         }
         for sentence in split_sentences(line) {
-            let lower = sentence.to_lowercase();
-            let hit = OPENERS.iter().any(|o| {
-                lower.starts_with(o) || lower.contains(&format!(". {o}")) || {
-                    // Mid-sentence after a conjunction, which is where the
-                    // measured form actually appears: "…, then I'll start it".
-                    lower.contains(&format!(", {o}")) || lower.contains(&format!("then {o}"))
-                }
-            });
+            if sentence.chars().any(char::is_alphanumeric) {
+                last = sentence.to_string();
+            }
+            if sentence.ends_with('?') || out.len() >= MAX_COMMITMENTS {
+                continue;
+            }
+            let mut lower = sentence.to_lowercase();
+            for n in NOT_OPENERS {
+                lower = lower.replace(n, "");
+            }
+            let hit = progressive_promise(sentence)
+                || OPENERS.iter().any(|o| {
+                    lower.starts_with(o) || lower.contains(&format!(". {o}")) || {
+                        // Mid-sentence after a conjunction, which is where the
+                        // measured form actually appears: "…, then I'll start it".
+                        lower.contains(&format!(", {o}")) || lower.contains(&format!("then {o}"))
+                    }
+                });
             if !hit {
                 continue;
             }
             out.push(clip_bytes(sentence.trim(), MAX_SENTENCE_BYTES));
-            if out.len() >= MAX_COMMITMENTS {
-                return out;
-            }
+        }
+    }
+    if last.ends_with('?') {
+        return Vec::new();
+    }
+    // Text that ends on a colon introduced something that never came.
+    if last.ends_with(':') && out.len() < MAX_COMMITMENTS {
+        let said = clip_bytes(last.trim(), MAX_SENTENCE_BYTES);
+        if !out.contains(&said) {
+            out.push(said);
         }
     }
     out
@@ -1110,5 +1208,67 @@ mod tests {
     fn a_goal_needs_a_criterion_before_it_can_be_met() {
         let l = IntentLedger::new();
         assert_eq!(l.meet_goal("turn_1").unwrap_err(), LedgerError::NoGoal);
+    }
+    #[test]
+    fn a_text_only_last_round_is_read_after_the_turn_ran_tools() {
+        let said = "Found the actual hang. Fixing it properly: the ptys are drained on \
+                    Editor::tick, so output arrives even when you aren't typing.";
+        let (l, mut sink) = ledger_with_encoder();
+        for e in finished("turn_1", "c1", "read", true) {
+            sink.emit(e);
+        }
+        let mid = l.reconcile_round("turn_1", said, false);
+        assert_eq!(
+            mid.findings,
+            vec![],
+            "a round that called tools is not read"
+        );
+        let end = l.reconcile_round("turn_1", said, true);
+        let steer = end.steering().expect("the last round promised and stopped");
+        assert!(steer.contains("Fixing it properly: the ptys"), "{steer}");
+        assert!(steer.contains("do it, or say why not"), "{steer}");
+    }
+
+    #[test]
+    fn kimis_progressive_openers_are_commitments() {
+        for line in [
+            "Fixing both now: BS moves left and clears that cell, and the strip redraws.",
+            "Fixing it properly: the ptys are drained on Editor::tick.",
+            "Let me try exactly that rather than guess.",
+            "Done with the read. Moving the check now: it goes in the turn loop.",
+            "Now I'll wire the flag into the parser.",
+            "Next, I'll add the test.",
+            "Let me now look at the caller.",
+            "I'll go ahead and rebuild it.",
+            "Moving on to the second bug.",
+            "Running the full suite now.",
+            "The parser is fine. The real fault is in the lexer, so here is the change:",
+        ] {
+            assert_eq!(commitments(line).len(), 1, "{line}");
+        }
+    }
+
+    #[test]
+    fn reports_and_questions_are_not_commitments() {
+        for line in [
+            "Fixed both: BS moves left and clears that cell.",
+            "Fixing X was easy.",
+            "Fixing it properly took two tries.",
+            "Nothing changes now: the flag stays off.",
+            "Everything passes now: 412 tests, 0 failures.",
+            "Full gate running; then it lands, I push, and I rebuild.",
+            "Let me know if you want the strip moved.",
+            "Fixing both now: BS moves left and clears that cell. Should I also push?",
+            "I'll restart it once you confirm. Want me to go ahead?",
+            "Shall I fix it now: or leave it?",
+            "Working now.",
+            "Failing tests are gone now.",
+            "Next, the parser reads the header.",
+            "The changes:\n- `a.rs`: the parser\n- `b.rs`: the lexer",
+            "Here is the fix:\n```\nlet x = 1;\n```",
+            "I'll be honest: it was the lexer all along. Do you want the details?",
+        ] {
+            assert_eq!(commitments(line), Vec::<String>::new(), "{line}");
+        }
     }
 }

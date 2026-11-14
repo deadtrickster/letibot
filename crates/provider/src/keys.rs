@@ -514,6 +514,60 @@ fn parse_model_list(raw: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// `[nudge]`: which models get the prose half of the turn-end intent check, keyed like a
+/// `leticode.toml` `[fallback]` table so the same precedence picks the entry.
+///
+/// ```toml
+/// [nudge]
+/// "kimi-code-global/*" = "announced"
+/// "kimi-code-global/k3-mini" = "off"
+/// ```
+///
+/// `true` is `announced`, `false` is `off`. `Ok` empty is no file or no section.
+pub fn nudge(file: Option<&Path>) -> Result<BTreeMap<String, bool>, Unreadable> {
+    let file = file.map(Path::to_path_buf).unwrap_or_else(config_file);
+    if !file.is_file() {
+        return Ok(BTreeMap::new());
+    }
+    let parsed = parse_file(&file).map_err(|why| Unreadable {
+        file: file.clone(),
+        why,
+    })?;
+    let Some(sec) = parsed.sections.get("nudge") else {
+        return Ok(BTreeMap::new());
+    };
+    let mut out = BTreeMap::new();
+    for (raw, value) in sec {
+        let key = raw.trim_matches(['"', '\'']).to_string();
+        let fault = |why: String| Unreadable {
+            file: file.clone(),
+            why: format!("[nudge] {raw} {why}. No per-model nudge is in force."),
+        };
+        let name = key.strip_suffix("/*").unwrap_or(&key);
+        if key != "*"
+            && (name.is_empty() || name.contains('*') || name.contains(char::is_whitespace))
+        {
+            return Err(fault(
+                "is not a key: write a model as `/models` spells it (`kimi-code-global/k3.1-pro`), \
+                 a provider's every model (`kimi-code-global/*`), or `*`"
+                    .into(),
+            ));
+        }
+        let on = match value.as_str() {
+            "announced" => true,
+            "off" => false,
+            other => {
+                return Err(fault(format!(
+                    "= \"{other}\" is not a nudge: `announced` checks what the turn said it \
+                     would do, `off` does not"
+                )));
+            }
+        };
+        out.insert(key, on);
+    }
+    Ok(out)
+}
+
 /// Record the standing choice. `provider = "local"` records the local server.
 pub fn set_default(
     file: Option<&Path>,
@@ -1213,6 +1267,37 @@ mod tests {
             "the fault quotes what was written and what a list looks like: {}",
             e.why
         );
+    }
+    #[test]
+    fn the_nudge_table_reads_quoted_model_keys() {
+        let f = tmp_providers(
+            "nudge_table",
+            "[nudge]\n\"kimi-code-global/*\" = \"announced\"\n\
+             \"kimi-code-global/k3-mini\" = \"off\"\n\"*\" = \"off\"\n",
+        );
+        let t = nudge(Some(&f)).expect("a valid table");
+        assert_eq!(t.get("kimi-code-global/*"), Some(&true));
+        assert_eq!(t.get("kimi-code-global/k3-mini"), Some(&false));
+        assert_eq!(t.get("*"), Some(&false));
+
+        let none = tmp_providers("nudge_absent", "[deepseek]\nkey = \"sk-x\"\n");
+        assert!(nudge(Some(&none)).expect("no section").is_empty());
+    }
+
+    #[test]
+    fn a_nudge_value_or_key_that_means_nothing_is_a_fault() {
+        let f = tmp_providers(
+            "nudge_bad_value",
+            "[nudge]\n\"kimi-code-global/*\" = \"yes\"\n",
+        );
+        let e = nudge(Some(&f)).unwrap_err();
+        assert!(
+            e.why.contains("announced") && e.why.contains("yes"),
+            "{}",
+            e.why
+        );
+        let g = tmp_providers("nudge_bad_key", "[nudge]\n\"kimi*\" = \"announced\"\n");
+        assert!(nudge(Some(&g)).unwrap_err().why.contains("not a key"));
     }
 }
 

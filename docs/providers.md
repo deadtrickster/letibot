@@ -287,6 +287,22 @@ row and shown in the header, as `/models` would have done it, and `/models` move
 that could not be taken is said rather than skipped in silence, with the reason and that the next name
 is being tried. Each name is tried once, and never the one that just refused the round.
 
+## Nudge: announced and did not do it
+
+`[nudge]` in `providers.toml` turns on the prose half of the turn-end intent check per model. A turn
+whose last round is text only and announces work ("I'll ...", "Let me ...", "Fixing it properly: ...",
+"Running the tests now.", a trailing colon) gets one nudge quoting the sentence. Text ending on a
+question never fires. A restart after such a turn wakes the session with the same sentence.
+
+```toml
+[nudge]
+"kimi-code-global/*" = "announced"
+"kimi-code-global/k3-mini" = "off"
+```
+
+Keys pick like `[fallback]`: the exact model, then `provider/*`, then `*`. Values are `announced` or
+`off`, and the default is off. `--intent-prose` turns it on for every model.
+
 ## What crosses the seam
 
 `MessagesBackend` (in `letibot-backend`): the transcript goes over as the API's messages - system,

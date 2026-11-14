@@ -247,6 +247,12 @@ pub(super) const FLAGS: &[Flag] = &[
         "start with the guard model consulted on every gated call",
         None,
     ),
+    flag(
+        &["--intent-prose"],
+        None,
+        "nudge every model whose turn ends on a promise (else `[nudge]`)",
+        None,
+    ),
     // --- where the tools run -------------------------------------------------------------
     flag(
         &["--where"],
@@ -576,10 +582,6 @@ pub(super) const REMOVED: &[(&str, &str)] = &[
     (
         "--flowy-token-file",
         "$FLOWY_TOKEN, or the seat's own file (`flowy mint` writes it)",
-    ),
-    (
-        "--intent-prose",
-        "nothing to set - the prose half had no reader",
     ),
     (
         "--thinking",

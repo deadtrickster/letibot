@@ -349,6 +349,43 @@ fn the_prose_heuristic_is_off_unless_it_is_asked_for() {
     assert!(with_prose.contains("check the file"), "{with_prose}");
 }
 
+/// A turn that read files and then ended on a text-only round that promised the fix is told,
+/// quoting the sentence. The same words in a round that also called a tool are not.
+#[test]
+fn a_promise_in_the_last_text_only_round_is_nudged_after_tools_ran() {
+    let l = encoded();
+    l.record_effect("t1", "c1", "read", &letibot_transcript::ToolOutcome::Ok);
+    let said = "Found the actual hang. Fixing it properly: the ptys are drained on Editor::tick.";
+    let last = [TranscriptItem::Assistant {
+        text: said.into(),
+        tool_calls: vec![],
+        truncated: false,
+    }];
+    let steer = steer_for_turn(&l, true, "t1", &last).expect("the last round promised and stopped");
+    assert!(steer.contains("\"Fixing it properly: the ptys"), "{steer}");
+    assert!(steer.contains("do it, or say why not"), "{steer}");
+    assert_eq!(
+        steer_for_turn(&l, false, "t1", &last),
+        None,
+        "off for this model"
+    );
+
+    let working = [TranscriptItem::Assistant {
+        text: said.into(),
+        tool_calls: vec![letibot_transcript::ToolCall {
+            id: "c2".into(),
+            name: "edit".into(),
+            arguments: "{}".into(),
+        }],
+        truncated: false,
+    }];
+    assert_eq!(
+        steer_for_turn(&l, true, "t1", &working),
+        None,
+        "a round that did the work is not nudged"
+    );
+}
+
 /// The diff is idempotent per turn. A turn boundary that fires twice is a thing
 /// that happens, and a diff that grows each time it is read is not a
 /// measurement.

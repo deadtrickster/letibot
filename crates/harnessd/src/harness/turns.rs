@@ -3463,7 +3463,8 @@ impl Harness {
         let seated = tool_names(&self.prefix.tools_json);
         let plan = (seated.contains("todo_write") && !seated.contains("todo"))
             .then(|| intent_tools::ledger::Board::of_plan(&self.todos.snapshot()));
-        steer_for_turn_over(&self.intent, self.cfg.intent_prose, turn_id, items, plan)
+        let prose = self.cfg.prose_nudge(&self.model_name()).0;
+        steer_for_turn_over(&self.intent, prose, turn_id, items, plan)
     }
 
     /// One round's context claim, judged, logged and warned about. The line for the MODEL is returned, for the

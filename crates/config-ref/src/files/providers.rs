@@ -31,6 +31,19 @@ pub const PROVIDERS: File = File {
             )],
         },
         Table {
+            path: "nudge",
+            note: "The prose half of the turn-end intent check, per model. Lookup: exact model, then `provider/*`, then `*`. --intent-prose turns it on for every model.",
+            needs: "",
+            keys: &[k(
+                "<model>",
+                "announced | off",
+                "off",
+                "",
+                "nudge a turn whose last text-only round announced work it did not do; key is `provider/model`, `provider/*` or `*`",
+                "\"announced\"",
+            )],
+        },
+        Table {
             path: "<preset>",
             note: "One per built-in preset, by canonical name (deepseek, glm, glm-coding, grok, anthropic, openai, gemini, kimi-code, ...). The preset's env variable wins.",
             needs: "",

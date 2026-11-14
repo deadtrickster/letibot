@@ -738,6 +738,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // model doing the work, and on this fleet it should not be - a 4B on the CPU beside a 27B
             // on a GPU, or a second box entirely.
             "--supervise" => cfg.supervise = true,
+            "--intent-prose" => cfg.intent_prose = true,
             "--oracle" => {
                 let v = next()?;
                 let (h, p) = v.rsplit_once(':').ok_or("--oracle wants HOST:PORT")?;
@@ -1594,6 +1595,12 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         }
         Ok(_) => {}
         Err(why) => eprintln!("  providers.toml: {why} — no fallback is in force"),
+    }
+    // Which models are nudged when a turn ends on something it said it would do. Read once,
+    // like `[fallback]`; a bad table is said and leaves every model off.
+    match letibot_provider::keys::nudge(None) {
+        Ok(table) => cfg.nudge = table,
+        Err(why) => eprintln!("  providers.toml: {why}"),
     }
     // A session's own list outranks the box's, because it is the narrower statement: a file in
     // the project says where THIS project's sessions go.

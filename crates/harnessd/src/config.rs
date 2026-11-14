@@ -668,6 +668,9 @@ pub struct Config {
     /// the tool half cannot fire unless a role seating `todo`/`goal` is in use, while the prose half
     /// fires on any turn that ran no tools - the false positive that turns the check off.
     pub intent_prose: bool,
+    /// providers.toml `[nudge]`: the prose half per model, `true` for `announced`. Picked by
+    /// [`crate::leticode_config::by_model`]; `intent_prose` above overrides it for every model.
+    pub nudge: std::collections::BTreeMap<String, bool>,
     pub spill: SpillPolicy,
     pub spill_storage: SpillStorage,
     /// The backstop, and only the backstop. How many rounds one user turn may take before the
@@ -1752,6 +1755,7 @@ impl Config {
             oracle_question: crate::oracle::Question::Verdict,
             supervise: false,
             intent_prose: false,
+            nudge: Default::default(),
             spill: SpillPolicy::Unset,
             spill_storage: SpillStorage::Memory,
             // Unbounded on purpose: `stall_rounds` is the stop that measures progress, and a round
@@ -2070,6 +2074,18 @@ impl Config {
                 }
             })
             .collect()
+    }
+
+    /// Whether the turn-end intent check reads the prose for `model`, and why. `--intent-prose`
+    /// turns it on for every model; otherwise providers.toml `[nudge]` decides, and nothing is off.
+    pub fn prose_nudge(&self, model: &str) -> (bool, String) {
+        if self.intent_prose {
+            return (true, "--intent-prose".into());
+        }
+        match crate::leticode_config::by_model_keyed(&self.nudge, model) {
+            Some((key, on)) => (*on, format!("[nudge] \"{key}\"")),
+            None => (false, "default".into()),
+        }
     }
 
     pub fn settings(
@@ -2543,7 +2559,14 @@ impl Config {
             "",
         ));
         out.push(row("stall-rounds", self.stall_rounds.to_string(), "", ""));
-        out.push(row("intent.prose", self.intent_prose.to_string(), "", ""));
+        let model = crate::harness::model_name_of(&self.provider);
+        let (prose, why) = self.prose_nudge(&model);
+        out.push(row(
+            "intent.prose",
+            format!("{} for {model}", if prose { "on" } else { "off" }),
+            &why,
+            "",
+        ));
         // The fabric.
         out.push(row(
             "flowy",

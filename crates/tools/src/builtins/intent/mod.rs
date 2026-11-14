@@ -47,34 +47,34 @@ pub fn close_the_turn(
     turn_id: &str,
     items: &[letibot_transcript::TranscriptItem],
 ) -> Option<String> {
-    let said: String = items
-        .iter()
-        .filter_map(|i| match i {
-            letibot_transcript::TranscriptItem::Assistant { text, .. } => Some(text.as_str()),
-            _ => None,
-        })
-        .collect::<Vec<_>>()
-        .join("\n");
-    ledger.reconcile(turn_id, &said).steering()
+    close_the_turn_over(ledger, turn_id, items, None)
 }
 
-/// [`close_the_turn`] for a seat whose plan tool is `todo_write` - the board line reads `plan`
-///.
+/// [`close_the_turn`] for a seat whose plan tool is `todo_write` - the board line reads `plan`.
+/// `items` is the round just finished; one with text and no call is read even when earlier
+/// rounds of the turn ran tools.
 pub fn close_the_turn_over(
     ledger: &IntentLedger,
     turn_id: &str,
     items: &[letibot_transcript::TranscriptItem],
     plan: Option<ledger::Board>,
 ) -> Option<String> {
+    use letibot_transcript::TranscriptItem::Assistant;
     let said: String = items
         .iter()
         .filter_map(|i| match i {
-            letibot_transcript::TranscriptItem::Assistant { text, .. } => Some(text.as_str()),
+            Assistant { text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect::<Vec<_>>()
         .join("\n");
-    ledger.reconcile(turn_id, &said).steering_over(plan)
+    let spoke = items.iter().any(|i| matches!(i, Assistant { .. }));
+    let called = items
+        .iter()
+        .any(|i| matches!(i, Assistant { tool_calls, .. } if !tool_calls.is_empty()));
+    ledger
+        .reconcile_round(turn_id, &said, spoke && !called)
+        .steering_over(plan)
 }
 
 /// Everything this module needs from the session it is registered into: a struct rather
@@ -398,7 +398,11 @@ mod tests {
         l.complete("turn_1", id).unwrap();
         let items = vec![TranscriptItem::Assistant {
             text: "I'll restart the service now.".into(),
-            tool_calls: vec![],
+            tool_calls: vec![letibot_transcript::ToolCall {
+                id: "c1".into(),
+                name: "write".into(),
+                arguments: "{}".into(),
+            }],
             truncated: false,
         }];
         assert_eq!(close_the_turn(&l, "turn_1", &items), None);

@@ -2323,3 +2323,29 @@ fn a_door_with_no_catalogue_is_unpriced_with_its_window_unknown_on_the_model_car
         doors.choices
     );
 }
+
+/// `[nudge]` picks like `[fallback]`: the model, then `provider/*`, then `*`; `--intent-prose`
+/// is on for every model.
+#[test]
+fn the_prose_nudge_is_picked_per_model_and_the_flag_overrides_it() {
+    let mut c = Config::for_this_box("/tmp");
+    assert_eq!(c.prose_nudge("acme/big"), (false, "default".into()));
+    c.nudge = [
+        ("acme/*".to_string(), true),
+        ("acme/small".to_string(), false),
+        ("*".to_string(), false),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        c.prose_nudge("acme/big"),
+        (true, "[nudge] \"acme/*\"".into())
+    );
+    assert_eq!(
+        c.prose_nudge("acme/small"),
+        (false, "[nudge] \"acme/small\"".into())
+    );
+    assert_eq!(c.prose_nudge("other/x"), (false, "[nudge] \"*\"".into()));
+    c.intent_prose = true;
+    assert_eq!(c.prose_nudge("acme/small"), (true, "--intent-prose".into()));
+}
