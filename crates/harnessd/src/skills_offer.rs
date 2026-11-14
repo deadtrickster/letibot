@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::path::Path;
 
-use crate::offer_evidence::{self, DECLINE_ROUNDS, Declines, Pending};
+use crate::offer_evidence::{self, DECLINE_ROUNDS, Declined, Declines, Pending};
 use letibot_tools::similarity::{Evidence, Seen};
 
 use letibot_tokencore::store::{TodoBy, TodoItem};
@@ -123,11 +123,13 @@ pub struct Offers {
     skipped: Vec<(String, String)>,
     skip_logged: HashSet<String>,
     /// The identity words each open offer was let through on.
-    open_hits: HashMap<String, Vec<String>>,
+    open_hits: HashMap<String, (Vec<String>, String)>,
     /// Offers not loaded yet, counting down to a decline.
     pending: Vec<Pending>,
-    /// Skills declined this session, with the words each was offered on.
-    declined: HashMap<String, Vec<String>>,
+    /// Skills declined this session, with the words and the version each was offered on.
+    declined: HashMap<String, Declined>,
+    /// Paths this session's `write` and `edit` calls named: a skill it wrote is not news to it.
+    wrote: Vec<std::path::PathBuf>,
     /// This project's declines, which raise a skill's floor.
     declines: Declines,
     /// The session's own words. An offer by meaning needs the skill's name among them.
@@ -173,6 +175,13 @@ impl Offers {
     /// Read the session's own words off the transcript, for this round's evidence.
     pub fn observe(&mut self, items: &[TranscriptItem]) {
         self.seen = offer_evidence::seen(items);
+        self.wrote = items
+            .iter()
+            .filter_map(tool_calls_of)
+            .flatten()
+            .filter(|c| matches!(c.name.as_str(), "write" | "edit"))
+            .filter_map(crate::notes_offer::written_of)
+            .collect();
     }
 
     /// Seed the memory with what this SESSION has already been offered: the log is the memory, so the
@@ -181,7 +190,7 @@ impl Offers {
         let Ok(text) = std::fs::read_to_string(logs.join(LOG)) else {
             return;
         };
-        let mut open: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut open: BTreeMap<String, (Vec<String>, String)> = BTreeMap::new();
         for line in text.lines() {
             let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
@@ -195,25 +204,32 @@ impl Offers {
             if let Some(name) = row.get("skill").and_then(|p| p.as_str()) {
                 self.offered.insert(name.to_string());
                 let hits = hits_of(&row);
+                let version = row
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 // A row that says the round loaded it settles the rule for the rest of the session:
                 // only an offer nobody took may be earned a second time.
                 if row.get("taken").and_then(|t| t.as_bool()) == Some(true) {
                     self.taken.insert(name.to_string());
                     open.remove(name);
                 } else if row.get("declined").and_then(|t| t.as_bool()) == Some(true) {
-                    self.declined.insert(name.to_string(), hits);
+                    self.declined
+                        .insert(name.to_string(), Declined { hits, version });
                     open.remove(name);
                 } else {
-                    open.insert(name.to_string(), hits);
+                    open.insert(name.to_string(), (hits, version));
                 }
             }
         }
         // An offer the last turn left open still has its rounds to be loaded in.
         self.pending
-            .extend(open.into_iter().map(|(key, hits)| Pending {
+            .extend(open.into_iter().map(|(key, (hits, version))| Pending {
                 key,
                 rounds: DECLINE_ROUNDS - 1,
                 hits,
+                version,
             }));
     }
 
@@ -290,9 +306,13 @@ impl Offers {
                 }
             }
         }
-        let live = match (&self.seat, scored.is_empty()) {
-            (Some(_), false) => registry.live_skills(),
-            _ => Vec::new(),
+        let live = match scored.is_empty() {
+            false => registry.live_skills(),
+            true => Vec::new(),
+        };
+        let version_of = |name: &str| match live.iter().find(|s| s.name == name) {
+            Some(s) => version_of(s),
+            None => offer_evidence::version(name),
         };
         let evidence = match (&self.tier, scored.is_empty()) {
             (Some(_), false) => Some(evidence_of(registry, scored.keys())),
@@ -303,8 +323,9 @@ impl Offers {
         for (name, mut row) in scored {
             // A body in the conversation is never offered; a name said once is said again only when
             // a new prompt's own score earns it, which is the untaken offer the operator asked about.
-            let floor = self.declines.floor(OFFER_FLOOR, &name);
-            if self.taken.contains(&name) || row.best < floor {
+            let version = version_of(&name);
+            let floor = self.declines.floor(OFFER_FLOOR, &name, &version);
+            if self.taken.contains(&name) || row.best < floor || self.wrote_it(&live, &name) {
                 continue;
             }
             // Meaning finds neighbours of anything the session does, so a subject offer under the
@@ -323,15 +344,15 @@ impl Offers {
                 }
             }
             let asked_again = fresh && row.prompt.is_some_and(|score| score >= floor);
-            // A decline is final for the session until the session names the skill in new words.
+            // A decline holds for the session until the skill is named in new words or edited.
             let renewed = self
                 .declined
                 .get(&name)
-                .is_some_and(|before| offer_evidence::new_evidence(&hits, before));
+                .is_some_and(|before| before.reopened_by(&hits, &version));
             if self.offered.contains(&name) && !asked_again && !renewed {
                 continue;
             }
-            self.open_hits.insert(name.clone(), hits);
+            self.open_hits.insert(name.clone(), (hits, version));
             let why = if self.never.contains(&name) {
                 Some("never_offer".to_string())
             } else {
@@ -399,15 +420,23 @@ impl Offers {
         }
         self.pending = waiting;
         for p in offer_evidence::tick(&mut self.pending) {
-            self.declines.record(session, &p.key, now_secs());
+            self.declines
+                .record(session, &p.key, &p.version, now_secs());
             lines.push_str(&format!(
-                "{{\"at\":{},\"session\":{},\"skill\":{},\"declined\":true,\"hits\":{}}}\n",
+                "{{\"at\":{},\"session\":{},\"skill\":{},\"declined\":true,\"hits\":{},\"version\":{}}}\n",
                 now_secs(),
                 json(session),
                 json(&p.key),
-                serde_json::json!(p.hits)
+                serde_json::json!(p.hits),
+                json(&p.version)
             ));
-            self.declined.insert(p.key, p.hits);
+            self.declined.insert(
+                p.key,
+                Declined {
+                    hits: p.hits,
+                    version: p.version,
+                },
+            );
         }
         for (name, why) in std::mem::take(&mut self.skipped) {
             if self.skip_logged.insert(name.clone()) {
@@ -429,7 +458,7 @@ impl Offers {
                 .any(|c| loaded_of(c).as_deref() == Some(&offer.name));
             offer.taken = taken;
             self.offered.insert(offer.name.clone());
-            let hits = self.open_hits.remove(&offer.name).unwrap_or_default();
+            let (hits, version) = self.open_hits.remove(&offer.name).unwrap_or_default();
             if taken {
                 self.taken.insert(offer.name.clone());
             } else {
@@ -438,21 +467,42 @@ impl Offers {
                     key: offer.name.clone(),
                     rounds: DECLINE_ROUNDS - 1,
                     hits: hits.clone(),
+                    version: version.clone(),
                 });
             }
             lines.push_str(&format!(
-                "{{\"at\":{},\"session\":{},\"skill\":{},\"score\":{:.3},\"by\":{},\"taken\":{taken},\"hits\":{}}}\n",
+                "{{\"at\":{},\"session\":{},\"skill\":{},\"score\":{:.3},\"by\":{},\"taken\":{taken},\"hits\":{},\"version\":{}}}\n",
                 now_secs(),
                 json(session),
                 json(&offer.name),
                 offer.score,
                 json(offer.by.word()),
-                serde_json::json!(hits)
+                serde_json::json!(hits),
+                json(&version)
             ));
         }
         offer_evidence::append(&logs.join(LOG), &lines);
         self.last = open;
         self.last.clone()
+    }
+
+    /// Whether this session wrote the skill's `SKILL.md` or a file in its directory.
+    fn wrote_it(&self, live: &[letibot_tools::builtins::skill::Skill], name: &str) -> bool {
+        let Some(dir) = live
+            .iter()
+            .find(|s| s.name == name)
+            .and_then(|s| s.path.as_deref())
+            .and_then(Path::parent)
+        else {
+            return false;
+        };
+        // A relative path is the workspace's; its directory part is enough to place it.
+        self.wrote.iter().any(|w| match w.is_absolute() {
+            true => w.starts_with(dir),
+            false => w
+                .parent()
+                .is_some_and(|p| !p.as_os_str().is_empty() && dir.ends_with(p)),
+        })
     }
 
     /// The offers the round just settled, for a caller that reports on them.
@@ -520,6 +570,11 @@ pub fn subject(items: &[TranscriptItem], plan: &[TodoItem]) -> String {
     walked.truncate(cut);
     out.push_str(&walked);
     out
+}
+
+/// A skill's version: its frontmatter and body, so any edit to `SKILL.md` that a reader sees.
+pub fn version_of(skill: &letibot_tools::builtins::skill::Skill) -> String {
+    offer_evidence::version(&format!("{}\n{}", skill.document(), skill.body))
 }
 
 /// The identity words a log row records.

@@ -5,7 +5,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::offer_evidence::{self, DECLINE_ROUNDS, Declines, Pending};
+use crate::offer_evidence::{self, DECLINE_ROUNDS, Declined, Declines, Pending};
 use letibot_tools::similarity::{self, Evidence};
 
 use letibot_transcript::{Speaker, ToolCall, TranscriptItem, UserPart};
@@ -71,12 +71,12 @@ pub struct Offers {
     /// The box's second tier, when it has one: this offer's corpus's vectors, and nothing of
     /// another caller's. `None` is the lexical score exactly, which is the default.
     tier: Option<Tier>,
-    /// The identity words the open offer was let through on.
-    open_hits: Vec<String>,
+    /// The identity words and the version the open offer was let through on.
+    open_hits: (Vec<String>, String),
     /// Offers not read yet, counting down to a decline. Keyed by the offered path.
     pending: Vec<Pending>,
     /// Notes declined this session, with the words each was offered on.
-    declined: HashMap<PathBuf, Vec<String>>,
+    declined: HashMap<PathBuf, Declined>,
     /// This project's declines, which raise a note's floor.
     declines: Declines,
 }
@@ -113,7 +113,7 @@ impl Offers {
         let Ok(text) = std::fs::read_to_string(logs.join(LOG)) else {
             return;
         };
-        let mut open: BTreeMap<String, Vec<String>> = BTreeMap::new();
+        let mut open: BTreeMap<String, (Vec<String>, String)> = BTreeMap::new();
         for line in text.lines() {
             let Ok(row) = serde_json::from_str::<serde_json::Value>(line) else {
                 continue;
@@ -133,22 +133,29 @@ impl Offers {
                             .collect()
                     })
                     .unwrap_or_default();
+                let version = row
+                    .get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 if row.get("taken").and_then(|t| t.as_bool()) == Some(true) {
                     open.remove(path);
                 } else if row.get("declined").and_then(|t| t.as_bool()) == Some(true) {
-                    self.declined.insert(PathBuf::from(path), hits);
+                    self.declined
+                        .insert(PathBuf::from(path), Declined { hits, version });
                     open.remove(path);
                 } else {
-                    open.insert(path.to_string(), hits);
+                    open.insert(path.to_string(), (hits, version));
                 }
             }
         }
         // An offer the last turn left open still has its rounds to be read in.
         self.pending
-            .extend(open.into_iter().map(|(key, hits)| Pending {
+            .extend(open.into_iter().map(|(key, (hits, version))| Pending {
                 key,
                 rounds: DECLINE_ROUNDS - 1,
                 hits,
+                version,
             }));
     }
 
@@ -203,6 +210,11 @@ impl Offers {
             return false;
         };
         let key = path.display().to_string();
+        let version = files
+            .iter()
+            .find(|(p, _)| p == path)
+            .map(|(_, text)| offer_evidence::version(text))
+            .unwrap_or_default();
         // Under the tier the note's title must be in the operator's words or the touched files:
         // meaning alone finds a neighbour of whatever the session is doing.
         let hits = match &self.tier {
@@ -212,12 +224,12 @@ impl Offers {
             },
             None => Vec::new(),
         };
-        // A declined note comes back only on words the decline was not made on.
+        // A declined note comes back only on words the decline was not made on, or edited.
         let renewed = self
             .declined
             .get(path)
-            .is_some_and(|before| offer_evidence::new_evidence(&hits, before));
-        if score < self.declines.floor(OFFER_FLOOR, &key)
+            .is_some_and(|before| before.reopened_by(&hits, &version));
+        if score < self.declines.floor(OFFER_FLOOR, &key, &version)
             || (self.offered.contains(path) && !renewed)
             || already.contains(path)
             || already.iter().any(|p| same_note(p, path))
@@ -226,7 +238,7 @@ impl Offers {
         {
             return false;
         }
-        self.open_hits = hits;
+        self.open_hits = (hits, version);
         self.open = Some(Offer {
             path: path.to_path_buf(),
             score,
@@ -271,15 +283,23 @@ impl Offers {
         }
         self.pending = waiting;
         for p in offer_evidence::tick(&mut self.pending) {
-            self.declines.record(session, &p.key, now_secs());
+            self.declines
+                .record(session, &p.key, &p.version, now_secs());
             lines.push_str(&format!(
-                "{{\"at\":{},\"session\":{},\"path\":{},\"declined\":true,\"hits\":{}}}\n",
+                "{{\"at\":{},\"session\":{},\"path\":{},\"declined\":true,\"hits\":{},\"version\":{}}}\n",
                 now_secs(),
                 json(session),
                 json(&p.key),
-                serde_json::json!(p.hits)
+                serde_json::json!(p.hits),
+                json(&p.version)
             ));
-            self.declined.insert(PathBuf::from(&p.key), p.hits);
+            self.declined.insert(
+                PathBuf::from(&p.key),
+                Declined {
+                    hits: p.hits,
+                    version: p.version,
+                },
+            );
         }
         let Some(mut offer) = self.open.take() else {
             offer_evidence::append(&logs.join(LOG), &lines);
@@ -288,7 +308,7 @@ impl Offers {
         let taken = read(&offer.path);
         offer.taken = taken;
         self.offered.insert(offer.path.clone());
-        let hits = std::mem::take(&mut self.open_hits);
+        let (hits, version) = std::mem::take(&mut self.open_hits);
         let key = offer.path.display().to_string();
         if !taken {
             self.declined.remove(&offer.path);
@@ -296,15 +316,17 @@ impl Offers {
                 key: key.clone(),
                 rounds: DECLINE_ROUNDS - 1,
                 hits: hits.clone(),
+                version: version.clone(),
             });
         }
         lines.push_str(&format!(
-            "{{\"at\":{},\"session\":{},\"path\":{},\"score\":{:.3},\"taken\":{taken},\"hits\":{}}}\n",
+            "{{\"at\":{},\"session\":{},\"path\":{},\"score\":{:.3},\"taken\":{taken},\"hits\":{},\"version\":{}}}\n",
             now_secs(),
             json(session),
             json(&key),
             offer.score,
-            serde_json::json!(hits)
+            serde_json::json!(hits),
+            json(&version)
         ));
         offer_evidence::append(&logs.join(LOG), &lines);
         self.last = Some(offer);

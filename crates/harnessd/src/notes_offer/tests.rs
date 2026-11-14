@@ -809,7 +809,7 @@ fn a_note_not_read_in_three_rounds_is_declined() {
     let key = path.display().to_string();
     assert_eq!(declined[0]["path"], serde_json::json!(key));
     assert_eq!(
-        crate::offer_evidence::Declines::read(&project, "note").count(&key),
+        crate::offer_evidence::Declines::read(&project, "note").total(&key),
         1
     );
     assert!(!offers.compose(&f.reader(), &f.global, &f.box_dirs, "", &prompt(ABOUT)));
@@ -827,11 +827,40 @@ fn declines_in_the_project_raise_the_notes_floor() {
     let needed = ((score - OFFER_FLOOR) / crate::offer_evidence::DECLINE_STEP).floor() as u32 + 1;
     let mut declines = crate::offer_evidence::Declines::read(&project, "note");
     for i in 0..needed {
-        declines.record(&format!("s-{i}"), &path.display().to_string(), 0);
+        let text = std::fs::read_to_string(&path).expect("the note");
+        declines.record(
+            &format!("s-{i}"),
+            &path.display().to_string(),
+            &crate::offer_evidence::version(&text),
+            0,
+        );
     }
     let mut raised = Offers::new().with_project(&project);
     assert!(
         !raised.compose(&f.reader(), &f.global, &f.box_dirs, "", &prompt(ABOUT)),
         "{score} under a floor raised by {needed} declines"
     );
+}
+
+/// A note edited after it was declined is offered once more; the decline was of the old text.
+#[test]
+fn an_edited_note_loses_its_decline_once() {
+    let f = Fixture::new("edited");
+    let path = corpus(&f);
+    let mut offers = Offers::new().with_project(&f.ws.join("project"));
+    let compose =
+        |o: &mut Offers| o.compose(&f.reader(), &f.global, &f.box_dirs, "", &prompt(ABOUT));
+    assert!(compose(&mut offers));
+    for _ in 0..crate::offer_evidence::DECLINE_ROUNDS {
+        offers.settle(&f.ws, "s-1", &[]);
+    }
+    assert!(!compose(&mut offers), "declined");
+    let mut text = std::fs::read_to_string(&path).unwrap();
+    text.push_str("\n## Revisited\n\nbody text about the revisit\n");
+    std::fs::write(&path, text).unwrap();
+    assert!(compose(&mut offers), "edited since the decline");
+    for _ in 0..crate::offer_evidence::DECLINE_ROUNDS {
+        offers.settle(&f.ws, "s-1", &[]);
+    }
+    assert!(!compose(&mut offers), "the edit was declined too");
 }

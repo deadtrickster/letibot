@@ -1358,7 +1358,7 @@ impl Harness {
         self.session_registry.set_skills_source(
             &self.cfg.session_id,
             std::sync::Arc::new(move || {
-                let (rows, _) = skills.index_rows();
+                let (rows, _) = skills.live_rows();
                 // A skill this seat cannot use is not listed as usable.
                 let live = skills.live_skills();
                 rows.into_iter()

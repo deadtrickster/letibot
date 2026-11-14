@@ -881,7 +881,7 @@ fn an_offer_not_loaded_in_three_rounds_is_declined() {
     assert_eq!(declined.len(), 1, "{declined:?}");
     assert_eq!(declined[0]["skill"], "latex-presentation");
     let counted = Declines::read(&project, "skill");
-    assert_eq!(counted.count("latex-presentation"), 1);
+    assert_eq!(counted.total("latex-presentation"), 1);
     assert!(!offers.compose(&registry(), &latex(), None));
     // A restart reads the decline back as one, not as an offer still waiting.
     let mut after = Offers::new().with_project(&project);
@@ -904,7 +904,7 @@ fn a_late_load_is_a_take_up_and_not_a_decline() {
     let late = rows_with(&dir.join(LOG), "late");
     assert_eq!(late.len(), 1, "{late:?}");
     assert!(rows_with(&dir.join(LOG), "declined").is_empty());
-    assert_eq!(Declines::read(&dir, "skill").count("latex-presentation"), 0);
+    assert_eq!(Declines::read(&dir, "skill").total("latex-presentation"), 0);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -934,7 +934,12 @@ fn declines_in_the_project_raise_the_skills_floor() {
     let needed = ((score - OFFER_FLOOR) / crate::offer_evidence::DECLINE_STEP).floor() as u32 + 1;
     let mut declines = Declines::read(&dir, "skill");
     for i in 0..needed {
-        declines.record(&format!("s-{i}"), "latex-presentation", 0);
+        declines.record(
+            &format!("s-{i}"),
+            "latex-presentation",
+            &version_of(&slides()),
+            0,
+        );
     }
     let mut raised = Offers::new().with_project(&dir);
     assert!(
@@ -1074,4 +1079,104 @@ fn an_unrelated_subject_is_not_offered_under_the_real_tier() {
         "offered {named:?}"
     );
     let _ = std::fs::remove_dir_all(&data);
+}
+
+/// The latex skill after an edit to its body: the same name, another version.
+fn edited() -> SkillRegistry {
+    let mut skill = slides();
+    skill.body = "two ideas to a frame".into();
+    with_others(skill)
+}
+
+/// `skill` beside the fixture's two others: a corpus of one weighs every word at nothing.
+fn with_others(skill: Skill) -> SkillRegistry {
+    let mut all = registry().skills;
+    all[0] = skill;
+    SkillRegistry::new(all)
+}
+
+/// A decline is of one version. The skill edited since is offered once more, a second decline of
+/// the edit holds, and the project's count for the edit starts again.
+#[test]
+fn an_edited_skill_loses_its_decline_once() {
+    let dir = logs("edited");
+    let mut offers = Offers::new().with_project(&dir);
+    assert!(offers.compose(&registry(), &latex(), None));
+    for _ in 0..DECLINE_ROUNDS {
+        offers.settle(&dir, "s-1", &[]);
+    }
+    assert!(!offers.compose(&registry(), &latex(), None), "declined");
+    assert!(offers.compose(&edited(), &latex(), None), "edited since");
+    for _ in 0..DECLINE_ROUNDS {
+        offers.settle(&dir, "s-1", &[]);
+    }
+    assert!(
+        !offers.compose(&edited(), &latex(), None),
+        "the edit was declined too"
+    );
+    let declines = Declines::read(&dir, "skill");
+    assert_eq!(declines.total("latex-presentation"), 2);
+    let edit = version_of(&edited().live_skills()[0]);
+    assert_eq!(edited().live_skills()[0].name, "latex-presentation");
+    assert_eq!(declines.count("latex-presentation", &edit), 1);
+}
+
+/// A decline does not cover a skill that did not exist when it was made: another skill that took
+/// the declined name is a new document.
+#[test]
+fn a_decline_does_not_cover_a_skill_that_took_the_name_later() {
+    let dir = logs("renamed");
+    let mut offers = Offers::new().with_project(&dir);
+    assert!(offers.compose(&registry(), &latex(), None));
+    for _ in 0..DECLINE_ROUNDS {
+        offers.settle(&dir, "s-1", &[]);
+    }
+    let other = with_others(Skill {
+        keywords: vec!["latex".into(), "presentation".into()],
+        ..Skill::new(
+            "latex-presentation",
+            "a latex presentation from a markdown outline",
+            "pandoc first",
+            SkillSource::Project,
+        )
+    });
+    assert!(offers.compose(&other, &latex(), None));
+}
+
+/// A skill this session wrote is never offered back to it.
+#[test]
+fn a_skill_this_session_wrote_is_not_offered_back() {
+    let root = logs("wrote");
+    let skills = root.join("skills");
+    let md = skills.join("latex-presentation/SKILL.md");
+    std::fs::create_dir_all(md.parent().unwrap()).unwrap();
+    std::fs::write(
+        &md,
+        "---\nname: latex-presentation\ndescription: beamer slides for a talk\nkeywords: latex, beamer, slides\n---\n\none idea to a frame\n",
+    )
+    .unwrap();
+    let registry = SkillRegistry::load_for(&letibot_tools::builtins::skill::SkillDirs {
+        operator: vec![skills.clone()],
+        ..Default::default()
+    });
+    let mut offers = Offers::new();
+    assert!(
+        offers.compose(&registry, &latex(), None),
+        "offered to a session that did not write it"
+    );
+    let mut items = prompt("a latex presentation please");
+    items.push(TranscriptItem::Assistant {
+        text: String::new(),
+        tool_calls: vec![ToolCall {
+            id: "call_w".into(),
+            name: "write".into(),
+            arguments: serde_json::json!({"path": md.display().to_string(), "content": "x"})
+                .to_string(),
+        }],
+        truncated: false,
+    });
+    let mut writer = Offers::new();
+    writer.observe(&items);
+    assert!(!writer.compose(&registry, &latex(), None));
+    let _ = std::fs::remove_dir_all(&root);
 }

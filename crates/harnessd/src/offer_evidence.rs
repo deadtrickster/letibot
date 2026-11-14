@@ -73,6 +73,31 @@ pub struct Pending {
     pub key: String,
     pub rounds: u32,
     pub hits: Vec<String>,
+    /// The [`version`] offered. A decline holds for this content and no other.
+    pub version: String,
+}
+
+/// A short content hash. A decline is of one version: an edited skill or note, or a new one that
+/// took a declined name, is a document the model has not passed over yet.
+pub fn version(text: &str) -> String {
+    use sha2::Digest;
+    let digest = sha2::Sha256::digest(text.as_bytes());
+    digest.iter().take(8).map(|b| format!("{b:02x}")).collect()
+}
+
+/// What the session declined: the words it was offered on, and the version.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Declined {
+    pub hits: Vec<String>,
+    pub version: String,
+}
+
+impl Declined {
+    /// Whether an offer now is a different question from the one declined: new evidence, or the
+    /// document changed since.
+    pub fn reopened_by(&self, hits: &[String], version: &str) -> bool {
+        self.version != version || new_evidence(hits, &self.hits)
+    }
 }
 
 /// The project's declines by document, for one kind of offer.
@@ -80,7 +105,7 @@ pub struct Pending {
 pub struct Declines {
     log: Option<PathBuf>,
     kind: &'static str,
-    counts: BTreeMap<String, u32>,
+    counts: BTreeMap<(String, String), u32>,
 }
 
 impl Declines {
@@ -97,7 +122,10 @@ impl Declines {
                     continue;
                 }
                 if let Some(name) = row.get("name").and_then(|n| n.as_str()) {
-                    *counts.entry(name.to_string()).or_default() += 1;
+                    let version = row.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                    *counts
+                        .entry((name.to_string(), version.to_string()))
+                        .or_default() += 1;
                 }
             }
         }
@@ -108,22 +136,40 @@ impl Declines {
         }
     }
 
-    pub fn count(&self, key: &str) -> u32 {
-        self.counts.get(key).copied().unwrap_or(0)
+    /// Declines of this version of `key`. An edit starts the count again.
+    pub fn count(&self, key: &str, version: &str) -> u32 {
+        self.counts
+            .get(&(key.to_string(), version.to_string()))
+            .copied()
+            .unwrap_or(0)
     }
 
-    /// The floor for `key` in this project: `base`, raised by each earlier decline.
-    pub fn floor(&self, base: f64, key: &str) -> f64 {
-        base + DECLINE_STEP * self.count(key) as f64
+    /// Declines of `key` in any version.
+    pub fn total(&self, key: &str) -> u32 {
+        self.counts
+            .iter()
+            .filter(|((k, _), _)| k == key)
+            .map(|(_, n)| n)
+            .sum()
+    }
+
+    /// The floor for this version of `key` in this project: `base`, raised by each earlier decline.
+    pub fn floor(&self, base: f64, key: &str, version: &str) -> f64 {
+        base + DECLINE_STEP * self.count(key, version) as f64
     }
 
     /// Count one more decline and append it to the project's log.
-    pub fn record(&mut self, session: &str, key: &str, at: u64) {
-        *self.counts.entry(key.to_string()).or_default() += 1;
+    pub fn record(&mut self, session: &str, key: &str, version: &str, at: u64) {
+        *self
+            .counts
+            .entry((key.to_string(), version.to_string()))
+            .or_default() += 1;
         let Some(log) = &self.log else {
             return;
         };
-        let row = serde_json::json!({"at": at, "session": session, "kind": self.kind, "name": key});
+        let row = serde_json::json!({
+            "at": at, "session": session, "kind": self.kind, "name": key, "version": version,
+        });
         append(log, &format!("{row}\n"));
     }
 }

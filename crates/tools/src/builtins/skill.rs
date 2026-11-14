@@ -403,7 +403,12 @@ pub struct SkillRegistry {
     /// over what its frontmatter says. Read here because every door asks it.
     when: BTreeMap<String, SkillWhen>,
     shelf: Mutex<Option<Arc<dyn SkillShelf>>>,
+    /// The folders' skills as last read, under the modification times they were read at.
+    live: Mutex<Option<(Stamp, Vec<Skill>)>>,
 }
+
+/// Every path a scan reads, with its modification time: a skill added, removed or edited moves one.
+type Stamp = Vec<(PathBuf, Option<std::time::SystemTime>)>;
 
 impl std::fmt::Debug for SkillRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -422,6 +427,7 @@ impl SkillRegistry {
             pins: BTreeSet::new(),
             when: BTreeMap::new(),
             shelf: Mutex::new(None),
+            live: Mutex::new(None),
         }
     }
 
@@ -459,7 +465,7 @@ impl SkillRegistry {
     /// The pinned names nothing on this box answers to, sorted. A pin is the operator's own sentence,
     /// and a typo in one is silent without this: both the prompt and the session's opening say it.
     pub fn unknown_pins(&self) -> Vec<&str> {
-        let (rows, _) = self.index_rows();
+        let (rows, _) = self.live_rows();
         self.pins
             .iter()
             .filter(|pin| !rows.iter().any(|r| r.answers_to(pin)))
@@ -485,18 +491,39 @@ impl SkillRegistry {
     /// name found twice is held once, by the higher-priority source, and a directory that cannot be
     /// read is skipped rather than fatal.
     pub fn load_for(dirs: &SkillDirs) -> Self {
+        let at = stamp(dirs);
         let mut reg = SkillRegistry::new(scan(dirs));
         reg.dirs = Some(dirs.clone());
+        reg.live = Mutex::new(Some((at, reg.skills.clone())));
         reg
     }
 
-    /// The skills as the disk has them now: built-ins plus a fresh read of the folders. Without
-    /// folders (a registry built from a list) it is the list as given.
+    /// The skills as the disk has them now: built-ins plus the folders, read again only when a
+    /// modification time moved. Without folders (a registry built from a list) it is the list.
     pub fn live_skills(&self) -> Vec<Skill> {
-        match &self.dirs {
-            Some(dirs) => scan(dirs),
-            None => self.skills.clone(),
+        if self.dirs.is_none() {
+            return self.skills.clone();
         }
+        self.refresh();
+        let live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        live.as_ref().map(|(_, s)| s.clone()).unwrap_or_default()
+    }
+
+    /// Read the folders again if a modification time moved since the last read, so a skill added
+    /// or edited mid-session is offered, found and loaded. `true` when the skills changed. Pins and
+    /// `when` are kept by name, so they apply to the new read as they did to the old. A check is
+    /// a stat per path, so every live read makes one.
+    pub fn refresh(&self) -> bool {
+        let Some(dirs) = &self.dirs else {
+            return false;
+        };
+        let now = stamp(dirs);
+        let mut live = self.live.lock().unwrap_or_else(|e| e.into_inner());
+        if live.as_ref().is_some_and(|(at, _)| *at == now) {
+            return false;
+        }
+        *live = Some((now, scan(dirs)));
+        true
     }
 
     /// This box's directories ([`SkillDirs::for_this_box`]) with nothing named: the default a
@@ -663,8 +690,17 @@ impl SkillRegistry {
     /// source priority, then the shelf's rows. A shelf that cannot be read comes back as the
     /// sentence, never as an empty shelf.
     pub fn index_rows(&self) -> (Vec<IndexRow>, Option<String>) {
-        let mut rows: Vec<IndexRow> = self
-            .skills
+        self.rows_of(&self.skills)
+    }
+
+    /// [`Self::index_rows`] over the skills as the disk has them now, for a head's listing: the
+    /// prompt's index stays on the snapshot taken at open, so the prefix does not move.
+    pub fn live_rows(&self) -> (Vec<IndexRow>, Option<String>) {
+        self.rows_of(&self.live_skills())
+    }
+
+    fn rows_of(&self, skills: &[Skill]) -> (Vec<IndexRow>, Option<String>) {
+        let mut rows: Vec<IndexRow> = skills
             .iter()
             .map(|s| IndexRow {
                 name: s.name.clone(),
@@ -827,8 +863,9 @@ impl SkillRegistry {
     pub fn tool_ceiling(&self, names: &[String]) -> Option<BTreeSet<String>> {
         let mut out: BTreeSet<String> = BTreeSet::new();
         let mut declared = false;
+        let live = self.live_skills();
         for name in names {
-            let Some(skill) = self.skills.iter().find(|s| &s.name == name) else {
+            let Some(skill) = live.iter().find(|s| &s.name == name) else {
                 continue;
             };
             if let Some(tools) = &skill.allowed_tools {
@@ -875,6 +912,47 @@ fn names_or_none(skills: &[Skill]) -> String {
             .collect::<Vec<_>>()
             .join(", ")
     }
+}
+
+/// The modification times of everything [`scan`] reads: each folder, each skill directory in it,
+/// and its `SKILL.md`. A stat per path, so checking costs far less than reading.
+fn stamp(dirs: &SkillDirs) -> Stamp {
+    fn at(out: &mut Stamp, path: PathBuf) {
+        let modified = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+        out.push((path, modified));
+    }
+    fn children(dir: &Path) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = std::fs::read_dir(dir)
+            .map(|e| {
+                e.flatten()
+                    .map(|e| e.path())
+                    .filter(|p| p.is_dir())
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.sort();
+        out
+    }
+    let mut out = Stamp::new();
+    for (dir, source) in dirs.walk() {
+        at(&mut out, dir.clone());
+        let mut roots = vec![dir.clone()];
+        if matches!(source, SkillSource::Installed(_)) {
+            let synced = dir.join("synced");
+            at(&mut out, synced.clone());
+            for group in children(&synced) {
+                at(&mut out, group.clone());
+                roots.push(group);
+            }
+        }
+        for root in roots {
+            for skill in children(&root) {
+                at(&mut out, skill.join("SKILL.md"));
+                at(&mut out, skill);
+            }
+        }
+    }
+    out
 }
 
 /// Built-ins with the folders read over them: a name found twice is held once, by the
@@ -1944,6 +2022,118 @@ mod tests {
         assert_eq!(found.first().map(|f| f.0.as_str()), Some("zebra-grooming"));
         assert_eq!(r.index(&vocab), before, "the pinned index is fixed at open");
         assert!(!r.names().contains(&"zebra-grooming"));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The folders are read again when a modification time moves, and only then: a skill added,
+    /// edited or removed mid-session is what the next live read holds.
+    #[test]
+    fn a_skill_added_edited_or_removed_is_read_again() {
+        let root = temp_root("reload");
+        let op = root.join("operator");
+        write_skill(&op.join("first"), "first", "the first one");
+        let dirs = SkillDirs {
+            operator: vec![op.clone()],
+            ..SkillDirs::default()
+        };
+        let r = SkillRegistry::load_for(&dirs);
+        assert!(!r.refresh(), "nothing moved since the load");
+        write_skill(&op.join("second"), "second", "the second one");
+        assert!(r.refresh(), "a new skill directory moves the folder's time");
+        assert!(r.live_skills().iter().any(|s| s.name == "second"));
+        // An edit in place moves the file's time and not the folder's.
+        let md = op.join("second/SKILL.md");
+        std::fs::write(
+            &md,
+            "---\nname: second\ndescription: edited\n---\n\nnew body\n",
+        )
+        .unwrap();
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(2);
+        std::fs::File::options()
+            .write(true)
+            .open(&md)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+        assert_eq!(r.load("second").as_deref().map(str::trim), Some("new body"));
+        std::fs::remove_dir_all(op.join("first")).unwrap();
+        assert!(
+            !r.live_skills().iter().any(|s| s.name == "first"),
+            "a vanished skill is dropped"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// Pins and `[skills.when]` are names, so a skill that arrives after open is pinned and gated
+    /// by them once it is read.
+    #[test]
+    fn pins_and_when_apply_to_a_skill_read_after_open() {
+        let root = temp_root("reload-pins");
+        let op = root.join("operator");
+        std::fs::create_dir_all(&op).unwrap();
+        let dirs = SkillDirs {
+            operator: vec![op.clone()],
+            ..SkillDirs::default()
+        };
+        let when = BTreeMap::from([(
+            "late".to_string(),
+            SkillWhen {
+                requires: vec!["flowy".into()],
+                unless: Vec::new(),
+            },
+        )]);
+        let r = SkillRegistry::load_for(&dirs)
+            .with_pins(["late"])
+            .with_when(when);
+        assert_eq!(r.unknown_pins(), vec!["late"]);
+        write_skill(&op.join("late"), "late", "arrives later");
+        assert!(r.unknown_pins().is_empty(), "the pin names a skill now");
+        let late = r
+            .live_skills()
+            .into_iter()
+            .find(|s| s.name == "late")
+            .unwrap();
+        let seat: BTreeSet<String> = ["bash".to_string()].into();
+        assert!(
+            r.unmet(&late, &seat).is_some(),
+            "the operator's `when` still gates it"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// The second tier is filled from the live read: a new skill is embedded on first sight and
+    /// a removed one is no longer ranked.
+    #[test]
+    fn the_tier_follows_the_skills_on_disk() {
+        let root = temp_root("reload-tier");
+        let op = root.join("operator");
+        write_skill(&op.join("slides"), "slides", "make beamer slides");
+        let dirs = SkillDirs {
+            operator: vec![op.clone()],
+            ..SkillDirs::default()
+        };
+        let r = SkillRegistry::load_for(&dirs);
+        let tier = letibot_embeddings::testing::planted(
+            &root.join("data"),
+            &[&["keynote", "beamer"], &["zebra", "grooming"]],
+        );
+        let names = |q: &str| -> Vec<String> {
+            r.ranked_with(q, 10, Some(&tier))
+                .into_iter()
+                .map(|(n, _)| n)
+                .collect()
+        };
+        assert!(!names("zebra").contains(&"groom".to_string()));
+        write_skill(&op.join("groom"), "groom", "grooming");
+        assert!(
+            names("zebra").contains(&"groom".to_string()),
+            "embedded on first sight"
+        );
+        std::fs::remove_dir_all(op.join("slides")).unwrap();
+        assert!(
+            !names("keynote").contains(&"slides".to_string()),
+            "dropped when gone"
+        );
         let _ = std::fs::remove_dir_all(&root);
     }
 
