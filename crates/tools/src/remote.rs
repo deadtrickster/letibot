@@ -1303,6 +1303,9 @@ const VM_INLINE_WRITE: usize = 48 * 1024;
 /// that directory is what the boundary exists to leave outside.
 pub const HOME_DIR: &str = ".letibot-home";
 
+/// Where a placement's and a fanout call's jobs ledgers sit under a host's root.
+pub const JOBS_DIR: &str = ".letibot-jobs";
+
 /// What a host answered about its own firecode: the program, absolute on that machine.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VmHost {
@@ -3506,7 +3509,7 @@ impl SshBackend {
         let root = resolved_root(&ssh, &spec.host.root, true).map_err(place)?;
         let mirror = format!("{root}/{repo_name}.git");
         let worktree = format!("{root}/{repo_name}/{short}");
-        let ledger = format!("{root}/.letibot-jobs/{short}");
+        let ledger = format!("{root}/{JOBS_DIR}/{short}");
 
         // **The owner's stamp on this machine** (`docs/lifecycle.md` d.4, d.10): the lease a
         // host-local reaper judges, the tree whose work it will bundle, and the ledger its pids are
@@ -4353,6 +4356,16 @@ pub fn collect(spec: &CollectSpec) -> Result<String, BackendError> {
 pub fn owner_home(root: &str, session: &str) -> String {
     format!(
         "{}/{HOME_DIR}/{}",
+        root.trim_end_matches('/'),
+        short_branch_id(session)
+    )
+}
+
+/// The jobs ledger a placement keeps on a host: `<root>/.letibot-jobs/<short>`, named as
+/// [`owner_home`] is.
+pub fn owner_ledger(root: &str, session: &str) -> String {
+    format!(
+        "{}/{JOBS_DIR}/{}",
         root.trim_end_matches('/'),
         short_branch_id(session)
     )

@@ -224,6 +224,40 @@ fn holds_answers_what_the_owner_holds() {
     assert_eq!(snapshot(&gc_root), disk_before, "holds changed the disk");
 }
 
+/// `letibot holds` lists what an owner holds on another host, per host, with the measured size.
+#[test]
+fn holds_lists_remote_holdings_per_host() {
+    let f = Fixture::new("holds-remote");
+    let (data, _gc_root) = f.box_with_a_closed_owner();
+    let store = Store::open_set(&data, "0123456789ab").expect("a split store");
+    store
+        .put_holding(
+            &HoldingRow::new(
+                "s-1794509750373521593",
+                "fanout",
+                HoldingClass::Cache,
+                "/r/fanout-call_1",
+                "a fanout call of this session made it",
+                letibot_metrics::now_ms() as i64,
+            )
+            .on_host(Some("lubuntu9".into()))
+            .measured(Some(8192)),
+        )
+        .expect("the remote holding");
+    drop(store);
+
+    let (ok, out, err) = f.run(&["holds"]);
+    assert!(ok, "`letibot holds` failed. stderr:\n{err}");
+    assert!(out.contains("remote hosts:"), "{out}");
+    assert!(out.contains("lubuntu9: 1 holding(s), 8"), "{out}");
+    assert!(out.contains("fanout /r/fanout-call_1"), "{out}");
+
+    let (ok, json, err) = f.run(&["holds", "--json"]);
+    assert!(ok, "`letibot holds --json` failed. stderr:\n{err}");
+    let v: serde_json::Value = serde_json::from_str(&json).expect("one object");
+    assert_eq!(v["remote"]["lubuntu9"][0]["bytes"], 8192, "{json}");
+}
+
 /// `holds --top` orders the box's owners by the memory their cgroups hold and says what the box
 /// itself has left: the view where the question is who is holding this machine (G5). It removes
 /// nothing, and an owner whose cgroup the walk could not read is a zero it earned.

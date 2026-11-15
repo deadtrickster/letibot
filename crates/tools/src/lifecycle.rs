@@ -51,7 +51,7 @@ pub use reap::{
 };
 pub use remote::{
     Bundle, HostPass, LeaseKeeper, LeaseRenewer, RENEW_MS, RemoteLeases, RemoteOwner,
-    collect_bundle, host_pass, renew_script,
+    collect_bundle, host_pass, remote_holdings, remote_holdings_lines, renew_script,
 };
 pub use systemd::{NoManager, Systemd, UnitManager, UnitTable};
 pub use worktree::{
@@ -92,6 +92,10 @@ pub const STATE: &str = "state";
 pub const COPY_OUT: &str = "copy-out";
 /// A remote home or build directory, under that host's `.letibot-home`.
 pub const REMOTE_HOME: &str = "home";
+/// A remote jobs ledger, `<root>/.letibot-jobs/<id>`: a placement's or a fanout call's pid files.
+pub const REMOTE_JOBS: &str = "jobs-ledger";
+/// A fanout call's work directory on a host, `<root>/fanout-<call>`.
+pub const REMOTE_FANOUT: &str = "fanout";
 
 /// An owner root's own record, as `owner.json` holds it. Deliberately small: a reaper that cannot
 /// open the store must still be able to read an owner's id, its box and when its lease ran out.

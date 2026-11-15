@@ -121,6 +121,7 @@ fn ops(engine: Option<&Path>, docker: crate::docker::Settings) -> Ops {
         }),
         docker,
         daemon_up_ms: None,
+        measured: Default::default(),
     }
 }
 

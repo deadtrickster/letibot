@@ -72,6 +72,8 @@ pub struct Ops {
     pub docker: crate::docker::Settings,
     /// When the daemon running this pass came up; `None` for a pass outside a daemon.
     pub daemon_up_ms: Option<i64>,
+    /// When each host's remote dirs were last sized, kept from one sweep to the next.
+    pub measured: Arc<crate::lifecycle::LeaseKeeper>,
 }
 
 impl std::fmt::Debug for Ops {
@@ -99,6 +101,7 @@ impl Ops {
             hands: Arc::new(hands),
             docker: crate::docker::Settings::load_or_default(),
             daemon_up_ms: None,
+            measured: Arc::default(),
         }
     }
 }
@@ -427,7 +430,7 @@ pub fn open_job_elsewhere(store: &Store, o: &OwnerRow) -> bool {
 /// Is a turn in flight or a job running? The cgroup answers it, because the seat's own `ps` cannot
 /// see host pids and the daemon may not be there to be asked. A store row that says `running` for
 /// a process whose cgroup is empty is a row the supervisor has not caught up with, not work.
-fn busy(store: &Store, o: &OwnerRow) -> bool {
+pub(super) fn busy(store: &Store, o: &OwnerRow) -> bool {
     let mut populated = false;
     for row in store.holdings_of(&o.id).unwrap_or_default() {
         if row.kind != SCOPE || row.state == HoldingState::Gone {
@@ -1135,7 +1138,7 @@ fn drain_refusal(store: &Store, places: &Places, owner: &OwnerRow) -> Option<Str
 }
 
 /// The owner has a job open, in the reaper's project file or any other.
-fn owns_open_job(store: &Store, owner: &OwnerRow) -> bool {
+pub(super) fn owns_open_job(store: &Store, owner: &OwnerRow) -> bool {
     store
         .processes_of(&owner.id)
         .is_ok_and(|v| v.iter().any(|p| p.state.is_open()))

@@ -104,6 +104,7 @@ fn quick(by: &str) -> Ops {
         hands: std::sync::Arc::new(NoHands),
         docker: crate::docker::Settings::default(),
         daemon_up_ms: None,
+        measured: Default::default(),
     }
 }
 

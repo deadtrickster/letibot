@@ -2053,17 +2053,31 @@ impl Harness {
             let hosts = letibot_tools::remote::Hosts::load();
             if let Some(host) = hosts.get(name) {
                 let home = letibot_tools::remote::owner_home(&host.root, &cfg.session_id);
-                let _ = store.put_holding(
-                    &letibot_tokencore::store::HoldingRow::new(
-                        &cfg.session_id,
+                let ledger = letibot_tools::remote::owner_ledger(&host.root, &cfg.session_id);
+                for (kind, handle, stamp) in [
+                    (
                         letibot_tools::lifecycle::REMOTE_HOME,
-                        letibot_tokencore::store::HoldingClass::Cache,
-                        &home,
+                        home,
                         "owner.json there names the owner",
-                        letibot_metrics::now_ms() as i64,
-                    )
-                    .on_host(Some(host.name.clone())),
-                );
+                    ),
+                    (
+                        letibot_tools::lifecycle::REMOTE_JOBS,
+                        ledger,
+                        "the placement's own ledger, named as its home is",
+                    ),
+                ] {
+                    let _ = store.put_holding(
+                        &letibot_tokencore::store::HoldingRow::new(
+                            &cfg.session_id,
+                            kind,
+                            letibot_tokencore::store::HoldingClass::Cache,
+                            &handle,
+                            stamp,
+                            letibot_metrics::now_ms() as i64,
+                        )
+                        .on_host(Some(host.name.clone())),
+                    );
+                }
             }
         }
         let backend_boundary = backend.boundary();

@@ -748,6 +748,7 @@ the kill and what survived").
 | shared target (`target-landing*`, queue targets) | cache | queue | quota | owner is the queue; removed whole when over quota or unused for 3 days, under the build lock `rrun-runner` already takes | none |
 | tmp, confined home | cache | tools | close | remove | none |
 | remote owner root (`.letibot-home/<sid>` and build dirs) | cache + work | `remote.rs` | close for cache; settle for the tree | after the branch is home or bundled (d.8) | bundle on that host, or fetched ref |
+| remote jobs ledger (`.letibot-jobs/<short>`, `.letibot-jobs/fanout-<call>`) and fanout work dir (`fanout-<call>`) | cache | placement, `fanout` (recorded through the process book) | owner settled, or its lease reaped there with any bundle home | the home box's remote pass: refused while a process carries the owner's mark or a ledger pid runs, or the owner is held or has an open job; `chmod -R u+w` then `rm -rf`, checked absent | none |
 | firecode run dir | record | firecode | owner settled, VM down, copy-out not pending | `firecode gc --run <id>` (a new, small firecode verb); until it exists, move to `runs-archive/<yyyy-mm>/` | console log, result, verdict kept in the archive |
 | firecode state layers of a per-owner project | cache | firecode | owner settled | firecode's own removal for that project slug; if firecode has no verb for one slug, this is a firecode row to file | none |
 | session rows | record | store | settle | `set_archived` with the reason (R184) | never deleted |

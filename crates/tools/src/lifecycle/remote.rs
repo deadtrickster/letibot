@@ -5,6 +5,8 @@
 //! and, when the lease is older than the owner's idle TTL plus an hour, ends that owner's processes,
 //! removes its caches and BUNDLES its work - never deletes it. The bundle is a `work` holding until
 //! the home box fetches it into `refs/letibot/archive/<owner>/`, and the fetch removes it.
+//! The home box then removes the owner's home, ledgers and fanout dirs once it is settled or reaped
+//! (`remove_script`): those are caches, while the checkout stays as work.
 //!
 //! Leases are compared as "seconds since the last renewal by this box's clock", so clock skew
 //! between two machines does not matter: what is compared is an age, never two wall clocks.
@@ -43,6 +45,8 @@ pub struct HostPass {
     pub acts: Vec<Act>,
     pub kept: Vec<String>,
     pub bundles: Vec<Bundle>,
+    /// Owners whose stale lease this pass acted on: swept, cached removed, work bundled.
+    pub reaped: Vec<String>,
 }
 
 impl HostPass {
@@ -95,6 +99,7 @@ impl RemoteOwner {
 
 /// The owner root a remote placement writes on its host: `<root>/.letibot-home/<owner>/`, with the
 /// `owner.json` in it - the one place the two sides agree on a path.
+#[cfg(test)]
 pub fn owner_root(root: &Path, owner: &str) -> PathBuf {
     root.join(crate::remote::HOME_DIR).join(owner)
 }
@@ -110,7 +115,7 @@ pub fn list_script(root: &Path) -> String {
          \x20 tr -d '\\n' < \"$f\"\n\
          \x20 printf '\\n'\n\
          done\n",
-        root = crate::remote::quote(&root.display().to_string()),
+        root = crate::remote::expand_root(&root.display().to_string()),
         home = crate::remote::HOME_DIR
     )
 }
@@ -118,10 +123,8 @@ pub fn list_script(root: &Path) -> String {
 /// The script that ends one stale owner's compute, removes its caches and bundles its work. It
 /// prints one `ACT`/`BUNDLE`/`KEPT`/`SAID` line per fact, each after looking, so the home box reads
 /// what happened rather than inferring it from an exit status.
-pub fn reap_script(root: &Path, owner: &RemoteOwner, now: i64) -> String {
-    let home = owner_root(root, &owner.owner);
-    let archive = root.join(".letibot-archive");
-    let bundle = archive.join(format!("{}.bundle", owner.owner));
+/// `home` is the directory the listing found the stamp in: a placement names it after the short id.
+pub fn reap_script(root: &Path, home: &str, owner: &RemoteOwner, now: i64) -> String {
     // The same sweep a session's own close runs, by the mark and the ledger: a host has no cgroup,
     // so those two are what prove a process is this owner's.
     let sweep = match &owner.ledger {
@@ -132,7 +135,8 @@ pub fn reap_script(root: &Path, owner: &RemoteOwner, now: i64) -> String {
     };
     let work = owner.work.clone().unwrap_or_default();
     format!(
-        "root={root}\nhome={home}\narchive={archive}\nbundle={bundle}\nowner={who}\n\
+        "root={root}\nhome={home}\narchive=\"$root\"/.letibot-archive\n\
+         bundle=\"$archive\"/{name}\nowner={who}\n\
          mkdir -p \"$archive\"\n\
          # 1. compute first, and by the same rule the session's own close uses.\n\
          {sweep}\n\
@@ -154,10 +158,9 @@ pub fn reap_script(root: &Path, owner: &RemoteOwner, now: i64) -> String {
          \x20 fi\n\
          done\n\
          printf 'SAID swept and bundled, lease %s ms old\\n' \"{age}\"\n",
-        root = crate::remote::quote(&root.display().to_string()),
-        home = crate::remote::quote(&home.display().to_string()),
-        archive = crate::remote::quote(&archive.display().to_string()),
-        bundle = crate::remote::quote(&bundle.display().to_string()),
+        root = crate::remote::expand_root(&root.display().to_string()),
+        home = crate::remote::quote(home),
+        name = crate::remote::quote(&format!("{}.bundle", owner.owner)),
         who = crate::remote::quote(&owner.owner),
         sweep = sweep,
         work = crate::remote::quote(&work),
@@ -173,7 +176,7 @@ pub fn host_pass(host: &str, root: &Path, hands: &dyn Hands, now: i64) -> Result
         ..HostPass::default()
     };
     let listed = hands.host_command(host, &list_script(root))?;
-    for owner in parse_stamps(&listed) {
+    for (home, owner) in parse_listing(&listed) {
         let ttl = owner.idle_ttl_ms.unwrap_or(DEFAULT_IDLE_TTL_MS);
         let age = now.saturating_sub(owner.lease_ms);
         if age < ttl.saturating_add(LEASE_GRACE_MS) {
@@ -192,8 +195,9 @@ pub fn host_pass(host: &str, root: &Path, hands: &dyn Hands, now: i64) -> Result
                 owner.owner, owner.box_id
             ));
         }
-        let said = hands.host_command(host, &reap_script(root, &owner, now))?;
+        let said = hands.host_command(host, &reap_script(root, &home, &owner, now))?;
         absorb(&mut pass, &owner.owner, &said);
+        pass.reaped.push(owner.owner.clone());
     }
     Ok(pass)
 }
@@ -238,7 +242,23 @@ fn absorb(pass: &mut HostPass, owner: &str, said: &str) {
     }
 }
 
+/// Every `owner.json` in a listing with the directory it sits in, from the `F <path>` line before it.
+pub fn parse_listing(listed: &str) -> Vec<(String, RemoteOwner)> {
+    let mut out = Vec::new();
+    let mut dir: Option<String> = None;
+    for line in listed.lines() {
+        let line = line.trim();
+        if let Some(path) = line.strip_prefix("F ") {
+            dir = Path::new(path).parent().map(|p| p.display().to_string());
+        } else if let (Some(d), Ok(o)) = (dir.take(), serde_json::from_str::<RemoteOwner>(line)) {
+            out.push((d, o));
+        }
+    }
+    out
+}
+
 /// Every `owner.json` in a listing: the lines that parse as one, which skips the `F <path>` markers.
+#[cfg(test)]
 pub fn parse_stamps(listed: &str) -> Vec<RemoteOwner> {
     listed
         .lines()
@@ -335,9 +355,14 @@ impl LeaseKeeper {
     /// Is this host's renewal due at `now`? A due host is remembered as renewed here, so the caller
     /// may take the round trip without a second bookkeeping step.
     pub fn due(&self, host: &str, now: i64) -> bool {
+        self.due_every(host, now, RENEW_MS)
+    }
+
+    /// [`LeaseKeeper::due`] on a clock of `every_ms`.
+    pub fn due_every(&self, host: &str, now: i64, every_ms: i64) -> bool {
         let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
         match last.get(host) {
-            Some(at) if now.saturating_sub(*at) < RENEW_MS => false,
+            Some(at) if now.saturating_sub(*at) < every_ms => false,
             _ => {
                 last.insert(host.to_string(), now);
                 true
@@ -426,6 +451,189 @@ fn expand_in_shell(root: &str) -> String {
         Some(rest) => format!("$HOME/{rest}"),
         None => root.to_string(),
     }
+}
+
+/// Is `handle` one of the three shapes a placement or a fanout writes on a host? The removal is
+/// refused for anything else, so a row with a wrong handle cannot aim `rm -rf` at a home or a root.
+pub fn removable_shape(handle: &str) -> bool {
+    let path = Path::new(handle);
+    if path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return false;
+    }
+    let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    let parent = path
+        .parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str());
+    match parent {
+        Some(crate::remote::HOME_DIR) | Some(crate::remote::JOBS_DIR) => !name.starts_with('.'),
+        _ => name.starts_with("fanout-") && name.len() > "fanout-".len(),
+    }
+}
+
+/// The far side's liveness check for one owner: a process carrying its session mark, or a pid in
+/// one of its ledgers whose launcher is still running. Prints `LIVE <pids>` when there is one.
+fn live_check(owner: &str, ledgers: &[String]) -> String {
+    let ledgers: Vec<String> = ledgers
+        .iter()
+        .map(|l| crate::remote::expand_root(l))
+        .collect();
+    format!(
+        "mark={mark}\n\
+         live=$(grep -lF -- \"$mark\" /proc/[0-9]*/environ 2>/dev/null | while read -r f; do\n\
+         \x20 tr '\\0' '\\n' < \"$f\" 2>/dev/null | grep -qxF -- \"$mark\" && {{ p=${{f#/proc/}}; echo \"${{p%/environ}}\"; }}\n\
+         done | tr '\\n' ' ')\n\
+         for l in {ledgers}; do\n\
+         \x20 for f in \"$l\"/*.pid; do\n\
+         \x20   [ -f \"$f\" ] || continue\n\
+         \x20   k=$(tr -d ' ' < \"$f\" 2>/dev/null)\n\
+         \x20   [ -n \"$k\" ] || continue\n\
+         \x20   case \"$(ps -p \"$k\" -o args= 2>/dev/null)\" in *\"${{f%.pid}}.sh\"*) live=\"$live $k\";; esac\n\
+         \x20 done\n\
+         done\n",
+        mark = crate::remote::quote(&format!("{}={owner}", crate::remote::SESSION_MARK)),
+        ledgers = if ledgers.is_empty() {
+            "''".to_string()
+        } else {
+            ledgers.join(" ")
+        },
+    )
+}
+
+/// The script that removes a settled owner's dirs on a host: refused whole while any process of
+/// it lives, a home whose stamp names another owner is kept, and each removal is checked by looking.
+/// Go's module cache is read-only, so `chmod -R u+w` runs before `rm -rf`. Answers one
+/// `LIVE`/`GONE <i> <kib>`/`KEPT <i> <why>` line per fact, `i` indexing `paths`.
+pub fn remove_script(owner: &str, ledgers: &[String], paths: &[String]) -> String {
+    let mut s = live_check(owner, ledgers);
+    s.push_str(
+        "if [ -n \"$(echo $live)\" ]; then printf 'LIVE %s\\n' \"$(echo $live)\"; exit 0; fi\n",
+    );
+    let needle = crate::remote::quote(&format!("\"owner\":\"{owner}\""));
+    for (i, path) in paths.iter().enumerate() {
+        if !removable_shape(path) {
+            s.push_str(&format!(
+                "printf 'KEPT {i} not a home, ledger or fanout dir\\n'\n"
+            ));
+            continue;
+        }
+        s.push_str(&format!(
+            "p={p}\n\
+             if [ -f \"$p/owner.json\" ] && ! grep -qF {needle} \"$p/owner.json\"; then\n\
+             \x20 printf 'KEPT {i} its owner.json names another owner\\n'\n\
+             elif [ -e \"$p\" ]; then\n\
+             \x20 n=$(du -sk \"$p\" 2>/dev/null | awk '{{print $1}}')\n\
+             \x20 chmod -R u+w \"$p\" 2>/dev/null\n\
+             \x20 rm -rf \"$p\" 2>/dev/null\n\
+             \x20 if [ -e \"$p\" ]; then printf 'KEPT {i} rm -rf left it there\\n'; else printf 'GONE {i} %s\\n' \"${{n:-0}}\"; fi\n\
+             else\n\
+             \x20 printf 'GONE {i} 0\\n'\n\
+             fi\n",
+            p = crate::remote::expand_root(path),
+        ));
+    }
+    s
+}
+
+/// The script that sizes recorded dirs on a host: `SIZE <i> <kib>` or `MISSING <i>` per path.
+pub fn measure_script(paths: &[String]) -> String {
+    let mut s = String::new();
+    for (i, path) in paths.iter().enumerate() {
+        s.push_str(&format!(
+            "p={p}\n\
+             if [ -e \"$p\" ]; then printf 'SIZE {i} %s\\n' \"$(du -sk \"$p\" 2>/dev/null | awk '{{print $1}}')\"; \
+             else printf 'MISSING {i}\\n'; fi\n",
+            p = crate::remote::expand_root(path),
+        ));
+    }
+    s
+}
+
+/// What a removal or a measurement said about one path, by its index.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PathSaid {
+    Gone { bytes: u64 },
+    Kept(String),
+    Size(u64),
+    Missing,
+}
+
+/// A script's answer: `Err(pids)` when the owner has a live process there, else what each path did.
+pub fn parse_paths(said: &str) -> Result<BTreeMap<usize, PathSaid>, String> {
+    let mut out = BTreeMap::new();
+    for line in said.lines() {
+        let mut f = line.trim().splitn(3, ' ');
+        let word = f.next().unwrap_or("");
+        if word == "LIVE" {
+            return Err(f.collect::<Vec<_>>().join(" "));
+        }
+        let Some(i) = f.next().and_then(|i| i.parse::<usize>().ok()) else {
+            continue;
+        };
+        let rest = f.next().unwrap_or("").trim();
+        let kib = || rest.parse::<u64>().unwrap_or(0) * 1024;
+        let said = match word {
+            "GONE" => PathSaid::Gone { bytes: kib() },
+            "KEPT" => PathSaid::Kept(rest.to_string()),
+            "SIZE" => PathSaid::Size(kib()),
+            "MISSING" => PathSaid::Missing,
+            _ => continue,
+        };
+        out.insert(i, said);
+    }
+    Ok(out)
+}
+
+/// The holdings this store records on other hosts and has not seen go, per host: what `letibot
+/// holds` lists under its remote section, with the size the last pass measured.
+pub fn remote_holdings(
+    store: &letibot_tokencore::store::Store,
+    box_id: &str,
+) -> letibot_tokencore::store::Result<BTreeMap<String, Vec<HoldingRow>>> {
+    let mut out: BTreeMap<String, Vec<HoldingRow>> = BTreeMap::new();
+    for row in store.holdings()? {
+        let Some(host) = row.host.clone() else {
+            continue;
+        };
+        if host == box_id || row.state == letibot_tokencore::store::HoldingState::Gone {
+            continue;
+        }
+        out.entry(host).or_default().push(row);
+    }
+    Ok(out)
+}
+
+/// [`remote_holdings`] in a person's words: one line per host with its total, one per holding.
+pub fn remote_holdings_lines(by_host: &BTreeMap<String, Vec<HoldingRow>>) -> Vec<String> {
+    let size = |b: Option<u64>| match b {
+        Some(b) => super::human_bytes(b),
+        None => "not measured yet".to_string(),
+    };
+    let mut out = Vec::new();
+    for (host, rows) in by_host {
+        let total: u64 = rows.iter().filter_map(|r| r.bytes).sum();
+        out.push(format!(
+            "{host}: {} holding(s), {}",
+            rows.len(),
+            super::human_bytes(total)
+        ));
+        for r in rows {
+            out.push(format!(
+                "    {} {} {} ({}, {})",
+                r.owner_id,
+                r.kind,
+                r.handle,
+                size(r.bytes),
+                r.state.word()
+            ));
+        }
+    }
+    out
 }
 
 #[cfg(test)]

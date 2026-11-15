@@ -161,6 +161,9 @@ pub trait ProcessBook: Send + Sync {
     fn started(&self, p: &ProcessNote);
     /// A process ended. `handle` is the job id this book was told about.
     fn ended(&self, handle: &str, state: ProcState, exit: Option<i32>);
+    /// A call made its work dir and jobs ledger on `host`: holdings the remote pass removes once
+    /// the session is settled.
+    fn workdir(&self, _host: &str, _dir: &str, _ledger: &str) {}
 }
 
 /// What a book is told about a start.
@@ -364,6 +367,9 @@ impl Fleet {
         if made != 0 {
             return Err(format!("`{name}` would not make `{dir}` (exit {made})"));
         }
+        let ledger = format!("{root}/{}/{}", remote::JOBS_DIR, self.work);
+        // Recorded before a command runs in it, so a session's reap finds every dir it made here.
+        self.book.workdir(name, &dir, &ledger);
         self.workdirs
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -376,7 +382,7 @@ impl Fleet {
             remote::RemoteProcesses::new(ssh, name.to_string(), dir.clone())
                 // Beside the work directory and not in it: a branch's commands run in `dir`, and
                 // a pid file they can rewrite is a kill aimed at a process nobody here started.
-                .with_ledger(format!("{root}/.letibot-jobs/{}", self.work)),
+                .with_ledger(ledger),
         ))
     }
 

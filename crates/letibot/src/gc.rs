@@ -295,6 +295,7 @@ fn holds(args: &[String]) -> Result<(), String> {
         .iter()
         .filter(|o| matches_folder(o.repo.as_deref(), parsed.folder.as_deref()))
         .collect();
+    let remote = remote_holdings(&store, &places, &owners, parsed.owner.as_deref());
     if parsed.json {
         let filtered = Plan {
             owners: owners.iter().map(|o| (*o).clone()).collect(),
@@ -305,7 +306,9 @@ fn holds(args: &[String]) -> Result<(), String> {
             systemd: plan.systemd.clone(),
             systemd_why: plan.systemd_why.clone(),
         };
-        println!("{}", filtered.to_json());
+        let mut json = filtered.to_json();
+        json["remote"] = remote_json(&remote);
+        println!("{json}");
         return Ok(());
     }
     if owners.is_empty() {
@@ -318,6 +321,7 @@ fn holds(args: &[String]) -> Result<(), String> {
         );
         print_spills(&plan.spills);
         print_bounded(&plan.bounded);
+        print_remote(&remote);
         return Ok(());
     }
     if parsed.top {
@@ -356,7 +360,57 @@ fn holds(args: &[String]) -> Result<(), String> {
     }
     print_spills(&plan.spills);
     print_bounded(&plan.bounded);
+    print_remote(&remote);
     Ok(())
+}
+
+/// What the owners shown hold on other hosts, per host, as the last remote pass measured it.
+fn remote_holdings(
+    store: &Store,
+    places: &Places,
+    owners: &[&lifecycle::OwnerView],
+    only: Option<&str>,
+) -> std::collections::BTreeMap<String, Vec<HoldingRow>> {
+    let mut by_host = lifecycle::remote_holdings(store, &places.box_id).unwrap_or_default();
+    for rows in by_host.values_mut() {
+        rows.retain(|r| {
+            only.is_none_or(|o| r.owner_id == o) && owners.iter().any(|o| o.id == r.owner_id)
+        });
+    }
+    by_host.retain(|_, rows| !rows.is_empty());
+    by_host
+}
+
+fn print_remote(by_host: &std::collections::BTreeMap<String, Vec<HoldingRow>>) {
+    if by_host.is_empty() {
+        return;
+    }
+    println!("remote hosts:");
+    for line in lifecycle::remote_holdings_lines(by_host) {
+        println!("  {line}");
+    }
+}
+
+fn remote_json(by_host: &std::collections::BTreeMap<String, Vec<HoldingRow>>) -> serde_json::Value {
+    by_host
+        .iter()
+        .map(|(host, rows)| {
+            let rows: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|r| {
+                    serde_json::json!({
+                        "owner": r.owner_id,
+                        "kind": r.kind,
+                        "handle": r.handle,
+                        "bytes": r.bytes,
+                        "state": r.state.word(),
+                    })
+                })
+                .collect();
+            (host.clone(), serde_json::Value::Array(rows))
+        })
+        .collect::<serde_json::Map<_, _>>()
+        .into()
 }
 
 /// The spill stores, after the owners: per project, not per owner.

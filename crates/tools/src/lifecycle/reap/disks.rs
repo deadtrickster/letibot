@@ -596,7 +596,10 @@ pub(super) fn remote_hosts(
     let mut by_host: BTreeMap<String, Vec<HoldingRow>> = BTreeMap::new();
     for row in store.holdings()? {
         let Some(host) = &row.host else { continue };
-        if host == &places.box_id || only.is_some_and(|n| row.owner_id != n) {
+        if host == &places.box_id
+            || only.is_some_and(|n| row.owner_id != n)
+            || row.state == HoldingState::Gone
+        {
             continue;
         }
         by_host.entry(host.clone()).or_default().push(row);
@@ -655,24 +658,28 @@ pub(super) fn remote_hosts(
                         )),
                     }
                 }
-                for row in rows {
-                    let moved = pass.touched(&row.owner_id) || collected.contains(&row.owner_id);
-                    store.put_holding(&HoldingRow {
-                        state: if moved {
-                            HoldingState::Gone
-                        } else {
-                            HoldingState::Held
-                        },
-                        why: Some(if moved {
-                            "the host's own pass bundled its tree and removed its caches".into()
-                        } else {
-                            "the host answered: its lease is fresh, or its work is still there"
-                                .into()
-                        }),
-                        checked_ms: Some(now),
-                        ..row
-                    })?;
+                let pending: Vec<&str> = pass
+                    .bundles
+                    .iter()
+                    .filter(|b| !collected.contains(&b.owner))
+                    .map(|b| b.owner.as_str())
+                    .collect();
+                let mut left = Vec::new();
+                for (owner, mine) in by_owner(rows) {
+                    let verdict = removable(store, &owner, &pass, &pending, now)?;
+                    match verdict {
+                        Ok(why) => {
+                            left.extend(remove_remote(store, ops, &host, &why, mine, now, report)?)
+                        }
+                        Err(why) => {
+                            report
+                                .kept
+                                .push(format!("{owner} on {host}: its dirs stay, {why}"));
+                            left.extend(mine.into_iter().map(|r| (r, why.clone())));
+                        }
+                    }
                 }
+                measure_remote(store, ops, &host, left, now)?;
             }
             Err(why) => {
                 for row in &rows {
@@ -698,6 +705,169 @@ pub(super) fn remote_hosts(
                 }
             }
         }
+    }
+    Ok(())
+}
+
+/// How often a host's recorded dirs are sized for `letibot holds`: `du` over a 150G home is not a
+/// once-a-minute cost. A row never measured is sized on the next pass regardless.
+pub const MEASURE_EVERY_MS: i64 = 30 * 60 * 1000;
+
+fn by_owner(rows: Vec<HoldingRow>) -> BTreeMap<String, Vec<HoldingRow>> {
+    let mut out: BTreeMap<String, Vec<HoldingRow>> = BTreeMap::new();
+    for r in rows {
+        out.entry(r.owner_id.clone()).or_default().push(r);
+    }
+    out
+}
+
+/// May this owner's dirs on a host go? `Ok(why)` once it is settled, or its lease was reaped there
+/// with any bundle brought home, and nothing of it is held or open here. `Err(why)` keeps them.
+fn removable(
+    store: &Store,
+    owner: &str,
+    pass: &HostPass,
+    pending: &[&str],
+    now: i64,
+) -> StoreResult<Result<String, String>> {
+    let Some(row) = store.owner(owner)? else {
+        return Ok(Err("no owner row here names it".into()));
+    };
+    if row.held(now) {
+        return Ok(Err("the operator holds it".into()));
+    }
+    let settled = matches!(row.state, OwnerState::Settled | OwnerState::Swept);
+    let reaped = pass.reaped.iter().any(|o| o == owner) && past_compute(&row);
+    if !settled && !reaped {
+        return Ok(Err(format!("its owner is `{}`", row.state.word())));
+    }
+    if pending.contains(&owner) {
+        return Ok(Err(
+            "its bundle is not home yet, and it is the only copy of that work".into(),
+        ));
+    }
+    if super::owns_open_job(store, &row) || super::busy(store, &row) {
+        return Ok(Err("a job of it is still open".into()));
+    }
+    Ok(Ok(if settled {
+        format!("its owner is `{}`", row.state.word())
+    } else {
+        "the host's own pass reaped its lease".into()
+    }))
+}
+
+/// Remove one owner's recorded dirs on `host`. Answers the rows still there, each with why.
+fn remove_remote(
+    store: &Store,
+    ops: &Ops,
+    host: &str,
+    why: &str,
+    rows: Vec<HoldingRow>,
+    now: i64,
+    report: &mut Pass,
+) -> StoreResult<Vec<(HoldingRow, String)>> {
+    let owner = rows[0].owner_id.clone();
+    let ledgers: Vec<String> = rows
+        .iter()
+        .filter(|r| r.kind == crate::lifecycle::REMOTE_JOBS)
+        .map(|r| r.handle.clone())
+        .collect();
+    let paths: Vec<String> = rows.iter().map(|r| r.handle.clone()).collect();
+    let said = match ops
+        .hands
+        .host_command(host, &remote::remove_script(&owner, &ledgers, &paths))
+        .map(|s| remote::parse_paths(&s))
+    {
+        Ok(Ok(said)) => said,
+        Ok(Err(pids)) => {
+            let why = format!("a process of it still runs there (pid {pids})");
+            report.kept.push(format!("{owner} on {host}: {why}"));
+            return Ok(rows.into_iter().map(|r| (r, why.clone())).collect());
+        }
+        Err(e) => {
+            let why = format!("{host} did not answer the removal: {e}");
+            report.kept.push(format!("{owner} on {host}: {why}"));
+            return Ok(rows.into_iter().map(|r| (r, why.clone())).collect());
+        }
+    };
+    let mut left = Vec::new();
+    for (i, row) in rows.into_iter().enumerate() {
+        match said.get(&i) {
+            Some(remote::PathSaid::Gone { bytes }) => {
+                let line = format!("removed from {host}: {why}");
+                report.acts.push(Act {
+                    owner: owner.clone(),
+                    kind: row.kind.clone(),
+                    host: Some(host.to_string()),
+                    handle: row.handle.clone(),
+                    act: ReapAct::Remove,
+                    said: line.clone(),
+                    bytes: *bytes,
+                });
+                journal(store, ops, &owner, &row, ReapAct::Remove, &line, now)?;
+                store.put_holding(&HoldingRow {
+                    state: HoldingState::Gone,
+                    why: Some(line),
+                    checked_ms: Some(now),
+                    ..row
+                })?;
+            }
+            Some(remote::PathSaid::Kept(k)) => {
+                report
+                    .kept
+                    .push(format!("{owner} on {host} {}: {k}", row.handle));
+                left.push((row, k.clone()));
+            }
+            _ => left.push((row, format!("{host} said nothing of it"))),
+        }
+    }
+    Ok(left)
+}
+
+/// Size what stays on `host` for `letibot holds`, when due or never measured. A path the host no
+/// longer has is `gone`.
+fn measure_remote(
+    store: &Store,
+    ops: &Ops,
+    host: &str,
+    rows: Vec<(HoldingRow, String)>,
+    now: i64,
+) -> StoreResult<()> {
+    if rows.is_empty() {
+        return Ok(());
+    }
+    let due = ops.measured.due_every(host, now, MEASURE_EVERY_MS);
+    let ask: Vec<usize> = (0..rows.len())
+        .filter(|&i| due || rows[i].0.bytes.is_none())
+        .collect();
+    let paths: Vec<String> = ask.iter().map(|&i| rows[i].0.handle.clone()).collect();
+    let said = if paths.is_empty() {
+        BTreeMap::new()
+    } else {
+        ops.hands
+            .host_command(host, &remote::measure_script(&paths))
+            .ok()
+            .and_then(|s| remote::parse_paths(&s).ok())
+            .unwrap_or_default()
+    };
+    for (i, (row, why)) in rows.into_iter().enumerate() {
+        let at = ask.iter().position(|&a| a == i).and_then(|k| said.get(&k));
+        let (state, bytes, why) = match at {
+            Some(remote::PathSaid::Missing) => (
+                HoldingState::Gone,
+                row.bytes,
+                format!("{host} no longer has it"),
+            ),
+            Some(remote::PathSaid::Size(b)) => (HoldingState::Held, Some(*b), why),
+            _ => (HoldingState::Held, row.bytes, why),
+        };
+        store.put_holding(&HoldingRow {
+            state,
+            bytes,
+            why: Some(why),
+            checked_ms: Some(now),
+            ..row
+        })?;
     }
     Ok(())
 }

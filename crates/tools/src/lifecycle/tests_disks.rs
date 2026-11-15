@@ -853,3 +853,188 @@ fn holding(store: &Store, owner: &str, kind: &str) -> Option<HoldingRow> {
         .into_iter()
         .find(|r| r.kind == kind)
 }
+
+/// A placed session's home (with a read-only Go module cache in it), its ledger, and a fanout
+/// call's work dir and ledger, all recorded on one host, under one owner in `state`.
+fn remote_fixture(f: &Fixture, store: &Store, id: &str, state: OwnerState) -> Vec<PathBuf> {
+    let root = f.at("host");
+    let home = remote::owner_root(&root, id);
+    std::fs::create_dir_all(&home).unwrap();
+    let stamp = remote::RemoteOwner {
+        owner: id.into(),
+        box_id: "lab2x1".into(),
+        kind: "session".into(),
+        created_ms: now_ms(),
+        lease_ms: now_ms(),
+        idle_ttl_ms: Some(super::PACKAGE_IDLE_TTL_MS),
+        work: None,
+        ledger: None,
+    };
+    std::fs::write(home.join(OWNER_JSON), stamp.line()).unwrap();
+    let module = f.file(
+        &format!("host/.letibot-home/{id}/go/pkg/mod/x@v1/x.go"),
+        2048,
+    );
+    let ledger = f.at(&format!("host/.letibot-jobs/{id}"));
+    let fanout = f.at(&format!("host/fanout-call_{id}"));
+    f.file(&format!("host/fanout-call_{id}/out.log"), 4096);
+    let fanout_ledger = f.at(&format!("host/.letibot-jobs/fanout-call_{id}"));
+    use std::os::unix::fs::PermissionsExt;
+    let ro = |p: &Path, mode| std::fs::set_permissions(p, std::fs::Permissions::from_mode(mode));
+    ro(&module, 0o444).unwrap();
+    for d in module.ancestors().skip(1).take(4) {
+        ro(d, 0o555).unwrap();
+    }
+
+    let mut owner = f.owner(&f.places(), id, state);
+    owner.lease_ms = now_ms();
+    store.put_owner(&owner).unwrap();
+    let paths = vec![home, ledger, fanout, fanout_ledger];
+    for (kind, p) in [REMOTE_HOME, REMOTE_JOBS, REMOTE_FANOUT, REMOTE_JOBS]
+        .iter()
+        .zip(&paths)
+    {
+        store
+            .put_holding(
+                &HoldingRow::new(
+                    id,
+                    *kind,
+                    HoldingClass::Cache,
+                    p.display().to_string(),
+                    "recorded when it was made",
+                    now_ms(),
+                )
+                .on_host(Some("lubuntu2".into())),
+            )
+            .unwrap();
+    }
+    paths
+}
+
+fn remote_rows(store: &Store, id: &str) -> Vec<HoldingRow> {
+    store
+        .holdings_of(id)
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.host.as_deref() == Some("lubuntu2"))
+        .collect()
+}
+
+/// **Done when** a settled owner's home, ledgers and fanout dirs on a host are gone after one pass,
+/// a read-only module cache included, and its rows say so.
+#[test]
+fn a_settled_owners_remote_dirs_are_removed() {
+    let f = Fixture::new("remote-settled");
+    let places = f.places();
+    let store = f.store();
+    let paths = remote_fixture(&f, &store, "s-8", OwnerState::Settled);
+    let hands = Arc::new(StubHands::new(|_| Err("no firecode".into())));
+    let report = pass(&store, &places, &hands, now_ms(), None).expect("a pass");
+
+    for p in &paths {
+        assert!(!p.exists(), "{} is still on the host", p.display());
+    }
+    let rows = remote_rows(&store, "s-8");
+    assert_eq!(rows.len(), 4);
+    assert!(
+        rows.iter().all(|r| r.state == HoldingState::Gone),
+        "{rows:#?}"
+    );
+    let freed: u64 = report
+        .acts
+        .iter()
+        .filter(|a| a.owner == "s-8" && a.act == letibot_tokencore::store::ReapAct::Remove)
+        .map(|a| a.bytes)
+        .sum();
+    assert!(freed >= 4096, "{:#?}", report.acts);
+    assert!(
+        remote::remote_holdings(&store, "lab2x1")
+            .unwrap()
+            .is_empty(),
+        "nothing left to list"
+    );
+}
+
+/// A held owner, a closed one and one with a live process there keep every dir, and `holds` lists
+/// them per host with the size the pass measured.
+#[test]
+fn held_live_and_unsettled_owners_keep_their_remote_dirs() {
+    let f = Fixture::new("remote-kept");
+    let places = f.places();
+    let store = f.store();
+    let held = remote_fixture(&f, &store, "s-9", OwnerState::Settled);
+    let mut row = store.owner("s-9").unwrap().unwrap();
+    row.held_until_ms = Some(0);
+    store.put_owner(&row).unwrap();
+    let closed = remote_fixture(&f, &store, "s-10", OwnerState::Closed);
+    let live = remote_fixture(&f, &store, "s-11", OwnerState::Settled);
+    let mut child = std::process::Command::new("sleep")
+        .arg("30")
+        .env(crate::remote::SESSION_MARK, "s-11")
+        .spawn()
+        .expect("sleep");
+
+    let hands = Arc::new(StubHands::new(|_| Err("no firecode".into())));
+    let report = pass(&store, &places, &hands, now_ms(), None).expect("a pass");
+    let _ = child.kill();
+    let _ = child.wait();
+
+    for p in held.iter().chain(&closed).chain(&live) {
+        assert!(p.exists(), "{} was removed", p.display());
+    }
+    let kept = report.kept.join("\n");
+    assert!(
+        kept.contains("s-9 on lubuntu2: its dirs stay, the operator holds it"),
+        "{kept}"
+    );
+    assert!(
+        kept.contains("s-10 on lubuntu2: its dirs stay, its owner is `closed`"),
+        "{kept}"
+    );
+    assert!(
+        kept.contains("s-11 on lubuntu2: a process of it still runs"),
+        "{kept}"
+    );
+
+    let by_host = remote::remote_holdings(&store, "lab2x1").unwrap();
+    let rows = &by_host["lubuntu2"];
+    assert_eq!(rows.len(), 12, "{rows:#?}");
+    let fanout = rows
+        .iter()
+        .find(|r| r.owner_id == "s-10" && r.kind == REMOTE_FANOUT)
+        .expect("the fanout row");
+    assert!(fanout.bytes.is_some_and(|b| b >= 4096), "{fanout:#?}");
+    let lines = remote::remote_holdings_lines(&by_host);
+    assert!(
+        lines[0].starts_with("lubuntu2: 12 holding(s), "),
+        "{lines:#?}"
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("s-10 fanout") && l.contains("fanout-call_s-10")),
+        "{lines:#?}"
+    );
+
+    // The read-only cache would otherwise stop the fixture's own cleanup.
+    let _ = std::process::Command::new("chmod")
+        .args(["-R", "u+w"])
+        .arg(f.at("host"))
+        .status();
+}
+
+/// The removal refuses a handle that is not one of the three shapes, so a bad row cannot aim
+/// `rm -rf` at a host's root or home.
+#[test]
+fn only_homes_ledgers_and_fanout_dirs_are_removable() {
+    assert!(remote::removable_shape(
+        "~/letibot-remote/.letibot-home/abc"
+    ));
+    assert!(remote::removable_shape("/r/.letibot-jobs/fanout-call_1"));
+    assert!(remote::removable_shape("/r/fanout-call_1"));
+    assert!(!remote::removable_shape("/r"));
+    assert!(!remote::removable_shape("/r/.letibot-home"));
+    assert!(!remote::removable_shape("/r/.letibot-home/.."));
+    assert!(!remote::removable_shape("/r/fanout-"));
+    assert!(!remote::removable_shape("/home/dead"));
+}

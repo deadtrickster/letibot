@@ -98,6 +98,30 @@ impl ProcessBook for StoreBook {
         });
     }
 
+    fn workdir(&self, host: &str, dir: &str, ledger: &str) {
+        use letibot_tokencore::store::{HoldingClass, HoldingRow};
+        use letibot_tools::lifecycle::{REMOTE_FANOUT, REMOTE_JOBS};
+        let now = crate::supervise::now_ms();
+        self.with(dir, "its work dir on that host", |store| {
+            for (kind, handle) in [(REMOTE_FANOUT, dir), (REMOTE_JOBS, ledger)] {
+                store
+                    .put_holding(
+                        &HoldingRow::new(
+                            &self.session,
+                            kind,
+                            HoldingClass::Cache,
+                            handle,
+                            "a fanout call of this session made it",
+                            now,
+                        )
+                        .on_host(Some(host.to_string())),
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(())
+        });
+    }
+
     fn ended(&self, handle: &str, state: ProcState, exit: Option<i32>) {
         let mut check = Check::new(state, crate::supervise::now_ms(), 0, "fleet");
         if let Some(code) = exit {
@@ -141,6 +165,34 @@ mod tests {
             deadline_ms: Some(1_700_000_060_000),
             log: Some("/home/dead/letibot-remote/fanout-1/.letibot-remote/jobs/7.out".to_string()),
         }
+    }
+
+    /// A fanout's work dir and ledger on a host are this session's holdings there, so the remote
+    /// pass can remove them once the session is settled.
+    #[test]
+    fn a_work_dir_is_recorded_as_two_remote_holdings() {
+        let path = store_path("workdir");
+        let book = StoreBook::new(path.clone(), "s-wd");
+        book.workdir("lubuntu1", "/r/fanout-c1", "/r/.letibot-jobs/fanout-c1");
+
+        let store = Store::open(&path).expect("the store");
+        let rows = store.holdings_of("s-wd").expect("the query");
+        let mut got: Vec<(String, String)> = rows
+            .iter()
+            .map(|r| (r.kind.clone(), r.handle.clone()))
+            .collect();
+        got.sort();
+        assert_eq!(
+            got,
+            vec![
+                ("fanout".to_string(), "/r/fanout-c1".to_string()),
+                (
+                    "jobs-ledger".to_string(),
+                    "/r/.letibot-jobs/fanout-c1".to_string()
+                ),
+            ]
+        );
+        assert!(rows.iter().all(|r| r.host.as_deref() == Some("lubuntu1")));
     }
 
     /// What the supervisor needs is what the record carries - the host it checks on, the identity
