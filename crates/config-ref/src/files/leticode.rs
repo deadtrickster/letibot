@@ -97,6 +97,12 @@ pub const LETICODE: File = File {
                 k("auto_background", "bool", "true", PW, "move a call to the background past the threshold", "true"),
                 k("foreground_seconds", "int >= 1", "60", PW, "foreground threshold", "60"),
                 k("job_dead_after_seconds", "int", "1800", PW, "a job with no output and no CPU this long is dead; 0 = check off", "1800"),
+                k("io_wbps", "size", "none", PW, "io.max write bytes/s on every job (`200M`); needs io delegated", "\"200M\""),
+                k("io_wiops", "int", "none", PW, "io.max write ops/s on every job; needs io delegated", "2000"),
+                k("disk_floor", "percent or size", "5%", PW, "free space on a job's filesystems below which the top writers in the last 60s are stopped; 0 = off", "\"5%\""),
+                k("disk_floor_action", "freeze | kill", "freeze", PW, "what the floor does to them; `job_resume` thaws a frozen job", "\"freeze\""),
+                k("io_pressure_full", "percent", "60", PW, "system io `full` pressure (avg10) that, held for 20s, throttles the top writer through io.max; 0 = off", "60"),
+                k("disk_watch", "list of paths", "[\"/build\", $CARGO_TARGET_DIR]", PW, "filesystems the floor watches besides each job's cwd; replaces the default", "[\"/build\"]"),
             ],
         },
         Table {

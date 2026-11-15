@@ -323,6 +323,7 @@ pub fn runner_tools_with(
     reg.register(Box::new(builtins::jobs::JobOutput))?;
     reg.register(Box::new(builtins::jobs::JobWait))?;
     reg.register(Box::new(builtins::jobs::JobExtend))?;
+    reg.register(Box::new(builtins::jobs::JobResume))?;
     reg.register(Box::new(builtins::jobs::JobKill::new()))?;
     reg.register(Box::new(builtins::monitor::Monitor))?;
     // Work on many machines, registered with the exec surface and proved by nothing here: a registry that

@@ -5419,6 +5419,8 @@ impl RemoteProcesses {
             // The job's processes are that host's, and nothing here can read its cgroup: a count
             // taken on this machine would be about the wrong processes entirely.
             holding: None,
+            io: None,
+            io_marks: Default::default(),
         }
     }
 

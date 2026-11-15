@@ -142,6 +142,10 @@ pub struct JobView {
     /// not running (its cgroup is gone), for a job of jobs (its work is on other machines) and for
     /// a backend that cannot read a cgroup at all.
     pub holding: Option<super::scope::Holding>,
+    /// The job's io total: `io.stat` at its settle, or the last sample.
+    pub io: Option<super::diskio::IoUse>,
+    /// What the disk floor or the throttle did to it.
+    pub io_marks: super::diskio::IoMarks,
 }
 
 /// What a job is called: the caller's name and the id, or just the id when nobody
@@ -348,6 +352,18 @@ pub trait ProcessHost: Send + Sync {
     fn take_dead_warning(&self, job: &JobId) -> Option<DeadWarning> {
         let _ = job;
         None
+    }
+
+    /// The row the disk floor or the io throttle owes a job, TAKEN so it is said once.
+    fn take_io_note(&self, job: &JobId) -> Option<String> {
+        let _ = job;
+        None
+    }
+
+    /// Thaw a job the disk floor froze. `Err` says why nothing was thawed.
+    fn resume_job(&self, job: &JobId) -> Result<String, String> {
+        let _ = job;
+        Err("this backend freezes nothing, so it has nothing to resume".into())
     }
 
     /// Block on a handle, never a pattern. `job` waits for one job to leave
@@ -955,7 +971,10 @@ impl Liveness {
                 let cpu = super::scope::cpu_use_of(&p.job.lifetime().scope);
                 // A host that cannot read the clock cannot prove a job dead: `None` is *we cannot
                 // say*, and ending a job on it is the wall clock this check exists to end.
-                let moved = cpu.is_none() || bytes != p.bytes || p.cpu.is_none() || cpu != p.cpu;
+                // A frozen job is stopped on purpose; its silence is not death.
+                let frozen = p.job.io_marks().frozen.is_some();
+                let moved =
+                    frozen || cpu.is_none() || bytes != p.bytes || p.cpu.is_none() || cpu != p.cpu;
                 p.bytes = bytes;
                 p.cpu = cpu;
                 if moved {
@@ -1060,6 +1079,8 @@ pub struct HostProcesses {
     deadlines: Arc<Deadlines>,
     /// The dead check, and the thread that runs it. See [`Liveness`].
     liveness: Arc<Liveness>,
+    /// Disk IO accounting, the throttle and the disk floor. See [`super::diskio::IoGuard`].
+    io: Arc<super::diskio::IoGuard>,
     reaps: Mutex<Vec<Reaping>>,
     /// Every promotion, for the same reason `reaps` exists: a lifetime that
     /// changed under the model is a fact somebody has to be able to read back.
@@ -1312,6 +1333,17 @@ fn keeps_on_restart(job: &Job) -> bool {
 
 /// The same look, remembering a scope that could not be released: the last process in it can leave
 /// long after its leader, and the only other moment this host touches the tree is a spawn.
+/// `io.stat` outlives the processes, so the settle reads the whole total. Without it the guard's
+/// last sample stays.
+fn record_io_at_settle(job: &Job) {
+    let dir = job.lifetime().scope.path;
+    if dir.join("io.stat").exists()
+        && let Some(u) = super::diskio::io_use_at(&dir, std::path::Path::new("/proc"))
+    {
+        job.record_io(u);
+    }
+}
+
 fn settle_scope(tree: &dyn ScopeTree, kept: &Mutex<Vec<ScopeId>>, scope: &ScopeId) {
     if release_settled_scope(tree, scope) {
         return;
@@ -1405,6 +1437,12 @@ impl HostProcesses {
         let h = HostProcesses {
             deadlines: Deadlines::new(Arc::clone(&tree)),
             liveness: Liveness::new(Arc::clone(&tree)),
+            io: super::diskio::IoGuard::new(
+                Arc::clone(&tree),
+                Box::new(super::diskio::HostDisks),
+                PathBuf::from("/proc"),
+                true,
+            ),
             tree,
             // Not asked for, and named as such rather than left absent, so a
             // reader of `describe()` cannot mistake silence for a boundary.
@@ -1777,6 +1815,8 @@ impl HostProcesses {
             // The work is in other machines' cgroups: a count read here would be this host's
             // processes, and there are none of them.
             holding: None,
+            io: None,
+            io_marks: Default::default(),
         }
     }
 
@@ -1838,6 +1878,8 @@ impl HostProcesses {
             output_file: cap.output_file(),
             env_report: cap.env_report(),
             holding,
+            io: job.io_used(),
+            io_marks: job.io_marks(),
         }
     }
 
@@ -1856,6 +1898,20 @@ impl HostProcesses {
 
     pub fn dead_after(&self) -> Option<Duration> {
         self.liveness.window()
+    }
+
+    /// The `[exec]` io keys: the per-job `io.max`, the disk floor and the pressure throttle.
+    pub fn set_io_policy(&self, policy: super::diskio::IoPolicy) {
+        self.io.set_policy(policy);
+    }
+
+    pub fn io_policy(&self) -> super::diskio::IoPolicy {
+        self.io.policy()
+    }
+
+    /// The io guard, for a test to tick by hand.
+    pub fn io_guard(&self) -> &Arc<super::diskio::IoGuard> {
+        &self.io
     }
 
     /// The warnings the dead check owes jobs, oldest first. Taken one at a time through
@@ -2054,6 +2110,12 @@ impl ProcessHost for HostProcesses {
                 Ok(()) => MemoryCap::Capped(bytes),
                 Err(why) => MemoryCap::Uncapped { asked: bytes, why },
             },
+        };
+        // The configured io cap goes on with the memory cap, before any process joins.
+        let io_capped = if req.tty || confined.memory_is_elsewhere() {
+            None
+        } else {
+            self.io.cap_new(self.tree.as_ref(), &cgroup.path, &cwd)
         };
 
         let procs = Cgroup2::procs_path(&cgroup);
@@ -2301,6 +2363,7 @@ impl ProcessHost for HostProcesses {
             Some((f, _)) => job.with_follow(Arc::clone(f)),
             None => job,
         });
+        job.set_throttled(io_capped);
         // The parent's copy of the output file goes: the child holds its own.
         drop(follow);
         if let Some(p) = super::procs::read(pid) {
@@ -2420,6 +2483,7 @@ impl ProcessHost for HostProcesses {
                 if let Some(used) = super::scope::memory_use_of(&waiter.lifetime().scope) {
                     waiter.record_memory(used);
                 }
+                record_io_at_settle(&waiter);
                 waiter.settle(state);
                 if let Some(f) = waiter.follow() {
                     f.discard();
@@ -2480,6 +2544,7 @@ impl ProcessHost for HostProcesses {
         // it is theirs to end.
         if !req.tty {
             self.liveness.watch(Arc::clone(&job));
+            self.io.watch(Arc::clone(&job));
         }
         self.jobs.lock().expect("jobs").push(job);
         self.release_settled_captures(SETTLED_CAPTURE_BUDGET);
@@ -2560,6 +2625,7 @@ impl ProcessHost for HostProcesses {
         // An adopted job is watched on the same rule: it was started by a daemon that is gone, and
         // nothing here knows whether it was given a deadline.
         self.liveness.watch(Arc::clone(&job));
+        self.io.watch(Arc::clone(&job));
         // The record's identity is the whole of the evidence that this is the same process. A
         // pid alone would settle a stranger's job, or keep one running for ever, on a box that had
         // reused the number.
@@ -2619,6 +2685,25 @@ impl ProcessHost for HostProcesses {
         // through `Deadlines::armed_for` rather than assumed: a caller must not announce a
         // deadline nothing enforces.
         self.deadlines.armed_for(job).then_some(after)
+    }
+
+    fn take_io_note(&self, job: &JobId) -> Option<String> {
+        self.io.take_note(job)
+    }
+
+    fn resume_job(&self, id: &JobId) -> Result<String, String> {
+        let job = self
+            .find(id)
+            .ok_or_else(|| format!("no job `{}` on this host", id.0))?;
+        let Some(why) = job.io_marks().frozen else {
+            return Err(format!("`{}` is not frozen", id.0));
+        };
+        if !job.state().is_running() {
+            return Err(format!("`{}` has already {}", id.0, job.state().word()));
+        }
+        super::diskio::freeze(&job.lifetime().scope.path, false)?;
+        job.set_frozen(None);
+        Ok(format!("`{}` was thawed; it had been {why}", id.0))
     }
 
     fn take_dead_warning(&self, job: &JobId) -> Option<DeadWarning> {
@@ -2955,6 +3040,7 @@ impl ProcessHost for HostProcesses {
             return Ok((id, Reattached::Ended(state)));
         }
         self.liveness.watch(Arc::clone(&job));
+        self.io.watch(Arc::clone(&job));
         let tree = Arc::clone(&self.tree);
         let kept = Arc::clone(&self.kept_scopes);
         let watched = Arc::clone(&job);
@@ -2984,6 +3070,7 @@ impl ProcessHost for HostProcesses {
                     if let Some(used) = super::scope::memory_use_of(&scope) {
                         watched.record_memory(used);
                     }
+                    record_io_at_settle(&watched);
                     let state = match super::detach::read_status(follow.status()) {
                         Some(code) => JobState::Exited { code },
                         None => JobState::Dead,
@@ -3276,6 +3363,7 @@ impl Drop for HostProcesses {
         // And the dead check, for the same reason: a tick that outlived its jobs has nothing to
         // look at and would keep the host's `Arc` alive for the process's life.
         self.liveness.close();
+        self.io.close();
         let session = self.session.lock().expect("session scope").clone();
         let kept = !self
             .detached

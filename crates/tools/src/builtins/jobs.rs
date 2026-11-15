@@ -388,6 +388,22 @@ fn live_lines_said(j: &JobView, said: &mut std::collections::HashSet<String>) ->
     if let Some(cpu) = j.holding.as_ref().and_then(|h| h.cpu) {
         s.push_str(&format!("  cpu:     {}\n", cpu.clause()));
     }
+    match j.holding.as_ref().and_then(|h| h.io_clause()) {
+        Some(io) => s.push_str(&format!("  io:      {io}\n")),
+        // An ended job keeps its total: what it wrote is the question a full disk asks.
+        None if !j.state.is_running() => {
+            if let Some(u) = j.io.filter(|u| u.stat.wbytes > 0) {
+                s.push_str(&format!("  io:      {}\n", u.clause(None)));
+            }
+        }
+        None => {}
+    }
+    for mark in [&j.io_marks.frozen, &j.io_marks.throttled]
+        .into_iter()
+        .flatten()
+    {
+        s.push_str(&format!("  io:      {mark}\n"));
+    }
     if let Some(m) = j.memory_clause() {
         match said.insert(m.clone()) {
             true => s.push_str(&format!("  memory:  {m}\n")),
@@ -1198,6 +1214,55 @@ impl Tool for JobExtend {
     }
 }
 
+// ---------------------------------------------------------------- job_resume
+
+/// `job_resume` thaws a job the disk floor froze. Nothing else freezes a job.
+pub struct JobResume;
+
+impl Tool for JobResume {
+    fn schema(&self) -> ToolSchema {
+        ToolSchema::new(
+            "job_resume",
+            "Let a job the disk floor FROZE go on. When a filesystem a job writes to drops below \
+             `[exec] disk_floor`, the top writers are frozen (every process stopped, nothing \
+             lost) and their row says which filesystem and how much they wrote. Free space \
+             first, then call this; `job_kill` ends the job instead.",
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "job": {"type": "string", "description": "The frozen job: its id (`j65`) or the name it was given."}
+                },
+                "required": ["job"]
+            }),
+            Access::Exec,
+        )
+    }
+
+    fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
+        let Some(host) = ctx.backend.processes() else {
+            return no_process_host(ctx);
+        };
+        let Some(asked) = args.get("job").and_then(|v| v.as_str()) else {
+            return Invocation::failed(
+                "job_resume needs a job",
+                "call it again with `job` set to a job id or the name you gave it. `job_list` \
+                 shows which jobs are frozen.",
+            );
+        };
+        let view = match resolve_job(host, asked) {
+            Ok(v) => v,
+            Err(inv) => return inv,
+        };
+        match host.resume_job(&view.id) {
+            Ok(said) => Invocation::ok(format!("{said}\n")),
+            Err(why) => Invocation::not_run(
+                format!("`{}` was not resumed", view.label()),
+                format!("{why}. Nothing was changed.\n"),
+            ),
+        }
+    }
+}
+
 // ---------------------------------------------------------------- job_kill
 
 /// `job_kill` stops a job or a subagent, and the two are stopped differently: a job is
@@ -1633,7 +1698,54 @@ mod tests {
             output_file: None,
             env_report: None,
             holding: None,
+            io: None,
+            io_marks: Default::default(),
         }
+    }
+
+    /// A running job's row carries what its cgroup wrote, read from `io.stat`; an ended one keeps
+    /// its total; a frozen one says so.
+    #[test]
+    fn a_job_row_shows_the_bytes_it_wrote() {
+        let dir = std::env::temp_dir().join(format!("letibot-iorow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("cgroup.procs"), "").unwrap();
+        std::fs::write(
+            dir.join("io.stat"),
+            "259:1 rbytes=0 wbytes=67108864 rios=0 wios=512 dbytes=0 dios=0\n",
+        )
+        .unwrap();
+        let mut v = view("j1", Some("dd"));
+        v.holding = Some(crate::exec::Holding::read_in(&dir, &dir, 0, None));
+        let row = job_row(&v);
+        assert!(row.contains("io:      64 MiB written, 512 writes"), "{row}");
+        assert!(!row.contains("sampled"), "{row}");
+
+        let mut ended = view("j2", None);
+        ended.state = crate::exec::JobState::Exited { code: 0 };
+        ended.io = Some(crate::exec::diskio::IoUse {
+            stat: crate::exec::diskio::IoStat {
+                wbytes: 1 << 30,
+                wios: 9,
+                ..Default::default()
+            },
+            source: crate::exec::diskio::IoSource::Sampled,
+        });
+        let row = job_row(&ended);
+        assert!(row.contains("1 GiB written"), "{row}");
+        assert!(row.contains("sampled from /proc"), "{row}");
+
+        let mut frozen = view("j3", None);
+        frozen.io_marks.frozen = Some("FROZEN by the disk floor: /build at 1 GiB free".into());
+        assert!(job_row(&frozen).contains("io:      FROZEN by the disk floor"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn job_resume_is_an_exec_tool_with_a_clean_description() {
+        let s = JobResume.schema();
+        assert_eq!(s.access, Access::Exec);
+        assert_eq!(crate::schema::lint_description(&s.description), vec![]);
     }
 
     /// A job the kernel ended at its cap says what ended it and names the cap, in one clause: that

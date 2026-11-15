@@ -331,6 +331,11 @@ pub trait ScopeTree: Send + Sync {
 
     /// What `scope`'s memory did, read from the kernel - before the scope is ended, because
     /// ending it removes the files this reads.
+    /// Whether this tree's scopes carry the io controller (`io.stat`, `io.max`), or why not.
+    fn io_controls(&self) -> Result<(), String> {
+        Err("this scope mechanism has no io controller".into())
+    }
+
     fn memory_use(&self, _scope: &ScopeId) -> Option<MemoryUse> {
         None
     }
@@ -614,6 +619,11 @@ pub struct Holding {
     /// How long ago `memory.events`' `oom_kill` was last seen to grow. `None` on the first
     /// reading of a scope already at its cap: the count says how many, not when.
     pub oom_since: Option<Duration>,
+    /// What the cgroup has done to disks, and its write rate since the previous reading.
+    pub io: Option<super::diskio::IoUse>,
+    pub io_rate: Option<super::diskio::IoRate>,
+    /// The cgroup's own `io.pressure` "full" avg10, whole percent.
+    pub io_pressure: Option<u32>,
     /// The clock and the totals this reading was taken at, which is what makes the next one a
     /// delta. Private: a caller passes this reading back in and reads the fields above.
     seen: Seen,
@@ -625,6 +635,7 @@ struct Seen {
     at: Instant,
     cpu_usec: Option<u64>,
     oom_kills: u64,
+    io: Option<super::diskio::IoUse>,
     /// When this reader last saw `oom_kills` grow: a counter says how many, never how recently.
     oom_moved: Option<Instant>,
 }
@@ -647,6 +658,7 @@ impl Holding {
         let top = top_commands(&pids, proc_root);
         let leader_alive = pid != 0 && proc_root.join(pid.to_string()).exists();
         let oom_kills = oom_kills_at(dir);
+        let io_before = super::diskio::io_use_at(dir, proc_root);
         let (now, cpu_usec, cpu, oom_moved) = match prev.map(|p| p.seen) {
             Some(before) => {
                 let now = Instant::now();
@@ -685,19 +697,62 @@ impl Holding {
                 (now, cpu_usec, cpu, None)
             }
         };
+        // With a previous reading the delta is over the interval; without one, over the CPU sample.
+        let (io, io_rate) = match prev.map(|p| p.seen) {
+            Some(before) => {
+                let io = super::diskio::monotonic(before.io, io_before);
+                let rate = match (before.io, io) {
+                    (Some(a), Some(b)) => super::diskio::IoRate::between(
+                        &a.stat,
+                        &b.stat,
+                        now.saturating_duration_since(before.at),
+                    ),
+                    _ => None,
+                };
+                (io, rate)
+            }
+            None => {
+                let after =
+                    super::diskio::monotonic(io_before, super::diskio::io_use_at(dir, proc_root));
+                let rate = match (io_before, after) {
+                    (Some(a), Some(b)) => {
+                        super::diskio::IoRate::between(&a.stat, &b.stat, CPU_SAMPLE)
+                    }
+                    _ => None,
+                };
+                (after, rate)
+            }
+        };
+        let io_pressure = std::fs::read_to_string(dir.join("io.pressure"))
+            .ok()
+            .and_then(|t| super::diskio::pressure_full(&t))
+            .map(|p| p.round() as u32);
         Holding {
             processes: pids.len(),
             top,
             leader_alive,
             cpu,
             oom_since: oom_moved.map(|m| now.saturating_duration_since(m)),
+            io,
+            io_rate,
+            io_pressure,
             seen: Seen {
                 at: now,
                 cpu_usec,
                 oom_kills,
+                io,
                 oom_moved,
             },
         }
+    }
+
+    /// The `io:` line: bytes written, the rate, and the cgroup's own stall when it has one.
+    pub fn io_clause(&self) -> Option<String> {
+        let mut s = self.io?.clause(self.io_rate);
+        if let Some(p) = self.io_pressure.filter(|p| *p >= 1) {
+            s.push_str(&format!("; stalled on io {p}% of the last 10s"));
+        }
+        Some(s)
     }
 
     /// `75 processes — 73 v3rpc.test, 1 go, 1 timeout` - or `0 processes`, which is a cgroup that
@@ -849,6 +904,8 @@ pub struct Cgroup2 {
     /// Whether scopes under this root can be memory-capped, or why not. See [`delegate_memory`]:
     /// `Ok` only when the tree hangs off a delegated scope the daemon has stepped out of.
     memory: Result<(), String>,
+    /// Whether scopes under this root carry `io`, or why not. See [`super::diskio::io_delegation`].
+    io: Result<(), String>,
 }
 
 /// Where a delegated cgroup v2 hierarchy is mounted.
@@ -866,6 +923,7 @@ impl Cgroup2 {
             Ok(base) => {
                 let mut t = Self::probe_under(base)?;
                 t.memory = Ok(());
+                t.io = io_in(base, &t.root);
                 Ok(t)
             }
             Err(_) => Self::probe_under(&own_cgroup()?),
@@ -915,6 +973,10 @@ impl Cgroup2 {
                         .into()
                 }
             }),
+            io: Err(
+                "this tree was built under a chosen parent, not the daemon's delegated scope"
+                    .into(),
+            ),
         })
     }
 
@@ -946,6 +1008,26 @@ pub(crate) fn populated_at(dir: &Path) -> bool {
             .unwrap_or(false),
         Err(_) => false,
     }
+}
+
+/// io on a tree root under the delegated scope: offered by `base` and enabled on `root`'s
+/// subtree, so every scope opened under it carries `io.stat` and `io.max`.
+fn io_in(base: &Path, root: &Path) -> Result<(), String> {
+    super::diskio::io_delegation()?;
+    let offered = |p: &Path| {
+        std::fs::read_to_string(p.join("cgroup.controllers"))
+            .unwrap_or_default()
+            .split_whitespace()
+            .any(|c| c == "io")
+    };
+    if !offered(base) || !offered(root) {
+        return Err(format!(
+            "`{}` does not offer the io controller to its children",
+            base.display()
+        ));
+    }
+    std::fs::write(root.join("cgroup.subtree_control"), "+io")
+        .map_err(|e| format!("enabling io under `{}` failed: {e}", root.display()))
 }
 
 /// The harness's own cgroup path, from `/proc/self/cgroup`.
@@ -1000,6 +1082,10 @@ pub fn delegate_memory() -> &'static Result<PathBuf, String> {
                 leaf.display()
             )
         })?;
+        // A separate write: `+memory +io` fails whole when io is not delegated.
+        if controllers.split_whitespace().any(|c| c == "io") {
+            let _ = std::fs::write(own.join("cgroup.subtree_control"), "+io");
+        }
         Ok(own)
     })
 }
@@ -1208,7 +1294,7 @@ pub fn said_once(tag: &str, why: &str) {
     eprintln!("letibot: {why}");
 }
 
-fn own_cgroup() -> Result<PathBuf, ExecError> {
+pub(crate) fn own_cgroup() -> Result<PathBuf, ExecError> {
     let text = std::fs::read_to_string("/proc/self/cgroup")
         .map_err(|e| ExecError::NoScopes(format!("`/proc/self/cgroup` could not be read: {e}")))?;
     // cgroup v2 gives exactly one line, `0::<path>`. A v1-only host gives several and none of them
@@ -1227,7 +1313,7 @@ fn own_cgroup() -> Result<PathBuf, ExecError> {
 }
 
 /// Read the pids in one cgroup directory and every directory under it.
-fn members_at(dir: &Path, out: &mut Vec<u32>) {
+pub(crate) fn members_at(dir: &Path, out: &mut Vec<u32>) {
     if let Ok(s) = std::fs::read_to_string(dir.join("cgroup.procs")) {
         for line in s.lines() {
             if let Ok(pid) = line.trim().parse::<u32>() {
@@ -1303,6 +1389,9 @@ impl ScopeTree for Cgroup2 {
         if self.memory.is_ok() {
             let _ = std::fs::write(base.join("cgroup.subtree_control"), "+memory");
         }
+        if self.io.is_ok() {
+            let _ = std::fs::write(base.join("cgroup.subtree_control"), "+io");
+        }
         std::fs::create_dir_all(&dir).map_err(|e| ExecError::Cgroup {
             op: "mkdir",
             path: dir.display().to_string(),
@@ -1322,6 +1411,10 @@ impl ScopeTree for Cgroup2 {
 
     fn memory_caps(&self) -> Result<(), String> {
         self.memory.clone()
+    }
+
+    fn io_controls(&self) -> Result<(), String> {
+        self.io.clone()
     }
 
     fn cap_memory(&self, scope: &ScopeId, bytes: u64) -> Result<(), String> {

@@ -307,6 +307,12 @@ fn say_memory_caps() {
         ),
         Err(why) => eprintln!("harnessd: memory caps OFF — {why}"),
     }
+    match letibot_tools::exec::diskio::io_delegation() {
+        Ok(()) => eprintln!(
+            "harnessd: io delegated — jobs' disk IO is read from io.stat and io.max can throttle"
+        ),
+        Err(why) => eprintln!("harnessd: io NOT delegated — {why}"),
+    }
 }
 
 /// Nothing this process booted on another machine outlives it. A guest is booted by a

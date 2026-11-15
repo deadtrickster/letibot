@@ -774,8 +774,9 @@ fn the_leticode_seat_carries_ask_user_question() {
     // arrived, which is the property `max_tools` is declared for. The count is pinned so a
     // tool added without a decision fails here. 38 since `job_extend` (R160): a background job
     // has no deadline of its own, and the warning before a dead check names the way out.
-    // 39 with `screen`.
-    assert_eq!(seat.tools.len(), 39, "{:?}", seat.tools);
+    // 39 with `screen`. 40 with `job_resume` (R269): the disk floor freezes a job, and its row
+    // names the way out.
+    assert_eq!(seat.tools.len(), 40, "{:?}", seat.tools);
     assert!(
         seat.tools.len() <= seat.max_tools,
         "the seat is over its own ceiling: {} > {}",

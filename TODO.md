@@ -1526,7 +1526,19 @@ A single spill is already bounded: a command's capture is an 8 MiB tail ring (`D
 
 ## R269 - Per-job disk and IO accounting, an IO throttle and a disk floor
 
-**Status:** open, 2026-11-15. Queued after R268. left: all of it.
+**Status:** built on branch `r269`, 2026-11-15. left: the `io.stat` path measured live (needs the user manager restarted), and the 1 GiB / iops-throttle checks of "Done when" on a box with io passed down.
+
+**Built (branch `r269`):**
+- `crates/tools/src/exec/diskio.rs`: `io.stat` parsed and summed over devices (a device under another one, by sysfs `holders`, is skipped so dm-crypt is not counted twice), `io.pressure` "full", the `/proc/<pid>/io` fallback (`write_bytes`, `syscw`, kept monotonic), `io.max`, `cgroup.freeze`, and `IoGuard`, a thread ticking every 5s.
+- `Cgroup2` enables `+io` wherever the parent offers it, in a write of its own so a missing io never costs memory caps. `ScopeTree::io_controls` says whether it can throttle.
+- The job row, `job_list`, `job_output` and `job_wait` carry an `io:` line: bytes written, writes, the rate, the cgroup's own io stall, and `(sampled from /proc ...)` on the fallback. An ended job keeps its total (`io.stat` read at the settle).
+- `[exec] io_wbps`, `io_wiops`: `io.max` on every job at its spawn, for the devices backing its cwd and `disk_watch`. Default none.
+- `[exec] disk_floor` (default `5%`, or a size, `0` off), `disk_floor_action = freeze|kill` (default freeze), `disk_watch` (default `/build` and `$CARGO_TARGET_DIR`). Below the floor the top writer in the last 60s (and any writing at least half as much, at most 3, at least 1 MiB) is frozen or killed. The row and a `job_io` warning name the job, the bytes and the filesystem. A frozen job is spared by the dead check.
+- `[exec] io_pressure_full` (default 60, `0` off): system `full avg10` above it for 4 ticks throttles the top writer through `io.max` to half its window rate (at least 1 MiB/s, 50 writes/s), with a row.
+- `job_resume` thaws a frozen job. The leticode seat's ceiling is 40 for it.
+- Startup: `harnessd: io delegated` or `io NOT delegated - <why and the setup line>`.
+
+**Measured 2026-11-15:** the drop-in is in (`DelegateControllers=cpu io memory pids`) and `user@1000.service/cgroup.controllers` lists io, but its `subtree_control` is still `cpu memory pids`: the user manager started on 2026-11-07, before the drop-in, and does not pass io to new scopes (`systemd-run --user --scope -p Delegate=yes -p IOAccounting=yes` gets `cpu memory pids`). The startup line says exactly that. Smoke (`LETIBOT_IO_SMOKE=1 cargo test -p letibot-tools --test io_smoke`): `dd` of 64 MiB in a job reads `64 MiB written, 65 writes` on the sampled path.
 
 The question was "can we track that a particular command causes disk hog?" A `dd of=file` writing a terabyte is not touched by spills, and the memory caps do not limit disk. Operator: "if it hogs iops it is equally bad". So bytes written, space held and IO rate all count.
 

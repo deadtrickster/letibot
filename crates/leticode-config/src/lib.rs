@@ -896,17 +896,29 @@ fn provider_keys(
 /// auto_background = true   # move a call to the background past the threshold (default)
 /// foreground_seconds = 60 # the threshold
 /// job_dead_after_seconds = 1800 # a background job with no output and no CPU for this long is dead
+/// io_wbps = "200M"         # io.max write bytes/s on every job (default: none)
+/// io_wiops = 2000          # io.max write ops/s on every job (default: none)
+/// disk_floor = "5%"        # free space below which the top writers are stopped; "20G"; 0 = off
+/// disk_floor_action = "freeze" # or "kill"
+/// io_pressure_full = 60    # system io "full" pressure, percent, that throttles the top writer; 0 = off
+/// disk_watch = ["/build"]  # filesystems watched besides each job's cwd
 /// ```
 ///
 /// `false` keeps the advice only. The project's file wins over the user's. `job_dead_after_seconds`
 /// is the ONLY clock a background job has: a job with no deadline is ended when it is dead, never at
 /// a fixed age, because ten minutes is nothing next to a fuzz campaign or a cold build. `0` turns the
 /// check off, and then only `job_kill` ends a job that has wedged.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExecKeys {
     pub auto_background: Option<bool>,
     pub foreground_seconds: Option<u64>,
     pub job_dead_after_seconds: Option<u64>,
+    pub io_wbps: Option<u64>,
+    pub io_wiops: Option<u64>,
+    pub disk_floor: Option<letibot_tools::exec::diskio::DiskFloor>,
+    pub disk_floor_action: Option<letibot_tools::exec::diskio::FloorAction>,
+    pub io_pressure_full: Option<f64>,
+    pub disk_watch: Option<Vec<PathBuf>>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -918,15 +930,66 @@ struct ExecTable {
     foreground_seconds: Option<u64>,
     #[serde(default)]
     job_dead_after_seconds: Option<u64>,
+    #[serde(default)]
+    io_wbps: Option<toml::Value>,
+    #[serde(default)]
+    io_wiops: Option<u64>,
+    #[serde(default)]
+    disk_floor: Option<toml::Value>,
+    #[serde(default)]
+    disk_floor_action: Option<String>,
+    #[serde(default)]
+    io_pressure_full: Option<f64>,
+    #[serde(default)]
+    disk_watch: Option<Vec<PathBuf>>,
+}
+
+/// A size key: an integer of bytes, or a string with a unit (`"200M"`, `"20G"`, `"5%"` for a floor).
+fn size_word(v: &toml::Value) -> Result<String, String> {
+    match v {
+        toml::Value::Integer(n) if *n >= 0 => Ok(n.to_string()),
+        toml::Value::String(s) => Ok(s.clone()),
+        other => Err(format!("`{other}` is not a size")),
+    }
 }
 
 fn exec_keys(value: &toml::Value) -> Result<ExecKeys, String> {
     let t: ExecTable = value.clone().try_into().map_err(|e| {
         format!(
-            "[exec]: {e}; the keys are `auto_background` (bool), `foreground_seconds` and \
-             `job_dead_after_seconds` (0 turns the dead check off)"
+            "[exec]: {e}; the keys are `auto_background` (bool), `foreground_seconds`, \
+             `job_dead_after_seconds` (0 turns the dead check off), `io_wbps`, `io_wiops`, \
+             `disk_floor`, `disk_floor_action`, `io_pressure_full` and `disk_watch`"
         )
     })?;
+    use letibot_tools::exec::diskio::{DiskFloor, FloorAction, parse_size};
+    let io_wbps = match &t.io_wbps {
+        None => None,
+        Some(v) => Some(
+            size_word(v)
+                .and_then(|w| parse_size(&w))
+                .map_err(|e| format!("[exec] io_wbps: {e}"))?,
+        )
+        .filter(|n| *n > 0),
+    };
+    let disk_floor = match &t.disk_floor {
+        None => None,
+        Some(v) => Some(
+            size_word(v)
+                .and_then(|w| DiskFloor::parse(&w))
+                .map_err(|e| format!("[exec] disk_floor: {e}"))?,
+        ),
+    };
+    let disk_floor_action = match &t.disk_floor_action {
+        None => None,
+        Some(a) => {
+            Some(FloorAction::parse(a).map_err(|e| format!("[exec] disk_floor_action: {e}"))?)
+        }
+    };
+    if t.io_pressure_full
+        .is_some_and(|p| !(0.0..=100.0).contains(&p))
+    {
+        return Err("[exec] io_pressure_full is a percentage, from 0 (off) to 100".into());
+    }
     if t.foreground_seconds == Some(0) {
         return Err("[exec] foreground_seconds must be at least 1".into());
     }
@@ -934,6 +997,12 @@ fn exec_keys(value: &toml::Value) -> Result<ExecKeys, String> {
         auto_background: t.auto_background,
         foreground_seconds: t.foreground_seconds,
         job_dead_after_seconds: t.job_dead_after_seconds,
+        io_wbps,
+        io_wiops: t.io_wiops.filter(|n| *n > 0),
+        disk_floor,
+        disk_floor_action,
+        io_pressure_full: t.io_pressure_full,
+        disk_watch: t.disk_watch,
     })
 }
 
@@ -989,6 +1058,46 @@ pub fn job_dead_after(
         }
     }
     window
+}
+
+/// The io policy a session's jobs run under: defaults, then the user file, then the nearest
+/// project file. `disk_watch` replaces the default list rather than adding to it.
+pub fn io_policy(
+    user: &LeticodeConfig,
+    workspace: &Path,
+    read_project: bool,
+) -> letibot_tools::exec::diskio::IoPolicy {
+    let mut p = letibot_tools::exec::diskio::IoPolicy::default();
+    let mut apply = |k: &ExecKeys| {
+        if let Some(v) = k.io_wbps {
+            p.wbps = Some(v);
+        }
+        if let Some(v) = k.io_wiops {
+            p.wiops = Some(v);
+        }
+        if let Some(v) = k.disk_floor {
+            p.floor = v;
+        }
+        if let Some(v) = k.disk_floor_action {
+            p.action = v;
+        }
+        if let Some(v) = k.io_pressure_full {
+            p.pressure_full = (v > 0.0).then_some(v);
+        }
+        if let Some(v) = &k.disk_watch {
+            p.watch = v.clone();
+        }
+    };
+    apply(&user.exec);
+    if read_project && let Some(path) = LeticodeConfig::discover(workspace) {
+        match LeticodeConfig::load(&path) {
+            Ok(project) => apply(&project.exec),
+            Err(why) => {
+                eprintln!("  leticode.toml: {why} - this session's [exec] is the level below")
+            }
+        }
+    }
+    p
 }
 
 /// `[output]` in a `leticode.toml`: the cap a tool result is spilled at, the head and tail kept
@@ -2537,6 +2646,16 @@ impl LeticodeConfig {
                     .exec
                     .job_dead_after_seconds
                     .or(self.exec.job_dead_after_seconds),
+                io_wbps: other.exec.io_wbps.or(self.exec.io_wbps),
+                io_wiops: other.exec.io_wiops.or(self.exec.io_wiops),
+                disk_floor: other.exec.disk_floor.or(self.exec.disk_floor),
+                disk_floor_action: other.exec.disk_floor_action.or(self.exec.disk_floor_action),
+                io_pressure_full: other.exec.io_pressure_full.or(self.exec.io_pressure_full),
+                disk_watch: other
+                    .exec
+                    .disk_watch
+                    .clone()
+                    .or_else(|| self.exec.disk_watch.clone()),
             },
             // The user's only: see [`BrowserKeys`].
             browser: if other.level == Level::User {

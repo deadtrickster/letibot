@@ -1306,6 +1306,12 @@ impl Harness {
                     &cfg.workspace,
                     cfg.read_project_config,
                 ));
+                // `[exec]` io keys: the per-job `io.max`, the disk floor and the pressure throttle.
+                h.set_io_policy(crate::leticode_config::io_policy(
+                    &cfg.leticode_user,
+                    &cfg.workspace,
+                    cfg.read_project_config,
+                ));
                 h.protect_model_server(
                     cfg.endpoint.port,
                     format!(
@@ -2409,6 +2415,7 @@ impl Harness {
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobList)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobOutput)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobExtend)))
+            .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobResume)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobWait)))
             .and_then(|_| {
                 registry.register(Box::new(
@@ -4687,6 +4694,7 @@ pub(crate) fn base_role_for_seat(seat: Seat, cfg: &Config) -> Role {
                             | "job_output"
                             | "job_wait"
                             | "job_kill"
+                            | "job_resume"
                             | "monitor"
                             | "pkill"
                             | "ps"

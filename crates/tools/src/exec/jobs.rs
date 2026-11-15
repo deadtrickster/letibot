@@ -883,6 +883,10 @@ pub struct Job {
     /// holding the counters can be ended. `None` on a tree with no memory controller, and while
     /// the job runs.
     memory_used: Mutex<Option<super::scope::MemoryUse>>,
+    /// The latest io reading: `io.stat` at the settle, or the guard's last sample while it runs.
+    io_used: Mutex<Option<super::diskio::IoUse>>,
+    /// What the disk floor or the throttle did to this job, for its row.
+    io_marks: Mutex<super::diskio::IoMarks>,
     /// `start:<n>` of the leader at spawn or adoption: what tells this process from a later one
     /// with its number. Empty when unread.
     identity: Mutex<String>,
@@ -931,6 +935,8 @@ impl Job {
             stdin,
             memory_cap: MemoryCap::NotAsked,
             memory_used: Mutex::new(None),
+            io_used: Mutex::new(None),
+            io_marks: Mutex::new(Default::default()),
             identity: Mutex::new(String::new()),
             follow: None,
         }
@@ -1003,6 +1009,36 @@ impl Job {
     /// Recorded by the waiter, once, just before [`Job::settle`].
     pub fn record_memory(&self, used: super::scope::MemoryUse) {
         *self.memory_used.lock().expect("job memory") = Some(used);
+    }
+
+    /// What the job has done to disks, at the last reading.
+    pub fn io_used(&self) -> Option<super::diskio::IoUse> {
+        *self.io_used.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    pub fn record_io(&self, used: super::diskio::IoUse) {
+        *self.io_used.lock().unwrap_or_else(|e| e.into_inner()) = Some(used);
+    }
+
+    pub fn io_marks(&self) -> super::diskio::IoMarks {
+        self.io_marks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    pub fn set_frozen(&self, why: Option<String>) {
+        self.io_marks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .frozen = why;
+    }
+
+    pub fn set_throttled(&self, why: Option<String>) {
+        self.io_marks
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .throttled = why;
     }
 
     /// The way in to this job's stdin. Cloned out rather than lent because the reader is on

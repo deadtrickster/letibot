@@ -25,6 +25,9 @@ const WATCH_CHUNK: Duration = Duration::from_secs(5);
 /// that arrives before the harness ends a silent job, and the only chance to say `job_extend`.
 pub const JOB_DEAD_SOON: &str = "job_dead_soon";
 
+/// The warning code for what the disk floor or the io throttle did to a job.
+pub const JOB_IO: &str = "job_io";
+
 /// What that warning says. Pure, so the words are asserted without a daemon: it names the job, both
 /// numbers, what is about to happen, and the two ways out.
 pub fn dead_soon_note(w: &letibot_tools::exec::DeadWarning) -> String {
@@ -1760,6 +1763,9 @@ fn watch_one(
                 // so a watcher that polls says it once. It is the last moment `job_extend` helps.
                 if let Some(w) = host.take_dead_warning(&JobId(job.clone())) {
                     hub.warn(JOB_DEAD_SOON, dead_soon_note(&w));
+                }
+                while let Some(note) = host.take_io_note(&JobId(job.clone())) {
+                    hub.warn(JOB_IO, note);
                 }
             }
             // The job is gone from the host: its scope was reaped with the session, or the host

@@ -1121,6 +1121,8 @@ fn a_jobs_process_record_reads_running_then_done() {
         output_file: None,
         env_report: None,
         holding: None,
+        io: None,
+        io_marks: Default::default(),
     };
 
     rec.process(&view);

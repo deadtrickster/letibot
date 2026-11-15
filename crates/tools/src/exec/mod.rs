@@ -9,6 +9,7 @@ pub mod console;
 #[cfg(target_os = "macos")]
 pub mod darwin;
 pub mod detach;
+pub mod diskio;
 pub mod fence;
 pub mod github;
 pub mod host;

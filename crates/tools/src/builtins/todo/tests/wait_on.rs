@@ -31,6 +31,8 @@ fn job(id: &str, slug: Option<&str>, state: JobState) -> JobView {
         output_file: None,
         env_report: None,
         holding: None,
+        io: None,
+        io_marks: Default::default(),
     }
 }
 

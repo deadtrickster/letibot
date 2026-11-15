@@ -76,6 +76,12 @@ NAME is a seat a spawn uses, or `subagent`, the floor under every spawn. Window 
 | `auto_background` | bool | true | both, project wins | move a call to the background past the threshold |
 | `foreground_seconds` | int >= 1 | 60 | both, project wins | foreground threshold |
 | `job_dead_after_seconds` | int | 1800 | both, project wins | a job with no output and no CPU this long is dead; 0 = check off |
+| `io_wbps` | size | none | both, project wins | io.max write bytes/s on every job (`200M`); needs io delegated |
+| `io_wiops` | int | none | both, project wins | io.max write ops/s on every job; needs io delegated |
+| `disk_floor` | percent or size | 5% | both, project wins | free space on a job's filesystems below which the top writers in the last 60s are stopped; 0 = off |
+| `disk_floor_action` | freeze \| kill | freeze | both, project wins | what the floor does to them; `job_resume` thaws a frozen job |
+| `io_pressure_full` | percent | 60 | both, project wins | system io `full` pressure (avg10) that, held for 20s, throttles the top writer through io.max; 0 = off |
+| `disk_watch` | list of paths | ["/build", $CARGO_TARGET_DIR] | both, project wins | filesystems the floor watches besides each job's cwd; replaces the default |
 
 ## `[output]`
 

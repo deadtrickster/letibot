@@ -692,6 +692,36 @@ fn the_dead_after_window_is_a_key_and_zero_turns_the_check_off() {
     );
 }
 
+/// The `[exec]` io keys: defaults, sizes with units, the floor as a percent or a size, `0` off,
+/// and a bad action refused by name.
+#[test]
+fn the_io_keys_resolve_and_a_bad_one_is_refused() {
+    use letibot_tools::exec::diskio::{DiskFloor, FloorAction};
+    let dir = project_dir("io_policy");
+    let none = LeticodeConfig::default();
+    let p = io_policy(&none, &dir, true);
+    assert_eq!((p.wbps, p.wiops), (None, None));
+    assert_eq!(p.floor, DiskFloor::Percent(5.0));
+    assert_eq!(p.action, FloorAction::Freeze);
+    write_file(
+        &dir,
+        "[exec]\nio_wbps = \"200M\"\nio_wiops = 2000\ndisk_floor = \"20G\"\n\
+         disk_floor_action = \"kill\"\nio_pressure_full = 0\ndisk_watch = [\"/tmp\"]\n",
+    );
+    let p = io_policy(&none, &dir, true);
+    assert_eq!(p.wbps, Some(200 << 20));
+    assert_eq!(p.wiops, Some(2000));
+    assert_eq!(p.floor, DiskFloor::Bytes(20 << 30));
+    assert_eq!(p.action, FloorAction::Kill);
+    assert_eq!(p.pressure_full, None, "zero turns it off");
+    assert_eq!(p.watch, vec![std::path::PathBuf::from("/tmp")]);
+    write_file(&dir, "[exec]\ndisk_floor = 0\n");
+    assert_eq!(io_policy(&none, &dir, true).floor, DiskFloor::Off);
+    let path = write_file(&dir, "[exec]\ndisk_floor_action = \"stop\"\n");
+    let why = LeticodeConfig::load(&path).unwrap_err();
+    assert!(why.contains("disk_floor_action"), "{why}");
+}
+
 /// The project's `[memory] default` beats the box-wide one for a session in it, and the
 /// policy names the project file as the source, which is what the `bash` description
 /// then says. A session elsewhere keeps the box's number.

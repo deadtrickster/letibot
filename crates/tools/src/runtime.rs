@@ -1127,6 +1127,8 @@ pub mod roles {
                 // longer. Seated with the job verbs, because the warning that precedes a dead
                 // check names it.
                 "job_extend",
+                // `job_resume`: the way out of a freeze by the disk floor, whose row names it.
+                "job_resume",
                 "monitor",
                 // `pkill`: find by a string, kill by pid, never itself. Seated with the exec
                 // surface, because signalling a process is one.
@@ -1190,7 +1192,7 @@ pub mod roles {
         // The declared ceiling is this list's own count and not DEFAULT_MAX_TOOLS: the
         // number is written down where somebody deciding can read it, and a ceiling
         // quietly raised for everybody is not a ceiling.
-        r.max_tools = 39;
+        r.max_tools = 40;
         r
     }
 
