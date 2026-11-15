@@ -2885,6 +2885,9 @@ impl Harness {
                 self.switch_back = None;
                 self.trouble_kind.clear();
                 self.trouble_count = 0;
+                if attempted.is_ok() {
+                    self.a_round_answered();
+                }
                 break attempted;
             };
             // A switch the operator made during this attempt is answered here and nothing else changes: it is

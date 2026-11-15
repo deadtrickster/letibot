@@ -598,6 +598,9 @@ pub struct Config {
     /// a limit somebody else's clock lifts is worth three more calls, and not an afternoon.
     pub limit_retry_wait: std::time::Duration,
     pub limit_retry_rounds: u32,
+    /// The steps a park re-tries its request on before the reset, the last repeating:
+    /// `[provider] limit_probe`. Empty waits for the reset alone.
+    pub limit_probe: Vec<std::time::Duration>,
     /// The clock a limit park is measured by. [`LimitClock::Wall`] in a daemon, and a test hands in
     /// its own so a park of five hours is measured without sleeping through it.
     pub limit_clock: LimitClock,
@@ -1728,6 +1731,7 @@ impl Config {
             wait_if_within: crate::leticode_config::DEFAULT_WAIT_IF_WITHIN,
             limit_retry_wait: std::time::Duration::from_secs(300),
             limit_retry_rounds: 3,
+            limit_probe: crate::leticode_config::DEFAULT_LIMIT_PROBE.to_vec(),
             limit_clock: LimitClock::Wall,
             // No overrides until `run` loads the operator's `prompts.toml`. `Default`
             // is the byte-identical case: a daemon that never reads the file composes

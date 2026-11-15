@@ -497,6 +497,9 @@ pub struct Harness {
     limited: limit::Limited,
     /// The way back a limit-driven switch earns: the model it left, and when that one may answer again.
     limit_return: Option<limit::LimitReturn>,
+    /// Early re-tries of a parked request: how many were refused in this run of parks, and the
+    /// park the one in flight was taken from. See [`limit::Probing`].
+    limit_probing: limit::Probing,
     /// The status row's limit words, shared with the activity source: `paused until 21:02:27 UTC`,
     /// or `glm limited until 21:02:27 UTC, on deepseek`.
     limit_row: Arc<std::sync::Mutex<Option<String>>>,

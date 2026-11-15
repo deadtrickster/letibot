@@ -3609,6 +3609,7 @@ impl Harness {
             limit_park: None,
             limited: Default::default(),
             limit_return: None,
+            limit_probing: Default::default(),
             limit_row: Default::default(),
             shadow: Default::default(),
             shadow_held: None,

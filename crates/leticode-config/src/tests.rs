@@ -1456,6 +1456,43 @@ fn a_bad_fallback_table_is_refused_by_line() {
     }
 }
 
+/// `limit_probe` is a list of spans: the default ladder when absent, `[]` turns it off, a zero or
+/// a non-span refused with its file and line.
+#[test]
+fn limit_probe_is_a_list_of_spans_with_a_default() {
+    let m = |n: u64| std::time::Duration::from_secs(n * 60);
+    assert_eq!(
+        LeticodeConfig::default().limit_probe(),
+        vec![m(2), m(5), m(15), m(30), m(60)]
+    );
+    let dir = project_dir("limit_probe");
+    let set = write_file(
+        &sub(&dir, "set"),
+        "[provider]\nlimit_probe = [\"1m\", \"1h\"]\n",
+    );
+    let cfg = LeticodeConfig::load(&set).unwrap();
+    assert_eq!(cfg.limit_probe(), vec![m(1), m(60)]);
+    assert!(
+        cfg.set_models()
+            .contains(&"limit_probe [1m, 1h]".to_string()),
+        "{:?}",
+        cfg.set_models()
+    );
+    let off = write_file(&sub(&dir, "off"), "[provider]\nlimit_probe = []\n");
+    assert!(LeticodeConfig::load(&off).unwrap().limit_probe().is_empty());
+    for (tag, body) in [
+        ("zero", "\n[provider]\nlimit_probe = [\"0\"]\n"),
+        ("bare", "\n[provider]\nlimit_probe = [\"5\"]\n"),
+        ("str", "\n[provider]\nlimit_probe = \"5m\"\n"),
+        ("int", "\n[provider]\nlimit_probe = [5]\n"),
+    ] {
+        let path = write_file(&sub(&dir, tag), body);
+        let err = LeticodeConfig::load(&path).expect_err(tag);
+        assert!(err.contains("leticode.toml:3:"), "{tag}: {err}");
+        assert!(err.contains("limit_probe"), "{tag}: {err}");
+    }
+}
+
 /// `wait_if_within` is a span next to `on_limit`: 45m when absent, `0` allowed, a bare number or
 /// a stranger refused with its file and line, and the project's span beats the user's.
 #[test]

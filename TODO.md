@@ -85,6 +85,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R263 | The generic output cap is off by default and its head/tail seam is unmarked | Code work | built (audit J2, plan 1.3): default cap 50 KiB / 2000 lines for every tool, one seam line naming bytes, lines and the `read_spill` hash/offset/length, `read_spill` pages under the cap, `[output]` in `leticode.toml`, TUI draws the seam in the Info role; left: the default store is memory so spills do not survive a restart without `--spill-dir`, and no `--spill-lines` flag |
 | R262 | Daemon-run sessions stay on a stale prompt: nobody answers their card | Code work | built: a seat states `on_stale` (ask, reseat, exempt), a session nobody answers reingests before a turn whose prompt fingerprint moved, one `reseated:` row and the model's `[reseat]` line, a refusal said once per target, `[sessions] auto_reseat`; left: a skill-pin or notes change does not trigger it (the fingerprint strips the notes section), and a profile cannot override its seat's answer |
 | R272 | Host setup, working rules and failure modes are in memory and chat, not in the docs | Code work | built: `docs/install.md` host setup and the checkout install loop, `AGENTS.md` rules, the bridge's start flag in `docs/claude-code-bridge.md`, `scripts/gate-at.sh` in `docs/gate.md`, `docs/troubleshooting.md` |
+| R275 | A GLM coding-plan limit parked rano for 5h on a window that lifted 3 minutes later | Code work | built: GLM 429s classified by business code (`crates/http/src/zai.rs`), `next_flush_time` read as UTC+8, `Resets at`/`将在` parsed, z.ai's quota endpoint on the GLM coding doors, every park re-tries on `[provider] limit_probe` (2m, 5m, 15m, 30m, 1h); left: the refusal body is not persisted anywhere, so this diagnosis is inferred from timings |
 | R267 | A streaming assistant line is drawn over an earlier row of the history | Code work | built: the live marker's join is taken back before the walk and only by its whole joined line; test `a_streaming_row_never_rewrites_an_earlier_row` |
 | R265 | A usage-limit park cannot be ended or moved: Esc does nothing and `/models` leaves the turn parked on the old model's reset | Code work | built: Esc ends the parked turn with a row naming the limit and the reset, a switch by any door retries the parked request on the new model, the status row names the reset and both ways out; left: the live check on a real Kimi limit |
 | R266 | Reaper remainder: a job across a stop that is not a handover, a start grace for a new owner, d.3 and the store-key rule written down | Code work | built (audit H1, R241's left): the reaper's daemon stop leaves the restart marker so host jobs are kept for the next daemon, the idle exit drains on a running job, a daemon's first 5 minutes judge no owner idle or orphaned, d.3 and the store-key rule written down; left: a plain `letibot --stop` still ends every job, by design |
@@ -4486,6 +4487,76 @@ What `e7f4e55` does, for when it is picked up (rebase it onto main; it was cut o
    repository's merge-queue lease; only the project's own daemon serves its queue.
 3. Every place that assumed `.claude/worktrees` moves with it (grants, cleanup, texts).
 
+
+## R275 - A GLM coding-plan limit parked rano for 5h on a window that lifted 3 minutes later
+
+**Status:** built 2026-11-15 on `glm-limit`.
+
+Operator report: rano (`s-1794057745451974498`, project `c74d1fd17483`, glm-coding/glm-5.3) showed
+`interrupted: paused until 23:08:20 UTC (nothing kept)`. Daemon log line 334520:
+`todo check -> paused until 23:08:20 UTC`. After the 18:12 restart the session worked on glm at once.
+
+**Measurements.**
+- Operator, z.ai console after the restart: 5h window 2% used, "Reset Time: 07:15", China time
+  (UTC+8), so 23:15 UTC. letibot's park was 23:08:20 UTC, 7 minutes earlier.
+- `metrics.db`: one `model.retry` row, `api.z.ai gave_up`, 6 calls over 33.7 s, ended
+  18:08:18.765 UTC, then `warning limit_park`. 18:08:18.765 + 5h + `PARK_JITTER_MS` (2 s) is
+  23:08:20.765, the park exactly. So the reset was computed: the body's window width (`for 5 hour`)
+  added to now. It was not a header and not the usage endpoint (glm-coding declared none).
+- glm-coding rounds, all sessions on this box: none between 2026-11-14 21:21 UTC and 2026-11-15
+  13:11:08 UTC. A rolling window opened by that request lifts at 18:11:08 UTC, 02:11:08 UTC+8.
+  The refusal came at 18:05-18:08, 3-6 minutes before it.
+- The next request was 18:15:27 UTC, the restart's first round. A window opened then lifts at
+  23:15:27 UTC, 07:15 UTC+8, which is the console's figure. So the console's 2% is the NEW window,
+  not the one that refused.
+- The same zone check on 2026-11-07's verbatim refusal ("Your limit will reset at 2026-11-07
+  21:02:27"): requests resumed 08:01:52 UTC after a gap, and as UTC+8 the reset is 13:02:27 UTC,
+  5h after that. Read as UTC it fits no window start.
+- The refusal body itself is not recorded: openai.rs logs only the request shape, and the
+  `limit_park` warning that carried it lived in the old daemon's hub.
+
+**Cause.** The refusal was most likely a real `1308` (or `1316`-`1321`) for the window opened at
+13:11. `reset::wall_clock_ms` read `next_flush_time` as UTC, 8 hours late (02:11 next day), so the
+window width beat it and the park ran to now + 5h. A rate limit was not misread as a window here:
+a `1302` body names no number, so it already took the long retry. The 2% console figure belongs to
+the window the restart opened.
+
+**z.ai's codes** (<https://docs.z.ai/api-reference/api-code>, mainland
+<https://docs.bigmodel.cn/cn/faq/api-code>). All are HTTP 429.
+- `1302` rate limit ("您的账户已达到速率限制"; concurrency per
+  <https://docs.z.ai/devpack/usage-policy>), `1305` overloaded: transient, retry, never park.
+- `1308` "Usage limit reached for {number} {unit}. Your limit will reset at {next_flush_time}",
+  `1310` weekly/monthly, `1316`-`1321` 5h/7d with extra usage unavailable ("Resets at ..."): a
+  spent window, park on `next_flush_time`.
+- `1113` no balance, `1309` plan expired, `1311` model not in plan, `1313` fair-use restriction,
+  `1314`/`1315` enterprise: refused, no wait lifts them.
+- The docs name no zone for `next_flush_time` and no `Retry-After`. The window is "the next 5-hour
+  cycle" (<https://docs.z.ai/devpack/faq>). The measurements above say rolling from the first
+  request, China time.
+- Usage endpoint: undocumented `GET /api/monitor/usage/quota/limit` on the door's host, bare key
+  (`Bearer` is a 401), `data.limits[]` with `percentage` and `nextResetTime` in millis. Read from
+  community clients (<https://docs.rs/crate/ai-usagebar/0.7.0/source/src/zai/types.rs>).
+
+**What changed.**
+- `letibot_http::zai` reads the code the provider crate appends as `(NNNN)`. `Policy::class` and
+  `trouble` decide by it before the money words, so `1316` ("Insufficient balance for extra usage")
+  is a window, not a quota. A transient code has no reset, whatever its prose or `Retry-After`.
+- A coded GLM wall clock is UTC+8. `Resets at` and `将在` are read as well as `reset at`.
+- The provider crate appends a numeric `code` as well as a string one.
+- `usage_url` on `glm-coding` and `glm-coding-cn`, asked only when a refusal names no wall clock.
+- `[provider] limit_probe` (default `["2m", "5m", "15m", "30m", "1h"]`, last repeating, `[]` off):
+  every park comes due at the next step before its reset and re-sends the parked request. A refusal
+  re-parks one step out, the first answer lifts the park and logs `limit_cleared_early` ("limit
+  cleared early at T"). Esc and `/models` (R265) reset the steps.
+
+Tests: `letibot-http` `a_glm_code_decides_between_a_rate_limit_a_window_and_a_refusal`,
+`a_glm_coded_wall_clock_is_china_time`; `harnessd/tests/limits.rs`
+`a_glm_rate_limit_retries_and_never_parks`, `a_glm_window_parks_on_its_china_time_reset`,
+`a_park_re_tries_on_its_steps_and_the_first_answer_lifts_it`.
+
+Left: the refusal body is not kept anywhere a later diagnosis can read it (the `limit_park`
+warning should reach the store or the daemon log). A probe re-runs the whole retry ladder rather
+than one call. The live check on a real z.ai limit.
 
 ## R267 - A streaming assistant line is drawn over an earlier row of the history
 

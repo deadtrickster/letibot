@@ -365,6 +365,7 @@ fn session_fallback(cfg: &mut Config) {
     // without one - the operator's ruling is that a limit with a known reset never fails a session.
     cfg.on_limit = cfg.leticode.limit_policy();
     cfg.wait_if_within = cfg.leticode.wait_if_within();
+    cfg.limit_probe = cfg.leticode.limit_probe();
     eprintln!(
         "  on a usage limit: {} — {}",
         cfg.on_limit.as_str(),

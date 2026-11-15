@@ -1308,6 +1308,7 @@ impl State {
                         | "limit_returned"
                         | "limit_park_interrupted"
                         | "limit_unparked"
+                        | "limit_cleared_early"
                 ) {
                     self.limit = Some(LimitNews {
                         kind: match code.as_str() {

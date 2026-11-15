@@ -221,6 +221,8 @@ fn config(
     cfg.http_retries = 0;
     cfg.limit_retry_wait = Duration::from_millis(20);
     cfg.limit_retry_rounds = 2;
+    // A park waits for the reset alone unless a scenario is about the early re-tries.
+    cfg.limit_probe = Vec::new();
     let (clock, _handle) = letibot_harnessd::config::LimitClock::fixed(T0);
     cfg.limit_clock = clock;
     cfg
@@ -1263,4 +1265,174 @@ fn a_prompt_after_a_switch_while_parked_is_sent_and_lifts_the_park() {
         "no second turn for one park"
     );
     assert_eq!(deepseek.count(), 1);
+}
+
+// ---------------------------------------------------------------------------- GLM's own codes
+//
+// The bodies are z.ai's templates (https://docs.z.ai/api-reference/api-code) as the door returns
+// them: `{"error":{"code":"NNNN","message":...}}`. The incident they reproduce is 2026-11-15: a
+// 429 at 18:08 UTC parked a glm-coding session until 23:08:20 UTC. Its window opened at 13:11:08
+// UTC and lifted at 18:11:08; the next window, opened by the first request after the restart at
+// 18:15:27, is the one the console showed resetting at 07:15 UTC+8.
+
+/// `1302`: z.ai's rate or concurrency limit. Not a window.
+const GLM_1302: &str =
+    "{\"error\":{\"code\":\"1302\",\"message\":\"Rate limit reached for requests\"}}";
+
+/// `1308` three minutes after T0, in the China time z.ai writes: T0 is 2026-11-06 21:20:00 UTC.
+const GLM_1308_SOON: &str = "{\"error\":{\"code\":\"1308\",\"message\":\"Usage limit reached for 5 \
+                             hour. Your limit will reset at 2026-11-07 05:23:00\"}}";
+
+/// `1308` four hours after T0: far enough that every early re-try comes before it.
+const GLM_1308_FAR: &str = "{\"error\":{\"code\":\"1308\",\"message\":\"Usage limit reached for 5 \
+                            hour. Your limit will reset at 2026-11-07 09:20:00\"}}";
+
+/// A rate limit coded `1302` is the long retry and never a park, and the turn it delayed answers.
+#[test]
+fn a_glm_rate_limit_retries_and_never_parks() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("glm-1302");
+    let glm = model(&[Act::RefuseWith(GLM_1302), Act::Answer]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let cfg = config(&scratch, &gguf, "glm-1302", ("glm", "glm-5.3"), Vec::new());
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+
+    let out = sessions
+        .submit(&id, PROMPT)
+        .expect("a rate limit that lifts is a turn");
+    assert!(out.text.contains(ANSWER), "{}", out.text);
+    assert_eq!(glm.count(), 2, "one refusal, one long wait, one answer");
+    assert!(said(&hub, "limit_park").is_empty(), "no window to park on");
+    assert_eq!(said(&hub, "limit_retry").len(), 1);
+    assert!(
+        sessions
+            .harness_of(&id)
+            .expect("open")
+            .limit_park()
+            .is_none()
+    );
+}
+
+/// A spent window coded `1308` parks on the reset its body names, read as China time: three
+/// minutes, not the five hours the window's width would say.
+#[test]
+fn a_glm_window_parks_on_its_china_time_reset() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("glm-1308");
+    let glm = model(&[Act::RefuseWith(GLM_1308_SOON), Act::Answer]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let mut cfg = config(&scratch, &gguf, "glm-1308", ("glm", "glm-5.3"), Vec::new());
+    let (clock, handle) = letibot_harnessd::config::LimitClock::fixed(T0);
+    cfg.limit_clock = clock;
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+
+    let out = sessions.submit(&id, PROMPT).expect_err("parked");
+    assert!(
+        out.to_string().contains("paused until 21:23:02 UTC"),
+        "{out}"
+    );
+    let park = sessions
+        .harness_of(&id)
+        .expect("open")
+        .limit_park()
+        .expect("parked")
+        .clone();
+    assert_eq!(park.reset_ms, T0 + 180_000 + 2_000);
+    assert_eq!(park.until_ms, park.reset_ms);
+    handle.store(park.until_ms, Ordering::SeqCst);
+    assert_eq!(sessions.resume_due_limits(), 1);
+    assert!(answered(&hub));
+}
+
+/// A park re-tries early on `limit_probe`'s steps. Refused twice, the third re-try is answered:
+/// the park lifts there, hours before the reset, and the log says the limit cleared early.
+#[test]
+fn a_park_re_tries_on_its_steps_and_the_first_answer_lifts_it() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("probe");
+    let glm = model(&[
+        Act::RefuseWith(GLM_1308_FAR),
+        Act::RefuseWith(GLM_1308_FAR),
+        Act::RefuseWith(GLM_1308_FAR),
+        Act::Answer,
+    ]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let mut cfg = config(&scratch, &gguf, "probe", ("glm", "glm-5.3"), Vec::new());
+    let min = |n: u64| Duration::from_secs(n * 60);
+    cfg.limit_probe = vec![min(2), min(5), min(15)];
+    let (clock, handle) = letibot_harnessd::config::LimitClock::fixed(T0);
+    cfg.limit_clock = clock;
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+    let reset = T0 + 4 * 3_600_000 + 2_000;
+
+    let out = sessions.submit(&id, PROMPT).expect_err("parked");
+    assert!(
+        out.to_string()
+            .contains("limited until 01:20:02 UTC, asking again at 21:22:02 UTC"),
+        "{out}"
+    );
+    let mut now = T0;
+    for (step, refused) in [(2, 2), (5, 3)] {
+        let park = sessions
+            .harness_of(&id)
+            .expect("open")
+            .limit_park()
+            .expect("still parked")
+            .clone();
+        assert_eq!(park.reset_ms, reset, "a re-try never moves the reset");
+        assert_eq!(park.until_ms, now + min(step).as_millis() as u64 + 2_000);
+        assert!(
+            !sessions
+                .harness_of(&id)
+                .expect("open")
+                .limit_park_due(park.until_ms - 1)
+        );
+        now = park.until_ms;
+        handle.store(now, Ordering::SeqCst);
+        sessions.resume_due_limits();
+        assert_eq!(glm.count(), refused, "one call per re-try");
+    }
+    let park = sessions
+        .harness_of(&id)
+        .expect("open")
+        .limit_park()
+        .expect("refused twice, still parked")
+        .clone();
+    assert_eq!(park.until_ms, now + min(15).as_millis() as u64 + 2_000);
+    assert!(said(&hub, "limit_cleared_early").is_empty());
+    handle.store(park.until_ms, Ordering::SeqCst);
+    assert_eq!(sessions.resume_due_limits(), 1);
+    assert_eq!(glm.count(), 4, "the third re-try was answered");
+    assert!(answered(&hub));
+    let h = sessions.harness_of(&id).expect("open");
+    assert!(h.limit_park().is_none(), "the answer lifted the park");
+    assert!(
+        h.limited_until("glm/glm-5.3").is_none(),
+        "nor is the model limited"
+    );
+    let cleared = said(&hub, "limit_cleared_early");
+    assert_eq!(cleared.len(), 1, "{cleared:?}");
+    assert!(
+        cleared[0].starts_with("limit cleared early at 21:42:06 UTC"),
+        "{}",
+        cleared[0]
+    );
 }

@@ -634,6 +634,17 @@ impl OnLimit {
 /// `wait_if_within` when no level sets it: a reset this close is waited for even with a fallback.
 pub const DEFAULT_WAIT_IF_WITHIN: std::time::Duration = std::time::Duration::from_secs(45 * 60);
 
+/// `limit_probe` when no level sets it: how long a park waits before each early re-try of the
+/// parked request, the last step repeating until the reset. A limit that was not what it said
+/// (a rate limit read as a window) costs minutes, not the window.
+pub const DEFAULT_LIMIT_PROBE: &[std::time::Duration] = &[
+    std::time::Duration::from_secs(2 * 60),
+    std::time::Duration::from_secs(5 * 60),
+    std::time::Duration::from_secs(15 * 60),
+    std::time::Duration::from_secs(30 * 60),
+    std::time::Duration::from_secs(60 * 60),
+];
+
 /// A span as the file writes it - `45m`, `1h30m`, `90s`, `2d`, or a bare `0` - or a refusal
 /// naming the shape. A bare number other than `0` is refused: minutes and seconds both read it.
 pub fn parse_span(s: &str) -> Result<std::time::Duration, String> {
@@ -736,6 +747,7 @@ pub const DEFAULT_ANSWER_SECS: u64 = 600;
 /// [provider]
 /// on_limit = "switch"                            # or "wait"
 /// wait_if_within = "45m"                         # a reset this close is waited for anyway
+/// limit_probe = ["2m", "5m", "15m", "30m", "1h"] # a park re-tries early on these steps
 /// fallback = ["deepseek", "glm-coding/glm-5.3"]  # where a switch goes, in order
 /// slow_notice_seconds = 15                       # silence before the "model slow" notice
 /// first_byte_seconds = 60                        # silence before the round fails
@@ -764,6 +776,8 @@ pub const DEFAULT_ANSWER_SECS: u64 = 600;
 pub struct ProviderKeys {
     pub on_limit: Option<OnLimit>,
     pub wait_if_within: Option<std::time::Duration>,
+    /// `limit_probe`: the steps a park re-tries on before its reset. `Some(empty)` never probes.
+    pub limit_probe: Option<Vec<std::time::Duration>>,
     pub fallback: Vec<String>,
     /// The deadline keys written directly under `[provider]`.
     pub deadlines: DeadlineKeys,
@@ -830,7 +844,7 @@ fn provider_keys(
     user: bool,
 ) -> Result<ProviderKeys, String> {
     let keys = "the keys are `on_limit` (\"wait\" or \"switch\"), `wait_if_within` (\"45m\"), \
-                `fallback`, \
+                `limit_probe` ([\"2m\", \"5m\"]), `fallback`, \
                 `slow_notice_seconds`, `first_byte_seconds`, `answer_seconds`, and `[provider.NAME]` \
                 tables (a preset or `provider/model`) holding the last three";
     let table = table_at(value, path, text, "provider", keys)?;
@@ -858,6 +872,34 @@ fn provider_keys(
                     .map_err(|why| format!("{from}: [provider] wait_if_within = {why}"))?;
                 out.wait_if_within = Some(d);
             }
+            "limit_probe" => {
+                let list = v.as_array().ok_or_else(|| {
+                    format!(
+                        "{from}: [provider] limit_probe is a list of spans like [\"2m\", \"5m\"], \
+                         not {}",
+                        kind_of(v)
+                    )
+                })?;
+                let mut steps = Vec::with_capacity(list.len());
+                for item in list {
+                    let s = item.as_str().ok_or_else(|| {
+                        format!(
+                            "{from}: [provider] limit_probe holds spans like \"2m\", not {}",
+                            kind_of(item)
+                        )
+                    })?;
+                    let d = parse_span(s)
+                        .map_err(|why| format!("{from}: [provider] limit_probe = {why}"))?;
+                    if d.is_zero() {
+                        return Err(format!(
+                            "{from}: [provider] limit_probe step \"{s}\" is zero; an empty list \
+                             turns probing off"
+                        ));
+                    }
+                    steps.push(d);
+                }
+                out.limit_probe = Some(steps);
+            }
             "fallback" => {
                 out.fallback = fallback_list(v).map_err(|why| format!("{from}: {why}"))?;
             }
@@ -867,7 +909,10 @@ fn provider_keys(
                     return Err(format!("{from}: [provider] `{name}` is not a key; {keys}"));
                 };
                 for k in sub.keys() {
-                    if matches!(k.as_str(), "on_limit" | "wait_if_within" | "fallback") {
+                    if matches!(
+                        k.as_str(),
+                        "on_limit" | "wait_if_within" | "limit_probe" | "fallback"
+                    ) {
                         return Err(format!(
                             "{}:{}: [provider.{name}] `{k}` is not a key here; a preset or model \
                              table holds `slow_notice_seconds`, `first_byte_seconds` and \
@@ -2681,6 +2726,11 @@ impl LeticodeConfig {
                     .provider
                     .wait_if_within
                     .or(self.provider.wait_if_within),
+                limit_probe: other
+                    .provider
+                    .limit_probe
+                    .clone()
+                    .or_else(|| self.provider.limit_probe.clone()),
                 fallback: if other.provider.fallback.is_empty() {
                     self.provider.fallback.clone()
                 } else {
@@ -2813,6 +2863,15 @@ impl LeticodeConfig {
             .unwrap_or(DEFAULT_WAIT_IF_WITHIN)
     }
 
+    /// The steps a park re-tries its request on before the reset: the file's list, else
+    /// [`DEFAULT_LIMIT_PROBE`].
+    pub fn limit_probe(&self) -> Vec<std::time::Duration> {
+        self.provider
+            .limit_probe
+            .clone()
+            .unwrap_or_else(|| DEFAULT_LIMIT_PROBE.to_vec())
+    }
+
     /// The deadlines for a session on `name` (a preset) and `model`: per key, the
     /// `[provider."name/model"]` table, then `[provider.name]`, then `[provider]`, then the
     /// built-in numbers. A first byte above the answer budget (two levels disagreeing) is cut to it.
@@ -2868,6 +2927,10 @@ impl LeticodeConfig {
         }
         if let Some(d) = self.provider.wait_if_within {
             out.push(format!("wait_if_within {}", span_words(d)));
+        }
+        if let Some(steps) = &self.provider.limit_probe {
+            let words: Vec<String> = steps.iter().map(|d| span_words(*d)).collect();
+            out.push(format!("limit_probe [{}]", words.join(", ")));
         }
         for (role, r) in &self.roles {
             let mut line = role.clone();

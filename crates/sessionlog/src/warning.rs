@@ -287,6 +287,8 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     ("limit_returned", Class::Routine, Action::Nothing),
     // Esc on a parked session: the parked turn ended before the reset, its rows kept.
     ("limit_park_interrupted", Class::Routine, Action::Nothing),
+    // A park's early re-try was answered: the limit cleared before the reset it named.
+    ("limit_cleared_early", Class::Routine, Action::Nothing),
     // A switch off the parked model: the parked turn goes on there without waiting for the reset.
     ("limit_unparked", Class::Routine, Action::Nothing),
     // A rate limit that named no instant: the long beat before the round is taken again. Past the
@@ -1647,13 +1649,13 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_91_routine_15_refused_and_103_failures() {
+    fn the_table_is_92_routine_15_refused_and_103_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k, _)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 209, "the table's size");
-        assert_eq!(count(Class::Routine), 91, "the six limits are routine");
+        assert_eq!(TABLE.len(), 210, "the table's size");
+        assert_eq!(count(Class::Routine), 92, "the seven limits are routine");
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 103);
         // A code with an id is read by its family.

@@ -40,6 +40,16 @@ pub(crate) struct LimitReturn {
     pub at_ms: u64,
 }
 
+/// Early re-tries of a park ([`crate::config::Config::limit_probe`]): a park comes due at the next
+/// step rather than the reset, and the first answer lifts it.
+#[derive(Debug, Default)]
+pub(crate) struct Probing {
+    /// Re-tries refused since the last answer: the index of the next step.
+    refused: usize,
+    /// The park the re-try in flight was lifted from: its model and its reset.
+    asked: Option<(String, u64)>,
+}
+
 /// What the limit rule says to do with a failure whose ladder is spent.
 pub(crate) enum LimitAnswer {
     /// The provider put a time on it: the reset as it named it, unbounded and without jitter.
@@ -99,6 +109,36 @@ impl Harness {
             .is_some_and(|p| p.model != self.model_name())
     }
 
+    /// When the next early re-try of a park made now is due, or `None` when probing is off.
+    fn next_probe_ms(&self, now: u64) -> Option<u64> {
+        let steps = &self.cfg.limit_probe;
+        let step = steps.get(self.limit_probing.refused.min(steps.len().checked_sub(1)?))?;
+        Some(now.saturating_add(u64::try_from(step.as_millis()).unwrap_or(u64::MAX)))
+    }
+
+    /// A round answered. If it was a park's early re-try, the limit cleared before its reset: the
+    /// model is no longer limited, and the session's log says when.
+    pub(crate) fn a_round_answered(&mut self) {
+        self.limit_probing.refused = 0;
+        let Some((model, reset_ms)) = self.limit_probing.asked.take() else {
+            return;
+        };
+        self.limited.remove(&model);
+        let now = self.limit_now_ms();
+        self.hub.warn(
+            "limit_cleared_early",
+            format!(
+                "limit cleared early at {}: {model} answered the re-try, {} before the reset it \
+                 named ({})",
+                clock_words(now),
+                crate::leticode_config::span_words(std::time::Duration::from_millis(
+                    reset_ms.saturating_sub(now)
+                )),
+                clock_words_from(now, reset_ms),
+            ),
+        );
+    }
+
     /// Clear the park and everything that says it: the status row, the seat, the expired limits.
     fn lift_the_park(&mut self) -> Option<LimitPark> {
         let park = self.limit_park.take()?;
@@ -113,6 +153,7 @@ impl Harness {
     /// in the harness's voice, so neither the model nor a restart reads the turn as still owed.
     pub fn interrupt_a_park(&mut self, reason: &str) -> Option<String> {
         let park = self.lift_the_park()?;
+        self.limit_probing = Probing::default();
         let now = self.limit_now_ms();
         let said = format!(
             "[limit] the operator interrupted this turn while it was parked on {}'s usage limit \
@@ -188,11 +229,20 @@ impl Harness {
         let model = self.model_name();
         let said = said_one_line(&e.to_string(), 200);
         let now = self.limit_now_ms();
+        // A re-try that was refused again moves the next one a step out.
+        if self.limit_probing.asked.take().is_some() {
+            self.limit_probing.refused += 1;
+        }
         let reset_ms = reset_ms.saturating_add(PARK_JITTER_MS);
-        let until_ms = reset_ms.min(
-            now.saturating_add(letibot_http::reset::LONGEST)
-                .saturating_add(PARK_JITTER_MS),
-        );
+        let probe_ms = self
+            .next_probe_ms(now)
+            .map_or(u64::MAX, |at| at.saturating_add(PARK_JITTER_MS));
+        let until_ms = reset_ms
+            .min(
+                now.saturating_add(letibot_http::reset::LONGEST)
+                    .saturating_add(PARK_JITTER_MS),
+            )
+            .min(probe_ms);
         let words = words.unwrap_or_else(|| park_words(now, until_ms, reset_ms));
         self.limit_park = Some(LimitPark {
             until_ms,
@@ -223,13 +273,26 @@ impl Harness {
             return self.unpark_after_a_switch();
         }
         let park = self.lift_the_park()?;
+        let early = park.until_ms < park.reset_ms;
+        if early {
+            self.limit_probing.asked = Some((park.model.clone(), park.reset_ms));
+        }
         self.hub.warn(
             "limit_resumed",
-            format!(
-                "the limit on {} lifted, so the turn it stopped goes on by itself - nothing was \
-                 sent to make that happen",
-                park.model
-            ),
+            if early {
+                format!(
+                    "{} is asked again before its reset at {}, so the turn it stopped goes on by \
+                     itself; a refusal parks it again",
+                    park.model,
+                    clock_words_from(park.until_ms, park.reset_ms)
+                )
+            } else {
+                format!(
+                    "the limit on {} lifted, so the turn it stopped goes on by itself - nothing \
+                     was sent to make that happen",
+                    park.model
+                )
+            },
         );
         // A park cut short by its bound has not seen the limit lift, and must not say it did.
         let what = if park.until_ms < park.reset_ms {
@@ -259,6 +322,7 @@ impl Harness {
             return None;
         }
         let park = self.lift_the_park()?;
+        self.limit_probing = Probing::default();
         // The switch was the operator's, not the limit rule's: no way back is owed, so no row
         // says the session is on the new model until a reset.
         self.write_limit_row(None);

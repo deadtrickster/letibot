@@ -47,6 +47,7 @@ pub const LETICODE: File = File {
             keys: &[
                 k("on_limit", "\"wait\" | \"switch\"", "switch with a fallback, else wait", PW, "on a usage limit: park until the reset, or move to the next fallback", "\"switch\""),
                 k("wait_if_within", "span (45m, 1h30m, 90s, 2d, 0)", "45m", PW, "with switch: a reset this close is waited for anyway; 0 never waits", "\"45m\""),
+                k("limit_probe", "list of spans", "[2m, 5m, 15m, 30m, 1h]", PW, "a park re-tries the refused request on these steps before its reset, the last repeating; [] never", "[\"2m\", \"5m\", \"15m\"]"),
                 k("fallback", "list of models", "none", "as fallback", "the top-level fallback list; both set to different lists is refused", "[\"deepseek/deepseek-flash\"]"),
                 k("slow_notice_seconds", "int >= 1", "15", PW, "silence before the \"model slow\" notice", "15"),
                 k("first_byte_seconds", "int >= 1", "60", PW, "silence before the first byte that fails the round", "60"),
