@@ -651,6 +651,51 @@ impl TodoBoard {
         n
     }
 
+    /// Take every `job` need off the open rows whose job `ended` says is over, on all four
+    /// halves. `ended` returns the note's words for a handle that is no longer running and `None`
+    /// for one that still is, or whose ending the model has not digested yet.
+    pub fn resolve_job_waits(
+        &self,
+        mut ended: impl FnMut(&str) -> Option<String>,
+    ) -> Vec<ResolvedWait> {
+        let mut asked: BTreeMap<String, Option<String>> = BTreeMap::new();
+        let mut out: Vec<ResolvedWait> = Vec::new();
+        for half in [&self.queue, &self.todos, &self.parent, &self.operator] {
+            let mut rows = half.lock().unwrap_or_else(|e| e.into_inner());
+            for row in rows.iter_mut() {
+                if matches!(row.status, TodoStatus::Completed | TodoStatus::Cancelled) {
+                    continue;
+                }
+                let content = row.content.clone();
+                row.needs.retain(|need| {
+                    let TodoNeed::Job { handle } = need else {
+                        return true;
+                    };
+                    let said = asked
+                        .entry(handle.clone())
+                        .or_insert_with(|| ended(handle))
+                        .clone();
+                    let Some(said) = said else {
+                        return true;
+                    };
+                    match out.iter_mut().find(|r| &r.handle == handle) {
+                        Some(r) => r.rows.push(content.clone()),
+                        None => out.push(ResolvedWait {
+                            handle: handle.clone(),
+                            said,
+                            rows: vec![content.clone()],
+                        }),
+                    }
+                    false
+                });
+            }
+        }
+        if !out.is_empty() {
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
+        out
+    }
+
     /// The list as it stands: the union of all four halves, and the one getter everything
     /// downstream reads. The queue's rows come first, so a session working the queue cannot bury
     /// a review under a plan of its own, then the model's, then what it was told.
@@ -892,6 +937,51 @@ impl TodoBoard {
         }
         self.operator_ask(content, question).map(|_| ())
     }
+}
+
+/// A job wait [`TodoBoard::resolve_job_waits`] took off the board: the handle, how it ended in
+/// the note's words, and the rows that waited on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedWait {
+    pub handle: String,
+    pub said: String,
+    pub rows: Vec<String>,
+}
+
+/// How a job a row waited on ended, as the note says it. `state` is the job table's word
+/// (`exited 0`, `killed by job_kill`), `None` for a job the table no longer holds. A non-zero
+/// exit is called failed, so the model does not read the wait's end as success.
+pub fn job_ended_words(handle: &str, state: Option<&str>, at: Option<&str>) -> String {
+    let at = at.map(|at| format!(" at {at}")).unwrap_or_default();
+    let Some(state) = state else {
+        return format!(
+            "{handle} is not in this session's job table (lost in a restart, or a wrong \
+             handle){at}, so its result is unavailable"
+        );
+    };
+    let how = match state.strip_prefix("exited ").map(str::trim) {
+        Some("0") => "exit 0".to_string(),
+        Some(code) => format!("exit {code}, failed"),
+        None => state.to_string(),
+    };
+    format!("{handle} ended ({how}){at}")
+}
+
+/// The one-time note for waits [`TodoBoard::resolve_job_waits`] took off: one line per job,
+/// naming the rows that are no longer waiting on it.
+pub fn resolved_waits_note(resolved: &[ResolvedWait]) -> String {
+    resolved
+        .iter()
+        .map(|r| {
+            let rows: Vec<String> = r.rows.iter().map(|c| format!("`{}`", c.trim())).collect();
+            format!(
+                "[todo] {} - no longer a wait of {}.",
+                r.said,
+                rows.join(", ")
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// One `wait_on` entry, as the board applies it - see [`TodoBoard::set_waits`].

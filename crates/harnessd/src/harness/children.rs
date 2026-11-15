@@ -4046,6 +4046,7 @@ impl HarnessTaskRunner {
             // And a child of a child comes back with its parent - this session's own records
             // are read the way a root's are when the daemon opens it.
             sub.restore_after_restart();
+            sub.resolve_ended_job_waits();
         }
         let restart = restart.filter(|_| {
             sub.resumed().is_some()

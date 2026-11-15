@@ -228,6 +228,7 @@ mod board;
 mod cap;
 mod children;
 mod external;
+mod job_ends;
 mod nag;
 mod needs;
 mod operator;

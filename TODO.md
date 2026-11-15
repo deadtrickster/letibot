@@ -1870,6 +1870,22 @@ Operator, in rano's session: "suppose i click in [N tool calls] where N is yello
 
 **Done when:** `cargo test -p letibot-tui runningrow`. Two finished calls and one running, with and without narration. Collapsed, the marker reads `[3 tool calls]` and no card is drawn. Expanded, three cards, the last `◐ Running`. When the call finishes, the last card is `Ran (c2)` with its result and there are still three.
 
+## R301 - A row waiting on a job that ended is freed and noted
+
+**Status:** built, 2026-11-15.
+
+Seen live on rano (s-1794057745451974498): K4, K5 and K6 still listed waits on j86131, j86141 and j86254 hours after all three had `exited 0`, and after their endings were delivered.
+
+Cause: nothing ever took a `job` need off a row. The board kept the edge and every reader judged it per read against the live job table. The nag (`unmet_needs`, `running_jobs`) already read an ended job as met. The board text (`render_rows`), the `todo_write` answer (`waits`, which counted the row as waiting and hid it), and the head's pane (`need_words`) printed the edge as a live wait. No compaction or restart lost a resolution, because there was none to lose.
+
+**Change:**
+- `TodoBoard::resolve_job_waits` takes every `job` need off the open rows whose job no longer runs, on all four halves, and bumps the version.
+- `Harness::resolve_ended_job_waits` asks `job_fate` per handle. Ended, killed, missing from the table, or a stored `running` row with nothing live behind it are all resolved. An ending still in its digest grace is left for the next sweep, so the nag's grace is kept.
+- One transcript note per sweep, one line per job: `[todo] j86131 ended (exit 0) at 11-15 22:13 - no longer a wait of `K4 ...`, `K5 ...`.` A non-zero exit says `exit N, failed`. A missing job says its result is unavailable.
+- The sweep runs at open and restore, and on every nag-clock tick (`Sessions::deliver_due_nags`) for every open session, so a missed job-end event, a compaction or a restart cannot leave a row waiting.
+
+**Left:** a seat's board (`bridge/src/seat.rs`) still judges job needs per read. `pid` needs are not swept.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.

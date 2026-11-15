@@ -140,6 +140,55 @@ impl Harness {
         jobs
     }
 
+    /// Take every job wait off the open rows whose job no longer runs - ended, killed, or gone from
+    /// the table after a restart - and leave the model one note saying how each ended. An ending
+    /// still in its grace (the model has not had a turn with it) waits for the next sweep.
+    pub(crate) fn resolve_ended_job_waits(&mut self) -> usize {
+        let board = self.todos.clone();
+        let graced = |handle: &str| {
+            self.job_watch.as_ref().is_some_and(|w| {
+                w.grace_left(
+                    handle,
+                    self.cfg.held_results_cap,
+                    std::time::SystemTime::now(),
+                )
+                .is_some()
+            })
+        };
+        let resolved = board.resolve_job_waits(|handle| {
+            let state = match self.job_fate(handle) {
+                JobFate::Running => return None,
+                _ if graced(handle) => return None,
+                // A row that still says `running` with nothing live behind it died with its daemon.
+                JobFate::Ended { state } if state != "running" => Some(state),
+                JobFate::Ended { .. } | JobFate::Unknown => None,
+            };
+            let at = state.as_ref().and_then(|_| {
+                let store = self.store.as_ref()?;
+                let ms = store.job_updated_ms(&self.cfg.session_id, handle).ok()??;
+                Some(super::open::seated_at(ms as i64))
+            });
+            Some(letibot_tools::builtins::todo::job_ended_words(
+                handle,
+                state.as_deref(),
+                at.as_deref(),
+            ))
+        });
+        if resolved.is_empty() {
+            return 0;
+        }
+        let note = letibot_tools::builtins::todo::resolved_waits_note(&resolved);
+        let rows: Vec<String> = resolved.iter().flat_map(|r| r.rows.clone()).collect();
+        if let Err(e) = self.say_without_a_turn(&Facts::Todo { rows }, &note) {
+            eprintln!(
+                "  {} · todos: the resolved job waits were not noted ({e})",
+                self.cfg.session_id
+            );
+        }
+        self.flush_todos_or_say("a resolved job wait");
+        resolved.len()
+    }
+
     /// The `[todo check]` text, or nothing, and a row the operator postponed is not part of it. The rows are read
     /// through `the_plan_as_checked`, the same reading the arming decision takes, so clock and sentence cannot disagree.
     /// Reading it does not remember what it named: `nag_turn` commits it, where a check is delivered.

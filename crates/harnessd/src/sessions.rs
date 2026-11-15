@@ -796,6 +796,7 @@ impl<'a> Sessions<'a> {
         // *"we should bring subagents back - i cant afford to wait till they finish"*. Before the
         // ring below, so the wake it causes carries the `[restart]` notice. See `crate::restart`.
         harness.restore_after_restart();
+        harness.resolve_ended_job_waits();
         sessions.open.insert(id.clone(), harness);
         sessions.declare_flowy_monitor(&id, cond);
         // AND THE DAEMON'S OWN FIRST SESSION ARMS ITS CLOCK TOO.
@@ -2126,6 +2127,7 @@ impl<'a> Sessions<'a> {
             // session is opened - before the ring below, so the wake carries the `[restart]`
             // notice. See `crate::restart`.
             h.restore_after_restart();
+            h.resolve_ended_job_waits();
             self.open.insert(session_id.to_string(), h);
             self.declare_flowy_monitor(session_id, cond);
             // A SESSION THAT HAS JUST BEEN BUILT IS PUT TO WORK, WHICH ARMING IS NOT.
@@ -3378,6 +3380,16 @@ impl<'a> Sessions<'a> {
     /// doors arm
     pub fn deliver_due_nags(&mut self) -> usize {
         let mut ran = self.ask_courts(|s| s.deliver_due_nags());
+        // Out of band of job-end delivery: a missed ending, a compaction or a restart must not
+        // leave a row waiting on a job that no longer runs.
+        let freed: Vec<String> = self
+            .open
+            .iter_mut()
+            .filter_map(|(id, h)| (h.resolve_ended_job_waits() > 0).then(|| id.clone()))
+            .collect();
+        for id in &freed {
+            self.rearm_todo_nag(id);
+        }
         let now = Instant::now();
         let due: Vec<String> = self
             .nags

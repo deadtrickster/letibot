@@ -3725,6 +3725,19 @@ impl Store {
         self.jobs_where(session_id, "")
     }
 
+    /// When a job's row was last written, in wall-clock ms: for an ended job, when it ended.
+    pub fn job_updated_ms(&self, session_id: &str, handle: &str) -> Result<Option<u64>> {
+        let conn = self.at("job");
+        let ms: Option<i64> = conn
+            .query_row(
+                "SELECT updated_ms FROM job WHERE session_id = ?1 AND handle = ?2",
+                params![session_id, handle],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(ms.map(|ms| ms as u64))
+    }
+
     /// [`Store::jobs`], narrowed by a fixed SQL condition (never a caller's text).
     fn jobs_where(&self, session_id: &str, and: &str) -> Result<Vec<JobRecord>> {
         let conn = self.at("job");

@@ -364,7 +364,7 @@ pub fn stale_prompt_for_the_model(added: &[String], gone: &[String], grew: &[Str
 
 /// When a session was seated, in the launcher's own spelling: `10-08 21:14`. An unreadable clock is
 /// SAID rather than rendered as the epoch, because `0` is *nobody recorded when*.
-fn seated_at(ms: i64) -> String {
+pub(crate) fn seated_at(ms: i64) -> String {
     if ms <= 0 {
         return "an unrecorded time".into();
     }
