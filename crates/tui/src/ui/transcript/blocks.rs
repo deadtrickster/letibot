@@ -16,6 +16,93 @@ pub(crate) fn session_block(text: &str, ts: u64, cfg: &RenderConfig) -> Vec<Stri
     row_strings(&block.lines(cfg.width), cfg.palette())
 }
 
+/// A row under its own label instead of `session · `, drawn the way rano's `SessionBlock` lays one
+/// out: label on the first line, the rest indented under it, the clock at the end.
+fn labelled_lines(
+    label: &str,
+    label_role: rano::style::Role,
+    text_role: Option<rano::style::Role>,
+    text: &str,
+    stamp: &str,
+    w: usize,
+) -> Vec<rano::render::Line> {
+    use rano::agent::text::{clean, visible_width, wrap};
+    use rano::render::{Line, Span};
+    let w = w.max(20);
+    let cols = w
+        .saturating_sub(visible_width(label) + visible_width(stamp) + 4)
+        .max(8);
+    let mut rows = wrap(&clean(text), cols);
+    if rows.is_empty() {
+        rows.push(String::new());
+    }
+    let indent = " ".repeat(visible_width(label));
+    let last = rows.len() - 1;
+    rows.iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let lead = if i == 0 {
+                Span::role(label.to_string(), label_role)
+            } else {
+                Span::raw(indent.clone())
+            };
+            let tail = if i == last && !stamp.is_empty() {
+                format!("  {stamp}")
+            } else {
+                String::new()
+            };
+            let body = format!("{l}{tail}");
+            let body = match text_role {
+                Some(r) => Span::role(body, r),
+                None => Span::raw(body),
+            };
+            rano::render::text::truncate_owned(Line::new(vec![Span::raw("  "), lead, body]), w)
+        })
+        .collect()
+}
+
+/// The label a peer's row is drawn under: its handle and a marker that is not the operator's bar.
+pub(crate) fn peer_label(from: &str) -> String {
+    format!("{from} ▸ ")
+}
+
+/// An agent's line, sent through the bridge: words, under the sender's handle, in their own
+/// register. Never the operator's `▌` bar, since a reader must not take it for the person typing.
+pub(crate) fn peer_block(from: &str, text: &str, ts: u64, cfg: &RenderConfig) -> Vec<String> {
+    let lines = labelled_lines(
+        &peer_label(from),
+        rano::style::Role::Info,
+        None,
+        text,
+        &clock_time(ts),
+        cfg.width,
+    );
+    row_strings(&lines, cfg.palette())
+}
+
+/// The shadow's row in the watched session, under `shadow · `: it is a second model's suggestion,
+/// not something the session said.
+pub(crate) fn shadow_card_block(
+    lines: &[crate::ui::transcript::line_cards::CardLine],
+    ts: u64,
+    cfg: &RenderConfig,
+) -> Vec<String> {
+    let text = lines
+        .iter()
+        .map(|l| l.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let drawn = labelled_lines(
+        "shadow · ",
+        rano::style::Role::Faint,
+        Some(rano::style::Role::Faint),
+        &text,
+        &clock_time(ts),
+        cfg.width,
+    );
+    row_strings(&drawn, cfg.palette())
+}
+
 /// A session row that opens with a card's line, drawn as [`session_block`] draws one - label, faint
 /// text, clock - with each card line's accent in its role: a red target's head in the failure
 /// register, a review's verdict in the queue pane's. Already cut to [`session_text_cols`].

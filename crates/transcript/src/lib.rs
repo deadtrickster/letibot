@@ -44,7 +44,7 @@ pub enum CallOrigin {
 /// Who a `User` row's words came from: the operator typed it, or this session appended
 /// it. The vocabulary is `letibot_tools::authorise::Speaker`'s, repeated rather than
 /// imported because `letibot-tools` depends on this crate and not the reverse.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Speaker {
     /// The person at the keyboard. Every row written before this field existed reads as
@@ -55,13 +55,56 @@ pub enum Speaker {
     /// the intent check. Never an authorisation, and never to be drawn as the operator's
     /// words.
     Agent,
+    /// Another agent or program sent it into this session, e.g. a Claude Code seat through the
+    /// bridge. It drives a turn like a prompt, but it is never the operator's words: nothing may
+    /// read it as an authorisation, a correction or a label.
+    Peer {
+        /// The sender's handle, `cc@rano`.
+        from: String,
+    },
 }
 
 impl Speaker {
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(&self) -> &'static str {
         match self {
             Speaker::Operator => "operator",
             Speaker::Agent => "agent",
+            Speaker::Peer { .. } => "peer",
+        }
+    }
+
+    /// The human at the keyboard said it. The one test every reader of "the operator's words" uses.
+    pub fn is_operator(&self) -> bool {
+        matches!(self, Speaker::Operator)
+    }
+
+    /// Who said it, as a reader names them: `operator`, `agent`, or the peer's handle.
+    pub fn author(&self) -> &str {
+        match self {
+            Speaker::Peer { from } => from,
+            other => other.as_str(),
+        }
+    }
+
+    /// A peer's words as the model reads them: under the sender's handle, once. The model is not
+    /// shown the speaker field, so the handle rides the text.
+    pub fn signed(from: &str, text: &str) -> String {
+        if text.trim_start().starts_with(&format!("{from}:")) {
+            text.to_string()
+        } else {
+            format!("{from}: {text}")
+        }
+    }
+
+    /// A peer's line, with an empty handle read as unknown rather than as the operator.
+    pub fn peer(from: impl Into<String>) -> Self {
+        let from = from.into();
+        Speaker::Peer {
+            from: if from.trim().is_empty() {
+                "unknown".into()
+            } else {
+                from
+            },
         }
     }
 }
@@ -767,6 +810,24 @@ mod tests {
         .unwrap();
         assert_ne!(operator, agent);
         assert!(agent.contains(r#""speaker":"agent""#), "{agent}");
+    }
+
+    /// A peer's line keeps its sender across the store and is not the operator's.
+    #[test]
+    fn a_peer_row_keeps_its_sender() {
+        let peer = TranscriptItem::User {
+            speaker: Speaker::peer("cc@rano"),
+            parts: vec![UserPart::Text { text: "hi".into() }],
+        };
+        let wire = serde_json::to_string(&peer).unwrap();
+        let back: TranscriptItem = serde_json::from_str(&wire).unwrap();
+        assert_eq!(back, peer);
+        let TranscriptItem::User { speaker, .. } = back else {
+            panic!("a user row");
+        };
+        assert!(!speaker.is_operator());
+        assert_eq!(speaker.author(), "cc@rano");
+        assert_eq!(Speaker::peer(" ").author(), "unknown");
     }
 
     /// The size bound counts what a row actually holds. A picture's base64 body, a tool's own

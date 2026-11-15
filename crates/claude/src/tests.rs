@@ -157,7 +157,7 @@ fn every_shape_maps_in_order_with_its_own_time_and_its_speaker() {
     let TranscriptItem::User { speaker, parts } = &rows[0].item else {
         panic!("the operator's line is a User row: {:?}", rows[0]);
     };
-    assert_eq!(*speaker, Speaker::Operator);
+    assert_eq!(speaker.clone(), Speaker::Operator);
     assert_eq!(parts.len(), 1);
 
     // The sidechain produced no rows and said so once. Both its lines are skipped,

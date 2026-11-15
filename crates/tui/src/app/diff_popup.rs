@@ -398,6 +398,19 @@ impl App {
                                 &cards,
                             )
                         }
+                        // A shadow's suggestion is a door to the shadow session that made it.
+                        (
+                            Some(letibot_sessionlog::view::SnapshotItem {
+                                item:
+                                    Some(letibot_transcript::TranscriptItem::Offer {
+                                        kind: letibot_transcript::OfferKind::Shadow,
+                                        body,
+                                        ..
+                                    }),
+                                ..
+                            }),
+                            _,
+                        ) => shadow_session_of(body).into_iter().map(Some).collect(),
                         _ => Vec::new(),
                     };
                     // One list or none - see this function's docstring.
@@ -735,6 +748,14 @@ pub(crate) fn skill_row_text(it: &letibot_sessionlog::view::SnapshotItem) -> Opt
         }
         _ => None,
     }
+}
+
+/// The shadow session a shadow row names on its `shadow session: ` line.
+pub(crate) fn shadow_session_of(body: &str) -> Option<String> {
+    body.lines()
+        .find_map(|l| l.trim().strip_prefix("shadow session: "))
+        .map(|id| id.trim().to_string())
+        .filter(|id| !id.is_empty())
 }
 
 /// An offer row's headline and what a click opens, or `None` for any other row.

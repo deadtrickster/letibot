@@ -504,3 +504,88 @@ fn the_trail_holds_only_what_it_reads() {
     );
     assert_eq!(newest.text.chars().count(), UTTERANCE_CHARS);
 }
+
+/// An agent's line through a head drives the turn as a peer's row: the model reads it under its
+/// sender, the trail carries it as context, and no reader counts it as the operator's words.
+#[test]
+fn a_bridge_line_is_never_the_operators_words() {
+    use letibot_sessionlog::hub::Hub;
+    use letibot_sessionlog::protocol::Caps;
+    use letibot_turn::SteeringSource;
+
+    let hub = Hub::new("s-peer");
+    let head = hub.attach(
+        "remote",
+        letibot_sessionlog::MCP_IDENTITY,
+        Caps::default(),
+        0,
+    );
+    let rule = "cc@rano: That shape works; keep it: one item per turn";
+    hub.submit(
+        &head.head_id,
+        "c1",
+        0,
+        letibot_sessionlog::CommandKind::Prompt {
+            text: rule.into(),
+            attachments: Vec::new(),
+            context: None,
+            from: Some("cc@rano".into()),
+        },
+    );
+    let trail = Arc::new(TrailMirror::default());
+    let mut steering = HubSteering {
+        trail: Some(trail.clone()),
+        ..HubSteering::new(hub.clone())
+    };
+    let m = steering.try_next().expect("the line is steering");
+    assert!(!m.from_operator);
+    let item = m.to_item();
+    let TranscriptItem::User { speaker, .. } = &item else {
+        panic!("a user row: {item:?}");
+    };
+    assert_eq!(*speaker, letibot_transcript::Speaker::peer("cc@rano"));
+
+    let t = trail.trail();
+    assert_eq!(t.utterances.len(), 1, "carried as context");
+    assert!(t.operator_words().is_empty(), "never the operator's words");
+
+    // The offers' evidence, the shadow's rows and a resumed trail agree.
+    let rows = [user("fix the parser"), item.clone()];
+    let seen = crate::offer_evidence::seen(&rows);
+    let theirs = crate::offer_evidence::seen(&rows[..1]);
+    assert_eq!(
+        format!("{seen:?}"),
+        format!("{theirs:?}"),
+        "the agent's words add nothing"
+    );
+    let said = crate::shadow::words::recent(&rows);
+    assert_eq!(
+        said.last().map(|s| &s.author),
+        Some(&crate::shadow::words::Author::Peer("cc@rano".into()))
+    );
+    assert_eq!(
+        crate::shadow::turn_end::last_operator(&rows).as_deref(),
+        Some("fix the parser")
+    );
+    let resumed = TrailMirror::default();
+    resumed.seed(&rows);
+    assert_eq!(resumed.trail().operator_words().len(), 1);
+
+    // An older bridge that names no sender is still a peer, by the identity it attached under.
+    hub.submit(
+        &head.head_id,
+        "c2",
+        0,
+        letibot_sessionlog::CommandKind::Prompt {
+            text: "next".into(),
+            attachments: Vec::new(),
+            context: None,
+            from: None,
+        },
+    );
+    let cmd = hub.try_command().expect("queued");
+    assert_eq!(
+        cmd.peer().as_deref(),
+        Some(letibot_sessionlog::MCP_IDENTITY)
+    );
+}

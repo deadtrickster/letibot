@@ -180,7 +180,7 @@ fn a_prompt_about_slides_composes_the_offer_of_the_slides_skill() {
         panic!("an offer is a user item: {made:?}")
     };
     assert_eq!(
-        *speaker,
+        speaker.clone(),
         Speaker::Agent,
         "the harness's own line, and it says so"
     );

@@ -116,6 +116,7 @@ fn the_request_is_input_items_and_the_record_is_ours() {
             tail: &[],
             max_output_tokens: Some(256),
             thinking: None,
+            json: false,
         })
         .expect("the body builds");
 
@@ -170,6 +171,7 @@ fn a_reasoning_row_is_replayed_only_where_this_provider_issued_it() {
             tail: &[],
             max_output_tokens: None,
             thinking: None,
+            json: false,
         })
         .expect("a body")
     };
@@ -255,6 +257,7 @@ fn effort_becomes_reasoning_effort_and_a_cheap_turn_asks_for_none() {
         tail: &[],
         max_output_tokens: None,
         thinking,
+        json: false,
     };
     let mut p = p;
     p.thinking = true;
@@ -308,6 +311,7 @@ fn sampling_is_translated_into_this_protocols_names() {
         tail: &[],
         max_output_tokens: max,
         thinking: None,
+        json: false,
     };
     let body = p.body(&req(Some(256))).expect("a body");
     assert_eq!(body["temperature"], 0.2);
@@ -359,6 +363,7 @@ fn an_orphan_output_is_dropped_and_the_operators_own_is_their_turn() {
             tail: &[],
             max_output_tokens: None,
             thinking: None,
+            json: false,
         })
         .expect("a body");
     let input = body["input"].as_array().unwrap();
@@ -401,6 +406,7 @@ fn a_note_between_a_call_and_its_result_waits_for_the_result() {
             tail: &[],
             max_output_tokens: None,
             thinking: None,
+            json: false,
         })
         .expect("a body");
     let input = body["input"].as_array().unwrap();
@@ -438,6 +444,7 @@ fn an_unanswered_call_is_filled_before_whatever_came_next() {
             tail: &[],
             max_output_tokens: None,
             thinking: None,
+            json: false,
         })
         .expect("a body");
     let input = body["input"].as_array().unwrap();
@@ -481,6 +488,7 @@ fn a_request_that_ends_on_an_instruction_ends_on_a_message() {
             tail: &[],
             max_output_tokens: None,
             thinking: None,
+            json: false,
         })
         .expect("a body");
     let input = body["input"].as_array().unwrap();
@@ -511,6 +519,7 @@ fn a_transcript_that_leads_with_a_system_row_keeps_it_in_place() {
             tail: &[],
             max_output_tokens: None,
             thinking: None,
+            json: false,
         })
         .expect("a body");
     assert!(body.get("instructions").is_none(), "{body:#?}");
@@ -543,6 +552,7 @@ fn a_picture_is_sent_to_a_model_that_sees_and_named_to_one_that_does_not() {
             tail: &[],
             max_output_tokens: None,
             thinking: None,
+            json: false,
         })
         .expect("a body")
     };

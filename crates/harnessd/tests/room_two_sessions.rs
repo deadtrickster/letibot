@@ -170,6 +170,7 @@ impl One {
                 text: text.into(),
                 attachments: Vec::new(),
                 context: None,
+                from: None,
             },
         );
         assert!(

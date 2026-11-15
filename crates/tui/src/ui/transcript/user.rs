@@ -43,6 +43,18 @@ pub(crate) fn user_row_lines(
             }
             (RowClass::Speech, rows)
         }
+        // Another agent's line: drawn as words, under its sender's handle, never as the operator's.
+        letibot_transcript::Speaker::Peer { from } => {
+            // The handle is the label, so an agent's own `cc@rano: ` prefix is not drawn twice.
+            let said = text
+                .strip_prefix(&format!("{from}:"))
+                .map(str::trim_start)
+                .unwrap_or(&text);
+            (
+                RowClass::Speech,
+                crate::ui::transcript::blocks::peer_block(from, said, it.ts, cfg),
+            )
+        }
         letibot_transcript::Speaker::Agent => (
             RowClass::Other,
             session_row_lines(&text, it.ts, cfg, subagents, job_tails, ctx.cards),

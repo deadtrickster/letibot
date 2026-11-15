@@ -80,7 +80,7 @@ fn a_brief_that_is_an_open_row_gets_the_offer() {
         panic!("an offer is a user item: {made:?}")
     };
     assert_eq!(
-        *speaker,
+        speaker.clone(),
         Speaker::Agent,
         "the harness's own line, and it says so"
     );

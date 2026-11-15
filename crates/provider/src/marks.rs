@@ -331,6 +331,7 @@ mod tests {
             tail: &[],
             max_output_tokens: None,
             thinking: None,
+            json: false,
         };
         assert!(p.complete(&req, &mut |_| StreamFlow::Continue).is_err());
         assert_eq!(

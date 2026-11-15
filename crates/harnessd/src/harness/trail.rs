@@ -136,7 +136,9 @@ impl TrailMirror {
                     // the mapping.
                     speaker: match speaker {
                         letibot_transcript::Speaker::Operator => Speaker::Operator,
-                        letibot_transcript::Speaker::Agent => Speaker::Agent,
+                        // A peer's line is context, never an authorisation.
+                        letibot_transcript::Speaker::Agent
+                        | letibot_transcript::Speaker::Peer { .. } => Speaker::Agent,
                     },
                     text,
                     clipped,

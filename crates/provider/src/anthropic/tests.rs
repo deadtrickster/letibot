@@ -112,6 +112,7 @@ fn request<'a>(
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     }
 }
 
@@ -305,6 +306,7 @@ fn the_transcript_ends_with_a_breakpoint_and_the_tail_is_after_it() {
         tail: &tail,
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let body = provider().body(&req).expect("a body");
     let messages = body["messages"].as_array().unwrap();

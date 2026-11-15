@@ -319,6 +319,7 @@ fn a_prompt_to_a_live_subagent_is_served_by_its_own_thread_only() {
                 text: format!("question {n}"),
                 attachments: Vec::new(),
                 context: None,
+                from: None,
             },
         );
     }

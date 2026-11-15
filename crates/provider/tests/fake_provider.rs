@@ -120,6 +120,7 @@ fn a_turn_streams_reasoning_text_and_a_tool_call_and_the_request_carries_the_key
         tail: &[],
         max_output_tokens: Some(256),
         thinking: None,
+        json: false,
     };
     let mut deltas = Vec::new();
     let done = p
@@ -178,6 +179,7 @@ fn a_tail_is_the_last_message_on_the_wire() {
         tail: &tail,
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     p.complete(&req, &mut |_| StreamFlow::Continue).unwrap();
     let seen = f.seen.lock().unwrap();
@@ -208,6 +210,7 @@ fn a_refusal_carries_the_providers_own_message() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
     match err {
@@ -240,6 +243,7 @@ fn a_refusal_keeps_the_code_that_says_what_it_is() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
     match err {
@@ -323,6 +327,7 @@ fn a_refusal_of_the_picture_is_learned_and_the_request_retried_with_placeholders
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let done = p
         .complete(&req, &mut |_| StreamFlow::Continue)
@@ -432,6 +437,7 @@ fn a_provider_that_refuses_the_bytes_is_learned_against_the_picture_and_the_requ
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let done = p
         .complete(&req, &mut |_| StreamFlow::Continue)
@@ -529,6 +535,7 @@ fn a_refusal_learned_in_one_session_leaves_another_sessions_request_alone() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let a = Arc::new(Mutex::new(letibot_provider::marks::Marks::new()));
     let b = Arc::new(Mutex::new(letibot_provider::marks::Marks::new()));
@@ -601,6 +608,7 @@ fn a_refusal_that_is_not_about_the_picture_is_answered_as_itself() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let err = p
         .complete(&req, &mut |_| StreamFlow::Continue)
@@ -655,6 +663,7 @@ fn a_retry_that_is_refused_too_records_nothing_and_says_what_the_provider_said()
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let err = p
         .complete(&req, &mut |_| StreamFlow::Continue)
@@ -696,6 +705,7 @@ fn stopping_mid_stream_is_an_abort_not_an_answer() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let mut n = 0;
     let err = p
@@ -747,6 +757,7 @@ fn bare_request(p: &OpenAiProvider) -> Result<(), BackendError> {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     p.complete(&req, &mut |_| StreamFlow::Continue).map(|_| ())
 }
@@ -762,6 +773,7 @@ fn bare_with_deltas(p: &OpenAiProvider) -> (usize, Result<(), BackendError>) {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let mut n = 0;
     let out = p

@@ -166,7 +166,7 @@ fn the_offer_is_at_the_tail_and_never_in_the_transcript() {
         panic!("the tail is a user-side row: {:?}", tail[0]);
     };
     assert_eq!(
-        *speaker,
+        speaker.clone(),
         Speaker::Agent,
         "the harness's own line, never drawn as the operator's"
     );

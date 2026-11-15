@@ -1177,6 +1177,7 @@ impl TurnEngine {
             tail,
             max_output_tokens,
             thinking: self.thinking,
+            json: false,
         };
         let mut urgent: Option<String> = None;
         // The first-token clock: the first delta of any kind, against the turn's start.

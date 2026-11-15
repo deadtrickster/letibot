@@ -626,6 +626,10 @@ pub enum ClientFrame {
         /// version-70 daemon parses the frame and drops it, which is what the version bump is for.
         #[serde(default)]
         context: Option<EditorContext>,
+        /// The agent that sent it, by its handle (`cc@rano`), when it was not the operator typing.
+        /// Absent is the operator, which is every head that is a person's.
+        #[serde(default)]
+        from: Option<String>,
     },
     /// Take back what this head queued: every prompt from it the running turn has not consumed, plus
     /// the operator's held run.

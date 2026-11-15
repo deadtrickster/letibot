@@ -13,6 +13,7 @@ pub mod replay;
 pub mod runner;
 pub mod turn_end;
 pub mod verdict;
+pub mod words;
 
 #[cfg(test)]
 mod tests;

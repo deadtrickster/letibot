@@ -425,6 +425,7 @@ mod tests {
                 text: "why does this need a lock?".into(),
                 attachments: Vec::new(),
                 context: Some(c),
+                from: None,
             },
         );
         assert!(
@@ -437,7 +438,7 @@ mod tests {
         let letibot_transcript::TranscriptItem::User { speaker, parts } = &item else {
             panic!("a prompt is a user row: {item:?}")
         };
-        assert_eq!(*speaker, letibot_transcript::Speaker::Operator);
+        assert_eq!(speaker.clone(), letibot_transcript::Speaker::Operator);
         let letibot_transcript::UserPart::Text { text } = &parts[0] else {
             panic!("the words must be the FIRST part: {parts:?}")
         };

@@ -79,6 +79,7 @@ fn one_turn(h: &Harness) {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     h.provider
         .as_ref()

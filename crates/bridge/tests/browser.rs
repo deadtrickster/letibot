@@ -216,6 +216,7 @@ fn take_prompt(
                 text,
                 attachments,
                 context,
+                ..
             } = cmd.kind
             {
                 return (text, attachments, context);

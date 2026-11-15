@@ -76,6 +76,9 @@ fn carried_row(item: &TranscriptItem, reasoning: bool) -> Option<Value> {
             if !rest.is_empty() {
                 row["attachments"] = Value::Array(rest);
             }
+            if let letibot_transcript::Speaker::Peer { from } = speaker {
+                row["from"] = json!(from);
+            }
             row
         }
         // A delivery, as its own kind on the wire: a bridge reader that draws the operator's

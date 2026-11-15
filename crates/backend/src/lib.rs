@@ -87,6 +87,9 @@ pub struct TurnRequest<'a> {
     /// `None` keeps the backend's own setting. `Some(false)` asks this one request not to think:
     /// a cheap turn whose expected end is silence.
     pub thinking: Option<bool>,
+    /// Ask for a JSON object reply, where the door has a switch for it. A verdict call's schema
+    /// is a JSON object, and an answer in prose is a void.
+    pub json: bool,
 }
 
 pub trait Backend {

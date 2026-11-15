@@ -230,7 +230,7 @@ fn user_row(item: &TranscriptItem) -> Option<(RowSpeaker, String)> {
         })
         .collect::<Vec<_>>()
         .join("");
-    Some((*speaker, text))
+    Some((speaker.clone(), text))
 }
 
 /// A choice, and the person's own note on it, land as their words - and the trail can cite

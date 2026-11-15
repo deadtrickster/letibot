@@ -2296,7 +2296,7 @@ impl<'a> Sessions<'a> {
                 return out;
             }
         }
-        self.run_prompt(session_id, text, &[], None)
+        self.run_prompt(session_id, text, &[], None, None)
     }
 
     /// One turn, and everything that has to happen around one. Both ways a prompt reaches a
@@ -2308,6 +2308,7 @@ impl<'a> Sessions<'a> {
         text: &str,
         attachments: &[letibot_sessionlog::protocol::Attachment],
         context: Option<&letibot_sessionlog::protocol::EditorContext>,
+        peer: Option<&str>,
     ) -> Result<Reply, HarnessError> {
         // Opened first, lazily - the resume a head reaches (`/resume`, a switch from the
         // picker). A session that cannot be opened ran nothing, and says so on its own log.
@@ -2322,8 +2323,15 @@ impl<'a> Sessions<'a> {
         // Everything around the turn is the shared tail's : the plan-check earned back the wall
         // checked BEFORE the send, the clock, the failure, the compaction, the continuation past
         // the wall, the title, and the wake.
-        self.turn(session_id, Door::Prompt, |h| {
-            h.submit_with_context(text, attachments, context).map(Some)
+        // An agent's line is a message for the tail, not the operator's prompt.
+        let door = if peer.is_some() {
+            Door::Message
+        } else {
+            Door::Prompt
+        };
+        self.turn(session_id, door, |h| {
+            h.submit_with_context_from(text, attachments, context, peer)
+                .map(Some)
         })
         .expect("a prompt always runs a turn")
     }
@@ -3732,11 +3740,19 @@ impl<'a> Sessions<'a> {
                 text,
                 attachments,
                 context,
+                ..
             } => {
                 // One line, because everything a turn needs around it - the title, the wake, the failure
                 // notice, the compaction at the wall - is in `run_prompt`, which the scripted path also
                 // calls. One copy, so the compaction is never missed.
-                match self.run_prompt(session_id, text, attachments, context.as_ref()) {
+                let peer = cmd.peer();
+                match self.run_prompt(
+                    session_id,
+                    text,
+                    attachments,
+                    context.as_ref(),
+                    peer.as_deref(),
+                ) {
                     Ok(reply) => Outcome::Replied(Box::new(reply)),
                     Err(e) => Outcome::Failed(e.to_string()),
                 }

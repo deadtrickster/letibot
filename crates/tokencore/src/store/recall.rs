@@ -96,6 +96,19 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// When one transcript row was written, ms since the epoch; `None` for a row not stored.
+    pub fn item_created_at(&self, transcript_id: &str, seq: u64) -> Result<Option<i64>> {
+        let conn = self.at("transcript_item");
+        let mut stmt = conn.prepare(
+            "SELECT created_at FROM transcript_item WHERE transcript_id = ?1 AND seq = ?2",
+        )?;
+        let mut rows = stmt.query(params![transcript_id, seq as i64])?;
+        Ok(match rows.next()? {
+            Some(r) => Some(r.get::<_, i64>(0)?),
+            None => None,
+        })
+    }
+
     /// One transcript's rows in `seq` order, as the unit builder reads them.
     pub fn recall_rows(
         &self,

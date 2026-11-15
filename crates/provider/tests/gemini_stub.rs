@@ -170,6 +170,7 @@ fn a_turn_streams_thoughts_text_usage_and_the_ending() {
         tail: &[],
         max_output_tokens: Some(99),
         thinking: Some(true),
+        json: false,
     };
     let mut deltas: Vec<Delta> = Vec::new();
     let done: Completion = p
@@ -259,6 +260,7 @@ fn a_tool_call_round_trip_carries_the_signature_and_the_id_back() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let first_answer = p
         .complete(&req, &mut |_| StreamFlow::Continue)
@@ -294,6 +296,7 @@ fn a_tool_call_round_trip_carries_the_signature_and_the_id_back() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let done = p
         .complete(&req, &mut |_| StreamFlow::Continue)
@@ -359,6 +362,7 @@ fn a_refused_picture_is_named_on_the_retry_and_never_sent_again() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let done = p
         .complete(&req, &mut |_| StreamFlow::Continue)
@@ -410,6 +414,7 @@ fn an_error_status_is_a_refusal_with_the_providers_words() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
     match err {
@@ -454,6 +459,7 @@ fn a_rate_limit_keeps_the_status_the_word_and_the_instant_to_come_back() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
     match err {
@@ -496,6 +502,7 @@ fn a_safety_finish_with_no_content_is_the_providers_refusal() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
     match err {
@@ -527,6 +534,7 @@ fn a_stream_that_ends_without_a_finish_reason_is_a_fragment() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
     match err {
@@ -557,6 +565,7 @@ fn a_tool_schema_gemini_cannot_read_is_refused_before_the_post() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
     match err {
@@ -589,6 +598,7 @@ fn an_error_inside_the_stream_is_a_refusal_with_the_chunks_own_code() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let err = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
     match err {
@@ -618,6 +628,7 @@ fn a_stop_from_the_callback_aborts_the_turn() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let mut seen: Vec<String> = Vec::new();
     let err = p

@@ -6,6 +6,7 @@ use serde::Deserialize;
 
 use super::Job;
 use super::guard::{self, Call};
+use super::words::Author;
 
 /// The shortest quote that counts as evidence. A two-letter "quote" is a substring of anything.
 pub const MIN_QUOTE: usize = 8;
@@ -23,6 +24,55 @@ pub struct Shown {
     pub shortlist: Vec<String>,
     /// The call a `permission` verdict is about.
     pub call: Option<Call>,
+    /// Who wrote each stretch of `data`, for the author rules: a note quotes only the operator's
+    /// own words, and a promise only the assistant's.
+    pub spans: Vec<Span>,
+}
+
+/// One authored stretch of [`Shown::data`]: byte range, author, and transcript row.
+#[derive(Debug, Clone)]
+pub struct Span {
+    pub start: usize,
+    pub end: usize,
+    pub author: Author,
+    pub row: Option<usize>,
+}
+
+impl Shown {
+    /// Append `text` as `author`'s, under `header`, and record its span.
+    pub fn push_said(&mut self, header: &str, author: Author, row: Option<usize>, text: &str) {
+        self.data.push_str(header);
+        self.data.push('\n');
+        let start = self.data.len();
+        self.data.push_str(text.trim());
+        let end = self.data.len();
+        self.data.push_str("\n\n");
+        self.spans.push(Span {
+            start,
+            end,
+            author,
+            row,
+        });
+    }
+
+    /// The span holding an occurrence of `quote` whose author passes `ok`.
+    fn authored(&self, quote: &str, ok: impl Fn(&Author) -> bool) -> Option<&Span> {
+        self.data.match_indices(quote).find_map(|(at, _)| {
+            self.spans
+                .iter()
+                .find(|s| ok(&s.author) && s.start <= at && at + quote.len() <= s.end)
+        })
+    }
+}
+
+/// A note's quote and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Quoted {
+    pub text: String,
+    /// The author's label, `the operator`.
+    pub author: String,
+    /// The transcript row it was quoted from, when known.
+    pub row: Option<usize>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -56,8 +106,8 @@ pub enum Decision {
 pub enum Verdict {
     TurnEnd {
         reminder: Reminder,
-        /// A proposed note, quoted. Propose-only: nothing writes it.
-        note: Option<String>,
+        /// A proposed note, quoted from the operator's own words. Propose-only: nothing writes it.
+        note: Option<Quoted>,
     },
     During {
         drift: Drift,
@@ -229,10 +279,43 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
                 return log.reject("quotes", why);
             }
             log.pass("quotes");
-            log.done(Verdict::TurnEnd {
-                reminder,
-                note: (!r.note.is_empty()).then_some(r.note),
-            })
+            // The author rules, in code because a prompt is not a guardrail. A promise is the
+            // assistant's own words; a note quotes only what the human operator wrote.
+            if !shown.spans.is_empty() {
+                if !r.promise.is_empty()
+                    && shown
+                        .authored(&r.promise, |a| *a == Author::Assistant)
+                        .is_none()
+                {
+                    return log.reject(
+                        "author",
+                        format!("promise {:?} is not the assistant's words", r.promise),
+                    );
+                }
+                log.pass("author");
+            }
+            let note = match r.note.is_empty() {
+                true => None,
+                false => match shown.authored(&r.note, |a| *a == Author::Operator) {
+                    Some(span) => {
+                        log.pass("note author");
+                        Some(Quoted {
+                            text: r.note,
+                            author: span.author.label(),
+                            row: span.row,
+                        })
+                    }
+                    // Unsure means no proposal: the reminder stands, the note is dropped.
+                    None => {
+                        log.0.push(format!(
+                            "drop note: {:?} is not the operator's own words",
+                            r.note
+                        ));
+                        None
+                    }
+                },
+            };
+            log.done(Verdict::TurnEnd { reminder, note })
         }
         Job::During => {
             let r: DuringReply = match serde_json::from_str(json) {

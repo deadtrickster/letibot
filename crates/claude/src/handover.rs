@@ -206,7 +206,7 @@ fn line_for(
                 skipped.empty += 1;
                 return None;
             }
-            ("user", Value::Array(blocks), *speaker == Speaker::Agent)
+            ("user", Value::Array(blocks), !speaker.is_operator())
         }
         TranscriptItem::Assistant {
             text, tool_calls, ..
@@ -329,10 +329,11 @@ fn markdown_for(item: &TranscriptItem) -> String {
             if text.trim().is_empty() {
                 return String::new();
             }
-            let who = match speaker {
-                Speaker::Operator => "operator",
+            let who: String = match speaker {
+                Speaker::Operator => "operator".into(),
                 // Named, because a reader of the Markdown has no `speaker` field to check.
-                Speaker::Agent => "letibot (the session's own voice, not the operator's)",
+                Speaker::Agent => "letibot (the session's own voice, not the operator's)".into(),
+                Speaker::Peer { from } => format!("{from} (another agent, not the operator)"),
             };
             format!("**{who}**\n\n{text}\n\n")
         }

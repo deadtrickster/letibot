@@ -1713,6 +1713,7 @@ pub fn serve_conn_rooted(
                 text,
                 attachments,
                 context,
+                from,
             }) => {
                 let f = seat.hub.submit(
                     &seat.head_id,
@@ -1722,6 +1723,7 @@ pub fn serve_conn_rooted(
                         text,
                         attachments,
                         context,
+                        from,
                     },
                 );
                 writer.lock().unwrap().write(&f)?;

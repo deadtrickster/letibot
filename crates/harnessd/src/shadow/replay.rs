@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use letibot_tokencore::store::{Store, StoredSession, split};
-use letibot_transcript::{Speaker, TranscriptItem};
+use letibot_transcript::TranscriptItem;
 
 use super::Job;
 use super::judge::Judge;
@@ -55,21 +55,18 @@ fn is_go_on(text: &str) -> bool {
 pub struct Case {
     pub at: usize,
     pub reply: String,
-    pub operator: Option<String>,
+    /// The words that drove the turn, with their authors, as a live check is shown them.
+    pub words: Vec<super::words::Said>,
     pub label: Label,
     pub regex_owed: bool,
 }
 
-/// Every labelled turn end in `items`: a finished text-only answer followed by an operator row.
+/// Every labelled turn end in `items`: a finished text-only answer followed by the operator's own
+/// words. An agent's line after it is no label: only the human says whether work was owed.
 pub fn cases(items: &[TranscriptItem]) -> Vec<Case> {
     let mut out = Vec::new();
-    let mut operator: Option<String> = None;
     for (i, item) in items.iter().enumerate() {
         match item {
-            TranscriptItem::User {
-                speaker: Speaker::Operator,
-                ..
-            } => operator = Some(letibot_sessionlog::view::body_of(item)),
             TranscriptItem::Assistant {
                 text,
                 tool_calls,
@@ -83,13 +80,7 @@ pub fn cases(items: &[TranscriptItem]) -> Vec<Case> {
                             | TranscriptItem::Reasoning { .. }
                     )
                 });
-                let Some(
-                    n @ TranscriptItem::User {
-                        speaker: Speaker::Operator,
-                        ..
-                    },
-                ) = next
-                else {
+                let Some(n) = next.filter(|n| super::words::human(n)) else {
                     continue;
                 };
                 let said = letibot_sessionlog::view::body_of(n);
@@ -101,7 +92,7 @@ pub fn cases(items: &[TranscriptItem]) -> Vec<Case> {
                 out.push(Case {
                     at: i,
                     reply: text.clone(),
-                    operator: operator.clone(),
+                    words: super::words::recent(&items[..i]),
                     label,
                     regex_owed: !letibot_tools::builtins::intent::commitments(text).is_empty(),
                 });
@@ -163,6 +154,8 @@ pub struct Report {
     pub shadow: Score,
     pub acting: Score,
     pub fell_back: u32,
+    /// Replies that failed a check, an empty one included: the void rate the provider is judged by.
+    pub voided: u32,
     pub lines: Vec<String>,
 }
 
@@ -176,7 +169,7 @@ pub fn score(sessions: &[Logged], judge: &dyn Judge) -> Report {
         for c in cases(items) {
             r.turns += 1;
             r.regex.add(c.regex_owed, c.label);
-            let shown = super::turn_end::shown(c.operator.as_deref(), &c.reply, &[], &[]);
+            let shown = super::turn_end::shown(&c.words, &c.reply, &[], &[]);
             let outcome = match judge.judge(
                 super::prompts::TURN_END,
                 &super::prompts::fence(&shown.data),
@@ -187,6 +180,9 @@ pub fn score(sessions: &[Logged], judge: &dyn Judge) -> Report {
                 },
                 Err(e) => Outcome::Failed(e),
             };
+            if matches!(outcome, Outcome::Void(_)) {
+                r.voided += 1;
+            }
             let said = match &outcome {
                 Outcome::Verdict(Verdict::TurnEnd { reminder, .. }) => match reminder {
                     Reminder::Owed { .. } => Some(true),
@@ -236,8 +232,8 @@ impl Report {
             self.shadow.line("shadow"),
             self.acting.line("acting"),
             format!(
-                "shadow fell back to the regex on {} (unsure, void or no answer)",
-                self.fell_back
+                "shadow fell back to the regex on {} (unsure, void or no answer); void {} of {}",
+                self.fell_back, self.voided, self.turns
             ),
         ];
         if verbose {
@@ -400,12 +396,26 @@ fn shared_reader() -> Result<Store, String> {
     let target = std::env::var_os("LETIBOT_STORE")
         .map(PathBuf::from)
         .unwrap_or_else(letibot_tools::lifecycle::data_dir);
-    let path = if target.is_dir() {
-        split::shared_path(&target)
-    } else {
-        target
-    };
-    Store::open_reader(&path).map_err(|e| format!("{}: {e}", path.display()))
+    if !target.is_dir() {
+        return Store::open_reader(&target).map_err(|e| format!("{}: {e}", target.display()));
+    }
+    // The session index alone has no `transcript` table, so it is read as a set: any project
+    // file will do, since only the session row is read here and its own file is opened after.
+    let any = std::fs::read_dir(target.join("projects"))
+        .ok()
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.strip_suffix(".db").map(str::to_string)
+        })
+        .next();
+    match any {
+        Some(key) => Store::open_set_reader(&target, &key),
+        None => Store::open_reader(&split::shared_path(&target)),
+    }
+    .map_err(|e| format!("{}: {e}", target.display()))
 }
 
 fn is_conversation(s: &StoredSession) -> bool {
@@ -448,7 +458,11 @@ fn scope_of(what: &str) -> Result<Scope, String> {
     let model = ids.first().map(|s| s.model_id.clone()).unwrap_or_default();
     let mut sessions = Vec::new();
     for s in ids {
-        let Some(tid) = s.transcript_id.clone() else {
+        let Some(tid) = s
+            .transcript_id
+            .clone()
+            .or_else(|| store.current_transcript_id(&s.id).ok().flatten())
+        else {
             continue;
         };
         if let Ok(t) = store.load_transcript(&tid) {

@@ -78,6 +78,19 @@ pub struct QueuedCommand {
     pub kind: CommandKind,
 }
 
+impl QueuedCommand {
+    /// Who sent this prompt when it was not the operator: the frame's sender, or the bridge's own
+    /// identity for a prompt that names none (an older bridge, a prompt restored from the journal).
+    pub fn peer(&self) -> Option<String> {
+        let CommandKind::Prompt { from, .. } = &self.kind else {
+            return None;
+        };
+        from.clone()
+            .filter(|f| !f.trim().is_empty())
+            .or_else(|| (self.identity == crate::MCP_IDENTITY).then(|| self.identity.clone()))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum CommandKind {
     Prompt {
@@ -89,6 +102,9 @@ pub enum CommandKind {
         /// after their words. It rides the command and the journal, so a prompt queued across a
         /// daemon restart still carries what the operator was looking at.
         context: Option<crate::protocol::EditorContext>,
+        /// The agent or program that sent it, `cc@rano`. `None` is the operator. See
+        /// [`QueuedCommand::peer`] for the reading every consumer uses.
+        from: Option<String>,
     },
     /// Compact the session: one summary turn, then the history is replaced by that summary
     /// through a transcript fork. Queued like a prompt because it is a turn, and accepted on
@@ -482,6 +498,7 @@ impl CommandQueue {
                     text,
                     attachments,
                     context,
+                    ..
                 } => Some(JournaledPrompt {
                     enqueued_ms: c.enqueued_ms,
                     head_id: c.head_id.clone(),
@@ -733,10 +750,13 @@ impl Hub {
                 client_request_id: p.client_request_id.clone(),
                 at_seq,
                 enqueued_ms: p.enqueued_ms,
+                // The journal keeps the identity and not the sender, so a restored bridge prompt
+                // reads as a peer through `QueuedCommand::peer`.
                 kind: CommandKind::Prompt {
                     text: p.text.clone(),
                     attachments: p.attachments.clone(),
                     context: p.context.clone(),
+                    from: None,
                 },
             });
         }
@@ -2365,6 +2385,7 @@ mod mode_steering_tests {
                 text: "do the thing".into(),
                 attachments: Vec::new(),
                 context: None,
+                from: None,
             },
         );
         assert!(hub.journal_settled(std::time::Duration::from_secs(5)));
@@ -2431,6 +2452,7 @@ mod mode_steering_tests {
                     text: "tell me about it".into(),
                     attachments: Vec::new(),
                     context: None,
+                    from: None,
                 },
             );
             let taken = matches!(
@@ -2467,6 +2489,7 @@ mod mode_steering_tests {
                 text: "stop and look at this".into(),
                 attachments: Vec::new(),
                 context: None,
+                from: None,
             },
         );
         assert!(hub.has_queued_prompt());
@@ -2561,6 +2584,7 @@ mod mode_steering_tests {
                     text: "speak as the operator".into(),
                     attachments: Vec::new(),
                     context: None,
+                    from: None,
                 },
                 "send a prompt",
             ),

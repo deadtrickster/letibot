@@ -201,14 +201,18 @@ impl OpenAiProvider {
         let thinking = req.thinking.unwrap_or(self.thinking);
         // Kimi's K3.1 Pro answers `disabled` with a 400, so there the field is left out and the
         // model's own default stands (see `crate::kimi::may_switch_thinking_off`).
-        if let Some(field) = self.preset.thinking_field {
-            if thinking {
-                body[field] = json!({"type": "enabled"});
-            } else if req.thinking == Some(false)
-                && crate::kimi::may_switch_thinking_off(self.preset.name, &self.model)
-            {
-                body[field] = json!({"type": "disabled"});
-            }
+        if let Some(field) = self.preset.thinking_field
+            && thinking
+        {
+            body[field] = json!({"type": "enabled"});
+        } else if let Some(field) = self.preset.thinking_off_field()
+            && req.thinking == Some(false)
+            && crate::kimi::may_switch_thinking_off(self.preset.name, &self.model)
+        {
+            body[field] = json!({"type": "disabled"});
+        }
+        if req.json && self.preset.json_object() {
+            body["response_format"] = json!({"type": "json_object"});
         }
         // A turn that switched thinking off has no effort to spend.
         if req.thinking != Some(false)
@@ -1241,6 +1245,7 @@ mod tests {
                 tail: &[],
                 max_output_tokens: None,
                 thinking: None,
+                json: false,
             })
             .expect("the body builds");
         assert!(
@@ -1267,6 +1272,7 @@ mod tests {
                 tail: &[],
                 max_output_tokens: None,
                 thinking: None,
+                json: false,
             })
             .expect("the body builds");
         assert!(without.get("tools").is_none(), "{without:#?}");
@@ -1302,6 +1308,7 @@ mod tests {
             tail: &[],
             max_output_tokens,
             thinking,
+            json: false,
         };
         let usual = p.body(&req(None, None)).expect("a body");
         assert_eq!(usual["thinking"], json!({"type": "enabled"}));
@@ -1312,6 +1319,34 @@ mod tests {
         p.thinking = false;
         let plain = p.body(&req(None, None)).expect("a body");
         assert!(plain.get("thinking").is_none(), "{plain}");
+    }
+
+    /// A verdict call on DeepSeek turns its default thinking off and asks for a JSON object; an
+    /// ordinary turn sends neither, so the operator's sessions are untouched.
+    #[test]
+    fn a_verdict_call_on_deepseek_switches_thinking_off_and_asks_for_json() {
+        let creds = Credentials {
+            key: "k".into(),
+            from: "test".into(),
+            prices: Default::default(),
+            url: None,
+        };
+        let p = OpenAiProvider::new(&crate::presets::DEEPSEEK, Some("deepseek-flash"), creds);
+        let req = |thinking, json| TurnRequest {
+            system: "",
+            tools_json: &[],
+            items: &[],
+            tail: &[],
+            max_output_tokens: None,
+            thinking,
+            json,
+        };
+        let verdict = p.body(&req(Some(false), true)).expect("a body");
+        assert_eq!(verdict["thinking"], json!({"type": "disabled"}));
+        assert_eq!(verdict["response_format"], json!({"type": "json_object"}));
+        let usual = p.body(&req(None, false)).expect("a body");
+        assert!(usual.get("thinking").is_none(), "{usual}");
+        assert!(usual.get("response_format").is_none(), "{usual}");
     }
 
     /// The plan's `reasoning_effort` carries `--effort` in its own words; a door with no such
@@ -1335,6 +1370,7 @@ mod tests {
             tail: &[],
             max_output_tokens: None,
             thinking,
+            json: false,
         };
         let kimi = OpenAiProvider::new(
             &crate::presets::KIMI_CODE_GLOBAL,
@@ -1389,6 +1425,7 @@ mod tests {
                 tail: &[],
                 max_output_tokens: Some(128),
                 thinking: Some(false),
+                json: false,
             })
             .expect("a body")
         };
@@ -1413,6 +1450,7 @@ mod tests {
                 tail: &[],
                 max_output_tokens: None,
                 thinking: Some(false),
+                json: false,
             })
             .expect("a body");
         assert!(body.get("prompt_cache_key").is_none(), "{body}");

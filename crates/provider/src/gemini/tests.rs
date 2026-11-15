@@ -58,6 +58,7 @@ fn body(items: &[TranscriptItem], tools_json: &[String], system: &str) -> Value 
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     p.body(&req).expect("a body")
 }
@@ -230,6 +231,7 @@ fn a_thought_signature_rides_the_function_call_it_came_on() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let b = p.body(&req).expect("a body");
     let contents = b["contents"].as_array().expect("contents");
@@ -371,6 +373,7 @@ fn effort_becomes_a_thinking_level_and_absence_sends_nothing() {
             tail: &[],
             max_output_tokens: None,
             thinking: None,
+            json: false,
         };
         p.body(&req).expect("a body")
     };

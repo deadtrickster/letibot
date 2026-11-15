@@ -7257,6 +7257,58 @@ fn a_parents_message_is_drawn_as_the_sessions_own_block() {
     );
 }
 
+/// An agent's line through the bridge is drawn under its handle, with its own marker, and never
+/// with the operator's `▌` bar; its own `cc@rano:` signature is not drawn twice.
+#[test]
+fn an_agent_line_is_drawn_under_its_handle_and_never_with_the_operators_bar() {
+    let peer = TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::peer("cc@rano"),
+        parts: vec![UserPart::Text {
+            text: "cc@rano: verified a7b7c22 on origin, keep going".into(),
+        }],
+    };
+    let (_, lines) = item_rendered(false, peer);
+    let drawn = lines.join("\n");
+    assert!(drawn.contains("cc@rano ▸ verified a7b7c22"), "{drawn}");
+    assert!(
+        !drawn.contains('▌'),
+        "the operator's bar on an agent's line: {drawn}"
+    );
+    assert_eq!(drawn.matches("cc@rano").count(), 1, "{drawn}");
+
+    let operator = TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Operator,
+        parts: vec![UserPart::Text {
+            text: "verified a7b7c22 on origin, keep going".into(),
+        }],
+    };
+    let (_, lines) = item_rendered(false, operator);
+    assert!(lines.join("\n").contains('▌'), "the operator keeps the bar");
+}
+
+/// A shadow's suggestion is drawn as the shadow's row, not the session's.
+#[test]
+fn a_shadow_suggestion_is_drawn_as_the_shadows_row() {
+    let row = TranscriptItem::Offer {
+        kind: letibot_transcript::OfferKind::Shadow,
+        title: "shadow suggests saving a note: the gate runs on lab2x1".into(),
+        body: "shadow suggests saving a note:\n\nthe gate runs on lab2x1\n\nquoted from the \
+               operator at 12:08 UTC (row 41)\n\nshadow session: s-w-shadow"
+            .into(),
+    };
+    let (_, lines) = item_rendered(false, row);
+    let drawn = lines.join("\n");
+    assert!(
+        drawn.contains("shadow · suggests saving a note: the gate runs on lab2x1"),
+        "{drawn}"
+    );
+    assert!(!drawn.contains("session ·"), "{drawn}");
+    assert_eq!(
+        crate::app::diff_popup::shadow_session_of("x\n\nshadow session: s-w-shadow").as_deref(),
+        Some("s-w-shadow")
+    );
+}
+
 /// A row that rides its own announcement is drawn at once and asks for nothing: no
 /// `FetchRows`, and no `TranscriptContent` to wait for.
 #[test]

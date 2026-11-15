@@ -44,7 +44,10 @@ provider is in trouble.
 ## Steer, answer, end
 
 - `leticode_send` queues a line behind the running turn; the daemon starts a turn for it. That is
-  how a child is corrected — not by stopping it.
+  how a child is corrected — not by stopping it. The line is stored under this seat's handle, never
+  as the operator's words.
+- Talk to a session through the bridge or the room, never by typing into a head over tmux. A head
+  cannot tell that from the operator typing.
 - `leticode_asks` then `leticode_answer {session, ask, option, note}`. Answer the gate's routine
   asks yourself; take a question that needs a person to the operator.
 - `leticode_stop` interrupts, closes and detaches, and a placement settles as it closes — the

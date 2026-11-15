@@ -142,7 +142,7 @@ fn context_checks(h: &Harness) -> Vec<(letibot_transcript::Speaker, String)> {
         .filter_map(|i| match i {
             TranscriptItem::User { speaker, parts } => parts.iter().find_map(|p| match p {
                 UserPart::Text { text } if text.starts_with("[context check]") => {
-                    Some((*speaker, text.clone()))
+                    Some((speaker.clone(), text.clone()))
                 }
                 _ => None,
             }),
@@ -248,7 +248,7 @@ fn an_excuse_at_low_fill_is_answered_with_the_measured_fill_and_the_turn_continu
     assert_eq!(checks.len(), 1, "one line, once: {checks:#?}");
     let (speaker, line) = &checks[0];
     assert_eq!(
-        *speaker,
+        speaker.clone(),
         Speaker::Agent,
         "the harness speaking, never the operator"
     );
@@ -360,7 +360,7 @@ fn an_excuse_in_a_round_that_calls_a_tool_rides_the_step_boundary() {
     assert_eq!(checks.len(), 1, "one line, once: {checks:#?}");
     let (speaker, line) = &checks[0];
     assert_eq!(
-        *speaker,
+        speaker.clone(),
         Speaker::Agent,
         "the harness speaking, never the operator"
     );

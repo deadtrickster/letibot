@@ -40,12 +40,47 @@ impl Judge for ProviderJudge {
             tail: &[],
             max_output_tokens: Some(MAX_TOKENS),
             thinking: Some(false),
+            json: true,
         };
         self.backend
             .complete(&req, &mut |_| letibot_backend::StreamFlow::Continue)
-            .map(|c| c.text)
+            .map(|c| reply_of(&c.text, &c.reasoning))
             .map_err(|e| e.to_string())
     }
+}
+
+/// The reply a verdict is read from: the answer, or, when a model that kept thinking answered
+/// nothing, the JSON object its reasoning ends with. Either way it meets the same checks.
+pub fn reply_of(text: &str, reasoning: &str) -> String {
+    if !text.trim().is_empty() {
+        return text.to_string();
+    }
+    match (reasoning.rfind('{'), reasoning.rfind('}')) {
+        (Some(_), Some(_)) => last_object(reasoning).unwrap_or_default().to_string(),
+        _ => String::new(),
+    }
+}
+
+/// The last balanced `{...}` in `s`, outside string literals.
+fn last_object(s: &str) -> Option<&str> {
+    let end = s.rfind('}')?;
+    let bytes = s.as_bytes();
+    let mut depth = 0usize;
+    let mut i = end + 1;
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b'}' => depth += 1,
+            b'{' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&s[i..=end]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// A llama-server style chat endpoint: the daemon's own server or a declared `[model.*]` one.
@@ -71,16 +106,23 @@ impl Judge for LocalJudge {
             "temperature": 0.0,
             "reasoning_effort": "none",
             "chat_template_kwargs": { "enable_thinking": false },
+            "response_format": { "type": "json_object" },
         })
         .to_string();
         let res = letibot_turn::http::post_json(&self.endpoint, "/v1/chat/completions", &body)
             .map_err(|e| e.to_string())?;
         let text = res.read_to_string().map_err(|e| e.to_string())?;
         let v: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
-        v.pointer("/choices/0/message/content")
-            .and_then(|c| c.as_str())
-            .map(str::to_string)
-            .ok_or_else(|| "the reply carries no choices[0].message.content".to_string())
+        let field = |f: &str| {
+            v.pointer(&format!("/choices/0/message/{f}"))
+                .and_then(|c| c.as_str())
+                .unwrap_or("")
+                .to_string()
+        };
+        if v.pointer("/choices/0/message").is_none() {
+            return Err("the reply carries no choices[0].message".to_string());
+        }
+        Ok(reply_of(&field("content"), &field("reasoning_content")))
     }
 }
 

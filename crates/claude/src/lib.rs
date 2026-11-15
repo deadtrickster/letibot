@@ -631,7 +631,7 @@ fn head_scan(path: &Path) -> Head {
                 let declared = declared_speaker(&v);
                 let texts = user_texts(&v);
                 for t in texts {
-                    if let Said::Words { text, speaker } = classify(&t, declared)
+                    if let Said::Words { text, speaker } = classify(&t, declared.clone())
                         && speaker == Speaker::Operator
                         && !text.is_empty()
                     {
@@ -1092,7 +1092,16 @@ fn user_line(
                 match b.get("type").and_then(Value::as_str) {
                     Some("text") => {
                         let t = str_field(b, "text");
-                        utterance(sid, line_no, uuid, ts_ms, &t, declared, report, sink);
+                        utterance(
+                            sid,
+                            line_no,
+                            uuid,
+                            ts_ms,
+                            &t,
+                            declared.clone(),
+                            report,
+                            sink,
+                        );
                     }
                     Some("tool_result") => {
                         tool_result_line(sid, line_no, uuid, ts_ms, b, st, report, sink)

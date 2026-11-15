@@ -5,20 +5,34 @@ use letibot_tokencore::store::{TodoItem, TodoStatus};
 use letibot_transcript::{OfferKind, Speaker, TranscriptItem};
 
 use super::runner::Outcome;
-use super::verdict::{Reminder, Shown, Verdict};
+use super::verdict::{Quoted, Reminder, Shown, Verdict};
+use super::words::{Author, Said};
 
-/// The rows a turn_end check is shown, as data: the operator's last words, the turn's final answer,
-/// the open todos, and whether anything blocked it.
-pub fn shown(operator: Option<&str>, reply: &str, todos: &[TodoItem], blocked: &[String]) -> Shown {
-    let mut data = String::new();
-    if let Some(op) = operator {
-        data.push_str("operator's last message:\n");
-        data.push_str(op.trim());
-        data.push_str("\n\n");
+/// Each recent message under its author's header, with its span: the operator's own words and an
+/// agent's line are never one heading.
+pub fn push_words(shown: &mut Shown, words: &[Said]) {
+    for w in words {
+        let header = match &w.author {
+            Author::Operator => "operator's last message (the human, in their own words):".into(),
+            other => format!("message from {}:", other.label()),
+        };
+        shown.push_said(&header, w.author.clone(), Some(w.row), &w.text);
     }
-    data.push_str("assistant's final answer this turn:\n");
-    data.push_str(reply.trim());
-    data.push_str("\n\nopen todos:\n");
+}
+
+/// The rows a turn_end check is shown, as data: the recent messages with their authors, the turn's
+/// final answer, the open todos, and whether anything blocked it.
+pub fn shown(words: &[Said], reply: &str, todos: &[TodoItem], blocked: &[String]) -> Shown {
+    let mut s = Shown::default();
+    push_words(&mut s, words);
+    s.push_said(
+        "assistant's final answer this turn:",
+        Author::Assistant,
+        None,
+        reply,
+    );
+    let mut data = std::mem::take(&mut s.data);
+    data.push_str("open todos:\n");
     let open: Vec<&TodoItem> = todos
         .iter()
         .filter(|t| matches!(t.status, TodoStatus::Pending | TodoStatus::InProgress))
@@ -36,10 +50,8 @@ pub fn shown(operator: Option<&str>, reply: &str, todos: &[TodoItem], blocked: &
         data.push_str(&blocked.join("; "));
         data.push('\n');
     }
-    Shown {
-        data,
-        ..Shown::default()
-    }
+    s.data = data;
+    s
 }
 
 /// What the session is told, from a fixed template and a verified quote.
@@ -54,13 +66,22 @@ pub fn reminder(promise: &str, shadow_session: &str) -> String {
 /// The marker a reminder row starts with: one reminder per operator message is counted by it.
 pub const MARK: &str = "[shadow] You said";
 
+/// The line a shadow row's body names its session on, which the head reads to open it.
+pub const SESSION_LINE: &str = "shadow session: ";
+
 /// A proposed note, as a display-only row in the watched session: the operator sees it, the model
-/// does not, and nothing writes the note.
-pub fn note_row(quote: &str, shadow_session: &str) -> TranscriptItem {
+/// does not, and nothing writes the note. `at` is the quoted row's clock time, when known.
+pub fn note_row(quote: &Quoted, at: Option<&str>, shadow_session: &str) -> TranscriptItem {
+    let row = quote.row.map(|r| format!(" (row {r})")).unwrap_or_default();
+    let at = at.map(|t| format!(" at {t}")).unwrap_or_default();
     TranscriptItem::Offer {
         kind: OfferKind::Shadow,
-        title: format!("shadow proposes a note: {}", first_line(quote)),
-        body: format!("{}\n\nfrom {shadow_session}", quote.trim()),
+        title: format!("shadow suggests saving a note: {}", first_line(&quote.text)),
+        body: format!(
+            "shadow suggests saving a note:\n\n{}\n\nquoted from {}{at}{row}\n\n{SESSION_LINE}{shadow_session}",
+            quote.text.trim(),
+            quote.author,
+        ),
     }
 }
 
@@ -93,9 +114,18 @@ pub fn decide(
     outcome: &Outcome,
     held: Option<&str>,
     reminded: bool,
+    moved: bool,
     shadow_session: &str,
 ) -> (Act, Option<String>) {
+    // A fallback releases the held nudge only about the turn it was held for: once the session
+    // moved on, a late regex nudge is about a turn that is no longer current.
     let fallback = |why: &str| match held {
+        Some(_) if moved => (
+            Act::Nothing,
+            Some(format!(
+                "turn_end · {why}, and the session moved on; the held regex nudge is dropped"
+            )),
+        ),
         Some(t) => (
             Act::Regex(t.to_string()),
             Some(format!("turn_end · {why}; the regex nudge goes out")),
@@ -132,11 +162,12 @@ pub fn decide(
     }
 }
 
-/// Whether a shadow reminder went out after the operator's last message.
+/// Whether a shadow reminder went out after the last message that drove a turn: the operator's,
+/// or an agent's line, which is a new instruction though not the operator's words.
 pub fn reminded_since_operator(items: &[TranscriptItem]) -> bool {
     for item in items.iter().rev() {
         if let TranscriptItem::User { speaker, .. } = item {
-            if *speaker == Speaker::Operator {
+            if matches!(speaker, Speaker::Operator | Speaker::Peer { .. }) {
                 return false;
             }
             if letibot_sessionlog::view::body_of(item).contains(MARK) {
@@ -147,13 +178,11 @@ pub fn reminded_since_operator(items: &[TranscriptItem]) -> bool {
     false
 }
 
-/// The operator's last message, for the data a check is shown.
+/// The operator's last message in their own words, never an agent's line or a harness template.
 pub fn last_operator(items: &[TranscriptItem]) -> Option<String> {
-    items.iter().rev().find_map(|i| match i {
-        TranscriptItem::User {
-            speaker: Speaker::Operator,
-            ..
-        } => Some(letibot_sessionlog::view::body_of(i)),
-        _ => None,
-    })
+    items
+        .iter()
+        .rev()
+        .find(|i| super::words::human(i))
+        .map(letibot_sessionlog::view::body_of)
 }

@@ -1598,6 +1598,9 @@ pub struct Head {
     /// Shared with the collecting thread because an `Ack` is a client frame: a head that
     /// acked from a second borrow of the socket would be two writers on one stream.
     client: Arc<Mutex<HeadClient>>,
+    /// The handle this head's prompts are sent under, so the daemon stores them as that agent's
+    /// lines. `None` for the browser bridge, whose prompts are the operator's.
+    speaks_as: Option<String>,
 }
 
 impl Head {
@@ -1682,6 +1685,7 @@ impl Head {
             placement: d.placement.clone(),
             shared,
             client,
+            speaks_as: (identity == IDENTITY).then(crate::rooms::handle),
         };
         head.seated_on(session)?;
         Ok(head)
@@ -1941,7 +1945,7 @@ impl Head {
         // `expected_seq = 0` is what the protocol reads as *I am not claiming a position*,
         // and `Hub::submit` accepts a prompt on a stale seq anyway. A bridge is a second
         // head on a session a person may be typing into, so it must never drop what it was told.
-        c.prompt_with_context(0, text, attachments, context)
+        c.prompt_from(0, text, attachments, context, self.speaks_as.clone())
             .map_err(|e| e.to_string())
     }
 

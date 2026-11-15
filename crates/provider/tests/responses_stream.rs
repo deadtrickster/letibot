@@ -154,6 +154,7 @@ fn a_turn_streams_text_a_summary_and_a_call_and_the_request_carries_the_key() {
         tail: &[],
         max_output_tokens: Some(256),
         thinking: Some(true),
+        json: false,
     };
     let mut deltas = Vec::new();
     let done = p
@@ -212,6 +213,7 @@ fn request<'a>(items: &'a [TranscriptItem], tools: &'a [String]) -> TurnRequest<
         tail: &[],
         max_output_tokens: None,
         thinking: Some(true),
+        json: false,
     }
 }
 
@@ -308,6 +310,7 @@ fn a_refusal_carries_the_providers_own_message_and_the_status() {
                 tail: &[],
                 max_output_tokens: None,
                 thinking: None,
+                json: false,
             },
             &mut |_| StreamFlow::Continue,
         )
@@ -363,6 +366,7 @@ fn a_rate_limit_keeps_its_retry_after() {
                 tail: &[],
                 max_output_tokens: None,
                 thinking: None,
+                json: false,
             },
             &mut |_| StreamFlow::Continue,
         )
@@ -401,6 +405,7 @@ data: {\"type\":\"error\",\"code\":\"server_error\",\"param\":null,\"message\":\
                 tail: &[],
                 max_output_tokens: None,
                 thinking: None,
+                json: false,
             },
             &mut |_| StreamFlow::Continue,
         )
@@ -430,6 +435,7 @@ fn a_stream_that_ends_without_a_terminal_event_is_a_fragment() {
                 tail: &[],
                 max_output_tokens: None,
                 thinking: None,
+                json: false,
             },
             &mut |_| StreamFlow::Continue,
         )
@@ -459,6 +465,7 @@ fn a_sink_that_says_stop_aborts_the_round() {
                 tail: &[],
                 max_output_tokens: None,
                 thinking: None,
+                json: false,
             },
             &mut |_| StreamFlow::Stop,
         )

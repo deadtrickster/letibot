@@ -1178,17 +1178,33 @@ pub(crate) fn serve_child_with(
                 }
             }
             ChildCommand::Answer => {
-                let (text, attachments, context) = match &kind {
+                let (text, attachments, context, from) = match &kind {
                     letibot_sessionlog::CommandKind::Prompt {
                         text,
                         attachments,
                         context,
-                    } => (text.clone(), attachments.clone(), context.clone()),
+                        from,
+                    } => (
+                        text.clone(),
+                        attachments.clone(),
+                        context.clone(),
+                        from.clone(),
+                    ),
                     _ => unreachable!("`child_command` answers a Prompt and nothing else"),
                 };
-                later_turn(sub, turns, Door::Prompt, |h| {
-                    h.submit_with_context(&text, &attachments, context.as_ref())
-                        .map(Some)
+                let door = if from.is_some() {
+                    Door::Message
+                } else {
+                    Door::Prompt
+                };
+                later_turn(sub, turns, door, |h| {
+                    h.submit_with_context_from(
+                        &text,
+                        &attachments,
+                        context.as_ref(),
+                        from.as_deref(),
+                    )
+                    .map(Some)
                 });
             }
             // A parent's message with no turn to steer it into, so one is started. The words are recorded as

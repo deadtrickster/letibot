@@ -47,7 +47,7 @@ fn a_brief_a_commit_already_did_gets_the_offer() {
         panic!("an offer is a user item: {made:?}")
     };
     assert_eq!(
-        *speaker,
+        speaker.clone(),
         Speaker::Agent,
         "the harness's own line, and it says so"
     );

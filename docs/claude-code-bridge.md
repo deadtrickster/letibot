@@ -61,7 +61,7 @@ one head connection per session it started or attached to, so asks reach it.
 |---|---|
 | `leticode_start` | `{worktree, brief, model, mode, host, vm}` - starts the folder's daemon if needed, opens a session, sends the brief, stays attached |
 | `leticode_attach` | `{worktree, session, watch_only}` - joins a running daemon, or starts it to reopen a stored id; `session` is an id or `gatekeeper` |
-| `leticode_send` | `{session, text}` - an operator line, queued behind a running turn |
+| `leticode_send` | `{session, text}` - a line from this seat, queued behind a running turn and stored under the seat's handle (`cc@rano`), never as the operator's words |
 | `leticode_status` | `{session}` - `state`, `model`, `last_trouble`, `placement`, `turn`, `todos`, `last_message`, `report?`, `cost_usd`, `tokens`, `spent`, `pending_asks`, `activity`, `waiting_on`, `last_rejection` |
 | `leticode_events` | `{session, since, limit}` - the progress since the cursor: calls, jobs, failures, asks, turns, **subagents**, and a `provider` entry when the provider itself was stuck |
 | `leticode_transcript` | `{session, since, limit, reasoning}` - the CONVERSATION, row by row, up to the stated `cap` (B8) |
@@ -74,6 +74,11 @@ one head connection per session it started or attached to, so asks reach it.
 | `leticode_collect` | `{session, host, folder, vm}` - fetches what a session that is already stopped committed on `host` into `remote/<host>/<short id>`, in `folder` or this process's own directory. A stop that never reached the close - `letibot --stop`, a daemon that died - leaves the work on that machine, and this is the way back that needs nothing of the daemon |
 | `leticode_list` | - the sessions this bridge holds, with `placement`, watched or driven |
 | `rooms`, `room_read`, `room_say`, `room_dm`, `room_roster`, `room_inbox` | see `docs/room.md` § *Claude Code*: Claude Code as the external seat `claude-code` in the host's chat rooms |
+
+An agent's line is stored as `Speaker::Peer` with the seat's handle: it starts a turn like a
+prompt, the model reads it under that handle, and no gate, offer, reminder or shadow reads it as
+the operator's words. Agents talk to sessions through the bridge or the room, never by typing into a
+head over tmux - a head cannot tell that from the operator.
 
 ### Rooms: the stream and `room-wait`
 

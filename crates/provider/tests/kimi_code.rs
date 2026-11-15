@@ -153,6 +153,7 @@ fn a_request_names_itself_carries_the_thinking_switch_and_an_empty_thought() {
         tail: &[],
         max_output_tokens: Some(512),
         thinking: Some(true),
+        json: false,
     };
     let done = p
         .complete(&req, &mut |_| StreamFlow::Continue)
@@ -219,6 +220,7 @@ fn a_quota_429_is_not_retried_and_keeps_kimis_own_code() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let why = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
     match &why {
@@ -259,6 +261,7 @@ fn a_403_for_an_unrecognised_client_says_so_plainly() {
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let why = p.complete(&req, &mut |_| StreamFlow::Continue).unwrap_err();
     let said = why.to_string();

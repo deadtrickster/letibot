@@ -2112,6 +2112,7 @@ mod journal_tests {
                 text: "carry on after the restart".into(),
                 attachments: Vec::new(),
                 context: None,
+                from: None,
             },
         );
         assert!(first.journal_settled(std::time::Duration::from_secs(30)));

@@ -300,6 +300,7 @@ mod tests {
                 text: "what is in this picture?".into(),
                 attachments: vec![chip(AttachmentKind::Image, &p, "shot.png")],
                 context: None,
+                from: None,
             },
         );
 
@@ -310,7 +311,7 @@ mod tests {
         let letibot_transcript::TranscriptItem::User { speaker, parts } = &item else {
             panic!("a prompt is a user row: {item:?}")
         };
-        assert_eq!(*speaker, letibot_transcript::Speaker::Operator);
+        assert_eq!(speaker.clone(), letibot_transcript::Speaker::Operator);
         let letibot_transcript::UserPart::Text { text } = &parts[0] else {
             panic!("the words must be the FIRST part: {parts:?}")
         };
@@ -343,6 +344,7 @@ mod tests {
                 text: "look".into(),
                 attachments: vec![chip(AttachmentKind::Image, &p, "never-there.png")],
                 context: None,
+                from: None,
             },
         );
         let mut steering = crate::harness::HubSteering::new(hub.clone());

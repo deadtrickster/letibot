@@ -140,7 +140,7 @@ impl Drop for Parent {
 fn user_text(item: &TranscriptItem) -> Option<(Speaker, String)> {
     match item {
         TranscriptItem::User { speaker, parts } => Some((
-            *speaker,
+            speaker.clone(),
             parts
                 .iter()
                 .filter_map(|p| match p {

@@ -13,7 +13,7 @@ type Registered = (
 
 impl Harness {
     /// Open the shadow once the session is stored, and move its position to the rows that count:
-    /// an operator message or an answer. Harness notices and display rows do not move it.
+    /// an operator message, an agent's line or an answer. Harness notices and display rows do not.
     pub(crate) fn tend_shadow(&mut self) {
         if matches!(self.shadow, crate::shadow::Slot::NotYet) {
             let bell = self.session_registry.bell().clone();
@@ -34,14 +34,7 @@ impl Harness {
         let (from, mut n) = self.shadow_counted;
         let items = &self.session.items;
         for i in items.iter().skip(from) {
-            if matches!(
-                i,
-                TranscriptItem::Assistant { .. }
-                    | TranscriptItem::User {
-                        speaker: letibot_transcript::Speaker::Operator,
-                        ..
-                    }
-            ) {
+            if crate::shadow::words::moves_position(i) {
                 n += 1;
             }
         }
@@ -230,8 +223,8 @@ impl Harness {
         if !letibot_tokencore::store::operator_asks(&todos).is_empty() {
             blocked.push("a todo row is waiting on the operator".to_string());
         }
-        let operator = turn_end::last_operator(&self.session.items);
-        let shown = turn_end::shown(operator.as_deref(), reply, &todos, &blocked);
+        let words = crate::shadow::words::recent(&self.session.items);
+        let shown = turn_end::shown(&words, reply, &todos, &blocked);
         if let Some(s) = self.shadow.get() {
             s.submit(Job::TurnEnd, shown);
         }
@@ -243,6 +236,9 @@ impl Harness {
         let Some((events, recorder, shadow_id)) = self.shadow.parts() else {
             return Vec::new();
         };
+        // The position as the rows stand now, so a fallback about an older turn is seen as one.
+        self.tend_shadow();
+        let now = self.shadow.get().map_or(0, |s| s.position());
         let mut notices = Vec::new();
         let mut rows = Vec::new();
         let events: Vec<crate::shadow::Event> = {
@@ -256,7 +252,9 @@ impl Harness {
         for e in events {
             let held = self.shadow_held.take();
             let reminded = turn_end::reminded_since_operator(&self.session.items);
-            let (act, said) = turn_end::decide(&e.outcome, held.as_deref(), reminded, &shadow_id);
+            let moved = now > e.position;
+            let (act, said) =
+                turn_end::decide(&e.outcome, held.as_deref(), reminded, moved, &shadow_id);
             if let Some(said) = said {
                 recorder.row(&said, "");
             }
@@ -270,7 +268,8 @@ impl Harness {
                 },
             ) = &e.outcome
             {
-                rows.push(turn_end::note_row(quote, &shadow_id));
+                let at = quote.row.and_then(|r| self.row_clock(r));
+                rows.push(turn_end::note_row(quote, at.as_deref(), &shadow_id));
             }
         }
         if !rows.is_empty() {
@@ -330,20 +329,21 @@ impl Harness {
             .session
             .items
             .iter()
-            .filter(|i| {
-                matches!(
-                    i,
-                    TranscriptItem::Assistant { .. }
-                        | TranscriptItem::User {
-                            speaker: letibot_transcript::Speaker::Operator,
-                            ..
-                        }
-                )
-            })
+            .filter(|i| crate::shadow::words::moves_position(i))
             .count() as u64;
         let store = self.cfg.store_at()?.open_existing().ok()?;
         let (position, word, promise) =
             crate::shadow::record::last_turn_end(&store, &self.cfg.session_id)?;
         (position == at).then_some((word, promise))
+    }
+
+    /// A transcript row's clock time, `HH:MM` UTC, from the store.
+    fn row_clock(&self, row: usize) -> Option<String> {
+        let store = self.cfg.store_at()?.open_existing().ok()?;
+        let ms = store
+            .item_created_at(&self.session.transcript_id, row as u64)
+            .ok()??;
+        let secs = (ms / 1000).rem_euclid(86_400);
+        Some(format!("{:02}:{:02} UTC", secs / 3600, (secs / 60) % 60))
     }
 }

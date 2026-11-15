@@ -259,10 +259,12 @@ fn the_editor_head_attaches_prompts_streams_answers_and_interrupts() {
         text,
         attachments,
         context,
+        from,
     } = &queued.kind
     else {
         panic!("a prompt must queue a prompt: {:?}", queued.kind);
     };
+    assert_eq!(*from, None, "the operator's head sends no sender");
     assert_eq!(text, WORDS, "the operator's words reach the daemon whole");
     assert!(attachments.is_empty(), "no chips were attached");
     assert!(

@@ -207,17 +207,25 @@ impl SteeringSource for HubSteering {
             self.hub.try_steering_command()
         };
         if let Some(cmd) = cmd {
+            let peer = cmd.peer();
             return match cmd.kind {
                 CommandKind::Prompt {
                     text,
                     attachments,
                     context,
+                    ..
                 } => {
                     // The operator, typing into a running turn: the one utterance that can authorise the
-                    // action it is racing. The chips are read HERE and not by the engine, because a turn's
-                    // library has no business opening the operator's files.
+                    // action it is racing. An agent's line through a head is context and never that.
+                    // The chips are read HERE and not by the engine, because a turn's library has no
+                    // business opening the operator's files.
                     if let Some(t) = &self.trail {
-                        t.say(Speaker::Operator, &text, Some(Instant::now()));
+                        let who = if peer.is_some() {
+                            Speaker::Agent
+                        } else {
+                            Speaker::Operator
+                        };
+                        t.say(who, &text, Some(Instant::now()));
                     }
                     let (mut extra, refused) = crate::attachments::parts(&attachments);
                     for said in &refused {
@@ -239,7 +247,14 @@ impl SteeringSource for HubSteering {
                             extra.push(part);
                         }
                     }
-                    Some(SteeringMessage::operator_with(text, extra))
+                    Some(match peer {
+                        Some(from) => SteeringMessage::from_a_peer(
+                            letibot_transcript::Speaker::signed(&from, &text),
+                            extra,
+                            from,
+                        ),
+                        None => SteeringMessage::operator_with(text, extra),
+                    })
                 }
                 CommandKind::Interrupt { reason } => {
                     // The children first, then this session: the one door an interrupt reaches a turn in

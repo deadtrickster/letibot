@@ -44,6 +44,7 @@ pub fn shown(
         data: d,
         shortlist: Vec::new(),
         call: Some(call),
+        spans: Vec::new(),
     }
 }
 

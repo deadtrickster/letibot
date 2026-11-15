@@ -507,7 +507,7 @@ fn user_rows(items: &[TranscriptItem]) -> Vec<(Speaker, String)> {
         .iter()
         .filter_map(|i| match i {
             TranscriptItem::User { speaker, parts } => Some((
-                *speaker,
+                speaker.clone(),
                 parts
                     .iter()
                     .filter_map(|p| match p {

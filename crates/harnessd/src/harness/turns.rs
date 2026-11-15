@@ -218,6 +218,19 @@ impl Harness {
         attachments: &[letibot_sessionlog::protocol::Attachment],
         context: Option<&letibot_sessionlog::protocol::EditorContext>,
     ) -> Result<Reply, HarnessError> {
+        self.submit_with_context_from(text, attachments, context, None)
+    }
+
+    /// A prompt through a head, from the operator (`peer` is `None`) or from an agent that sent it
+    /// under its handle. The agent's line drives the turn the same way and is stored as its own, so
+    /// nothing downstream reads it as the operator's words.
+    pub fn submit_with_context_from(
+        &mut self,
+        text: &str,
+        attachments: &[letibot_sessionlog::protocol::Attachment],
+        context: Option<&letibot_sessionlog::protocol::EditorContext>,
+        peer: Option<&str>,
+    ) -> Result<Reply, HarnessError> {
         let (mut extra, refused) = crate::attachments::parts(attachments);
         // Only what an editor captured is worth a block: a context with no refs, no open buffers and no
         // ask is a head sending a defaulted field, and a bare sentence about nothing would be noise.
@@ -238,6 +251,15 @@ impl Harness {
         }
         for said in &refused {
             self.warn("attachment_refused", said.clone());
+        }
+        if let Some(from) = peer {
+            let said = letibot_transcript::Speaker::signed(from, text);
+            return self.submit_said(
+                Speaker::Agent,
+                letibot_transcript::Speaker::peer(from),
+                &said,
+                extra,
+            );
         }
         if extra.is_empty() {
             return self.submit(text);
@@ -263,6 +285,26 @@ impl Harness {
         text: &str,
         extra: Vec<UserPart>,
     ) -> Result<Reply, HarnessError> {
+        let row = match speaker {
+            Speaker::Operator => letibot_transcript::Speaker::Operator,
+            // A session talking to itself, a tool's row, a parent's message: none of
+            // them is the operator's words, and none may be drawn as them.
+            Speaker::Agent | Speaker::Tool => letibot_transcript::Speaker::Agent,
+        };
+        self.submit_said(speaker, row, text, extra)
+    }
+
+    /// One turn, with the trail's speaker and the row's given apart: a peer's row names its sender,
+    /// which the trail has no word for and records as context.
+    fn submit_said(
+        &mut self,
+        speaker: Speaker,
+        row: letibot_transcript::Speaker,
+        text: &str,
+        extra: Vec<UserPart>,
+    ) -> Result<Reply, HarnessError> {
+        // New words start a new turn: a nudge held for the last one never goes out after them.
+        self.shadow_held = None;
         self.trail.begin_turn();
         // the results held for this break ride in with the turn - as the harness's
         // own row, BEFORE the words that started the turn, so what the operator (or a parent)
@@ -281,13 +323,7 @@ impl Harness {
         }
         self.trail.say(speaker, text, Some(Instant::now()));
         items.push(TranscriptItem::User {
-            // The same speaker the trail records, one line up.
-            speaker: match speaker {
-                Speaker::Operator => letibot_transcript::Speaker::Operator,
-                // A session talking to itself, a tool's row, a parent's message: none of
-                // them is the operator's words, and none may be drawn as them.
-                Speaker::Agent | Speaker::Tool => letibot_transcript::Speaker::Agent,
-            },
+            speaker: row,
             // The words first and whole, the chips after - a head retires its `queued`
             // echo by the row's leading lines, so nothing may be spliced in front of them.
             parts: {
@@ -5446,6 +5482,7 @@ mod endpoint_retry {
             tail: &[],
             max_output_tokens: None,
             thinking: None,
+            json: false,
         };
         match built.complete(&req, &mut |_| StreamFlow::Continue) {
             Err(BackendError::Malformed(m)) => {

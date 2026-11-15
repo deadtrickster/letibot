@@ -28,6 +28,8 @@ pub struct SteeringMessage {
     /// What sort of news this is when it is a DELIVERY rather than somebody's words - a monitor's
     /// firing. `None` for everything a person or a peer said.
     pub notice: Option<letibot_transcript::NoticeKind>,
+    /// An agent's prompt through a head, by its handle: stored as `Speaker::Peer`, never the operator's.
+    pub peer: Option<String>,
 }
 
 impl SteeringMessage {
@@ -39,6 +41,7 @@ impl SteeringMessage {
             extra: Vec::new(),
             from_session: None,
             notice: None,
+            peer: None,
         }
     }
 
@@ -52,6 +55,7 @@ impl SteeringMessage {
             extra: Vec::new(),
             from_session: None,
             notice: Some(letibot_transcript::NoticeKind::Monitor),
+            peer: None,
         }
     }
 
@@ -66,6 +70,7 @@ impl SteeringMessage {
             extra: Vec::new(),
             from_session: Some(from.into()),
             notice: None,
+            peer: None,
         }
     }
 
@@ -78,6 +83,7 @@ impl SteeringMessage {
             extra: Vec::new(),
             from_session: None,
             notice: None,
+            peer: None,
         }
     }
 
@@ -91,6 +97,21 @@ impl SteeringMessage {
             extra,
             from_session: None,
             notice: None,
+            peer: None,
+        }
+    }
+
+    /// A prompt an agent sent through a head, with what it attached. Stands alone like a notice, so
+    /// it never coalesces into the operator's words.
+    pub fn from_a_peer(
+        text: impl Into<String>,
+        extra: Vec<UserPart>,
+        from: impl Into<String>,
+    ) -> Self {
+        SteeringMessage {
+            extra,
+            peer: Some(from.into()),
+            ..SteeringMessage::normal(text)
         }
     }
 
@@ -102,6 +123,7 @@ impl SteeringMessage {
             extra: Vec::new(),
             from_session: None,
             notice: None,
+            peer: None,
         }
     }
 
@@ -122,7 +144,9 @@ impl SteeringMessage {
             // `from_operator` is exactly this field's question: a steering line the model asked
             // for is the session's own words and one an operator typed is theirs, so a head
             // draws the operator's as theirs and the rest as the agent's.
-            speaker: if self.from_operator {
+            speaker: if let Some(from) = &self.peer {
+                letibot_transcript::Speaker::peer(from.clone())
+            } else if self.from_operator {
                 letibot_transcript::Speaker::Operator
             } else {
                 letibot_transcript::Speaker::Agent

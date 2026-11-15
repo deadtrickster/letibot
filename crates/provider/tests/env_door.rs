@@ -102,6 +102,7 @@ fn anthropic_base_url_defines_env_anthropic_and_without_it_the_builtin_is_unchan
         tail: &[],
         max_output_tokens: None,
         thinking: None,
+        json: false,
     };
     let done = p
         .complete(&req, &mut |_| StreamFlow::Continue)

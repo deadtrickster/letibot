@@ -527,7 +527,8 @@ pub fn operator_text(items: &[TranscriptItem]) -> String {
         let TranscriptItem::User { parts, speaker } = item else {
             continue;
         };
-        if *speaker == Speaker::Agent {
+        // An agent's line through the bridge is not somebody referring back either.
+        if !speaker.is_operator() {
             continue;
         }
         let mut out = String::new();

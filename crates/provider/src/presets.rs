@@ -501,6 +501,22 @@ impl Preset {
 
     /// `--effort` as this door's body field and word, or `None` where it has no switch or no
     /// word for it: the model's own default then stands.
+    /// The field that turns thinking off for one request, on a door that has no field to turn it
+    /// on: DeepSeek's chat door thinks by default and takes `thinking: {"type": "disabled"}`.
+    pub fn thinking_off_field(&self) -> Option<&'static str> {
+        self.thinking_field
+            .or_else(|| (self.name == "deepseek").then_some("thinking"))
+    }
+
+    /// Whether this door takes `response_format: {"type": "json_object"}`.
+    pub fn json_object(&self) -> bool {
+        self.protocol == Protocol::ChatCompletions
+            && matches!(
+                self.name,
+                "deepseek" | "glm" | "glm-coding" | "glm-coding-cn" | "grok"
+            )
+    }
+
     pub fn effort_for(&self, effort: Option<&str>) -> Option<(&'static str, &'static str)> {
         let e = self.effort?;
         let asked = effort?.trim().to_ascii_lowercase();

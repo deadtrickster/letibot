@@ -610,6 +610,7 @@ fn every_frame_round_trips() {
                 name: "shot.png".into(),
             }],
             context: None,
+            from: Some("cc@rano".into()),
         },
         // A frame from a version-49 head has no `attachments` key at all, which is
         // asserted on the wire's own bytes in
@@ -620,6 +621,7 @@ fn every_frame_round_trips() {
             text: "no attachments here".into(),
             attachments: Vec::new(),
             context: None,
+            from: None,
         },
         ClientFrame::WithdrawPrompts {
             client_request_id: "r1w".into(),

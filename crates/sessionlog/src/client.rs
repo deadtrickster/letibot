@@ -194,6 +194,18 @@ impl HeadClient {
         attachments: Vec<crate::protocol::Attachment>,
         context: Option<crate::protocol::EditorContext>,
     ) -> Result<String, ClientError> {
+        self.prompt_from(expected_seq, text, attachments, context, None)
+    }
+
+    /// A prompt an agent sent, under its handle: stored as that agent's line, never the operator's.
+    pub fn prompt_from(
+        &mut self,
+        expected_seq: u64,
+        text: &str,
+        attachments: Vec<crate::protocol::Attachment>,
+        context: Option<crate::protocol::EditorContext>,
+        from: Option<String>,
+    ) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::Prompt {
             client_request_id: client_request_id.clone(),
@@ -201,6 +213,7 @@ impl HeadClient {
             text: text.to_string(),
             attachments,
             context,
+            from,
         })?;
         Ok(client_request_id)
     }

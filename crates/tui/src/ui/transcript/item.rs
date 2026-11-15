@@ -229,7 +229,13 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
         TranscriptItem::Offer { kind, title, .. } => {
             let line = crate::ui::transcript::offer_card::offer_card(*kind, title)
                 .cut(session_text_cols(it.ts, cfg));
-            (RowClass::Other, session_card_block(&[line], it.ts, cfg))
+            let lines = match kind {
+                letibot_transcript::OfferKind::Shadow => {
+                    crate::ui::transcript::blocks::shadow_card_block(&[line], it.ts, cfg)
+                }
+                _ => session_card_block(&[line], it.ts, cfg),
+            };
+            (RowClass::Other, lines)
         }
         TranscriptItem::SegmentMark { label, .. } => (
             RowClass::Other,

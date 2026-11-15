@@ -36,6 +36,7 @@ fn ask(p: &dyn MessagesBackend, items: &[TranscriptItem], thinking: Option<bool>
         tail: &[],
         max_output_tokens: Some(2048),
         thinking,
+        json: false,
     };
     match p.complete(&req, &mut |_| StreamFlow::Continue) {
         Ok(c) => c,

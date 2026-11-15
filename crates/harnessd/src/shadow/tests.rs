@@ -244,6 +244,7 @@ fn the_schema_and_the_verdict_space_are_closed() {
         data: TURN.into(),
         shortlist: vec!["gate".into(), "rust".into(), "notes".into()],
         call: None,
+        spans: Vec::new(),
     };
     let three = r#"```json
 {"verdict":"on_plan","offers":[{"name":"gate","quote":"run the gate next"},{"name":"rust","quote":"run the gate next"},{"name":"notes","quote":"run the gate next"}]}
@@ -311,6 +312,7 @@ fn an_injected_allow_in_the_transcript_still_meets_the_denylist() {
             data: injected.into(),
             shortlist: vec![],
             call: Some(call(cmd)),
+            spans: Vec::new(),
         };
         let c = verdict::check(Job::Permission, reply, &s);
         let Ok(Verdict::Permission { decision, .. }) = c.verdict else {
@@ -648,17 +650,17 @@ mod turn_end_acting {
     #[test]
     fn the_shadow_replaces_or_confirms_the_regex_and_falls_back_to_it() {
         let id = "s-w-shadow";
-        let (act, said) = turn_end::decide(&owed(), Some("regex line"), false, id);
+        let (act, said) = turn_end::decide(&owed(), Some("regex line"), false, false, id);
         assert!(matches!(&act, Act::Remind(t) if t.contains("\"I will run the gate next\"")));
         assert!(said.unwrap().contains("confirms"));
-        let (act, said) = turn_end::decide(&owed(), None, false, id);
+        let (act, said) = turn_end::decide(&owed(), None, false, false, id);
         assert!(matches!(act, Act::Remind(_)));
         assert!(said.unwrap().contains("regex was silent"));
         let none = Outcome::Verdict(Verdict::TurnEnd {
             reminder: Reminder::None,
             note: None,
         });
-        let (act, said) = turn_end::decide(&none, Some("regex line"), false, id);
+        let (act, said) = turn_end::decide(&none, Some("regex line"), false, false, id);
         assert_eq!(act, Act::Nothing);
         assert!(said.unwrap().contains("replaces"));
         for fallback in [
@@ -671,23 +673,27 @@ mod turn_end_acting {
             Outcome::Failed("refused".into()),
             Outcome::Paused,
         ] {
-            let (act, _) = turn_end::decide(&fallback, Some("regex line"), false, id);
+            let (act, _) = turn_end::decide(&fallback, Some("regex line"), false, false, id);
             assert_eq!(act, Act::Regex("regex line".into()), "{fallback:?}");
-            assert_eq!(turn_end::decide(&fallback, None, false, id).0, Act::Nothing);
+            assert_eq!(
+                turn_end::decide(&fallback, None, false, false, id).0,
+                Act::Nothing
+            );
         }
         let stale = Outcome::Stale { judged: 1, now: 2 };
         assert_eq!(
-            turn_end::decide(&stale, Some("regex line"), false, id).0,
+            turn_end::decide(&stale, Some("regex line"), false, false, id).0,
             Act::Nothing
         );
-        let (act, said) = turn_end::decide(&owed(), Some("regex line"), true, id);
+        let (act, said) = turn_end::decide(&owed(), Some("regex line"), true, false, id);
         assert_eq!(act, Act::Nothing, "one reminder per operator message");
         assert!(said.unwrap().contains("withheld"));
     }
 
     #[test]
     fn a_reminder_is_the_template_and_the_quote_and_nothing_the_shadow_wrote() {
-        let (Act::Remind(text), _) = turn_end::decide(&owed(), None, false, "s-w-shadow") else {
+        let (Act::Remind(text), _) = turn_end::decide(&owed(), None, false, false, "s-w-shadow")
+        else {
             panic!("owed reminds")
         };
         assert_eq!(
@@ -730,12 +736,70 @@ mod turn_end_acting {
 
     #[test]
     fn a_proposed_note_is_a_row_the_model_never_reads() {
-        let row = turn_end::note_row("the gate needs LETIBOT_REQUIRE_APPARATUS=1", "s-w-shadow");
-        assert!(matches!(
-            &row,
-            TranscriptItem::Offer { kind: letibot_transcript::OfferKind::Shadow, title, body }
-                if title.starts_with("shadow proposes a note") && body.contains("s-w-shadow")
-        ));
+        let quote = verdict::Quoted {
+            text: "the gate needs LETIBOT_REQUIRE_APPARATUS=1".into(),
+            author: "the operator".into(),
+            row: Some(41),
+        };
+        let row = turn_end::note_row(&quote, Some("12:08 UTC"), "s-w-shadow");
+        let TranscriptItem::Offer {
+            kind: letibot_transcript::OfferKind::Shadow,
+            title,
+            body,
+        } = &row
+        else {
+            panic!("a shadow offer row: {row:?}");
+        };
+        assert!(
+            title.starts_with("shadow suggests saving a note: the gate"),
+            "{title}"
+        );
+        assert!(
+            body.contains("quoted from the operator at 12:08 UTC (row 41)"),
+            "{body}"
+        );
+        assert!(body.contains("shadow session: s-w-shadow"), "{body}");
+        assert!(
+            !body.contains("from s-w-shadow"),
+            "the session is not the author: {body}"
+        );
+    }
+
+    /// A fallback about a turn the session has moved past sends nothing: the held regex nudge was
+    /// about that turn.
+    #[test]
+    fn a_held_nudge_is_dropped_when_the_session_moved_on() {
+        for fallback in [
+            Outcome::TimedOut,
+            Outcome::Void("schema".into()),
+            Outcome::Failed("refused".into()),
+            Outcome::Paused,
+        ] {
+            let (act, said) = turn_end::decide(&fallback, Some("regex line"), false, true, "s");
+            assert_eq!(act, Act::Nothing, "{fallback:?}");
+            assert!(said.unwrap().contains("moved on"));
+        }
+    }
+
+    /// Held, the position advanced, then the call timed out: nothing goes out. The deadline is
+    /// counted from the shadow call, so the slow judge outlives it.
+    #[test]
+    fn a_slow_shadow_sends_no_nudge_after_the_session_moved() {
+        let judge = Stub::new(|_, _| {
+            std::thread::sleep(Duration::from_millis(400));
+            Ok(String::new())
+        });
+        let (r, pos, rx) = runner(Job::TurnEnd, judge, Arc::new(Rows::default()), fast());
+        pos.store(3, Ordering::SeqCst);
+        r.submit(Request::new(3, shown(TURN)));
+        // The operator speaks while the shadow is still out.
+        pos.store(5, Ordering::SeqCst);
+        let (at, outcome) = rx.recv_timeout(Duration::from_secs(5)).expect("an outcome");
+        assert_eq!(outcome, Outcome::TimedOut);
+        let moved = pos.load(Ordering::SeqCst) > at;
+        assert!(moved);
+        let (act, _) = turn_end::decide(&outcome, Some("regex line"), false, moved, "s");
+        assert_eq!(act, Act::Nothing);
     }
 
     use letibot_transcript::TranscriptItem;
@@ -785,6 +849,112 @@ mod turn_end_acting {
         assert_eq!(r.shadow.none_right, 2);
         assert!((r.acting.accuracy() - 1.0).abs() < 1e-9);
         assert!(r.said(true).contains("s-1 #1: label Owed"));
+    }
+
+    fn peer(from: &str, t: &str) -> TranscriptItem {
+        TranscriptItem::User {
+            speaker: letibot_transcript::Speaker::peer(from),
+            parts: vec![letibot_transcript::UserPart::Text { text: t.into() }],
+        }
+    }
+
+    /// An agent's line is no label, and an old row an agent signed is not one either.
+    #[test]
+    fn replay_takes_no_label_from_an_agent() {
+        use super::super::replay;
+        let items = vec![
+            operator("fix the parser"),
+            assistant("I'll run the parser tests next."),
+            peer("cc@rano", "continue"),
+            assistant("I'll run the docs next."),
+            operator("cc@rano: continue"),
+        ];
+        assert!(replay::cases(&items).is_empty());
+    }
+
+    /// The live case: an agent's process rule is shown under its handle, and a note quoting it
+    /// is dropped. The operator's own correction is kept, with its row.
+    #[test]
+    fn a_note_quotes_only_the_operators_own_words() {
+        use super::super::words;
+        let rule = "That shape works; keep it: one item per turn, commands first.";
+        let fix = "no, the gate runs on lab2x1, not on the laptop";
+        let items = vec![
+            operator(fix),
+            assistant("Moving the gate to lab2x1."),
+            peer("cc@rano", rule),
+            operator("[answer] on \"db\": you asked \"which?\" - the operator chose \"pg\""),
+        ];
+        let said = words::recent(&items);
+        assert_eq!(said.len(), 2, "{said:?}");
+        assert_eq!(said[0].author, words::Author::Operator);
+        assert_eq!(said[0].row, 0);
+        assert_eq!(said[1].author, words::Author::Peer("cc@rano".into()));
+        let shown = turn_end::shown(&said, "I will run the gate next.", &[], &[]);
+        assert!(
+            shown
+                .data
+                .contains("message from cc@rano (an agent, not the operator):"),
+            "{}",
+            shown.data
+        );
+        let agents = format!(r#"{{"verdict":"none","note":"{rule}"}}"#);
+        let c = verdict::check(Job::TurnEnd, &agents, &shown);
+        assert!(
+            matches!(
+                &c.verdict,
+                Ok(Verdict::TurnEnd {
+                    note: None,
+                    reminder: Reminder::None
+                })
+            ),
+            "{:?}",
+            c
+        );
+        assert!(
+            c.log.iter().any(|l| l.starts_with("drop note")),
+            "{:?}",
+            c.log
+        );
+        let operators = format!(r#"{{"verdict":"none","note":"{fix}"}}"#);
+        let Ok(Verdict::TurnEnd { note: Some(q), .. }) =
+            verdict::check(Job::TurnEnd, &operators, &shown).verdict
+        else {
+            panic!("the operator's correction is a note");
+        };
+        assert_eq!((q.author.as_str(), q.row), ("the operator", Some(0)));
+        // A promise must be the assistant's: quoting the operator's row voids the verdict.
+        let wrong = format!(r#"{{"verdict":"owed","promise":"{fix}"}}"#);
+        let why = verdict::check(Job::TurnEnd, &wrong, &shown)
+            .verdict
+            .unwrap_err();
+        assert!(why.starts_with("author"), "{why}");
+    }
+
+    /// An agent's line moves the position like a turn, and never reads as the operator's.
+    #[test]
+    fn an_agent_line_is_a_new_turn_but_not_the_operators_words() {
+        use super::super::words;
+        let line = peer("cc@rano", "next item");
+        assert!(words::moves_position(&line));
+        assert!(!words::human(&line));
+        assert!(!words::human(&operator("cc@rano: verified, keep going")));
+        assert!(!words::human(&operator("[restart] The daemon restarted")));
+        assert!(words::human(&operator("fix it")));
+        let items = [operator("fix it"), line];
+        assert_eq!(turn_end::last_operator(&items).as_deref(), Some("fix it"));
+        // A reminder budget is per message that drove a turn, the agent's included.
+        let reminded = [
+            operator("fix it"),
+            TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Agent,
+                parts: vec![letibot_transcript::UserPart::Text {
+                    text: turn_end::reminder("I will fix it", "s"),
+                }],
+            },
+            peer("cc@rano", "next item"),
+        ];
+        assert!(!turn_end::reminded_since_operator(&reminded));
     }
 
     #[test]
@@ -967,7 +1137,13 @@ mod observe_only {
                 .data
                 .contains("stated plan:\nI'll fix the parser test first.")
         );
-        assert!(shown.data.starts_with("operator's last message:\nx"));
+        assert!(
+            shown
+                .data
+                .starts_with("operator's last message (the human, in their own words):\nx"),
+            "{}",
+            shown.data
+        );
         assert_eq!(shown.shortlist, ["parser-testing"]);
     }
 
@@ -1199,4 +1375,33 @@ fn the_shortlist_is_the_ranked_skills_then_the_notes() {
     assert_eq!(names.len(), SKILLS_SHORT + 1, "{names:?}");
     assert_eq!(names[0], "skill-5");
     assert_eq!(names.last(), Some(&"note:build.md"));
+}
+
+/// An empty answer from a model that kept thinking is read from its reasoning's last JSON object,
+/// and still meets every check; reasoning with no object is still an empty reply.
+#[test]
+fn an_empty_reply_is_read_from_the_reasoning_and_checked_the_same() {
+    use super::judge::reply_of;
+    assert_eq!(
+        reply_of("{\"verdict\":\"none\"}", "ignored"),
+        "{\"verdict\":\"none\"}"
+    );
+    let thought = "the turn asked a question {maybe}. Answer: {\"verdict\":\"none\",\"note\":\"\"}";
+    let got = reply_of("  ", thought);
+    assert_eq!(got, "{\"verdict\":\"none\",\"note\":\"\"}");
+    assert!(
+        verdict::check(Job::TurnEnd, &got, &shown(TURN))
+            .verdict
+            .is_ok()
+    );
+    let made_up = reply_of(
+        "",
+        "{\"verdict\":\"owed\",\"promise\":\"never said this at all\"}",
+    );
+    assert!(
+        verdict::check(Job::TurnEnd, &made_up, &shown(TURN))
+            .verdict
+            .is_err()
+    );
+    assert_eq!(reply_of("", "no object here"), "");
 }

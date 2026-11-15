@@ -119,7 +119,7 @@ fn user_rows(h: &Harness) -> Vec<(Speaker, String)> {
         .iter()
         .filter_map(|i| match i {
             TranscriptItem::User { speaker, parts } => parts.iter().find_map(|p| match p {
-                UserPart::Text { text } => Some((*speaker, text.clone())),
+                UserPart::Text { text } => Some((speaker.clone(), text.clone())),
                 _ => None,
             }),
             _ => None,

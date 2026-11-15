@@ -1075,3 +1075,38 @@ fn a_relayed_ask_names_the_session_it_is_for() {
     assert_eq!(p.kind, letibot_transcript::pending::PendingKind::Approval);
     assert_eq!(p.session, "s-main");
 }
+
+/// A line the bridge sends names its sender, so the daemon stores it as that agent's and never as
+/// the operator's words.
+#[test]
+fn a_bridge_prompt_names_the_agent_that_sent_it() {
+    let socket = letibot_sessionlog::testing::scratch_root()
+        .join(format!("bridge-from-{}.sock", std::process::id()));
+    let hub = letibot_sessionlog::hub::Hub::new("s");
+    let server = letibot_sessionlog::server::serve(hub.clone(), socket.clone()).expect("bind");
+    let d = crate::daemon::Daemon {
+        workspace: socket.clone(),
+        key: "k".into(),
+        socket,
+        log: Default::default(),
+        store: Default::default(),
+        placement: None,
+        started: false,
+    };
+    let h = Head::attach(&d, "s").expect("attach");
+    h.prompt("verified - keep going").expect("sent");
+    let end = Instant::now() + Duration::from_secs(10);
+    let cmd = loop {
+        if let Some(c) = hub.try_command() {
+            break c;
+        }
+        assert!(Instant::now() < end, "the prompt never arrived");
+        std::thread::sleep(Duration::from_millis(20));
+    };
+    let letibot_sessionlog::CommandKind::Prompt { from, .. } = &cmd.kind else {
+        panic!("a prompt: {:?}", cmd.kind);
+    };
+    assert_eq!(from.as_deref(), Some(crate::rooms::handle().as_str()));
+    assert!(cmd.peer().is_some_and(|p| p.starts_with("cc@")), "{cmd:?}");
+    server.shutdown();
+}

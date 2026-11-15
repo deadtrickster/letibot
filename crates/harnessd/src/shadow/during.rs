@@ -104,6 +104,13 @@ impl Clock {
                     self.calls = 0;
                     say(&mut why, "a new operator prompt".into());
                 }
+                TranscriptItem::User {
+                    speaker: Speaker::Peer { from },
+                    ..
+                } => {
+                    self.calls = 0;
+                    say(&mut why, format!("a new message from {from}"));
+                }
                 TranscriptItem::Assistant { tool_calls, .. } => {
                     for c in tool_calls {
                         self.calls += 1;
@@ -240,23 +247,18 @@ pub fn shortlist_ranked(
     out
 }
 
-/// Whether the operator spoke after the row the verdict judged at `position`, counted as the
-/// shadow counts (assistant rows and operator rows). A pick for an older request is stale.
+/// Whether a new request came after the row the verdict judged at `position`, counted as the shadow
+/// counts (`words::moves_position`). The operator's message or an agent's line is a new request; a
+/// pick for an older one is stale.
 pub fn operator_since(items: &[TranscriptItem], position: u64) -> bool {
     let mut n = 0u64;
     for i in items {
-        let operator = matches!(
-            i,
-            TranscriptItem::User {
-                speaker: Speaker::Operator,
-                ..
-            }
-        );
-        if !(operator || matches!(i, TranscriptItem::Assistant { .. })) {
+        if !super::words::moves_position(i) {
             continue;
         }
         n += 1;
-        if operator && n > position {
+        let asked = matches!(i, TranscriptItem::User { .. });
+        if asked && n > position {
             return true;
         }
     }
@@ -300,12 +302,9 @@ pub fn shown(
     shortlist: &[Entry],
     loaded: &BTreeSet<String>,
 ) -> Shown {
-    let mut d = String::new();
-    if let Some(op) = super::turn_end::last_operator(items) {
-        d.push_str("operator's last message:\n");
-        d.push_str(op.trim());
-        d.push_str("\n\n");
-    }
+    let mut head = Shown::default();
+    super::turn_end::push_words(&mut head, &super::words::recent(items));
+    let mut d = std::mem::take(&mut head.data);
     d.push_str("stated plan:\n");
     d.push_str(plan_of(items).unwrap_or("(none)").trim());
     d.push_str("\n\nopen todos:\n");
@@ -346,5 +345,6 @@ pub fn shown(
         data: d,
         shortlist: shortlist.iter().map(|e| e.name.clone()).collect(),
         call: None,
+        spans: head.spans,
     }
 }

@@ -17,9 +17,14 @@ pub(crate) fn offer_card(kind: OfferKind, title: &str) -> Card {
     let lead = match kind {
         OfferKind::Skill => "skill offered",
         OfferKind::Note => "note offered",
-        OfferKind::Shadow => "shadow",
+        // The row's own `shadow · ` label says it; the line goes on from there.
+        OfferKind::Shadow => "",
     };
     let head = title.lines().next().unwrap_or("").trim();
+    let head = match kind {
+        OfferKind::Shadow => head.strip_prefix("shadow ").unwrap_or(head),
+        _ => head,
+    };
     Card::new(
         format!("{head} · {CLICK}"),
         0,
