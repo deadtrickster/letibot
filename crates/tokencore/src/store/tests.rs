@@ -3847,3 +3847,79 @@ fn a_forked_session_holds_the_rows_up_to_the_point_and_the_source_is_untouched()
         "an existing id"
     );
 }
+
+/// A file nothing else can open: a raw rollback-journal connection holds `BEGIN EXCLUSIVE` on it,
+/// so a `Store::open` of it waits in the busy handler until `release` is sent.
+fn held_file(dir: &std::path::Path) -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
+    let path = dir.join("held.db");
+    let (held, hold) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let p = path.clone();
+    std::thread::spawn(move || {
+        let raw = rusqlite::Connection::open(&p).unwrap();
+        raw.execute_batch("CREATE TABLE x(a); BEGIN EXCLUSIVE; INSERT INTO x VALUES (1);")
+            .unwrap();
+        held.send(()).unwrap();
+        let _ = released.recv();
+        raw.execute_batch("ROLLBACK").unwrap();
+    });
+    hold.recv().unwrap();
+    (path, release)
+}
+
+fn open_dir(tag: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("letibot-open-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+/// One open waiting on a locked file does not hold up an open of another file (R230).
+#[test]
+fn a_slow_open_of_one_store_does_not_block_opening_another() {
+    let dir = open_dir("other");
+    let (held, release) = held_file(&dir);
+    let (done, finished) = std::sync::mpsc::channel();
+    std::thread::spawn(move || done.send(Store::open(&held).is_ok()).unwrap());
+    // Long enough for the held open to be inside the busy handler.
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let t = std::time::Instant::now();
+    Store::open(&dir.join("other.db")).expect("the other store opens");
+    let took = t.elapsed();
+    assert!(
+        finished.try_recv().is_err(),
+        "the held open finished early, so it measured nothing"
+    );
+    assert!(
+        took < std::time::Duration::from_secs(2),
+        "opening another store waited {took:?} behind the held one"
+    );
+    release.send(()).unwrap();
+    assert!(
+        finished.recv().unwrap(),
+        "the held open failed once released"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Two opens of one file racing a slow first open still share one connection.
+#[test]
+fn racing_opens_of_one_file_share_one_connection() {
+    let dir = open_dir("same");
+    let (held, release) = held_file(&dir);
+    let opens: Vec<_> = (0..2)
+        .map(|_| {
+            let p = held.clone();
+            std::thread::spawn(move || Store::open(&p).expect("opens once released"))
+        })
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    release.send(()).unwrap();
+    let stores: Vec<Store> = opens.into_iter().map(|h| h.join().unwrap()).collect();
+    assert!(
+        std::sync::Arc::ptr_eq(&stores[0].shared, &stores[1].shared),
+        "two racing opens built two connections to one file"
+    );
+    drop(stores);
+    let _ = std::fs::remove_dir_all(&dir);
+}

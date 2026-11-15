@@ -1421,14 +1421,17 @@ fn lock_shared(
     }
 }
 
-/// Every store file this process has open, by canonical path. A `Weak` and not an `Arc`: the
-/// connection lives exactly as long as something holds a `Store` for it, and the entry is
-/// dropped when the next open finds it dead.
+/// One store file's slot in [`shared_stores`]. Its own lock is held across an open of that file,
+/// so a second opener waits for the first one's connection. A `Weak`: the connection lives
+/// exactly as long as something holds a `Store` for it.
+type StoreSlot = std::sync::Arc<std::sync::Mutex<std::sync::Weak<Shared>>>;
+
+/// Every store file this process has opened, by canonical path. Held only to find or add a slot,
+/// never across an open, so a slow open of one file does not hold up opens of the others.
 fn shared_stores()
--> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Weak<Shared>>>
-{
+-> &'static std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, StoreSlot>> {
     static OPEN: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, std::sync::Weak<Shared>>>,
+        std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, StoreSlot>>,
     > = std::sync::OnceLock::new();
     OPEN.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
@@ -1681,16 +1684,19 @@ impl Store {
 
     fn open_sharing(path: &Path, share: bool) -> Result<Self> {
         split::refuse_creating_beside_legacy(path)?;
-        let key = if share {
-            Some(canonical_key(path))
-        } else {
-            None
-        };
-        // The registry is held across the open so two threads cannot each create a connection to
-        // one file. Nothing inside this window opens another store, so it cannot deadlock.
-        let mut open = shared_stores().lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(key) = &key
-            && let Some(shared) = open.get(key).and_then(std::sync::Weak::upgrade)
+        if !share {
+            return Self::from_connection(Connection::open(path)?, Some(path.to_path_buf()));
+        }
+        let slot = shared_stores()
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(canonical_key(path))
+            .or_default()
+            .clone();
+        // The slot is held across the open so two threads cannot each create a connection to one
+        // file. Nothing inside this window opens the same file, so it cannot deadlock.
+        let mut slot = slot.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(shared) = slot.upgrade()
             && shared.still_the_same_file()
         {
             return Ok(Store {
@@ -1699,9 +1705,7 @@ impl Store {
             });
         }
         let store = Self::from_connection(Connection::open(path)?, Some(path.to_path_buf()))?;
-        if let Some(key) = key {
-            open.insert(key, std::sync::Arc::downgrade(&store.shared));
-        }
+        *slot = std::sync::Arc::downgrade(&store.shared);
         Ok(store)
     }
 
