@@ -85,6 +85,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R263 | The generic output cap is off by default and its head/tail seam is unmarked | Code work | built (audit J2, plan 1.3): default cap 50 KiB / 2000 lines for every tool, one seam line naming bytes, lines and the `read_spill` hash/offset/length, `read_spill` pages under the cap, `[output]` in `leticode.toml`, TUI draws the seam in the Info role; left: the default store is memory so spills do not survive a restart without `--spill-dir`, and no `--spill-lines` flag |
 | R262 | Daemon-run sessions stay on a stale prompt: nobody answers their card | Code work | built: a seat states `on_stale` (ask, reseat, exempt), a session nobody answers reingests before a turn whose prompt fingerprint moved, one `reseated:` row and the model's `[reseat]` line, a refusal said once per target, `[sessions] auto_reseat`; left: a skill-pin or notes change does not trigger it (the fingerprint strips the notes section), and a profile cannot override its seat's answer |
 | R267 | A streaming assistant line is drawn over an earlier row of the history | Code work | built: the live marker's join is taken back before the walk and only by its whole joined line; test `a_streaming_row_never_rewrites_an_earlier_row` |
+| R265 | A usage-limit park cannot be ended or moved: Esc does nothing and `/models` leaves the turn parked on the old model's reset | Code work | built: Esc ends the parked turn with a row naming the limit and the reset, a switch by any door retries the parked request on the new model, the status row names the reset and both ways out; left: the live check on a real Kimi limit |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -1261,6 +1262,28 @@ Left:
 - The pick acts without a replay score first, by operator decision; `letibot shadow replay --job during` scores it once logged sessions exist.
 
 **Done when:** the left items are settled.
+
+## R265 - A usage-limit park cannot be ended or moved: Esc does nothing and `/models` leaves the turn parked on the old model's reset
+
+**Status:** built 2026-11-15. left: the live check.
+
+What happened: rano's session `s-1794057745451974498` on `kimi-code-global/k3.1-pro` met Kimi's 5-hour limit. With `on_limit = wait` and no fallback for kimi the session parked (`paused until 17:07:09 UTC`, `harnessd-c74d1fd17483.log`). The operator wanted it on deepseek. Esc did nothing and the turn could not be ended, so the daemon was restarted.
+
+Cause:
+1. A park is not a running turn. `after_the_ladder` returns `Parked`, the turn ends with `LimitParked`, and the owed turn waits in `Harness::limit_park` for `resume_due_limits`. An Esc reaches `Sessions::dispatch` between turns, and the `Interrupt` arm only said `interrupt_idle` - nothing was generating - and left the park in place.
+2. The park was the session's, not the model's. `/models` switched the provider, but `limit_park_due` read only `until_ms`, and `take_the_round` refused every prompt with `paused until` until the old model's reset.
+
+Built:
+1. `Harness::interrupt_a_park`, called from the `Interrupt` arm: the park is lifted, the turn's rows are kept, and a harness-voice row says the turn was interrupted while parked on the model's limit, with the reset. The row also makes `restart::mid_turn` false, so a restart after the stop owes nothing. A restart during a park still resumes the turn as before (the last row is the operator's prompt).
+2. `park_moved`: a park whose model is not the session's model is due now (`limit_park_until`, `limit_park_due`), so the idle pass resumes the parked request on the new model (`unpark_after_a_switch`, warning `limit_unparked`). This covers every switch door, `/models`, the model card, `leticode_model`, and a switch pended mid-turn. A prompt that lands first lifts the park in `take_the_round` and is the continuation, so one park never opens two turns.
+3. The status row while parked is `parked on MODEL's limit until T - esc ends the turn, /models switches`. It is `Waiting::Limit` in the session's activity, so the head and `leticode_status`'s `waiting_on` say the same. The bridge's limit news reads `limit_park_interrupted` as `ended` and `limit_unparked` as `resumed`.
+
+Tests: `tests/limits.rs` `an_interrupt_ends_a_park_at_once_and_keeps_the_rows`, `a_switch_while_parked_retries_the_parked_turn_on_the_new_model`, `a_prompt_after_a_switch_while_parked_is_sent_and_lifts_the_park`; the park row in `a_reset_under_wait_if_within_parks_even_with_a_fallback` and `a_weekly_limit_with_no_fallback_parks_and_names_the_real_reset`.
+
+Left:
+- The live check: a real Kimi limit, Esc, then a second park and `/models deepseek/deepseek-flash`.
+
+**Done when:** the live check passes.
 
 ## R257 - The shadow as a persistent session fed the conversation incrementally, asked only at the trigger points
 

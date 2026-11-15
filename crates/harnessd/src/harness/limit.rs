@@ -74,16 +74,63 @@ impl Harness {
         self.limit_park.as_ref()
     }
 
-    /// When the turn this park owes comes due, for the worker's own deadline.
+    /// When the turn this park owes comes due, for the worker's own deadline. Now, once the
+    /// session has moved off the parked model: the park was that model's, not the session's.
     pub fn limit_park_until(&self) -> Option<u64> {
-        self.limit_park.as_ref().map(|p| p.until_ms)
+        let p = self.limit_park.as_ref()?;
+        Some(if self.park_moved() {
+            self.limit_now_ms()
+        } else {
+            p.until_ms
+        })
     }
 
     /// Is the turn this park owes due, as of `now_ms`?
     pub fn limit_park_due(&self, now_ms: u64) -> bool {
         self.limit_park
             .as_ref()
-            .is_some_and(|p| p.until_ms <= now_ms)
+            .is_some_and(|p| p.until_ms <= now_ms || self.park_moved())
+    }
+
+    /// Has a switch moved this session off the model it is parked on?
+    pub(crate) fn park_moved(&self) -> bool {
+        self.limit_park
+            .as_ref()
+            .is_some_and(|p| p.model != self.model_name())
+    }
+
+    /// Clear the park and everything that says it: the status row, the seat, the expired limits.
+    fn lift_the_park(&mut self) -> Option<LimitPark> {
+        let park = self.limit_park.take()?;
+        self.seat.limited(None);
+        self.set_limit_row(None);
+        let now = self.limit_now_ms();
+        self.limited.retain(|_, at| *at > now);
+        Some(park)
+    }
+
+    /// Esc on a parked session: the parked turn ends here, its rows stay, and the record says so
+    /// in the harness's voice, so neither the model nor a restart reads the turn as still owed.
+    pub fn interrupt_a_park(&mut self, reason: &str) -> Option<String> {
+        let park = self.lift_the_park()?;
+        let now = self.limit_now_ms();
+        let said = format!(
+            "[limit] the operator interrupted this turn while it was parked on {}'s usage limit \
+             (reset {}){}. The turn ends here and nothing more was sent; what it did is kept.",
+            park.model,
+            clock_words_from(now, park.reset_ms),
+            if reason.is_empty() {
+                String::new()
+            } else {
+                format!(": {reason}")
+            },
+        );
+        let warning = match self.record_notice(&said) {
+            Ok(()) => said.clone(),
+            Err(e) => format!("{said} The row could not be written: {e}"),
+        };
+        self.hub.warn("limit_park_interrupted", warning);
+        Some(said)
     }
 
     /// When the switch back may be made, if one is owed.
@@ -153,14 +200,14 @@ impl Harness {
             model: model.clone(),
             said: said.clone(),
         });
-        self.write_limit_row(Some(words.clone()));
+        self.write_limit_row(Some(parked_row(&model, now, until_ms, reset_ms)));
         self.seat.limited(Some((until_ms, words.clone())));
         self.hub.warn(
             "limit_park",
             format!(
                 "{model} said `{said}`, so this session is {words}. Nothing is lost - the daemon \
-                 opens the turn by itself, a prompt sent meanwhile waits with it, and `/models` \
-                 moves the session now if waiting is not what you want."
+                 opens the turn by itself and a prompt sent meanwhile waits with it. Esc ends the \
+                 turn now, and `/models` moves it to another model now."
             ),
         );
         words
@@ -169,15 +216,13 @@ impl Harness {
     /// The reset has come: clear the park, say it, and hand back the notice the resumed turn opens
     /// with. `None` when this session is not parked or the instant has not arrived.
     pub fn take_a_due_park(&mut self) -> Option<String> {
-        let park = self.limit_park.clone()?;
-        if park.until_ms > self.limit_now_ms() {
+        if !self.limit_park_due(self.limit_now_ms()) {
             return None;
         }
-        self.limit_park = None;
-        self.seat.limited(None);
-        self.set_limit_row(None);
-        let now = self.limit_now_ms();
-        self.limited.retain(|_, at| *at > now);
+        if self.park_moved() {
+            return self.unpark_after_a_switch();
+        }
+        let park = self.lift_the_park()?;
         self.hub.warn(
             "limit_resumed",
             format!(
@@ -204,6 +249,35 @@ impl Harness {
         Some(format!(
             "[limit] {what}; this turn was parked on it and nothing it did was lost. Pick the work \
              up where it stopped and carry on; do not repeat what is already done."
+        ))
+    }
+
+    /// The park lifted by a switch: the new model is not the one that refused, so the parked
+    /// request is asked of it now instead of at the reset. `None` when not parked or not moved.
+    pub(crate) fn unpark_after_a_switch(&mut self) -> Option<String> {
+        if !self.park_moved() {
+            return None;
+        }
+        let park = self.lift_the_park()?;
+        // The switch was the operator's, not the limit rule's: no way back is owed, so no row
+        // says the session is on the new model until a reset.
+        self.write_limit_row(None);
+        let now = self.limit_now_ms();
+        let here = self.model_name();
+        self.hub.warn(
+            "limit_unparked",
+            format!(
+                "this session was parked on {}'s limit until {}, and it is on {here} now, so the \
+                 parked turn goes on there without waiting for the reset",
+                park.model,
+                clock_words_from(now, park.reset_ms)
+            ),
+        );
+        Some(format!(
+            "[limit] this turn was parked on {}'s usage limit and the session has moved to {here}; \
+             nothing it did was lost. Pick the work up where it stopped and carry on; do not repeat \
+             what is already done.",
+            park.model
         ))
     }
 
@@ -448,6 +522,19 @@ fn switch_words(
         "{model} reset {} is past wait_if_within {} - on {next} until then",
         clock_words_from(now_ms, reset_ms),
         crate::leticode_config::span_words(within)
+    )
+}
+
+/// The status row while parked: the reset and the two ways out of the wait.
+fn parked_row(model: &str, now_ms: u64, until_ms: u64, reset_ms: u64) -> String {
+    let again = if until_ms < reset_ms {
+        format!(", asking again at {}", clock_words_from(now_ms, until_ms))
+    } else {
+        String::new()
+    };
+    format!(
+        "parked on {model}'s limit until {}{again} - esc ends the turn, /models switches",
+        clock_words_from(now_ms, reset_ms)
     )
 }
 

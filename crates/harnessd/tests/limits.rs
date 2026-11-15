@@ -724,7 +724,13 @@ fn a_reset_under_wait_if_within_parks_even_with_a_fallback() {
         .expect_err("the session waits instead of moving");
     let words = "waiting 5m for the reset at 21:25:02 UTC (under wait_if_within 45m)";
     assert!(out.to_string().contains(words), "{out}");
-    assert_eq!(limit_row(&hub).as_deref(), Some(words));
+    assert_eq!(
+        limit_row(&hub).as_deref(),
+        Some(
+            "parked on glm/glm-5.3's limit until 21:25:02 UTC - esc ends the turn, /models \
+             switches"
+        )
+    );
     assert_eq!(deepseek.count(), 0, "the fallback was not asked");
     let h = sessions.harness_of(&id).expect("open");
     assert_eq!(h.model_name().to_string(), "glm/glm-5.3");
@@ -825,7 +831,13 @@ fn a_weekly_limit_with_no_fallback_parks_and_names_the_real_reset() {
     let out = sessions.submit(&id, PROMPT).expect_err("parked");
     let words = "limited until Tue 14:00:02 UTC, asking again at 03:20:02 UTC";
     assert!(out.to_string().contains(words), "{out}");
-    assert_eq!(limit_row(&hub).as_deref(), Some(words));
+    assert_eq!(
+        limit_row(&hub).as_deref(),
+        Some(
+            "parked on glm/glm-5.3's limit until Tue 14:00:02 UTC, asking again at 03:20:02 \
+             UTC - esc ends the turn, /models switches"
+        )
+    );
     let park = sessions
         .harness_of(&id)
         .expect("open")
@@ -1059,4 +1071,196 @@ fn a_failed_usage_request_falls_back_to_the_window() {
         KIMI_NOW + 5 * 3_600_000 + 2_000,
         "the 5-hour window: {seen:?}"
     );
+}
+
+/// A reset three hours out: far enough that only an interrupt or a switch ends the park.
+const FAR: u64 = 3 * 3600;
+
+/// The conversation as the store holds it, for the restart's own reading.
+fn items(hub: &letibot_sessionlog::Hub) -> Vec<TranscriptItem> {
+    hub.snapshot()
+        .items
+        .into_iter()
+        .filter_map(|i| i.item)
+        .collect()
+}
+
+/// A stop, as a head's Esc queues it.
+fn esc() -> letibot_sessionlog::hub::QueuedCommand {
+    letibot_sessionlog::hub::QueuedCommand {
+        head_id: letibot_sessionlog::hub::DAEMON_SUBMITTER.into(),
+        identity: "operator".into(),
+        client_request_id: "esc-1".into(),
+        at_seq: 0,
+        enqueued_ms: 0,
+        kind: letibot_sessionlog::hub::CommandKind::Interrupt {
+            reason: "esc".into(),
+        },
+    }
+}
+
+/// Parked on a far reset, the session says so with both ways out; Esc ends the parked turn at
+/// once, keeps its rows, and leaves a row a restart does not read as a turn still owed.
+#[test]
+fn an_interrupt_ends_a_park_at_once_and_keeps_the_rows() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("esc");
+    let glm = model(&[Act::Refuse(FAR), Act::Answer]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let cfg = config(&scratch, &gguf, "esc", ("glm", "glm-5.3"), Vec::new());
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+
+    sessions.submit(&id, PROMPT).expect_err("parked");
+    assert_eq!(
+        limit_row(&hub).as_deref(),
+        Some(
+            "parked on glm/glm-5.3's limit until 00:20:02 UTC - esc ends the turn, /models \
+             switches"
+        ),
+        "the session's facts carry the park, its reset and the two ways out"
+    );
+    assert!(
+        letibot_harnessd::restart::mid_turn(&items(&hub)),
+        "while parked, a restart reads the turn as owed and resumes it"
+    );
+
+    let started = std::time::Instant::now();
+    let out = sessions.dispatch(&id, &esc());
+    assert!(
+        started.elapsed() < Duration::from_secs(1),
+        "the stop took {:?}",
+        started.elapsed()
+    );
+    assert!(
+        matches!(&out, letibot_harnessd::sessions::Outcome::Failed(said)
+            if said.contains("interrupted this turn while it was parked")),
+        "the stop ended the parked turn"
+    );
+    let h = sessions.harness_of(&id).expect("open");
+    assert!(h.limit_park().is_none(), "the park is gone");
+    assert_ne!(h.nag_hold(), NagHold::Parked);
+    assert_eq!(limit_row(&hub), None, "nothing says parked any more");
+    let rows = items(&hub);
+    let kept = |needle: &str| {
+        rows.iter().any(|i| {
+            match i {
+            TranscriptItem::User { parts, .. } => parts.iter().any(|p| {
+                matches!(p, letibot_transcript::UserPart::Text { text } if text.contains(needle))
+            }),
+            _ => false,
+        }
+        })
+    };
+    assert!(kept(PROMPT), "the parked turn's prompt is kept");
+    assert!(
+        kept("parked on glm/glm-5.3's usage limit (reset 00:20:02 UTC): esc"),
+        "the row names the limit and its reset"
+    );
+    assert!(
+        !letibot_harnessd::restart::mid_turn(&rows),
+        "a restart after the stop owes nothing"
+    );
+    assert_eq!(said(&hub, "limit_park_interrupted").len(), 1);
+    assert_eq!(glm.count(), 1, "nothing was sent by the stop");
+    assert_eq!(sessions.resume_due_limits(), 0, "nothing resumes later");
+
+    sessions
+        .submit(&id, "carry on")
+        .expect("the next prompt is a turn of its own");
+    assert!(answered(&hub));
+}
+
+/// `/models` while parked: the park was the refusing model's, so the parked request goes to
+/// the new one at once and the turn completes there.
+#[test]
+fn a_switch_while_parked_retries_the_parked_turn_on_the_new_model() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("unpark");
+    let glm = model(&[Act::Refuse(FAR)]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let cfg = config(&scratch, &gguf, "unpark", ("glm", "glm-5.3"), Vec::new());
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+
+    sessions.submit(&id, PROMPT).expect_err("parked");
+    let reply = sessions.slash(&id, "models deepseek/deepseek-flash");
+    assert!(reply.ok, "{:?}", reply.lines);
+    let h = sessions.harness_of(&id).expect("open");
+    assert!(
+        h.limit_park_due(h.limit_now_ms()),
+        "the switch made the park due, on a clock that has not moved"
+    );
+
+    assert_eq!(sessions.resume_due_limits(), 1, "the parked turn went on");
+    assert_eq!(glm.count(), 1, "the limited model was not asked again");
+    assert_eq!(deepseek.count(), 1, "the new model took the parked request");
+    let sent = deepseek.seen.lock().unwrap()[0].clone();
+    assert!(sent.contains(PROMPT), "the parked prompt went with it");
+    assert!(answered(&hub), "the turn completed on the new model");
+    let h = sessions.harness_of(&id).expect("open");
+    assert!(h.limit_park().is_none());
+    assert_eq!(
+        h.limit_return_at(),
+        None,
+        "an operator's switch owes no way back"
+    );
+    assert_eq!(limit_row(&hub), None);
+    assert_eq!(said(&hub, "limit_unparked").len(), 1);
+    assert!(said(&hub, "limit_resumed").is_empty());
+}
+
+/// A prompt that lands after the switch and before the idle pass is the continuation itself:
+/// the park is lifted by it, and no second turn is opened for the same park.
+#[test]
+fn a_prompt_after_a_switch_while_parked_is_sent_and_lifts_the_park() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("unpark-prompt");
+    let glm = model(&[Act::Refuse(FAR)]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let cfg = config(
+        &scratch,
+        &gguf,
+        "unpark-prompt",
+        ("glm", "glm-5.3"),
+        Vec::new(),
+    );
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+
+    sessions.submit(&id, PROMPT).expect_err("parked");
+    assert!(sessions.slash(&id, "models deepseek/deepseek-flash").ok);
+    sessions
+        .submit(&id, "and go on")
+        .expect("the prompt is sent to the new model");
+    assert_eq!(deepseek.count(), 1);
+    assert!(answered(&hub));
+    assert!(
+        sessions
+            .harness_of(&id)
+            .expect("open")
+            .limit_park()
+            .is_none()
+    );
+    assert_eq!(
+        sessions.resume_due_limits(),
+        0,
+        "no second turn for one park"
+    );
+    assert_eq!(deepseek.count(), 1);
 }

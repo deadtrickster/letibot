@@ -3956,6 +3956,11 @@ impl<'a> Sessions<'a> {
                 // is left computing for nobody - *"we talk to parents and they own lifecycle"*.
                 if let Some(h) = self.open.get_mut(session_id) {
                     h.stop_children();
+                    // A parked turn is still owed, so a stop between turns is the one way to
+                    // end it before the reset.
+                    if let Some(said) = h.interrupt_a_park(reason) {
+                        return Outcome::Failed(said);
+                    }
                 }
                 if let Some(hub) = &hub {
                     hub.warn(

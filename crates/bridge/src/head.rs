@@ -638,7 +638,7 @@ fn trouble_word(kind: &str) -> &'static str {
 /// row repeats - `limited until X`, `switched to Y`, `resumed`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LimitNews {
-    /// `limited`, `switched` or `resumed` - the three things a limit does to a session.
+    /// `limited`, `switched`, `resumed`, or `ended` when the operator stopped a parked turn.
     pub kind: &'static str,
     /// What was limited, as `/models` spells it.
     pub model: String,
@@ -1302,13 +1302,17 @@ impl State {
                 // of their own: the channel push reports `limited until X` and `resumed`.
                 if matches!(
                     code.as_str(),
-                    "limit_park" | "limit_resumed" | "limit_returned"
+                    "limit_park"
+                        | "limit_resumed"
+                        | "limit_returned"
+                        | "limit_park_interrupted"
+                        | "limit_unparked"
                 ) {
                     self.limit = Some(LimitNews {
-                        kind: if code == "limit_park" {
-                            "limited"
-                        } else {
-                            "resumed"
+                        kind: match code.as_str() {
+                            "limit_park" => "limited",
+                            "limit_park_interrupted" => "ended",
+                            _ => "resumed",
                         },
                         model: self.model.clone(),
                         until_ms: None,

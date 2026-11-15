@@ -2737,7 +2737,11 @@ impl Harness {
         // A prompt that arrives while the session is parked WAITS, and nothing is sent: the
         // provider's own clock has not reached the reset, and one more call would only meet the
         // same refusal. The prompt is already a row, so the turn the reset opens answers it.
-        if let Some(park) = self.limit_park.clone()
+        // A session moved off the parked model owes nothing to that model's clock, so this
+        // round is the parked turn's continuation and the park is lifted here.
+        let unparked = self.unpark_after_a_switch().is_some();
+        if !unparked
+            && let Some(park) = self.limit_park.clone()
             && park.until_ms > self.limit_now_ms()
         {
             return Err(HarnessError::LimitParked {
@@ -3696,7 +3700,7 @@ impl Harness {
     }
 
     /// The row itself, whoever decided the sentence.
-    fn record_notice(&mut self, text: &str) -> Result<(), HarnessError> {
+    pub(super) fn record_notice(&mut self, text: &str) -> Result<(), HarnessError> {
         // The harness talking to itself, recorded as such, so a salvage notice or an intent nudge can never be read
         // back as the operator authorising the action it is about: the whole reason `Speaker` has three values.
         self.trail.say(Speaker::Agent, text, Some(Instant::now()));
