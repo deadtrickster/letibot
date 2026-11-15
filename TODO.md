@@ -68,7 +68,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R229 | Gates ran tests with the operator's real HOME, and the launcher's store ignores XDG_DATA_HOME | Code work | bridge store resolution and read-only opens landed (abd03a3d); left: no in-tree gate script isolates HOME/XDG, and `scripts/letibot`'s `STORE` ignores `XDG_DATA_HOME` while the bridge follows it |
 | R230 | One slow store open blocks every open in the process, and unladdered writes sleep 30 s holding the connection | Code work | left: `Store::open_sharing` holds `shared_stores()` across pragmas and migrate, and `connection()`/`connection_of()` writes sleep up to `BUSY_TIMEOUT` (30 s) in the busy handler |
 | R231 | A room protocol bump refused every older client | Code work | fixed for 11 by `OLDEST_CLIENT = 11` (fc69dcb2); left: a rule that each bump states whether older clients are served, and a test per bump |
-| R232 | Kimi's usage endpoint is asked only on a refusal | Code work | left: a background poll of the preset's `usage_url`, cached like `listed_models`, and the model card / status row showing it (`5h 44% · resets 07:07`) |
+| R232 | Kimi's usage endpoint is asked only on a refusal | Code work | built: a background poll of the preset's `usage_url` every 5 min (`crates/provider/src/usage_poll.rs`), one per endpoint, ending once no session is on the preset; the `models.usage` row, drawn in the status row and on the model card's provider row (`5h 44% · resets 07:07`); left: z.ai turns on when glm-limit lands, live check against a real Kimi key |
 | R233 | Rate-limit decisions as config values or a fuel-capped wasm call | Needs the operator | not started; left: the operator's shape for the hook record (which decisions, value or plugin, what the call is given and answers) |
 | R234 | VMs do not boot at load 100-240, and packages fall back to host subagents | Code work | left: a measurement of boot time against load, then a queue or an admission rule |
 | R235 | A Claude Code session starts a new `until [ -s ... ]` wait loop every few minutes and never stops the old ones | Needs the operator | an observation about Claude Code's waiters, not a letibot defect; left: the operator's call on whether letibot's own docs or skills warn about it |
@@ -909,7 +909,7 @@ Left: nothing makes the next bump ask the question. A rule in `docs/socket.md` (
 
 ## R232 - Kimi's usage endpoint is asked only on a refusal
 
-**Status:** open, 2026-11-14. left: all of it.
+**Status:** built, 2026-11-15. left: z.ai once glm-limit is on main, and a look at a real Kimi session.
 
 The Kimi presets carry a `usage_url` (`crates/provider/src/registry.rs:203`), and `crates/provider/src/usage.rs` reads it, but the only caller is `harness/usage.rs:45`, which asks `exhausted_reset_ms` after a limit refusal to park the session until the reset. Before that the operator has no view of how much of the window is spent.
 
@@ -928,6 +928,10 @@ Idea: a background poll of the usage endpoint, cached the way `listed_models` (`
 - **Config:** `[provider.usage_warn]` with keys `5h`, `weekly`, `monthly`, each a list such as `[80, 95]`, plus a per-preset override.
 
 **Done when:** with a Kimi preset active, the status row and the model card show the window's use and reset from a cached poll, a test against a fake endpoint checks the rendering and the cache, and no poll runs for a preset with no `usage_url`.
+
+Built (branch `r232-usage`): `usage_poll::watch` runs one poller thread per usage URL, every `EVERY` (5 min), shared by every session watching it. Each publish of a session's settings re-watches (`harness/usage.rs` `watch_usage`); before each later request the poller drops watchers whose published `model` row is no longer on the door, and stops when none is left. A preset with no `usage_url` unwatches and starts nothing. A reading is put into the session's rows between publishes (`Registry::put_setting`) as `models.usage`: the busiest window, its reset in the daemon's local time (a clock within a day, `Dec 13` beyond). The head draws it at the end of the status row, idle or in a turn, and on the provider row and open heading of the card. Tests: `usage_poll::tests` (fake endpoint: one request serves two watchers, cached reading for the second, no request once unused, no poll without `usage_url`; Kimi and z.ai parsing; the label), `harness::usage::tests`, `registry::tests::a_put_row_replaces_its_key_and_keeps_the_rest`, `tests::model_card::the_plans_usage_is_on_its_provider_row_and_the_status_row`.
+
+Left: glm-limit (`origin/glm-limit`, not on main) sets `usage_url` on the GLM coding doors. The poll already parses z.ai's `data.limits[]` and sends the bare key on its quota path, so landing that branch turns it on; z.ai's `unit` values other than 3 (hours) are unknown and named by `type`. Not yet seen against a live Kimi key.
 
 ## R234 - VMs do not boot at load 100-240, and packages fall back to host subagents
 

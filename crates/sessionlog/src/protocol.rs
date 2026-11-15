@@ -57,6 +57,10 @@ pub const MODEL_FACTS_KEY: &str = "models.facts";
 /// twice. Space-separated, one choice each, in the preset table's own order.
 pub const MODEL_DOORS_KEY: &str = "models.doors";
 
+/// The session's plan usage from its preset's usage endpoint, `5h 44% · resets 07:07` in the
+/// daemon's local time; `choices[0]` is the door it was read for. Absent until a first reading.
+pub const MODEL_USAGE_KEY: &str = "models.usage";
+
 /// The switch names the store's sessions were last moved to, newest activity first, comma-joined
 /// and at most five: what the card draws above the providers. Only the daemon can read it.
 pub const MODEL_RECENT_KEY: &str = "models.recent";

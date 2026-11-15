@@ -267,7 +267,7 @@ fn provider_row(p: Option<&Provider>, cursor: bool, w: Widths, keys: bool) -> RL
         p.models.len(),
         if p.models.len() == 1 { "" } else { "s" }
     );
-    RLine::new(vec![
+    let mut row = RLine::new(vec![
         Span::raw("  "),
         marks(cursor, false),
         Span::raw(" "),
@@ -281,7 +281,12 @@ fn provider_row(p: Option<&Provider>, cursor: bool, w: Widths, keys: bool) -> RL
         Span::role(pad_left(&count, 9), Role::Faint),
         Span::raw("  "),
         Span::role(price_range(p), Role::Faint),
-    ])
+    ]);
+    if let Some(u) = &p.usage {
+        row.spans.push(Span::raw("  "));
+        row.spans.push(Span::role(u.clone(), Role::Faint));
+    }
+    row
 }
 
 /// The row's name, with how many more doors reach the same models: one row per catalogue hid

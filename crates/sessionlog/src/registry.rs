@@ -2058,6 +2058,26 @@ impl Registry {
         source(job, offset)
     }
 
+    /// Replace the one row keyed `row.key` (or add it) in what the session last published, and push
+    /// it to the heads when that changed it. For a reading that lands between publishes. `false`
+    /// when the session is gone.
+    pub fn put_setting(&self, session_id: &str, row: crate::protocol::SettingRow) -> bool {
+        let (hub, rows) = {
+            let mut g = self.lock();
+            let Some(e) = g.entry_mut(session_id) else {
+                return false;
+            };
+            match e.settings.iter_mut().find(|r| r.key == row.key) {
+                Some(r) if *r == row => return true,
+                Some(r) => *r = row,
+                None => e.settings.push(row),
+            }
+            (e.hub.clone(), e.settings.clone())
+        };
+        hub.push_frame(crate::protocol::ServerFrame::Settings { rows });
+        true
+    }
+
     /// What a session's harness last published. Empty for a session whose
     /// harness has not opened, which the head says rather than hides.
     pub fn settings(&self, session_id: &str) -> Vec<crate::protocol::SettingRow> {

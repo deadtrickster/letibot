@@ -34,6 +34,8 @@ pub(crate) struct Provider {
     pub(crate) keyless: bool,
     /// The models, each once, whoever's door offered it.
     pub(crate) models: Vec<Model>,
+    /// The plan's use the daemon last read, when one of these doors is this session's.
+    pub(crate) usage: Option<String>,
 }
 
 /// What the card as a whole holds, gathered once per frame so the drawing and the cursor read one
@@ -121,6 +123,16 @@ impl App {
             .unwrap_or_default()
     }
 
+    /// The plan's usage the daemon last read for this session's door: `(door, 5h 44% · resets 07:07)`.
+    pub(crate) fn plan_usage(&self) -> Option<(&str, &str)> {
+        let r = self
+            .settings
+            .iter()
+            .find(|r| r.key == letibot_sessionlog::protocol::MODEL_USAGE_KEY)?;
+        let door = r.choices.first()?;
+        (!r.value.is_empty()).then_some((door.as_str(), r.value.as_str()))
+    }
+
     /// The models the store's sessions were last moved to, newest first - the card's recent group.
     pub(crate) fn recent_models_setting(&self) -> Vec<String> {
         self.settings
@@ -173,6 +185,7 @@ impl App {
                         ready: false,
                         keyless: false,
                         models: Vec::new(),
+                        usage: None,
                     });
                     providers.len() - 1
                 }
@@ -194,7 +207,11 @@ impl App {
             });
         }
         let keyless = self.keyless_choices();
+        let usage = self.plan_usage();
         for p in &mut providers {
+            p.usage = usage
+                .filter(|(d, _)| p.doors.iter().any(|x| x == d))
+                .map(|(_, u)| u.to_string());
             p.keyless = p.doors.is_empty() && keyless.iter().any(|k| k == &p.label);
             p.ready = if p.doors.is_empty() {
                 self.choice_ready(&p.label)
@@ -495,8 +512,13 @@ fn open_heading(a: &App, p: &Provider) -> String {
             )
         }
     };
+    let usage = p
+        .usage
+        .as_ref()
+        .map(|u| format!(" · {u}"))
+        .unwrap_or_default();
     format!(
-        "{} · {state} · {} model{}{doors}",
+        "{} · {state} · {} model{}{usage}{doors}",
         p.label,
         p.models.len(),
         plural(p.models.len())

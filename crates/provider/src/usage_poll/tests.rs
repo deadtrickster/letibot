@@ -1,0 +1,173 @@
+use super::*;
+use std::io::{BufRead, BufReader, Write};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+/// Kimi's answer with 44% of the 5-hour window spent and the month duplicated under two names.
+const KIMI: &str = r#"{"limits":[{"window":{"duration":300,"timeUnit":"TIME_UNIT_MINUTE"},"detail":{"limit":"100","used":"44","resetTime":"2026-11-15T07:07:00Z"}}],"usages":{"limit_5h":{"used_ratio":0.44,"reset_time":"2026-11-15T07:07:00Z"},"limit_month_total":{"used_ratio":0.1688,"reset_time":"2026-12-13T00:07:40Z"},"limit_month_code":{"used_ratio":0.1688,"reset_time":"2026-12-13T00:07:40Z"}}}"#;
+
+fn ms(s: &str) -> u64 {
+    letibot_http::reset::rfc3339_ms(s).unwrap()
+}
+
+fn creds() -> Credentials {
+    Credentials {
+        key: "k".into(),
+        from: "test".into(),
+        prices: Default::default(),
+        url: None,
+    }
+}
+
+/// A usage endpoint on loopback that answers `body` and counts the requests.
+fn fake(body: &'static str) -> (String, Arc<AtomicUsize>) {
+    let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/coding/v1/usages", l.local_addr().unwrap());
+    let hits = Arc::new(AtomicUsize::new(0));
+    let n = hits.clone();
+    std::thread::spawn(move || {
+        for s in l.incoming().flatten() {
+            let mut r = BufReader::new(&s);
+            let mut line = String::new();
+            while r.read_line(&mut line).is_ok_and(|k| k > 2) {
+                line.clear();
+            }
+            n.fetch_add(1, Ordering::SeqCst);
+            let _ = write!(
+                &s,
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+        }
+    });
+    (url, hits)
+}
+
+fn preset_at(url: &str) -> Preset {
+    Preset {
+        usage_url: Some(Box::leak(url.to_string().into_boxed_str())),
+        ..crate::presets::KIMI_CODE
+    }
+}
+
+fn until(what: impl Fn() -> bool) {
+    for _ in 0..200 {
+        if what() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    panic!("timed out");
+}
+
+#[test]
+fn kimi_windows_are_read_and_the_duplicate_month_is_one() {
+    let w = windows(&serde_json::from_str(KIMI).unwrap());
+    assert_eq!(
+        w,
+        vec![
+            Window {
+                name: "5h".into(),
+                used: 0.44,
+                reset_ms: Some(ms("2026-11-15T07:07:00Z")),
+            },
+            Window {
+                name: "month".into(),
+                used: 0.1688,
+                reset_ms: Some(ms("2026-12-13T00:07:40Z")),
+            },
+        ]
+    );
+    let limits_only: Value =
+        serde_json::json!({"limits": serde_json::from_str::<Value>(KIMI).unwrap()["limits"]});
+    assert_eq!(windows(&limits_only)[0].name, "5h");
+    assert_eq!(windows(&limits_only)[0].used, 0.44);
+}
+
+#[test]
+fn zai_windows_are_read_off_percentage() {
+    let body = serde_json::json!({"data": {"limits": [
+        {"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 12, "nextResetTime": 1_794_766_268_000u64},
+        {"type": "TIME_LIMIT", "unit": 5, "number": 1, "percentage": 3, "nextResetTime": 0}]}});
+    let w = windows(&body);
+    assert_eq!(w[0].name, "5h");
+    assert_eq!(w[0].used, 0.12);
+    assert_eq!(w[1].name, "time");
+    assert_eq!(w[1].reset_ms, None);
+}
+
+#[test]
+fn the_label_is_the_busiest_window_in_local_time() {
+    let w = windows(&serde_json::from_str(KIMI).unwrap());
+    let b = busiest(&w).unwrap();
+    let now = ms("2026-11-15T03:00:00Z");
+    assert_eq!(label(b, now, 0), "5h 44% · resets 07:07");
+    assert_eq!(label(b, now, 3 * 3600), "5h 44% · resets 10:07");
+    assert_eq!(label(&w[1], now, 0), "month 17% · resets Dec 13");
+    let bare = Window {
+        name: "5h".into(),
+        used: 1.0,
+        reset_ms: None,
+    };
+    assert_eq!(label(&bare, now, 0), "5h 100%");
+}
+
+#[test]
+fn one_poll_serves_every_watcher_and_stops_when_none_is_on_the_preset() {
+    let (url, hits) = fake(KIMI);
+    let preset = preset_at(&url);
+    let on = Arc::new(AtomicBool::new(true));
+    let told = Arc::new(AtomicUsize::new(0));
+    let watcher = |on: &Arc<AtomicBool>, told: &Arc<AtomicUsize>| {
+        let (on, told) = (on.clone(), told.clone());
+        Watcher {
+            still: Box::new(move || on.load(Ordering::SeqCst)),
+            tell: Box::new(move |w| {
+                assert_eq!(w[0].name, "5h");
+                told.fetch_add(1, Ordering::SeqCst);
+            }),
+        }
+    };
+    let every = Duration::from_millis(40);
+    assert_eq!(
+        watch(&preset, &creds(), "s-a", every, watcher(&on, &told)),
+        None
+    );
+    until(|| told.load(Ordering::SeqCst) >= 1);
+    // A second session gets the cached reading at once and starts no second poller.
+    let cached = watch(&preset, &creds(), "s-b", every, watcher(&on, &told));
+    assert_eq!(cached.unwrap()[0].used, 0.44);
+    assert_eq!(reading(&url).unwrap().len(), 2);
+    until(|| hits.load(Ordering::SeqCst) >= 3);
+    assert!(
+        told.load(Ordering::SeqCst) >= hits.load(Ordering::SeqCst),
+        "both watchers are told from one request"
+    );
+    on.store(false, Ordering::SeqCst);
+    until(|| !polls().get(&url).is_some_and(|p| p.running));
+    let after = hits.load(Ordering::SeqCst);
+    std::thread::sleep(every * 4);
+    assert_eq!(hits.load(Ordering::SeqCst), after, "no request once unused");
+    assert!(reading(&url).is_some(), "the last reading stays cached");
+}
+
+#[test]
+fn a_preset_without_a_usage_url_is_never_polled() {
+    let told = Arc::new(AtomicBool::new(false));
+    let t = told.clone();
+    let w = Watcher {
+        still: Box::new(|| true),
+        tell: Box::new(move |_| t.store(true, Ordering::SeqCst)),
+    };
+    let got = watch(
+        &crate::presets::DEEPSEEK,
+        &creds(),
+        "s-none",
+        Duration::from_millis(10),
+        w,
+    );
+    assert_eq!(got, None);
+    assert!(polls().values().all(|p| !p.watchers.contains_key("s-none")));
+    std::thread::sleep(Duration::from_millis(50));
+    assert!(!told.load(Ordering::SeqCst));
+}

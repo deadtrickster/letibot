@@ -1024,11 +1024,13 @@ impl Harness {
             choices: Vec::new(),
             tools: Vec::new(),
         });
+        rows.extend(self.usage_row());
         // The list row's model follows the seat: a resume reseats before any turn.
         self.session_registry
             .set_model(&self.cfg.session_id, &self.cfg.prompt_model_name());
         self.session_registry
             .set_settings(&self.cfg.session_id, rows);
+        self.watch_usage();
     }
 
     /// What a head needs to offer the door without holding a schema, derived from this session's

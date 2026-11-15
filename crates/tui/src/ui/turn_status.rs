@@ -53,6 +53,9 @@ impl App {
         if let Some(pending) = self.model_pending.clone() {
             extra.push(pending);
         }
+        if let Some((_, used)) = self.plan_usage() {
+            extra.push(used.to_string());
+        }
         if !extra.is_empty() {
             line.spans.push(rano::render::Span::role(
                 format!(" · {}", extra.join(" · ")),
@@ -89,6 +92,13 @@ impl App {
             } else {
                 text = format!("{text} · {pending}");
             }
+        }
+        // The plan's use last: a fact about the account, not about what this session waits on.
+        if let Some((_, used)) = self.plan_usage() {
+            text = match text.is_empty() {
+                true => used.to_string(),
+                false => format!("{text} · {used}"),
+            };
         }
         if text.is_empty() {
             return Line::default();

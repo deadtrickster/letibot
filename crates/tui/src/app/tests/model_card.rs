@@ -687,3 +687,54 @@ fn the_matched_characters_are_highlighted() {
         "the match is not tinted: {all:?}"
     );
 }
+
+/// The plan's use the daemon read for this session's door: on that provider's row and its open
+/// heading, and in the status row whether or not a turn runs.
+#[test]
+fn the_plans_usage_is_on_its_provider_row_and_the_status_row() {
+    let mut a = card(&Wire::default());
+    let ServerFrame::Settings { mut rows } = Wire::default().frame() else {
+        unreachable!()
+    };
+    rows.push(letibot_sessionlog::protocol::SettingRow {
+        key: letibot_sessionlog::protocol::MODEL_USAGE_KEY.into(),
+        value: "5h 44% · resets 07:07".into(),
+        source: "deepseek usage endpoint".into(),
+        editable: String::new(),
+        choices: vec!["deepseek".into()],
+        tools: Vec::new(),
+    });
+    a.apply(ServerFrame::Settings { rows });
+    let shown = rows_of(&a);
+    let deepseek = &shown[row_of(&shown, "keyed").expect("the deepseek row")];
+    assert!(deepseek.contains("5h 44% · resets 07:07"), "{deepseek}");
+    let glm = shown
+        .iter()
+        .find(|l| l.contains("glm"))
+        .expect("the glm row");
+    assert!(!glm.contains("44%"), "another door's row: {glm}");
+    assert!(
+        a.turn_status(120).contains("5h 44% · resets 07:07"),
+        "idle status row: {:?}",
+        a.turn_status(120)
+    );
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    assert!(
+        a.turn_status(120).contains("5h 44% · resets 07:07"),
+        "a running turn's row: {:?}",
+        a.turn_status(120)
+    );
+    cursor_on(&mut a, "deepseek");
+    a.model_card_enter();
+    assert!(
+        rows_of(&a)
+            .iter()
+            .any(|l| l.contains("deepseek · keyed") && l.contains("5h 44%")),
+        "{:?}",
+        rows_of(&a)
+    );
+}
+
+fn rows_of(a: &App) -> Vec<String> {
+    rows(a, 140)
+}

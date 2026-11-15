@@ -1097,3 +1097,29 @@ fn a_monitors_wake_survives_the_drop_a_stopped_turn_makes() {
         "nothing rung this session has to hear is left: the drop took a fact no queue holds"
     );
 }
+
+/// One row put between publishes replaces its own key and keeps the rest; a gone session says so.
+#[test]
+fn a_put_row_replaces_its_key_and_keeps_the_rest() {
+    let r = reg();
+    r.create("s-1", "", SessionWiring::default()).unwrap();
+    let row = |k: &str, v: &str| crate::protocol::SettingRow {
+        key: k.into(),
+        value: v.into(),
+        source: String::new(),
+        editable: String::new(),
+        choices: Vec::new(),
+        tools: Vec::new(),
+    };
+    r.set_settings("s-1", vec![row("model", "kimi-code/k3")]);
+    assert!(r.put_setting("s-1", row(crate::protocol::MODEL_USAGE_KEY, "5h 1%")));
+    assert!(r.put_setting("s-1", row(crate::protocol::MODEL_USAGE_KEY, "5h 2%")));
+    let rows = r.settings("s-1");
+    assert_eq!(rows[0], row("model", "kimi-code/k3"));
+    let usage: Vec<_> = rows
+        .iter()
+        .filter(|x| x.key == crate::protocol::MODEL_USAGE_KEY)
+        .collect();
+    assert_eq!(usage, vec![&row(crate::protocol::MODEL_USAGE_KEY, "5h 2%")]);
+    assert!(!r.put_setting("s-gone", row("x", "y")));
+}
