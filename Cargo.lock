@@ -1625,6 +1625,7 @@ dependencies = [
  "letibot-github",
  "letibot-http",
  "letibot-llama",
+ "letibot-mcp",
  "letibot-metrics",
  "letibot-opencode",
  "letibot-plugin",
@@ -1659,6 +1660,16 @@ dependencies = [
  "cc",
  "letibot-dialect",
  "letibot-tokencore",
+ "letibot-transcript",
+ "serde_json",
+]
+
+[[package]]
+name = "letibot-mcp"
+version = "0.6.0"
+dependencies = [
+ "letibot-http",
+ "letibot-tools",
  "letibot-transcript",
  "serde_json",
 ]

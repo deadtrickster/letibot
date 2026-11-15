@@ -99,6 +99,8 @@ pub struct Body {
     /// one per chunk was an allocation per chunk for a line of four hex digits. Cleared, not
     /// replaced: the capacity survives, and a chunked body is one chunk per TCP read.
     size_line: String,
+    /// The response headers, names lowercased. MCP's streamable HTTP keys a session on one.
+    headers: Vec<(String, String)>,
 }
 
 enum Framing {
@@ -119,6 +121,14 @@ fn fill(reader: &mut BufReader<TcpStream>, buf: &mut Vec<u8>, n: usize) -> std::
 }
 
 impl Body {
+    /// The first response header named `name`, compared without case.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+
     /// Read the next chunk of decoded body bytes into `buf`, or `false` at end of
     /// body. The caller brings the buffer because both callers copy the bytes into a
     /// buffer of their own anyway, so a fresh `Vec` per chunk is allocated and freed.
@@ -419,6 +429,7 @@ fn read_response(mut reader: BufReader<TcpStream>) -> Result<Body, HttpError> {
     // a delay, or a date this box subtracts its own clock from. The prose in a body is
     // `reset::from_prose`'s, read where the failure is handled.
     let mut retry_after: Option<u64> = None;
+    let mut headers = Vec::new();
     loop {
         let mut line = String::new();
         if reader.read_line(&mut line)? == 0 {
@@ -439,6 +450,7 @@ fn read_response(mut reader: BufReader<TcpStream>) -> Result<Body, HttpError> {
         } else if name == "content-length" {
             length = value.parse().ok();
         }
+        headers.push((name, value.to_string()));
     }
 
     let framing = if chunked {
@@ -453,6 +465,7 @@ fn read_response(mut reader: BufReader<TcpStream>) -> Result<Body, HttpError> {
         framing,
         done: false,
         size_line: String::new(),
+        headers,
     };
 
     if !(200..300).contains(&code) {

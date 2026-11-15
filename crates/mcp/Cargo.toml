@@ -1,0 +1,23 @@
+[package]
+name = "letibot-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+# The `McpCatalog` seam this crate fills; the client lives here so `tools` spawns no servers.
+letibot-tools.workspace = true
+letibot-http.workspace = true
+serde_json.workspace = true
+
+# The fake stdio server the tests drive. A bin so `CARGO_BIN_EXE_` names it; nothing installs it.
+[[bin]]
+name = "letibot-mcp-fake"
+path = "src/bin/fake.rs"
+test = false
+
+[dev-dependencies]
+letibot-tools = { workspace = true, features = ["testing"] }
+letibot-transcript.workspace = true

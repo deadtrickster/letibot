@@ -573,6 +573,9 @@ pub struct LeticodeConfig {
     pub exec: ExecKeys,
     /// The `[output]` table: the inline cap every tool result falls under. See [`output_cap`].
     pub output: OutputKeys,
+    /// The `[mcp.NAME]` tables: MCP servers a session reaches through `mcp_search` and
+    /// `mcp_call`. Read at both levels; only the user file's start. See [`McpServerKeys`].
+    pub mcp: BTreeMap<String, McpServerKeys>,
     /// The `[provider]` table: what a session does when its provider says the model is limited.
     /// See [`ProviderKeys`] and [`LeticodeConfig::limit_policy`].
     pub provider: ProviderKeys,
@@ -1143,6 +1146,129 @@ pub fn io_policy(
         }
     }
     p
+}
+
+/// `[mcp.NAME]` in a `leticode.toml`: one MCP server, stdio (`command`) or HTTP (`url`).
+/// A table with neither or both is the daemon's to report as a server that did not start, so
+/// one bad table does not refuse the file.
+///
+/// ```toml
+/// [mcp.files]
+/// command = "npx"
+/// args = ["-y", "@modelcontextprotocol/server-filesystem", "/srv"]
+/// env = { LOG = "warn" }
+///
+/// [mcp.docs]
+/// url = "http://127.0.0.1:8931/mcp"
+/// headers = { Authorization = "Bearer ..." }
+/// timeout_seconds = 30
+/// ```
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct McpServerKeys {
+    pub command: Option<String>,
+    pub args: Vec<String>,
+    pub env: BTreeMap<String, String>,
+    pub url: Option<String>,
+    pub headers: BTreeMap<String, String>,
+    /// Per request. `None` is the client's 60 s.
+    pub timeout_seconds: Option<u64>,
+    /// `false` keeps the table and starts nothing.
+    pub enabled: bool,
+}
+
+const MCP_KEYS: &str = "the keys are `command`, `args`, `env` (stdio), `url`, `headers` (http), \
+                        `timeout_seconds` and `enabled`";
+
+fn mcp_tables(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<BTreeMap<String, McpServerKeys>, String> {
+    let servers = table_at(
+        value,
+        path,
+        text,
+        "mcp",
+        "each server is a [mcp.NAME] table",
+    )?;
+    let mut out = BTreeMap::new();
+    for (name, v) in servers {
+        let from = at(path, text, &format!("[mcp.{name}]"), user);
+        // `__` splits `server__tool`, so a name holding it could not be called.
+        if name.is_empty()
+            || name.contains("__")
+            || !name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+        {
+            return Err(format!(
+                "{from}: [mcp.{name}]: a server name is letters, digits, `-` and `_`, without `__`"
+            ));
+        }
+        let t = v
+            .as_table()
+            .ok_or_else(|| format!("{from}: [mcp.{name}] is a table; {MCP_KEYS}"))?;
+        let mut k = McpServerKeys {
+            enabled: true,
+            ..Default::default()
+        };
+        let string = |key: &str, v: &toml::Value| {
+            v.as_str()
+                .map(str::to_string)
+                .ok_or_else(|| format!("{from}: [mcp.{name}] `{key}` is a string"))
+        };
+        let strings = |key: &str, v: &toml::Value| -> Result<BTreeMap<String, String>, String> {
+            let t = v
+                .as_table()
+                .ok_or_else(|| format!("{from}: [mcp.{name}] `{key}` is a table of strings"))?;
+            t.iter()
+                .map(|(k, v)| {
+                    v.as_str()
+                        .map(|s| (k.clone(), s.to_string()))
+                        .ok_or_else(|| format!("{from}: [mcp.{name}] `{key}.{k}` is a string"))
+                })
+                .collect()
+        };
+        for (key, v) in t {
+            match key.as_str() {
+                "command" => k.command = Some(string(key, v)?),
+                "url" => k.url = Some(string(key, v)?),
+                "args" => {
+                    k.args = v
+                        .as_array()
+                        .and_then(|a| {
+                            a.iter()
+                                .map(|x| x.as_str().map(str::to_string))
+                                .collect::<Option<Vec<_>>>()
+                        })
+                        .ok_or_else(|| {
+                            format!("{from}: [mcp.{name}] `args` is a list of strings")
+                        })?
+                }
+                "env" => k.env = strings(key, v)?,
+                "headers" => k.headers = strings(key, v)?,
+                "timeout_seconds" => {
+                    k.timeout_seconds =
+                        Some(v.as_integer().filter(|n| *n >= 1).ok_or_else(|| {
+                            format!("{from}: [mcp.{name}] `timeout_seconds` is an int >= 1")
+                        })? as u64)
+                }
+                "enabled" => {
+                    k.enabled = v
+                        .as_bool()
+                        .ok_or_else(|| format!("{from}: [mcp.{name}] `enabled` is a bool"))?
+                }
+                other => {
+                    return Err(format!(
+                        "{from}: [mcp.{name}] `{other}` is not a key; {MCP_KEYS}"
+                    ));
+                }
+            }
+        }
+        out.insert(name.clone(), k);
+    }
+    Ok(out)
 }
 
 /// `[output]` in a `leticode.toml`: the cap a tool result is spilled at, the head and tail kept
@@ -2499,6 +2625,10 @@ impl LeticodeConfig {
                 Some(v) => output_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => OutputKeys::default(),
             },
+            mcp: match &file.mcp {
+                Some(v) => mcp_tables(v, path, &text, level == Level::User)?,
+                None => BTreeMap::new(),
+            },
             provider: match &file.provider {
                 Some(v) => provider_keys(v, path, &text, level == Level::User)?,
                 None => ProviderKeys::default(),
@@ -2676,6 +2806,9 @@ impl LeticodeConfig {
             fallback_after_timeouts: other
                 .fallback_after_timeouts
                 .or(self.fallback_after_timeouts),
+            // The user file's only: a project file starting processes would run whatever a
+            // cloned repository names.
+            mcp: self.mcp.clone(),
             output: OutputKeys {
                 inline_bytes: other.output.inline_bytes.or(self.output.inline_bytes),
                 inline_lines: other.output.inline_lines.or(self.output.inline_lines),
@@ -3093,6 +3226,9 @@ struct LeticodeConfigFile {
     /// The `[output]` table, see [`OutputKeys`].
     #[serde(default)]
     output: Option<toml::Value>,
+    /// The `[mcp.NAME]` tables, see [`McpServerKeys`].
+    #[serde(default)]
+    mcp: Option<toml::Value>,
     /// The fallback list and its budget, see [`fallback_list`] and [`fallback_timeouts`].
     /// Raw here so a value of the wrong shape is refused by name rather than by serde's
     /// message, which names the table and not the key the operator wrote.

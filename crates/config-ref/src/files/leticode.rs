@@ -117,6 +117,20 @@ pub const LETICODE: File = File {
             ],
         },
         Table {
+            path: "mcp.<name>",
+            note: "One MCP server per NAME (letters, digits, `-`, `_`, no `__`), stdio by `command` or streamable HTTP by `url` (http:// only, no TLS). Its tools are reached through `mcp_search` and `mcp_call` as `NAME__tool`; the two doors seat only when a server is configured. Every call is a network call under the gate; preapprove with permission.json `{\"mcp_call\": {\"NAME__*\": \"allow\"}}`. Results fall under [output]. Started once per daemon; a server that fails is reported once and the rest start. A project file's [mcp] is reported and never started.",
+            needs: "",
+            keys: &[
+                k("command", "string", "none", U, "program to run as a stdio server; set this or url", "\"npx\""),
+                k("args", "list of strings", "[]", U, "its arguments", "[\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/srv\"]"),
+                k("env", "table of strings", "{}", U, "variables added to its environment", "{ LOG = \"warn\" }"),
+                k("url", "string", "none", U, "http:// endpoint of a streamable HTTP server; set this or command", "\"http://127.0.0.1:8931/mcp\""),
+                k("headers", "table of strings", "{}", U, "headers sent with every HTTP request", "{ Authorization = \"Bearer x\" }"),
+                k("timeout_seconds", "int >= 1", "60", U, "deadline for start, listing and each call", "60"),
+                k("enabled", "bool", "true", U, "false keeps the table and starts nothing", "true"),
+            ],
+        },
+        Table {
             path: "memory",
             note: "Amounts: a size (64M, 2G) or a fraction of free memory (0.5, 50%). Over providers.toml [memory].",
             needs: "",

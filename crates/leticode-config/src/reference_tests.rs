@@ -92,6 +92,7 @@ fn hand_read_keys_are_listed() {
         "nag",
         "room",
         "project",
+        "mcp.<name>",
     ] {
         let t = LETICODE.table(path).unwrap();
         unlisted.extend(probe::unlisted_accepted(

@@ -1961,6 +1961,41 @@ mod gatekeeper_reviews {
         );
     }
 
+    /// The MCP doors seat only with an enabled `[mcp]` server, so a session without one keeps its
+    /// prompt; a reviewer never gets them.
+    #[test]
+    fn the_mcp_doors_seat_only_when_a_server_is_configured() {
+        let doors = ["mcp_search", "mcp_call"];
+        let mut cfg = Config::for_this_box("/tmp");
+        cfg.leticode_user = Default::default();
+        let bare = role_for_seat(Seat::Coder, &cfg);
+        assert!(
+            !bare.tools.iter().any(|t| doors.contains(&t.as_str())),
+            "{:?}",
+            bare.tools
+        );
+        cfg.leticode_user.mcp.insert(
+            "fs".into(),
+            crate::leticode_config::McpServerKeys {
+                command: Some("srv".into()),
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        let seated = role_for_seat(Seat::Coder, &cfg);
+        for d in doors {
+            assert!(
+                seated.tools.iter().any(|t| t == d),
+                "{d}: {:?}",
+                seated.tools
+            );
+        }
+        let reviewer = role_for_seat(Seat::Gatekeeper, &cfg);
+        assert!(!reviewer.tools.iter().any(|t| doors.contains(&t.as_str())));
+        cfg.leticode_user.mcp.get_mut("fs").unwrap().enabled = false;
+        assert_eq!(role_for_seat(Seat::Coder, &cfg).tools, bare.tools);
+    }
+
     #[test]
     fn the_notes_keeper_is_a_seat_that_repairs_memory_and_cannot_touch_code() {
         assert_eq!(Seat::parse("notes_keeper").unwrap(), Seat::NotesKeeper);

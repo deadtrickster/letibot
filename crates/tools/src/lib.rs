@@ -273,19 +273,26 @@ pub fn register_self_verbs(
 }
 
 /// Add the tools that need infrastructure this box does not run. Registered, not seated: the registry is
-/// a superset and the role decides what a session's prompt carries. MCP tools are not here, since their
-/// schemas are the server's.
+/// a superset and the role decides what a session's prompt carries. MCP's own tools are not here, since
+/// their schemas are the server's; the two catalogue doors are.
 pub fn external_tools(
     mut reg: Registry,
     backends: &ExternalBackends,
 ) -> Result<Registry, RegisterError> {
     use builtins::external::{
         github::Github,
+        mcp::{McpCall, McpSearch},
         web::{WebFetch, WebSearch},
     };
     reg.register(Box::new(WebSearch::new(backends.search.clone())))?;
     reg.register(Box::new(WebFetch::new(backends.fetch.clone())))?;
     reg.register(Box::new(Github::new(backends.github.clone())))?;
+    reg.register(Box::new(McpSearch {
+        catalog: backends.mcp.clone(),
+    }))?;
+    reg.register(Box::new(McpCall {
+        catalog: backends.mcp.clone(),
+    }))?;
     Ok(reg)
 }
 

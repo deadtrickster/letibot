@@ -69,6 +69,7 @@ pub mod leases;
 pub use leticode_config;
 pub mod kept_jobs;
 pub mod m1;
+pub mod mcp;
 pub mod memory_high;
 pub mod memwatch;
 pub mod mergequeue;

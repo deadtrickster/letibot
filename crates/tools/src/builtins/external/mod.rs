@@ -267,6 +267,20 @@ impl ExternalWiring {
                 active: false,
             };
         }
+        if self.is_seated(mcp::CALL) {
+            return ExternalDisclosure {
+                subject: "mcp",
+                state: "",
+                detail: format!(
+                    "{}, reached through `{}` and `{}`. Every call passes the gate as a \
+                     network call, and what comes back is quarantined as untrusted text.",
+                    self.mcp,
+                    mcp::SEARCH,
+                    mcp::CALL
+                ),
+                active: true,
+            };
+        }
         if mounted.is_empty() {
             return ExternalDisclosure {
                 subject: "mcp",

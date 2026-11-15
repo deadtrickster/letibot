@@ -1953,3 +1953,40 @@ fn the_projects_value_wins_and_a_mute_unions_across_the_levels() {
     assert_eq!(denied.from.file, project);
     assert_eq!(denied.from.line, 8, "the line the code is written on");
 }
+
+#[test]
+fn mcp_tables_load_and_only_the_user_level_survives_the_merge() {
+    let dir = project_dir("mcp_tables");
+    let path = write_file(
+        &dir,
+        "[mcp.files]\ncommand = \"srv\"\nargs = [\"-v\"]\nenv = { LOG = \"warn\" }\n\n\
+         [mcp.docs]\nurl = \"http://127.0.0.1:1/mcp\"\ntimeout_seconds = 5\nenabled = false\n",
+    );
+    let user = LeticodeConfig::load_as(&path, Level::User).unwrap();
+    let files = &user.mcp["files"];
+    assert_eq!(files.command.as_deref(), Some("srv"));
+    assert_eq!(files.args, ["-v"]);
+    assert_eq!(files.env["LOG"], "warn");
+    assert!(files.enabled);
+    assert_eq!(user.mcp["docs"].timeout_seconds, Some(5));
+    assert!(!user.mcp["docs"].enabled);
+
+    let project = LeticodeConfig::load(&path).unwrap();
+    let merged = LeticodeConfig::default().overridden_by(&project);
+    assert!(
+        merged.mcp.is_empty(),
+        "a project file never starts a server"
+    );
+    assert_eq!(user.overridden_by(&project).mcp, user.mcp);
+}
+
+#[test]
+fn an_mcp_name_that_cannot_be_split_or_an_unknown_key_is_refused() {
+    let dir = project_dir("mcp_refused");
+    let bad = write_file(&dir, "[mcp.a__b]\ncommand = \"x\"\n");
+    let e = LeticodeConfig::load(&bad).unwrap_err();
+    assert!(e.contains("without `__`"), "{e}");
+    let bad = write_file(&dir, "[mcp.a]\ncomand = \"x\"\n");
+    let e = LeticodeConfig::load(&bad).unwrap_err();
+    assert!(e.contains("`comand` is not a key"), "{e}");
+}

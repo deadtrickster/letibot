@@ -2050,6 +2050,33 @@ impl Harness {
                 Err(why) => return Err(HarnessError::Setup(format!("--web-fetch: {why}"))),
             }
         }
+        // MCP servers from the user file only; a project file's `[mcp]` is named and not started.
+        if crate::mcp::configured(&cfg.leticode_user.mcp) {
+            let (specs, bad) = crate::mcp::specs(&cfg.leticode_user.mcp);
+            let (catalog, started) = crate::mcp::pool(&specs, bad);
+            if started {
+                for line in crate::mcp::failure_lines(&catalog) {
+                    hub.warn("mcp_server", line);
+                }
+            }
+            external.mcp = catalog;
+        }
+        if cfg.read_project_config
+            && let Some(path) = crate::leticode_config::LeticodeConfig::discover(&cfg.workspace)
+            && let Ok(project) = crate::leticode_config::LeticodeConfig::load(&path)
+            && !project.mcp.is_empty()
+        {
+            let names: Vec<&str> = project.mcp.keys().map(String::as_str).collect();
+            hub.warn(
+                "mcp_server",
+                format!(
+                    "{} declares MCP server(s) {} and a project file does not start processes. \
+                     Move the tables to the user leticode.toml to use them.",
+                    path.display(),
+                    names.join(", ")
+                ),
+            );
+        }
         let external = external;
         // Both halves of the intent ledger are built for every session: not attaching them makes
         // every completion `NoEncoder`, which is a state whose reason is ours.
@@ -4639,6 +4666,19 @@ pub(crate) fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     if cfg.web_fetch && !matches!(seat, Seat::Runner | Seat::NotesKeeper) {
         r.tools.push("web_fetch".into());
         r.max_tools += 1;
+    }
+    // The MCP doors seat on the same rule: only with a server configured, so a session without
+    // `[mcp]` keeps its prefix. A reviewer does not get them.
+    if crate::mcp::configured(&cfg.leticode_user.mcp)
+        && !matches!(seat, Seat::Runner | Seat::NotesKeeper | Seat::Gatekeeper)
+    {
+        for door in [
+            letibot_tools::builtins::external::mcp::SEARCH,
+            letibot_tools::builtins::external::mcp::CALL,
+        ] {
+            r.tools.push(door.into());
+        }
+        r.max_tools += 2;
     }
     r
 }

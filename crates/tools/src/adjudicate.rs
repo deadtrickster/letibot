@@ -3057,7 +3057,7 @@ impl Gate for AdjudicatedGate {
         // 1.5. opencode's permission model, evaluated before the mode: `deny` refuses, `allow`
         //      admits, `ask` falls through. Last rule wins over the config plus `always`.
         if !self.permission.is_empty() {
-            let pattern = permission_pattern(call.args);
+            let pattern = permission_pattern(call.name, call.args);
             // A `bash` command is tested segment by segment against the prefix rules, and a
             // compound the splitter cannot read is asked, never allowed.
             let action = if call.args.get("command").and_then(|v| v.as_str()).is_some()
@@ -3584,7 +3584,15 @@ fn target_of(args: &Value) -> String {
 
 /// The pattern the permission model tests a call against: the path for a file tool, the command
 /// for `bash`, else `*`.
-fn permission_pattern(args: &Value) -> String {
+fn permission_pattern(name: &str, args: &Value) -> String {
+    // An MCP call is preapproved per catalogued tool: `{"mcp_call": {"fs__read_*": "allow"}}`.
+    if name == crate::builtins::external::mcp::CALL {
+        return args
+            .get("tool")
+            .and_then(|v| v.as_str())
+            .unwrap_or("*")
+            .to_string();
+    }
     if let Some(p) = args.get("path").and_then(|v| v.as_str()) {
         return p.to_string();
     }
@@ -3603,10 +3611,10 @@ fn derived_pattern(
     rules: &crate::permission::Ruleset,
 ) -> Option<String> {
     let Some(cmd) = call.args.get("command").and_then(|v| v.as_str()) else {
-        return Some(permission_pattern(call.args));
+        return Some(permission_pattern(call.name, call.args));
     };
     if call.access != Access::Exec {
-        return Some(permission_pattern(call.args));
+        return Some(permission_pattern(call.name, call.args));
     }
     if !crate::permission::a_durable_rule_can_apply(cmd) {
         return None;
