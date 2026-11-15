@@ -79,6 +79,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R244 | Offers by meaning: evidence and declines | Code work | built: cosine rescaled over a 0.20 baseline in `blended`, a subject offer under the tier needs the skill's or note's name in the operator's words or touched files, untaken offers decline after three rounds and raise the floor per project; left: description words as evidence, the real-model test runs only where the checkpoint is |
 | R245 | The review queue's sessions are not reseated after a daemon restart, and their asks reach nobody | Code work | built: a restart keeps a claimed review claimed and reopens its reviewer on the stored session, a Claude run is started under a known id so it resumes, and every open board ask in the queue's tree is a card on the main session, in the bridge's asks list and the desktop notification; left: live permission and question cards of the queue's tree still fail closed with no head |
 | R255 | The multicall binary and the launcher are both named `letibot`, so an install copies the ELF over the command a person types | Code work | built: the multicall is `letibot-multi`, every install path refuses a non-script under a launcher name, `check-dist-names.sh --built` is a gate step (R222 settled); left: a box's own `target/release` needs a release build before the launcher's verbs find `letibot-multi`, and units installed from the old `letibot` path |
+| R256 | Long lines end to end: `read` cannot reach past 32 KiB of a line, and the tool window cuts every line at the screen edge | Code work | not started (audit package H6, plan 1.14 with R242's remainder); left: all of it |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -1199,6 +1200,16 @@ Fix: the multicall ships under its own name; `install.sh`, `make-dist.sh`, the r
 **Left.** A box's own `target/release` holds no `letibot-multi` until its next release build (`install-gate-build.sh`), and until then the launcher's verbs (`stats`, `rooms`, `where`, `migrate`) say so. A stale `target/release/letibot` ELF is not deleted: socket-activated units installed from it (`letibot rooms install`, `letibot browser install`) still name it, and need reinstalling. A published release carries no `letibot-multi` until the next tag. Plan 1.27's verb group is J16.
 
 **Done when:** `cargo build --release --bins` leaves no ELF named `letibot`, `sh scripts/check-dist-names.sh` exits 0 and is a gate step, and an install from an archive or a checkout puts the script at `letibot` and the multicall at its own name with `letibot-askpass` beside it.
+## R256 - Long lines end to end: `read` cannot reach past 32 KiB of a line, and the tool window cuts every line at the screen edge
+
+**Status:** not started. left: all of it.
+
+Audit package H6 (`STATUS-fable-5.2-2026-11-15.md`), plan item 1.14, and R242's remainder.
+
+- Data side (R242's remainder): a line over 32 KiB is clipped even in a window `read` bounds with `limit`, and `edit` refuses any hit in it as never shown. kimi's `read` takes a `column_offset` and names the next one when a line continues (`maps/kimi-code.md:202`).
+- Display side (1.14): rano cuts every payload line to the screen width, in the opened window too (`rano: src/agent/tool_row.rs`), and drops envelope marker lines from the payload and its count without saying so.
+
+**Done when:** a line over 32 KiB is read in pieces with `column_offset` and `columns`, and an edit whose match lies inside a shown piece lands; a 400-column line is fully readable in the window at 80 columns; the header's count plus the stated hidden marker lines equals the payload's lines.
 
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
