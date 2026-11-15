@@ -104,6 +104,7 @@ fn scratch() -> PathBuf {
     ));
     std::fs::create_dir_all(d.join("ws")).unwrap();
     std::fs::create_dir_all(d.join(".config/letibot")).unwrap();
+    std::fs::create_dir_all(d.join("run")).unwrap();
     d
 }
 
@@ -183,6 +184,8 @@ fn a_daemon_with_no_key_asks_saves_and_asks_again_when_the_key_is_refused() {
         .env("LETIBOT_NOTES_REPO", home.join("notes"))
         .env("LETIBOT_LOGS_ROOT", home.join("logs"))
         .env("XDG_CONFIG_HOME", home.join(".config"))
+        // The daemon's records and locks, never the box's `/run/user/<uid>/letibot`.
+        .env("XDG_RUNTIME_DIR", home.join("run"))
         .env_remove("DEEPSEEK_API_KEY")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
@@ -306,6 +309,8 @@ fn with_no_head_to_ask_the_refusal_names_where_a_key_goes() {
         .env("LETIBOT_NOTES_REPO", home.join("notes"))
         .env("LETIBOT_LOGS_ROOT", home.join("logs"))
         .env("XDG_CONFIG_HOME", home.join(".config"))
+        // The daemon's records and locks, never the box's `/run/user/<uid>/letibot`.
+        .env("XDG_RUNTIME_DIR", home.join("run"))
         .env_remove("DEEPSEEK_API_KEY")
         .stdin(std::process::Stdio::null())
         .output()

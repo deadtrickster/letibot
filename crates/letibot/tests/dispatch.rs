@@ -28,7 +28,7 @@ fn home() -> std::path::PathBuf {
     HOME.get_or_init(|| {
         let dir =
             std::env::temp_dir().join(format!("letibot-dispatch-home-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("a temp home");
+        std::fs::create_dir_all(dir.join("run")).expect("a temp home");
         dir
     })
     .clone()
@@ -42,6 +42,8 @@ fn cmd(args: &[&str]) -> std::process::Command {
         .env("HOME", home())
         .env("XDG_CONFIG_HOME", home().join(".config"))
         .env("XDG_DATA_HOME", home().join(".local/share"))
+        // The socket a role finds by folder is under the runtime dir: never the box's live one.
+        .env("XDG_RUNTIME_DIR", home().join("run"))
         .env_remove("LETIBOT_SOCKET")
         .env_remove("LETIBOT_SESSION")
         .env_remove("LETIBOT_COMPLETION_URL");
@@ -301,6 +303,7 @@ fn a_store_query_writes_nothing_into_the_config_dir() {
         .env("HOME", &home)
         .env("XDG_CONFIG_HOME", &config)
         .env("XDG_DATA_HOME", &data)
+        .env("XDG_RUNTIME_DIR", &home)
         .env_remove("LETIBOT_SOCKET")
         .env_remove("LETIBOT_SESSION")
         .output()
@@ -414,6 +417,7 @@ fn each_role_is_reachable_through_a_symlink_of_its_own_name() {
             .env("HOME", home())
             .env("XDG_CONFIG_HOME", home().join(".config"))
             .env("XDG_DATA_HOME", home().join(".local/share"))
+            .env("XDG_RUNTIME_DIR", home().join("run"))
             .env_remove("LETIBOT_SOCKET")
             .env_remove("LETIBOT_SESSION")
             .output()

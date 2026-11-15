@@ -65,6 +65,8 @@ fn the_listing_names_the_host_a_moved_session_lives_on() {
         .arg("--store")
         .arg(&path)
         .arg("--list-sessions")
+        // Never the box's `/run/user/<uid>/letibot`, where the live daemons' records are.
+        .env("XDG_RUNTIME_DIR", &dir)
         .output()
         .expect("the listing ran");
     let listed = String::from_utf8_lossy(&out.stdout);

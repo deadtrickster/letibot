@@ -132,6 +132,16 @@ fn wait_past(ms: i64) {
     }
 }
 
+/// A runtime dir beside the test's store, so the query never reads the box's live daemon records.
+fn runtime_beside(store: &Path) -> PathBuf {
+    let run = store
+        .parent()
+        .expect("a store in a scratch dir")
+        .join("run");
+    std::fs::create_dir_all(&run).expect("the runtime dir");
+    run
+}
+
 /// The store query the launcher runs, as the launcher runs it: exit code, stdout, stderr.
 fn latest(store: &Path) -> (i32, String, String) {
     let out = Command::new(env!("CARGO_BIN_EXE_harnessd"))
@@ -140,6 +150,7 @@ fn latest(store: &Path) -> (i32, String, String) {
         .arg("--latest-session")
         .arg("--scope")
         .arg(WS)
+        .env("XDG_RUNTIME_DIR", runtime_beside(store))
         // The walked-past rows are said under -v only; this file checks they are said at all.
         .env("LETIBOT_VERBOSE", "1")
         .output()
@@ -159,6 +170,7 @@ fn listing(store: &Path) -> String {
         .arg("--list-sessions")
         .arg("--scope")
         .arg(WS)
+        .env("XDG_RUNTIME_DIR", runtime_beside(store))
         .output()
         .expect("running harnessd");
     assert_eq!(out.status.code(), Some(0), "the listing answers");

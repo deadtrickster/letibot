@@ -17,6 +17,20 @@ use letibot_turn::Endpoint;
 
 const ROOT: &str = "s-split-paths";
 
+/// The in-process session open walks the runtime dir's daemon records, so this binary gets its own
+/// instead of the box's `/run/user/<uid>/letibot`.
+fn private_runtime_dir() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let run =
+            std::env::temp_dir().join(format!("letibot-split-paths-run-{}", std::process::id()));
+        std::fs::create_dir_all(&run).expect("the runtime dir");
+        // SAFETY: every test makes its Fixture first and waits on this Once, so no thread of
+        // this binary is reading the environment for a session yet.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", &run) };
+    });
+}
+
 /// A data directory and the folder the daemon serves, in a temp directory of this test's own.
 struct Fixture {
     dir: PathBuf,
@@ -31,6 +45,7 @@ impl Fixture {
         // deletes while the other is writing.
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        private_runtime_dir();
         let dir =
             std::env::temp_dir().join(format!("letibot-split-paths-{}-{n}", std::process::id()));
         let workspace = dir.join("ws");
@@ -115,6 +130,8 @@ fn listing(fixture: &Fixture) -> std::process::Output {
         .arg("--workspace")
         .arg(&fixture.workspace)
         .arg("--list-sessions")
+        // Never the box's `/run/user/<uid>/letibot`, where the live daemons' records are.
+        .env("XDG_RUNTIME_DIR", &fixture.dir)
         .output()
         .expect("the listing ran")
 }
@@ -247,6 +264,7 @@ fn the_legacy_file_inside_a_split_directory_is_refused_by_name() {
         .arg("--workspace")
         .arg(&fixture.workspace)
         .arg("--list-sessions")
+        .env("XDG_RUNTIME_DIR", &fixture.dir)
         .output()
         .expect("the query ran");
     assert!(

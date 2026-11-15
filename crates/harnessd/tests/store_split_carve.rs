@@ -139,6 +139,8 @@ fn listing(fixture: &Fixture) -> String {
         .arg("--workspace")
         .arg(ROOT_A)
         .arg("--list-sessions")
+        // Never the box's `/run/user/<uid>/letibot`, where the live daemons' records are.
+        .env("XDG_RUNTIME_DIR", &fixture.dir)
         .output()
         .expect("the listing ran");
     assert!(

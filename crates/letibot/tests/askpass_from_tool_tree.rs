@@ -25,6 +25,9 @@ fn socket_path(tag: &str) -> std::path::PathBuf {
 #[test]
 fn the_askpass_helper_still_gets_the_password_from_inside_a_tool_tree() {
     let socket = socket_path("inside");
+    // Never the box's `/run/user/<uid>/letibot`, where the live daemons' records are.
+    let run = socket.with_extension("run");
+    std::fs::create_dir_all(&run).expect("the runtime dir");
     let registry = Registry::of(Hub::new("s"));
     let server = serve_registry(registry, &socket).expect("bind");
 
@@ -46,6 +49,7 @@ fn the_askpass_helper_still_gets_the_password_from_inside_a_tool_tree() {
         .env("LETIBOT_SOCKET", server.path())
         .env("LETIBOT_SESSION", "s")
         .env("LETIBOT_COMMAND", "sudo apt install x")
+        .env("XDG_RUNTIME_DIR", &run)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())

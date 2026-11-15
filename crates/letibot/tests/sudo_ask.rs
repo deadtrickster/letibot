@@ -96,7 +96,21 @@ unsafe extern "C" {
     fn prctl(option: i32, ...) -> i32;
 }
 
+/// The harness runs in this process and its runs inherit the environment, so the binary gets its
+/// own runtime dir instead of the box's `/run/user/<uid>/letibot`.
+fn private_runtime_dir() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let run = letibot_sessionlog::testing::scratch("letibot-sudo-ask-run");
+        std::fs::create_dir_all(&run).expect("the runtime dir");
+        // SAFETY: both harness tests wait on this Once before they build a config, and the
+        // re-exec child reads nothing from the environment but its own marker.
+        unsafe { std::env::set_var("XDG_RUNTIME_DIR", &run) };
+    });
+}
+
 fn config(session: &str, socket: &Path) -> Config {
+    private_runtime_dir();
     let repo = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(|p| p.parent())
