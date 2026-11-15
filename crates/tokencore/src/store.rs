@@ -26,7 +26,7 @@ mod transfer;
 pub mod writers;
 pub use transfer::{ImportInto, ImportReport, SessionTransfer, TRANSFER_FORMAT, TableExport};
 mod queues;
-pub use busy::{BUSY_RETRY_TOTAL, is_busy_sql};
+pub use busy::{BUSY_RETRY_TOTAL, Watch, WatchGuard, is_busy_sql, watch_busy_waits};
 pub use queues::*;
 mod modes;
 pub use modes::ProjectMode;
@@ -1785,10 +1785,10 @@ impl Store {
         LIVE.load(std::sync::atomic::Ordering::Relaxed)
     }
 
-    /// How long a connection waits for the write lock before giving up: MEASURED, not chosen. On a
-    /// box holding hundreds of sessions across many daemons the wait is real, and failing at once
-    /// turns a busy file into a failed turn. Enforced by [`busy::on_busy`], not `busy_timeout`.
-    pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+    /// How long a statement outside the busy ladder waits for the write lock before it fails busy.
+    /// Five seconds, as opencode's `busy_timeout`: the handler sleeps holding this process's one
+    /// connection, so every other thread waits as long. Enforced by [`busy::on_busy`].
+    pub const BUSY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
     /// The one place a `Shared` is built, and therefore the one place [`LIVE`] is counted:
     /// every `Store` is a handle onto a `Shared`, so this is the count of connections.

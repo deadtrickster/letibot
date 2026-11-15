@@ -261,6 +261,9 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // Capture is switched off, so nothing was written. A disclosure of configuration  -
     // the code above, one branch along.
     ("frame_capture_disabled", Class::Routine, Action::Developer),
+    // A provider's refusal or limit, its status, code and message kept with keys redacted: the
+    // daemon log holds it past a restart, so the next diagnosis reads it instead of inferring it.
+    ("provider_refusal_body", Class::Routine, Action::Developer),
     // A command the operator typed, answered: `mode_set` where the point moved, and
     // `mode_set_next_session_only` where it moved for *later* sessions because this one cannot
     // carry it.

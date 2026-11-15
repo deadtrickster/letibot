@@ -668,3 +668,79 @@ fn a_refused_write_is_counted_by_kind_and_call_site() {
         full[0]
     );
 }
+
+/// A raw-connection write outside the ladder leaves the busy handler within its bound instead of
+/// sleeping 30 s holding the process's connection.
+#[test]
+fn an_unladdered_write_leaves_the_handler_within_its_bound() {
+    let db = TempDb::new("unladdered");
+    let s = Store::open(&db.0).unwrap();
+    seed(&s);
+    let (release, holder) = hold_write_lock(&db.0);
+    let t = Instant::now();
+    let err = s
+        .connection()
+        .execute(
+            "UPDATE session SET title = 'raw' WHERE id = 'sess-busy'",
+            [],
+        )
+        .expect_err("the lock is held throughout");
+    let took = t.elapsed();
+    assert!(is_busy_sql(&err), "{err}");
+    assert!(
+        took >= Store::BUSY_TIMEOUT - Duration::from_millis(500),
+        "it waited its bound: {took:?}"
+    );
+    assert!(
+        took < Store::BUSY_TIMEOUT + Duration::from_secs(2),
+        "and no longer: {took:?}"
+    );
+    release.send(()).unwrap();
+    holder.join().unwrap();
+}
+
+/// A watched wait ends at the watch's stop: the lock is held past the ladder, the stop comes at 300 ms,
+/// and the write returns busy within a second, having told the watch how long it waited.
+#[test]
+fn a_stop_ends_a_laddered_wait_within_a_second() {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    let db = TempDb::new("watched");
+    let s = Store::open(&db.0).unwrap();
+    seed(&s);
+    // Held until after the assertions: the 10 s the plan names, and longer if the stop is missed.
+    let (release, holder) = hold_write_lock(&db.0);
+    let stop = Arc::new(AtomicBool::new(false));
+    let told = Arc::new(AtomicU64::new(0));
+    let (st, tl) = (stop.clone(), told.clone());
+    let guard = super::watch_busy_waits(super::Watch {
+        stop: Box::new(move || st.load(Ordering::SeqCst)),
+        waiting: Box::new(move |d| tl.store(d.as_millis() as u64, Ordering::SeqCst)),
+    });
+    let stopper = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            stop.store(true, Ordering::SeqCst);
+        })
+    };
+    let t = Instant::now();
+    let err = s
+        .write_tx(|tx| {
+            tx.execute("UPDATE session SET title = 'w' WHERE id = 'sess-busy'", [])?;
+            Ok(())
+        })
+        .expect_err("stopped before the lock freed");
+    let took = t.elapsed();
+    drop(guard);
+    assert!(err.is_busy(), "the stop returns the busy error: {err}");
+    assert!(took < Duration::from_secs(1), "the stop was read: {took:?}");
+    assert!(
+        told.load(Ordering::SeqCst) > 0,
+        "the watch was told the wait between attempts"
+    );
+    stopper.join().unwrap();
+    assert!(!super::stopped(), "the guard took the watch away");
+    release.send(()).unwrap();
+    holder.join().unwrap();
+}

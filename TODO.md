@@ -67,6 +67,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R228 | Remote hosts keep every placed session's home, jobs ledger and fanout dirs | Code work | left: the reaper's remote pass bundles an owner's work and never removes the home; `.letibot-jobs/<id>` and `fanout-<call>` have no reaper at all; removal needs `chmod u+w` for read-only Go module caches |
 | R229 | Gates ran tests with the operator's real HOME, and the launcher's store ignores XDG_DATA_HOME | Code work | bridge store resolution and read-only opens landed (abd03a3d); left: no in-tree gate script isolates HOME/XDG, and `scripts/letibot`'s `STORE` ignores `XDG_DATA_HOME` while the bridge follows it |
 | R230 | One slow store open blocks every open in the process, and unladdered writes sleep 30 s holding the connection | Code work | left: `Store::open_sharing` holds `shared_stores()` across pragmas and migrate, and `connection()`/`connection_of()` writes sleep up to `BUSY_TIMEOUT` (30 s) in the busy handler |
+| R280 | Retry jitter, a no-network budget, interruptible store waits, and the provider's refusal kept (plan 1.29, 1.30, R275's item) | Code work | built on `j17-retry`: 20% jitter on every ladder wait, a 1 h no-network budget (30 s steps) that spends no retry, an interrupt ending a store wait within 250 ms, a store-wait status line after 1 s, raw statements bounded at 5 s, `provider_refusal_body` (status, code, message, keys redacted) in the daemon log and on the session; left: the 90 s outage end-to-end test, a file key for the budget, R230's open lock, rebase onto `glm-limit` |
 | R231 | A room protocol bump refused every older client | Code work | fixed for 11 by `OLDEST_CLIENT = 11` (fc69dcb2); left: a rule that each bump states whether older clients are served, and a test per bump |
 | R232 | Kimi's usage endpoint is asked only on a refusal | Code work | built: a background poll of the preset's `usage_url` every 5 min (`crates/provider/src/usage_poll.rs`), one per endpoint, ending once no session is on the preset; the `models.usage` row, drawn in the status row and on the model card's provider row (`5h 44% · resets 07:07`); threshold warnings (`crates/provider/src/usage_warn.rs`): one `[usage]` notice per crossing, once per window, the figure coloured by level, `[provider.usage_warn]` and `[provider.NAME.usage_warn]`; z.ai is polled on the GLM coding doors (glm-limit is on main); left: a live check against a real Kimi and z.ai key |
 | R233 | Rate-limit decisions as config values or a fuel-capped wasm call | Needs the operator | not started; left: the operator's shape for the hook record (which decisions, value or plugin, what the call is given and answers) |
@@ -903,6 +904,27 @@ Fix: hold the registry lock only for the lookup and the insert, with a per-key i
 **Still open?** read `open_sharing` for where the `shared_stores()` guard is dropped, and `grep -n 'fn connection\b\|fn connection_of' crates/tokencore/src/store.rs` for whether they go through the ladder.
 
 **Done when:** a test opens one store whose migration is held (a hook or a slow file) and opens a second, different store from another thread in well under the first one's time, and a test with a held write lock shows a raw-connection write leaving the handler within the ladder's attempt budget.
+
+## R280 - Retry jitter, a no-network budget, interruptible store waits, and the provider's refusal kept
+
+**Status:** built 2026-11-15 on `j17-retry` (package J17: plan 1.29, 1.30 and R275's open item). left: see below.
+
+Built:
+- `crates/http/src/retry.rs`: `Ladder::failed` moves every wait by up to `JITTER_PERCENT` (20%) either way, seeded per ladder (`Ladder::seeded` for a replay). A provider's `Retry-After` is only ever lengthened. `Policy::offline_for(budget)` gives name-resolution and no-route failures (`Policy::is_offline`) their own budget: doubling waits capped at `OFFLINE_STEP` (30 s), the last cut to what is left, and none of them spends a retry. Past the budget the ending reads `no network for 1h 00m: ...`. Ignored when `http_retries` is 0.
+- `Config::http_offline_budget` (default `OFFLINE_BUDGET`, 1 h) is what the turn's ladder uses. Not a file key yet.
+- `crates/tokencore/src/store/busy.rs`: `watch_busy_waits(Watch { stop, waiting })` puts a thread's busy waits under a caller's watch. `stop` is polled in the busy handler and between ladder attempts, so a stopped write returns its busy error at once; `waiting` is told the elapsed wait between attempts, connection released, outermost call only.
+- `Store::BUSY_TIMEOUT` is 5 s (was 30 s): a statement outside the ladder (`connection()`, `connection_of()`) leaves the busy handler within 5 s instead of sleeping 30 s holding the process's one connection (R230's second half).
+- `store_patiently` and `persist_rows` install the watch: an `Interrupt` or a closed session ends the wait within 250 ms, and a wait past 1 s is said once as `store_busy_wait` (and `store_busy_queue` on the daemon's other sessions), on the same 2-minute clock as the existing notices.
+- R275's item: when the ladder ends on a limit, a quota or a refusal, the turn writes `provider_refusal_body` (a developer code, so it lands in the daemon log as `diagnostic · provider_refusal_body: ...` and on the session): `<model> said status 429 · code 1308 · message ...`. The message is one line, 400 chars at most, with the session's `api_key` and every key-shaped token replaced by `[redacted]` (`crates/harnessd/src/harness/refusal.rs`). The request is never written.
+
+Tests: `retry::tests::a_wait_is_jittered_within_a_fifth_of_its_rung`, `no_network_waits_out_its_own_budget_and_then_says_so`; `busy::tests::a_stop_ends_a_laddered_wait_within_a_second`, `an_unladdered_write_leaves_the_handler_within_its_bound`; `store_writes::an_interrupt_ends_a_real_store_wait_within_a_second` (real lock held by a second connection), `a_store_wait_is_said_while_it_waits`; `refusal::tests::*`; `provider_trouble.rs` scenario C checks the record and its redaction end to end.
+
+Left:
+- Plan 1.29's done-when through a daemon: an endpoint unreachable for 90 s and then up completes the turn without "gave up". Needs a stub that fails name resolution and then answers; the ladder test covers the arithmetic only.
+- A `[provider]` file key for the no-network budget. Kept out of `leticode-config` while `glm-limit` rewrites the same `[provider]` parser.
+- `STORE_BUSY_PATIENCE` (30 min) is unchanged: the wait is now interruptible and said, not shorter.
+- R230's first half (`open_sharing` holding the registry lock across a migration) is not touched.
+- Rebase onto main once `glm-limit` lands: expect conflicts in `crates/http/src/retry.rs` (tests module) and the `warning.rs` census (both add one routine code, so 93 routine, 211 total).
 
 ## R231 - A room protocol bump refused every older client
 

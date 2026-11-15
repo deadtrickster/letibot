@@ -735,6 +735,9 @@ pub struct Config {
     /// `0` is none. The count is the ladder's length, not its rule - *what* is retryable lives in
     /// `letibot_http::retry::Policy`, so raising this is patience. Retries, not attempts.
     pub http_retries: u32,
+    /// How long a turn keeps retrying when the box has no network (name resolution, no route).
+    /// Those waits do not spend `http_retries`; past this the turn ends and says it was offline.
+    pub http_offline_budget: std::time::Duration,
     /// How many consecutive rounds may produce nothing new before the turn stops. A round produces
     /// nothing new when no call returned an `Ok` result this turn had not already seen
     /// ([`crate::progress`]); `0` turns the check off and leaves the round count as the only stop.
@@ -1843,6 +1846,7 @@ impl Config {
             // count never could. See the field.
             max_tool_rounds: 0,
             http_retries: crate::harness::MAX_HTTP_RETRIES,
+            http_offline_budget: letibot_http::retry::OFFLINE_BUDGET,
             stall_rounds: 5,
             // The provider's own ten minutes: a box that has an opinion sets it, and a fixture that
             // must measure a timeout sets a short one.

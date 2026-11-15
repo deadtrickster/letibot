@@ -601,3 +601,109 @@ fn the_archived_half_of_the_list_is_read_from_the_store() {
     );
     assert_eq!(archived[0].title, "the one away", "with the row's own name");
 }
+
+/// Another connection holding the store's write lock until told to let go: another daemon.
+fn hold_the_write_lock(
+    path: &std::path::Path,
+) -> (std::sync::mpsc::Sender<()>, std::thread::JoinHandle<()>) {
+    let (go, wait) = std::sync::mpsc::channel::<()>();
+    let (held, is_held) = std::sync::mpsc::channel::<()>();
+    let path = path.to_path_buf();
+    let h = std::thread::spawn(move || {
+        let c = letibot_tokencore::rusqlite::Connection::open(&path).unwrap();
+        c.execute_batch("BEGIN IMMEDIATE").unwrap();
+        held.send(()).unwrap();
+        let _ = wait.recv();
+        c.execute_batch("COMMIT").unwrap();
+    });
+    is_held.recv().unwrap();
+    (go, h)
+}
+
+/// Plan 1.30: with the write lock held by another connection, an `Interrupt` ends a real
+/// write's wait within a second, inside the store's own ladder and not after its 90 s.
+#[test]
+fn an_interrupt_ends_a_real_store_wait_within_a_second() {
+    let dir = Scratch::new("j17-store-stop");
+    let Some((h, path)) = harness_on_a_store(&dir, "j17-store-stop") else {
+        return;
+    };
+    let (release, holder) = hold_the_write_lock(&path);
+    let head = h.hub.attach("tui", "dead", Default::default(), 0);
+    let stopper = {
+        let hub = h.hub.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            hub.submit(
+                &head.head_id,
+                "stop-1",
+                0,
+                letibot_sessionlog::hub::CommandKind::Interrupt {
+                    reason: "esc".into(),
+                },
+            );
+            std::time::Instant::now()
+        })
+    };
+    let r: Result<usize, _> = h.store_patiently("title", |s| {
+        s.write_tx(|tx| {
+            Ok(tx.execute(
+                "UPDATE session SET title = 'held' WHERE id = 'j17-store-stop'",
+                [],
+            )?)
+        })
+    });
+    let returned = std::time::Instant::now();
+    let asked = stopper.join().unwrap();
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    let why = r
+        .expect_err("the lock never freed before the stop")
+        .to_string();
+    assert!(why.contains("stopped"), "{why}");
+    let after = returned.saturating_duration_since(asked);
+    assert!(
+        after < std::time::Duration::from_secs(1),
+        "the interrupt took {after:?} to end the wait"
+    );
+}
+
+/// A wait past a second is said while the store's ladder is still waiting, not after it.
+#[test]
+fn a_store_wait_is_said_while_it_waits() {
+    let dir = Scratch::new("j17-store-said");
+    let Some((h, path)) = harness_on_a_store(&dir, "j17-store-said") else {
+        return;
+    };
+    let (release, holder) = hold_the_write_lock(&path);
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(1800));
+        release.send(()).unwrap();
+    });
+    let n = h
+        .store_patiently("title", |s| {
+            s.write_tx(|tx| {
+                Ok(tx.execute(
+                    "UPDATE session SET title = 'waited' WHERE id = 'j17-store-said'",
+                    [],
+                )?)
+            })
+        })
+        .expect("the lock freed and the write was made");
+    releaser.join().unwrap();
+    holder.join().unwrap();
+    assert_eq!(n, 1);
+    let said: Vec<String> = h
+        .hub
+        .retained()
+        .iter()
+        .filter_map(|e| match &e.event {
+            SessionEvent::Warning { code, detail, .. } if code == "store_busy_wait" => {
+                Some(detail.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(said.len(), 1, "one line for one wait: {said:?}");
+    assert!(said[0].contains("so far"), "{}", said[0]);
+}

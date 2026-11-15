@@ -69,6 +69,69 @@ struct Measure {
     lines: Option<Vec<String>>,
 }
 
+/// A caller's view into this thread's busy waits: `stop` ends one at the next poll, and
+/// `waiting` is told the wait so far between attempts, with the connection released.
+pub struct Watch {
+    pub stop: Box<dyn Fn() -> bool>,
+    pub waiting: Box<dyn FnMut(Duration)>,
+}
+
+thread_local! {
+    static WATCH: RefCell<Option<Watch>> = const { RefCell::new(None) };
+}
+
+/// Restores the watch that was in force before [`watch_busy_waits`] when dropped.
+pub struct WatchGuard {
+    prev: Option<Watch>,
+    // A thread-local is installed: the guard must drop on the thread that made it.
+    _here: std::marker::PhantomData<*const ()>,
+}
+
+impl Drop for WatchGuard {
+    fn drop(&mut self) {
+        let prev = self.prev.take();
+        WATCH.with(|w| {
+            if let Ok(mut w) = w.try_borrow_mut() {
+                *w = prev;
+            }
+        });
+    }
+}
+
+/// Watch every busy wait on this thread while the guard lives. A stopped wait returns its busy
+/// error at once, which the caller already handles as "not written".
+pub fn watch_busy_waits(watch: Watch) -> WatchGuard {
+    let prev = WATCH.with(|w| w.borrow_mut().replace(watch));
+    WatchGuard {
+        prev,
+        _here: std::marker::PhantomData,
+    }
+}
+
+/// Has the watch asked this wait to stop? `false` with no watch, or while the watch itself is
+/// running a store call that waits.
+fn stopped() -> bool {
+    WATCH.with(|w| match w.try_borrow() {
+        Ok(w) => w.as_ref().is_some_and(|w| (w.stop)()),
+        Err(_) => false,
+    })
+}
+
+/// Tell the watch how long this wait has run. Called only with the connection released.
+fn tell(waited: Duration) {
+    // Only the outermost call: a nested one runs inside a body that holds the connection.
+    if MEASUREMENT.with(|m| m.borrow().depth) != 1 {
+        return;
+    }
+    WATCH.with(|w| {
+        if let Ok(mut w) = w.try_borrow_mut()
+            && let Some(w) = w.as_mut()
+        {
+            (w.waiting)(waited);
+        }
+    });
+}
+
 /// Is this the database being busy rather than the operation being wrong? Covers `SQLITE_BUSY`
 /// and its `_SNAPSHOT` and `_RECOVERY` spellings.
 pub fn is_busy_sql(e: &rusqlite::Error) -> bool {
@@ -145,6 +208,9 @@ pub(super) fn on_busy(count: i32) -> bool {
         m.waited += delay;
         true
     });
+    if go && stopped() {
+        return false;
+    }
     if go {
         std::thread::sleep(delay);
     }
@@ -221,7 +287,8 @@ pub(super) fn retry_busy<T, E: Flavour>(
     enter();
     loop {
         match f() {
-            Err(e) if busy(&e) && start.elapsed() < budget => {
+            Err(e) if busy(&e) && start.elapsed() < budget && !stopped() => {
+                tell(start.elapsed());
                 let pause = backoff(attempt).min(budget.saturating_sub(start.elapsed()));
                 std::thread::sleep(pause);
                 // The pause is lock wait too, now that most of a long wait is spent between attempts.

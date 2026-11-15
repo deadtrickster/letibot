@@ -20,6 +20,17 @@ pub const STANDARD_RETRIES: u32 = 5;
 /// worth respecting is usually a minute, and the stop key ends any wait a person will not sit out.
 pub const LONGEST_WAIT: Duration = Duration::from_secs(60);
 
+/// How far a wait is spread, in percent either way: clients that failed together must not come
+/// back together. A provider's `Retry-After` is only ever lengthened.
+pub const JITTER_PERCENT: u64 = 20;
+
+/// How long a turn keeps retrying with no network (name resolution or no route) before it ends
+/// and says so. These waits do not spend the ladder's retries: a laptop off wifi is not a provider.
+pub const OFFLINE_BUDGET: Duration = Duration::from_secs(60 * 60);
+
+/// The longest one wait for the network to come back.
+pub const OFFLINE_STEP: Duration = Duration::from_secs(30);
+
 /// What one failure is, in the only terms a retry can use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
@@ -82,13 +93,49 @@ impl Trouble {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Policy {
     retries: u32,
+    /// The no-network budget; zero spends offline failures on the ladder like any other.
+    offline: Duration,
 }
 
 impl Policy {
     /// `retries` calls after the first, waiting 1 s, 2 s, 4 s… between them, or longer where the
     /// provider sent a `Retry-After`. `0` is none, and the first failure is the answer.
     pub const fn new(retries: u32) -> Self {
-        Policy { retries }
+        Policy {
+            retries,
+            offline: Duration::ZERO,
+        }
+    }
+
+    /// This policy, with failures that mean no network waited out for up to `budget` without
+    /// spending a retry. Ignored when `retries` is zero: a daemon that retries nothing means it.
+    pub const fn offline_for(mut self, budget: Duration) -> Self {
+        self.offline = budget;
+        self
+    }
+
+    /// The no-network budget in force: zero when there is none or the ladder is off.
+    pub const fn offline_budget(&self) -> Duration {
+        if self.retries == 0 {
+            Duration::ZERO
+        } else {
+            self.offline
+        }
+    }
+
+    /// Is this failure the box having no network, rather than the provider failing? Name
+    /// resolution and no route only: a refused connection means something answered.
+    pub fn is_offline(e: &HttpError) -> bool {
+        if matches!(
+            Self::what(e),
+            "name resolution failed" | "the host could not be reached"
+        ) {
+            return true;
+        }
+        // A wrapped io error keeps only its words, and the kind is lost with them.
+        let HttpError::Io(err) = e else { return false };
+        let said = err.to_string().to_ascii_lowercase();
+        said.contains("network is unreachable") || said.contains("no route to host")
     }
 
     /// No retry at all - a caller that already knows the endpoint is not there.
@@ -360,14 +407,27 @@ pub struct Ladder {
     policy: Policy,
     failed: u32,
     waited: Duration,
+    /// Failures that meant no network, and what was waited for them: their own budget.
+    offline_failed: u32,
+    offline_waited: Duration,
+    /// The jitter's state. Seeded per ladder so two daemons that failed together spread apart.
+    rng: u64,
 }
 
 impl Ladder {
     pub fn new(policy: Policy) -> Self {
+        Ladder::seeded(policy, fresh_seed())
+    }
+
+    /// [`Ladder::new`] with a chosen seed: the same seed gives the same waits.
+    pub fn seeded(policy: Policy, seed: u64) -> Self {
         Ladder {
             policy,
             failed: 0,
             waited: Duration::ZERO,
+            offline_failed: 0,
+            offline_waited: Duration::ZERO,
+            rng: seed,
         }
     }
 
@@ -379,17 +439,68 @@ impl Ladder {
     /// ladder has nothing left - the answer for a refusal on the very first call. The
     /// wait is added to what this ladder reports, because the caller sleeps it next.
     pub fn failed(&mut self, e: &HttpError) -> Option<Duration> {
-        let wait = self.policy.after(e, self.failed);
+        let budget = self.policy.offline_budget();
+        if !budget.is_zero() && Policy::is_offline(e) {
+            return self.offline(budget);
+        }
+        let base = self.policy.after(e, self.failed);
         self.failed += 1;
+        let wait = base.map(|b| {
+            let asked = match e {
+                HttpError::Status {
+                    retry_after: Some(s),
+                    ..
+                } => Duration::from_secs(*s).min(LONGEST_WAIT),
+                _ => Duration::ZERO,
+            };
+            self.spread(b).max(asked)
+        });
         if let Some(w) = wait {
             self.waited += w;
         }
         wait
     }
 
-    /// How many calls have failed so far.
+    /// A no-network failure: the doubling ladder capped at [`OFFLINE_STEP`], until `budget` is
+    /// spent. The last wait is cut to what is left, so the budget is a bound and not a target.
+    fn offline(&mut self, budget: Duration) -> Option<Duration> {
+        let left = budget.saturating_sub(self.offline_waited);
+        self.offline_failed += 1;
+        if left.is_zero() {
+            return None;
+        }
+        let rung = Duration::from_secs(1u64 << (self.offline_failed - 1).min(31)).min(OFFLINE_STEP);
+        let w = self.spread(rung).min(left);
+        self.offline_waited += w;
+        self.waited += w;
+        Some(w)
+    }
+
+    /// `base` moved by up to [`JITTER_PERCENT`] either way.
+    fn spread(&mut self, base: Duration) -> Duration {
+        let span = base.as_millis() as u64 * JITTER_PERCENT / 100;
+        if span == 0 {
+            return base;
+        }
+        let r = splitmix(&mut self.rng) % (2 * span + 1);
+        (base + Duration::from_millis(r)).saturating_sub(Duration::from_millis(span))
+    }
+
+    /// Is the turn out of network rather than out of retries? `true` once the no-network
+    /// budget has been spent: the ending says the box is offline, not that the provider failed.
+    pub fn out_of_network(&self) -> bool {
+        let budget = self.policy.offline_budget();
+        !budget.is_zero() && self.offline_waited >= budget
+    }
+
+    /// How long this ladder has waited for the network to come back.
+    pub fn offline_waited(&self) -> Duration {
+        self.offline_waited
+    }
+
+    /// How many calls have failed so far, offline ones included.
     pub fn attempts(&self) -> u32 {
-        self.failed
+        self.failed + self.offline_failed
     }
 
     /// How long the waits before them add up to.
@@ -402,6 +513,15 @@ impl Ladder {
     /// the ladder was switched off, or it ran out after so many tries and so long.
     pub fn ending(&self, e: &HttpError) -> String {
         let what = Policy::what(e);
+        if self.out_of_network() && Policy::is_offline(e) {
+            return format!(
+                "no network for {}: {what}, {} calls, and the daemon stops retrying after {} \
+                 offline. The last thing it said: {e}",
+                span(self.offline_waited),
+                self.attempts(),
+                span(self.policy.offline_budget()),
+            );
+        }
         if !self.policy.class(e).retryable() {
             return format!(
                 "{e} — {what}, and a refusal is not retried ({} call{}, no waiting)",
@@ -412,15 +532,35 @@ impl Ladder {
         if self.policy.retries() == 0 {
             return format!("{e} — {what}, and this daemon retries nothing (`--http-retries 0`)");
         }
-        if self.failed <= 1 {
+        if self.attempts() <= 1 {
             return format!("{e} — {what}, and the ladder stopped after one call");
         }
         format!(
             "tried {} times over {}, then gave up: {what}. The last thing it said: {e}",
-            self.failed,
+            self.attempts(),
             span(self.waited),
         )
     }
+}
+
+/// A seed no two ladders share: the clock, the process and a counter.
+fn fresh_seed() -> u64 {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    nanos ^ (u64::from(std::process::id()) << 32) ^ n.wrapping_mul(0x9E37_79B9_7F4A_7C15)
+}
+
+/// SplitMix64: enough randomness to spread retries, with no dependency for it.
+fn splitmix(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
 }
 
 fn plural(n: u32) -> &'static str {
@@ -756,17 +896,20 @@ mod tests {
         };
         assert_eq!(p.after(&money, 0), None);
 
-        // The ladder reports the wait it took, so the ending cannot say 31 s for a minute's.
-        let mut ladder = Ladder::new(p);
+        // The ladder reports the wait it took, so the ending cannot say 31 s for a minute's. The
+        // jitter only lengthens a provider's own instant.
+        let mut ladder = Ladder::seeded(p, 7);
         let mut slept = Duration::ZERO;
         for n in 0..p.retries() {
             let wait = ladder.failed(&minute).expect("retryable");
-            assert_eq!(Some(wait), p.after(&minute, n), "rung {n}");
+            assert!(
+                (Duration::from_secs(60)..=Duration::from_secs(72)).contains(&wait),
+                "rung {n}: {wait:?}"
+            );
             slept += wait;
         }
         assert!(ladder.failed(&minute).is_none(), "the ladder is spent");
         assert_eq!(ladder.attempts(), 6);
-        assert_eq!(slept, Duration::from_secs(300));
         assert_eq!(
             ladder.waited(),
             slept,
@@ -774,7 +917,7 @@ mod tests {
         );
         let ending = ladder.ending(&minute);
         assert!(
-            ending.contains("tried 6 times over 5m 00s"),
+            ending.contains(&format!("tried 6 times over {}", span(slept))),
             "the ending says what was waited: {ending}"
         );
     }
@@ -854,15 +997,18 @@ mod tests {
     fn the_ending_names_the_attempts_or_says_there_were_none() {
         // A ladder that ran out.
         let p = Policy::standard();
-        let mut ladder = Ladder::new(p);
+        let mut ladder = Ladder::seeded(p, 7);
         for n in 0..=p.retries() {
             let wait = ladder.failed(&dns());
-            assert_eq!(wait, p.after(&dns(), n), "attempt {n}");
+            assert_eq!(wait.is_some(), p.after(&dns(), n).is_some(), "attempt {n}");
         }
         assert_eq!(ladder.attempts(), 6);
-        assert_eq!(ladder.waited(), Duration::from_secs(31));
+        let waited = ladder.waited();
         let ending = ladder.ending(&dns());
-        assert!(ending.starts_with("tried 6 times over 31s, then gave up: name resolution failed"));
+        assert!(ending.starts_with(&format!(
+            "tried 6 times over {}, then gave up: name resolution failed",
+            span(waited)
+        )));
         assert!(
             ending.contains("Temporary failure in name resolution"),
             "and the provider's own words, for the bug report: {ending}"
@@ -884,5 +1030,93 @@ mod tests {
         assert!(ladder.failed(&dns()).is_none());
         let ending = ladder.ending(&dns());
         assert!(ending.contains("--http-retries 0"), "{ending}");
+    }
+
+    /// Every wait is its rung moved by at most a fifth, and two seeds give two ladders: clients
+    /// that failed together must not come back in lockstep.
+    #[test]
+    fn a_wait_is_jittered_within_a_fifth_of_its_rung() {
+        let p = Policy::new(8);
+        let mut runs = Vec::new();
+        for seed in [1u64, 2, 3, 0xdead_beef] {
+            let mut ladder = Ladder::seeded(p, seed);
+            let mut waits = Vec::new();
+            for n in 0..p.retries() {
+                let base = p.after(&status(503), n).expect("retryable");
+                let w = ladder.failed(&status(503)).expect("retryable");
+                let (lo, hi) = (base * 4 / 5, base * 6 / 5);
+                assert!(
+                    w >= lo && w <= hi,
+                    "rung {n}: {w:?} outside {lo:?}..={hi:?}"
+                );
+                waits.push(w);
+            }
+            assert!(ladder.failed(&status(503)).is_none(), "the ladder is spent");
+            runs.push(waits);
+        }
+        assert_ne!(runs[0], runs[1], "two seeds, two ladders");
+        let again = {
+            let mut l = Ladder::seeded(p, 1);
+            (0..p.retries())
+                .map(|_| l.failed(&status(503)).unwrap())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(again, runs[0], "a seed is a replay");
+    }
+
+    /// No network has its own budget: the five retries are not spent on it, each wait is at
+    /// most 30 s and a fifth, and the ladder ends when the budget does, saying the box is offline.
+    #[test]
+    fn no_network_waits_out_its_own_budget_and_then_says_so() {
+        let budget = Duration::from_secs(300);
+        let p = Policy::standard().offline_for(budget);
+        assert!(Policy::is_offline(&dns()));
+        assert!(
+            !Policy::is_offline(&refused()),
+            "a refusal means something answered"
+        );
+        assert!(Policy::is_offline(&HttpError::Io(std::io::Error::other(
+            "io: Network is unreachable (os error 101)"
+        ))));
+        let mut ladder = Ladder::seeded(p, 9);
+        let mut calls = 0u32;
+        while let Some(w) = ladder.failed(&dns()) {
+            calls += 1;
+            assert!(w <= OFFLINE_STEP * 6 / 5, "one wait is bounded: {w:?}");
+            assert!(calls < 1000, "the budget ends the retries");
+        }
+        assert!(
+            calls > p.retries(),
+            "the retries were not the bound: {calls}"
+        );
+        assert_eq!(
+            ladder.offline_waited(),
+            budget,
+            "the last wait is cut to the budget"
+        );
+        assert!(ladder.out_of_network());
+        let ending = ladder.ending(&dns());
+        assert!(ending.starts_with("no network for 5m 00s"), "{ending}");
+        assert!(
+            ending.contains("stops retrying after 5m 00s offline"),
+            "{ending}"
+        );
+
+        // The network came back and the provider is failing: the five retries are all still there.
+        let mut ladder = Ladder::seeded(p, 9);
+        for _ in 0..10 {
+            ladder.failed(&dns()).expect("offline is waited");
+        }
+        for n in 0..p.retries() {
+            assert!(
+                ladder.failed(&status(503)).is_some(),
+                "retry {n} is unspent"
+            );
+        }
+        assert!(ladder.failed(&status(503)).is_none());
+
+        // A daemon that retries nothing means it, budget or not.
+        let mut ladder = Ladder::new(Policy::none().offline_for(budget));
+        assert!(ladder.failed(&dns()).is_none());
     }
 }

@@ -442,7 +442,7 @@ fn what_is_retryable_and_what_the_operator_is_told() {
     );
 
     // ── E. The ladder runs out, and the sentence names the attempts ──────────────────────
-    // One retry: two calls, one second of waiting, and the ending says both - which is the
+    // One retry: two calls, about a second of waiting, and the ending says both - which is the
     // fact `FAILED - http io: …` never carried.
     endpoint.refuse(100, Refusal::Unavailable);
     let before = endpoint.seen();
@@ -457,8 +457,10 @@ fn what_is_retryable_and_what_the_operator_is_told() {
         "the ladder did not take the round twice, so this scenario measured nothing"
     );
     let said = &rec.failed[0];
+    // The one second is jittered by a fifth either way, so it reads as 0s or 1s.
     assert!(
-        said.starts_with("tried 2 times over 1s, then gave up: "),
+        said.starts_with("tried 2 times over 1s, then gave up: ")
+            || said.starts_with("tried 2 times over 0s, then gave up: "),
         "the ending names the attempts and the waiting: {said}"
     );
     assert!(

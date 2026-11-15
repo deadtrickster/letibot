@@ -3,6 +3,9 @@
 //! around it, and the restart restore that starts a turn nobody typed for.
 use super::*;
 use letibot_plugin::notice::Facts;
+use letibot_tokencore::store::{Watch, WatchGuard, watch_busy_waits};
+use std::sync::Mutex;
+use std::time::Instant;
 
 /// The one notice door, for every caller: the harness's sentence offered to the `notice_<kind>`
 /// layer for the facts' kind, and `None` when a layer dropped a kind that may be dropped. Free
@@ -2861,9 +2864,10 @@ impl Harness {
         // The ladder this turn walks, and the only thing that decides whether a round is taken again. It is
         // also what the turn's ending is said from, since the count and the waiting are nobody else's to
         // report and a failure with no count is the report this was written for.
-        let mut ladder = letibot_http::retry::Ladder::new(letibot_http::retry::Policy::new(
-            self.cfg.http_retries,
-        ));
+        let mut ladder = letibot_http::retry::Ladder::new(
+            letibot_http::retry::Policy::new(self.cfg.http_retries)
+                .offline_for(self.cfg.http_offline_budget),
+        );
         // How many of the LONG waits this round has taken - a rate limit that named no instant is
         // worth a few five-minute beats and not an afternoon. Bounded by `limit_retry_rounds`.
         let mut limit_retries = 0u32;
@@ -2980,6 +2984,7 @@ impl Harness {
             let Some(wait) = ladder.failed(&e) else {
                 // The ladder is spent, and what comes next is the limit rule's to say: the operator's
                 // ruling is that a provider which named its reset never costs a session its turn.
+                self.record_refusal(&e);
                 let e = self.with_the_plans_reset(e);
                 let here = self.model_name();
                 match self.after_the_ladder(&e, &mut tried_fallbacks) {
@@ -3028,7 +3033,8 @@ impl Harness {
                         match self.sleep_unless_closed(self.cfg.limit_retry_wait) {
                             Waited::Out => {
                                 ladder = letibot_http::retry::Ladder::new(
-                                    letibot_http::retry::Policy::new(self.cfg.http_retries),
+                                    letibot_http::retry::Policy::new(self.cfg.http_retries)
+                                        .offline_for(self.cfg.http_offline_budget),
                                 );
                                 continue;
                             }
@@ -3418,6 +3424,28 @@ impl Harness {
     /// The provider's trouble, as the type an automation branches on. Called where the daemon knows
     /// the round is over for good, not per attempt: a ladder of five calls against one 429 is one fact.
     /// The count is the run of this kind, so a caller can tell the first timeout from the fourth.
+    /// A limit's or a refusal's own words, kept where a later diagnosis can read them: the
+    /// warning is a developer code, so it lands in the daemon log as well as on the session.
+    fn record_refusal(&self, e: &letibot_turn::HttpError) {
+        let worth = letibot_http::retry::Policy::trouble(e).is_some()
+            || !letibot_http::retry::Policy::standard().class(e).retryable();
+        if !worth {
+            return;
+        }
+        let key = self
+            .cfg
+            .provider
+            .as_ref()
+            .and_then(|p| p.api_key.as_deref());
+        let secrets: Vec<&str> = key.into_iter().collect();
+        if let Some(r) = super::refusal::Refusal::of(e, &secrets) {
+            self.hub.warn(
+                "provider_refusal_body",
+                format!("{} said {}", self.model_name(), r.line()),
+            );
+        }
+    }
+
     fn publish_trouble(&mut self, e: &letibot_turn::HttpError, switched_to: Option<String>) {
         let Some(trouble) = letibot_http::retry::Policy::trouble(e) else {
             return;
@@ -4205,23 +4233,48 @@ impl Harness {
     /// worker runs one turn at a time, so the others' commands queue behind this write and their
     /// heads would show `queued` with no reason at all.
     fn say_the_store_is_busy(&self, detail: String) {
-        self.hub.warn("store_busy_wait", detail.clone());
-        for id in self.session_registry.held_ids() {
-            if id == self.cfg.session_id {
-                continue;
-            }
-            let Some(hub) = self.session_registry.get(&id) else {
-                continue;
-            };
-            hub.warn(
-                "store_busy_queue",
-                format!(
-                    "this daemon serves one turn at a time, and `{}` is waiting on the session \
-                     store — your next command waits behind that write. {detail}",
-                    self.cfg.session_id
-                ),
-            );
-        }
+        say_store_busy(
+            &self.hub,
+            &self.session_registry,
+            &self.cfg.session_id,
+            detail,
+        );
+    }
+
+    /// The turn path's watch on the store's own busy waits, on this thread while the guard lives:
+    /// a stop or a closed session ends one at the next poll (250 ms at most), and a wait past a
+    /// second is said once, on the clock `said` shares with the caller's own notices.
+    fn watch_store_waits(&self, what: &str, said: Arc<Mutex<Option<Instant>>>) -> WatchGuard {
+        let stop_hub = self.hub.clone();
+        let hub = self.hub.clone();
+        let registry = self.session_registry.clone();
+        let sid = self.cfg.session_id.clone();
+        let what = what.to_string();
+        watch_busy_waits(Watch {
+            stop: Box::new(move || stop_hub.is_closed() || stop_hub.has_queued_interrupt()),
+            waiting: Box::new(move |d| {
+                if d < STORE_WAIT_SAID_AFTER {
+                    return;
+                }
+                let mut at = said.lock().unwrap_or_else(|e| e.into_inner());
+                if at.is_some_and(|t| t.elapsed() < STORE_WAIT_SAID_EVERY) {
+                    return;
+                }
+                *at = Some(Instant::now());
+                drop(at);
+                say_store_busy(
+                    &hub,
+                    &registry,
+                    &sid,
+                    format!(
+                        "the session store is busy — another daemon holds its write lock. The \
+                         {what} write waits for it; this session is waiting, not failing ({}s so \
+                         far). Esc stops the wait.",
+                        d.as_secs()
+                    ),
+                );
+            }),
+        })
     }
 
     /// One store write, with the patience `persist_reporting` has: the store's own minute of busy retries, and past
@@ -4238,7 +4291,8 @@ impl Harness {
             )));
         };
         let mut first_busy: Option<std::time::Instant> = None;
-        let mut said_at: Option<std::time::Instant> = None;
+        let said: Arc<Mutex<Option<Instant>>> = Arc::default();
+        let _watch = self.watch_store_waits(what, said.clone());
         loop {
             match f(store) {
                 Ok(t) => return Ok(t),
@@ -4251,8 +4305,7 @@ impl Harness {
                             waited.as_secs()
                         )));
                     }
-                    if said_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(120)) {
-                        said_at = Some(std::time::Instant::now());
+                    if said_due(&said) {
                         self.say_the_store_is_busy(format!(
                             "the session store is busy (`{e}`) — another daemon holds its write \
                              lock. The {what} write is kept in memory and made when it frees; this \
@@ -4309,7 +4362,8 @@ impl Harness {
         // The patience is measured from the FIRST busy chunk, not from the call: a long transcript
         // that wrote for twenty minutes before the store wedged has not spent its budget.
         let mut first_busy: Option<std::time::Instant> = None;
-        let mut said_at: Option<std::time::Instant> = None;
+        let said: Arc<Mutex<Option<Instant>>> = Arc::default();
+        let _watch = self.watch_store_waits("transcript", said.clone());
         while self.persisted < rows.len() {
             let from = self.persisted;
             let to = (from + PERSIST_CHUNK).min(rows.len());
@@ -4365,8 +4419,7 @@ impl Harness {
                             waited.as_secs()
                         )));
                     }
-                    if said_at.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(120)) {
-                        said_at = Some(std::time::Instant::now());
+                    if said_due(&said) {
                         self.say_the_store_is_busy(format!(
                             "the session store is busy (`{e}`) — another daemon holds its write \
                              lock. Rows from {at} on are kept in memory and written when it frees; \
@@ -4615,6 +4668,46 @@ fn reply_tail(text: &str) -> String {
 
 /// The ending for a turn somebody stopped while the retry ladder was waiting: the stop is the
 /// news, and the count says how far the ladder had got before they pressed it.
+/// A store wait is said once it has run this long, and again every [`STORE_WAIT_SAID_EVERY`].
+const STORE_WAIT_SAID_AFTER: std::time::Duration = std::time::Duration::from_secs(1);
+const STORE_WAIT_SAID_EVERY: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Is a store-wait notice due on this clock? Marks it said when it is.
+fn said_due(said: &Mutex<Option<Instant>>) -> bool {
+    let mut at = said.lock().unwrap_or_else(|e| e.into_inner());
+    if at.is_some_and(|t| t.elapsed() < STORE_WAIT_SAID_EVERY) {
+        return false;
+    }
+    *at = Some(Instant::now());
+    true
+}
+
+/// A wait on the store, said on this session and on every other one this daemon holds: the
+/// worker runs one turn at a time, so the others' commands queue behind this write.
+fn say_store_busy(
+    hub: &Hub,
+    registry: &letibot_sessionlog::registry::Registry,
+    session_id: &str,
+    detail: String,
+) {
+    hub.warn("store_busy_wait", detail.clone());
+    for id in registry.held_ids() {
+        if id == session_id {
+            continue;
+        }
+        let Some(other) = registry.get(&id) else {
+            continue;
+        };
+        other.warn(
+            "store_busy_queue",
+            format!(
+                "this daemon serves one turn at a time, and `{session_id}` is waiting on the \
+                 session store — your next command waits behind that write. {detail}"
+            ),
+        );
+    }
+}
+
 fn stopped_in_the_wait(
     reason: &str,
     ladder: &letibot_http::retry::Ladder,

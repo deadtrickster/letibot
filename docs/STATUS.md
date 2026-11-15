@@ -75,7 +75,8 @@ provider, for one person's box ([README.md:46-56](../README.md)).
   drift after a resume ([2026-11-03-harnessd.md:250](reviews/2026-11-03-harnessd.md),
   [:290](reviews/2026-11-03-harnessd.md), [:382](reviews/2026-11-03-harnessd.md), deferred list at
   [:628-636](reviews/2026-11-03-harnessd.md)).
-- **A store busy wait can stall a session for thirty minutes and ignores interrupts**; a child can
+- **A store busy wait can stall a session for thirty minutes** (an interrupt now ends it within
+  250 ms, and a raw statement waits at most 5 s); a child can
   answer its parent and then run a `[meanwhile]` turn nobody hears; closing a root session drops held
   results. R91 leaves five items in all, and these three are the ones an operator meets
   ([TODO.md:593](../TODO.md)).

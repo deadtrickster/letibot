@@ -95,8 +95,9 @@ impl Fake {
                         let _ = s.flush();
                     }
                     Act::Quota => {
+                        // A key echoed back, as some providers do: it must not reach the log.
                         let body = "{\"error\":{\"code\":\"insufficient_quota\",\"message\":\"You \
-                                    exceeded your current quota\"}}";
+                                    exceeded your current quota for sk-proj-Zx81Fake0000abcd\"}}";
                         let _ = write!(
                             s,
                             "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\n\
@@ -444,6 +445,24 @@ fn the_four_provider_troubles_reach_the_wire_as_types() {
     );
     assert_eq!(rec.troubles.len(), 1, "{:?}", rec.troubles);
     assert_eq!(rec.troubles[0].kind, "quota", "{:?}", rec.troubles);
+    // The refusal's own words are kept for the next diagnosis, its key redacted.
+    let kept: Vec<&String> = rec
+        .said
+        .iter()
+        .filter(|w| w.starts_with("provider_refusal_body: "))
+        .collect();
+    assert_eq!(kept.len(), 1, "one refusal, one record: {:?}", rec.said);
+    assert!(
+        kept[0].contains("status 429 · code insufficient_quota · message You exceeded"),
+        "{}",
+        kept[0]
+    );
+    assert!(kept[0].contains("[redacted]"), "{}", kept[0]);
+    assert!(
+        !kept[0].contains("Zx81Fake"),
+        "the key reached the record: {}",
+        kept[0]
+    );
 
     // D. A model API that never answers: the daemon's own deadline ends the round, and two of them in
     // a row is what `count` is for - a caller that must move a session after N needs the N.
