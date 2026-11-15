@@ -821,6 +821,18 @@ pub(crate) fn archived_filter(where_clause: &str, archived: Archived) -> String 
 }
 
 /// A session as the store holds it: enough to list, pick and resume. Separate from
+/// A session row's identity columns, for a rule that decides from who a session is for and
+/// never from what it said. See [`Store::unarchived_stubs`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionStub {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub origin: Option<String>,
+    pub role: Option<String>,
+    pub workspace_root: String,
+    pub created_ms: i64,
+}
+
 /// [`SessionRecord`], the write shape, and carrying three computed things (transcript id,
 /// row count, last activity) that every list would otherwise re-derive differently.
 #[derive(Debug, Clone, PartialEq)]
@@ -3434,6 +3446,29 @@ impl Store {
             return Err(StoreError::NotFound(format!("session {id}")));
         }
         Ok(())
+    }
+
+    /// Every session still in the list, as the few columns an archive rule reads. No transcript
+    /// is touched, so a sweep over thousands of rows costs one statement.
+    pub fn unarchived_stubs(&self) -> Result<Vec<SessionStub>> {
+        let conn = self.conn();
+        let mut st = conn.prepare(
+            "SELECT id, parent_session_id, origin, role, workspace_root, created_at \
+               FROM session WHERE archived_ms IS NULL ORDER BY created_at, id",
+        )?;
+        let rows = st
+            .query_map([], |r| {
+                Ok(SessionStub {
+                    id: r.get(0)?,
+                    parent_id: r.get(1)?,
+                    origin: r.get(2)?,
+                    role: r.get(3)?,
+                    workspace_root: r.get(4)?,
+                    created_ms: r.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
     }
 
     /// Write down who this session is for. Set once, and the `AND origin IS NULL` is the guarantee:

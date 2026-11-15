@@ -366,7 +366,7 @@ What letibot has today, read from the code, because the proposal has to be judge
   files, because "a host has no cgroup" (`remote.rs:1904-1909`). That sweep runs from the
   session's close, over ssh, from the home box.
 - **Sessions.** `archived_ms` and `archived_reason` exist, with `leticode_archive` (TODO R184).
-  Auto-archive of package and child sessions is listed there as left to do.
+  Auto-archive of settled sessions is d.3's (R276).
 - **firecode.** `firecode gc [keep]` exists and refuses to sweep a live run
   (`/home/dead/Projects/firecode/bin/firecode:7755-7800`). Nothing in letibot calls it.
   `firecode down --discard` exists (`firecode:4068-4097`).
@@ -569,7 +569,7 @@ live ──close trigger──▶ closing ──compute gone──▶ closed ─
   and it can be reopened. Reopening moves it back to `live` with a fresh lease, and a fresh
   VM if it had one.
 - **settling / settled**: work has been archived and removed, caches removed, the session
-  archived (R184) with reason `settled: landed <sha>` or `settled: archived unlanded`.
+  archived with reason `landed <sha>` or `abandoned` (d.3, "Auto-archive").
 - **swept**: no holding left that is not `gone`. The owner row and the journal stay for ever.
 - **stuck**: a reap step failed twice. Nothing further is removed for that holding. The
   operator sees it in every `letibot gc` and once in the room.
@@ -624,6 +624,26 @@ Settle triggers:
 
 A hold (`letibot hold OWNER [--for 2d]`) stops every trigger except the operator's own
 commands. It is the only opt-out, it is visible in `holds`, and it expires.
+
+Auto-archive (R276, `tools/src/lifecycle/autoarchive.rs`). A session whose work is over is put out
+of sight with a reason. Archive only hides: the rows stay, `letibot --sessions --archived` lists
+it, and opening it by id takes it back into the list.
+
+| Rule | Reason |
+|---|---|
+| A review queue reviewer whose verdict the queue took | `verdict delivered` |
+| A reviewer a later reviewer of the same row replaced | `superseded by <id>` |
+| A reviewer whose row moved on with no verdict and no successor, after 10 min | `review abandoned` |
+| A `--prompt` run whose steps are over | `one-shot ended` |
+| A subagent whose answer reached its parent (`subagent_run.delivered`) | `result collected` |
+| A package owner `settled` or `swept` | `landed <sha>` or `abandoned` |
+
+Never archived: the operator's own top-level session (no parent, origin `operator` or none, no
+automatic owner), and any session a head, a turn in flight, an open card, an open job (any
+project file) or a board ask holds, or that another live process holds as writer. The daemon's
+reaper pass applies the rules to facts newer than the daemon and writes only the row, so an idle
+session it serves stays served. A one-shot archives its own session before it exits. Older facts
+are the backfill's: `letibot gc --archive-settled` lists them, and with `--now` archives them.
 
 ### d.4 How ownership is proved
 

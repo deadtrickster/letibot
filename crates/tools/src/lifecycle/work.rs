@@ -357,10 +357,19 @@ fn settled(
         None => "settled: archived unlanded".to_string(),
     };
     store.set_owner_state(&owner.id, OwnerState::Settled, &why, now)?;
-    // The session goes out of sight with the reason; its rows and transcripts stay (R184). An
-    // owner id that is not a session row (a gate run) simply has nothing to archive.
-    let archived =
-        store.set_archived(&owner.id, true, Some(&why)).is_ok() && archived_ok(store, &owner.id);
+    // Through the auto-archive rules, so the guards hold here too: never the operator's own
+    // session, never one a writer, a job or an ask holds. A gate run has no session row.
+    let write = super::autoarchive::write_to(store);
+    let archived = super::autoarchive::settle_one(
+        store,
+        &super::autoarchive::Here::this_process(),
+        &super::autoarchive::no_daemon,
+        &owner.id,
+        now,
+        Some(&write),
+    )
+    .is_some_and(|d| d.archived)
+        && archived_ok(store, &owner.id);
     let tail = if archived {
         ", which is archived and out of the list"
     } else {

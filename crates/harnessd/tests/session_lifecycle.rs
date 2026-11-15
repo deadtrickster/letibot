@@ -914,6 +914,54 @@ fn a_turn_whose_tool_call_outlasts_the_idle_ttl_is_not_reaped() {
     d.registry.close();
 }
 
+/// R276: a package whose work landed is archived by the daemon's own pass once nothing holds it -
+/// not while a head is attached - with its reason and its rows kept.
+#[test]
+fn a_settled_package_is_archived_by_the_daemon_once_its_head_goes() {
+    let _one = serial();
+    let d = a_daemon_with_no_model("harnessd-auto-archive");
+    let _sessions = Sessions::open_first(&d.parts, d.cfg.clone(), d.registry.clone())
+        .expect("the daemon opens");
+    let store_path = d.cfg.store.clone().expect("a store");
+    let store = letibot_tokencore::store::Store::open(&store_path).expect("a second reader");
+    store
+        .set_session_origin(ROOT, "package")
+        .expect("a package");
+    let now = letibot_metrics::now_ms() as i64;
+    let mut owner = letibot_tokencore::store::OwnerRow::live(
+        ROOT,
+        letibot_tokencore::store::OwnerKind::Package,
+        Some("/tmp".into()),
+        now,
+    );
+    owner.state = letibot_tokencore::store::OwnerState::Settled;
+    owner.landed_sha = Some("89abcdef01234567".into());
+    owner.settled_ms = Some(now);
+    store.put_owner(&owner).expect("the owner row");
+    let rows_before = store.session(ROOT).unwrap().unwrap().items;
+
+    let hub = d.registry.get(ROOT).expect("the root's hub");
+    let head = hub.attach("letibot-mcp", "test", Caps::default(), 0);
+    let said = letibot_harnessd::reap_pass::auto_archive(&store, &d.registry, now);
+    assert!(said.is_empty(), "archived with a head attached: {said:?}");
+    assert!(store.session(ROOT).unwrap().unwrap().archived_ms.is_none());
+
+    hub.detach(&head.head_id);
+    let said = letibot_harnessd::reap_pass::auto_archive(&store, &d.registry, now);
+    assert_eq!(said.len(), 1, "{said:?}");
+    let row = store.session(ROOT).unwrap().expect("the row stays");
+    assert_eq!(row.archived_reason.as_deref(), Some("landed 89abcdef"));
+    assert!(row.archived_ms.is_some());
+    assert_eq!(row.items, rows_before, "archiving touched the conversation");
+    assert!(
+        d.registry.get(ROOT).is_some(),
+        "archive only hides: the daemon still serves the session"
+    );
+    let again = letibot_harnessd::reap_pass::auto_archive(&store, &d.registry, now);
+    assert!(again.is_empty(), "archived twice: {again:?}");
+    d.registry.close();
+}
+
 /// **Done when** a package session is held live while a bridge head is attached, is `closed` after
 /// its idle TTL once the head goes, its notice was written first, its daemon has let go of it, and
 /// sending to it reopens it with its transcript intact (`docs/lifecycle.md` G2, R241).

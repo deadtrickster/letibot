@@ -1739,6 +1739,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // or whose daemon is gone has its compute ended and its row closed (`crate::reap_pass`), which
     // is what lets this daemon go when it holds nothing anybody is running.
     crate::reap_pass::spawn(cfg.store_at(), registry.clone());
+    let one_shot_store = cfg.store_at().filter(|_| cfg.one_shot);
     // The process supervisor, from the start - RH7. Its own thread, and its FIRST tick is
     // the recovery: it reads every record the last daemon left open, checks each host once
     // and writes down which processes are still the ones recorded.
@@ -1936,6 +1937,23 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         // was interrupted properly and then spends its orderly tail (up to five seconds of
         // subagent threads, a flowy seat stopping) must not be killed by its own watchdog with a
         crate::daemon::one_shot_steps_done();
+        // Its steps are over, so its session is put away, while this process can still say
+        // whether a turn or a card holds it.
+        if let Some(store) = one_shot_store.as_ref().and_then(|at| at.open().ok()) {
+            let live = |id: &str| crate::reap_pass::live_hold(&registry, id);
+            let write = letibot_tools::lifecycle::autoarchive::write_to(&store);
+            if let Some(d) = letibot_tools::lifecycle::autoarchive::settle_one(
+                &store,
+                &letibot_tools::lifecycle::autoarchive::Here::this_process(),
+                &live,
+                &session_id,
+                letibot_metrics::now_ms() as i64,
+                Some(&write),
+            ) && d.refused.is_some()
+            {
+                eprintln!("  {}", d.line());
+            }
+        }
         daemon.shutdown();
         // The same wait the serving path makes, for the same reason. The process ends at the
         // `Ok` below - `bin/harnessd.rs` turns it into `std::process::exit` - and a subagent

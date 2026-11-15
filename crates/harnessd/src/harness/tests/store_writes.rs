@@ -473,6 +473,79 @@ fn opening_an_archived_session_takes_it_back_into_the_list() {
     );
 }
 
+/// R276: a reviewer the auto-archive put away is opened again by id, at the same door, and the
+/// note carries the rule's reason.
+#[test]
+fn an_auto_archived_reviewer_is_opened_again_by_id() {
+    use letibot_tools::lifecycle::autoarchive;
+    let dir = Scratch::new("auto-archive-resume");
+    let store = Store::open(&dir.0.join("one.db")).expect("a store");
+    let id = "s-gatekeeper-k-sub-1";
+    store
+        .put_session(&SessionRecord {
+            id: id.into(),
+            title: None,
+            model_id: "qwen".into(),
+            dialect_sha: "d".into(),
+            workspace_root: "/tmp/letibot-review-clones/review-row-1-7-0".into(),
+            owner: "dead".into(),
+            approvers: Vec::new(),
+            role: Some("gatekeeper".into()),
+            parent_session_id: Some("s-gatekeeper-k".into()),
+        })
+        .expect("a session row");
+    store
+        .enqueue_review(
+            &letibot_tokencore::store::NewReview {
+                id: "row-1".into(),
+                repository: "/repo".into(),
+                target: "main".into(),
+                kind: letibot_tokencore::store::ReviewKind::Branch,
+                session_id: "s-author".into(),
+                branch: "agent/row-1".into(),
+                worktree: None,
+                base_sha: "b".into(),
+                head_sha: "h".into(),
+                brief: "the ask".into(),
+                priority: letibot_tokencore::store::MergePriority::Subagent,
+                fixes: None,
+                evidence: String::new(),
+            },
+            "test",
+            1,
+        )
+        .expect("the row");
+    store
+        .record_transition(
+            "review",
+            "row-1",
+            "/repo",
+            Some("reviewing"),
+            "rejected",
+            &format!("reviewer:{id}"),
+            "no",
+            letibot_metrics::now_ms(),
+        )
+        .expect("the verdict");
+    let write = autoarchive::write_to(&store);
+    let out = autoarchive::sweep(
+        &store,
+        &autoarchive::Here::this_process(),
+        &autoarchive::no_daemon,
+        0,
+        letibot_metrics::now_ms() as i64,
+        Some(&write),
+    );
+    assert!(out.iter().any(|d| d.id == id && d.archived), "{out:?}");
+    assert!(store.list_sessions().expect("the list").is_empty());
+
+    let stored = store.session(id).expect("a read").expect("the row stays");
+    let mut notes = Vec::new();
+    crate::harness::open::unarchive_on_open(Some(&store), &stored, &mut notes);
+    assert_eq!(store.list_sessions().expect("the list").len(), 1);
+    assert!(notes[0].contains("verdict delivered"), "{notes:?}");
+}
+
 /// A head's two halves of the list are one store read each: what a daemon is not holding is in
 /// `list`, and what it has put out of sight is in `list_archived` - the group a head draws - and a
 /// row is in exactly one of them.

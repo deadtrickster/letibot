@@ -67,6 +67,12 @@ letibot gc [OWNER] [--folder DIR] [--json] [--log | --now [--json]]
   --older D        with `--drop-archive`: only the archives older than this (`90d`)
   --adopt PATTERN  take worktrees of this folder's repository whose path matches PATTERN under an
                    owner `legacy-<date>`, stamped as letibot's; nothing is removed without `--now`
+  --archive-settled
+                   the sessions whose work is over (a reviewer's verdict delivered or superseded,
+                   a one-shot ended, a subagent's result collected, a package landed or
+                   abandoned), each with its reason; with `--now`, archive them. Never the
+                   operator's own sessions, and never one a writer, a job or an ask holds. Archive
+                   only hides: `letibot --session ID` resumes one
 
   example:
     letibot gc
@@ -74,7 +80,8 @@ letibot gc [OWNER] [--folder DIR] [--json] [--log | --now [--json]]
     letibot gc --log
     letibot gc --settle s-1794509750373521593
     letibot gc --restore s-1794509750373521593 --worktree
-    letibot gc --adopt 'wt-pk-*' --now";
+    letibot gc --adopt 'wt-pk-*' --now
+    letibot gc --archive-settled";
 
 const USAGE_HOLD: &str = "\
 letibot hold OWNER [--for 2d]
@@ -163,6 +170,8 @@ struct Args {
     adopt: Option<String>,
     /// `gc --older D`: only archives older than this, in milliseconds.
     older: Option<i64>,
+    /// `gc --archive-settled`: the settled sessions, listed; with `--now`, archived.
+    archive_settled: bool,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -182,6 +191,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         drop_archive: false,
         adopt: None,
         older: None,
+        archive_settled: false,
     };
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
@@ -199,6 +209,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--restore" => out.restore = true,
             "--worktree" => out.worktree = true,
             "--drop-archive" => out.drop_archive = true,
+            "--archive-settled" => out.archive_settled = true,
             "--adopt" => {
                 let pattern = it
                     .next()
@@ -371,6 +382,9 @@ fn gc(args: &[String]) -> Result<(), String> {
     if let Some(pattern) = &parsed.adopt {
         return gc_adopt(pattern, parsed.folder.as_deref(), parsed.now);
     }
+    if parsed.archive_settled {
+        return gc_archive_settled(parsed.now);
+    }
     if parsed.docker_report {
         return docker_report(parsed.json);
     }
@@ -542,6 +556,40 @@ fn gc_settle(owner: Option<&str>) -> Result<(), String> {
     let pass =
         lifecycle::pass(&store, &places, &ops, Some(owner), now).map_err(|e| e.to_string())?;
     print!("{}", pass.render());
+    Ok(())
+}
+
+/// `letibot gc --archive-settled [--now]`: the one-time backfill. Lists first; writes only with
+/// `--now`, and only `archived_ms` and `archived_reason`.
+fn gc_archive_settled(act: bool) -> Result<(), String> {
+    use lifecycle::autoarchive;
+    let (store, _places) = if act { open_for_acts(None)? } else { open()? };
+    let here = autoarchive::Here::this_process();
+    let write = autoarchive::write_to(&store);
+    let decisions = autoarchive::sweep(
+        &store,
+        &here,
+        &autoarchive::no_daemon,
+        0,
+        lifecycle::now_ms(),
+        act.then_some(&write as autoarchive::ActFn<'_>),
+    );
+    if decisions.is_empty() {
+        println!("no settled session is left in the list");
+        return Ok(());
+    }
+    for d in &decisions {
+        println!("{}", d.line());
+    }
+    let done = decisions.iter().filter(|d| d.archived).count();
+    let kept = decisions.iter().filter(|d| d.refused.is_some()).count();
+    let open = decisions.len() - done - kept;
+    match act {
+        true => println!("{done} archived, {kept} kept"),
+        false => println!(
+            "{open} would be archived, {kept} kept; `letibot gc --archive-settled --now` writes it"
+        ),
+    }
     Ok(())
 }
 

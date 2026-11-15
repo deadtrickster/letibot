@@ -429,3 +429,53 @@ fn adopting_worktrees_nothing_recorded_plans_them_and_removes_nothing() {
         "the target branch is not touched"
     );
 }
+
+/// R276's backfill: `--archive-settled` lists what it would archive and writes nothing; with
+/// `--now` it archives those and keeps the operator's own session in the list.
+#[test]
+fn archive_settled_lists_first_and_archives_only_with_now() {
+    let f = Fixture::new("archive-settled");
+    let data = f.at("data");
+    let store = Store::open_set(&data, "0123456789ab").expect("a split store");
+    for id in ["s-oneshot", "s-mine"] {
+        store
+            .put_session(&letibot_tokencore::store::SessionRecord {
+                id: id.into(),
+                title: None,
+                model_id: "qwen".into(),
+                dialect_sha: "d".into(),
+                workspace_root: "/w".into(),
+                owner: "dead".into(),
+                role: None,
+                approvers: vec![],
+                parent_session_id: None,
+            })
+            .expect("a session row");
+    }
+    store.set_session_origin("s-oneshot", "one_shot").unwrap();
+    store.set_session_origin("s-mine", "operator").unwrap();
+    drop(store);
+    let archived = |id: &str| {
+        Store::open_set(&data, "0123456789ab")
+            .unwrap()
+            .session(id)
+            .unwrap()
+            .unwrap()
+            .archived_reason
+    };
+
+    let (ok, out, err) = f.run(&["gc", "--archive-settled"]);
+    assert!(ok, "stderr:\n{err}");
+    assert!(
+        out.contains("s-oneshot  would archive: one-shot ended"),
+        "{out}"
+    );
+    assert!(!out.contains("s-mine"), "{out}");
+    assert_eq!(archived("s-oneshot"), None, "a dry run wrote");
+
+    let (ok, out, err) = f.run(&["gc", "--archive-settled", "--now"]);
+    assert!(ok, "stderr:\n{err}");
+    assert!(out.contains("1 archived"), "{out}");
+    assert_eq!(archived("s-oneshot").as_deref(), Some("one-shot ended"));
+    assert_eq!(archived("s-mine"), None);
+}

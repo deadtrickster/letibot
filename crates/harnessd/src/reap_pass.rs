@@ -88,7 +88,46 @@ pub fn pass_with(store: &Store, registry: Option<&Registry>, ops: &lifecycle::Op
             _ => {}
         }
     }
+    if let Some(registry) = registry {
+        said.extend(auto_archive(store, registry, now));
+    }
     said
+}
+
+/// Put away what settled since this daemon came up (plan 1.6, R276). Older facts are the
+/// backfill's, `letibot gc --archive-settled`, which lists before it writes.
+pub fn auto_archive(store: &Store, registry: &Registry, now: i64) -> Vec<String> {
+    use letibot_tools::lifecycle::autoarchive;
+    let live = |id: &str| live_hold(registry, id);
+    // The row only: an idle session this daemon serves stays served, so a parent can still
+    // send to the child it collected, and the open that follows takes it back into the list.
+    let act = autoarchive::write_to(store);
+    autoarchive::sweep(
+        store,
+        &autoarchive::Here::this_process(),
+        &live,
+        registry.started_ms() as i64,
+        now,
+        Some(&act),
+    )
+    .into_iter()
+    .filter(|d| d.archived)
+    .map(|d| d.line())
+    .collect()
+}
+
+/// What this daemon's own hub says holds a session: a head, a turn or an open card.
+pub fn live_hold(registry: &Registry, id: &str) -> Option<Option<String>> {
+    let hub = registry.get(id)?;
+    Some(if hub.attached_heads() > 0 {
+        Some("a head is attached".into())
+    } else if hub.turn_in_flight() {
+        Some("a turn is in flight".into())
+    } else if !hub.open_ask_ids().is_empty() {
+        Some("an ask is open".into())
+    } else {
+        None
+    })
 }
 
 /// Renew the lease of every owner this daemon serves that a head, a turn or a job still holds:

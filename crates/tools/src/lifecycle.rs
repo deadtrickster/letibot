@@ -19,6 +19,7 @@ use letibot_tokencore::store::{
 use crate::exec::scope::{self, ScopeUse};
 
 mod archive;
+pub mod autoarchive;
 mod config;
 mod plan;
 mod reap;
@@ -26,6 +27,8 @@ mod remote;
 pub mod systemd;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_autoarchive;
 #[cfg(test)]
 mod tests_disks;
 #[cfg(test)]
