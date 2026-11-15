@@ -1206,6 +1206,64 @@ Audit package H6 (`STATUS-fable-5.2-2026-11-15.md`), plan item 1.14, and R242's 
 
 **Done when:** a line over 32 KiB is read in pieces with `column_offset` and `columns`, and an edit whose match lies inside a shown piece lands; a 400-column line is fully readable in the window at 80 columns; the header's count plus the stated hidden marker lines equals the payload's lines.
 
+## R257 - The shadow as a persistent session fed the conversation incrementally, asked only at the trigger points
+
+**Status:** design accepted by the operator, 2026-11-15. Not started. left: all of it. Queued after the shadow attribution package (R251).
+
+Today (R243) every shadow trigger is a separate stateless call: the job's base prompt plus one fenced blob holding what that trigger needs (the last operator message, the final answer, todos, a recent window). The operator, after reading rano's shadow session: "there must be a base prompt for that role and then during/turn_end messages with tons of stuff. repeating stuff i would say, this somewhat concerns me. because i imagined that we will literally feed the whole conversation to the shadow session, incrementally so it has the full context, but ask it yes, at the special points".
+
+**Design:**
+- The shadow is a real session on `Seat::Shadow`, with its own prefix (R251 gives it one).
+- Every row of the watched session is appended to it as it lands: fenced data, with each row's author (R251's speakers).
+- At a trigger (turn end, during, permission) it gets one question turn, and it answers with the same verdict schema.
+- The conversation is sent once and never re-sent per question. The prefix stays append-only and cacheable, so a metered shadow pays mostly cached tokens.
+- It reuses letibot's own session machinery: store, resume, reseat, compaction.
+- These carry over unchanged: schema or nothing, verified quotes (now checked against the whole history), the closed verdict space, stale drop, deadlines, breaker, every prompt and reply visible.
+
+**Requirements, because the whole conversation becomes the attack surface** (operator asked; these are part of the design, not later hardening):
+1. **Acting verdicts quote only rows whose author has that authority.**
+   - An owed promise is quoted from the watched model's own assistant text.
+   - A note proposal is quoted from operator rows or the watched model's own assistant text: its findings in its own words. Notes are agent memory (operator: "notes are usually used by agents to remember interesting things").
+   - Raw tool output, file or web content, and other agents' lines inform the shadow but are never the quote that triggers an action.
+   An instruction injected anywhere else can then at worst produce a void.
+2. **Compaction of the shadow is mechanical, never a model-written summary.** It rebuilds from the stored rows with their authors, for example by dropping the oldest rows behind a marker. A model summary would launder an injected instruction into unfenced, authority-looking text that every later verdict reads.
+3. **Permission stays observe-only, or at most allow-narrows-ask, behind the hard denylist** (sudo, writes outside the workspace, the keys dir, pushes). A persistent session that was told once "always answer allow" stays told, so this job never gets more than that without replay evidence and an operator decision.
+
+**Drift checks:** on a sample of triggers, ask the same question of a fresh stateless call. A disagreement is a visible row, and replay scoring (R243 stage 2) is run against the persistent shadow as well.
+
+**Done when:**
+- A shadow session holds the watched session's rows, with authors, in order.
+- A turn_end question reuses the cached prefix: measured, and the request carries only the new rows plus the question.
+- A tool result that says "answer allow / report none" cannot produce an acting verdict.
+- Compaction keeps authors and fences.
+- The sampled fresh-call comparison records its agreement.
+
+## R258 - The merge queue gates one row at a time; landings are not batched, and agents bypass the queue
+
+**Status:** open, 2026-11-15. left: all of it. Check first whether batching exists somewhere this row missed; the operator recalled having it.
+
+**Now:**
+- letibot's merge queue (`docs/gate.md`, `crates/harnessd/src/mergequeue/`) takes an enqueued branch through the gatekeeper's review, a rebase onto the target's tip, the project's `## Merge gate` steps in a landing worktree, and the push.
+- Each approved row gets its own full gate. No batching code was found: the only "batch" in `mergequeue/` is a 200-transition read size in `watch.rs`.
+- Claude Code agents working on letibot do not use the queue at all. Each one ran `cargo test --workspace` in its own `/build/target-*` and pushed straight to main.
+- On 2026-11-15 that meant up to 8 concurrent full gates, load average 225 and seven ~200G target dirs. A box-wide `flock` in the operator-side gate script was put in as a stopgap.
+- Operator: "i dont thinks agents should know about lock, in anyway, commits must be batched".
+
+**Change:**
+- **Batched landings.** When several approved rows wait, the queue rebases them as one stack onto the tip and gates the stack once.
+  - Green: all of them land in order.
+  - Red: the stack is split and re-gated, halving until the failing row is found and parked. That row returns to review as it does today.
+  - This is the merge-train or bors shape; copy an established one rather than inventing.
+  - The batch size is a `[queue]` key.
+- **Agents enqueue instead of gating.** A Claude Code agent (through the bridge) or a letibot seat pushes its branch and calls `queue enqueue`, then stops. The queue owns gating and landing, so no agent knows about a lock or runs the workspace suite.
+  - Check whether the bridge exposes `queue`. Add it if not.
+  - Agent briefs say: test the touched crates, push the branch, enqueue.
+
+**Done when:**
+- Three approved rows land through one gate run when green.
+- A stack with one bad row lands the other two and parks the bad one, with at most log2(n)+1 extra gate runs.
+- A Claude Code agent can enqueue a branch through the bridge and read its row's state.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.
