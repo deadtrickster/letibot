@@ -5,8 +5,8 @@ description: Fix the harness's own behaviour from inside a session — pick the 
 
 # Patch the harness from inside this session
 
-The operator's complaint is usually one of fifteen shapes, and each is a hook. When it is not, it is
-one of three things a layer can **add**: a pane, a `/` verb, or a tool. Eighteen kinds in all, and
+The operator's complaint is usually one of sixteen shapes, and each is a hook. When it is not, it is
+one of three things a layer can **add**: a pane, a `/` verb, or a tool. Nineteen kinds in all, and
 finding the right one is most of the work; after that it is a small wasm module and no release.
 
 ## The patch points
@@ -28,11 +28,12 @@ finding the right one is most of the work; after that it is a small wasm module 
 | a child's brief needs a rule of this project's, or its seat a class of tools taken away | **`brief_worktree`** | on a `task_start` child, before it is opened |
 | a Claude Code session is woken by room lines it should not see, or misses the ones it should | **`push_channel`** | before each notification the bridge pushes to a client |
 | a row's card in the head is wrong, or a notice a layer reworded lost its card | **`card_item`** and **`card_call`** | once per transcript row, in the head, with the row's typed facts |
+| a rate limit should be waited out, switched away from or asked about by this project's own rule | **`limit_decide`** | on every rate or quota refusal after the retry ladder is spent |
 
 The contract for some of these and for a pane is the `plugin_hooks` tool, **read from the host's
 own types**: read it before writing anything, and read it again after a refusal.
 `plugin_hooks {"hook":"condition"}` is one kind; no argument is all of them. `adjudicate_floor`,
-`digest_`, `link_`, `nag_`, `tool_`, `command_`, `steer_`, `compact_`, `push_` and `card_` are
+`digest_`, `link_`, `nag_`, `tool_`, `command_`, `steer_`, `compact_`, `push_`, `card_` and `limit_` are
 written out below: the host has no page for them yet.
 
 ### `adjudicate_floor` — the gate's floor
@@ -378,6 +379,28 @@ so a `notice_` layer that rewords the sentence cannot take the card with it. The
 falls back to are `letibot_plugin::card::facts` and `::readers`, and the built-in `cards` layer is
 compiled from the same ones — a layer of yours above it may draw differently, and the head cuts,
 colours and wraps what you answer, so a card here is words and a register and never a cell.
+
+### `limit_decide` - what a session does on a rate limit
+
+```toml
+name = "limit-policy"
+hooks = ["limit_decide", "limit_second_opinion"]
+capabilities = []
+```
+
+With a layer answering `limit_decide`, **the layer alone decides**: `wait_if_within`, `[fallback]`
+and `on_limit` do not run. In: `{"v": 1, "now_ms", "refusal": {"status", "provider", "model",
+"kind", "window", "reset_ms", "attempt", "said"}, "usage", "session": {"id", "seat", "parent",
+"turn_in_flight"}, "candidates": [{"provider", "model", "limited_until_ms"}], "state",
+"answered": {"question", "options", "option", "text", "by"}}`.
+
+Out: `{"state": …, "do": "wait", "when": <unix ms>}`, with the action's fields beside `do`:
+`wait` (`when`, or the provider's reset), `switch {provider, model}`, `new_session {provider,
+model}`, `ask_user {question, options}`, `call {function}` (runs `limit_<function>` next) or
+`stop`. `state` is yours: the host keeps it for the episode, hands it back unchanged on the next
+refusal, and destroys it on the first request that succeeds. An `ask_user` answer arrives as
+`answered` on the next call. A trap, running out of fuel, or an answer outside this record ends the
+hook for the episode, and the host's own rules decide it, with a `limit_hook_fallback` row.
 
 ## The loop
 

@@ -283,6 +283,72 @@ impl PluginHost {
         Some(parsed)
     }
 
+    /// One rate-limit decision through `limit_decide`, following `call` answers down the chain.
+    /// `None` when no layer answers. `Err` is a trap, the chain's fuel or length spent, or a
+    /// malformed answer: the caller falls back to its own rules for the episode.
+    pub fn limit(
+        &self,
+        hub: &Arc<Hub>,
+        input: &letibot_plugin::limit::Input,
+    ) -> Option<Result<LimitDecision, String>> {
+        use letibot_plugin::limit;
+        if !self.answers(limit::HOOK) {
+            return None;
+        }
+        let mut input = input.clone();
+        let mut hook = limit::HOOK.to_string();
+        let mut chain = Vec::new();
+        let mut fuel = 0u64;
+        loop {
+            if chain.len() >= LIMIT_CHAIN_CALLS {
+                return Some(Err(format!(
+                    "the chain {} is {LIMIT_CHAIN_CALLS} calls long, the most one decision may take",
+                    chain.join(" -> ")
+                )));
+            }
+            let value = match serde_json::to_value(&input) {
+                Ok(v) => v,
+                Err(e) => return Some(Err(format!("the input did not serialise: {e}"))),
+            };
+            chain.push(hook.clone());
+            let Some(resolved) = self.ask(hub, &hook, &value) else {
+                return Some(Err(format!("no layer answered `{hook}`")));
+            };
+            let by = resolved.by.clone().unwrap_or_default();
+            fuel = fuel.saturating_add(self.lock().stack.fuel(&by).unwrap_or(0));
+            if fuel > LIMIT_CHAIN_FUEL {
+                return Some(Err(format!(
+                    "the chain {} burned {fuel} fuel, past the {LIMIT_CHAIN_FUEL} one decision \
+                     may burn",
+                    chain.join(" -> ")
+                )));
+            }
+            let Some(answer) = resolved.answer else {
+                let why = resolved
+                    .failures
+                    .iter()
+                    .map(|f| f.to_string())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Some(Err(if why.is_empty() {
+                    format!("`{hook}` gave no answer")
+                } else {
+                    why
+                }));
+            };
+            let out = match limit::Out::parse(&answer) {
+                Ok(out) => out,
+                Err(why) => return Some(Err(format!("`{hook}` by `{by}`: {why}: {answer}"))),
+            };
+            if let limit::Do::Call { function } = &out.act {
+                hook = limit::hook(function);
+                input.state = out.state;
+                continue;
+            }
+            return Some(Ok(LimitDecision { out, by, chain }));
+        }
+    }
+
     /// One sentence for this session's model, queued once: a failure said every call is noise the
     /// model learns to ignore. Answers whether this is the first time, which is also when the
     /// session's log is worth a line.
@@ -919,4 +985,21 @@ impl letibot_tools::runtime::DigestHook for DigestHooks {
 /// its fallback. The hooks themselves say it, so this cannot drift from the plugins' work.
 fn daemon_asks(hook: &str) -> bool {
     letibot_plugin::review::is_review_hook(hook) || hook == letibot_plugin::brief::WORKTREE
+}
+
+/// The most calls one limit decision may chain through `call`.
+pub const LIMIT_CHAIN_CALLS: usize = 8;
+
+/// The fuel one limit decision may burn across its whole chain: one hook's budget in rano, so
+/// `call` composes functions without buying more time.
+pub const LIMIT_CHAIN_FUEL: u64 = 50_000_000;
+
+/// A limit decision a layer took, after its `call` chain.
+#[derive(Debug, Clone)]
+pub struct LimitDecision {
+    pub out: letibot_plugin::limit::Out,
+    /// The layer whose answer ended the chain.
+    pub by: String,
+    /// The hooks asked, in order.
+    pub chain: Vec<String>,
 }

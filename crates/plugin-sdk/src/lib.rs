@@ -16,6 +16,7 @@ pub mod complete;
 pub mod condition;
 pub mod digest;
 pub mod lifecycle;
+pub mod limit;
 pub mod link;
 pub mod nag;
 pub mod notice;
@@ -73,6 +74,7 @@ mod tests {
         "brief_",
         "push_",
         "card_",
+        "limit_",
     ];
 
     fn admitted(hook: &str) -> bool {
@@ -103,6 +105,7 @@ mod tests {
         assert!(admitted(brief::WORKTREE), "{}", brief::WORKTREE);
         assert!(admitted(push::HOOK), "{}", push::HOOK);
         assert!(admitted(&push::hook("channel")));
+        assert!(admitted(limit::HOOK), "{}", limit::HOOK);
         for hook in card::HOOKS {
             assert!(admitted(hook), "{hook}");
         }

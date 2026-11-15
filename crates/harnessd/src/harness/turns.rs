@@ -2910,6 +2910,9 @@ impl Harness {
                     _ => None,
                 },
             );
+            if attempted.is_ok() {
+                self.limit_episodes_over();
+            }
             let Err(TurnFailure::Http(e)) = attempted else {
                 // The new model answered, which is the whole of what a switch had
                 // to prove - there is nothing to go back to any more. A round that came back
@@ -2975,6 +2978,20 @@ impl Harness {
                         // running in the hub's view, and the head's spinner with it.
                         self.last_turn_id = sink.turn_id.clone().unwrap_or_default();
                         return Err(HarnessError::LimitParked { said });
+                    }
+                    limit::AfterTheLadder::Again => {
+                        self.publish_trouble(&e, None);
+                        ladder = letibot_http::retry::Ladder::new(
+                            letibot_http::retry::Policy::new(self.cfg.http_retries),
+                        );
+                        continue;
+                    }
+                    limit::AfterTheLadder::Stopped { said } => {
+                        self.publish_trouble(&e, None);
+                        if let Some(o) = self.outage.take() {
+                            self.end_outage(&o, false);
+                        }
+                        return Err(HarnessError::Endpoint { said, cause: e });
                     }
                     limit::AfterTheLadder::Retry if limit_retries < self.cfg.limit_retry_rounds => {
                         limit_retries += 1;
@@ -3456,50 +3473,60 @@ impl Harness {
                 continue;
             }
             tried.push(name.clone());
-            let (provider, model) = crate::slash::split_model_name(&name);
-            // The resolver's own notes are dropped on the success arm, deliberately: a
-            // fallback is a switch nobody typed, so the sentence that has to be right is
-            // `fallback_notice`'s, said by the caller with the provider's refusal in it.
-            let (choice, _notes) =
-                match crate::slash::models_choice(&provider, model.as_deref(), None, None) {
-                    Ok(x) => x,
-                    Err(lines) => {
-                        self.fallback_skip(&name, &lines.join(" "));
-                        continue;
-                    }
-                };
-            let crate::slash::ModelChoice::Metered(pc) = choice else {
-                self.fallback_skip(
-                    &name,
-                    "a metered model is the only thing an automatic switch may land on, and this \
-                     one is the daemon's own server or a fleet model — either can re-render the \
-                     conversation into a fork, which is not something the daemon's own switch \
-                     should do unbidden",
-                );
-                continue;
-            };
-            // The note the `models_choice` resolver came back with is not carried: a
-            // fallback is a switch nobody typed, so the sentence that matters is
-            // `fallback_notice`'s, said by the caller with the provider's own refusal in it.
-            let target = model_name_of(&Some(pc.clone()));
-            self.pend_switch(Some(pc), target.clone());
-            // And the work goes on by itself: `run_turn` opens this turn when the one that met the refusal has
-            // ended, with the notice as its user item. Not when THIS turn is already a continuation, or a fallback
-            // chain would ping-pong between two names for ever - which a limit chain would too, one turn later:
-            // the next turn finds the model it moved to limited as well and moves on from there.
-            if !self.in_fallback_continuation() {
-                // The sentence goes through the one door HERE, where the two models it names are in
-                // hand: `continue_after_fallback` says what this decided, and the turn opens with it.
-                let said = fallback_continuation_notice(&here, &target, e);
-                let facts = Facts::Fallback {
-                    was: here.clone(),
-                    now: target.clone(),
-                };
-                self.fallback_continuation = Some(self.say_kept(&facts, said));
+            match self.switch_on_a_refusal(&name, e) {
+                Ok(target) => return Some(target),
+                Err(why) => self.fallback_skip(&name, &why),
             }
-            return Some(target);
         }
         None
+    }
+
+    /// Move this session to `name` after a refusal, and arm the continuation that carries the
+    /// turn there. `Err` is why `name` cannot be taken; nothing has changed then.
+    pub(crate) fn switch_on_a_refusal(
+        &mut self,
+        name: &str,
+        e: &letibot_turn::HttpError,
+    ) -> Result<String, String> {
+        let here = self.model_name();
+        let (provider, model) = crate::slash::split_model_name(name);
+        // The resolver's own notes are dropped on the success arm, deliberately: a
+        // fallback is a switch nobody typed, so the sentence that has to be right is
+        // `fallback_notice`'s, said by the caller with the provider's refusal in it.
+        let (choice, _notes) =
+            match crate::slash::models_choice(&provider, model.as_deref(), None, None) {
+                Ok(x) => x,
+                Err(lines) => return Err(lines.join(" ")),
+            };
+        let crate::slash::ModelChoice::Metered(pc) = choice else {
+            return Err(
+                "a metered model is the only thing an automatic switch may land on, and \
+                 this one is the daemon's own server or a fleet model — either can re-render the \
+                 conversation into a fork, which is not something the daemon's own switch \
+                 should do unbidden"
+                    .into(),
+            );
+        };
+        // The note the `models_choice` resolver came back with is not carried: a
+        // fallback is a switch nobody typed, so the sentence that matters is
+        // `fallback_notice`'s, said by the caller with the provider's own refusal in it.
+        let target = model_name_of(&Some(pc.clone()));
+        self.pend_switch(Some(pc), target.clone());
+        // And the work goes on by itself: `run_turn` opens this turn when the one that met the refusal has
+        // ended, with the notice as its user item. Not when THIS turn is already a continuation, or a fallback
+        // chain would ping-pong between two names for ever - which a limit chain would too, one turn later:
+        // the next turn finds the model it moved to limited as well and moves on from there.
+        if !self.in_fallback_continuation() {
+            // The sentence goes through the one door HERE, where the two models it names are in
+            // hand: `continue_after_fallback` says what this decided, and the turn opens with it.
+            let said = fallback_continuation_notice(&here, &target, e);
+            let facts = Facts::Fallback {
+                was: here.clone(),
+                now: target.clone(),
+            };
+            self.fallback_continuation = Some(self.say_kept(&facts, said));
+        }
+        Ok(target)
     }
 
     /// A fallback name that could not be taken, said. Its own code and not the spent ladder's: the

@@ -510,6 +510,10 @@ pub struct Harness {
     /// The status row's limit words, shared with the activity source: `paused until 21:02:27 UTC`,
     /// or `glm limited until 21:02:27 UTC, on deepseek`.
     limit_row: Arc<std::sync::Mutex<Option<String>>>,
+    /// The `limit_decide` layer's open episodes. See `harness::limit_hook`.
+    limit_episodes: limit_hook::Episodes,
+    /// The head `ask_user_question` reaches, shared so the limit hook asks the same person.
+    question_slot: limit_hook::QuestionSlot,
     /// The shadow watching this session (R243): off unless providers.toml `[shadow]` turns a job on.
     shadow: crate::shadow::Slot,
     /// The regex nudge a turn end held back for the shadow's turn_end verdict.
@@ -1705,6 +1709,8 @@ mod hub_io;
 mod job_window;
 mod jobs;
 mod limit;
+mod limit_hook;
+pub use limit_hook::QuestionSlot;
 mod models;
 mod nags;
 mod note_accept;

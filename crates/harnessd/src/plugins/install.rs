@@ -1273,6 +1273,8 @@ fn synthetic_for(hook: &str, feeds: &BTreeMap<String, Value>) -> Value {
         serde_json::to_value(compact::Input::synthetic())
     } else if hook.starts_with(push::PREFIX) {
         serde_json::to_value(push::Input::synthetic())
+    } else if hook.starts_with(letibot_plugin::limit::PREFIX) {
+        serde_json::to_value(letibot_plugin::limit::Input::synthetic())
     } else {
         serde_json::to_value(notice::Notice::synthetic())
     };
@@ -1434,6 +1436,9 @@ fn accepted(
         let input: push::Input =
             serde_json::from_value(input.clone()).map_err(|e| format!("not a push input ({e})"))?;
         return Ok(out.said(&input));
+    }
+    if hook.starts_with(letibot_plugin::limit::PREFIX) {
+        return letibot_plugin::limit::Out::parse(answer).map(|out| out.said());
     }
     let out: notice::NoticeOut =
         serde_json::from_value(answer.clone()).map_err(|e| format!("not a notice ({e})"))?;

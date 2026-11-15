@@ -41,7 +41,7 @@ pub mod tool;
 
 // The dispatcher's four doors are named from here, so a caller outside this module asks the host
 // for a hook by the path it always did: `plugins::CallHooks` and not where the code lives now.
-pub use hook::{CallHooks, DigestHooks, FloorHooks, ReviewFloorHooks};
+pub use hook::{CallHooks, DigestHooks, FloorHooks, LimitDecision, ReviewFloorHooks};
 
 #[cfg(test)]
 mod tests;

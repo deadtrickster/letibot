@@ -1447,3 +1447,268 @@ fn a_park_re_tries_on_its_steps_and_the_first_answer_lifts_it() {
         cleared[0]
     );
 }
+
+/// A `limit_decide` rule over the hook's input: its answer, or a trap.
+type Rule = Arc<dyn Fn(&serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
+
+/// A `limit_decide` layer for the R233 scenarios: a rule over the input, and every input it saw.
+struct LimitRule {
+    rule: Rule,
+    seen: Arc<Mutex<Vec<serde_json::Value>>>,
+}
+
+impl letibot_plugins::Module for LimitRule {
+    fn hooks(&self) -> Vec<String> {
+        vec![letibot_plugin::limit::HOOK.to_string()]
+    }
+
+    fn call(&self, _hook: &str, input: &str) -> Result<Option<String>, String> {
+        let input: serde_json::Value = serde_json::from_str(input).map_err(|e| e.to_string())?;
+        self.seen.lock().unwrap().push(input.clone());
+        (self.rule)(&input).map(|v| Some(v.to_string()))
+    }
+
+    fn fuel(&self) -> u64 {
+        5
+    }
+}
+
+struct LimitLoader {
+    rule: Rule,
+    seen: Arc<Mutex<Vec<serde_json::Value>>>,
+}
+
+impl letibot_plugins::Loader for LimitLoader {
+    fn load(
+        &self,
+        _wasm: &std::path::Path,
+        _caps: &[letibot_plugins::Capability],
+    ) -> Result<Box<dyn letibot_plugins::Module>, String> {
+        Ok(Box::new(LimitRule {
+            rule: self.rule.clone(),
+            seen: self.seen.clone(),
+        }))
+    }
+}
+
+struct NoBuild;
+
+impl letibot_plugins::Builder for NoBuild {
+    fn build(&self, dir: &std::path::Path) -> Result<String, letibot_plugins::BuildError> {
+        Ok(format!("not built: {}", dir.display()))
+    }
+}
+
+/// The operator, always choosing the first option.
+struct FirstOption;
+
+impl letibot_tools::builtins::intent::Questioner for FirstOption {
+    fn ask(
+        &self,
+        _q: &letibot_tools::builtins::intent::Question,
+    ) -> Result<
+        (letibot_tools::builtins::intent::QuestionAnswer, String),
+        letibot_tools::builtins::intent::AskError,
+    > {
+        Ok((
+            letibot_tools::builtins::intent::QuestionAnswer::choosing(0),
+            "operator".into(),
+        ))
+    }
+
+    fn describe(&self) -> String {
+        "a test's operator".into()
+    }
+}
+
+/// Put a `limit_decide` layer answering with `rule` on the session's stack, and hand back the
+/// inputs it is given.
+fn with_limit_hook(
+    sessions: &Sessions<'_>,
+    id: &str,
+    workspace: &std::path::Path,
+    rule: Rule,
+) -> Arc<Mutex<Vec<serde_json::Value>>> {
+    let layer = workspace.join(".letibot/plugins/limit-policy");
+    std::fs::create_dir_all(&layer).expect("the layer directory");
+    std::fs::write(
+        layer.join("plugin.toml"),
+        "name = \"limit-policy\"\npurpose = \"decides a rate limit\"\n\
+         hooks = [\"limit_decide\"]\ncapabilities = []\ncontract = 1\n",
+    )
+    .expect("a manifest");
+    std::fs::write(layer.join("plugin.wasm"), b"a module").expect("a module");
+    let seen: Arc<Mutex<Vec<serde_json::Value>>> = Default::default();
+    let host = letibot_harnessd::plugins::PluginHost::discover(
+        id,
+        workspace,
+        None,
+        None,
+        Arc::new(LimitLoader {
+            rule,
+            seen: seen.clone(),
+        }),
+        Arc::new(NoBuild),
+    );
+    let h = sessions.harness_of(id).expect("open");
+    *h.plugin_slot().lock().unwrap() = Some(Arc::new(host));
+    *h.question_slot().lock().unwrap() = Some(Arc::new(FirstOption));
+    seen
+}
+
+/// R233's done-when: a hook keeping a counter in its state answers `wait`, then `ask_user`, then
+/// `switch` with the answer, across three refusals; the state is carried between the calls and
+/// destroyed after the first success.
+#[test]
+fn a_limit_hook_waits_then_asks_then_switches_and_its_state_is_carried_and_destroyed() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("hook");
+    let glm = model(&[Act::Refuse(300)]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let mut cfg = config(
+        &scratch,
+        &gguf,
+        "hook",
+        ("glm", "glm-5.3"),
+        vec!["deepseek/deepseek-flash".into()],
+    );
+    let (clock, handle) = letibot_harnessd::config::LimitClock::fixed(T0);
+    cfg.limit_clock = clock;
+    let workspace = cfg.workspace.clone();
+    let state_file = cfg.daemon_logs().join("limit-hook.json");
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+    let seen = with_limit_hook(
+        &sessions,
+        &id,
+        &workspace,
+        Arc::new(|input| {
+            let n = input["state"]["n"].as_u64().unwrap_or(0);
+            let now = input["now_ms"].as_u64().unwrap_or(0);
+            Ok(match n {
+                0 => serde_json::json!({"state": {"n": 1}, "do": "wait", "when": now + 60_000}),
+                1 => serde_json::json!({"state": {"n": 2}, "do": "ask_user",
+                    "question": "glm is limited - move?", "options": ["deepseek", "stop"]}),
+                _ => {
+                    let chose = input["answered"]["text"].as_str().unwrap_or("none");
+                    assert_eq!(chose, "deepseek", "the answer came back: {input}");
+                    serde_json::json!({"state": {"n": 3}, "do": "switch",
+                        "provider": "deepseek", "model": "deepseek-flash"})
+                }
+            })
+        }),
+    );
+
+    let out = sessions
+        .submit(&id, PROMPT)
+        .expect_err("parked by the hook");
+    assert!(out.to_string().contains("paused until"), "{out}");
+    let h = sessions.harness_of(&id).expect("open");
+    assert_eq!(
+        h.limit_park().expect("parked").until_ms,
+        T0 + 60_000 + 2_000,
+        "the hook's `when`, not the provider's 300 s"
+    );
+    assert_eq!(
+        h.limit_hook_state("glm/glm-5.3"),
+        Some(&serde_json::json!({"n": 1}))
+    );
+    let kept = std::fs::read_to_string(&state_file).expect("the state is on disk");
+    assert!(kept.contains("\"n\":1"), "{kept}");
+
+    handle.store(T0 + 70_000, Ordering::SeqCst);
+    sessions.resume_due_limits();
+    assert_eq!(glm.count(), 3, "three refusals");
+    assert_eq!(deepseek.count(), 1, "the switch took the turn");
+    assert!(answered(&hub), "{:?}", said(&hub, "limit_hook"));
+
+    let inputs = seen.lock().unwrap().clone();
+    assert_eq!(inputs.len(), 3, "{inputs:?}");
+    let states: Vec<_> = inputs.iter().map(|i| i["state"].clone()).collect();
+    assert_eq!(
+        states,
+        vec![
+            serde_json::Value::Null,
+            serde_json::json!({"n": 1}),
+            serde_json::json!({"n": 2})
+        ],
+        "each call gets the state the last one returned"
+    );
+    let attempts: Vec<_> = inputs
+        .iter()
+        .map(|i| i["refusal"]["attempt"].clone())
+        .collect();
+    assert_eq!(attempts, vec![1, 2, 3]);
+    assert_eq!(said(&hub, "limit_hook").len(), 3, "one row per call");
+
+    let h = sessions.harness_of(&id).expect("open");
+    assert_eq!(h.model_name(), "deepseek/deepseek-flash");
+    assert_eq!(
+        h.limit_hook_state("glm/glm-5.3"),
+        None,
+        "destroyed on success"
+    );
+    assert!(!state_file.exists(), "and off the disk");
+    assert_eq!(said(&hub, "limit_hook_done").len(), 1);
+}
+
+/// A hook that runs out of fuel falls back to the fixed logic for the episode, with a row, and is
+/// not asked again in it.
+#[test]
+fn a_limit_hook_out_of_fuel_falls_back_to_the_fixed_rules() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("hook-fuel");
+    let glm = model(&[Act::Refuse(300), Act::Answer]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let mut cfg = config(&scratch, &gguf, "hook-fuel", ("glm", "glm-5.3"), Vec::new());
+    let (clock, handle) = letibot_harnessd::config::LimitClock::fixed(T0);
+    cfg.limit_clock = clock;
+    let workspace = cfg.workspace.clone();
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+    let seen = with_limit_hook(
+        &sessions,
+        &id,
+        &workspace,
+        Arc::new(|_| Err("all fuel consumed by WebAssembly".into())),
+    );
+
+    let out = sessions.submit(&id, PROMPT).expect_err("parked");
+    assert!(out.to_string().contains("paused until"), "{out}");
+    assert_eq!(
+        sessions
+            .harness_of(&id)
+            .expect("open")
+            .limit_park()
+            .expect("the fixed rule parked it")
+            .until_ms,
+        T0 + 300_000 + 2_000,
+        "the provider's own reset: the fixed rule decided"
+    );
+    let rows = said(&hub, "limit_hook_fallback");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains("fuel"), "{rows:?}");
+    assert_eq!(seen.lock().unwrap().len(), 1);
+
+    handle.store(T0 + 400_000, Ordering::SeqCst);
+    assert_eq!(sessions.resume_due_limits(), 1);
+    assert!(answered(&hub));
+    assert_eq!(seen.lock().unwrap().len(), 1, "not asked again");
+    assert_eq!(
+        sessions
+            .harness_of(&id)
+            .expect("open")
+            .limit_hook_state("glm/glm-5.3"),
+        None
+    );
+}

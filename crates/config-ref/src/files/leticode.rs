@@ -42,7 +42,7 @@ pub const LETICODE: File = File {
         },
         Table {
             path: "provider",
-            note: "Usage limits and model API deadlines.",
+            note: "Usage limits and model API deadlines. A plugin layer answering `limit_decide` decides a limit in place of `on_limit`, `wait_if_within` and the fallback lists.",
             needs: "",
             keys: &[
                 k("on_limit", "\"wait\" | \"switch\"", "switch with a fallback, else wait", PW, "on a usage limit: park until the reset, or move to the next fallback", "\"switch\""),

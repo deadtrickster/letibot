@@ -70,6 +70,8 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R231 | A room protocol bump refused every older client | Code work | fixed for 11 by `OLDEST_CLIENT = 11` (fc69dcb2); left: a rule that each bump states whether older clients are served, and a test per bump |
 | R232 | Kimi's usage endpoint is asked only on a refusal | Code work | built: a background poll of the preset's `usage_url` every 5 min (`crates/provider/src/usage_poll.rs`), one per endpoint, ending once no session is on the preset; the `models.usage` row, drawn in the status row and on the model card's provider row (`5h 44% · resets 07:07`); threshold warnings (`crates/provider/src/usage_warn.rs`): one `[usage]` notice per crossing, once per window, the figure coloured by level, `[provider.usage_warn]` and `[provider.NAME.usage_warn]`; z.ai is polled on the GLM coding doors (glm-limit is on main); left: a live check against a real Kimi and z.ai key |
 | R233 | Rate-limit decisions as config values or a fuel-capped wasm call | Needs the operator | not started; left: the operator's shape for the hook record (which decisions, value or plugin, what the call is given and answers) |
+| R232 | Kimi's usage endpoint is asked only on a refusal | Code work | left: a background poll of the preset's `usage_url`, cached like `listed_models`, and the model card / status row showing it (`5h 44% · resets 07:07`) |
+| R233 | Rate-limit decisions as config values or a fuel-capped wasm call | Needs the operator | built on branch `r233-hook`: a `limit_decide` layer decides every rate/quota refusal after the ladder (`wait`/`switch`/`new_session`/`ask_user`/`call`/`stop`), its state kept per episode in `<logs>/<session>/limit-hook.json` and destroyed on the first success, a failure, fuel or malformed answer falling back to the fixed rules with a `limit_hook_fallback` row; left: the operator's ruling on the `new_session` default recorded in the entry, `usage` from R232's poll, and `when` on anything but `wait` |
 | R234 | VMs do not boot at load 100-240, and packages fall back to host subagents | Code work | left: a measurement of boot time against load, then a queue or an admission rule |
 | R235 | A Claude Code session starts a new `until [ -s ... ]` wait loop every few minutes and never stops the old ones | Needs the operator | an observation about Claude Code's waiters, not a letibot defect; left: the operator's call on whether letibot's own docs or skills warn about it |
 | R236 | `sudo_ask` failed once under load: a run judged unreadable because "one of its processes belongs to another user" | Code work | built: branch `flakes` (exiting processes skipped, an empty scope is not unreadable); 80 of 80 parallel runs green at load 120-180, was 2 of 64 red; left: land |
@@ -3295,7 +3297,7 @@ A decision, an account, a live run on real hosts, or an install. Do not start th
 
 ## R233 - Rate-limit decisions as config values or a fuel-capped wasm call
 
-**Status:** shape given by the operator, 2026-11-15. Not started. left: all of the code.
+**Status:** built on branch `r233-hook`, 2026-11-15. left: the operator's ruling on the `new_session` default below, `usage` filled once R232's background poll lands (it is `null` now), and `when` honoured by actions other than `wait`.
 
 Operator idea, 2026-11-13. Decisions the provider layer makes on a rate limit today are fixed in code: whether to wait out a limit whose reset is near (`wait_if_within`) and which fallback model or provider to take. The idea is config keys that take either a value or a plugin call, a wasm module run fuel-capped like the other plugin hooks, so an operator can say "wait if the reset is within 10 minutes, else fall back to X" or hand the choice to code.
 
@@ -3327,6 +3329,17 @@ Operator's shape (2026-11-15): "if user gives a callback than the callback decid
 - **Visible:** each call, its decision and its fallback are a row in the session record. The state blob is shown in the row's details.
 
 **Open for whoever builds it:** what "new session" means for a running turn, and whether a turn in flight is resumed on the new target or restarted. Settle it with the operator before landing.
+
+**Default taken, for the operator to confirm (2026-11-15):** for `new_session` on a turn in flight, the turn ends in the old session with a row naming the new one. The new session is created in the same workspace, switched to the target with `/models provider/model`, and starts with a brief that carries the operator's last message in the old session. Nothing of the old turn is resumed there.
+
+**What was built (branch `r233-hook`):**
+
+- `letibot_plugin::limit` (`crates/plugin-sdk/src/limit.rs`): the input record and `Out::parse`, which refuses an action outside the set, a missing field, or a field that is not the action's. `limit_` is a hook prefix; `limit_decide` is the entry, any other `limit_<name>` is a `call` target.
+- `PluginHost::limit` (`crates/harnessd/src/plugins/hook.rs`): follows `call` answers, at most `LIMIT_CHAIN_CALLS` (8) calls and `LIMIT_CHAIN_FUEL` (one rano hook budget, 50M) across the chain.
+- `harness/limit_hook.rs`: asked first in `after_the_ladder` for a `rate_limit` or `quota` refusal. Episodes are keyed by the refusing model, stored in `<daemon_logs>/limit-hook.json` (reloaded at open), and cleared on the first successful round. A hook failure marks the episode `fell_back`, so the fixed rules decide the rest of it and the hook is not asked again until a success.
+- Rows: `limit_hook` per call (chain, layer, action, state), `limit_hook_fallback`, `limit_hook_done`, `limit_new_session`.
+- `ask_user` goes through the head `ask_user_question` reaches (`Harness::question_slot`), blocks the round like the key card does, and the round is taken again at once; the answer is the next call's `answered`. No head is a hook failure.
+- Tests: `crates/harnessd/tests/limits.rs` `a_limit_hook_waits_then_asks_then_switches_and_its_state_is_carried_and_destroyed` and `a_limit_hook_out_of_fuel_falls_back_to_the_fixed_rules`; `letibot-plugin` `limit::tests`.
 
 **Done when:** a test hook that keeps a counter in its state returns `wait` with a later `when`, then `ask_user`, then `switch` with the answer, across three refusals. letibot carries the state between the calls, destroys it after the first success, and a hook that exhausts its fuel falls back to the fixed logic with a visible row.
 

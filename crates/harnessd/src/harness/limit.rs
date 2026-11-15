@@ -71,6 +71,10 @@ pub(crate) enum AfterTheLadder {
     Retry,
     /// Nothing left to try: the turn fails as the tree always failed it.
     Failed,
+    /// The limit hook had the operator answer: take the round again now.
+    Again,
+    /// The limit hook ended the turn; `said` is its ending.
+    Stopped { said: String },
 }
 
 impl Harness {
@@ -462,6 +466,9 @@ impl Harness {
         tried: &mut Vec<String>,
     ) -> AfterTheLadder {
         use crate::leticode_config::OnLimit;
+        if let Some(hooked) = self.limit_hook(e) {
+            return hooked;
+        }
         let here = self.model_name();
         // Asked first, and for every failure: it is what records `here` as limited when the provider
         // named an instant, which is the fact a fallback list is filtered by.
@@ -617,7 +624,7 @@ fn park_words(now_ms: u64, until_ms: u64, reset_ms: u64) -> String {
 
 /// `s` in one line, cut to `n` bytes on a char boundary: a provider's body is prose with newlines
 /// in it, and a warning carries one line.
-fn said_one_line(s: &str, n: usize) -> String {
+pub(super) fn said_one_line(s: &str, n: usize) -> String {
     let flat = s.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.len() <= n {
         return flat;

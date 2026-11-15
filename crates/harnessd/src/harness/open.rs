@@ -3567,6 +3567,7 @@ impl Harness {
             vocab: parts.vocab.clone(),
             wiring: parts.wiring.clone(),
         };
+        let limit_episodes = limit_hook::load(&cfg);
         let mut h = Harness {
             mode_store: parts.mode_store.clone(),
             // The claim on this session's transcript, held for the harness's life - see
@@ -3699,6 +3700,8 @@ impl Harness {
             limit_return: None,
             limit_probing: Default::default(),
             limit_row: Default::default(),
+            limit_episodes,
+            question_slot: question_head.clone(),
             shadow: Default::default(),
             shadow_held: None,
             shadow_counted: (0, 0),

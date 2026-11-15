@@ -29,7 +29,7 @@ Table form of `fallback`: the list for one limited model. Lookup: exact model, t
 
 ## `[provider]`
 
-Usage limits and model API deadlines.
+Usage limits and model API deadlines. A plugin layer answering `limit_decide` decides a limit in place of `on_limit`, `wait_if_within` and the fallback lists.
 
 | key | type | default | level | meaning |
 |---|---|---|---|---|
