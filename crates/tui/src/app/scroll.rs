@@ -1199,6 +1199,7 @@ impl App {
                 return;
             }
             let n = rows.len();
+            self.stored_call_facts(&rows);
             self.items.extend(rows);
             // A row appended while the page was in flight is one this head still does not hold.
             self.items_below = self.items_below.saturating_sub(n);
@@ -1208,6 +1209,7 @@ impl App {
         if !rows.is_empty() && from.saturating_add(rows.len()) == self.items_base {
             let n = rows.len();
             let lead = self.items_lead;
+            self.stored_call_facts(&rows);
             // The page lands where the base begins, which is not the front of the list when a
             // resume republished the transcripts a compaction put behind it: those rows are above
             // the base, and a page of the base belongs under them.

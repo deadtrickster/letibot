@@ -308,6 +308,8 @@ mod tests {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             )],
         );
@@ -333,6 +335,8 @@ mod tests {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             )],
         );

@@ -59,6 +59,8 @@ fn result(id: &str) -> TranscriptItem {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     }
 }
 
@@ -71,6 +73,8 @@ fn ran_by_the_operator(id: &str, payload: &str) -> TranscriptItem {
         edits: Vec::new(),
         origin: Some(CallOrigin::Operator { who: "dead".into() }),
         media: None,
+        ran_ms: None,
+        decision: None,
     }
 }
 

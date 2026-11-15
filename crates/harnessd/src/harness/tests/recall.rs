@@ -54,6 +54,8 @@ fn result(id: &str, name: &str, payload: String) -> TranscriptItem {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     }
 }
 

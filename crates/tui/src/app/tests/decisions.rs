@@ -855,6 +855,8 @@ fn a_settled_card_keeps_the_decision_that_gated_it() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -949,6 +951,8 @@ fn results_out_of_order_keep_their_own_call_facts() {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     };
     // c2's row lands first, in the place c1's would take.
     for (seq, id, call) in [(9, "i1", "c2"), (11, "i2", "c1")] {
@@ -1504,4 +1508,122 @@ fn a_relayed_card_draws_the_shadows_line_only_when_it_has_one() {
     d.shadow = Some(line.into());
     let drawn = a.decision_lines(&d, 100).join("\n");
     assert!(drawn.contains(line), "{drawn}");
+}
+
+/// A result row as the daemon stores it, with or without the two facts it writes on the row.
+fn stored_result(call: &str, ran_ms: Option<u64>, decided: bool) -> TranscriptItem {
+    let decision = decided.then(|| {
+        serde_json::to_value(SettledDecision {
+            req_id: format!("r.{call}"),
+            kind: "permission".into(),
+            call_id: Some(call.to_string()),
+            summary: "run it".into(),
+            outcome: letibot_sessionlog::event::DecisionOutcome::Selected {
+                option_id: "allow".into(),
+            },
+            by: letibot_sessionlog::event::Decider {
+                kind: "human".into(),
+                identity: "dead".into(),
+            },
+            basis: "chose `allow` at the head".into(),
+            advice: None,
+            late: false,
+        })
+        .expect("a settled decision serialises")
+    });
+    TranscriptItem::ToolResult {
+        call_id: call.into(),
+        name: "bash".into(),
+        outcome: letibot_transcript::ToolOutcome::Ok,
+        payload: "done".into(),
+        edits: Vec::new(),
+        origin: None,
+        media: None,
+        ran_ms,
+        decision,
+    }
+}
+
+/// A head that restarts, or is resynced, has watched no call run: the duration and the decision
+/// come from the stored row, and a row stored before the fields existed draws without either.
+#[test]
+fn a_restarted_or_resynced_head_draws_the_stored_duration_and_decision() {
+    let hub = Hub::new("s");
+    hub.append_row(
+        "s.0",
+        "tool_result",
+        "h",
+        &stored_result("c1", Some(1_234), true),
+    );
+    hub.append_row("s.1", "tool_result", "h", &stored_result("c1", None, false));
+
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    assert_eq!(
+        a.call_ms.get("s.0"),
+        Some(&1_234),
+        "restart lost the duration"
+    );
+    assert_eq!(
+        a.call_decisions.get("s.0").map(|d| d.req_id.as_str()),
+        Some("r.c1"),
+        "restart lost the decision"
+    );
+    assert!(
+        !a.call_ms.contains_key("s.1") && !a.call_decisions.contains_key("s.1"),
+        "an old row grew facts it never had"
+    );
+
+    // A resync replaces the window; the facts come back from the rows, not from what the head kept.
+    a.call_ms.clear();
+    a.call_decisions.clear();
+    a.apply(ServerFrame::Resync {
+        reason: "test".into(),
+        dropped: 0,
+        snapshot: Box::new(hub.snapshot()),
+        scrubbed: Default::default(),
+    });
+    assert_eq!(
+        a.call_ms.get("s.0"),
+        Some(&1_234),
+        "resync lost the duration"
+    );
+    assert_eq!(
+        a.call_decisions.get("s.0").map(|d| d.req_id.as_str()),
+        Some("r.c1"),
+        "resync lost the decision"
+    );
+    let screen = a.screen(120, 30).join("\n");
+    assert!(
+        screen.contains("dead"),
+        "the decision is not drawn: {screen}"
+    );
+}
+
+/// A fact this head bound live is exact and the stored one never replaces it, and a body arriving
+/// over `TranscriptContent` fills what the head did not watch.
+#[test]
+fn a_stored_fact_fills_only_what_the_head_did_not_watch() {
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(
+        1,
+        testing::appended("s.0", "tool_result"),
+    )));
+    a.call_ms.insert("s.0".into(), 7);
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::TranscriptContent {
+            item_id: "s.0".into(),
+            item: Box::new(stored_result("c1", Some(1_234), true)),
+        },
+    )));
+    assert_eq!(
+        a.call_ms.get("s.0"),
+        Some(&7),
+        "the live duration was replaced"
+    );
+    assert!(
+        a.call_decisions.contains_key("s.0"),
+        "the stored decision did not fill the gap"
+    );
 }

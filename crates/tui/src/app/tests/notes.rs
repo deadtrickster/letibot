@@ -2650,6 +2650,8 @@ fn a_run_with_notices() -> App {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));

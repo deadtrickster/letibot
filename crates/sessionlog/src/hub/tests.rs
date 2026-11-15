@@ -1079,3 +1079,41 @@ fn an_open_card_is_pending_typed_and_a_childs_names_the_child() {
     hub.publish(answered("r1", "deny"));
     assert_eq!(hub.pending().len(), 1, "a settled card is not pending");
 }
+
+/// A call id repeats by round, so a call's decision is only one that settled after the mark taken
+/// before it ran: an earlier round's approval of the same id is not this call's.
+#[test]
+fn a_calls_decision_is_one_settled_after_the_mark() {
+    let hub = Hub::new("s");
+    assert_eq!(hub.last_settled(), None);
+    hub.publish(requested("r1", "rm -rf /"));
+    hub.publish(answered("r1", "allow"));
+    let call = |hub: &Hub| {
+        hub.lock()
+            .view
+            .settled_decisions()
+            .last()
+            .and_then(|d| d.call_id.clone())
+            .expect("the fixture names a call")
+    };
+    let id = call(&hub);
+    assert_eq!(
+        hub.settled_after(None, &id).map(|d| d.req_id),
+        Some("r1".into())
+    );
+
+    let mark = hub.last_settled();
+    assert_eq!(mark.as_deref(), Some("r1"));
+    assert_eq!(
+        hub.settled_after(mark.as_deref(), &id),
+        None,
+        "the last round's decision was taken for this one"
+    );
+    hub.publish(requested("r2", "rm -rf /"));
+    hub.publish(answered("r2", "deny"));
+    assert_eq!(
+        hub.settled_after(mark.as_deref(), &id).map(|d| d.req_id),
+        Some("r2".into())
+    );
+    assert_eq!(hub.settled_after(mark.as_deref(), "other"), None);
+}

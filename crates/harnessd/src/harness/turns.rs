@@ -2599,6 +2599,7 @@ impl Harness {
             // The slot is emptied immediately before the batch runs, so nothing an earlier call left can be read
             // as this one's answer. A pooled batch holds only reads, and none of them fills it.
             self.asked.lock().unwrap_or_else(|e| e.into_inner()).take();
+            let mark = self.hub.last_settled();
             let ran = if batch.len() > 1 {
                 self.runtime
                     .invoke_pooled(turn_id, batch, &mut self.tool_sink)
@@ -2611,7 +2612,8 @@ impl Harness {
             };
             // Settled in call order whatever order the pool finished in.
             for (call, (r, started)) in batch.iter().zip(ran) {
-                let item = self.settle_call(call, &r, started, progress, &mut asked);
+                let mut item = self.settle_call(call, &r, started, progress, &mut asked);
+                stamp_decision(&self.hub, &mut item, mark.as_deref());
                 if matches!(
                     &item,
                     TranscriptItem::ToolResult {
@@ -5089,6 +5091,18 @@ fn probe_row() {
     SWEPT_ROWS.with(|n| n.set(n.get() + 1));
 }
 
+/// The decision that gated this call, put on its row so a head that restarts or resyncs still draws
+/// it. Only one settled since `mark`, taken before the batch ran: call ids repeat by round.
+pub(crate) fn stamp_decision(hub: &Hub, item: &mut TranscriptItem, mark: Option<&str>) {
+    if let TranscriptItem::ToolResult {
+        call_id, decision, ..
+    } = item
+        && let Some(d) = hub.settled_after(mark, call_id)
+    {
+        *decision = serde_json::to_value(d).ok();
+    }
+}
+
 #[cfg(test)]
 mod endpoint_retry {
     //! When the model server is not answering, take the round again. The retry rule's own tests are the policy's,
@@ -5144,6 +5158,8 @@ mod endpoint_retry {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }
         }
 

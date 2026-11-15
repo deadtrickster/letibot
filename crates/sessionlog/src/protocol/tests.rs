@@ -159,8 +159,11 @@ fn every_frame_is_accounted_for_at_this_version() {
     let _ = event;
     let _ = server;
     assert_eq!(
-        PROTOCOL_VERSION, 77,
-        "the match above was last reconciled with the frame list at 77. 77 added \
+        PROTOCOL_VERSION, 78,
+        "the match above was last reconciled with the frame list at 78. 78 added \
+             `TranscriptItem::ToolResult`'s `ran_ms` and `decision`: the daemon writes a call's \
+             duration and the decision that gated it on the stored row, so a head that restarts or \
+             resyncs draws both. Defaulted, so an older row and an older head read as before. 77 added \
              `ClientFrame::DriverTodos` and the `Peer <handle>` todo author: a driving head's rows \
              on the session's board. 76 added \
              `SessionEvent::TurnEnded`: a round's end and the prompt's end were one frame, \

@@ -611,6 +611,8 @@ mod tests {
             edits: Vec::new(),
             origin: None,
             media: Some(png.clone()),
+            ran_ms: None,
+            decision: None,
         };
         // And a result that read a file, which is every other call.
         let read_text = TranscriptItem::ToolResult {
@@ -621,6 +623,8 @@ mod tests {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         };
         // A user row carrying two images - the head-attached path, and the case a single-image
         // fixture cannot catch: the second marker is the one a `once` bug would drop.
@@ -678,6 +682,8 @@ mod tests {
                 data_ref: "data:image/png;base64,AAAA".into(),
                 delivered: false,
             }),
+            ran_ms: None,
+            decision: None,
         }];
         let spans = QwenRenderer::new().render(&prefix("s", &[]), &items);
         assert_eq!(media_spans(&spans), 1, "one image");
@@ -861,6 +867,8 @@ mod tests {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
             TranscriptItem::ToolResult {
                 call_id: "c2".into(),
@@ -872,6 +880,8 @@ mod tests {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
             TranscriptItem::Reasoning {
                 text: "They differ.".into(),
@@ -932,6 +942,8 @@ mod tests {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
             TranscriptItem::ToolResult {
                 call_id: "c2".into(),
@@ -941,6 +953,8 @@ mod tests {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
             user("Thanks."),
         ];
@@ -1003,6 +1017,8 @@ mod tests {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         }];
         let mut foreign = RenderState::holding(7u8);
         let (spans, ends) = r.render_incremental_from(&history, &mut foreign, &batch);
@@ -1043,6 +1059,8 @@ mod tests {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
             TranscriptItem::ToolResult {
                 call_id: "c2".into(),
@@ -1052,6 +1070,8 @@ mod tests {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         ];
         let history = [user("Compare a and b."), calls];
@@ -1108,6 +1128,8 @@ mod tests {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         }];
         let got = spans_to_string(&r.render_incremental(&[], &one));
         assert!(got.ends_with("</tool_response><|im_end|>\n"), "{got}");

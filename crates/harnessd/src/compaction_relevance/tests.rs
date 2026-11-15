@@ -138,6 +138,8 @@ fn an_item_is_scored_on_its_own_text() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         })
         .len(),
         ITEM_CHARS

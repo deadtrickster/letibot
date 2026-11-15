@@ -97,6 +97,8 @@ fn result(id: &str, outcome: ToolOutcome, payload: &str) -> TranscriptItem {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     }
 }
 
@@ -457,6 +459,8 @@ fn the_operators_own_result_is_the_persons_turn() {
         edits: Vec::new(),
         origin: Some(CallOrigin::Operator { who: "dead".into() }),
         media: None,
+        ran_ms: None,
+        decision: None,
     };
     let items = vec![user("! ls"), ran];
     let body = provider().body(&request("", &items, &[])).expect("a body");

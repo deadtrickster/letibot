@@ -26,6 +26,8 @@ fn a_png_result_is_drawn_inline_and_uploaded_once() {
                 edits: Vec::new(),
                 origin: None,
                 media: Some(media.clone()),
+                ran_ms: None,
+                decision: None,
             },
         );
     };
@@ -202,6 +204,8 @@ fn copy_takes_the_open_window_else_the_last_reply() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     a.payload_sel = Some("r.0".into());

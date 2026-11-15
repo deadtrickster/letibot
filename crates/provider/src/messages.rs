@@ -513,6 +513,8 @@ pub fn convert_with_tail(
                 payload,
                 // Display-only; the prompt never sees it.
                 edits: _,
+                ran_ms: _,
+                decision: _,
                 media,
                 origin,
             } => {
@@ -812,6 +814,8 @@ mod pairing_tests {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         }
     }
 
@@ -826,6 +830,8 @@ mod pairing_tests {
             edits: Vec::new(),
             origin: Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
             media: None,
+            ran_ms: None,
+            decision: None,
         }
     }
 

@@ -291,6 +291,8 @@ fn bang_rows(a: &mut App, seq: u64, id: &str, line: &str, payload: &str) {
                 edits: Vec::new(),
                 origin: Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -316,6 +318,8 @@ fn model_bash_rows(a: &mut App, seq: u64, id: &str, payload: &str) {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -407,6 +411,8 @@ fn bash_result(payload: &str) -> TranscriptItem {
         edits: Vec::new(),
         origin: Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
         media: None,
+        ran_ms: None,
+        decision: None,
     }
 }
 
@@ -603,6 +609,8 @@ fn a_result_row(a: &mut App, seq: u64, id: &str, payload: &str) {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -976,6 +984,8 @@ fn the_counts_are_plain_and_the_seam_is_faint_body() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         ),
     ] {
@@ -1067,6 +1077,8 @@ fn a_turn_mid_run(a: &mut App) {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     // The work in flight: thinking, and no row of its own - the pane's half of the counts.

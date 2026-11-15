@@ -53,6 +53,8 @@ fn output(payload: &str) -> TranscriptItem {
         edits: vec![],
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     }
 }
 

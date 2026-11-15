@@ -66,6 +66,8 @@ fn row(
             edits: edit.into_iter().collect(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     )
 }

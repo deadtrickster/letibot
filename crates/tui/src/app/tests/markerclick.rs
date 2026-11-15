@@ -107,6 +107,8 @@ fn a_run_of(think: &str, extra: usize) -> App {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -542,6 +544,8 @@ fn esc_on_a_window_does_not_fold_the_thinking() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     a.key(Key::CtrlR);
@@ -594,6 +598,8 @@ fn ctrl_r_will_not_open_a_run_that_holds_no_thinking() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));

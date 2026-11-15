@@ -92,6 +92,8 @@ fn round_trip(p: &dyn MessagesBackend, thinking: Option<bool>, replay: bool) {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     });
     let second = ask(p, &items, thinking);
     eprintln!(

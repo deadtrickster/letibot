@@ -64,6 +64,8 @@ fn conversation() -> Vec<(u64, TranscriptItem)> {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         ),
         (
@@ -256,6 +258,8 @@ fn the_markdown_says_who_spoke_and_collapses_a_call_to_one_line() {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     };
     let w = write_handover(&conv, &meta(), &dir).unwrap();
     let md = std::fs::read_to_string(&w.markdown).unwrap();

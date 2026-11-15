@@ -39,6 +39,8 @@ fn a_row_with_a_body(
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     };
     hub.record_item(item_id, item.clone());
     SnapshotItem {

@@ -33,6 +33,8 @@ fn tool_result(name: &str, payload: &str) -> TranscriptItem {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     }
 }
 

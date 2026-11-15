@@ -107,6 +107,8 @@ fn a_result_row_without_its_body_draws_its_header_and_what_is_coming() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -225,6 +227,8 @@ fn a_row_below_the_window_is_fetched_back_and_drawn_in_the_same_turn() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         }],
     });

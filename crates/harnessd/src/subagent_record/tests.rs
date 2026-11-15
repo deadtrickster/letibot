@@ -647,6 +647,8 @@ fn a_child_with_no_record_reads_its_own_last_row() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         }),
     ));
     let TaskStatus::Failed { why } = gone else {
@@ -708,6 +710,8 @@ fn how_far_says_where_a_child_with_no_record_stopped() {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     };
 
     // Two children that stopped somewhere different read differently - this is the whole

@@ -410,6 +410,8 @@ fn a_payload_window_takes_the_slot_and_its_keys_never_reach_the_card() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     assert_eq!(a.key(Key::CtrlV), None);
@@ -461,6 +463,8 @@ fn the_strip_does_not_offer_alt_p_while_the_slot_is_taken() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     assert_eq!(b.key(Key::CtrlV), None);

@@ -987,6 +987,8 @@ fn the_payload_window_keeps_the_arrows_from_a_decision_card() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     a.key(Key::CtrlV);

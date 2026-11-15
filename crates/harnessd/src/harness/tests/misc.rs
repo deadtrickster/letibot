@@ -439,3 +439,52 @@ fn a_reseat_names_what_changed_inside_a_tool() {
         ]
     );
 }
+
+/// A gated call's row carries the decision the daemon settled for it, so a head that restarts or
+/// resyncs draws it; an earlier round's decision for the same call id stays off it.
+#[test]
+fn a_gated_calls_row_stores_its_decision_and_not_an_earlier_rounds() {
+    use letibot_sessionlog::testing::{answered, requested};
+    let row = |call: &str| TranscriptItem::ToolResult {
+        call_id: call.into(),
+        name: "bash".into(),
+        outcome: letibot_transcript::ToolOutcome::Ok,
+        payload: "done".into(),
+        edits: Vec::new(),
+        origin: None,
+        media: None,
+        ran_ms: Some(12),
+        decision: None,
+    };
+    let hub = Hub::new("s");
+    hub.publish(requested("r1", "rm -rf /"));
+    hub.publish(answered("r1", "allow"));
+    let call = hub
+        .snapshot()
+        .settled_decisions
+        .last()
+        .and_then(|d| d.call_id.clone())
+        .expect("the fixture names a call");
+
+    let mark = hub.last_settled();
+    let mut item = row(&call);
+    super::turns::stamp_decision(&hub, &mut item, mark.as_deref());
+    let TranscriptItem::ToolResult { decision, .. } = &item else {
+        unreachable!()
+    };
+    assert_eq!(*decision, None, "the last round's decision was stamped");
+
+    hub.publish(requested("r2", "rm -rf /"));
+    hub.publish(answered("r2", "allow"));
+    super::turns::stamp_decision(&hub, &mut item, mark.as_deref());
+    let TranscriptItem::ToolResult {
+        decision, ran_ms, ..
+    } = &item
+    else {
+        unreachable!()
+    };
+    let d: letibot_sessionlog::view::SettledDecision =
+        serde_json::from_value(decision.clone().expect("no decision on the row")).unwrap();
+    assert_eq!(d.req_id, "r2");
+    assert_eq!(*ran_ms, Some(12), "the duration was lost");
+}

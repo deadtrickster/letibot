@@ -1258,6 +1258,8 @@ fn tool_result_line(
             // rather than a gap left by accident - the same sentence opencode's importer
             // makes about its own attachments.
             media: None,
+            ran_ms: None,
+            decision: None,
         },
         report,
         sink,

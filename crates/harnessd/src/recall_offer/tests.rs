@@ -56,6 +56,8 @@ fn result(text: &str) -> TranscriptItem {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     }
 }
 
@@ -313,6 +315,8 @@ fn the_trigger_is_the_operators_words_and_not_a_tool_result() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
         TranscriptItem::User {
             speaker: Speaker::Operator,

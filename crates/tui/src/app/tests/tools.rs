@@ -18,6 +18,8 @@ fn a_models_tool_row_is_unmarked_and_its_paint_has_not_moved() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     assert!(
@@ -145,6 +147,8 @@ fn content_this_head_did_not_write_cannot_reconfigure_the_terminal() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         ),
         (
@@ -159,6 +163,8 @@ fn content_this_head_did_not_write_cannot_reconfigure_the_terminal() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         ),
         (
@@ -183,6 +189,8 @@ fn content_this_head_did_not_write_cannot_reconfigure_the_terminal() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         ),
     ];
@@ -381,6 +389,8 @@ fn an_expanded_tool_payload_cannot_turn_the_mouse_off() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -513,6 +523,8 @@ fn a_settled_call_is_one_row_and_the_row_is_the_one_with_the_result_on_it() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -551,6 +563,8 @@ fn a_subject_too_long_for_the_row_never_pushes_the_outcome_off_it() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -586,6 +600,8 @@ fn a_result_whose_round_the_head_cannot_see_says_so_rather_than_borrowing() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -1069,6 +1085,8 @@ fn a_restarted_head_still_draws_the_last_turns_edit_panels() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     hub.publish(testing::turn_finished("t1"));
@@ -1107,6 +1125,8 @@ fn a_row_from_a_resumed_daemon_draws_its_panel_without_a_turn() {
             edits: vec![edit_excerpt()],
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
 
@@ -1309,6 +1329,8 @@ fn a_settled_edit_row_draws_the_diff_and_keeps_it_across_turns() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -1426,6 +1448,8 @@ fn a_folded_rows_rest_skips_the_reason_the_row_already_prints() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         }),
         citations: Vec::new(),
     };

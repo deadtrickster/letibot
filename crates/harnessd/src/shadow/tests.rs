@@ -1075,6 +1075,8 @@ mod observe_only {
             edits: vec![],
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         }
     }
 

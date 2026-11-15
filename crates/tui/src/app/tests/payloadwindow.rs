@@ -23,6 +23,8 @@ fn result(a: &mut App, seq: u64, id: &str, call: &str, lines: usize) {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
 }

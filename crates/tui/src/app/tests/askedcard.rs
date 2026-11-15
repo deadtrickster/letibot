@@ -54,6 +54,8 @@ fn with_exchange() -> App {
             edits: Vec::new(),
             origin: Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     shell_row(

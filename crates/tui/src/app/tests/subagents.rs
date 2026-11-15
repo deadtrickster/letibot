@@ -698,6 +698,8 @@ fn a_peeked_subagent_shows_its_tool_output_and_spills_the_whole_view() {
                         edits: Vec::new(),
                         origin: None,
                         media: None,
+                        ran_ms: None,
+                        decision: None,
                     }),
                 },
             ),

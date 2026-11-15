@@ -47,6 +47,8 @@ fn finish(a: &mut App, seq: u64, n: u64) {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
 }

@@ -835,6 +835,8 @@ fn tool(r: &mut Reader<'_>, conn: &Connection, session: &str, part_id: &str, ts:
             // opencode keeps a result file's bytes in `blob`; the payload names it, and a head shows
             // the text a text file held, not the picture a binary one is.
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
 }

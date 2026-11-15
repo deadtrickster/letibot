@@ -287,6 +287,8 @@ fn a_tool_call_round_trip_carries_the_signature_and_the_id_back() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     ];
     let req = TurnRequest {

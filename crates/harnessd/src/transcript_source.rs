@@ -394,6 +394,8 @@ mod tests {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         });
         assert!(t.contains("denied"), "{t}");
         assert!(t.contains("r9"), "{t}");

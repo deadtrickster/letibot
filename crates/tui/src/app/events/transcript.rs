@@ -147,6 +147,36 @@ impl App {
         }
     }
 
+    /// The facts a result row carries from the daemon: its duration and its decision. They fill what
+    /// this head did not watch live and never replace it, so a restart or a resync keeps both.
+    pub(crate) fn stored_call_fact(&mut self, item_id: &str, item: &TranscriptItem) {
+        let TranscriptItem::ToolResult {
+            ran_ms, decision, ..
+        } = item
+        else {
+            return;
+        };
+        if let Some(ms) = ran_ms {
+            self.call_ms.entry(item_id.to_string()).or_insert(*ms);
+        }
+        // A value the head cannot read is dropped: the card then shows no approval, as before the field.
+        if let Some(d) = decision
+            .as_ref()
+            .and_then(|v| serde_json::from_value::<SettledDecision>(v.clone()).ok())
+        {
+            self.call_decisions.entry(item_id.to_string()).or_insert(d);
+        }
+    }
+
+    /// [`App::stored_call_fact`] for every row of a page or a snapshot that carries its body.
+    pub(crate) fn stored_call_facts(&mut self, rows: &[SnapshotItem]) {
+        for r in rows {
+            if let Some(item) = &r.item {
+                self.stored_call_fact(&r.item_id, item);
+            }
+        }
+    }
+
     /// What a bodyless result row says until its body names its call: the words of the first call of
     /// the round no row is bound to or waits on. A placeholder only; the facts wait for the call id.
     fn pending_call_words(&self) -> (String, String) {

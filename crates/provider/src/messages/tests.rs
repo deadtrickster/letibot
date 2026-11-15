@@ -168,6 +168,8 @@ fn an_offer_row_is_not_in_the_request() {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     };
     let user = TranscriptItem::User {
         speaker: Default::default(),
@@ -222,6 +224,8 @@ fn items_become_the_apis_messages_without_tools() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     ];
     let m = convert("be terse", &items, false);
@@ -270,6 +274,8 @@ fn a_stored_transcript_with_positional_ids_still_replays() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         ]
     };
@@ -328,6 +334,8 @@ fn a_tool_result_with_an_image_puts_the_image_on_the_wire() {
                 data_ref: uri.clone(),
                 delivered: false,
             }),
+            ran_ms: None,
+            decision: None,
         },
     ];
     let m = convert("be terse", &items, false);
@@ -373,6 +381,8 @@ fn a_tool_result_without_an_image_sends_no_attachment_and_keeps_its_string() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     ];
     let m = convert("be terse", &items, false);
@@ -457,6 +467,8 @@ fn an_unknown_model_is_sent_the_picture() {
                 data_ref: uri.clone(),
                 delivered: false,
             }),
+            ran_ms: None,
+            decision: None,
         },
     ];
     let m = super::convert(
@@ -610,6 +622,8 @@ fn a_tool_results_image_becomes_a_placeholder_message_for_a_text_only_model() {
                 data_ref: picture_ref(),
                 delivered: false,
             }),
+            ran_ms: None,
+            decision: None,
         },
     ];
     let m = super::convert(
@@ -702,6 +716,8 @@ fn a_tool_results_incomplete_picture_is_named_and_not_sent() {
                 ),
                 delivered: false,
             }),
+            ran_ms: None,
+            decision: None,
         },
     ];
     let m = convert("be terse", &items, false);
@@ -847,6 +863,8 @@ fn an_empty_tool_result_is_sent_as_no_output() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     ];
     let m = convert("", &items, false);

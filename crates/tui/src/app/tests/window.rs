@@ -39,6 +39,8 @@ fn enter_sends_a_typed_line_past_an_open_ctrl_v_window() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));

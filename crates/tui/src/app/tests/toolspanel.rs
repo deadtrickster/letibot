@@ -165,6 +165,8 @@ fn the_panel_holds_the_calls_when_their_rows_land() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));

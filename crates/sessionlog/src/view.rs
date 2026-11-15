@@ -998,6 +998,11 @@ impl SessionView {
     pub fn open_decisions(&self) -> &[OpenDecision] {
         &self.open
     }
+
+    /// Settled decisions, oldest first, bounded by [`ViewBounds::settled_decisions`].
+    pub fn settled_decisions(&self) -> &[SettledDecision] {
+        &self.settled
+    }
 }
 
 /// The ordinal an item id names: a row of transcript `prefix` is `<prefix><n>`, `n` being its
@@ -1054,6 +1059,8 @@ mod tests {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
             "the payload"
         );
@@ -1191,6 +1198,8 @@ mod tests {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         );
         assert_eq!(

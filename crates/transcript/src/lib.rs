@@ -194,6 +194,14 @@ pub enum TranscriptItem {
         /// round would be a picture the model saw and then forgot.
         #[serde(default)]
         media: Option<media::Media>,
+        /// How long the call ran, from its start to its result, written by the daemon. On the row so
+        /// a head that restarts or resyncs still shows it. `None` on older rows and refused calls.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ran_ms: Option<u64>,
+        /// The settled decision that gated this call, as `letibot_sessionlog::view::SettledDecision`
+        /// serialises it. A value because this crate cannot name that type. Display-only.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        decision: Option<serde_json::Value>,
     },
     /// A delivery, not words: something learned while nobody was typing (a monitor's firing),
     /// as its own kind. A `User` row defaults `speaker` to the operator and would read as their instruction.
@@ -610,6 +618,8 @@ mod tests {
             }],
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         };
         let json = serde_json::to_string(&item).unwrap();
         let back: TranscriptItem = serde_json::from_str(&json).unwrap();
@@ -680,9 +690,47 @@ mod tests {
             }],
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         })
         .unwrap();
         assert!(json.contains("\"edits\":["), "{json}");
+    }
+
+    /// The daemon's duration and decision ride the row both ways, and a row stored before the
+    /// fields existed reads with neither and serialises to the same bytes.
+    #[test]
+    fn a_result_row_stores_its_duration_and_decision_and_an_old_row_still_reads() {
+        let bare = TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: "bash".into(),
+            outcome: ToolOutcome::Ok,
+            payload: "done".into(),
+            edits: Vec::new(),
+            origin: None,
+            media: None,
+            ran_ms: None,
+            decision: None,
+        };
+        let old = serde_json::to_string(&bare).unwrap();
+        assert!(
+            !old.contains("ran_ms") && !old.contains("decision"),
+            "an absent fact changed the stored bytes: {old}"
+        );
+        let back: TranscriptItem = serde_json::from_str(&old).unwrap();
+        assert_eq!(back, bare);
+
+        let mut with = bare.clone();
+        if let TranscriptItem::ToolResult {
+            ran_ms, decision, ..
+        } = &mut with
+        {
+            *ran_ms = Some(1_234);
+            *decision = Some(serde_json::json!({"req_id": "r1"}));
+        }
+        let json = serde_json::to_string(&with).unwrap();
+        let back: TranscriptItem = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, with, "the facts did not survive the store");
     }
 
     /// Who asked for the call, and that an old row says `None`. An operator-run call
@@ -698,6 +746,8 @@ mod tests {
             edits: Vec::new(),
             origin: Some(CallOrigin::Operator { who: "dead".into() }),
             media: None,
+            ran_ms: None,
+            decision: None,
         };
         let json = serde_json::to_string(&mine).unwrap();
         assert!(
@@ -880,6 +930,8 @@ mod tests {
                 data_ref: base64.clone(),
                 delivered: true,
             }),
+            ran_ms: None,
+            decision: None,
         };
         assert_eq!(read_a_picture.bytes(), "a picture".len() + base64.len());
 

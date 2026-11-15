@@ -241,6 +241,8 @@ fn an_expansion_draws_no_notice_the_watermark_covers() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -344,6 +346,8 @@ fn a_settled_runs_expansion_draws_no_notice_the_watermark_covers() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));

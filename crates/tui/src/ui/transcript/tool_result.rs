@@ -39,6 +39,9 @@ pub(crate) fn tool_result_row_lines(
         edits: row_edits,
         origin,
         media,
+        // Read off the row into `App::call_ms` and `App::call_decisions`, which this card is handed.
+        ran_ms: _,
+        decision: _,
     } = item
     else {
         unreachable!("tool_result_row_lines is handed only ToolResult rows");

@@ -12,7 +12,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 77;
+pub const PROTOCOL_VERSION: u32 = 78;
 
 /// The first version whose heads read [`crate::SessionEvent::TurnEnded`]. An older head is sent
 /// none, and gets the prompt's end as a `TurnFinished` with `ends_turn` instead.

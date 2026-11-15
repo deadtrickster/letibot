@@ -418,6 +418,32 @@ fn a_write_tool_does_and_m1_has_nobody_to_ask() {
     );
 }
 
+/// A call that ran carries its duration onto the stored row; one refused before it started has none.
+#[test]
+fn a_call_that_ran_stores_its_duration_and_a_refused_one_does_not() {
+    let rt = runtime(Access::Read);
+    let mut sink = RecordingToolSink::new();
+    let r = rt.invoke("t1", &call("probe", r#"{"path":"a"}"#), &mut sink);
+    assert!(r.ran_ms.is_some(), "a call that ran has no duration");
+    let TranscriptItem::ToolResult { ran_ms, .. } = ToolRuntime::transcript_item(&r) else {
+        unreachable!("transcript_item builds a tool result")
+    };
+    assert_eq!(ran_ms, r.ran_ms, "the row lost the duration");
+
+    let mut reg = Registry::new();
+    reg.register(Box::new(Probe {
+        access: Access::Write,
+    }))
+    .unwrap();
+    let d = crate::backend::tempdir::TempDir::new();
+    let rt = ToolRuntime::new(
+        reg,
+        Box::new(crate::backend::HostBackend::new(d.path()).unwrap()),
+    );
+    let r = rt.invoke("t1", &call("probe", r#"{"path":"a"}"#), &mut sink);
+    assert_eq!(r.ran_ms, None, "a call that never started has a duration");
+}
+
 #[test]
 fn an_unknown_tool_comes_back_with_the_list_and_the_nearest_name() {
     let rt = runtime(Access::Read);
@@ -837,6 +863,7 @@ fn the_row_and_the_event_carry_the_same_bounded_excerpt() {
         notes: Vec::new(),
         spill: None,
         media: None,
+        ran_ms: None,
         repairs_told: Vec::new(),
         edits: vec![crate::edit::FileEdit {
             path: "f".into(),

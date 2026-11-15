@@ -482,6 +482,8 @@ fn input_items(
                 payload,
                 // Display-only; the prompt never sees it.
                 edits: _,
+                ran_ms: _,
+                decision: _,
                 origin,
                 media,
             } => {

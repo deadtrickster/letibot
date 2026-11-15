@@ -258,6 +258,8 @@ impl App {
             // wire. See [`Carry::arriving`].
             arriving: false,
         });
+        // Before the decision match below, so a row's own decision wins over a guess by call id.
+        self.stored_call_facts(&s.items);
         self.items = s.items;
         // Where this snapshot's first row sits in the session. The daemon trims its own view, so the window's first
         // row may not be row 0, and `items_dropped` (on the wire) is the ordinal to ask for the rows above.
@@ -883,6 +885,7 @@ impl App {
         if let TranscriptItem::ToolResult { call_id, .. } = &item {
             self.carry_call_facts(item_id, call_id);
         }
+        self.stored_call_fact(item_id, &item);
         self.items[idx].item = Some(item);
         // A landed tool-result body takes the placeholder with it, and it is the row that says so:
         // the header the row drew a moment ago is replaced by the whole one, not by a second.

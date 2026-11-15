@@ -341,6 +341,8 @@ pub fn reduce(items: &[TranscriptItem], rows: &[String], store: &dyn BodyStore) 
                 edits,
                 origin,
                 media,
+                ran_ms,
+                decision,
                 ..
             } => TranscriptItem::ToolResult {
                 call_id,
@@ -350,6 +352,8 @@ pub fn reduce(items: &[TranscriptItem], rows: &[String], store: &dyn BodyStore) 
                 edits,
                 origin,
                 media,
+                ran_ms,
+                decision,
             },
             other => other,
         };

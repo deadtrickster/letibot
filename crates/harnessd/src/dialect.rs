@@ -308,6 +308,8 @@ mod tests {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         };
         let prefix = StablePrefix {
             system: "be terse".into(),
@@ -462,6 +464,8 @@ mod tests {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             })
             .collect();
         session

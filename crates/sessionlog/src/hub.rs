@@ -14,7 +14,7 @@ use crate::protocol::{
     Ack, Caps, REJECT_READ_ONLY, REJECT_STALE_SEQ, REJECT_UNKNOWN_DECISION, ServerFrame,
 };
 use crate::scrub::{ScrubReport, StoredProjection, scrub_replay};
-use crate::view::{SessionView, Snapshot, ViewBounds};
+use crate::view::{SessionView, SettledDecision, Snapshot, ViewBounds};
 
 /// What a head gets from one wait.
 #[derive(Debug, Clone, PartialEq)]
@@ -1323,6 +1323,31 @@ impl Hub {
     /// a replay consumes.
     pub fn retained(&self) -> Vec<Envelope> {
         self.lock().log.retained().cloned().collect()
+    }
+
+    /// The newest settled decision's request id: a mark for [`Hub::settled_after`].
+    pub fn last_settled(&self) -> Option<String> {
+        self.lock()
+            .view
+            .settled_decisions()
+            .last()
+            .map(|d| d.req_id.clone())
+    }
+
+    /// The newest decision about `call_id` settled after `mark`. A call id repeats across rounds, so
+    /// only what settled since the call was handed to the gate can be its decision.
+    pub fn settled_after(&self, mark: Option<&str>, call_id: &str) -> Option<SettledDecision> {
+        let g = self.lock();
+        let all = g.view.settled_decisions();
+        // A mark bounded out of the view means everything held settled after it.
+        let from = mark
+            .and_then(|m| all.iter().position(|d| d.req_id == m))
+            .map_or(0, |i| i + 1);
+        all[from..]
+            .iter()
+            .rev()
+            .find(|d| d.call_id.as_deref() == Some(call_id))
+            .cloned()
     }
 
     /// A snapshot of the current state, for a head that is not attached (a test, a

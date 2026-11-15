@@ -851,6 +851,8 @@ pub(crate) fn interpret(
                     // file part whose content is on disk, and this importer reads the message
                     // log, so the conversation shows the sentence and not the picture.
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 },
                 report,
                 sink,

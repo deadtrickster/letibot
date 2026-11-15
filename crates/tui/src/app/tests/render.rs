@@ -362,6 +362,8 @@ fn an_operators_tool_row_is_the_models_row_with_the_persons_own_mark_on_it() {
         edits: Vec::new(),
         origin,
         media: None,
+        ran_ms: None,
+        decision: None,
     };
     let mine = item_rows(
         true,
@@ -531,6 +533,8 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 },
             ),
         ),
@@ -548,6 +552,8 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 },
             ),
         ),
@@ -578,6 +584,8 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 },
             ),
         ),
@@ -783,6 +791,8 @@ fn the_plain_palette_emits_no_escapes_and_keeps_the_glyphs() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -825,6 +835,8 @@ fn a_big_result_weighs_more_than_a_small_one_and_costs_no_cube_colour() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));

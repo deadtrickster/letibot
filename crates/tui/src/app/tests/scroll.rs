@@ -174,6 +174,8 @@ fn a_scrolled_viewport_holds_while_the_transcript_grows() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -480,6 +482,8 @@ fn arrows_walk_the_subagent_output_back_to_its_beginning() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )],
@@ -869,6 +873,8 @@ fn an_open_window_hands_scrolling_on_to_the_conversation_at_its_edges() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     a.screen(80, 24);
@@ -931,6 +937,8 @@ fn an_open_result_window_reaches_its_end_comes_back_at_once_and_fits() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -1017,6 +1025,8 @@ fn scroll_still_works_after_ctrl_t() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -1535,6 +1545,8 @@ fn a_page_through_a_run_of_20_000_hidden_rows_stays_under_a_bound() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         ));
     }
@@ -2305,6 +2317,8 @@ fn the_marker_joins_the_prose_the_tail_walk_rendered_before_it() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -3941,6 +3955,8 @@ fn a_reattach_mid_round_does_not_count_the_working_it_has_rows_for() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
 

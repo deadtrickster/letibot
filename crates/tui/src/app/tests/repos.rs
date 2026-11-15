@@ -95,6 +95,8 @@ fn edited(a: &mut App, id: &str, path: &str) {
             }],
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
 }

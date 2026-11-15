@@ -529,6 +529,8 @@ fn a_stored_row_with_one_edit_excerpt_reads_back_as_a_one_item_list() {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     };
     let row = ledger.append("it", &[1]).unwrap().clone();
     s.append_item(&tr, 0, &item, &row, &[1]).unwrap();
@@ -590,6 +592,8 @@ fn kinds_are_denormalised_correctly() {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     };
     let row = ledger.append("it", &[1]).unwrap().clone();
     s.append_item(&tr, 0, &item, &row, &[1]).unwrap();

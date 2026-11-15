@@ -1010,6 +1010,8 @@ fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     // And the one whose last row IS an answer - the case the review was about: its text is what it

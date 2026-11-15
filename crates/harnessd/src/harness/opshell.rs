@@ -94,6 +94,8 @@ impl Harness {
                 who: who.to_string(),
             }),
             media: None,
+            ran_ms: None,
+            decision: None,
         };
         self.append_imported(&[item])
     }
@@ -250,6 +252,8 @@ impl Harness {
                     who: who.to_string(),
                 }),
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         ];
         self.append_imported(&rows).map_err(|e| e.to_string())

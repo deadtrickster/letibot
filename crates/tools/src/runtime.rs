@@ -2283,6 +2283,8 @@ impl ToolRuntime {
             }
         }
 
+        // From the start, as a head's clock reads it: a decision wait is not running time.
+        let ran = std::time::Instant::now();
         sink.emit(ToolEvent::Started {
             turn_id: turn_id.to_string(),
             call_id: call.id.clone(),
@@ -2465,6 +2467,7 @@ impl ToolRuntime {
             // path bounds what goes into the prompt, and an image is bounded by its own format;
             // a truncated base64 is not a smaller picture, it is a corrupt one.
             media: invocation.media,
+            ran_ms: Some(ran.elapsed().as_millis() as u64),
         };
         sink.emit(finished_event(turn_id, &result));
         result
@@ -2485,6 +2488,9 @@ impl ToolRuntime {
             // excerpt is bounded because a head only draws it, while an image is sent, and a
             // bounded image is a truncated data URI the server refuses or renders as garbage.
             media: result.media.clone(),
+            ran_ms: result.ran_ms,
+            // The daemon fills it: the runtime's gate does not see the settled record.
+            decision: None,
         }
     }
 }

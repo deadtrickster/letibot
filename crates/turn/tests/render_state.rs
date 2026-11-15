@@ -154,6 +154,8 @@ fn one_batch_and_many_appends_build_the_same_prompt() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
         user("thanks"),
     ];

@@ -1447,6 +1447,8 @@ fn thinking_that_is_still_arriving_is_one_fold_with_the_run_it_will_join() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         );
         seq += 1;

@@ -257,6 +257,8 @@ fn the_next_request_carries_the_reasoning_item_the_first_round_issued() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     ];
     let second = p

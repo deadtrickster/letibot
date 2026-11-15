@@ -34,6 +34,9 @@ pub struct ToolResult {
     /// Repair codes this session's model has already been told about, which [`ToolResult::render`] does
     /// not repeat. `repairs` still holds them, so the head and the metrics count every repair.
     pub repairs_told: Vec<&'static str>,
+    /// Milliseconds from the tool starting to its result, set by the runtime. `None` for a call
+    /// refused before it started, which ran for no time at all.
+    pub ran_ms: Option<u64>,
 }
 
 impl ToolResult {
@@ -48,6 +51,7 @@ impl ToolResult {
             spill: None,
             edits: Vec::new(),
             media: None,
+            ran_ms: None,
             repairs_told: Vec::new(),
         }
     }

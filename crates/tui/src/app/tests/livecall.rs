@@ -290,6 +290,8 @@ fn a_cards_change_opens_the_popup_its_landed_row_opens() {
                 edits: vec![a_change()],
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));

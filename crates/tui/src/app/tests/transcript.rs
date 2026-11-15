@@ -859,6 +859,8 @@ fn the_conversation_rung_shows_the_conversation_and_nothing_else() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         ),
@@ -1068,6 +1070,8 @@ fn a_rung_that_hides_the_held_row_moves_the_view_and_says_so() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -2262,6 +2266,8 @@ fn asked_rows(a: &mut App, seq: u64, id: &str, payload: &str) {
             edits: Vec::new(),
             origin: Some(letibot_transcript::CallOrigin::Operator { who: "dead".into() }),
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     for (n, speaker, text) in [
@@ -2697,6 +2703,8 @@ fn a_second_round_of_calls_does_not_relabel_the_first_rounds_results() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -2827,6 +2835,8 @@ fn a_settled_call_is_one_row_when_the_round_does_not_start_at_row_zero() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -2897,6 +2907,8 @@ fn a_message_sent_mid_round_does_not_orphan_the_rounds_results() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -2942,6 +2954,8 @@ fn a_turn_is_a_question_a_step_of_working_and_an_answer_back_at_the_margin() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -3233,6 +3247,8 @@ fn a_run_of_hidden_rows_draws_one_line_that_continues_the_sentence() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -3367,6 +3383,8 @@ fn a_tool_heavy_turn_draws_one_marker_however_the_rows_are_interleaved() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         );
     }
@@ -3407,6 +3425,8 @@ fn a_tool_heavy_turn_draws_one_marker_however_the_rows_are_interleaved() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         );
     }
@@ -3491,6 +3511,8 @@ fn a_tool_heavy_turn_draws_one_marker_however_the_rows_are_interleaved() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         );
     }
@@ -3533,6 +3555,8 @@ fn a_run_longer_than_the_window_still_draws_its_marker() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -4092,6 +4116,8 @@ fn a_marker_is_glued_to_a_line_once_however_many_frames_draw_it() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -4173,6 +4199,8 @@ fn the_work_in_flight_is_counted_by_one_marker_not_two() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -4352,6 +4380,8 @@ fn only_the_newest_runs_marker_is_yellow_in_a_turn_of_many_rounds() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -4509,6 +4539,8 @@ fn the_yellow_does_not_stay_on_a_run_the_work_has_left() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         );
     }
@@ -4771,6 +4803,8 @@ fn the_calls_count_goes_pending_and_nothing_else_in_the_marker_does() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -5010,6 +5044,8 @@ fn a_call_the_transcript_has_answered_is_not_drawn_executing() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -5224,6 +5260,8 @@ fn settling_call_is_drawn_in_every_frame(tail: bool) {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
         "landed",
@@ -5319,6 +5357,8 @@ fn a_reused_call_id_does_not_inherit_the_last_rounds_answer() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -5408,6 +5448,8 @@ fn the_counts_after_the_operators_own_message_stand_on_their_own_line() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -5534,6 +5576,8 @@ fn the_counts_land_on_a_sentence_that_fills_its_line() {
                     edits: Vec::new(),
                     origin: None,
                     media: None,
+                    ran_ms: None,
+                    decision: None,
                 }),
             },
         )));
@@ -5685,6 +5729,8 @@ fn a_run_of_one_row_is_one_count() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -5971,6 +6017,8 @@ fn the_yellow_arrives_when_the_call_starts_not_when_a_row_lands() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     // Proposed, so the call is counted and not executing. `marker_carries_live` asks for
@@ -6265,6 +6313,8 @@ fn a_new_round_does_not_forget_the_rows_the_turn_already_produced() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         );
     }
@@ -6372,6 +6422,8 @@ fn a_prompt_that_is_actually_new_still_opens_a_run() {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
     a.apply(ServerFrame::Event(env(
@@ -6489,6 +6541,8 @@ fn a_run_of_rows_no_count_describes_says_what_it_is_rather_than_nothing() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         ),
     ] {
@@ -6545,6 +6599,8 @@ fn the_marker_reads_as_one_paragraph() {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         ),
         (
@@ -7442,6 +7498,8 @@ fn ghost_finish(a: &mut App, seq: u64, n: u64, rid: &str) {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         },
     );
 }

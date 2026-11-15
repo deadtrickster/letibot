@@ -539,6 +539,8 @@ mod tests {
                 edits: Vec::new(),
                 origin: None,
                 media: Some(m),
+                ran_ms: None,
+                decision: None,
             },
             crate::TranscriptItem::ToolResult {
                 call_id: "c2".into(),
@@ -548,6 +550,8 @@ mod tests {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         ];
         mark_delivered(&mut items);

@@ -510,6 +510,8 @@ pub fn recorded_items() -> Vec<(String, TranscriptItem)> {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             },
         ),
         (

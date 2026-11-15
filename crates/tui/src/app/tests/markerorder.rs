@@ -69,6 +69,8 @@ fn result(a: &mut App, seq: u64, id: &str, call: &str) {
                 edits: Vec::new(),
                 origin: None,
                 media: None,
+                ran_ms: None,
+                decision: None,
             }),
         },
     )));
@@ -172,6 +174,8 @@ fn a_row_landing_later_in_a_run_recounts_its_marker_at_once() {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     };
     row(&mut a, "s.0", "assistant", assistant("Looking:"));
     row(&mut a, "s.1", "tool_result", result("c1"));
