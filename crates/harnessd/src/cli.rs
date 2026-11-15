@@ -1142,6 +1142,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         eprintln!("  {said}");
     }
     registry.set_store_older(said);
+    crate::late_scope::spawn(registry.clone());
     // The daemon watches its own memory - `memwatch`. One line a minute in this log, a
     // census when it crosses a step, and a warning on every session.
     crate::memwatch::spawn(
@@ -2867,7 +2868,9 @@ fn run_query(
             // What the pick walked past is said, not silently dropped. The launcher deliberately
             // does not capture this stream: it is the announcement of which conversation the next
             // thing typed lands in, and a pick that skipped ten rows to reach it should say so.
-            if latest.hidden > 0 {
+            // Routine: the operator acts on none of it, so it waits for `letibot -v`.
+            let verbose = std::env::var_os("LETIBOT_VERBOSE").is_some_and(|v| !v.is_empty());
+            if verbose && latest.hidden > 0 {
                 eprintln!(
                     "skipped {} session(s) that are not conversations: a task child and the \
                      merge queue's reviewer are sessions, and neither is a conversation to \
@@ -2875,7 +2878,7 @@ fn run_query(
                     latest.hidden
                 );
             }
-            if latest.empty > 0 {
+            if verbose && latest.empty > 0 {
                 eprintln!(
                     "skipped {} session(s) with no rows: nothing was ever said in them",
                     latest.empty

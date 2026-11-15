@@ -414,6 +414,8 @@ pub struct Harness {
     /// Whether this harness has said its workspace is gone - once, at the first wake
     /// that found it so.
     workspace_gone_said: bool,
+    /// Whether this harness has said the launcher's late scope answer (`late_scope`).
+    late_scope_said: bool,
     /// The turn running now was woken only by passing-by room talk: thinking off, a small cap,
     /// and silence is its expected end, never nudged.
     pub(crate) cheap_turn: bool,

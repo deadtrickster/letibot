@@ -3568,6 +3568,7 @@ impl Harness {
             restart_notices: Vec::new(),
             kept_jobs,
             workspace_gone_said: false,
+            late_scope_said: false,
             cheap_turn: false,
             monitors_seen_live: Vec::new(),
             gate_told: Default::default(),

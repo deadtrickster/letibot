@@ -60,6 +60,7 @@ pub mod harness;
 pub mod httphead;
 pub mod instruments;
 pub mod jobwatch;
+pub mod late_scope;
 pub mod leases;
 // The seat's config layer, re-exported rather than re-implemented: which file a leticode
 // reads is a leticode decision, and it lives in `crates/leticode-config` outside the

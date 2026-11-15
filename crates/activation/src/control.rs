@@ -200,7 +200,9 @@ pub fn execute(steps: &[Step]) -> Result<(), String> {
                     if i > 0 {
                         std::thread::sleep(std::time::Duration::from_millis(700));
                     }
-                    match Command::new(&argv[0]).args(&argv[1..]).output() {
+                    let mut cmd = Command::new(&argv[0]);
+                    cmd.args(&argv[1..]);
+                    match crate::bounded::output(cmd, crate::bounded::STEP) {
                         Ok(o) if o.status.success() => true,
                         Ok(o) => {
                             last = String::from_utf8_lossy(&o.stderr).trim().to_string();
@@ -239,6 +241,8 @@ pub struct Status {
     /// The manager holds the sockets.
     pub on: bool,
     pub pid: Option<u32>,
+    /// A query hit [`crate::bounded::QUERY`]: `on` and `pid` are unknown, not false.
+    pub manager_silent: bool,
 }
 
 pub fn status(m: Manager, spec: &Spec, home: &Path, uid: u32) -> Status {
@@ -257,13 +261,19 @@ pub fn status(m: Manager, spec: &Spec, home: &Path, uid: u32) -> Status {
             out.stale.extend(differs(spec, &have, p));
         }
     }
-    let text = |argv: &[&str]| {
-        Command::new(argv[0])
-            .args(&argv[1..])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+    let mut silent = false;
+    let mut text = |argv: &[&str]| {
+        if silent {
+            return None;
+        }
+        match crate::bounded::text(argv, crate::bounded::QUERY) {
+            Ok(t) => t,
+            Err(_) => {
+                // One silent call is the manager's state: the next one would wait as long.
+                silent = true;
+                None
+            }
+        }
     };
     match m {
         Manager::Launchd => {
@@ -290,6 +300,7 @@ pub fn status(m: Manager, spec: &Spec, home: &Path, uid: u32) -> Status {
             .and_then(|t| main_pid(&t));
         }
     }
+    out.manager_silent = silent;
     out
 }
 

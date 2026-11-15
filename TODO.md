@@ -4524,3 +4524,19 @@ Kept verbatim and not repeated here: the five read-only reviews of 2026-10-12 (R
 4. The store-key rule is in d.3 of both: the key is the folder the daemon was spawned from (`Config::for_the_daemon` pins `store_key` before `--workspace` is read, `--project` overrides it), which is why `open_job_elsewhere` reads every project file.
 
 **Left.** A plain `letibot --stop` still ends every job; that is the operator's stop and stays so. The R241 done-when item "a SIGTERM with a running job leaves it running for the next daemon" is covered by the restart path's own tests (`harness/tests/kept_jobs.rs`) plus the marker test here; no end-to-end test runs a real daemon through a reaper stop.
+
+## R274 - The launcher never waits on a user manager that does not answer
+
+**Status:** built on branch `no-hang`, 2026-11-15. `letibot doctor` (branch `doctor`) already bounds its `systemctl` calls (`run_bounded`, 10s), so it is left as it is.
+
+**Measured 2026-11-15:** the user manager (pid 2894) at 100% CPU after a `reset-failed` of ~128k units. `letibot --continue` hung for ever in `letibot-multi rooms is-on` -> `systemctl --user show letibot-rooms.service -p MainPID --value`, while `harnessd --room` ran and its socket answered. The screen showed the "skipped N session(s)" lines and the session line, with no sign it was waiting.
+
+**Built:**
+- `letibot_activation::bounded`: one helper for a manager call, killed at its bound. `control::status` asks with a 2s bound and stops asking after the first silent call (`Status::manager_silent`). `control::execute` bounds each step at 30s.
+- `rooms is-on` dials the room socket first (a `rooms` frame before any `hello`, answered with a `bye`, so nothing is registered). The manager is asked only when the socket does not answer.
+- `scripts/letibot`: the scope probe (`systemd-run --user --scope true`) runs in the background, once per launcher run, and is waited for 2s with a live `waiting for systemd (Ns)...` line on a terminal. It is asked in the launcher's own shell before the daemon is detached, so the wait and the degraded line reach the terminal and not only the daemon's log. The daemon's start has a live `waiting for the daemon to start (Ns)...` line too. Past the bound the session starts without a scope, with one line saying memory caps and io accounting are off, and the probe keeps running. Its answer lands in `$RUNDIR/scope-probe-<pid>/answer`, whose path the daemon gets as `LETIBOT_SCOPE_LATE`.
+- `harnessd::late_scope`: watches that file. When the probe answers, every live session gets a `systemd_answered_late` warning and a wake, and the model gets the same sentence as a notice: what systemd said, and that the daemon runs without its own scope until `letibot --stop` and a start. A scope is not adopted late: memory delegation is read once at start (`delegate_memory`).
+- What harnessd needs from the scope, measured in a `tmux-spawn-*.scope`: `mkdir` and a process move in its own cgroup work, so `host_tree` succeeds and `bash` is seated. `delegate_memory` fails (the cgroup holds other processes) and the daemon says UNCAPPED. Nothing refuses.
+- The `--latest-session` "skipped N session(s)" lines are said only under `letibot -v` (`LETIBOT_VERBOSE`).
+
+**Tests:** `crates/activation/src/bounded.rs` (a hung command is killed at the bound), `crates/letibot/tests/no_hang.rs` (a `systemctl` that sleeps for ever: `is-on` answers from the socket in under 3s and gives up in under 4s without one; a `systemd-run` that answers after 6s: `letibot --new` reaches the head in under 5s, says one degraded line and at most three lines in all, and the probe's answer reaches the file the daemon was handed), `crates/harnessd/src/late_scope.rs` (the answer is warned on every live session).

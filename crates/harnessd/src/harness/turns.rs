@@ -476,6 +476,13 @@ impl Harness {
         // And what a shadow turn_end verdict decided: its templated reminder, or the held regex nudge.
         let shadow = self.shadow_notices();
         notices.extend(self.say_all(&Facts::Steer, shadow));
+        // The model hears the scope answer too, not only the operator's head.
+        if !self.late_scope_said
+            && let Some(said) = crate::late_scope::answer()
+        {
+            self.late_scope_said = true;
+            notices.push(said.to_string());
+        }
         let queue_n = notices.len();
         let cursor_before = self.monitor_cursor.load(Ordering::SeqCst);
         // A firing is a delivery and not one more sentence among the settlements: it gets a row

@@ -96,7 +96,21 @@ fn go(cmd: Cmd) -> Result<ExitCode, String> {
     match cmd {
         Cmd::Help => Ok(ExitCode::SUCCESS),
         Cmd::IsOn => {
+            // The socket first: a coordinator that answers is the fact the launcher needs, and
+            // the manager is asked only when it does not. Installed is read from the files.
+            let installed = h.spec.files(h.m, &h.home).iter().all(|(p, _)| p.exists());
+            if installed && answers(&h.socket, PING_BOUND) {
+                return Ok(ExitCode::SUCCESS);
+            }
             let st = control::status(h.m, &h.spec, &h.home, h.uid);
+            if st.manager_silent {
+                eprintln!(
+                    "letibot rooms: the user manager did not answer within {}s and the room \
+                     socket {} did not answer either",
+                    letibot_activation::bounded::QUERY.as_secs(),
+                    h.socket.display()
+                );
+            }
             Ok(if activation::launcher_spawns(activation::serves(&st)) {
                 ExitCode::from(1)
             } else {
@@ -114,6 +128,27 @@ fn go(cmd: Cmd) -> Result<ExitCode, String> {
         }
         Cmd::Verb(v) => verb_run(v, &h).map(|()| ExitCode::SUCCESS),
     }
+}
+
+const PING_BOUND: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// A frame the coordinator answers before any `hello`, and answers with a `bye`: nothing is
+/// registered, so asking leaves no presence behind.
+const PING: &str = "{\"type\":\"rooms\"}\n";
+
+/// Whether a coordinator reads `socket` and answers within `bound`.
+fn answers(socket: &std::path::Path, bound: std::time::Duration) -> bool {
+    use std::io::{BufRead, Write};
+    let Ok(mut s) = std::os::unix::net::UnixStream::connect(socket) else {
+        return false;
+    };
+    let _ = s.set_read_timeout(Some(bound));
+    let _ = s.set_write_timeout(Some(bound));
+    if s.write_all(PING.as_bytes()).is_err() {
+        return false;
+    }
+    let mut line = String::new();
+    matches!(std::io::BufReader::new(s).read_line(&mut line), Ok(n) if n > 0)
 }
 
 /// The coordinator binary: `harnessd` beside this one, resolved, so a rebuild in place is what

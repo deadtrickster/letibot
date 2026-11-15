@@ -8,6 +8,7 @@
 //!   first connection ──▶ helper starts, takes the fds (intake) ──▶ serves ──▶ idle: exits 0
 //! ```
 
+pub mod bounded;
 pub mod control;
 pub mod intake;
 pub mod render;

@@ -328,16 +328,60 @@ epoch_fmt() { # epoch_fmt SECONDS FORMAT
 # **AND WHAT IT SAYS IS THE MANAGER'S OWN ANSWER** (TODO.md R192): "no systemd user manager
 # here" was false on the box that reported it - the manager was there, at its unit limit, and
 # refusing. The probe is bounded too, so a manager pegged at 100% CPU costs seconds, not minutes.
-SCOPE_PROBE_SECONDS=10
+SCOPE_PROBE_SECONDS=2
 SCOPE_WHY=""
 # A command that cannot outlive `SCOPE_PROBE_SECONDS`. `timeout` is coreutils and is absent on a
 # Mac, where this is not asked anyway.
 probe_bounded() {
   if command -v timeout >/dev/null 2>&1; then
-    timeout "$SCOPE_PROBE_SECONDS" "$@"
+    timeout -k 1 "$SCOPE_PROBE_SECONDS" "$@"
     return $?
   fi
   "$@"
+}
+# **A probe past its bound is left running, not killed** (TODO.md R274). The session starts
+# without waiting; the probe's answer lands in `SCOPE_LATE` (`rc<TAB>seconds<TAB>last line`),
+# and the daemon, handed that path, tells its sessions what systemd said. One probe per launcher
+# run: the room and the daemon are detached in subshells, and the directory is the lock.
+SCOPE_LATE=""
+scope_probe_start() {
+  local dir="$RUNDIR/scope-probe-$$"
+  SCOPE_LATE="$dir/answer"
+  mkdir -p "$RUNDIR" 2>/dev/null || true
+  # Answered probes of earlier runs. One still unanswered is kept: a daemon waits on it.
+  find "$RUNDIR" -maxdepth 1 -name 'scope-probe-*' -mmin +60 -exec test -f '{}/answer' ';' \
+    -exec rm -rf '{}' + 2>/dev/null || true
+  mkdir "$dir" 2>/dev/null || return 0
+  # Twice forked, so the probe is nobody's child here and outlives an `exec`.
+  (
+    (
+      started=$(date +%s)
+      rc=0
+      out="$(systemd-run --user --scope --quiet --collect --expand-environment=no true 2>&1)" || rc=$?
+      line="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1 || true)"
+      printf '%s\t%s\t%s\n' "$rc" "$(($(date +%s) - started))" "$line" >"$SCOPE_LATE.tmp" &&
+        mv "$SCOPE_LATE.tmp" "$SCOPE_LATE"
+    ) </dev/null >/dev/null 2>&1 &
+  )
+}
+# Waits up to `SCOPE_PROBE_SECONDS` for the answer, with one live line on a terminal so a slow
+# manager does not look like a hung launcher. 0 when it answered.
+scope_probe_wait() {
+  local i=0 ticks=$((SCOPE_PROBE_SECONDS * 10)) shown=""
+  # An earlier caller in this run already waited the bound out.
+  [ -f "${SCOPE_LATE%/*}/late" ] && [ ! -f "$SCOPE_LATE" ] && return 1
+  while [ ! -f "$SCOPE_LATE" ] && [ "$i" -lt "$ticks" ]; do
+    if [ -t 2 ] && [ $((i % 10)) -eq 5 ]; then
+      printf '\rletibot: waiting for systemd (%ss)...' "$((SCOPE_PROBE_SECONDS - i / 10))" >&2
+      shown=1
+    fi
+    sleep 0.1
+    i=$((i + 1))
+  done
+  [ -n "$shown" ] && printf '\r\033[K' >&2
+  [ -f "$SCOPE_LATE" ] && return 0
+  : >"${SCOPE_LATE%/*}/late" 2>/dev/null || true
+  return 1
 }
 scope_ok() {
   SCOPE_WHY=""
@@ -349,16 +393,15 @@ scope_ok() {
     SCOPE_WHY="there is no systemd-run on this PATH"
     return 1
   fi
-  local out rc=0 line
-  out="$(probe_bounded systemd-run --user --scope --quiet --collect --expand-environment=no true 2>&1)" || rc=$?
-  [ "$rc" -eq 0 ] && return 0
-  if [ "$rc" -eq 124 ]; then
-    SCOPE_WHY="the user manager did not answer within ${SCOPE_PROBE_SECONDS}s"
+  local rc line
+  scope_probe_start
+  if ! scope_probe_wait; then
+    SCOPE_WHY="late"
     return 1
   fi
-  # Its last line, which is where systemd puts the reason: the rest is the transient unit's own
-  # chatter, and a multi-line message in a terminal's scrollback is the one nobody finishes.
-  line="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1 || true)"
+  IFS=$'\t' read -r rc _ line <"$SCOPE_LATE" || rc=1
+  [ "$rc" = 0 ] && return 0
+  # The manager's own last line, which is where systemd puts the reason.
   SCOPE_WHY="the user manager refused a scope: ${line:-exit $rc with nothing said}"
   return 1
 }
@@ -383,8 +426,19 @@ scope_accepts_runtime_max() {
   SCOPE_RUNTIME_WHY="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1 || true)"
   return 1
 }
+SCOPE_LATE_LINE="letibot: the systemd user manager is not answering - the daemon runs without its own scope, and memory caps and io accounting are off for it. Its sessions are told when systemd answers."
+# The probe asked in this shell, before a detach, so its wait and its degraded line are on the
+# operator's terminal and not only in the daemon's log. The detached call then finds the answer,
+# or the late mark, without waiting again.
+scope_ask_here() {
+  [ "$HOST_OS" = Darwin ] && return 0
+  if ! scope_ok && [ "$SCOPE_WHY" = late ]; then
+    echo "$SCOPE_LATE_LINE" >&2
+  fi
+}
 scope_run() { # scope_run UNIT-STEM
   SCOPE_RUN=()
+  unset LETIBOT_SCOPE_LATE
   if scope_ok; then
     SCOPE_RUN=(systemd-run --user --scope --quiet --collect --expand-environment=no
       --unit "$1-$KEY-$$" --slice "$SCOPE_SLICE" -p Delegate=yes -p OOMPolicy=continue)
@@ -395,6 +449,9 @@ scope_run() { # scope_run UNIT-STEM
         echo "letibot: the user manager would not put a runtime bound on a scope: ${SCOPE_RUNTIME_WHY:-it refused, and said nothing} - the hard TTL is the reaper's, which reads the owner row" >&2
       fi
     fi
+  elif [ "$SCOPE_WHY" = late ]; then
+    export LETIBOT_SCOPE_LATE="$SCOPE_LATE"
+    echo "$SCOPE_LATE_LINE" >&2
   elif [ "$HOST_OS" != Darwin ]; then
     echo "letibot: ${SCOPE_WHY} - harnessd shares this terminal's cgroup, and its tool calls run uncapped" >&2
   fi
@@ -1432,6 +1489,11 @@ PROVIDER_SET=""
 PROVIDER_NAME=""
 while [ $# -gt 0 ]; do
   case "$1" in
+    -v | --verbose)
+      # The routine startup lines (sessions a pick skipped) are said only when asked for.
+      export LETIBOT_VERBOSE=1
+      shift
+      ;;
     --read-only)
       ROLE=orchestrator
       ADJ=""
@@ -3532,6 +3594,7 @@ if ! live; then
   # fresh session those two verbs mean. `--title` names it when `--new` gave one.
   STARTED=1
   rundir
+  scope_ask_here
   detach letibot-harnessd "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"} \
     ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" --socket "$SOCKET" \
     --role "$ROLE" ${ADJ:+--adjudicator "$ADJ"} ${MODE:+--mode "$MODE"} \
@@ -3552,12 +3615,15 @@ if ! live; then
   while ! live; do
     kill -0 "$DPID" 2>/dev/null || break
     [ "$waited" -ge 600 ] && break
-    if [ "$waited" -gt 0 ] && [ $((waited % 20)) -eq 0 ]; then
+    if [ -t 2 ] && [ "$waited" -gt 0 ] && [ $((waited % 2)) -eq 0 ]; then
+      printf '\rletibot: waiting for the daemon to start (%ss)...\033[K' "$((waited / 2))" >&2
+    elif [ "$waited" -gt 0 ] && [ $((waited % 20)) -eq 0 ]; then
       echo "letibot: still starting ($((waited / 2))s): $(tail -1 "$LOG" 2>/dev/null | cut -c1-120)" >&2
     fi
     sleep 0.5
     waited=$((waited + 1))
   done
+  if [ -t 2 ] && [ "$waited" -gt 1 ]; then printf '\r\033[K' >&2; fi
   live || {
     echo "letibot: daemon did not come up; last lines of $LOG:" >&2
     tail -15 "$LOG" >&2
