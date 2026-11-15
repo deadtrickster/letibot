@@ -151,6 +151,8 @@ cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.s
 
 Then start a daemon and read its startup lines: they say whether io accounting is live or sampled.
 
+`letibot doctor` checks all of this, and the rest of the box, in one run.
+
 **To undo it:** `echo -io > …/cgroup.subtree_control`, then remove `delegate-io.conf` and run `sudo systemctl daemon-reload`.
 
 The keys that use io are in `docs/config/leticode.toml.md` under `[exec]`: `io_wbps`, `io_wiops`, `disk_floor`, `disk_floor_action`, `disk_watch` and `io_pressure_full`.

@@ -72,9 +72,12 @@ letibot-config-ref.workspace = true
 letibot-activation.workspace = true
 # `letibot rooms install` reads the coordinator's lease, so it does not install over a stray.
 letibot-room.workspace = true
+# `letibot doctor`: the config files are walked as TOML for unknown keys, and the built-in
+# embeddings model's directory is the embeddings crate's rule.
+toml.workspace = true
+letibot-embeddings.workspace = true
 
 [dev-dependencies]
-toml.workspace = true
 # `tests/migrate.rs` hashes a session id the way the launcher's socket key does. Nothing in the
 # binary uses this any more: the socket's key is `letibot_bridge::daemon::key`'s.
 sha2 = "0.10"

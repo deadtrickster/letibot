@@ -530,6 +530,11 @@ case "${1:-}" in
     [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the config reference lives there)"
     exec "$BIN/letibot-multi" "$@"
     ;;
+  doctor)
+    # Its own flags (`--json`) and exit codes (0 ok, 1 warn, 2 FAIL), so it goes before the guard.
+    [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the doctor lives there)"
+    exec "$BIN/letibot-multi" "$@"
+    ;;
 esac
 
 # **`<verb> --help` answers for that verb.** One wall of text for every question is what this
@@ -1027,7 +1032,7 @@ EOF
   cat <<'EOF'
 
 VERBS
-  stats, boundary, notes, browser, rooms, holds, gc, where, migrate, fb, attach
+  stats, boundary, notes, browser, rooms, holds, gc, where, migrate, fb, attach, doctor
   `letibot <verb> --help` is that verb's own page; a verb with no page prints this list.
 
 Env overrides: LETIBOT_BIN LETIBOT_SOCKET LETIBOT_WORKSPACE LETIBOT_STORE

@@ -88,6 +88,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R265 | A usage-limit park cannot be ended or moved: Esc does nothing and `/models` leaves the turn parked on the old model's reset | Code work | built: Esc ends the parked turn with a row naming the limit and the reset, a switch by any door retries the parked request on the new model, the status row names the reset and both ways out; left: the live check on a real Kimi limit |
 | R266 | Reaper remainder: a job across a stop that is not a handover, a start grace for a new owner, d.3 and the store-key rule written down | Code work | built (audit H1, R241's left): the reaper's daemon stop leaves the restart marker so host jobs are kept for the next daemon, the idle exit drains on a running job, a daemon's first 5 minutes judge no owner idle or orphaned, d.3 and the store-key rule written down; left: a plain `letibot --stop` still ends every job, by design |
 | R264 | An `external` wait silences the plan-check forever, so a session idle on two open rows got no nag for 10h | Code work | built: an `external` edge is quiet for 2h from its `since_ms` stamp, then asked about on the ladder; `wait_on` steers a roster seat to `ask` and the operator to `operator`; the restart door reads the nag's predicate |
+| R271 | `letibot doctor`: what the box gives letibot, measured, with the fix for each warn or FAIL | Code work | built: the verb, its launcher pass-through, `--json`, exit 0/1/2, and the checks below; left: `[exec] disk_floor` is read with a 5% default until R269 adds the key, and the checks in its "not checked" footer |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -1492,6 +1493,27 @@ Built.
 7. TUI: a peer row draws as `cc@rano ▸ ...` in the info register, never the `▌` bar; a shadow offer row draws under `shadow · ` and a click opens the shadow session it names (`shadow session: <id>`), the popup behind it. The note row reads "shadow suggests saving a note", the quote, "quoted from the operator at HH:MM UTC (row N)". `leticode_transcript` rows carry `from`. Docs and the leticode skill say agents talk to sessions through the bridge or the room, never by typing into a head.
 
 Left. Nothing writes a proposed note yet, so the provenance the row carries ("quoted from X at T (row N)") is not yet copied into a written note. The head draws a queued echo only for its own prompts, so an agent's prompt shows when its row lands, not while queued. Only the bridge names a sender; another programmatic head (flowy, acp) still sends as the operator. The live 30% void rate on turn_end was not re-measured on the live session itself, whose recent rows hold no human labels.
+
+## R271 - `letibot doctor`: what the box gives letibot, measured, with the fix for each warn or FAIL
+
+**Status:** built, 2026-11-15, branch `doctor`. left: `[exec] disk_floor` is read with a 5% default until R269 adds the key, and the footer's unmeasured checks.
+
+`firecode doctor`'s shape: sections, one row per check as `ok` / `warn` / `FAIL` with a label and a short value, then a "what to do" block with the command for each warn or FAIL. `letibot doctor` is a verb of `letibot-multi` (`crates/letibot/src/doctor.rs`), passed through by `scripts/letibot`. `--json` prints one object. Exit 0 all ok, 1 warnings only, 2 any FAIL. Read-only: `providers.toml` is parsed for key names only and its parse error keeps a message only when it names a key, `keys/` is stat'ed and never opened, `~/.claude.json` is read for `mcpServers` names, `~/.bash_aliases` for the `claude` alias text.
+
+**Checks.**
+- cgroups: the user manager's controllers (cpu memory pids, io warned), io in its `subtree_control`, `DelegateControllers`. Fixes are `docs/install.md` "On Linux".
+- host: `/dev/kvm` usable and kvm group membership, drkonqi coredump socket masked, the user manager's failed units, load against cores, `/tmp` not a tmpfs over half of RAM.
+- binaries: `harnessd`, `letibot-tui`, `letibot-mcp`, `letibot-multi` on PATH and agreeing on version (and commit, when one is embedded); `letibot` a script and not an ELF; `letibot-askpass` the multicall by inode or bytes.
+- daemons: harnessd on a `(deleted)` or older-than-installed binary, listed by folder; each in a `letibot-harnessd-*` scope; the room socket reachable; `LETIBOT_STORE` not naming a file.
+- config: `providers.toml`, `leticode.toml`, `hosts.toml` parse (the real parser too for the last two) with unknown keys from `letibot-config-ref`; `providers.toml` and `hosts.toml` 0600; `keys/` 0700; reference headers current.
+- models: on-box model servers (`LETIBOT_ENDPOINT`, `[model.NAME] url`) answer `/health`; the embeddings model's files with `[embeddings] mode = "internal"`.
+- Claude Code: the leticode plugin enabled, no user-scope `leticode` server, the alias or wrapper loading `plugin:leticode@`, one `letibot-mcp` server per `claude` process, bridges not on a deleted or `target/` binary, none above 50% CPU over a 1 s sample, a room waiter per Claude folder, fewer than 5 `until [ -s` loops per session.
+- disk: free space on the data dir, /build and `$CARGO_TARGET_DIR` against the floor; each `/build/target-*` with its size, warned when no process works in it; a `/build/gate.lock` holder past 2 h; zero-byte refs under `~/Projects/*/{,*/}.git/refs`.
+- firecode, when on PATH: taps, and `firecode doctor`'s summary line under a 120 s bound.
+
+**Not checked** (footer): daemon build against the store schema, `[fallback]` coverage, fleet boxes, firecode copy-out canary, `reap_event` kills, `systemd-run --user --scope` responsiveness, MCP servers at Claude Code start.
+
+Tests: `doctor::tests` in `crates/letibot`, 30, every check against a temp fixture (fake cgroup, `/proc`, PATH, config, `~/.claude.json`, sockets, listeners). None reads the operator's home, config, store or `/proc`.
 
 ## R268 - Spills are durable: kept in the data dir, bounded by a budget, evicted visibly
 

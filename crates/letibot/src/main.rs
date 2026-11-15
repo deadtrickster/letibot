@@ -55,6 +55,7 @@ use std::process::ExitCode;
 mod boundary;
 mod browser;
 mod config_ref;
+mod doctor;
 mod gc;
 mod github;
 pub mod migrate;
@@ -322,6 +323,8 @@ fn main() -> ExitCode {
                     // `letibot attach github <org|owner/repo>`: a source and then a scope, checked
                     // before anything is polled so a typo is not a seat on somebody else's repo.
                     github::run(&tail())
+                } else if word == "doctor" {
+                    doctor::run(&tail())
                 } else if word == "--config-reference" {
                     config_ref::reference(&tail())
                 } else if word == "--config-header" {
@@ -394,6 +397,8 @@ VERBS
                               prints docs/config/FILE.md
   --config-header FILE        write the reference block into a TOML config file's header
                               (FILE.bak first; nothing outside the block changes)
+  doctor [--json]             what this box gives letibot, one row per check, and the
+                              command that fixes each warn or FAIL; exit 0 ok, 1 warn, 2 FAIL
   holds [OWNER]               what every owner holds on disk - its cgroup with its process
                               count and memory, its VM, its copies, its worktree and target
   gc [OWNER]                  what would be reaped, why, when; `--log` shows the journal.

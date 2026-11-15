@@ -1406,6 +1406,7 @@ dependencies = [
  "letibot-config-ref",
  "letibot-dialect-glm",
  "letibot-dialect-qwen",
+ "letibot-embeddings",
  "letibot-github",
  "letibot-harnessd",
  "letibot-metrics",
