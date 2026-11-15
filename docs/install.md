@@ -114,6 +114,47 @@ A local model needs its vocabulary. `--vocab` names the GGUF it serves, and ever
 dialect uses (`<|im_start|>`, `<think>`, `<tool_call>`, ...) must be one entry in it - checked at
 start, refused by name. None of the small `ggml-vocab-*` files llama.cpp ships passes for Qwen 3.x.
 
+## On Linux
+
+letibot puts every tool call and job in its own cgroup (v2). It caps memory and CPU there, counts IO, and freezes or kills a whole job tree at once. The cgroups live under your user's systemd manager, so letibot can only use the controllers that manager hands down to it.
+
+**What the stock setup gives.** On most distributions the user manager hands down `cpu memory pids`. That is enough for memory caps and job lifetimes. To check:
+
+```sh
+cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers
+```
+
+**IO accounting, throttling and the disk floor need `io` as well.** Without it, a job's bytes written are sampled from `/proc` and undercount short-lived children, `io.max` throttling is off, and the daemon says so at startup. The setup is done once, as root:
+
+```sh
+sudo mkdir -p /etc/systemd/system/user@.service.d
+printf '[Service]\nDelegate=cpu memory pids io\n' | sudo tee /etc/systemd/system/user@.service.d/delegate-io.conf
+sudo systemctl daemon-reload
+```
+
+It takes effect when your user manager next starts, which is at a login after all your sessions have ended, or at a reboot. Restarting the user manager (`systemctl restart user@$(id -u)`) kills every user process, tmux included, so do not use it on a box with work running.
+
+**To turn it on now, without a restart.** The manager's own subtree file belongs to you:
+
+```sh
+echo +io > /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.subtree_control
+```
+
+This is done behind systemd's back, and a systemd reload may undo it. Repeat it after a reload, or rely on the drop-in at the next fresh start. Daemons that were already running keep the sampled fallback until they restart.
+
+**To check that it worked:**
+
+```sh
+systemctl show user@$(id -u).service -p DelegateControllers   # cpu io memory pids
+cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.subtree_control
+```
+
+Then start a daemon and read its startup lines: they say whether io accounting is live or sampled.
+
+**To undo it:** `echo -io > …/cgroup.subtree_control`, then remove `delegate-io.conf` and run `sudo systemctl daemon-reload`.
+
+The keys that use io are in `docs/config/leticode.toml.md` under `[exec]`: `io_wbps`, `io_wiops`, `disk_floor`, `disk_floor_action`, `disk_watch` and `io_pressure_full`.
+
 ## On macOS
 
 The same tree builds and runs natively on Apple silicon. What a Mac answers differently, and where
