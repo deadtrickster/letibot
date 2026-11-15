@@ -36,6 +36,14 @@ sessions. `$LETIBOT_NOTES_REPO` overrides both; tests that spawn a daemon set it
 `letibot notes push` fetches `origin`, rebases onto `origin/main` and pushes `main`. A conflicting
 rebase is aborted and reported.
 
+## Shadow proposals
+
+The shadow's `turn_end` job may propose a note: a row in the watched session quoting the operator
+or the model, with its author and row. `/note accept N` writes it through the `notes` tool, under
+a `shadow-<first words>` name, with a `Source:` line naming the author, the quoted row's time, the
+session and row, and the shadow session. `/note decline N` writes nothing. Without N both act on
+the newest proposal. The model's seat need not hold `notes`: the accept is the operator's.
+
 ## Moving in-tree notes
 
 `scripts/migrate-notes.sh PROJECT [--repo DIR] [--remote URL] [--push]` copies

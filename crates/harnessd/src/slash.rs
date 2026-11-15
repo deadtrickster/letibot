@@ -37,6 +37,7 @@ pub const VERBS: &[&str] = &[
     "models",
     "monitor",
     "nag",
+    "note",
     "prune",
     "queue",
     "supervise",
@@ -82,6 +83,12 @@ pub enum Slash {
     /// `/monitor retire NAME`: end a monitor the model armed - the monitors pane's `x`. The
     /// model is told it was retired, and by whom, on its next turn.
     MonitorRetire(String),
+    /// `/note accept [N]` or `/note decline [N]`: the operator's answer to the shadow's note
+    /// proposal on row N, the newest when N is left out.
+    Note {
+        accept: bool,
+        row: Option<usize>,
+    },
     /// What this session's commands get: paths, network, env, hidden. See [`crate::perimeter`].
     Boundary,
     /// What this conversation can call, and what it only looks like it can.
@@ -303,6 +310,19 @@ impl Slash {
                     .unwrap_or(0);
                 Slash::Job { job, offset }
             }
+            Some("note") => match (words.get(1).copied(), words.get(2).map(|n| n.parse::<usize>())) {
+                (Some(v @ ("accept" | "decline")), None | Some(Ok(_))) if words.len() <= 3 => {
+                    Slash::Note {
+                        accept: v == "accept",
+                        row: words.get(2).and_then(|n| n.parse().ok()),
+                    }
+                }
+                _ => Slash::Help(
+                    "/note accept [N] saves the shadow's proposed note on row N (the newest when \
+                     N is left out); /note decline [N] drops it"
+                        .into(),
+                ),
+            },
             Some("monitor") => match (words.get(1).copied(), words.get(2)) {
                 (Some("retire"), Some(name)) => Slash::MonitorRetire((*name).to_string()),
                 _ => Slash::Help(

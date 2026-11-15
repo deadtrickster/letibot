@@ -1577,6 +1577,13 @@ impl<'a> Sessions<'a> {
                     ok: false,
                 },
             },
+            Slash::Note { accept, row } => match self.open.get_mut(session_id) {
+                Some(h) => h.answer_note_proposal(accept, row),
+                None => SlashReply {
+                    lines: vec![format!("session {session_id} is not open")],
+                    ok: false,
+                },
+            },
             Slash::MonitorRetire(name) => match self.open.get(session_id) {
                 Some(h) => h.retire_monitor_for_operator(&name),
                 None => SlashReply {

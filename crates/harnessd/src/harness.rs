@@ -1705,6 +1705,7 @@ mod jobs;
 mod limit;
 mod models;
 mod nags;
+mod note_accept;
 pub(crate) mod open;
 mod opshell;
 mod parts;

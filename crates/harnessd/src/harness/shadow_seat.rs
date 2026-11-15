@@ -290,7 +290,12 @@ impl Harness {
             ) = &e.outcome
             {
                 let at = quote.row.and_then(|r| self.row_clock(r));
-                rows.push(turn_end::note_row(quote, at.as_deref(), &shadow_id));
+                let mut row = turn_end::note_row(quote, at.as_deref(), &shadow_id);
+                if let TranscriptItem::Offer { body, .. } = &mut row {
+                    let n = self.session.items.len() + rows.len();
+                    body.push_str(&format!("\n\n{}", crate::note_accept::hint(n)));
+                }
+                rows.push(row);
             }
         }
         if !rows.is_empty() {

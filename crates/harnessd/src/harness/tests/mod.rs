@@ -48,6 +48,7 @@ mod jobs;
 mod kept_jobs;
 mod marks;
 mod misc;
+mod note_accept;
 mod notice_door;
 mod offer_row;
 mod operator_ask;
