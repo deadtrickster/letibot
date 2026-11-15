@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::time::Duration;
 
-use letibot_mcp::{Catalog, ServerSpec, Transport};
+use letibot_mcp_client::{Catalog, ServerSpec, Transport};
 use letibot_tools::builtins::external::mcp::McpCatalog;
 use serde_json::{Value, json};
 

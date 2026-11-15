@@ -1625,7 +1625,7 @@ dependencies = [
  "letibot-github",
  "letibot-http",
  "letibot-llama",
- "letibot-mcp",
+ "letibot-mcp-client",
  "letibot-metrics",
  "letibot-opencode",
  "letibot-plugin",
@@ -1665,7 +1665,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "letibot-mcp"
+name = "letibot-mcp-client"
 version = "0.6.0"
 dependencies = [
  "letibot-http",

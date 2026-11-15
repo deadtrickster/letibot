@@ -28,6 +28,7 @@ fn card(req_id: &str) -> SessionEvent {
         write_targets: Vec::new(),
         detail: String::new(),
         options: Vec::new(),
+        edits: Vec::new(),
         options_note: String::new(),
         choices: vec!["yes".into(), "no".into()],
         because: String::new(),

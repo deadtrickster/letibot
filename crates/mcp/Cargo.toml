@@ -1,5 +1,5 @@
 [package]
-name = "letibot-mcp"
+name = "letibot-mcp-client"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

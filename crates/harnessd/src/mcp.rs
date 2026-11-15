@@ -16,22 +16,22 @@ pub fn configured(tables: &std::collections::BTreeMap<String, McpServerKeys>) ->
 /// each table that names neither or both of `command` and `url`.
 pub fn specs(
     tables: &std::collections::BTreeMap<String, McpServerKeys>,
-) -> (Vec<letibot_mcp::ServerSpec>, Vec<letibot_mcp::Failure>) {
+) -> (Vec<letibot_mcp_client::ServerSpec>, Vec<letibot_mcp_client::Failure>) {
     let mut specs = Vec::new();
     let mut bad = Vec::new();
     for (name, k) in tables.iter().filter(|(_, k)| k.enabled) {
         let transport = match (&k.command, &k.url) {
-            (Some(command), None) => letibot_mcp::Transport::Stdio {
+            (Some(command), None) => letibot_mcp_client::Transport::Stdio {
                 command: command.clone(),
                 args: k.args.clone(),
                 env: k.env.clone(),
             },
-            (None, Some(url)) => letibot_mcp::Transport::Http {
+            (None, Some(url)) => letibot_mcp_client::Transport::Http {
                 url: url.clone(),
                 headers: k.headers.clone(),
             },
             (c, _) => {
-                bad.push(letibot_mcp::Failure {
+                bad.push(letibot_mcp_client::Failure {
                     server: name.clone(),
                     why: if c.is_some() {
                         "its table sets both `command` and `url`".into()
@@ -42,25 +42,25 @@ pub fn specs(
                 continue;
             }
         };
-        specs.push(letibot_mcp::ServerSpec {
+        specs.push(letibot_mcp_client::ServerSpec {
             name: name.clone(),
             transport,
             timeout: k
                 .timeout_seconds
-                .map_or(letibot_mcp::DEFAULT_TIMEOUT, Duration::from_secs),
+                .map_or(letibot_mcp_client::DEFAULT_TIMEOUT, Duration::from_secs),
         });
     }
     (specs, bad)
 }
 
-type Pools = Mutex<HashMap<String, Arc<letibot_mcp::Catalog>>>;
+type Pools = Mutex<HashMap<String, Arc<letibot_mcp_client::Catalog>>>;
 
 /// The catalogue for `specs`, and whether this call started it. Keyed by the specs themselves,
 /// so two daemons in one test process with different files never share servers.
 pub fn pool(
-    specs: &[letibot_mcp::ServerSpec],
-    bad: Vec<letibot_mcp::Failure>,
-) -> (Arc<letibot_mcp::Catalog>, bool) {
+    specs: &[letibot_mcp_client::ServerSpec],
+    bad: Vec<letibot_mcp_client::Failure>,
+) -> (Arc<letibot_mcp_client::Catalog>, bool) {
     static POOLS: OnceLock<Pools> = OnceLock::new();
     let key = format!("{specs:?}{bad:?}");
     let mut pools = POOLS
@@ -70,13 +70,13 @@ pub fn pool(
     if let Some(c) = pools.get(&key) {
         return (c.clone(), false);
     }
-    let c = Arc::new(letibot_mcp::Catalog::start(specs).with_failures(bad));
+    let c = Arc::new(letibot_mcp_client::Catalog::start(specs).with_failures(bad));
     pools.insert(key, c.clone());
     (c, true)
 }
 
 /// The warning for each server that did not start.
-pub fn failure_lines(catalog: &letibot_mcp::Catalog) -> Vec<String> {
+pub fn failure_lines(catalog: &letibot_mcp_client::Catalog) -> Vec<String> {
     catalog
         .failures()
         .iter()

@@ -41,7 +41,7 @@ letibot-provider.workspace = true
 letibot-websearch.workspace = true
 # The curl fetcher behind `web_fetch` (`--web-fetch`).
 letibot-webfetch.workspace = true
-letibot-mcp.workspace = true
+letibot-mcp-client.workspace = true
 # R6: reading an opencode conversation into this session's rows.
 letibot-opencode.workspace = true
 # Package H: the same for a Claude Code transcript — reading it in, and writing one out.

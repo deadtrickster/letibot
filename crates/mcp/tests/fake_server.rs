@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use letibot_mcp::{Catalog, ServerSpec, Transport};
+use letibot_mcp_client::{Catalog, ServerSpec, Transport};
 use letibot_tools::adjudicate::AdjudicatedGate;
 use letibot_tools::builtins::external::mcp::McpCatalog;
 use letibot_tools::builtins::external::scripted;
