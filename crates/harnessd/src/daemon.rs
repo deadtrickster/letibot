@@ -390,6 +390,10 @@ impl Daemon {
                             Err(e) => eprintln!("  the review queue's session did not open: {e}"),
                         }
                         sessions.fill_gatekeeper_board();
+                        let relayed = sessions.relay_queue_asks();
+                        if relayed > 0 {
+                            eprintln!("  queue asks -> {relayed} card(s) on the main session");
+                        }
                         let pass = std::time::Instant::now();
                         let served = sessions.serve_reviews();
                         crate::instruments::worker_pass("review", pass, served);

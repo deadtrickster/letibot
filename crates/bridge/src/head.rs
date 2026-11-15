@@ -141,6 +141,9 @@ pub struct Ask {
     pub options_note: String,
     pub choices: Vec<String>,
     pub deadline: Option<u64>,
+    /// The session whose ask this is, when it is not this one's own: a subagent, or a queue
+    /// session whose board question is relayed here.
+    pub from: Option<String>,
 }
 
 impl Ask {
@@ -165,6 +168,7 @@ impl Ask {
             options_note: d.options_note.clone(),
             choices: d.choices.clone(),
             deadline: d.deadline,
+            from: d.subagent.as_ref().map(|s| s.handle.clone()),
         }
     }
 
@@ -186,6 +190,7 @@ impl Ask {
             "options_note": self.options_note,
             "choices": self.choices,
             "deadline": self.deadline,
+            "from": self.from,
         })
     }
 }
@@ -1377,6 +1382,7 @@ impl State {
                 options_note,
                 choices,
                 deadline,
+                subagent,
                 ..
             } => {
                 let tool = call_id
@@ -1418,6 +1424,7 @@ impl State {
                     options_note: options_note.clone(),
                     choices,
                     deadline,
+                    from: subagent.map(|s| s.handle),
                 });
             }
             SessionEvent::DecisionAnswered {

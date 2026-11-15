@@ -1026,3 +1026,39 @@ fn eof_without_bye_marks_the_head_over() {
     assert_eq!(h.snapshot().closed.as_deref(), Some(WENT_AWAY));
     let _ = std::fs::remove_file(&socket);
 }
+
+/// A card that is another session's ask - a queue session's board question relayed onto this
+/// session - is in the asks list, naming that session.
+#[test]
+fn a_relayed_ask_names_the_session_it_is_for() {
+    use letibot_sessionlog::event::{OnTimeout, SubagentAsk};
+    let mut state = State::default();
+    state.fold(ServerFrame::Event(env(
+        1,
+        SessionEvent::DecisionRequested {
+            req_id: "relay-ask:s-gatekeeper-k:1".into(),
+            subagent: Some(SubagentAsk {
+                handle: "s-gatekeeper-k".into(),
+                task: "Raise the cap".into(),
+                root: "s-main".into(),
+            }),
+            kind: "question".into(),
+            call_id: None,
+            access: String::new(),
+            summary: "4 GiB or 8 GiB?".into(),
+            target: String::new(),
+            write_targets: Vec::new(),
+            detail: String::new(),
+            options: Vec::new(),
+            options_note: String::new(),
+            choices: vec!["4".into(), "8".into()],
+            because: String::new(),
+            advice: None,
+            deadline: None,
+            on_timeout: OnTimeout::Ask,
+        },
+    )));
+    let ask = state.asks.first().expect("the ask is listed");
+    assert_eq!(ask.from.as_deref(), Some("s-gatekeeper-k"));
+    assert_eq!(ask.to_json()["from"], "s-gatekeeper-k");
+}

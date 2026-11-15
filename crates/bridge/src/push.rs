@@ -608,9 +608,15 @@ pub fn event(head: &Head, attention: &Attention) -> Option<(String, Value)> {
             "ask",
             format!("ask:{}", a.req_id),
             format!(
-                "{who} asks ({}): {} {} - answer with `leticode_answer`; `leticode_asks` lists \
+                "{who} asks ({}){}: {} {} - answer with `leticode_answer`; `leticode_asks` lists \
                  the options.",
-                a.kind, a.tool, a.summary
+                a.kind,
+                a.from
+                    .as_deref()
+                    .map(|f| format!(" for `{f}`"))
+                    .unwrap_or_default(),
+                a.tool,
+                a.summary
             ),
         ),
         Attention::Failed { why } => (

@@ -84,6 +84,7 @@ pub mod pr_watch;
 pub mod profiles;
 pub mod progress;
 pub mod prompt;
+pub mod queue_asks;
 pub mod reap_pass;
 pub mod recall_index;
 pub mod recall_offer;

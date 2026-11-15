@@ -388,6 +388,8 @@ pub struct Sessions<'a> {
     /// [`Sessions::ensure_gatekeeper`], which runs every review pass, says a standing failure
     /// once and a new one again. `None` once it opens.
     gatekeeper_said: Option<String>,
+    /// The queue's relayed asks answered lately (`crate::queue_asks`).
+    relay_answered: crate::queue_asks::Answered,
     /// Each session's plugin layers - the stack, the recorded inputs and the panes a head has
     /// opened (W4 of `docs/plugins-slice1.md`).
     plugins: HashMap<String, Arc<crate::plugins::PluginHost>>,
@@ -737,6 +739,7 @@ impl<'a> Sessions<'a> {
             idle_held: None,
             bangs: HashMap::new(),
             gatekeeper_said: None,
+            relay_answered: Default::default(),
             plugins: HashMap::new(),
             courts: HashMap::new(),
             threaded: false,
@@ -1005,6 +1008,7 @@ impl<'a> Sessions<'a> {
             idle_held: None,
             bangs: HashMap::new(),
             gatekeeper_said: None,
+            relay_answered: Default::default(),
             plugins: HashMap::new(),
             courts: HashMap::new(),
             threaded: false,
@@ -2786,6 +2790,30 @@ impl<'a> Sessions<'a> {
                 title,
                 prompt: Some(prompt),
             }),
+        )
+    }
+
+    /// The open asks on the review queue's boards, as cards on this daemon's main session - see
+    /// [`crate::queue_asks`]. Returns how many were posted.
+    pub fn relay_queue_asks(&mut self) -> usize {
+        if !self.base.serve_queues {
+            return 0;
+        }
+        let Some(root) = self.registry.get(&self.base.session_id) else {
+            return 0;
+        };
+        let at = self.base.store_at();
+        let Some(store) = at.as_ref().and_then(|a| a.open().ok()) else {
+            return 0;
+        };
+        let asks = crate::queue_asks::open_asks(&store, &self.gatekeeper);
+        crate::queue_asks::relay(
+            &root,
+            &self.registry,
+            at,
+            &self.gatekeeper,
+            &asks,
+            &self.relay_answered,
         )
     }
 

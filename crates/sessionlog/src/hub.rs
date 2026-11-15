@@ -563,6 +563,9 @@ struct Inner {
     /// Where a settled decision goes instead of the command queue. See
     /// [`AnswerSink`] for why the queue cannot carry it.
     answers: Option<Arc<dyn AnswerSink>>,
+    /// Cards posted here for ANOTHER session's ask, by `req_id`, and where each answer goes.
+    /// See [`Hub::post_relayed`].
+    relays: HashMap<String, Arc<dyn AnswerSink>>,
     /// Open password requests: `req_id` -> the channel to the `askpass` connection
     /// waiting on it. The secret goes through the channel and nowhere else - not the log,
     /// not the view, not a `CommandIssued`.
@@ -693,6 +696,7 @@ impl Hub {
                 closed: false,
                 bell: None,
                 answers: None,
+                relays: HashMap::new(),
                 secrets: HashMap::new(),
                 next_secret: 0,
                 screens: HashMap::new(),
@@ -844,6 +848,42 @@ impl Hub {
     /// than the queue that whoever-is-blocked would have to drain.
     pub fn set_answer_sink(&self, sink: Arc<dyn AnswerSink>) {
         self.lock().answers = Some(sink);
+    }
+
+    /// Post a `DecisionRequested` that is another session's ask: a head answers it here like any
+    /// card, and the answer goes to `sink` instead of this session's own. `false` for any other
+    /// event, which is not posted.
+    pub fn post_relayed(&self, event: SessionEvent, sink: Arc<dyn AnswerSink>) -> bool {
+        let SessionEvent::DecisionRequested { req_id, .. } = &event else {
+            return false;
+        };
+        self.lock().relays.insert(req_id.clone(), sink);
+        self.publish(event);
+        true
+    }
+
+    /// Take a relayed card off the heads' screens: its ask was settled or withdrawn elsewhere.
+    /// `false` when no such card is open here.
+    pub fn withdraw_relayed(&self, req_id: &str, basis: impl Into<String>) -> bool {
+        if self.lock().relays.remove(req_id).is_none() {
+            return false;
+        }
+        self.publish(SessionEvent::DecisionAnswered {
+            req_id: req_id.to_string(),
+            outcome: crate::event::DecisionOutcome::Cancelled,
+            by: crate::event::Decider {
+                kind: "relay".into(),
+                identity: String::new(),
+            },
+            basis: basis.into(),
+            late: false,
+        });
+        true
+    }
+
+    /// The relayed cards open here, by `req_id`.
+    pub fn relayed_ids(&self) -> Vec<String> {
+        self.lock().relays.keys().cloned().collect()
     }
 
     /// `sudo` wants a password: raise it to every head, hand back the receiver
@@ -1761,7 +1801,12 @@ impl Hub {
             // An answer does not go on the command queue when anybody is waiting for one - see
             // [`AnswerSink`]. Taken here and delivered after the lock is released, because the
             // sink takes its own mutex. A hub with no sink queues it instead.
-            let deliver = match (&kind, g.answers.clone()) {
+            // A relayed card's answer belongs to the session that asked, never to this one.
+            let relayed = match &kind {
+                CommandKind::Answer { req_id, .. } => g.relays.remove(req_id),
+                _ => None,
+            };
+            let deliver = match (&kind, relayed.or_else(|| g.answers.clone())) {
                 (CommandKind::Answer { req_id, reply }, Some(sink)) => {
                     Some((sink, req_id.clone(), reply.clone()))
                 }
