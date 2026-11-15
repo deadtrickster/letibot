@@ -5018,9 +5018,20 @@ pub(crate) fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, Harn
     let budget: Box<dyn letibot_tools::InlineBudget> = Box::new(cfg.output_cap());
     // One store per project, not per session: a spill outlives the session's daemon and its
     // archive, and only the project's budget evicts it.
-    let store: Box<dyn letibot_tools::SpillStore> = match cfg.spill_dir() {
-        None => Box::new(MemoryStore::new()),
-        Some(dir) => Box::new(letibot_tools::spill::DirStore::new(dir, cfg.spill_budget())),
+    let store: Box<dyn letibot_tools::SpillStore> = match (cfg.spill_dir(), &cfg.spill_storage) {
+        (Some(dir), crate::config::SpillStorage::Dir(root)) => {
+            if let Some(spills) = &cfg.spill_roots
+                && let Err(e) = letibot_tools::spill::record_root(spills, root)
+            {
+                eprintln!("letibot: spill root {root:?} not recorded for `letibot holds`: {e}");
+            }
+            let mut store = letibot_tools::spill::DirStore::new(dir, cfg.spill_budget());
+            if let Some(old) = cfg.legacy_spill_dir() {
+                store = store.with_legacy(old);
+            }
+            Box::new(store)
+        }
+        _ => Box::new(MemoryStore::new()),
     };
     Ok(Spiller::new(budget, store))
 }

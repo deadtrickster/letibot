@@ -727,6 +727,9 @@ pub struct Config {
     pub shadow: crate::shadow::config::ShadowConfig,
     pub spill: SpillPolicy,
     pub spill_storage: SpillStorage,
+    /// `<data dir>/spills` for the daemon, where a `--spill-dir` root is recorded for `letibot
+    /// holds`. `None` in fixtures, so no test writes the data dir.
+    pub spill_roots: Option<PathBuf>,
     /// The backstop, and only the backstop. How many rounds one user turn may take before the
     /// daemon stops and says so; `0` is unbounded, and it is the default, because a round count
     /// measures effort and not progress. [`Config::stall_rounds`] is the closed-loop half.
@@ -1842,6 +1845,7 @@ impl Config {
             shadow: Default::default(),
             spill: SpillPolicy::Files,
             spill_storage: SpillStorage::Memory,
+            spill_roots: None,
             // Unbounded on purpose: `stall_rounds` is the stop that measures progress, and a round
             // count never could. See the field.
             max_tool_rounds: 0,
@@ -1881,6 +1885,7 @@ impl Config {
         // Spills follow the conversation, so they live beside the store, not in this process.
         if let Some(data) = crate::mergequeue::git::letibot_data_dir() {
             cfg.spill_storage = SpillStorage::Dir(data.join(letibot_tools::spill::SPILLS_DIR));
+            cfg.spill_roots = Some(data.join(letibot_tools::spill::SPILLS_DIR));
         }
         cfg.logs_root = std::env::var_os("LETIBOT_LOGS_ROOT")
             .filter(|v| !v.is_empty())
@@ -2813,6 +2818,16 @@ impl Config {
             &self.workspace,
             self.read_project_config,
         )
+    }
+
+    /// What an older daemon wrote under the same root: `<root>/<hash of session id>/`.
+    pub fn legacy_spill_dir(&self) -> Option<PathBuf> {
+        match &self.spill_storage {
+            SpillStorage::Memory => None,
+            SpillStorage::Dir(root) => Some(root.join(letibot_tools::spill::content_hash(
+                self.session_id.as_bytes(),
+            ))),
+        }
     }
 
     /// The project directory spills go to: `<root>/<project key>`, or `None` in memory.

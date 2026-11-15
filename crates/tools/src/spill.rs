@@ -9,7 +9,10 @@ use letibot_transcript::seam::Seam;
 use sha2::{Digest, Sha256};
 
 mod durable;
-pub use durable::{DEFAULT_SPILL_BUDGET, DirStore, SPILLS_DIR, TOMBSTONES, Tombstone, Usage};
+pub use durable::{
+    DEFAULT_SPILL_BUDGET, DirStore, ROOTS, SPILLS_DIR, TOMBSTONE_CAP, TOMBSTONES, Tombstone, Usage,
+    is_legacy_dir, record_root, recorded_roots,
+};
 
 /// What is being spilled, for a policy that wants to know before it decides.
 #[derive(Debug, Clone, Copy)]

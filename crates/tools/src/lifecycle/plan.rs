@@ -252,24 +252,47 @@ impl Stranger {
     }
 }
 
-/// One project's spill store under `<data dir>/spills/`.
+/// One project's spill store under `<data dir>/spills/` or a recorded `--spill-dir` root.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpillHolding {
     pub project: String,
     pub path: std::path::PathBuf,
     pub usage: crate::spill::Usage,
+    /// Under a `--spill-dir` root, not the data dir: the line names where.
+    pub elsewhere: bool,
+    /// An older daemon's per-session directory, read but never written.
+    pub legacy: bool,
 }
 
 impl SpillHolding {
     pub fn line(&self) -> String {
-        format!(
+        let mut line = format!(
             "spills {} — {} in {} spill(s), {} evicted, kept: only the store's budget evicts",
             self.project,
             human_bytes(self.usage.bytes),
             self.usage.spills,
             self.usage.evicted
-        )
+        );
+        if self.legacy {
+            line.push_str(", an older daemon's per-session store");
+        }
+        if self.elsewhere {
+            line.push_str(&format!(", at {}", self.path.display()));
+        }
+        line
     }
+}
+
+/// The data dir's stores, then each recorded `--spill-dir` root's.
+pub fn all_spill_holdings(spills: &std::path::Path) -> Vec<SpillHolding> {
+    let mut out = spill_holdings(spills);
+    for root in crate::spill::recorded_roots(spills) {
+        out.extend(spill_holdings(&root).into_iter().map(|mut h| {
+            h.elsewhere = true;
+            h
+        }));
+    }
+    out
 }
 
 /// Every project store under `root`, biggest first.
@@ -280,10 +303,15 @@ pub fn spill_holdings(root: &std::path::Path) -> Vec<SpillHolding> {
     let mut out: Vec<SpillHolding> = rd
         .flatten()
         .filter(|e| e.path().is_dir())
-        .map(|e| SpillHolding {
-            project: e.file_name().to_string_lossy().into_owned(),
-            usage: crate::spill::DirStore::usage(&e.path()),
-            path: e.path(),
+        .map(|e| {
+            let project = e.file_name().to_string_lossy().into_owned();
+            SpillHolding {
+                legacy: crate::spill::is_legacy_dir(&project),
+                project,
+                usage: crate::spill::DirStore::usage(&e.path()),
+                path: e.path(),
+                elsewhere: false,
+            }
         })
         .collect();
     out.sort_by(|a, b| {
@@ -497,6 +525,8 @@ impl Plan {
                 "spills": sp.usage.spills,
                 "bytes": sp.usage.bytes,
                 "evicted": sp.usage.evicted,
+                "elsewhere": sp.elsewhere,
+                "legacy": sp.legacy,
             })).collect::<Vec<_>>(),
             "bounded": self.bounded.iter().map(|b| b.to_json()).collect::<Vec<_>>(),
             "would_reap": { "holdings": reaping, "bytes": bytes },
@@ -536,7 +566,7 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
     let mut out = Plan {
         owners: Vec::new(),
         looks_like_ours: Vec::new(),
-        spills: spill_holdings(&places.data_dir.join(crate::spill::SPILLS_DIR)),
+        spills: all_spill_holdings(&places.data_dir.join(crate::spill::SPILLS_DIR)),
         bounded: bounded_holdings(places),
         now_ms,
         systemd: None,

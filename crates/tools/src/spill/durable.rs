@@ -17,6 +17,16 @@ pub const DEFAULT_SPILL_BUDGET: u64 = 2 * 1024 * 1024 * 1024;
 /// The tombstone index: one JSON line per eviction, so a read of a gone hash can say when.
 pub const TOMBSTONES: &str = "evicted.jsonl";
 
+/// Spill roots other than the default one, one path per line, so `letibot holds` finds a
+/// `--spill-dir` store after the daemon that used it is gone.
+pub const ROOTS: &str = "roots";
+
+/// Past this the tombstone file is rewritten: one line per hash, the newest kept.
+pub const TOMBSTONE_CAP: u64 = 1024 * 1024;
+
+/// What an older `--spill-dir` daemon named a spill inside its per-session directory.
+const LEGACY_EXT: &str = ".out";
+
 const LOCK: &str = ".lock";
 
 /// What an eviction left behind.
@@ -54,6 +64,8 @@ type Clock = Box<dyn Fn() -> SystemTime + Send + Sync>;
 pub struct DirStore {
     dir: PathBuf,
     budget: Option<u64>,
+    legacy: Option<PathBuf>,
+    tombstone_cap: u64,
     clock: Clock,
 }
 
@@ -62,6 +74,7 @@ impl std::fmt::Debug for DirStore {
         f.debug_struct("DirStore")
             .field("dir", &self.dir)
             .field("budget", &self.budget)
+            .field("legacy", &self.legacy)
             .finish()
     }
 }
@@ -72,8 +85,22 @@ impl DirStore {
         DirStore {
             dir: dir.into(),
             budget,
+            legacy: None,
+            tombstone_cap: TOMBSTONE_CAP,
             clock: Box::new(SystemTime::now),
         }
+    }
+
+    /// An older daemon's per-session directory (`<root>/<hash of session id>/<hash>.out`), read
+    /// when this store misses. It is never written, evicted or counted against the budget.
+    pub fn with_legacy(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.legacy = Some(dir.into());
+        self
+    }
+
+    pub fn with_tombstone_cap(mut self, bytes: u64) -> Self {
+        self.tombstone_cap = bytes;
+        self
     }
 
     pub fn for_project(root: &Path, project_key: &str, budget: Option<u64>) -> Self {
@@ -93,6 +120,12 @@ impl DirStore {
 
     fn path(&self, hash: &str) -> PathBuf {
         self.dir.join(hash)
+    }
+
+    fn legacy_path(&self, hash: &str) -> Option<PathBuf> {
+        self.legacy
+            .as_ref()
+            .map(|d| d.join(format!("{hash}{LEGACY_EXT}")))
     }
 
     fn touch(&self, path: &Path) {
@@ -128,23 +161,7 @@ impl DirStore {
     }
 
     fn spills(&self) -> Vec<(String, u64, SystemTime)> {
-        let Ok(rd) = std::fs::read_dir(&self.dir) else {
-            return Vec::new();
-        };
-        rd.flatten()
-            .filter_map(|e| {
-                let name = e.file_name().to_string_lossy().into_owned();
-                if !is_hash(&name) {
-                    return None;
-                }
-                let meta = e.metadata().ok()?;
-                Some((
-                    name,
-                    meta.len(),
-                    meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
-                ))
-            })
-            .collect()
+        spills_in(&self.dir, false)
     }
 
     /// Oldest read first until the rest fits. The spill just written is never the one evicted:
@@ -182,8 +199,46 @@ impl DirStore {
                 .open(self.dir.join(TOMBSTONES))
                 .map_err(SpillError::Io)?;
             f.write_all(stones.as_bytes()).map_err(SpillError::Io)?;
+            drop(f);
+            self.compact_tombstones()?;
         }
         Ok(())
+    }
+
+    /// Runs under the write lock. Only the newest line per hash answers a read, and a hash that
+    /// is stored again needs none; if that still leaves the file over half the cap, the oldest
+    /// go, and a read of those says `NotFound`.
+    fn compact_tombstones(&self) -> Result<(), SpillError> {
+        let file = self.dir.join(TOMBSTONES);
+        let size = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+        if size <= self.tombstone_cap {
+            return Ok(());
+        }
+        let mut newest: Vec<Tombstone> = Vec::new();
+        for t in tombstones(&self.dir).into_iter().rev() {
+            if !newest.iter().any(|n| n.hash == t.hash) && !self.path(&t.hash).exists() {
+                newest.push(t);
+            }
+        }
+        let mut lines: Vec<String> = newest
+            .iter()
+            .rev()
+            .filter_map(|t| serde_json::to_string(t).ok())
+            .collect();
+        let mut total: u64 = lines.iter().map(|l| l.len() as u64 + 1).sum();
+        let mut skip = 0;
+        while total > self.tombstone_cap / 2 && skip < lines.len() {
+            total -= lines[skip].len() as u64 + 1;
+            skip += 1;
+        }
+        lines.drain(..skip);
+        let mut text = lines.join("\n");
+        if !text.is_empty() {
+            text.push('\n');
+        }
+        let tmp = self.dir.join(format!(".{TOMBSTONES}.tmp"));
+        std::fs::write(&tmp, text).map_err(SpillError::Io)?;
+        std::fs::rename(&tmp, &file).map_err(SpillError::Io)
     }
 
     /// The last eviction of `hash`, if it was ever evicted.
@@ -192,9 +247,9 @@ impl DirStore {
     }
 
     /// What a project directory holds, read from the files alone.
+    /// An older daemon's per-session directory counts its `.out` files.
     pub fn usage(dir: &Path) -> Usage {
-        let store = DirStore::new(dir, None);
-        let spills = store.spills();
+        let spills = spills_in(dir, true);
         Usage {
             spills: spills.len(),
             bytes: spills.iter().map(|(_, b, _)| b).sum(),
@@ -245,16 +300,28 @@ impl SpillStore for DirStore {
                 self.touch(&path);
                 Ok(super::slice_range(&bytes, range))
             }
-            Err(_) => Err(match self.tombstone(hash) {
-                Some(t) => SpillError::Evicted(t),
-                None => SpillError::NotFound(hash.into()),
-            }),
+            Err(_) => {
+                if let Some(bytes) = self.legacy_path(hash).and_then(|p| std::fs::read(p).ok()) {
+                    return Ok(super::slice_range(&bytes, range));
+                }
+                Err(match self.tombstone(hash) {
+                    Some(t) => SpillError::Evicted(t),
+                    None => SpillError::NotFound(hash.into()),
+                })
+            }
         }
     }
 
     fn list(&self) -> Vec<SpillEntry> {
         let mut all = self.spills();
-        all.sort_by_key(|a| std::cmp::Reverse(a.2));
+        if let Some(old) = &self.legacy {
+            for s in spills_in(old, true) {
+                if !all.iter().any(|a| a.0 == s.0) {
+                    all.push(s);
+                }
+            }
+        }
+        all.sort_by_key(|e| std::cmp::Reverse(e.2));
         all.into_iter()
             .map(|(hash, bytes, _)| SpillEntry {
                 hash,
@@ -269,9 +336,75 @@ impl SpillStore for DirStore {
             return None;
         }
         std::fs::metadata(self.path(hash))
+            .or_else(|e| match self.legacy_path(hash) {
+                Some(p) => std::fs::metadata(p),
+                None => Err(e),
+            })
             .ok()
             .map(|m| m.len() as usize)
     }
+}
+
+/// `(hash, bytes, mtime)` of every spill file in `dir`; with `legacy`, `<hash>.out` too.
+fn spills_in(dir: &Path, legacy: bool) -> Vec<(String, u64, SystemTime)> {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    rd.flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let hash = match name.strip_suffix(LEGACY_EXT) {
+                Some(h) if legacy => h.to_string(),
+                _ => name,
+            };
+            if !is_hash(&hash) {
+                return None;
+            }
+            let meta = e.metadata().ok()?;
+            meta.is_file().then(|| {
+                (
+                    hash,
+                    meta.len(),
+                    meta.modified().unwrap_or(SystemTime::UNIX_EPOCH),
+                )
+            })
+        })
+        .collect()
+}
+
+/// Notes `root` in `<spills>/roots` unless it is `spills` itself or already there.
+pub fn record_root(spills: &Path, root: &Path) -> std::io::Result<()> {
+    if root == spills || recorded_roots(spills).iter().any(|r| r == root) {
+        return Ok(());
+    }
+    use std::os::unix::fs::DirBuilderExt;
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .recursive(true)
+        .create(spills)?;
+    let mut f = std::fs::File::options()
+        .create(true)
+        .append(true)
+        .open(spills.join(ROOTS))?;
+    writeln!(f, "{}", root.display())
+}
+
+/// The roots [`record_root`] noted, absolute paths only.
+pub fn recorded_roots(spills: &Path) -> Vec<PathBuf> {
+    std::fs::read_to_string(spills.join(ROOTS))
+        .map(|t| {
+            t.lines()
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Whether a directory under a spill root is an older daemon's per-session one: its name is a
+/// bare content hash, where a project key carries the project's name.
+pub fn is_legacy_dir(name: &str) -> bool {
+    is_hash(name)
 }
 
 fn tombstones(dir: &Path) -> Vec<Tombstone> {
@@ -353,6 +486,89 @@ mod tests {
         assert!(said.contains("100 bytes"), "{said}");
         let usage = DirStore::usage(reopened.dir());
         assert_eq!((usage.spills, usage.bytes, usage.evicted), (2, 200, 1));
+    }
+
+    #[test]
+    fn an_older_daemons_per_session_spill_is_read() {
+        let root = crate::backend::tempdir::TempDir::new();
+        let body = b"written by a daemon before the per-project store";
+        let old = root.path().join(content_hash(b"s-1"));
+        crate::spill::FileStore::new(root.path(), "s-1")
+            .unwrap()
+            .put("bash", body)
+            .unwrap();
+        let hash = content_hash(body);
+        assert!(old.join(format!("{hash}.out")).is_file());
+
+        let store = DirStore::for_project(root.path(), "p", Some(1)).with_legacy(&old);
+        assert_eq!(store.get(&hash, None).unwrap(), body);
+        assert_eq!(store.get(&hash, Some(0..7)).unwrap(), b"written");
+        assert_eq!(store.size(&hash), Some(body.len()));
+        assert!(store.list().iter().any(|e| e.hash == hash));
+        // Never moved, and outside the budget a new write keeps.
+        store.put("bash", &[b'n'; 10]).unwrap();
+        assert_eq!(store.get(&hash, None).unwrap(), body);
+        let usage = DirStore::usage(&old);
+        assert_eq!((usage.spills, usage.bytes), (1, body.len() as u64));
+        assert!(is_legacy_dir(&old.file_name().unwrap().to_string_lossy()));
+        assert!(!is_legacy_dir("letibot-0123456789ab"));
+    }
+
+    #[test]
+    fn the_tombstone_file_is_compacted_past_its_cap() {
+        let root = crate::backend::tempdir::TempDir::new();
+        let now = Arc::new(AtomicU64::new(1_800_000_000));
+        let store = clocked(root.path(), Some(100), &now).with_tombstone_cap(600);
+        let file = store.dir().join(TOMBSTONES);
+        let mut hashes = Vec::new();
+        for i in 0..40u8 {
+            now.fetch_add(10, Ordering::SeqCst);
+            hashes.push(store.put("t", &[i; 100]).unwrap());
+            let size = std::fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
+            assert!(size <= 600, "tombstones at {size} bytes after {i} writes");
+        }
+        // Every line names a different hash, none of them stored now.
+        let stones = tombstones(store.dir());
+        assert!(!stones.is_empty());
+        let mut seen: Vec<&str> = stones.iter().map(|t| t.hash.as_str()).collect();
+        seen.dedup();
+        assert_eq!(seen.len(), stones.len());
+        assert!(stones.iter().all(|t| store.size(&t.hash).is_none()));
+        // The newest eviction still answers; the oldest was dropped and reads as never written.
+        assert!(matches!(
+            store.get(&hashes[38], None),
+            Err(SpillError::Evicted(_))
+        ));
+        assert!(matches!(
+            store.get(&hashes[0], None),
+            Err(SpillError::NotFound(_))
+        ));
+        // A hash stored again loses its tombstone at the next compaction.
+        let again = store.put("t", &[38u8; 100]).unwrap();
+        assert_eq!(again, hashes[38]);
+        for i in 40..60u8 {
+            now.fetch_add(10, Ordering::SeqCst);
+            store.put("t", &[i; 100]).unwrap();
+        }
+        assert!(
+            tombstones(store.dir())
+                .iter()
+                .filter(|t| t.hash == hashes[38])
+                .count()
+                <= 1
+        );
+    }
+
+    #[test]
+    fn a_spill_root_is_recorded_once_and_the_default_never() {
+        let data = crate::backend::tempdir::TempDir::new();
+        let spills = data.path().join(SPILLS_DIR);
+        let other = data.path().join("elsewhere");
+        record_root(&spills, &spills).unwrap();
+        assert!(recorded_roots(&spills).is_empty());
+        record_root(&spills, &other).unwrap();
+        record_root(&spills, &other).unwrap();
+        assert_eq!(recorded_roots(&spills), vec![other]);
     }
 
     #[test]

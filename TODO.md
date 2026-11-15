@@ -1770,7 +1770,7 @@ Plan 2.12. Custom commands existed only as plugin `command_<verb>` layers. openc
 
 ## R268 - Spills are durable: kept in the data dir, bounded by a budget, evicted visibly
 
-**Status:** built, 2026-11-15. left: a store written by an older daemon under `--spill-dir` (one directory per session hash, `<hash>.out`) is not read; `letibot holds` reads the default root only, not a `--spill-dir`; the tombstone file is never compacted; `read_spill` lists a project store's spills, not only this session's.
+**Status:** built, 2026-11-15; leftovers built 2026-11-15. left: `read_spill` lists a project store's spills, not only this session's.
 
 R263 made the generic output cap the default. A spill's middle lives in memory unless the daemon runs with `--spill-dir`, so a daemon restart loses every stored middle. The transcript row still says `read_spill hash=H`, so the conversation refers to bytes that no longer exist.
 
@@ -1798,6 +1798,14 @@ A single spill is already bounded: a command's capture is an 8 MiB tail ring (`D
 - `lifecycle::Plan::spills` (`spill_holdings`): `letibot holds` prints `spills <project> — <size> in N spill(s), K evicted` after the owners, `letibot gc` lists them under `spill stores` and never reaps them, `--json` carries `spills`.
 
 **Tests.** `spill::durable::tests`: a spill read back through a second store on the same directory; three spills over a 250-byte budget evict the least recently read, the tombstone gives its size and date through a reopened store; a hash never written or a path-shaped one is `NotFound`. `read_spill::tests::an_evicted_hash_says_when_and_how_big`. `lifecycle::tests::the_spill_stores_are_held_with_their_size_and_never_reaped`. `harnessd` `config::tests::a_spill_outlives_its_spiller_and_the_budget_is_read_from_the_project`: a second `build_spiller` on the same `Dir` reads the first one's spill, and the project file's `spill_budget` moves the budget. All on temp directories.
+
+**Leftovers built.**
+- An older `--spill-dir` daemon's spills are read. `DirStore::with_legacy` names its per-session directory (`<root>/<content hash of the session id>/<hash>.out`); `build_spiller` passes `Config::legacy_spill_dir`. A miss in the project store falls back to it for `get`, `size` and `list`. Those files are never written, evicted or counted against the budget.
+- `letibot holds` lists a `--spill-dir` root. The daemon (`Config::spill_roots`, set only by `for_the_daemon`) records a non-default root in `<data dir>/spills/roots`, once. `lifecycle::all_spill_holdings` lists the data dir's stores, then each recorded root's, with `, at <path>` on the line and `elsewhere` in `--json`. A per-session directory under a root is marked `an older daemon's per-session store` (`legacy`), and its `.out` files are counted.
+- `evicted.jsonl` is compacted under the write lock past `TOMBSTONE_CAP` (1 MiB): one line per hash, the newest, and none for a hash stored again. If that is still over half the cap, the oldest lines go, and a read of those hashes answers `NotFound`.
+
+**Tests.** `spill::durable::tests::an_older_daemons_per_session_spill_is_read`, `the_tombstone_file_is_compacted_past_its_cap`, `a_spill_root_is_recorded_once_and_the_default_never`. `lifecycle::tests::a_recorded_spill_root_is_held_too`. `harnessd` `config::tests::a_spill_dir_daemon_reads_the_older_layout_and_records_its_root`. All on temp directories.
+
 ## R281 - Daemon logs, job captures and store journals grow without bound
 
 **Status:** built, 2026-11-15, branch `j18-logs` (plan 1.7, package J18). left: session debug logs, the shared `harnessd.log`, and the adjacent rows R227 and R228.

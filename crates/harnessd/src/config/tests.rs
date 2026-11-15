@@ -1894,6 +1894,35 @@ fn a_spill_outlives_its_spiller_and_the_budget_is_read_from_the_project() {
     assert_eq!(c.spill_budget(), None);
 }
 
+#[test]
+fn a_spill_dir_daemon_reads_the_older_layout_and_records_its_root() {
+    let dir = crate::mergequeue::serve::tests::TempDir::new("spill-legacy");
+    let root = dir.0.join("elsewhere");
+    let data_spills = dir.0.join("data").join(letibot_tools::spill::SPILLS_DIR);
+    let mut c = Config::for_this_box(&dir.0);
+    c.spill_storage = SpillStorage::Dir(root.clone());
+    c.spill_roots = Some(data_spills.clone());
+    let body = "an older daemon's spill\n".repeat(50);
+    use letibot_tools::SpillStore as _;
+    let hash = letibot_tools::spill::FileStore::new(&root, &c.session_id)
+        .unwrap()
+        .put("bash", body.as_bytes())
+        .unwrap();
+
+    let spiller = crate::harness::open::build_spiller(&c).unwrap();
+    assert_eq!(spiller.store.get(&hash, None).unwrap(), body.as_bytes());
+    assert_eq!(
+        letibot_tools::spill::recorded_roots(&data_spills),
+        vec![root.clone()]
+    );
+    let held = letibot_tools::lifecycle::all_spill_holdings(&data_spills);
+    let old = held
+        .iter()
+        .find(|h| h.legacy)
+        .expect("the older store is held");
+    assert!(old.elsewhere && old.line().contains(&root.display().to_string()));
+}
+
 /// The defect this replaced: the adjudication line asserted "M1 is read-only tools, which never
 /// prompt", printed regardless of what the session had seated. What is checked here is that the wording
 /// MOVES when the wiring does - a banner that says the same thing about both is not a disclosure.

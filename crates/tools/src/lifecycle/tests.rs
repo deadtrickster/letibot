@@ -376,6 +376,31 @@ fn the_spill_stores_are_held_with_their_size_and_never_reaped() {
     assert_eq!(plan.to_json()["spills"][0]["bytes"], 1000);
 }
 
+/// A `--spill-dir` root a daemon recorded is listed after the data dir's, with its path.
+#[test]
+fn a_recorded_spill_root_is_held_too() {
+    use crate::spill::{DirStore, SPILLS_DIR, SpillStore, record_root};
+    let stub = Stub::new("spill-roots");
+    let store = stub.store();
+    let spills = stub.places.data_dir.join(SPILLS_DIR);
+    let other = stub.places.data_dir.join("moved");
+    record_root(&spills, &other).unwrap();
+    DirStore::for_project(&other, "letibot-0123456789ab", None)
+        .put("bash", &[b'm'; 700])
+        .unwrap();
+
+    let plan = plan(&store, &stub.places, None, now_ms()).expect("a plan");
+    let held = plan.spills.first().expect("the moved store is listed");
+    assert!(held.elsewhere && !held.legacy);
+    assert_eq!(held.usage.bytes, 700);
+    assert!(
+        held.line().contains(&other.display().to_string()),
+        "{}",
+        held.line()
+    );
+    assert_eq!(plan.to_json()["spills"][0]["elsewhere"], true);
+}
+
 /// A root that carries a stamp for an owner the store does not know is reported too, by the name
 /// the stamp gives: the file is the proof, and it disagrees with the index.
 #[test]
