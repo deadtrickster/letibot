@@ -1029,6 +1029,33 @@ fn fleet() -> SkillRegistry {
     ])
 }
 
+/// Description words as evidence: the plain English the fleet's descriptions share (`work`,
+/// `caller`, `protocol`, `properly`) names no skill, and a word only one of them uses does.
+#[test]
+fn only_an_uncommon_description_word_is_evidence_for_a_skill() {
+    let registry = fleet();
+    let names: Vec<String> = Vec::new();
+    let ev = evidence_of(&registry, names.iter());
+    let plain = Seen::of_texts([
+        "the caller's work over the protocol, done properly, with every test passing",
+        "well my touchpad still doesnt scroll",
+    ]);
+    for skill in [
+        "fuzz-harness-writing",
+        "fuzzing-method",
+        "conformity-check-writing",
+    ] {
+        assert_eq!(ev.found(skill, &plain), None, "{skill}");
+    }
+    assert_eq!(
+        ev.found(
+            "conformity-check-writing",
+            &Seen::of_texts(["the normalizer strips the timestamps"])
+        ),
+        Some(vec!["normalizer".to_string()])
+    );
+}
+
 /// The rano case on the real model: a TUI session fixing touchpad scroll, with clippy output in
 /// hand, is offered no fuzzing or conformity skill.
 #[test]

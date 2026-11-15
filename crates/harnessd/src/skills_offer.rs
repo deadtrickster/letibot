@@ -357,7 +357,8 @@ impl Offers {
                 continue;
             }
             // Meaning finds neighbours of anything the session does, so a subject offer under the
-            // tier also needs the skill's name or keywords in the operator's words or touched files.
+            // tier also needs its name, keywords or an uncommon description word in the operator's
+            // words or touched files.
             let mut hits = Vec::new();
             if let (Some(ev), By::Subject) = (&evidence, row.by) {
                 match ev.found(&name, &self.seen) {
@@ -685,25 +686,31 @@ fn hits_of(row: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Each scored skill's identity - its name and keywords - weighted by rarity across the registry.
+/// Each scored skill's identity - its name, keywords and the description's uncommon words -
+/// weighted by rarity across the registry.
 fn evidence_of<'a>(registry: &SkillRegistry, names: impl Iterator<Item = &'a String>) -> Evidence {
-    let mut docs: Vec<(String, String, String)> = registry
+    let mut docs: Vec<(String, String, String, String)> = registry
         .live_skills()
         .iter()
         .map(|s| {
             let identity = format!("{} {}", s.name, s.keywords.join(" "));
-            (s.name.clone(), identity, s.document())
+            let described = format!(
+                "{} {}",
+                s.description,
+                s.when_to_use.as_deref().unwrap_or("")
+            );
+            (s.name.clone(), identity, described, s.document())
         })
         .collect();
     // A shelf entry is scored on its title alone, which is then its identity too.
     for name in names {
-        if !docs.iter().any(|(n, _, _)| n == name) {
-            docs.push((name.clone(), name.clone(), name.clone()));
+        if !docs.iter().any(|(n, _, _, _)| n == name) {
+            docs.push((name.clone(), name.clone(), String::new(), name.clone()));
         }
     }
-    Evidence::new(
+    Evidence::described(
         docs.iter()
-            .map(|(k, i, f)| (k.as_str(), i.as_str(), f.as_str())),
+            .map(|(k, i, d, f)| (k.as_str(), i.as_str(), d.as_str(), f.as_str())),
     )
 }
 
