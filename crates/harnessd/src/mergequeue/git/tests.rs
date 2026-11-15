@@ -891,7 +891,7 @@ fn the_worktree_sweep_takes_the_debris_and_keeps_the_living() {
     // The first sweep takes the registrations - a lock over a directory that is not there is one
     // over nothing - and leaves the tree that may be a child's mid-spawn.
     let now = std::time::SystemTime::now();
-    let first = reap_worktrees(&repo, now).unwrap();
+    let first = reap_worktrees(&repo, now, &|_| None).unwrap();
     let mut pruned = first.pruned.clone();
     pruned.sort();
     assert_eq!(
@@ -911,8 +911,25 @@ fn the_worktree_sweep_takes_the_debris_and_keeps_the_living() {
         "{first:?}"
     );
 
+    // An hour later, still in use: kept and said.
+    let busy = reap_worktrees(
+        &repo,
+        now + std::time::Duration::from_secs(60 * 60),
+        &|d: &Path| (d == orphan).then(|| "pid 7 (sleep) has its cwd in it".to_string()),
+    )
+    .unwrap();
+    assert!(orphan.exists(), "a tree in use is not removed");
+    assert!(busy.orphans.is_empty(), "{busy:?}");
+    assert_eq!(busy.in_use.len(), 1, "{busy:?}");
+    assert!(busy.words().contains("in use: pid 7"), "{}", busy.words());
+
     // An hour later it is nobody's: the sweep takes it, and only it.
-    let later = reap_worktrees(&repo, now + std::time::Duration::from_secs(60 * 60)).unwrap();
+    let later = reap_worktrees(
+        &repo,
+        now + std::time::Duration::from_secs(60 * 60),
+        &|_| None,
+    )
+    .unwrap();
     assert!(later.pruned.is_empty(), "{later:?}");
     assert_eq!(later.orphans.len(), 1, "{later:?}");
     assert!(

@@ -146,6 +146,26 @@ impl Store {
             .optional()?)
     }
 
+    /// The writers of every session whose workspace is `root` or a directory inside it: who has
+    /// a session open on a tree, in any daemon on the box.
+    pub fn writers_under(&self, root: &str) -> Result<Vec<SessionWriter>> {
+        let root = root.trim_end_matches('/');
+        let cols = WRITER_COLUMNS
+            .split(", ")
+            .map(|c| format!("w.{c}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // Both tables are in the shared file of a split set.
+        let conn = self.connection_of("session_writer");
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {cols} FROM session_writer w JOIN session s ON s.id = w.session_id
+             WHERE s.workspace_root = ?1 OR substr(s.workspace_root, 1, length(?1) + 1) = ?1 || '/'
+             ORDER BY w.session_id"
+        ))?;
+        let rows = stmt.query_map(params![root], writer_from_row)?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Give the session back - on the harness's way out, and only when the row is still
     /// this owner's. Guarded on the owner because a claim taken over (its holder having been
     /// judged gone) must not be deleted by the zombie that comes back.

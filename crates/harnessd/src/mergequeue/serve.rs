@@ -1282,8 +1282,11 @@ impl RepoQueue {
     /// The debris no row names: a registration whose directory is gone and a tree whose `.git` names a missing gitdir, left by a killed, refused or elsewhere-landed child. Neither can hold a commit.
     /// The tree says so in the daemon's log; a sweep that took nothing says nothing.
     fn reap_worktree_debris(&self) {
-        match git::reap_worktrees(&self.repo, std::time::SystemTime::now()) {
-            Ok(reaped) if reaped.took_anything() => {
+        let here = letibot_tools::lifecycle::autoarchive::Here::this_process();
+        let in_use =
+            |dir: &Path| letibot_tools::lifecycle::in_use::why_kept(dir, Some(&self.store), &here);
+        match git::reap_worktrees(&self.repo, std::time::SystemTime::now(), &in_use) {
+            Ok(reaped) if reaped.took_anything() || !reaped.in_use.is_empty() => {
                 eprintln!("  worktree sweep: {}: {}", self.key, reaped.words());
             }
             Ok(_) => {}
@@ -1429,6 +1432,25 @@ impl RepoQueue {
                     wt.display(),
                     held.branch,
                     held.session
+                ),
+            ));
+            return found;
+        }
+        // Another daemon's session, or any process with its cwd in the tree: the queue's own
+        // registry above sees only this daemon's sessions.
+        if there
+            && let Some(why) = letibot_tools::lifecycle::in_use::why_kept(
+                wt,
+                Some(&self.store),
+                &letibot_tools::lifecycle::autoarchive::Here::this_process(),
+            )
+        {
+            found.kept = Some((
+                "live",
+                format!(
+                    "the worktree {} and `{}` are kept: {why}",
+                    wt.display(),
+                    held.branch
                 ),
             ));
             return found;
@@ -3368,15 +3390,34 @@ impl RepoQueue {
                 &target,
                 &format!("the branch `{}` (landed at {rebased})", row.branch),
             );
-            let kept = match &live {
-                Some(s) => Err(format!(
+            // And another daemon's session, or a process cwd'd inside, which this registry cannot see.
+            let in_use = row
+                .worktree
+                .as_deref()
+                .map(Path::new)
+                .filter(|wt| wt.exists())
+                .and_then(|wt| {
+                    letibot_tools::lifecycle::in_use::why_kept(
+                        wt,
+                        Some(&self.store),
+                        &letibot_tools::lifecycle::autoarchive::Here::this_process(),
+                    )
+                });
+            let kept = match (&live, in_use) {
+                (Some(s), _) => Err(format!(
                     "the worktree {} and `{}` are kept: the session `{s}` that works in it is \
                      still live. Remove them once it has ended (`git worktree remove` and \
                      `git branch -D`).",
                     row.worktree.as_deref().unwrap_or("?"),
                     row.branch
                 )),
-                None => match proved {
+                (None, Some(why)) => Err(format!(
+                    "the worktree {} and `{}` are kept: {why}. Remove them once nothing uses \
+                     them (`git worktree remove` and `git branch -D`).",
+                    row.worktree.as_deref().unwrap_or("?"),
+                    row.branch
+                )),
+                (None, None) => match proved {
                     git::Proof::On => {
                         git::retire_branch(repo, &row.branch, row.worktree.as_deref())
                     }

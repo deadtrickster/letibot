@@ -4470,6 +4470,74 @@ fn a_terminal_rows_tree_a_live_session_holds_is_left_alone() {
     assert_eq!(git::branch_head(&w.repo, "agent/live2"), None);
 }
 
+/// The queue's own registry sees only this daemon's sessions: a tree whose session another
+/// daemon holds, or that any process on the box has as its cwd, is kept too. A dead one goes.
+#[test]
+fn a_terminal_rows_tree_another_daemon_or_a_process_holds_is_left_alone() {
+    let w = World::new("release-foreign");
+    let (wt, base, head) = branch(&w.repo, "far", "far.txt");
+    sh(&w.repo, &["merge", "--ff-only", "agent/far"]);
+    w.enqueue("far", &wt, &base, &head);
+    withdraw(&w, "far");
+    // Another daemon on the box: a live process holding the writer row of a session in the tree.
+    let mut other = std::process::Command::new("sleep")
+        .arg("120")
+        .current_dir(&w.repo)
+        .spawn()
+        .expect("sleep");
+    let s = w.store();
+    s.put_session(&letibot_tokencore::store::SessionRecord {
+        id: "s-far".into(),
+        title: None,
+        model_id: "m".into(),
+        dialect_sha: "sha".into(),
+        workspace_root: wt.display().to_string(),
+        owner: "dead".into(),
+        role: None,
+        approvers: vec![],
+        parent_session_id: None,
+    })
+    .unwrap();
+    s.claim_session_writer(
+        "s-far",
+        "other/1/1",
+        other.id(),
+        &letibot_tools::lifecycle::box_id(),
+        1,
+        0,
+    )
+    .unwrap();
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 2);
+    let kept = wt.exists();
+    let _ = other.kill();
+    let _ = other.wait();
+    assert!(kept, "another daemon's live session keeps the tree");
+    let said = w.door.warnings("queue_branch_kept");
+    assert!(
+        said.iter()
+            .any(|w| w.contains("s-far") && w.contains(&format!("pid {}", other.id()))),
+        "the kept line names the session and its daemon: {said:?}"
+    );
+
+    // Its daemon is gone, and a process has its cwd inside the tree.
+    let mut inside = std::process::Command::new("sleep")
+        .arg("120")
+        .current_dir(wt.join("."))
+        .spawn()
+        .expect("sleep");
+    run(&q, 1);
+    let kept = wt.exists();
+    let _ = inside.kill();
+    let _ = inside.wait();
+    assert!(kept, "a process cwd'd inside keeps the tree");
+
+    // Nothing uses it any more: it goes.
+    run(&q, 1);
+    assert!(!wt.exists(), "a tree nobody is in is released");
+    assert_eq!(git::branch_head(&w.repo, "agent/far"), None);
+}
+
 /// A tree with work in it is kept, with the reason on the row and a raised line - the branch
 /// may not carry what was never committed, so both stay.
 #[test]

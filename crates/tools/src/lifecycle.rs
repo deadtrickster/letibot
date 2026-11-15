@@ -21,6 +21,7 @@ use crate::exec::scope::{self, ScopeUse};
 mod archive;
 pub mod autoarchive;
 mod config;
+pub mod in_use;
 pub mod logs;
 mod plan;
 mod reap;

@@ -197,6 +197,17 @@ fn settle_worktree(
         ));
         return Ok(false);
     };
+    let here = super::autoarchive::Here {
+        host: super::box_id(),
+        pid: std::process::id(),
+        proc_root: places.proc_root.clone(),
+    };
+    if let Some(why) = super::in_use::why_kept(&path, Some(store), &here) {
+        report
+            .kept
+            .push(format!("{} {}: in use - {why}", owner.id, found.handle));
+        return Ok(false);
+    }
     let kept = worktree::archive_and_remove(places, &repo, &path, &owner.id, branch.as_deref())
         .map_err(StoreError::Refused)?;
     let ns = super::namespace(&owner.id, "wt");

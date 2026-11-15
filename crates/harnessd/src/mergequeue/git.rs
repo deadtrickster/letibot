@@ -876,6 +876,8 @@ pub struct Reaped {
     pub orphans: Vec<String>,
     /// Directories left alone, and the sentence saying why.
     pub kept: Vec<(String, String)>,
+    /// Orphans kept because something is still using them, and what.
+    pub in_use: Vec<(String, String)>,
 }
 
 impl Reaped {
@@ -904,13 +906,20 @@ impl Reaped {
         for (dir, why) in &self.kept {
             parts.push(format!("{dir} kept: {why}"));
         }
+        for (dir, why) in &self.in_use {
+            parts.push(format!("{dir} kept, in use: {why}"));
+        }
         parts.join("; ")
     }
 }
 
 /// The debris nothing else reaps: a git registration for a missing directory, and a directory under a worktrees home whose `.git` names a missing gitdir. Neither can hold a commit, so [`remove_worktree`]'s proof rule does not apply.
-/// A present tree, a directory that is its own repository, and another checkout's live worktree are kept, and said.
-pub fn reap_worktrees(repo: &Path, now: std::time::SystemTime) -> Result<Reaped, String> {
+/// A present tree, a directory that is its own repository, another checkout's live worktree and a tree `in_use` names are kept, and said.
+pub fn reap_worktrees(
+    repo: &Path,
+    now: std::time::SystemTime,
+    in_use: &dyn Fn(&Path) -> Option<String>,
+) -> Result<Reaped, String> {
     let listed = git(repo, &["worktree", "list", "--porcelain"])?;
     let mut registered: Vec<(String, bool)> = Vec::new();
     for block in listed.split("\n\n") {
@@ -978,6 +987,8 @@ pub fn reap_worktrees(repo: &Path, now: std::time::SystemTime) -> Result<Reaped,
                     if young {
                         out.kept
                             .push((name, format!("younger than {} s", ORPHAN_GRACE.as_secs())));
+                    } else if let Some(why) = in_use(&dir) {
+                        out.in_use.push((name, why));
                     } else {
                         std::fs::remove_dir_all(&dir)
                             .map_err(|e| format!("removing {}: {e}", dir.display()))?;
