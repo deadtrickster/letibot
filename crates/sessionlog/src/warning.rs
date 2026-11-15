@@ -242,6 +242,12 @@ pub const TABLE: &[(&str, Class, Action)] = &[
         Class::Refused,
         Action::Do("read the board and move that row"),
     ),
+    // A driving head's board write the session would not take: the head's own act, answered.
+    (
+        "driver_todos_refused",
+        Class::Refused,
+        Action::Do("read the board and write the rows again"),
+    ),
     (
         "child_door_refused",
         Class::Refused,
@@ -1694,6 +1700,8 @@ mod the_register_census {
         // A `/todo` move naming a row that is not on the board - the model rewrote its plan
         // between the head's read and the write; the board published with it is the correction.
         "todo_move_unresolved",
+        // A driving head's rows the session refused: the head's own write, answered.
+        "driver_todos_refused",
     ];
 
     /// The census, pinned. `Class`'s docs quote these numbers, so a code moved or added
