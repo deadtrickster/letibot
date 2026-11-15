@@ -164,7 +164,8 @@ fn a_job_whose_cpu_and_output_never_move_is_ended_as_dead() {
 }
 
 /// The case the rule exists for: a job that is burning CPU or printing is WORKING, and neither
-/// a window nor the end of one may end it. Two jobs, one signal each.
+/// a window nor the end of one may end it. Two jobs, one signal each. The test drives `scan`
+/// itself, after each move, so a starved test thread cannot pass for a silent job.
 #[test]
 fn a_job_that_burns_cpu_or_keeps_printing_is_never_ended() {
     let root = std::env::temp_dir().join(format!("letibot-alive-{}", std::process::id()));
@@ -173,8 +174,9 @@ fn a_job_that_burns_cpu_or_keeps_printing_is_never_ended() {
         root: root.clone(),
         ended: Mutex::new(Vec::new()),
     });
-    let liveness = Liveness::new(Arc::clone(&tree) as Arc<dyn ScopeTree>);
-    liveness.set_window(Some(Duration::from_millis(300)));
+    // No tick thread: this test is the tick.
+    let liveness = Liveness::unticked();
+    let window = Duration::from_millis(300);
     // One job whose CPU climbs, and one that says something now and then.
     let busy = a_scope(&tree, "j-busy", 0);
     let burning = a_job(&busy);
@@ -182,13 +184,14 @@ fn a_job_that_burns_cpu_or_keeps_printing_is_never_ended() {
     liveness.watch(Arc::clone(&burning));
     liveness.watch(Arc::clone(&talking));
     let clock = busy.path.join("cpu.stat");
-    let until = Instant::now() + Duration::from_millis(1200);
     let mut usec = 0u64;
-    while Instant::now() < until {
+    // Longer than the window in wall time on an idle box, and any length under load.
+    for _ in 0..60 {
         usec += 1_000;
         std::fs::write(&clock, format!("usage_usec {usec}\n")).unwrap();
         talking.capture.lock().expect("capture").push(b"tick\n");
         std::thread::sleep(Duration::from_millis(20));
+        liveness.scan(tree.as_ref(), window);
     }
     assert!(
         burning.state().is_running(),
@@ -202,6 +205,63 @@ fn a_job_that_burns_cpu_or_keeps_printing_is_never_ended() {
     );
     assert!(liveness.ended().is_empty(), "nothing was ended");
     assert!(tree.ended.lock().unwrap().is_empty());
+    // The control: the same scans end both once their signals stop for a whole window, so the
+    // green above is the signals' doing and not a check that never fires.
+    std::thread::sleep(window + Duration::from_millis(50));
+    liveness.scan(tree.as_ref(), window);
+    assert!(!burning.state().is_running(), "a still clock is dead");
+    assert!(!talking.state().is_running(), "a silent job is dead");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A job's start is stamped before its process exists, so its run time is never shorter than
+/// the command's own: the command reads the same wall clock at its first and last line, and the
+/// job's stamps must hold both readings, however late the host got to its bookkeeping.
+#[test]
+fn a_jobs_stamps_hold_the_commands_own_run() {
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "a process-lifetime tree (cgroup v2; process groups on macOS)",
+        letibot_tools::host_tree().is_ok(),
+    ) else {
+        return;
+    };
+    let root = std::env::temp_dir().join(format!("letibot-stamps-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let h = HostProcesses::new(&root).expect("this box has a cgroup v2 tree");
+    let id = h
+        .spawn(&SpawnRequest {
+            command: "date +%s%N; sleep 0.3; date +%s%N".into(),
+            slug: None,
+            cwd: "/".into(),
+            scope: ScopeKind::Session,
+            scope_name: None,
+            background: true,
+            env: vec![],
+            tty: false,
+            memory: None,
+            env_trailer: false,
+        })
+        .expect("a cgroup v2 tree was measured above");
+    let _ = h.wait_job(&id, Duration::from_secs(60));
+    let job = h.job_handle(&id).expect("the job");
+    let text = job.capture.lock().expect("capture").tail(4096).text();
+    let said: Vec<u128> = text.lines().filter_map(|l| l.trim().parse().ok()).collect();
+    assert_eq!(said.len(), 2, "two clock readings: {text:?}");
+    let nanos = |t: std::time::SystemTime| {
+        t.duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_nanos()
+    };
+    assert!(
+        nanos(job.started) <= said[0],
+        "the job's start is after its command's first line"
+    );
+    let ran = job.ran_for().expect("settled").as_nanos();
+    assert!(
+        ran >= said[1] - said[0],
+        "the job ran {ran} ns by its stamps, less than the {} ns its command measured",
+        said[1] - said[0]
+    );
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -1371,7 +1431,7 @@ fn the_operators_own_run_has_a_stdin_a_line_can_be_sent_to() {
     // And the host can NAME the run's processes, the other half of the detection: `ask`
     // reads each one's `/proc/<pid>/fd/0` and its `wchan`, so a host that cannot list them would
     // make every operator run look like one that is not asking (`ask::Waiting::Unreadable`).
-    let pids = h.job_pids(&id);
+    let pids = h.job_pids(&id).unwrap_or_default();
     assert!(
         !pids.is_empty(),
         "a spawned job's own cgroup must name its processes"

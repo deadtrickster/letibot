@@ -383,7 +383,7 @@ fn the_reap_log_reaches_the_model_through_job_list() {
         })
     };
     while std::time::Instant::now() < until {
-        let pids = host.job_pids(&job);
+        let pids = host.job_pids(&job).unwrap_or_default();
         if pids.len() >= 2 && execd(&pids) {
             break;
         }

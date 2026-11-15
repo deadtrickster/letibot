@@ -70,7 +70,12 @@ impl Tool for Pkill {
                     .filter(|j| j.state.is_running())
                     .flat_map(|j| {
                         let mut v = vec![(j.pid, j.id.0.clone())];
-                        v.extend(h.job_pids(&j.id).into_iter().map(|p| (p, j.id.0.clone())));
+                        v.extend(
+                            h.job_pids(&j.id)
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|p| (p, j.id.0.clone())),
+                        );
                         v
                     })
                     .collect()

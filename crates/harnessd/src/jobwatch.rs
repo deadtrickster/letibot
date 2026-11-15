@@ -1576,7 +1576,7 @@ fn own_kill_survivors(host: &dyn ProcessHost, job: &JobId) -> Option<String> {
         if host.job(job).is_some_and(|v| v.state.is_running()) {
             break;
         }
-        if host.job_pids(job).is_empty() {
+        if host.job_pids(job).unwrap_or_default().is_empty() {
             return None;
         }
         if std::time::Instant::now() >= until {
@@ -1584,7 +1584,7 @@ fn own_kill_survivors(host: &dyn ProcessHost, job: &JobId) -> Option<String> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    let pids = host.job_pids(job);
+    let pids = host.job_pids(job).unwrap_or_default();
     if pids.is_empty() {
         return None;
     }

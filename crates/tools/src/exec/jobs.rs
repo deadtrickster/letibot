@@ -1000,6 +1000,12 @@ impl Job {
         self
     }
 
+    /// The job, started at `at`: the host's stamp from before the fork, not this constructor's.
+    pub fn with_started(mut self, at: SystemTime) -> Job {
+        self.started = at;
+        self
+    }
+
     pub fn memory_cap(&self) -> &MemoryCap {
         &self.memory_cap
     }

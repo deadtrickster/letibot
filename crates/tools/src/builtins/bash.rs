@@ -1312,7 +1312,7 @@ fn stop_run(
     host: &dyn ProcessHost,
     id: &crate::exec::JobId,
 ) -> Result<crate::exec::Reaping, crate::exec::ExecError> {
-    let pids = host.job_pids(id);
+    let pids = host.job_pids(id).unwrap_or_default();
     for pid in &pids {
         // SAFETY: a pid read from this job's own cgroup a moment ago; the cgroup holds only the
         // run's processes, never this daemon or its ancestors.
@@ -1511,8 +1511,15 @@ fn ask_if_waiting(
     // terminal, and [`Stdin::input_end`] is the name the kernel gives both sides.
     let handle = host.job_handle(id);
     let ours = handle.as_ref().and_then(|j| j.stdin().input_end());
-    let pids = host.job_pids(id);
-    let verdict = crate::exec::ask::waiting_for_an_answer(&pids, ours.as_ref());
+    let verdict = match host.job_pids(id) {
+        // Its scope is empty: the last process exited and the settlement has not landed yet.
+        Some(pids) if pids.is_empty() => return,
+        pids => crate::exec::ask::waiting_for_an_answer(&pids.unwrap_or_default(), ours.as_ref()),
+    };
+    // A run that ended during the read is not asking, whatever the read could not see.
+    if handle.as_ref().is_some_and(|j| !j.state().is_running()) {
+        return;
+    }
     // And nothing has been typed at it for a beat: a program just answered is blocked reading its
     // terminal again within microseconds, so without this the card would be raised about a question
     // the person answered a moment ago. `None` is never written to, the quietest case there is.

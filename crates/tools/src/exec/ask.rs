@@ -57,11 +57,10 @@ pub fn waiting_for_an_answer(pids: &[u32], ours: Option<&InputEnd>) -> Waiting {
     let mut unseen = false;
     for pid in pids {
         // `Unreadable` here means this process could not be looked at: a uid the daemon is
-        // not, a process that left since the cgroup read, a `/proc` a confined daemon may
-        // not open. It is not a `No`.
+        // not, or a `/proc` a confined daemon may not open. It is not a `No`.
         match stdin_of(*pid) {
             StdinRead::Unreadable => unseen = true,
-            StdinRead::Other => {}
+            StdinRead::Gone | StdinRead::Other => {}
             StdinRead::Pipe(their_ino) => {
                 if matches!(ours, InputEnd::Pipe(ino) if *ino == their_ino)
                     && blocked_reading_fd0(*pid)
@@ -113,8 +112,11 @@ enum StdinRead {
     Device(String),
     /// Read, and fd 0 is neither: a regular file, a socket, `/dev/null`.
     Other,
-    /// This process could not be looked at: `EACCES` for a uid the daemon is not, or a
-    /// process that left between the cgroup read and this one.
+    /// The process left between the cgroup read and this one, is exiting, or has no fd 0. A
+    /// process on its way out is not asking, and a short-lived `sed` in a pipeline is common.
+    Gone,
+    /// This process could not be looked at: `EACCES` for a uid the daemon is not or a
+    /// non-dumpable process, or a `/proc` this daemon cannot see at all.
     Unreadable,
 }
 
@@ -123,8 +125,13 @@ enum StdinRead {
 /// (`socket:[N]`) and a `(deleted)` path were both read and neither can be our terminal.
 #[cfg(not(target_os = "macos"))]
 fn stdin_of(pid: u32) -> StdinRead {
-    let Ok(target) = std::fs::read_link(format!("/proc/{pid}/fd/0")) else {
-        return StdinRead::Unreadable;
+    let target = match std::fs::read_link(format!("/proc/{pid}/fd/0")) {
+        Ok(target) => target,
+        Err(e) if vanished(&e) => return StdinRead::Gone,
+        // A task that is exiting, a zombie or just reaped is refused with `EACCES` too, so a
+        // refusal counts only for a process that is not on its way out.
+        Err(_) if leaving(pid) => return StdinRead::Gone,
+        Err(_) => return StdinRead::Unreadable,
     };
     let Some(text) = target.to_str() else {
         return StdinRead::Other;
@@ -149,6 +156,33 @@ fn stdin_of(pid: u32) -> StdinRead {
         // file deleted out from under the run. Not `Unreadable` - the link was read.
         Err(_) => StdinRead::Other,
     }
+}
+
+/// `ENOENT`/`ESRCH` from a `/proc` that works: the process exited or fd 0 is closed. Without
+/// `/proc/self/fd` every pid answers `ENOENT`, and that is could not look, not gone.
+#[cfg(not(target_os = "macos"))]
+fn vanished(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(libc::ENOENT) | Some(libc::ESRCH))
+        && std::path::Path::new("/proc/self/fd").is_dir()
+}
+
+/// The process is on its way out: `PF_EXITING` in `/proc/<pid>/stat`'s flags (field 9), which
+/// stays readable for a process `/proc/<pid>/fd` refuses, or no `stat` at all on a working `/proc`.
+#[cfg(not(target_os = "macos"))]
+fn leaving(pid: u32) -> bool {
+    const PF_EXITING: u64 = 0x4;
+    let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+        return std::path::Path::new("/proc/self/fd").is_dir()
+            && !std::path::Path::new(&format!("/proc/{pid}")).exists();
+    };
+    // `comm` is in parentheses and may hold spaces or `)`, so the fields start after the last one.
+    let Some((_, rest)) = stat.rsplit_once(')') else {
+        return false;
+    };
+    rest.split_whitespace()
+        .nth(6)
+        .and_then(|f| f.parse::<u64>().ok())
+        .is_some_and(|flags| flags & PF_EXITING != 0)
 }
 
 /// Is any thread of this process blocked in a read on ITS fd 0? Every thread, since
@@ -375,11 +409,11 @@ mod tests {
     #[cfg(target_os = "linux")] // the signal is `/proc`'s; macOS answers `Unreadable` (see `waiting_for_an_answer`)
     fn a_process_that_could_not_be_looked_at_is_not_a_no() {
         // This process is readable and is not blocked on the pipe inode named here, so it alone
-        // would answer `No`. A pid that does not exist cannot be looked at, the same
-        // `Unreadable` a root-owned `sudo` gives, without needing one.
+        // would answer `No`. A non-dumpable child is refused the way a root `sudo` is.
+        let hidden = Undumpable::spawn();
         assert_eq!(
             waiting_for_an_answer(
-                &[std::process::id(), u32::MAX - 1],
+                &[std::process::id(), hidden.pid()],
                 Some(&InputEnd::Pipe(1234))
             ),
             Waiting::Unreadable,
@@ -392,6 +426,110 @@ mod tests {
             Waiting::No,
             "every process was looked at and none is reading this pipe"
         );
+    }
+
+    /// A process that left between the cgroup read and the `/proc` read is not asking, and is
+    /// not a hole: a pipeline's short-lived `sed` must not turn the run's answer to
+    /// `Unreadable`. A reaped child's pid is the real shape of it.
+    #[test]
+    #[cfg(target_os = "linux")] // the signal is `/proc`'s; macOS answers `Unreadable` (see `waiting_for_an_answer`)
+    fn a_process_that_has_left_is_not_asking() {
+        let mut gone = std::process::Command::new("/bin/true")
+            .spawn()
+            .expect("true starts");
+        let pid = gone.id();
+        gone.wait().expect("true is reaped");
+        assert_eq!(
+            waiting_for_an_answer(&[std::process::id(), pid], Some(&InputEnd::Pipe(1234))),
+            Waiting::No,
+            "a process that is not there is not asking, and it is not one the daemon could not see"
+        );
+        // A zombie: `/proc/<pid>` is still there and `fd/0` is refused with `EACCES`, the
+        // same errno a process of another user gives.
+        let mut zombie = std::process::Command::new("/bin/true")
+            .spawn()
+            .expect("true starts");
+        let state = || {
+            std::fs::read_to_string(format!("/proc/{}/stat", zombie.id()))
+                .ok()
+                .and_then(|s| {
+                    s.rsplit_once(')')
+                        .map(|(_, r)| r.trim_start().starts_with('Z'))
+                })
+        };
+        while state() != Some(true) {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_eq!(
+            waiting_for_an_answer(&[zombie.id()], Some(&InputEnd::Pipe(1234))),
+            Waiting::No,
+            "a process that has exited and is not yet reaped is not asking"
+        );
+        zombie.wait().expect("the zombie is reaped");
+        // A non-dumpable process beside them still makes the answer `Unreadable`: gone is
+        // skipped, refused is not.
+        let hidden = Undumpable::spawn();
+        assert_eq!(
+            waiting_for_an_answer(&[pid, hidden.pid()], Some(&InputEnd::Pipe(1234))),
+            Waiting::Unreadable
+        );
+    }
+
+    /// This test binary re-run as a process of this uid that `/proc` refuses: it sets
+    /// `PR_SET_DUMPABLE 0`, the flag a setuid exec sets, says so, and blocks on stdin.
+    #[test]
+    fn undumpable_child() {
+        if std::env::var("LETIBOT_ASK_UNDUMPABLE").as_deref() != Ok("1") {
+            return;
+        }
+        // SAFETY: `prctl(PR_SET_DUMPABLE, 0)` changes only this process's own flag.
+        let rc = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
+        assert_eq!(rc, 0, "PR_SET_DUMPABLE 0");
+        println!("undumpable-ready");
+        let mut line = String::new();
+        let _ = std::io::stdin().read_line(&mut line);
+    }
+
+    /// A running [`undumpable_child`], killed on drop. `spawn` returns once the flag is set.
+    #[allow(dead_code)]
+    struct Undumpable(std::process::Child);
+
+    #[allow(dead_code)]
+    impl Undumpable {
+        fn spawn() -> Undumpable {
+            use std::io::BufRead;
+            let mut child = std::process::Command::new(std::env::current_exe().expect("self"))
+                .args([
+                    "--exact",
+                    "exec::ask::tests::undumpable_child",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env("LETIBOT_ASK_UNDUMPABLE", "1")
+                .stdin(std::process::Stdio::piped())
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .expect("the test binary re-runs");
+            let out = child.stdout.take().expect("piped stdout");
+            let ready = std::io::BufReader::new(out)
+                .lines()
+                .map_while(Result::ok)
+                .any(|l| l.ends_with("undumpable-ready"));
+            assert!(ready, "the child never set PR_SET_DUMPABLE 0");
+            Undumpable(child)
+        }
+
+        fn pid(&self) -> u32 {
+            self.0.id()
+        }
+    }
+
+    impl Drop for Undumpable {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
     }
 
     /// `Yes` is knowledge, and a sibling that could not be read does not take it back: one
@@ -410,9 +548,10 @@ mod tests {
             .expect("sh starts");
         let w = child.stdin.take().expect("the pipe this test holds");
         let ino = pipe_inode(w.as_raw_fd()).expect("the write end is a pipe");
+        let hidden = Undumpable::spawn();
         let mut seen = Waiting::No;
         for _ in 0..100 {
-            seen = waiting_for_an_answer(&[child.id(), u32::MAX - 1], Some(&InputEnd::Pipe(ino)));
+            seen = waiting_for_an_answer(&[child.id(), hidden.pid()], Some(&InputEnd::Pipe(ino)));
             if seen == Waiting::Yes {
                 break;
             }
@@ -443,9 +582,10 @@ mod tests {
             Waiting::Unreadable,
             "with no pipe inode there is nothing to compare fd 0 against"
         );
-        // A pid that does not exist: nothing could be read about it at all.
+        // A process this daemon may not open: nothing could be read about it at all.
+        let hidden = Undumpable::spawn();
         assert_eq!(
-            waiting_for_an_answer(&[u32::MAX - 1], Some(&InputEnd::Pipe(1234))),
+            waiting_for_an_answer(&[hidden.pid()], Some(&InputEnd::Pipe(1234))),
             Waiting::Unreadable
         );
         // And this process, whose stdin is not a pipe at all: read, and definitively not

@@ -516,12 +516,12 @@ pub trait ProcessHost: Send + Sync {
         None
     }
 
-    /// The processes this job has right now, by pid, when the host can say. One reader:
-    /// [`super::ask`], whose question is asked of the run's processes and which therefore has
-    /// to name them. An empty list means *this host cannot say*, not *nothing is running*.
-    fn job_pids(&self, job: &JobId) -> Vec<u32> {
+    /// The processes this job has right now, by pid, when the host can say. `None` is *this
+    /// host cannot say*; an empty list is *nothing is left in the job's scope*, which a run
+    /// between its last process's exit and its settlement is.
+    fn job_pids(&self, job: &JobId) -> Option<Vec<u32>> {
         let _ = job;
-        Vec::new()
+        None
     }
 
     /// The pids the harness manages, which the model cannot see.
@@ -837,16 +837,21 @@ impl Liveness {
     /// must not end; a wedged `sleep` burns nothing and prints nothing, which is the one it must.
     pub const DEFAULT_AFTER: Duration = Duration::from_secs(1800);
 
-    /// An empty set, with the tick thread already running.
-    fn new(tree: Arc<dyn ScopeTree>) -> Arc<Liveness> {
-        let l = Arc::new(Liveness {
+    /// An empty set, with no tick thread: a test that calls [`Liveness::scan`] itself is the tick.
+    fn unticked() -> Arc<Liveness> {
+        Arc::new(Liveness {
             window: Mutex::new(Some(Self::DEFAULT_AFTER)),
             watching: Mutex::new(Vec::new()),
             added: Condvar::new(),
             warnings: Mutex::new(Vec::new()),
             ended: Mutex::new(Vec::new()),
             closed: std::sync::atomic::AtomicBool::new(false),
-        });
+        })
+    }
+
+    /// An empty set, with the tick thread already running.
+    fn new(tree: Arc<dyn ScopeTree>) -> Arc<Liveness> {
+        let l = Self::unticked();
         let watch = Arc::clone(&l);
         // Said on stderr for the same reason the deadline watchdog is: a check that did not start
         // is a host where only `job_kill` ends anything, and the operator reads that here.
@@ -2307,6 +2312,9 @@ impl ProcessHost for HostProcesses {
                 ))
             })?
         };
+        // The job's start is stamped before the fork: taken after it, a thread descheduled
+        // under load makes a job look shorter than it ran.
+        let spawned_at = std::time::SystemTime::now();
         let mut child = cmd.spawn().map_err(|e| {
             // The cgroup was made and nothing joined it; take it back rather than
             // leaving an empty directory that a later listing would call a scope.
@@ -2357,6 +2365,7 @@ impl ProcessHost for HostProcesses {
             stdin,
         )
         .with_memory_cap(memory_cap)
+        .with_started(spawned_at)
         // Masked as the bytes arrive, so the window and the spill file are one set of bytes.
         .with_secret_mask(&secret_env);
         let job = Arc::new(match &follow {
@@ -3303,13 +3312,11 @@ impl ProcessHost for HostProcesses {
         self.find(job)
     }
 
-    /// The job's own cgroup's members. See [`ProcessHost::job_pids`] for the reader and for
-    /// why an empty list is *cannot say* rather than *nothing there*.
-    fn job_pids(&self, job: &JobId) -> Vec<u32> {
-        let Some(j) = self.find(job) else {
-            return Vec::new();
-        };
-        self.tree.members(&j.lifetime().scope).unwrap_or_default()
+    /// The job's own cgroup's members. See [`ProcessHost::job_pids`] for what `None` and an
+    /// empty list each say.
+    fn job_pids(&self, job: &JobId) -> Option<Vec<u32>> {
+        let j = self.find(job)?;
+        self.tree.members(&j.lifetime().scope).ok()
     }
 
     fn workspace(&self) -> Option<&std::path::Path> {
