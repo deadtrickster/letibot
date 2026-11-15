@@ -32,10 +32,11 @@ fn the_waiter_joins_its_bridge_and_a_second_bridge_is_suffixed() {
     .expect("a session");
     let (code, said) = std::thread::scope(|scope| {
         let h = scope.spawn(|| {
-            rooms::wait(
+            rooms::wait_marked(
                 &waiter,
                 Attention::ToMe,
                 Instant::now() + Duration::from_secs(20),
+                &dir.join("wait-mark"),
             )
         });
         let until = Instant::now() + Duration::from_secs(10);
@@ -65,6 +66,51 @@ fn the_waiter_joins_its_bridge_and_a_second_bridge_is_suffixed() {
     other.ensure().expect("the second bridge connects");
     assert_ne!(rooms::handle(), "cc@letibot");
     assert!(rooms::handle().starts_with("cc@letibot-"));
+    assert_eq!(rooms::family().as_deref(), Some("cc@letibot"));
+
+    // Both bridges of the name get its mail, each under its own cursor: the first one's ack (and
+    // its waiter's mark) hides nothing from the second.
+    let (tx, rx) = std::sync::mpsc::channel::<u64>();
+    let tx = std::sync::Mutex::new(tx);
+    other.stream(Arc::new(move |m, _| {
+        let _ = tx.lock().unwrap().send(m["seq"].as_u64().unwrap_or(0));
+        true
+    }));
+    let said = speaker
+        .request(&Request::Say {
+            id: "2".into(),
+            room: "host".into(),
+            text: "is H6 gated?".into(),
+            to: Some("cc@letibot".into()),
+            thread: None,
+            refs: Vec::new(),
+            attachments: Vec::new(),
+            kind: Default::default(),
+        })
+        .expect("said");
+    let seq = match said {
+        letibot_room::Response::Said { message, .. } => message.seq,
+        other => panic!("{other:?}"),
+    };
+    // The waiter's message may come first: nothing acked it, so the family's inbox still holds it.
+    let until = Instant::now() + Duration::from_secs(10);
+    while rx.recv_timeout(Duration::from_millis(200)).ok() != Some(seq) {
+        assert!(
+            Instant::now() < until,
+            "the suffixed bridge is pushed mail to its family"
+        );
+    }
+    bridge.ack(seq).expect("the first bridge acks");
+    let rows = other.inbox(Attention::ToMe, 50).expect("inbox");
+    assert!(
+        rows["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|m| m["seq"] == seq),
+        "{rows}"
+    );
+    assert!(other.unseen().contains(&seq), "pushed, not yet seen");
     server.stop();
     let _ = std::fs::remove_dir_all(&dir);
 }

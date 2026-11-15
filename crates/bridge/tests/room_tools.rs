@@ -733,8 +733,11 @@ fn a_message_the_writer_did_not_take_is_offered_again() {
     wait_until(|| taken.lock().unwrap().as_slice() == [1]);
 }
 
+/// A push is a write to Claude Code, not a delivery: a client that drops the channel leaves no
+/// trace. The cursor waits until the model shows it saw the message, and a fresh bridge in the
+/// meantime is offered it again.
 #[test]
-fn a_delivered_message_is_acked_so_a_fresh_bridge_does_not_replay_it() {
+fn a_pushed_message_is_acked_only_once_the_model_saw_it() {
     let fake = Fake::start("ack");
     let first = RoomLink::at(&fake.path);
     let taken = Arc::new(Mutex::new(Vec::<u64>::new()));
@@ -747,31 +750,88 @@ fn a_delivered_message_is_acked_so_a_fresh_bridge_does_not_replay_it() {
     fake.push("s-a", "session", "host", Some("claude-code"), "one");
     fake.push("s-a", "session", "host", Some("claude-code"), "two");
     wait_until(|| taken.lock().unwrap().len() == 2);
+    std::thread::sleep(Duration::from_millis(2500));
+    assert_eq!(*fake.cursor.lock().unwrap(), 0, "pushed is not seen");
+    assert_eq!(first.unseen(), vec![1, 2]);
+
+    let replay = |link: &RoomLink| {
+        let again = Arc::new(Mutex::new(Vec::<u64>::new()));
+        let a = again.clone();
+        link.stream(Arc::new(move |m, _names_you| {
+            a.lock().unwrap().push(m["seq"].as_u64().unwrap());
+            true
+        }));
+        wait_until(|| link.connected());
+        std::thread::sleep(Duration::from_millis(500));
+        let got: Vec<u64> = again.lock().unwrap().clone();
+        drop(again);
+        got
+    };
+    assert_eq!(replay(&RoomLink::at(&fake.path)), vec![1, 2]);
+
+    // The model read them in a tool result: now the cursor moves, and a fresh bridge owes nothing.
+    rooms::call(&first, "room_inbox", &json!({})).unwrap();
+    assert!(first.unseen().is_empty());
     wait_until(|| *fake.cursor.lock().unwrap() == 2);
-    // A new bridge process starts after the old one: the cursor holds nothing for it.
-    let second = RoomLink::at(&fake.path);
-    let again = Arc::new(Mutex::new(Vec::<u64>::new()));
-    let a = again.clone();
-    second.stream(Arc::new(move |m, _names_you| {
-        a.lock().unwrap().push(m["seq"].as_u64().unwrap());
+    assert!(replay(&RoomLink::at(&fake.path)).is_empty());
+}
+
+/// A message nothing settled is pushed again after the wait, and rides the next tool result.
+#[test]
+fn an_unseen_message_is_raised_again_and_rides_the_next_tool_result() {
+    let fake = Fake::start("reraise");
+    let link = RoomLink::at(&fake.path);
+    link.reraise_after(Duration::from_millis(500));
+    let said = Arc::new(Mutex::new(Vec::<String>::new()));
+    let t = said.clone();
+    link.stream(Arc::new(move |m, _names_you| {
+        t.lock()
+            .unwrap()
+            .push(m["text"].as_str().unwrap_or("").to_string());
         true
     }));
-    wait_until(|| second.connected());
-    std::thread::sleep(Duration::from_millis(500));
-    assert!(again.lock().unwrap().is_empty(), "{:?}", again.lock());
+    wait_until(|| link.connected());
+    fake.push("s-a", "session", "dm", Some("claude-code"), "is H6 gated?");
+    wait_until(|| said.lock().unwrap().len() == 2);
+    assert!(
+        said.lock().unwrap()[1].starts_with("(unanswered"),
+        "{:?}",
+        said.lock()
+    );
+    let lines = link.take_unanswered().expect("the raised message");
+    assert!(lines.to_string().contains("is H6 gated?"), "{lines}");
+    assert!(link.take_unanswered().is_none(), "handed over once");
+    assert!(link.unseen().is_empty());
+    wait_until(|| *fake.cursor.lock().unwrap() == 1);
+}
+
+/// A reply settles what it answers: a dm to the author settles that author's dms.
+#[test]
+fn a_reply_settles_what_it_answers() {
+    let fake = Fake::start("reply");
+    let link = RoomLink::at(&fake.path);
+    link.stream(Arc::new(|_, _| true));
+    wait_until(|| link.connected());
+    fake.push("s-a", "session", "dm", Some("claude-code"), "one");
+    fake.push("s-b", "session", "dm", Some("claude-code"), "two");
+    wait_until(|| link.unseen().len() == 2);
+    let _ = rooms::call(&link, "room_dm", &json!({"to": "s-a", "text": "on it"}));
+    assert_eq!(link.unseen(), vec![2]);
 }
 
 #[test]
 fn room_wait_exits_on_a_matching_message_and_not_on_others() {
     let fake = Fake::start("wait");
+    let mark = fake.path.with_extension("wait-mark");
     let link = RoomLink::at(&fake.path);
     // Nothing for claude-code: the deadline passes with code 30 and no output.
     let lonely = std::thread::scope(|scope| {
         let h = scope.spawn(|| {
-            rooms::wait(
+            rooms::wait_marked(
                 &link,
                 Attention::ToMe,
                 Instant::now() + Duration::from_millis(1500),
+                &mark,
             )
         });
         wait_until(|| !fake.conns.lock().unwrap().is_empty());
@@ -781,14 +841,16 @@ fn room_wait_exits_on_a_matching_message_and_not_on_others() {
     });
     assert_eq!(lonely, (30, String::new()));
 
-    // A message for it ends the wait, and the cursor moves past it so the next wait blocks.
+    // A message for it ends the wait, and the waiter's own mark moves past it so the next wait
+    // blocks. The coordinator's cursor is the bridge's, and no waiter acks it.
     let link2 = RoomLink::at(&fake.path);
     let (code, said) = std::thread::scope(|scope| {
         let h = scope.spawn(|| {
-            rooms::wait(
+            rooms::wait_marked(
                 &link2,
                 Attention::ToMe,
                 Instant::now() + Duration::from_secs(20),
+                &mark,
             )
         });
         wait_until(|| fake.conns.lock().unwrap().len() >= 2);
@@ -808,19 +870,30 @@ fn room_wait_exits_on_a_matching_message_and_not_on_others() {
         "{said}"
     );
     let link3 = RoomLink::at(&fake.path);
-    let (code, _) = rooms::wait(
+    let (code, _) = rooms::wait_marked(
         &link3,
         Attention::ToMe,
         Instant::now() + Duration::from_millis(1200),
+        &mark,
     );
-    assert_eq!(code, 30, "the acked message is not delivered again");
+    assert_eq!(code, 30, "the marked message is not delivered again");
+    assert!(
+        !fake
+            .frames
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|f| f["type"] == "ack"),
+        "a waiter never acks the cursor"
+    );
 
     // A coordinator that is not there is exit 20 with the reason.
     let gone = RoomLink::at("/nonexistent/room.sock");
-    let (code, why) = rooms::wait(
+    let (code, why) = rooms::wait_marked(
         &gone,
         Attention::ToMe,
         Instant::now() + Duration::from_secs(5),
+        &mark,
     );
     assert_eq!(code, 20);
     assert!(why.contains("no room coordinator"), "{why}");

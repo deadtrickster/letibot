@@ -2333,14 +2333,19 @@ impl Chat {
 
     /// What `name` missed: visible messages after its cursor that pass `attention`, oldest first, up
     /// to `limit`, plus how many visible ones were left out. Moves nothing.
+    /// `family` is the name a suffixed bridge also answers to: its mail counts under this cursor.
     pub fn inbox(
         &self,
         name: &str,
+        family: Option<&str>,
         attention: Attention,
         limit: usize,
         see: impl Fn(&Message) -> bool,
     ) -> (Vec<Message>, u64) {
         let cursor = self.cursor(name);
+        let attends = |m: &Message| {
+            m.attends(name, attention) || family.is_some_and(|f| m.attends(f, attention))
+        };
         let mut rows = Vec::new();
         let mut skipped = 0;
         let mut all: Vec<&Message> = self
@@ -2351,9 +2356,9 @@ impl Chat {
             .collect();
         all.sort_by_key(|m| m.seq);
         for m in all {
-            if m.attends(name, attention) && rows.len() < limit.clamp(1, MAX_READ) {
+            if attends(m) && rows.len() < limit.clamp(1, MAX_READ) {
                 rows.push(m.clone());
-            } else if !m.attends(name, attention) {
+            } else if !attends(m) {
                 skipped += 1;
             }
         }
@@ -3141,11 +3146,11 @@ mod tests {
         c.arm("s-me");
         say(&mut c, "1", HOST_ROOM, "s-a", Seat::Session, "chatter");
         say(&mut c, "2", HOST_ROOM, "s-a", Seat::Session, "hey @s-me");
-        let (rows, skipped) = c.inbox("s-me", Attention::ToMe, 50, |_| true);
+        let (rows, skipped) = c.inbox("s-me", None, Attention::ToMe, 50, |_| true);
         assert_eq!((rows.len(), skipped), (1, 1));
         assert_eq!(c.cursor("s-me"), 0, "the inbox moves nothing");
         c.ack("s-me", 2);
-        let (rows, skipped) = c.inbox("s-me", Attention::All, 50, |_| true);
+        let (rows, skipped) = c.inbox("s-me", None, Attention::All, 50, |_| true);
         assert_eq!((rows.len(), skipped), (0, 0));
         assert_eq!(c.ack("s-me", 1), 2, "a cursor never moves back");
         assert_eq!(c.ack("s-me", 99), 2, "nor past the head");
@@ -3198,7 +3203,7 @@ mod tests {
         say(&mut c, "1", HOST_ROOM, "s-a", Seat::Session, "old");
         c.arm("s-new");
         assert_eq!(c.cursor("s-new"), 1);
-        let (rows, _) = c.inbox("s-new", Attention::All, 50, |_| true);
+        let (rows, _) = c.inbox("s-new", None, Attention::All, 50, |_| true);
         assert!(rows.is_empty());
     }
 }

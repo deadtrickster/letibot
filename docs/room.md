@@ -944,7 +944,12 @@ session's `say` does; `rooms` lists the two it may use.
 for a linked worktree) or the `room_nick` the working folder was given (kept under the data dir's
 `nicks/`, keyed by the folder's canonical path). The folder is the one holding that repository, or the
 working folder itself outside a repository. A second bridge with the same handle is refused (`name_in_use`)
-and takes a short suffix (`cc@app-3f2`), kept for its life. `cc@<name>` addresses the one connected
+and takes a short suffix (`cc@app-3f2`), kept for its life. Its `hello` names the handle it lost as its
+`family`: mail to `cc@app` is pushed to `cc@app-3f2` too, counts in its own inbox under its own cursor,
+and still reaches it when `cc@app` is gone. A family must be the handle's own prefix before `-<suffix>`,
+or it is ignored. One Claude Code session can run two bridges (a user-scope `leticode` server and the
+plugin's), and the channel flag may enable only one of them, so every bridge of the name gets the mail.
+`cc@<name>` addresses the one connected
 bridge with that name and is shown as the author and in the roster while the name is unique. When two
 bridges share a name, both show qualified and the short form is refused as ambiguous, listing the
 qualified names. `cc@<folder>` is a group mention when several bridges share the folder or no bridge's
@@ -986,10 +991,15 @@ target). `room_asks` is what it reads to see what it owes; a plain chat reply se
 that passes `to_me` (names the bridge, a DM to it, the operator's unaddressed line) is sent once as
 `notifications/claude/channel` with `content` the message line (`#14 [host] s-a -> cc@app: text`)
 and `meta` `room`, `author`, `kind`, `to`, `seq`, `thread`. After a dropped connection the supervisor
-redials and replays the inbox, skipping what it already sent. The stream acks the cursor to the newest
-message the writer took (within two seconds), so a fresh bridge resumes after it and does not start a
-turn per old message. The cursor is one number: a lower message that did not pass `to_me` is also
-past it for `room_inbox`.
+redials and replays the inbox, skipping what it already sent. A push is a write to Claude Code, not a
+delivery: a client started without the channel flag for this server drops it without a word. So an
+addressed message stays **pending** until the model shows it saw it - a `room_inbox` or `room_read`
+result that held it, a `thread` reply to it, a dm to its author, or `room_inbox ack: true` - and the
+stream acks the cursor only up to the message below the oldest pending one. A fresh bridge is offered
+what is still pending. A message pending for ten minutes (`LETIBOT_ROOM_RERAISE_SECS`) is pushed once
+more, prefixed `(unanswered Nm, raised again)`, and rides the next result of any bridge tool as
+`room_unanswered`, which settles it. The cursor is one number: a lower message that did not pass `to_me`
+is also past it for `room_inbox`.
 
 What Claude Code sees depends on how it was started. Started with the channel flag for this server
 (`--dangerously-load-development-channels server:<name>`, or `plugin:<plugin>@<marketplace>` when the
@@ -1000,16 +1010,17 @@ own monitor is what wakes the seat, running the wait below in a loop (`claude-pl
 still in the inbox, so a session that polls `room_inbox`, or runs the wait below, loses nothing.
 
 **`letibot-mcp room-wait [--attention to_me|mentions|all] [--timeout 2h]`** blocks until a message for
-this bridge arrives, prints it (`#seq [room] author -> to: text`), moves the inbox cursor past it and
-exits 0. Messages already waiting past the cursor print at once. 20 is an unreachable coordinator
+this bridge arrives, prints it (`#seq [room] author -> to: text`) and exits 0. It keeps its own mark
+under the data dir's `waiters/`, one per handle and Claude Code process, and never acks: the cursor is
+the bridge's, and a waiter's ack would hide the message from the bridge that reports what the model saw. Messages already waiting past the cursor print at once. 20 is an unreachable coordinator
 (reason on stderr), 30 the timeout. It needs no channel flag, so it is the wake for any session:
 
 ```text
 Monitor(command: while :; do letibot-mcp room-wait --attention to_me --timeout 1h; sleep 2; done, persistent: true)
 ```
 
-The stream and the wait share one inbox cursor, so a message may arrive by both. Handling it twice is
-harmless, and `room_inbox` with `ack: true` settles it.
+A message may arrive by the stream and the wait both. Handling it twice is harmless, and `room_inbox`
+with `ack: true` settles it.
 
 ## The state machine
 

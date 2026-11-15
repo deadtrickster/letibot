@@ -286,3 +286,135 @@ fn a_say_that_names_somebody_else_does_not_ride_another_pairs_dm_thread() {
         Some(&(2, "s-bridge-1".into(), Some("s-arango".into()), Some(root)))
     );
 }
+
+/// A second bridge in one folder, spoken by hand: it lost the race for `family`, took a suffixed
+/// name, and says so in its `hello` - the bridge's own wire, JSON lines.
+struct Raw {
+    w: std::os::unix::net::UnixStream,
+    chat: Receiver<serde_json::Value>,
+    replies: Receiver<serde_json::Value>,
+}
+
+fn raw_bridge(server: &Server, name: &str, family: &str) -> Raw {
+    use std::io::{BufRead, BufReader, Write};
+    let mut w = std::os::unix::net::UnixStream::connect(server.path()).expect("connect");
+    let hello = serde_json::json!({
+        "type": "hello", "protocol": letibot_room::ROOM_PROTOCOL_VERSION,
+        "speaker": { "session": name, "parent": null },
+        "room": room_name(&server.name(), ""), "seat": "external", "family": family,
+    });
+    writeln!(w, "{hello}").unwrap();
+    let mut r = BufReader::new(w.try_clone().unwrap());
+    let mut first = String::new();
+    r.read_line(&mut first).unwrap();
+    assert!(first.contains("\"welcome\""), "{first}");
+    let (ctx, chat) = mpsc::channel();
+    let (rtx, replies) = mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        while r.read_line(&mut line).unwrap_or(0) > 0 {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(line.trim()) {
+                match v["type"].as_str() {
+                    Some("chat") => drop(ctx.send(v)),
+                    Some("event") => {}
+                    _ => drop(rtx.send(v)),
+                }
+            }
+            line.clear();
+        }
+    });
+    Raw { w, chat, replies }
+}
+
+impl Raw {
+    fn call(&mut self, frame: serde_json::Value) -> serde_json::Value {
+        use std::io::Write;
+        writeln!(self.w, "{frame}").unwrap();
+        self.replies
+            .recv_timeout(Duration::from_secs(5))
+            .expect("a reply")
+    }
+
+    fn inbox(&mut self) -> Vec<u64> {
+        let r = self.call(serde_json::json!({"type": "inbox", "attention": "to_me", "limit": 50}));
+        r["rows"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|m| m["seq"].as_u64())
+            .collect()
+    }
+}
+
+fn inbox_of(s: &Seated) -> Vec<u64> {
+    match s.call(Request::Inbox {
+        attention: letibot_room::chat::Attention::ToMe,
+        limit: Some(50),
+    }) {
+        Response::Inbox { rows, .. } => rows.iter().map(|m| m.seq).collect(),
+        other => panic!("expected an inbox: {other:?}"),
+    }
+}
+
+/// Two bridges of one name: `cc@letibot`, and `cc@letibot-8e0` that lost the race for it. A dm to
+/// the name is pushed to both, each holds it under its own cursor, and one's ack hides nothing
+/// from the other.
+#[test]
+fn a_dm_to_a_name_reaches_every_bridge_of_it_and_one_ack_hides_nothing() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let me = seat(&server, "s-rano", A, Seat::Session);
+    tell(&me, vec![top("s-rano", "rano")]);
+    let first = seat(&server, "cc@letibot", "", Seat::External);
+    let mut second = raw_bridge(&server, "cc@letibot-8e0", "cc@letibot");
+
+    let dm = said(me.dm("1", "cc@letibot", "is H6 gated?"));
+    assert_eq!(dm.to.as_deref(), Some("cc@letibot"));
+    let (heard, named) = first.next();
+    assert!(heard.seq == dm.seq && named);
+    let pushed = second
+        .chat
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the second bridge is pushed the dm too");
+    assert_eq!(pushed["message"]["seq"], dm.seq);
+    assert_eq!(pushed["names_you"], true, "it is addressed to this bridge");
+
+    assert_eq!(inbox_of(&first), vec![dm.seq]);
+    assert_eq!(second.inbox(), vec![dm.seq]);
+    first.call(Request::Ack { seq: dm.seq });
+    assert!(inbox_of(&first).is_empty());
+    assert_eq!(
+        second.inbox(),
+        vec![dm.seq],
+        "the first one's ack is its own"
+    );
+    second.call(serde_json::json!({"type": "ack", "seq": dm.seq}));
+    assert!(second.inbox().is_empty());
+
+    // And a name the first holds no more still reaches the one left.
+    drop(first);
+    std::thread::sleep(Duration::from_millis(200));
+    let again = said(me.dm("2", "cc@letibot", "still there?"));
+    let pushed = second
+        .chat
+        .recv_timeout(Duration::from_secs(5))
+        .expect("the suffixed bridge reads the family's mail alone");
+    assert_eq!(pushed["message"]["seq"], again.seq);
+}
+
+/// A family is only the name's own prefix: a bridge cannot declare somebody else's mail its own.
+#[test]
+fn a_family_that_is_not_the_names_prefix_reads_nothing() {
+    let dir = Scratch::new();
+    let server = coordinator(&dir);
+    let me = seat(&server, "s-rano", A, Seat::Session);
+    tell(&me, vec![top("s-rano", "rano")]);
+    let _owner = seat(&server, "cc@serenedb", "", Seat::External);
+    let mut thief = raw_bridge(&server, "cc@letibot-1", "cc@serenedb");
+    said(me.dm("1", "cc@serenedb", "private"));
+    assert!(
+        thief.chat.recv_timeout(Duration::from_millis(300)).is_err(),
+        "nothing was pushed"
+    );
+    assert!(thief.inbox().is_empty());
+}

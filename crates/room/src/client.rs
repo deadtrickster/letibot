@@ -367,6 +367,7 @@ impl Client {
             seat: self.inner.seat,
             token: operator_token(&self.inner.path),
             share: false,
+            family: None,
         };
         write_frame(&mut writer, &hello)?;
         let first = read_frame(&mut reader)

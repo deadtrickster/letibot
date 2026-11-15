@@ -169,6 +169,10 @@ pub enum Request {
         /// bridge and its waiter). The socket is the same user's, so the claim is the user's own.
         #[serde(default)]
         share: bool,
+        /// The name a suffixed external asked for first (`cc@x` for `cc@x-1a2`): another bridge
+        /// held it. Mail to the family reaches this connection too, under its own cursor.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        family: Option<String>,
     },
     /// The rooms this connection may see, with unread counts.
     Rooms,
@@ -747,6 +751,7 @@ impl Room {
                 seat: _,
                 token: _,
                 share: _,
+                family: _,
             } => {
                 if let Some(why) = protocol_refusal(*protocol) {
                     return Answer::quiet(Response::Bye { why });

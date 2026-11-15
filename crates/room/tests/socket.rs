@@ -658,6 +658,7 @@ fn operator_hello(token: Option<String>, session: &str, seat: Seat) -> Request {
         seat,
         token,
         share: false,
+        family: None,
     }
 }
 

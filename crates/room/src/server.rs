@@ -21,6 +21,19 @@ fn queue_seat_project(name: &str) -> Option<&str> {
     (!key.is_empty()).then_some(key)
 }
 
+/// The family an external's `Hello` may declare: a bridge handle whose `-<suffix>` this name is.
+/// Anything else is dropped, so a connection cannot read mail it did not lose a race for.
+fn family_of(seat: Seat, name: &str, family: Option<&str>) -> Option<String> {
+    let f = family?.trim();
+    let tail = name.strip_prefix(f)?.strip_prefix('-')?;
+    let ok = seat == Seat::External
+        && chat::valid_handle(f)
+        && chat::bridge_parts(f).is_some()
+        && !tail.is_empty()
+        && tail.bytes().all(|b| b.is_ascii_alphanumeric());
+    ok.then(|| f.to_string())
+}
+
 use crate::chat::{self, Chat, Seat};
 use crate::item::Speaker;
 use crate::lease::{CoordinatorLease, LEASE_BEAT_EVERY_MS};
@@ -82,6 +95,9 @@ struct Conn {
     socket: UnixStream,
     /// Set by the first failure, so one broken connection says its reason once.
     gone: AtomicBool,
+    /// The name an external asked for before taking a suffixed one: mail to it reaches this
+    /// connection too. Checked at the `Hello` to be this name's own prefix.
+    family: Option<String>,
 }
 
 impl Conn {
@@ -1113,6 +1129,21 @@ impl Server {
         })
     }
 
+    /// The family a connected external `name` declared at its `Hello`.
+    fn family(&self, name: &str) -> Option<String> {
+        self.conn_list()
+            .iter()
+            .find(|c| c.who.session == name && c.family.is_some())
+            .and_then(|c| c.family.clone())
+    }
+
+    /// Does a connection read `name`'s mail as its family?
+    fn family_connected(&self, name: &str) -> bool {
+        self.conn_list()
+            .iter()
+            .any(|c| c.family.as_deref() == Some(name))
+    }
+
     /// The external names holding a connection now.
     fn external_names(&self) -> Vec<String> {
         self.conn_list()
@@ -1131,6 +1162,10 @@ impl Server {
             return Ok(collapsed);
         }
         let name: &str = &collapsed;
+        // A family with only suffixed members connected is still somebody: they read its mail.
+        if self.family_connected(name) {
+            return Ok(name.to_string());
+        }
         match self.bridge_lookup(name) {
             Some(Lookup::One(full)) => return Ok(full),
             Some(Lookup::Many(c) | Lookup::Group(_, c)) => return Err(Miss::Ambiguous(c)),
@@ -1224,7 +1259,10 @@ impl Server {
     /// How each connected bridge reads to others: `cc@name` when its name is unique among the
     /// connected bridges, else the qualified `cc@folder:name`.
     fn bridge_display(&self) -> BTreeMap<String, String> {
-        let bridges: Vec<String> = self.external_names();
+        // One name, one bridge: a waiter sharing the name is not a second bridge of it.
+        let mut bridges: Vec<String> = self.external_names();
+        bridges.sort();
+        bridges.dedup();
         let mut count: BTreeMap<&str, usize> = BTreeMap::new();
         for b in &bridges {
             if let Some((_, n)) = chat::bridge_parts(b) {
@@ -1684,7 +1722,11 @@ impl Server {
             return self.queue_seat_hears(name, m);
         }
         if m.room == chat::DM_ROOM {
-            return m.author == name || m.to.as_deref() == Some(name);
+            return m.author == name
+                || m.to.as_deref() == Some(name)
+                || self
+                    .family(name)
+                    .is_some_and(|f| m.to.as_deref() == Some(&f));
         }
         self.may_see(name, seat, project, &m.room)
     }
@@ -1721,7 +1763,10 @@ impl Server {
                 .lock()
                 .expect("externals")
                 .contains(name)
-            || self.conn_list().iter().any(|c| c.who.session == name)
+            || self
+                .conn_list()
+                .iter()
+                .any(|c| c.who.session == name || c.family.as_deref() == Some(name))
         {
             return true;
         }
@@ -2591,6 +2636,7 @@ impl Server {
                 let chat = self.inner.chat.lock().expect("the chat lock");
                 let (rows, skipped) = chat.inbox(
                     name,
+                    self.family(name).as_deref(),
                     *attention,
                     limit.map_or(chat::MAX_READ, |n| n as usize),
                     |m| self.visible(name, seat, project, m),
@@ -3423,8 +3469,10 @@ impl Server {
             if name == message.author || !self.visible(name, c.seat, &c.project, message) {
                 continue;
             }
+            let family = c.family.as_deref();
             c.send(Response::Chat {
                 names_you: message.names(name)
+                    || family.is_some_and(|f| message.names(f) || answered.as_deref() == Some(f))
                     || answered.as_deref() == Some(name)
                     || (blocked && c.seat == Seat::Operator),
                 message: self.shown(message.clone(), &handles),
@@ -4189,8 +4237,17 @@ impl Server {
                         return;
                     }
                 };
-                let (speaker, seat) = match &hello {
-                    Request::Hello { speaker, seat, .. } => (speaker.clone(), *seat),
+                let (speaker, seat, family) = match &hello {
+                    Request::Hello {
+                        speaker,
+                        seat,
+                        family,
+                        ..
+                    } => (
+                        speaker.clone(),
+                        *seat,
+                        family_of(*seat, &speaker.session, family.as_deref()),
+                    ),
                     _ => return,
                 };
                 // Which room this connection is in, resolved ONCE - the `Hello`'s name, and
@@ -4240,6 +4297,7 @@ impl Server {
                     outbox,
                     socket: w,
                     gone: AtomicBool::new(false),
+                    family,
                 });
                 me.inner
                     .conns
@@ -4925,6 +4983,7 @@ mod tests {
             seat: Default::default(),
             token: None,
             share: false,
+            family: None,
         })
         .unwrap();
         a.write_all(format!("{hello}\n").as_bytes()).unwrap();
@@ -4992,6 +5051,7 @@ mod tests {
                 seat: Default::default(),
                 token: None,
                 share: false,
+                family: None,
             },
             now_ms(),
         );
@@ -5019,6 +5079,7 @@ mod tests {
                 seat: Default::default(),
                 token: None,
                 share: false,
+                family: None,
             },
             now_ms(),
         );
@@ -5053,6 +5114,7 @@ mod tests {
                 seat: Default::default(),
                 token: None,
                 share: false,
+                family: None,
             },
             now,
         );
@@ -5404,6 +5466,7 @@ mod tests {
             outbox,
             socket: mine.try_clone().expect("a clone"),
             gone: AtomicBool::new(false),
+            family: None,
         };
         let bye = |why: &str| Response::Bye { why: why.into() };
         conn.send(bye("one"));

@@ -225,9 +225,24 @@ fn call_tool(bridge: &Bridge, params: &Value) -> Result<Value, (i64, String)> {
         .filter(|v| v.is_object())
         .unwrap_or_else(|| json!({}));
     Ok(match crate::tools::call(bridge, name, &args) {
-        Ok(value) => text(value.to_string(), false),
+        Ok(value) => text(with_unanswered(bridge, value).to_string(), false),
         Err(why) => text(why, true),
     })
+}
+
+/// A room message raised again and still unseen rides the next result of any tool: the channel
+/// may be the thing that dropped it, and a tool result always reaches the model.
+fn with_unanswered(bridge: &Bridge, value: Value) -> Value {
+    let Some(lines) = bridge.rooms().take_unanswered() else {
+        return value;
+    };
+    match value {
+        Value::Object(mut o) => {
+            o.insert("room_unanswered".into(), lines);
+            Value::Object(o)
+        }
+        other => json!({ "result": other, "room_unanswered": lines }),
+    }
 }
 
 /// An MCP tool result: one text block holding the JSON (or the sentence), and whether it is

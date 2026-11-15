@@ -227,6 +227,33 @@ fn set_handle(name: String) {
     *name_cell().lock().unwrap_or_else(|e| e.into_inner()) = name;
 }
 
+fn family_cell() -> &'static Mutex<Option<String>> {
+    static FAMILY: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
+    FAMILY.get_or_init(|| Mutex::new(None))
+}
+
+/// The name this bridge asked for before another bridge in the folder held it. The room pushes
+/// mail to that name here too, so a second Claude Code server in one folder is not deaf.
+pub fn family() -> Option<String> {
+    family_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+fn set_family(name: Option<String>) {
+    *family_cell().lock().unwrap_or_else(|e| e.into_inner()) = name;
+}
+
+/// How long a message addressed to this seat may go unseen before it is raised again. Nothing the
+/// bridge writes to the channel is known to have reached the model, so silence is not delivery.
+fn reraise_after() -> Duration {
+    std::env::var("LETIBOT_ROOM_RERAISE_SECS")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .map_or(Duration::from_secs(600), Duration::from_secs)
+}
+
 /// The room wire's version. A coordinator on another number refuses the hello with both numbers,
 /// which reaches the tool as its error.
 pub const PROTOCOL: u16 = letibot_room::ROOM_PROTOCOL_VERSION;
@@ -481,10 +508,14 @@ pub fn channel_notification_saying(m: &Value, content: &str) -> Value {
 /// a group that includes the seat. The coordinator's own `names_you` is the authority when it comes
 /// with the message; this is the same fact for a row replayed from the inbox, which carries none.
 pub fn names_you(m: &Value, me: &str) -> bool {
-    let text = m["text"].as_str().unwrap_or("");
-    m["to"].as_str().is_some_and(|t| is_me(t, me))
-        || mentions_in(text).iter().any(|n| is_me(n, me))
-        || group_mention(text, me).is_some()
+    let names = |me: &str| {
+        let text = m["text"].as_str().unwrap_or("");
+        m["to"].as_str().is_some_and(|t| is_me(t, me))
+            || mentions_in(text).iter().any(|n| is_me(n, me))
+            || group_mention(text, me).is_some()
+    };
+    // A suffixed bridge reads its family's mail, so mail to the family names it too.
+    names(me) || (me == handle() && family().is_some_and(|f| names(&f)))
 }
 
 /// A pushed message as Claude Code reads it: the room's header line, then the text quoted. Built
@@ -605,6 +636,14 @@ struct Live {
     generation: u64,
 }
 
+/// A message addressed to this seat that went to the channel and that the model has not shown it
+/// saw: no reply, no read, no ack. The cursor stops below the oldest one.
+struct Pending {
+    message: Value,
+    at: Instant,
+    raised: bool,
+}
+
 struct Inner {
     path: PathBuf,
     live: Mutex<Option<Live>>,
@@ -619,6 +658,9 @@ struct Inner {
     ids: AtomicU64,
     /// The newest seq handed to the stream, so a replay never repeats a push.
     delivered: Mutex<u64>,
+    /// Addressed messages pushed and not yet seen, by seq.
+    pending: Mutex<std::collections::BTreeMap<u64, Pending>>,
+    reraise_after: Mutex<Duration>,
     /// The newest seq the coordinator's cursor was acked to, so a reconnect resumes after it.
     acked: AtomicU64,
     /// The connection generation whose gap was replayed, so one gap is fetched once however the
@@ -667,6 +709,8 @@ impl RoomLink {
                 generation: AtomicU64::new(0),
                 ids: AtomicU64::new(0),
                 delivered: Mutex::new(0),
+                pending: Mutex::new(std::collections::BTreeMap::new()),
+                reraise_after: Mutex::new(reraise_after()),
                 acked: AtomicU64::new(0),
                 replayed: AtomicU64::new(0),
                 instance: Mutex::new(None),
@@ -680,6 +724,15 @@ impl RoomLink {
     /// bridge) instead of being refused as a duplicate.
     pub fn share_name(&self) {
         self.inner.share.store(true, Ordering::SeqCst);
+    }
+
+    /// The coordinator start the last welcome named.
+    pub fn instance(&self) -> Option<u64> {
+        *self
+            .inner
+            .instance
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
     }
 
     pub fn connected(&self) -> bool {
@@ -746,6 +799,7 @@ impl RoomLink {
             "room": here,
             "seat": "external",
             "share": self.inner.share.load(Ordering::SeqCst),
+            "family": family(),
         });
         write_line(&mut writer, &hello)?;
         let mut first = String::new();
@@ -759,6 +813,9 @@ impl RoomLink {
         if first["why"]["refused"] == "name_in_use"
             && !*self.inner.named.lock().unwrap_or_else(|e| e.into_inner())
         {
+            if family().is_none() {
+                set_family(Some(handle()));
+            }
             set_handle(suffixed(&handle(), std::process::id()));
             return self.open();
         }
@@ -778,6 +835,7 @@ impl RoomLink {
                         .delivered
                         .lock()
                         .unwrap_or_else(|e| e.into_inner()) = 0;
+                    self.pending_map().clear();
                     self.inner.acked.store(0, Ordering::SeqCst);
                 }
                 *seen = Some(now);
@@ -823,8 +881,11 @@ impl RoomLink {
         let old = handle();
         if new != old {
             self.drop_connection();
+            let was = family();
+            set_family(None);
             set_handle(new.clone());
             if let Err(e) = self.open() {
+                set_family(was);
                 set_handle(old.clone());
                 for _ in 0..20 {
                     if self.open().is_ok() {
@@ -923,7 +984,8 @@ impl RoomLink {
         // A `Weak`, so the hook the link stores does not keep the link alive.
         self.on_chat(Arc::new(move |m, names_you| {
             if let Some(inner) = hook_weak.upgrade() {
-                let _ = RoomLink { inner }.deliver_once(m, names_you, &live_deliver);
+                let owed = names_you || Attention::ToMe.passes(m, names_you);
+                let _ = RoomLink { inner }.deliver_once(m, names_you, owed, &live_deliver);
             }
         }));
         let spawned = std::thread::Builder::new()
@@ -934,8 +996,9 @@ impl RoomLink {
         }
     }
 
-    /// `true` when this call handed `m` over and moved the mark.
-    fn deliver_once(&self, m: &Value, names_you: bool, deliver: &Deliver) -> bool {
+    /// `true` when this call handed `m` over and moved the mark. An `owed` message stays pending
+    /// until the model shows it saw it.
+    fn deliver_once(&self, m: &Value, names_you: bool, owed: bool, deliver: &Deliver) -> bool {
         let seq = m["seq"].as_u64().unwrap_or(0);
         let mut last = self
             .inner
@@ -949,9 +1012,127 @@ impl RoomLink {
         // taken: it is seen, and it is nobody's to be owed again.
         if deliver(m, names_you) {
             *last = seq;
+            if owed && seq > 0 {
+                self.pending_map().insert(
+                    seq,
+                    Pending {
+                        message: m.clone(),
+                        at: Instant::now(),
+                        raised: false,
+                    },
+                );
+            }
             return true;
         }
         false
+    }
+
+    fn pending_map(&self) -> std::sync::MutexGuard<'_, std::collections::BTreeMap<u64, Pending>> {
+        self.inner.pending.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// How long an unseen push waits before it is raised again.
+    pub fn reraise_after(&self, after: Duration) {
+        *self
+            .inner
+            .reraise_after
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = after;
+    }
+
+    /// The seqs pushed to the model that it has not shown it saw.
+    pub fn unseen(&self) -> Vec<u64> {
+        self.pending_map().keys().copied().collect()
+    }
+
+    /// What a tool result put in front of the model, or what it answered: no longer owed.
+    pub fn saw(&self, seqs: impl IntoIterator<Item = u64>) {
+        let mut p = self.pending_map();
+        for seq in seqs {
+            p.remove(&seq);
+        }
+    }
+
+    /// The model's own ack: everything up to `seq` is its to have skipped.
+    pub fn saw_upto(&self, seq: u64) {
+        self.pending_map().retain(|s, _| *s > seq);
+    }
+
+    /// A dm to `peer` answers the dms `peer` sent this seat.
+    fn saw_dms_from(&self, peer: &str) {
+        self.pending_map()
+            .retain(|_, p| !(p.message["room"] == "dm" && p.message["author"] == peer));
+    }
+
+    /// Settle what one tool call showed or answered.
+    fn settle(&self, tool: &str, args: &Value, reply: &Value) {
+        let rows = reply["rows"].as_array().into_iter().flatten();
+        self.saw(rows.filter_map(|m| m["seq"].as_u64()));
+        if let Some(seq) = reply["acked"].as_u64() {
+            self.saw_upto(seq);
+        }
+        if matches!(tool, "room_say" | "room_dm") {
+            let sent = &reply["message"];
+            let thread = sent["thread"].as_u64().or_else(|| args["thread"].as_u64());
+            self.saw(thread);
+            if let Some(peer) = sent["to"].as_str().or_else(|| args["to"].as_str()) {
+                self.saw_dms_from(peer);
+            }
+        }
+    }
+
+    /// Pushes older than [`reraise_after`] that nothing settled, pushed once more with how long
+    /// they waited. A channel the client drops is otherwise silent for ever.
+    fn reraise(&self, deliver: &Deliver) {
+        let after = *self
+            .inner
+            .reraise_after
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let due: Vec<(u64, Value)> = self
+            .pending_map()
+            .iter_mut()
+            .filter(|(_, p)| !p.raised && p.at.elapsed() >= after)
+            .map(|(seq, p)| {
+                p.raised = true;
+                (*seq, p.message.clone())
+            })
+            .collect();
+        for (_, m) in due {
+            let mut again = m.clone();
+            let mins = after.as_secs() / 60;
+            again["text"] = json!(format!(
+                "(unanswered {mins}m, raised again) {}",
+                m["text"].as_str().unwrap_or_default()
+            ));
+            let _ = deliver(&again, true);
+        }
+    }
+
+    /// The raised messages still unseen, as lines for the next tool result - a result is the one
+    /// thing the model is sure to read. Handing them over settles them.
+    pub fn take_unanswered(&self) -> Option<Value> {
+        let mut p = self.pending_map();
+        let raised: Vec<u64> = p
+            .iter()
+            .filter(|(_, v)| v.raised)
+            .map(|(seq, _)| *seq)
+            .collect();
+        if raised.is_empty() {
+            return None;
+        }
+        let lines: Vec<String> = raised
+            .iter()
+            .filter_map(|seq| p.remove(seq))
+            .map(|v| {
+                format!(
+                    "{} (waiting {}m)",
+                    line(&v.message),
+                    v.at.elapsed().as_secs() / 60
+                )
+            })
+            .collect();
+        Some(json!(lines))
     }
 
     /// A row the stream missed while it was down goes to the watchers too: an operator's verdict
@@ -959,7 +1140,7 @@ impl RoomLink {
     fn replay(&self, m: &Value, deliver: &Deliver) {
         // An inbox row carries no `names_you`: the row is what this seat's cursor held, and whether
         // it names the seat is read off its own fields, as the sentence beside it reads them.
-        if !self.deliver_once(m, names_you(m, &handle()), deliver) {
+        if !self.deliver_once(m, names_you(m, &handle()), true, deliver) {
             return;
         }
         let watchers: Vec<Hook> = self
@@ -1014,11 +1195,16 @@ impl RoomLink {
             // mark, because its log's seqs begin again - and the old number would tell the fresh
             // log that messages nobody was told about were read, so `replay_the_gap` would then
             // never fetch them.
-            let upto = *self
+            let delivered = *self
                 .inner
                 .delivered
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
+            // Never past a message the model has not seen: a push is a write, not a delivery.
+            let upto = match self.pending_map().keys().next() {
+                Some(first) => delivered.min(first - 1),
+                None => delivered,
+            };
             if upto == 0 || upto <= self.inner.acked.load(Ordering::SeqCst) {
                 return;
             }
@@ -1043,6 +1229,7 @@ fn supervise(weak: Weak<Inner>, deliver: Deliver) {
             // A gap or a first start: what the cursor still holds for this seat.
             link.replay_the_gap(&deliver);
         }
+        link.reraise(&deliver);
         link.ack_delivered();
         drop(link);
         std::thread::sleep(REDIAL_EVERY);
@@ -1608,6 +1795,12 @@ pub fn call_in(
     args: &Value,
     workspace: &Path,
 ) -> Result<Value, String> {
+    let reply = dispatch(link, name, args, workspace)?;
+    link.settle(name, args, &reply);
+    Ok(reply)
+}
+
+fn dispatch(link: &RoomLink, name: &str, args: &Value, workspace: &Path) -> Result<Value, String> {
     match name {
         "rooms" => link.request(&json!({ "type": "rooms" })),
         "room_read" => {
@@ -1767,10 +1960,22 @@ pub fn call_in(
     }
 }
 
-/// `room-wait`: block until a message passes `attention`, print it, move the cursor past it.
+/// `room-wait`: block until a message passes `attention` and print it. The waiter keeps its own
+/// mark and never acks: the cursor is the bridge's, and a waiter's ack would hide a message from
+/// the session whose bridge is the one that reports what the model saw.
 /// Exit codes: 0 a message (its lines on stdout), 20 the coordinator could not be reached,
 /// 30 the deadline passed.
 pub fn wait(link: &RoomLink, attention: Attention, deadline: Instant) -> (i32, String) {
+    wait_marked(link, attention, deadline, &wait_mark_path())
+}
+
+/// [`wait`] with the mark kept at `mark`.
+pub fn wait_marked(
+    link: &RoomLink,
+    attention: Attention,
+    deadline: Instant,
+    mark: &Path,
+) -> (i32, String) {
     let (tx, rx) = mpsc::channel::<Value>();
     link.share_name();
     link.on_chat(Arc::new(move |m, names_you| {
@@ -1782,7 +1987,7 @@ pub fn wait(link: &RoomLink, attention: Attention, deadline: Instant) -> (i32, S
         // After a drop the cursor still holds what was missed, so a reopen replays it.
         match link.ensure() {
             Err(e) => return (20, e),
-            Ok(_) => match replay(link, attention) {
+            Ok(_) => match replay(link, attention, mark) {
                 Ok(Some(found)) => return (0, found),
                 Ok(None) => {}
                 Err(e) => return (20, e),
@@ -1797,9 +2002,12 @@ pub fn wait(link: &RoomLink, attention: Attention, deadline: Instant) -> (i32, S
             match rx.recv_timeout(left.min(Duration::from_secs(1))) {
                 Ok(m) => {
                     let seq = m["seq"].as_u64().unwrap_or(0);
-                    let out = line(&m);
-                    let _ = link.ack(seq);
-                    return (0, out);
+                    let (instance, had) = read_mark(mark);
+                    if instance == link.instance() && seq <= had {
+                        continue;
+                    }
+                    write_mark(mark, link.instance(), seq);
+                    return (0, line(&m));
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) if link.connected() => {}
                 Err(_) => break,
@@ -1808,15 +2016,74 @@ pub fn wait(link: &RoomLink, attention: Attention, deadline: Instant) -> (i32, S
     }
 }
 
-fn replay(link: &RoomLink, attention: Attention) -> Result<Option<String>, String> {
+fn replay(link: &RoomLink, attention: Attention, mark: &Path) -> Result<Option<String>, String> {
     let reply = link.inbox(attention, 200)?;
-    let rows = reply["rows"].as_array().cloned().unwrap_or_default();
+    let (instance, had) = read_mark(mark);
+    let had = if instance == link.instance() { had } else { 0 };
+    let rows: Vec<Value> = reply["rows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["seq"].as_u64().is_some_and(|s| s > had))
+        .cloned()
+        .collect();
     let Some(last) = rows.last().and_then(|m| m["seq"].as_u64()) else {
         return Ok(None);
     };
-    let out = rows.iter().map(line).collect::<Vec<_>>().join("\n");
-    link.ack(last)?;
-    Ok(Some(out))
+    write_mark(mark, link.instance(), last);
+    Ok(Some(rows.iter().map(line).collect::<Vec<_>>().join("\n")))
+}
+
+/// One mark per seat and Claude Code process: the waiter loop restarts this binary for every
+/// message, and two sessions of one name each need their own.
+fn wait_mark_path() -> PathBuf {
+    let key = format!("{}#{}", handle(), session_pid());
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in key.as_bytes() {
+        h ^= u64::from(*b);
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    data_dir().join("waiters").join(format!("{h:016x}"))
+}
+
+/// The nearest `claude` ancestor, else the parent: what this waiter wakes.
+fn session_pid() -> u32 {
+    let parent = |pid: u32| -> Option<u32> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        stat.rsplit_once(')')?
+            .1
+            .split_whitespace()
+            .nth(1)?
+            .parse()
+            .ok()
+    };
+    let me = std::process::id();
+    let mut at = me;
+    for _ in 0..16 {
+        let Some(up) = parent(at).filter(|p| *p > 1) else {
+            break;
+        };
+        let comm = std::fs::read_to_string(format!("/proc/{up}/comm")).unwrap_or_default();
+        if comm.trim() == "claude" {
+            return up;
+        }
+        at = up;
+    }
+    parent(me).unwrap_or(me)
+}
+
+fn read_mark(path: &Path) -> (Option<u64>, u64) {
+    let text = std::fs::read_to_string(path).unwrap_or_default();
+    let mut it = text.split_whitespace().map(|w| w.parse::<u64>().ok());
+    let instance = it.next().flatten();
+    (instance, it.next().flatten().unwrap_or(0))
+}
+
+fn write_mark(path: &Path, instance: Option<u64>, seq: u64) {
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, format!("{} {seq}\n", instance.unwrap_or(0)));
 }
 
 #[cfg(test)]

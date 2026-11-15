@@ -24,6 +24,7 @@ fn every_frame_round_trips_through_json() {
             seat: Default::default(),
             token: None,
             share: false,
+            family: None,
         },
         Request::Post {
             id: "r1".to_string(),
@@ -161,6 +162,7 @@ fn the_hello_hands_out_the_lease_and_refuses_a_subagent_at_the_door() {
             seat: Default::default(),
             token: None,
             share: false,
+            family: None,
         },
         1_000,
     );
@@ -193,6 +195,7 @@ fn the_hello_hands_out_the_lease_and_refuses_a_subagent_at_the_door() {
             seat: Default::default(),
             token: None,
             share: false,
+            family: None,
         },
         1_001,
     ) {
@@ -212,6 +215,7 @@ fn the_hello_hands_out_the_lease_and_refuses_a_subagent_at_the_door() {
             seat: Default::default(),
             token: None,
             share: false,
+            family: None,
         },
         1_002,
     ) {
