@@ -79,6 +79,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R242 | `read` clips a line at 2000 chars and `edit` then refuses it as never shown | Code work | done: a window read with its own `limit` clips at the byte budget (32 KiB) instead, marks the line shown, and the note says so (see the entry); left: a line over 32 KiB is still unreachable to `edit` |
 | R244 | Offers by meaning: evidence and declines | Code work | built: cosine rescaled over a 0.20 baseline in `blended`, a subject offer under the tier needs the skill's or note's name in the operator's words or touched files, untaken offers decline after three rounds and raise the floor per project; left: description words as evidence, the real-model test runs only where the checkpoint is |
 | R245 | The review queue's sessions are not reseated after a daemon restart, and their asks reach nobody | Code work | built: a restart keeps a claimed review claimed and reopens its reviewer on the stored session, a Claude run is started under a known id so it resumes, and every open board ask in the queue's tree is a card on the main session, in the bridge's asks list and the desktop notification; left: live permission and question cards of the queue's tree still fail closed with no head |
+| R255 | The multicall binary and the launcher are both named `letibot`, so an install copies the ELF over the command a person types | Code work | open; left: all of it (audit H8, plan 1.27 first step) |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -1191,6 +1192,16 @@ So on 2026-11-15 cc@letibot typed two prompts into rano's head over tmux: a shad
 It can be `leticode_send` widened beyond held sessions, or a room `prompt` kind addressed to a session. Pick the one that matches the existing permission model.
 
 **Done when:** from cc@letibot, a prompt to a rano session that this bridge does not hold is queued and runs a turn, is stored with `cc@letibot` as its author, and a project that refuses it gets a refusal with its reason. No tmux in the path.
+
+## R255 - The multicall binary and the launcher are both named `letibot`, so an install copies the ELF over the command a person types
+
+**Status:** open, 2026-11-15. left: all of it.
+
+Audit package H8 ("One name, one artifact", `STATUS-fable-5.2-2026-11-15.md` 3.3), the first step of plan 1.27. `crates/letibot` builds its multicall as `target/release/letibot`, the same name as `scripts/letibot`. On 2026-11-14 an install loop copied `target/release/letibot` over `~/.local/bin/letibot`, and `letibot --continue` answered "no such role". `install.sh` guards only the launcher copy of a source install (`:557-569`); `role_copies` (`:414-419`) hardlinks `$out/letibot` to `letibot-askpass` whatever that file is, so on a prebuilt archive `letibot-askpass` became a copy of the launcher script. In the installed layout the launcher's own `$BIN/letibot where|migrate|stats|...` calls land on the launcher itself, because the multicall is not installed under any name. R222 (`check-dist-names.sh` red) is the same mismatch seen from the checker.
+
+Fix: the multicall ships under its own name; `install.sh`, `make-dist.sh`, the release workflow, `install-gate-build.sh`, the migration's remote build and the launcher name it; role names (`letibot-askpass`) are made from it at install time; every write into the install directory refuses a non-script under a launcher name; the launcher passes `--config-reference` and `--config-header` through; a gate step asserts no ELF named `letibot` is built.
+
+**Done when:** `cargo build --release --bins` leaves no ELF named `letibot`, `sh scripts/check-dist-names.sh` exits 0 and is a gate step, and an install from an archive or a checkout puts the script at `letibot` and the multicall at its own name with `letibot-askpass` beside it.
 
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
