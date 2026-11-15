@@ -100,6 +100,36 @@ The `queue` tool's `restart` puts a parked row back in line, and its `regate` ga
 again once the cause of a red is gone. Neither is a way past a red - a branch that cannot pass the
 gate is not landed, which is the whole point of having one.
 
+## The local landing gate: `scripts/gate-at.sh`
+
+Until the queue batches branches (R258), the lead lands by hand. Agents test the crates they
+touched and push a branch. The lead stacks the branches on `origin/main` in one worktree and runs
+one full gate over the stack:
+
+```sh
+env -i HOME=$HOME PATH=$PATH sh scripts/gate-at.sh <worktree> /build/target-<name> origin/main
+```
+
+- **One full gate per box.** The script takes `flock` on `/build/gate.lock` before `cargo test
+  --workspace`, and a second caller waits there. Eight parallel gates put the box at load 225.
+  `LETIBOT_GATE_LOCK` names another lock file. Never remove the lock: end the stuck gate.
+- **Isolated home.** The tests run with `HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and a short
+  `XDG_RUNTIME_DIR` of their own, so a test that forgets to isolate cannot reach the operator's
+  store or sockets. `hosts.toml`, `keys` and `known_hosts` are linked in for the remote-host tests.
+  `providers.toml` is not. Cargo and rustup stay at the real `HOME`.
+- **Stale builtins output.** `crates/builtins/build.rs` watches absolute paths, so a target dir
+  shared by worktrees keeps another tree's `chat.wasm`. The script deletes every
+  `letibot-builtins-*` output whose `rerun-if-changed` is not this worktree.
+- **The verdict.** `check-fmt.sh` against `BASE` first (exit 4), then the test run: `GREEN` with
+  exit 0, or the failing lines and exit 3. Logs are `<name>.fmt.log` and `<name>.test.log` under
+  `$LETIBOT_GATE_LOGS` (default `$TMPDIR/letibot-gate`).
+- **On red,** bisect the stack, fix the failing commit, gate again, then push `main`.
+
+`TARGET_DIR` goes on `/build`, never the root disk. Delete it after the landing; each one is about
+200G. A link that dies with `signal 7 [Bus error]` is a full `/build`: `df -h /build` first.
+`letibot doctor`'s `gate lock` row warns about a holder older than 2h, and its disk rows list
+`/build/target-*` dirs that no process works in.
+
 ## On a host, by hand
 
 ```sh
