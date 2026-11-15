@@ -79,6 +79,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R245 | The review queue's sessions are not reseated after a daemon restart, and their asks reach nobody | Code work | built: a restart keeps a claimed review claimed and reopens its reviewer on the stored session, a Claude run is started under a known id so it resumes, and every open board ask in the queue's tree is a card on the main session, in the bridge's asks list and the desktop notification; left: live permission and question cards of the queue's tree still fail closed with no head |
 | R255 | The multicall binary and the launcher are both named `letibot`, so an install copies the ELF over the command a person types | Code work | built: the multicall is `letibot-multi`, every install path refuses a non-script under a launcher name, `check-dist-names.sh --built` is a gate step (R222 settled); left: a box's own `target/release` needs a release build before the launcher's verbs find `letibot-multi`, and units installed from the old `letibot` path |
 | R256 | Long lines end to end: `read` cannot reach past 32 KiB of a line, and the tool window cuts every line at the screen edge | Code work | built (audit H6, plan 1.14, R242's remainder): `read` takes `column_offset` and `columns`, the ledger keeps shown pieces and `edit` lands inside one; rano `c07e8ea` wraps the open window and counts hidden marker lines on the header; left: the unfolded (`/t`) row still cuts at the edge, and `grep` hits on a long line are still cut at 400 chars |
+| R261 | Skill offers under control: the shadow picks them, children get none, a skill can be hidden from the model | Code work | filed 2026-11-15 (audit H5, STATUS-fable-5.2 section 3.4); left: everything |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -1205,6 +1206,19 @@ Audit package H6 (`STATUS-fable-5.2-2026-11-15.md`), plan item 1.14, and R242's 
 - Tests: `a_line_over_the_budget_is_read_in_pieces_and_edited_inside_one`, `an_edit_inside_the_shown_prefix_of_a_clipped_line_lands`, `a_column_read_past_the_line_or_with_ranges_is_refused_by_name`, `a_part_shown_covers_a_change_inside_it_and_moves_with_an_edit_above`; rano `a_line_wider_than_the_screen_is_read_whole_in_the_window`, `hidden_marker_lines_are_counted_on_the_header`.
 
 **Done when:** a line over 32 KiB is read in pieces with `column_offset` and `columns`, and an edit whose match lies inside a shown piece lands; a 400-column line is fully readable in the window at 80 columns; the header's count plus the stated hidden marker lines equals the payload's lines.
+## R261 - Skill offers under control: the shadow picks them, children get none, a skill can be hidden from the model
+
+**Status:** filed 2026-11-15. left: everything below.
+
+Audit package H5 (`/build/oss-harnesses/STATUS-fable-5.2-2026-11-15.md`, section 4 and 3.4; the "False skill offers" row of section 3). The plan has no item for it; the audit names it as a new P1. Builds on R243 (shadow `during`) and R244 (floor, evidence, declines).
+
+Operator decisions (2026-11-15):
+1. With the shadow's `during` job on (`[shadow]` in providers.toml) and not paused, the shadow decides skill offers and its pick acts. Drift stays observe-only. The embedding plus lexical shortlist is the pre-filter. At most 2 picks, each with a verified quote, under the R243 guardrails: schema, quote check, closed verdict space, stale drop, deadline. A timeout, `unsure` or a void reply is no offer.
+2. With the shadow off, or `during` off or paused, offers use the R244 mechanism unchanged: rescaled blend, name evidence, declines.
+3. Child sessions get no skill offers by default: subagents, packages, review queue sessions, the gatekeeper and one-shots, anything with a parent or a non-operator origin. They run on a brief that already names what they need. `[skills] offer_children` in leticode.toml, default false. Note offers for children are unchanged; the same question applies to them.
+4. A per-skill and per-project switch that hides a skill from the model and keeps it for the operator: frontmatter `disable-model-invocation: true` (crush, Claude Code) and `[skills] hide` (crush `disable-skill`, omo-slim `!name`). Plus R244's remainder.
+
+**Done when:** each of 1-4 is built with a test, documented in `crates/config-ref`, `docs/config` and `docs/skills.md`.
 
 ## R257 - The shadow as a persistent session fed the conversation incrementally, asked only at the trigger points
 
