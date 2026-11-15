@@ -2582,16 +2582,21 @@ Operator's shape (2026-11-15): "if user gives a callback than the callback decid
 - **Input to one call:** the refusal (status, provider, model, window, reset if known, attempt count), the usage from R232 where there is any, the session (id, seat, origin, whether a turn is in flight), the configured candidates, and the stored state blob (empty on the first call of an episode).
 - **Output:** the operator's own words: "return is like state, what to do, when". As a record:
   - `state`: the opaque blob above.
-  - `do`: one of a closed set. `retry` (the same request, the same target), `switch { provider, model }` (the same session, another target), `new_session { provider, model }`, `stop` (end the turn and tell the operator).
-  - `when`: an absolute time or "now".
+  - `do`: one of a set of actions, in the operator's words: "wait, switch to model, ask user, you know what i mean or another function even". The set:
+    - `wait`: park, then run the same request at `when`.
+    - `switch { provider, model }`: continue the same session on another target.
+    - `new_session { provider, model }`: continue in a new session on that target.
+    - `ask_user { question, options }`: put a card in front of the operator through the normal ask path. The answer comes back to the hook as input on its next call.
+    - `call { function }`: run another named hook next, with the same state and input. This lets the operator compose functions, and the chain is under the same fuel cap.
+    - `stop`: end the turn and tell the operator.
 
-  An action outside the set counts as a malformed answer.
+    A name outside the set counts as a malformed answer. The set grows by adding a variant here, never by free text.
 - **The hook runs with a fuel cap** (wasm, the plugin runtime's existing fuel accounting). A hook that fails, runs out of fuel or returns a malformed answer is recorded visibly, and that episode falls back to the fixed logic. Code is not allowed to retry the hook in a loop.
 - **Visible:** each call, its decision and its fallback are a row in the session record. The state blob is shown in the row's details.
 
 **Open for whoever builds it:** what "new session" means for a running turn, and whether a turn in flight is resumed on the new target or restarted. Settle it with the operator before landing.
 
-**Done when:** a test hook that keeps a counter in its state returns `retry` at a later `when`, then `switch`, across two refusals. letibot carries the state between the calls, destroys it after the first success, and a hook that exhausts its fuel falls back to the fixed logic with a visible row.
+**Done when:** a test hook that keeps a counter in its state returns `wait` with a later `when`, then `ask_user`, then `switch` with the answer, across three refusals. letibot carries the state between the calls, destroys it after the first success, and a hook that exhausts its fuel falls back to the fixed logic with a visible row.
 
 ## R235 - A Claude Code session starts a new `until [ -s ... ]` wait loop every few minutes and never stops the old ones
 
