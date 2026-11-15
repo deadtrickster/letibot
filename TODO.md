@@ -2580,13 +2580,18 @@ Operator's shape (2026-11-15): "if user gives a callback than the callback decid
 - **Opaque state, owned by letibot, written by the hook.** Each call returns a state blob with its decision. letibot's limit state machine stores the blob per session, keyed by the limited provider and model, durable across a daemon restart. It passes the blob back unchanged on the next call for the same limit episode. letibot never interprets it.
 - **The episode ends when we are free to go.** That means the first request that succeeds after the decision. letibot then destroys the blob, so the next limit starts fresh.
 - **Input to one call:** the refusal (status, provider, model, window, reset if known, attempt count), the usage from R232 where there is any, the session (id, seat, origin, whether a turn is in flight), the configured candidates, and the stored state blob (empty on the first call of an episode).
-- **Output:** `{ state, session, run_at }`. `session` says where to continue: the same session, or the same session on another provider or model, or a new session. `run_at` is when to run it, and now means immediately.
+- **Output:** the operator's own words: "return is like state, what to do, when". As a record:
+  - `state`: the opaque blob above.
+  - `do`: one of a closed set. `retry` (the same request, the same target), `switch { provider, model }` (the same session, another target), `new_session { provider, model }`, `stop` (end the turn and tell the operator).
+  - `when`: an absolute time or "now".
+
+  An action outside the set counts as a malformed answer.
 - **The hook runs with a fuel cap** (wasm, the plugin runtime's existing fuel accounting). A hook that fails, runs out of fuel or returns a malformed answer is recorded visibly, and that episode falls back to the fixed logic. Code is not allowed to retry the hook in a loop.
 - **Visible:** each call, its decision and its fallback are a row in the session record. The state blob is shown in the row's details.
 
 **Open for whoever builds it:** what "new session" means for a running turn, and whether a turn in flight is resumed on the new target or restarted. Settle it with the operator before landing.
 
-**Done when:** a test hook that keeps a counter in its state returns wait-then-switch across two refusals. letibot carries the state between the calls, destroys it after the first success, and a hook that exhausts its fuel falls back to the fixed logic with a visible row.
+**Done when:** a test hook that keeps a counter in its state returns `retry` at a later `when`, then `switch`, across two refusals. letibot carries the state between the calls, destroys it after the first success, and a hook that exhausts its fuel falls back to the fixed logic with a visible row.
 
 ## R235 - A Claude Code session starts a new `until [ -s ... ]` wait loop every few minutes and never stops the old ones
 
