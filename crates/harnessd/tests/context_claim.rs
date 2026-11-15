@@ -101,13 +101,26 @@ fn an_excuse_that_calls_a_tool(
     excuse: &str,
     n_prompt: u64,
 ) -> Reply {
-    let thought = vocab.tokenize_text("thinking").expect("tokenizes");
+    a_round_that_calls(
+        vocab,
+        "thinking",
+        excuse,
+        "\n<function=no_such_tool>\n<parameter=why>\nno reason\n</parameter>\n</function>\n",
+        n_prompt,
+    )
+}
+
+/// A round with its thought, its text and one call spelled out.
+fn a_round_that_calls(
+    vocab: &letibot_tokencore::Vocab,
+    thought: &str,
+    excuse: &str,
+    call: &str,
+    n_prompt: u64,
+) -> Reply {
+    let thought = vocab.tokenize_text(thought).expect("tokenizes");
     let text = vocab.tokenize_text(excuse).expect("tokenizes");
-    let call = vocab
-        .tokenize_text(
-            "\n<function=no_such_tool>\n<parameter=why>\nno reason\n</parameter>\n</function>\n",
-        )
-        .expect("tokenizes");
+    let call = vocab.tokenize_text(call).expect("tokenizes");
     let mut frames = vec![canned::Frame::Progress {
         total: n_prompt,
         processed: n_prompt,
@@ -515,5 +528,63 @@ fn an_excuse_repeated_after_the_line_is_a_warning_for_the_operator() {
         warned[0].contains("I am at the end of my context"),
         "{}",
         warned[0]
+    );
+}
+
+/// rano's turn: the reasoning says the context is long and the round calls `compact_self`. The
+/// harness took the compaction, so the model is doing what the line would ask - no line, this
+/// round or after, and the compaction is still queued for the turn's end.
+#[test]
+fn an_accepted_compact_self_is_not_told_to_stop_sizing_by_context() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-context-claim-compact");
+    let mut cfg = config(&dir, "context-claim-compact");
+    cfg.context_window = Some(1_000_000);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let vocab = &parts.vocab;
+    let serv = canned::Canned::serve_replies(
+        vec![
+            a_round_that_calls(
+                vocab,
+                "And my context is very long, I should compact before continuing.",
+                "Compacting while the queue reviews:",
+                "\n<function=compact_self>\n</function>\n",
+                30,
+            ),
+            a_thoughtful_answer(
+                vocab,
+                "My context is long, so compacting at turn end.",
+                "Compacting this conversation now.",
+                60,
+            ),
+        ],
+        2,
+    );
+    cfg.endpoint = serv.endpoint.clone();
+
+    let hub = Hub::new("context-claim-compact");
+    let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
+    let reply = h.submit("carry on with the board").expect("the turn runs");
+
+    assert_eq!(reply.rounds, 2, "{reply:?}");
+    let accepted = h.items().iter().any(|i| {
+        matches!(i, TranscriptItem::ToolResult { name, outcome: letibot_transcript::ToolOutcome::Ok, .. }
+            if name == "compact_self")
+    });
+    assert!(accepted, "the premise: compact_self was accepted");
+    let checks = context_checks(&h);
+    assert!(checks.is_empty(), "no context check: {checks:#?}");
+    let queued = hub
+        .try_command()
+        .expect("the compaction waits in the queue");
+    assert_eq!(queued.kind, letibot_sessionlog::hub::CommandKind::Compact);
+    // Still measured: the log keeps every claim, told or not.
+    let log =
+        std::fs::read_to_string(dir.path.join(".letibot").join(LOG)).expect("the claim is logged");
+    assert!(
+        log.lines().all(|l| l.contains("\"slapped\":false")),
+        "{log}"
     );
 }

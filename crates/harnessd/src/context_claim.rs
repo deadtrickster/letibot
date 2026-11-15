@@ -702,6 +702,25 @@ pub struct Check {
     /// the first round of the turn, because the corpus behind them is a constant.
     tier: Option<Tier>,
     filled: bool,
+    /// The model asked to compact and the harness took it: talk of a long context is the reason
+    /// it gave, not a budget it is cutting work to.
+    compacting: bool,
+}
+
+/// Whether a round's results hold a compaction the harness accepted - `compact_self`, or a
+/// re-seat, which carries the conversation onto a new base the same way.
+pub fn accepted_compaction(results: &[letibot_transcript::TranscriptItem]) -> bool {
+    use letibot_tools::builtins::session_self::{COMPACT, RESEAT};
+    results.iter().any(|i| {
+        matches!(
+            i,
+            letibot_transcript::TranscriptItem::ToolResult {
+                name,
+                outcome: letibot_transcript::ToolOutcome::Ok,
+                ..
+            } if name == COMPACT || name == RESEAT
+        )
+    })
 }
 
 impl Check {
@@ -714,6 +733,12 @@ impl Check {
     pub fn with_tier(mut self, tier: Option<Tier>) -> Check {
         self.tier = tier;
         self
+    }
+
+    /// The rest of this turn is quiet: a compaction was accepted, so the model is doing what the
+    /// line would tell it to.
+    pub fn compaction_accepted(&mut self) {
+        self.compacting = true;
     }
 
     /// Judge one round's prose against the measured fill. `None` when the prose holds no claim
@@ -737,6 +762,7 @@ impl Check {
         }
         let claim = find_with(text, self.tier.as_ref())?;
         let verdict = match fill {
+            _ if self.compacting => Verdict::Quiet,
             // Not a measurement, or the claim is true: the wall is handled where it
             // always was, and there is nothing to correct.
             None => Verdict::Quiet,
@@ -977,6 +1003,53 @@ mod tests {
         );
         let third = check.judge(excuse, Some(LOW)).expect("a claim");
         assert_eq!(third.verdict, Verdict::Quiet);
+    }
+
+    /// A turn whose compaction was accepted says why it compacted; that is not sizing the work.
+    #[test]
+    fn an_accepted_compaction_quiets_the_rest_of_the_turn() {
+        let mut check = Check::new();
+        check.compaction_accepted();
+        let thought = "And my context is very long — I should compact before continuing.";
+        let found = check
+            .judge_reasoning(thought, Some(LOW))
+            .expect("still a claim");
+        assert_eq!(found.verdict, Verdict::Quiet);
+        let excuse = "My context is nearly spent, so I'll stop here.";
+        assert_eq!(
+            check.judge(excuse, Some(LOW)).map(|f| f.verdict),
+            Some(Verdict::Quiet)
+        );
+    }
+
+    /// Only an accepted compaction counts: a refused one leaves the check armed.
+    #[test]
+    fn only_an_accepted_compaction_counts() {
+        use letibot_transcript::{ToolOutcome, TranscriptItem};
+        let result = |name: &str, outcome: ToolOutcome| TranscriptItem::ToolResult {
+            call_id: "c1".into(),
+            name: name.into(),
+            outcome,
+            payload: String::new(),
+            edits: Vec::new(),
+            origin: None,
+            media: None,
+        };
+        assert!(accepted_compaction(&[result(
+            "compact_self",
+            ToolOutcome::Ok
+        )]));
+        assert!(accepted_compaction(&[result(
+            "reseat_self",
+            ToolOutcome::Ok
+        )]));
+        assert!(!accepted_compaction(&[result(
+            "compact_self",
+            ToolOutcome::Failed {
+                reason: "closed".into()
+            }
+        )]));
+        assert!(!accepted_compaction(&[result("bash", ToolOutcome::Ok)]));
     }
 
     /// At the wall the claim is true - the harness compacts, and the model is not told it is

@@ -2294,12 +2294,22 @@ impl Harness {
             // The context claim, checked against what the daemon measured: judged once per round whichever way it went,
             // so the log has every claim. And the reasoning in front of it, since a model that budgets by a percentage
             // says it there and nowhere the operator reads. A claim found only there is told, never forced.
+            // A round that asks to compact says why in these words; it is judged, logged and quiet.
+            let compacting = calls.iter().any(|c| {
+                use letibot_tools::builtins::session_self::{COMPACT, RESEAT};
+                c.name == COMPACT || c.name == RESEAT
+            });
             let (context_claim, claim_in_reasoning) =
-                match self.judge_context_claim(&mut context_check, &text, false) {
+                match self.judge_context_claim(&mut context_check, &text, false, compacting) {
                     Some((line, facts)) => (Some((line, facts)), false),
                     None => {
                         let thought = reasoning_text(&ok.items);
-                        match self.judge_context_claim(&mut context_check, &thought, true) {
+                        match self.judge_context_claim(
+                            &mut context_check,
+                            &thought,
+                            true,
+                            compacting,
+                        ) {
                             Some((line, facts)) => (Some((line, facts)), true),
                             None => (None, false),
                         }
@@ -2437,6 +2447,11 @@ impl Harness {
             let (results, backgrounded) =
                 self.run_the_rounds_calls(&calls, &turn_id, &mut progress);
             let round_verdict = progress.end_round();
+            // An accepted compaction is the model handing the context to the harness, which is
+            // what the line would ask of it: none for the rest of the turn either.
+            if crate::context_claim::accepted_compaction(&results) {
+                context_check.compaction_accepted();
+            }
             self.after_the_round(
                 &results,
                 &turn_id,
@@ -3670,6 +3685,7 @@ impl Harness {
         check: &mut crate::context_claim::Check,
         text: &str,
         reasoning: bool,
+        compacting: bool,
     ) -> Option<(String, Facts)> {
         use crate::context_claim::{REPEATED, Verdict};
         if text.trim().is_empty() {
@@ -3689,7 +3705,7 @@ impl Harness {
         // with auto-compaction off, "the harness handles it" is false - nothing compacts
         // at the wall (`turn_tail` says so when the turn stops there) - so the model is told
         // nothing, and the operator is not told it was. The claim is still logged and measured.
-        if !self.cfg.auto_compact {
+        if !self.cfg.auto_compact || compacting {
             finding.verdict = Verdict::Quiet;
         }
         finding.log(&self.cfg.daemon_logs(), &self.cfg.session_id);
