@@ -89,6 +89,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R266 | Reaper remainder: a job across a stop that is not a handover, a start grace for a new owner, d.3 and the store-key rule written down | Code work | built (audit H1, R241's left): the reaper's daemon stop leaves the restart marker so host jobs are kept for the next daemon, the idle exit drains on a running job, a daemon's first 5 minutes judge no owner idle or orphaned, d.3 and the store-key rule written down; left: a plain `letibot --stop` still ends every job, by design |
 | R264 | An `external` wait silences the plan-check forever, so a session idle on two open rows got no nag for 10h | Code work | built: an `external` edge is quiet for 2h from its `since_ms` stamp, then asked about on the ladder; `wait_on` steers a roster seat to `ask` and the operator to `operator`; the restart door reads the nag's predicate |
 | R271 | `letibot doctor`: what the box gives letibot, measured, with the fix for each warn or FAIL | Code work | built: the verb, its launcher pass-through, `--json`, exit 0/1/2, and the checks below; left: `[exec] disk_floor` is read with a 5% default until R269 adds the key, and the checks in its "not checked" footer |
+| R272 | Host setup, working rules and failure modes are in memory and chat, not in the docs | Code work | built: `docs/install.md` host setup and the checkout install loop, `AGENTS.md` rules, the bridge's start flag in `docs/claude-code-bridge.md`, `scripts/gate-at.sh` in `docs/gate.md`, `docs/troubleshooting.md` |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -1514,6 +1515,17 @@ Left. Nothing writes a proposed note yet, so the provenance the row carries ("qu
 **Not checked** (footer): daemon build against the store schema, `[fallback]` coverage, fleet boxes, firecode copy-out canary, `reap_event` kills, `systemd-run --user --scope` responsiveness, MCP servers at Claude Code start.
 
 Tests: `doctor::tests` in `crates/letibot`, 30, every check against a temp fixture (fake cgroup, `/proc`, PATH, config, `~/.claude.json`, sockets, listeners). None reads the operator's home, config, store or `/proc`.
+## R272 - Host setup, working rules and failure modes are in memory and chat, not in the docs
+
+**Status:** built, 2026-11-15, branch `docs-pkg`.
+
+The operator, 2026-11-15: "i think stuff like this commands must be documented". The session sweep of that day found the steps only in chat and memory.
+
+- `docs/install.md` "On Linux": the drkonqi coredump socket mask and why, `firecode net-setup`, the kvm group, `/tmp` off a large tmpfs, `LETIBOT_STORE` as a directory, the launcher as a script with `letibot-multi` and `letibot-askpass`, and the release install loop from a checkout. Each step names its `letibot doctor` row (R271).
+- `AGENTS.md` standing rules: no typing into a head over tmux, rano changes as a branch plus a DM to `cc@rano`, agents test touched crates and the lead runs one gate over the stack (until R258), no binary under a launcher's name.
+- `docs/claude-code-bridge.md`: start with `plugin:leticode@leticode`, no user-scope `leticode` server beside the plugin (R259), the room waiter as the fallback wake.
+- `scripts/gate-at.sh`, moved from the operator's scratchpad, with `LETIBOT_GATE_LOCK` (default `/build/gate.lock`) and `LETIBOT_GATE_LOGS`. Documented in `docs/gate.md`.
+- `docs/troubleshooting.md`: two bridges under one name, the coredump loop (R191, R192), spinning bridges, no room waiter, usage-limit park, the stale prompt on shadows, reaper kills (R241), the launcher overwritten by an ELF.
 
 ## R268 - Spills are durable: kept in the data dir, bounded by a budget, evicted visibly
 

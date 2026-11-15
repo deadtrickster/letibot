@@ -157,6 +157,70 @@ Then start a daemon and read its startup lines: they say whether io accounting i
 
 The keys that use io are in `docs/config/leticode.toml.md` under `[exec]`: `io_wbps`, `io_wiops`, `disk_floor`, `disk_floor_action`, `disk_watch` and `io_pressure_full`.
 
+### The rest of the host setup
+
+Each step below is done once per box, except the firecode taps, which a reboot removes. The root steps are one-time setup, not something a session asks for on each run. `letibot doctor` measures every one of them and prints the fix for the rows that fail. [troubleshooting.md](troubleshooting.md) has what each failure looks like.
+
+**Mask drkonqi's coredump socket** on a KDE desktop. A gate test killed for file size dumps core. drkonqi's coredump launcher is socket-activated per crash, crashes on letibot's dumps and loops. The user manager collected about 128k failed units, `systemd-run --user --scope` stopped answering, and every daemon came up without its scope and with memory caps off (R191, R192). No root needed:
+
+```sh
+systemctl --user mask --now drkonqi-coredump-launcher.socket
+```
+
+Doctor rows: `drkonqi coredump socket masked`, `user manager failed units`. A manager already wedged clears at a logout of every session or a reboot.
+
+**firecode taps.** firecode VMs need tap devices that belong to you. They are made as root and last until a reboot:
+
+```sh
+sudo "$(command -v firecode)" net-setup --count 14
+```
+
+Doctor row: `firecode taps`.
+
+**kvm group.** A VM started as you, without the jailer (`--no-jail`, and firecode's own tests), needs read and write on `/dev/kvm`, which is `root:kvm 0660`:
+
+```sh
+sudo usermod -aG kvm $USER
+```
+
+Groups are read at login, so log out of every session and back in. A tmux server started before that keeps the old groups. Doctor row: `kvm usable (/dev/kvm)`, which says whether the group is missing or only this login lacks it.
+
+**Keep `/tmp` off a large tmpfs** on a box that runs gates and builds. A tmpfs is RAM: test runs and builds writing there compete with the jobs and the model server for memory, and a full one fails writes. On systemd distributions that mount `/tmp` from `tmp.mount`, `sudo systemctl mask tmp.mount` and a reboot put it on the root fs. A tmpfs capped below half of RAM (`size=` in `fstab`) is fine too. Doctor row: `/tmp not a large tmpfs`.
+
+**`LETIBOT_STORE` names a directory.** Since the store split the store is `~/.local/share/letibot`, with `shared.db` and `projects/<key>.db` in it. Leave the variable unset. An old `export LETIBOT_STORE=~/.local/share/letibot/sessions.db` in a shell rc or a tmux environment broke `--continue` on builds before the launcher learnt to resolve it. Remove it from both:
+
+```sh
+unset LETIBOT_STORE
+tmux set-environment -gu LETIBOT_STORE
+```
+
+Doctor row: `LETIBOT_STORE`.
+
+### Installing from a checkout
+
+`letibot` and `leticode` on `PATH` must be the shell launchers from `scripts/`, not binaries. The Rust multicall is `letibot-multi`, the launcher hands it the verbs it does not handle itself, and `letibot-askpass` is a copy (or a hard link) of it. Never install a binary under a launcher's name: `leticode --continue` then answers `letibot: no such role: --continue`.
+
+The release install loop, run in the main checkout:
+
+```sh
+git fetch -q && git merge --ff-only -q origin/main
+for o in target/release/build/letibot-builtins-*/output; do
+  grep -q "rerun-if-changed=$PWD" "$o" || rm -f "$o"
+done
+nice -n 10 cargo build --release --bins
+for b in harnessd letibot-tui letibot-mcp letibot-multi; do
+  install -m755 "target/release/$b" ~/.local/bin/$b.new && mv -f ~/.local/bin/$b.new ~/.local/bin/$b
+done
+install -m755 target/release/letibot-multi ~/.local/bin/letibot-askpass.new &&
+  mv -f ~/.local/bin/letibot-askpass.new ~/.local/bin/letibot-askpass
+ln -sfn "$PWD/scripts/letibot" ~/.local/bin/letibot
+hash -r; type letibot   # must be the symlink to scripts/letibot
+```
+
+The builtins loop drops build output another worktree left in a shared target dir. `install` then `mv` replaces a binary that is running, which a plain `cp` refuses with `Text file busy`. A running daemon or bridge keeps the old binary until it restarts. A `target/release/letibot` left by an older build is not used: ignore it.
+
+Doctor rows: `letibot is the launcher script`, `letibot-askpass is the multicall`, `versions agree`, `daemons run the installed binary`, `bridges run an installed binary`.
+
 ## On macOS
 
 The same tree builds and runs natively on Apple silicon. What a Mac answers differently, and where

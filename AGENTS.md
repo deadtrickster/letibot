@@ -122,8 +122,21 @@ sh scripts/install-gate-build.sh
 - Never `git -c` inline config. Never bypass hooks.
 - Build machines lab2x1, lubuntu1 and lubuntu2 may fetch build dependencies without asking. Any
   other network egress asks first. lubuntu3 is never used.
-- Gates run remotely: `scripts/rrun NAME WORKTREE --host H [--target DIR] --gate` (header of
-  `scripts/rrun` has the full usage; default host lab2x1). The Mac runs only platform-touching tests.
+- Agents test the crates they touch (`cargo test -p <crate>`), push a branch and report its tip.
+  They never run a full gate and never push `main`. The lead stacks the branches and runs one full
+  gate over the stack (`scripts/gate-at.sh`, `docs/gate.md`), because parallel full gates choke the
+  box. R258 moves the stacking into the merge queue. A gate on a fleet host is `scripts/rrun NAME
+  WORKTREE --host H [--target DIR] --gate` (default host lab2x1). The Mac runs only
+  platform-touching tests.
+- Agents never type into a session's head over tmux (`tmux send-keys`). A head cannot tell typed
+  text from the operator, so it is stored as the operator's words. Use the bridge (`leticode_send`)
+  or the room.
+- rano changes go as a branch plus a DM to `cc@rano` for review. No push to rano `master` and no
+  bump of the rano `rev` in the crates' `Cargo.toml`: `cc@rano` owns that tree and decides what
+  lands in it.
+- Never install a binary under a launcher's name (`letibot`, `leticode`). The launchers are the
+  scripts in `scripts/`, the multicall is `letibot-multi`, and an ELF over the launcher breaks every
+  command a person types (`letibot: no such role: --continue`).
 - Never stage the operator's WIP in other checkouts (e.g. `~/Projects/rano`).
 - The shell adjudicator refuses compound commands with parameter expansion (`$var`, `$(...)`). Write
   literal spellings chained with `;`.

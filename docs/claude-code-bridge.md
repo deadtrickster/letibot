@@ -51,6 +51,33 @@ names it (`leticode_start { host: "lab2x1" }`); **it never speaks ssh**.
 - **Every answer says `placement`** - `host`, `host:lab2x1`, or `null`, which `leticode_start`
   refuses rather than assuming *local*.
 
+## Starting Claude Code with the bridge
+
+The `leticode` plugin (`claude-plugin/`) registers the bridge and its room waiter. Start Claude Code
+with the plugin's channel:
+
+```sh
+claude --dangerously-load-development-channels plugin:leticode@leticode
+```
+
+Not `server:leticode`. That form names a server registered by hand with `claude mcp add`, and
+Claude Code drops every channel notification from a server the flag does not name, silently.
+
+**Never also register a user-scope `leticode` MCP server.** With both, one session runs two
+`letibot-mcp` bridges. The second takes a suffixed name (`cc@letibot-8e0`), a DM to `cc@letibot`
+reached the plugin bridge whose channel the flag did not cover, the cursor moved, and the session saw
+nothing (R259). R259 now delivers to every bridge of a name, and one bridge is still the setup. To
+remove a hand registration: `claude mcp remove leticode -s user`, then restart the session.
+
+**The room waiter is the fallback wake.** Without the channel, or when a push is lost, the plugin's
+monitor (`letibot-mcp room-wait --attention to_me` in a loop) wakes the session on a message for its
+seat. A session without the plugin arms the same loop as a persistent Monitor (`docs/room.md`
+§ *Claude Code*).
+
+`letibot doctor`'s Claude Code rows check this: `leticode plugin enabled`, `no user-scope leticode
+MCP server`, `claude channel flag`, `one bridge per Claude session`, `room waiter per Claude
+folder`.
+
 ## `letibot-mcp`: an MCP server over stdio
 
 A binary in `crates/bridge` (package `letibot-bridge`, bin `letibot-mcp`): JSON-RPC 2.0 with
