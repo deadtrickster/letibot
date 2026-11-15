@@ -1,5 +1,5 @@
 //! The shadow's stored session, parented to the one it watches. Its rows are display-only and carry
-//! no tokens, so they are written straight to the store on the watched session's prefix.
+//! no tokens, so they are written straight to the store on the shadow's own empty prefix.
 
 use std::sync::Mutex;
 
@@ -32,6 +32,28 @@ pub enum OpenError {
     Fault(String),
 }
 
+/// The shadow's own prefix: no tools and no tokens, the job prompts as its system. Its record then
+/// says what the shadow is, rather than carrying the watched session's prompt and tools. The
+/// dialect and vocabulary are the watched one's, which is what the store keys a prefix by.
+pub fn shadow_prefix(
+    like: &letibot_tokencore::store::StablePrefixRecord,
+) -> letibot_tokencore::store::StablePrefixRecord {
+    let system = [Job::TurnEnd, Job::During, Job::Permission]
+        .iter()
+        .map(|j| format!("[{}]\n{}", j.as_str(), super::prompts::builtin(*j)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    letibot_tokencore::store::StablePrefixRecord {
+        dialect_sha: like.dialect_sha.clone(),
+        system,
+        tools_json: Vec::new(),
+        tokens: Vec::new(),
+        h_init: letibot_tokencore::ledger::hash_tokens(&[]),
+        vocab_source: like.vocab_source.clone(),
+        effort: None,
+    }
+}
+
 pub struct StoreRecorder {
     session_id: String,
     transcript_id: String,
@@ -44,7 +66,7 @@ pub const TITLE: &str = "shadow";
 
 impl StoreRecorder {
     /// The shadow session of `watched` in `store`, created on first use. It needs the watched
-    /// session's row and transcript, since it is parented to one and sits on the other's prefix.
+    /// session's row and transcript: it is parented to one and takes the other's dialect.
     pub fn open(
         store: Store,
         watched: &str,
@@ -67,10 +89,16 @@ impl StoreRecorder {
                 .current_transcript_id(watched)
                 .map_err(|x| e("the watched transcript", x))?
                 .ok_or_else(|| OpenError::NotYet(format!("{watched} has no transcript yet")))?;
-            let prefix = store
+            let watched_prefix = store
                 .transcript_prefix_id(&ptid)
                 .map_err(|x| e("the watched prefix", x))?
                 .ok_or_else(|| OpenError::Fault(format!("{ptid} has no stable prefix")))?;
+            let like = store
+                .stable_prefix_record(&watched_prefix)
+                .map_err(|x| e("the watched prefix", x))?;
+            let prefix = store
+                .put_stable_prefix(&shadow_prefix(&like))
+                .map_err(|x| e("the shadow's prefix", x))?;
             store
                 .put_session(&SessionRecord {
                     id: id.clone(),

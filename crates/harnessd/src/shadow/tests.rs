@@ -550,7 +550,7 @@ fn the_shadow_session_is_a_stored_system_session() {
         .put_stable_prefix(&StablePrefixRecord {
             dialect_sha: "d".into(),
             system: "sys".into(),
-            tools_json: vec![],
+            tools_json: vec![r#"{"name":"bash"}"#.into()],
             tokens: vec![1, 2, 3],
             h_init: [7; 32],
             vocab_source: "bytes:test".into(),
@@ -580,6 +580,17 @@ fn the_shadow_session_is_a_stored_system_session() {
         row.title.as_deref(),
         Some("shadow · turn_end on 0.1s · during paused")
     );
+    // Its own prefix: none of the watched session's tools or prompt, the shadow's jobs instead.
+    let own = store
+        .transcript_prefix_id("s-w-shadow#t0")
+        .unwrap()
+        .expect("a prefix");
+    assert_ne!(own, prefix);
+    let rec = store.stable_prefix_record(&own).unwrap();
+    assert!(rec.tools_json.is_empty(), "{:?}", rec.tools_json);
+    assert!(rec.tokens.is_empty());
+    assert!(rec.system.contains("[turn_end]"), "{}", rec.system);
+    assert_eq!(rec.dialect_sha, "d");
     let t = store.load_transcript("s-w-shadow#t0").unwrap();
     assert_eq!(t.items.len(), 3);
     assert!(
