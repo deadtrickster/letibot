@@ -583,6 +583,9 @@ struct Inner {
     /// Cards posted here for ANOTHER session's ask, by `req_id`, and where each answer goes.
     /// See [`Hub::post_relayed`].
     relays: HashMap<String, Arc<dyn AnswerSink>>,
+    /// Where a card goes when no head here can decide it: the daemon's pending set. `None` keeps
+    /// the card here alone. See [`crate::pending_asks`].
+    escalation: Option<Arc<crate::pending_asks::PendingAsks>>,
     /// Open password requests: `req_id` -> the channel to the `askpass` connection
     /// waiting on it. The secret goes through the channel and nowhere else - not the log,
     /// not the view, not a `CommandIssued`.
@@ -714,6 +717,7 @@ impl Hub {
                 bell: None,
                 answers: None,
                 relays: HashMap::new(),
+                escalation: None,
                 secrets: HashMap::new(),
                 next_secret: 0,
                 screens: HashMap::new(),
@@ -899,6 +903,31 @@ impl Hub {
             late: false,
         });
         true
+    }
+
+    /// Take a relayed card off the heads' screens with the asker's own `close`. Unlike
+    /// [`Hub::withdraw_relayed`] it closes a card already answered here, whose sink is gone, so the
+    /// view never keeps a card whose ask is over. `false` when no such card is open.
+    pub fn withdraw_relayed_with(&self, req_id: &str, close: SessionEvent) -> bool {
+        let open = {
+            let mut g = self.lock();
+            let had = g.relays.remove(req_id).is_some();
+            had || g.view.open_decisions().iter().any(|d| d.req_id == req_id)
+        };
+        if open {
+            self.publish(close);
+        }
+        open
+    }
+
+    /// Send the cards no head here can decide to the daemon's pending set.
+    pub fn set_escalation(&self, set: Arc<crate::pending_asks::PendingAsks>) {
+        self.lock().escalation = Some(set);
+    }
+
+    /// The pending set this session's undecidable cards go to, when it has one.
+    pub fn escalation(&self) -> Option<Arc<crate::pending_asks::PendingAsks>> {
+        self.lock().escalation.clone()
     }
 
     /// The relayed cards open here, by `req_id`.

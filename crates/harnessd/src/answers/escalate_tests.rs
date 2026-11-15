@@ -1,0 +1,244 @@
+//! A queue session's live card, with no head of its own, reaches the main session's head, and the
+//! answer reaches the session that asked.
+
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use letibot_sessionlog::hub::CommandKind;
+use letibot_sessionlog::pending_asks::PendingAsks;
+use letibot_sessionlog::protocol::Caps;
+use letibot_sessionlog::view::OpenDecision;
+
+use super::tests::request;
+use super::*;
+
+const MAIN: &str = "s-main";
+const GATEKEEPER: &str = "s-gatekeeper-k";
+const REVIEWER: &str = "s-gatekeeper-k-sub-1";
+
+fn deciding() -> Caps {
+    Caps {
+        can_decide: true,
+        ..Caps::default()
+    }
+}
+
+fn open_of(hub: &Arc<Hub>) -> Vec<OpenDecision> {
+    hub.snapshot().open_decisions
+}
+
+/// The main session with a deciding head, and the gatekeeper with none whose cards escalate.
+struct World {
+    main: Arc<Hub>,
+    head: String,
+    gatekeeper: Arc<Hub>,
+    answers: Arc<Answers>,
+    set: Arc<PendingAsks>,
+}
+
+fn world() -> World {
+    let main = Hub::new(MAIN);
+    let head = main.attach("tui", "operator", deciding(), 0).head_id;
+    let gatekeeper = Hub::new(GATEKEEPER);
+    let answers = Arc::new(Answers::new());
+    gatekeeper.set_answer_sink(answers.clone());
+    let set = PendingAsks::new();
+    set.set_main(&main);
+    gatekeeper.set_escalation(set.clone());
+    World {
+        main,
+        head,
+        gatekeeper,
+        answers,
+        set,
+    }
+}
+
+/// Wait on `hub` for an open card, then run `then` on it. Stops when `stop` is set.
+fn answer_when_open<T: Send + 'static>(
+    hub: Arc<Hub>,
+    stop: Arc<AtomicBool>,
+    then: impl Fn(&OpenDecision) -> T + Send + 'static,
+) -> std::thread::JoinHandle<Option<T>> {
+    std::thread::spawn(move || {
+        while !stop.load(Ordering::SeqCst) {
+            if let Some(d) = open_of(&hub).first() {
+                return Some(then(d));
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        None
+    })
+}
+
+fn allow(hub: &Hub, head: &str, req_id: &str) -> letibot_sessionlog::protocol::ServerFrame {
+    hub.submit(
+        head,
+        "c1",
+        0,
+        CommandKind::Answer {
+            req_id: req_id.to_string(),
+            reply: Reply::Permission {
+                option_id: "allow_once".into(),
+                pattern: None,
+                note: None,
+            },
+        },
+    )
+}
+
+#[test]
+fn a_reviewers_live_permission_card_reaches_the_main_session_and_its_answer_the_reviewer() {
+    let w = world();
+    let reviewer = SubagentAsk {
+        handle: REVIEWER.into(),
+        task: "review red-master".into(),
+        root: GATEKEEPER.into(),
+    };
+    let adj = SubagentAdjudicator::new(
+        reviewer,
+        Some(
+            HeadAdjudicator::new(w.gatekeeper.clone(), w.answers.clone())
+                .with_budget(Duration::from_secs(10)),
+        ),
+    );
+    let mut req = request();
+    req.id = "adj-reviewer-0001".into();
+    req.session_id = REVIEWER.into();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let main = w.main.clone();
+    let head = w.head.clone();
+    let set = w.set.clone();
+    let answerer = answer_when_open(w.main.clone(), stop.clone(), move |d| {
+        let pending = set.pending();
+        let frame = allow(&main, &head, &d.req_id);
+        (d.clone(), pending, frame)
+    });
+    let d = adj.decide(&req);
+    stop.store(true, Ordering::SeqCst);
+    let (card, pending, frame) = answerer
+        .join()
+        .unwrap()
+        .unwrap_or_else(|| panic!("no card reached the main session: {d:?}"));
+
+    assert!(
+        matches!(
+            frame,
+            letibot_sessionlog::protocol::ServerFrame::Accepted { .. }
+        ),
+        "{frame:?}"
+    );
+    assert_eq!(card.req_id, "adj-reviewer-0001");
+    assert_eq!(card.kind, "permission");
+    let named = card.subagent.expect("the card names who asks");
+    assert_eq!(named.handle, REVIEWER);
+    assert_eq!(named.root, MAIN);
+    assert_eq!(
+        pending,
+        vec![letibot_transcript::pending::Pending::new(
+            letibot_transcript::pending::PendingKind::Approval,
+            REVIEWER,
+            "adj-reviewer-0001",
+        )]
+    );
+    assert_eq!(
+        d.outcome,
+        DecisionOutcome::Selected {
+            option_id: "allow_once".into()
+        },
+        "{d:?}"
+    );
+    assert!(d.by.contains("operator"), "{}", d.by);
+    assert!(
+        open_of(&w.main).is_empty(),
+        "the main head's copy is closed"
+    );
+    assert!(open_of(&w.gatekeeper).is_empty());
+    assert!(w.set.ids().is_empty());
+}
+
+/// The same card answered at the gatekeeper's own head, attached after the ask: the main
+/// session's copy is taken down.
+#[test]
+fn an_answer_at_the_asking_session_retracts_the_main_sessions_card() {
+    let w = world();
+    let adj = HeadAdjudicator::new(w.gatekeeper.clone(), w.answers.clone())
+        .with_budget(Duration::from_secs(10));
+    let req = request();
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let gk = w.gatekeeper.clone();
+    let answerer = answer_when_open(w.main.clone(), stop.clone(), move |d| {
+        let mine = gk.attach("tui", "operator-at-the-gatekeeper", deciding(), 0);
+        allow(&gk, &mine.head_id, &d.req_id);
+    });
+    let d = adj.decide(&req);
+    stop.store(true, Ordering::SeqCst);
+    answerer
+        .join()
+        .unwrap()
+        .expect("the main session got the card");
+
+    assert!(d.by.contains("operator-at-the-gatekeeper"), "{}", d.by);
+    assert!(
+        open_of(&w.main).is_empty(),
+        "the main head's copy is retracted"
+    );
+    let settled = w.main.snapshot().settled_decisions;
+    assert!(
+        settled.iter().any(|s| s.req_id == req.id),
+        "the main head is told how it ended: {settled:?}"
+    );
+    assert!(w.set.ids().is_empty());
+}
+
+/// The gatekeeper's own `ask_user_question` goes the same way.
+#[test]
+fn a_queue_sessions_question_reaches_the_main_session() {
+    let w = world();
+    let q = HeadQuestioner::new(w.gatekeeper.clone(), w.answers.clone())
+        .with_budget(Duration::from_secs(10));
+    let stop = Arc::new(AtomicBool::new(false));
+    let main = w.main.clone();
+    let head = w.head.clone();
+    let answerer = answer_when_open(w.main.clone(), stop.clone(), move |d| {
+        main.submit(
+            &head,
+            "c1",
+            0,
+            CommandKind::Answer {
+                req_id: d.req_id.clone(),
+                reply: Reply::Question(letibot_sessionlog::question::QuestionAnswer {
+                    option: Some(1),
+                    note: None,
+                    free: None,
+                    abstain: false,
+                }),
+            },
+        );
+        d.subagent.clone()
+    });
+    let got = q.ask(&Question {
+        text: "4 GiB or 8 GiB?".into(),
+        options: vec!["4".into(), "8".into()],
+        ..Default::default()
+    });
+    stop.store(true, Ordering::SeqCst);
+    let named = answerer.join().unwrap().flatten().expect("named");
+    assert_eq!(named.handle, GATEKEEPER);
+    let (answer, by) = got.expect("answered");
+    assert_eq!(answer.option, Some(1));
+    assert_eq!(by, "operator");
+    assert!(open_of(&w.main).is_empty());
+}
+
+/// With no main session the gate still fails closed at once.
+#[test]
+fn with_no_main_session_a_queue_card_still_fails_closed() {
+    let gatekeeper = Hub::new(GATEKEEPER);
+    let answers = Arc::new(Answers::new());
+    gatekeeper.set_answer_sink(answers.clone());
+    gatekeeper.set_escalation(PendingAsks::new());
+    let d = HeadAdjudicator::new(gatekeeper, answers).decide(&request());
+    assert_eq!(d.by, "gate:no-head", "{d:?}");
+}

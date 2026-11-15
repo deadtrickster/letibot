@@ -128,8 +128,8 @@ pub fn card(ask: &Ask, gatekeeper: &str, root: &str) -> SessionEvent {
 /// Cards answered recently, by `req_id`, so a pass does not post one again before the row moves.
 pub type Answered = Arc<Mutex<HashMap<String, Instant>>>;
 
-/// Bring `root`'s relayed cards in line with `asks`: post the new ones, withdraw the settled ones.
-/// Returns how many were posted.
+/// Bring the daemon's pending set in line with `asks`, shown on `root`: post the new ones and
+/// withdraw the settled ones. Returns how many were posted.
 pub fn relay(
     root: &Arc<Hub>,
     registry: &Arc<Registry>,
@@ -138,10 +138,16 @@ pub fn relay(
     asks: &[Ask],
     answered: &Answered,
 ) -> usize {
-    let open = root.relayed_ids();
+    let set = registry.pending_asks();
+    set.set_main(root);
+    let open: Vec<String> = set
+        .ids()
+        .into_iter()
+        .filter(|id| id.starts_with(PREFIX))
+        .collect();
     let want: HashMap<String, &Ask> = asks.iter().map(|a| (a.req_id(), a)).collect();
     for id in open.iter().filter(|id| !want.contains_key(*id)) {
-        root.withdraw_relayed(id, "the question is no longer open on the asker's board");
+        set.withdraw(id, "the question is no longer open on the asker's board");
     }
     let now = Instant::now();
     let mut recent = answered.lock().unwrap_or_else(|e| e.into_inner());
@@ -158,7 +164,7 @@ pub fn relay(
             at: at.clone(),
             answered: answered.clone(),
         });
-        if root.post_relayed(card(ask, gatekeeper, &root.session_id()), sink) {
+        if set.post(card(ask, gatekeeper, &root.session_id()), sink) {
             root.warn(
                 "waiting_on_operator",
                 format!(

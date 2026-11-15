@@ -905,6 +905,8 @@ pub struct Registry {
     /// Set once at startup by the daemon. See [`CloseSettler`]: a closed session's placement, which
     /// may have to be settled without the worker that owns its harness.
     close_settler: Mutex<Option<Arc<dyn CloseSettler>>>,
+    /// The daemon's pending asks, delivered to a head attaching to the main session.
+    pending_asks: Arc<crate::pending_asks::PendingAsks>,
     /// The daemon's `review_verdict` floor (K5), filled when the review queue's session opens: the
     /// seat is the daemon's and the stack is a session's, so the panel is handed one by a slot.
     /// `None` is a daemon whose panel judges exactly as it did before the hook existed.
@@ -1020,6 +1022,11 @@ impl Inner {
 }
 
 impl Registry {
+    /// The daemon's pending asks. See [`crate::pending_asks`].
+    pub fn pending_asks(&self) -> Arc<crate::pending_asks::PendingAsks> {
+        self.pending_asks.clone()
+    }
+
     pub fn new() -> Arc<Registry> {
         Registry::with_bounds(LogBounds::default(), ViewBounds::default())
     }
@@ -1058,6 +1065,7 @@ impl Registry {
             terminal: Mutex::new(None),
             github: Mutex::new(None),
             close_settler: Mutex::new(None),
+            pending_asks: crate::pending_asks::PendingAsks::new(),
             review_floor: Mutex::new(None),
             prompts: Mutex::new(std::collections::HashMap::new()),
             pane_drivers: Mutex::new(std::collections::HashMap::new()),

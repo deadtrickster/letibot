@@ -115,14 +115,17 @@ impl Answers {
 
     /// Post a request to the heads and wait for one of them to settle it.
     pub fn ask(
-        &self,
+        self: &Arc<Self>,
         hub: &Arc<Hub>,
         req: &AdjudicationRequest,
         budget: Duration,
         subagent: Option<&SubagentAsk>,
     ) -> AdjudicationDecision {
         let started = Instant::now();
-        let who = hub.deciding_heads();
+        let (who, route) = match escalation(hub) {
+            Some((set, main)) => (vec![main], Some(set)),
+            None => (hub.deciding_heads(), None),
+        };
         if who.is_empty() {
             return AdjudicationDecision::unavailable(req, "gate:no-head", &no_head(subagent));
         }
@@ -133,7 +136,11 @@ impl Answers {
             let mut g = self.lock();
             g.insert(req.id.clone(), Slot::Waiting);
             drop(g);
-            hub.publish(pose(req, deadline_ms, subagent));
+            let card = pose(req, deadline_ms, subagent);
+            hub.publish(card.clone());
+            if let Some(set) = &route {
+                set.post(relayed(card, hub, set), self.clone());
+            }
             // The yellow card says why it is yellow: the call is still `Proposed`, so this
             // note is the only thing on it that explains the wait. A subagent's note lands on
             // the root's hub where its card did, and the root has no such call to hang it on.
@@ -182,8 +189,13 @@ impl Answers {
                 latency_ms,
             },
         };
-        // The open decision is closed on every path, including the ones nobody answered
-        hub.publish(close(req, &decision));
+        // The open decision is closed on every path, including the ones nobody answered, and
+        // on every head it was shown to.
+        let closed = close(req, &decision);
+        if let Some(set) = &route {
+            set.settle(&req.id, closed.clone());
+        }
+        hub.publish(closed);
         decision
     }
 }
@@ -203,14 +215,17 @@ impl Answers {
     /// [`Answers::ask`]'s, because the deadlock is the same one. What differs is the payload
     /// each way: the card is posed with `kind
     pub fn ask_question(
-        &self,
+        self: &Arc<Self>,
         hub: &Arc<Hub>,
         q: &Question,
         budget: Duration,
     ) -> Result<(QuestionAnswer, String), AskError> {
         // Read, not assumed, and asked before anything is posted - the same check
         // `Answers::ask` makes, for the same reason.
-        let who = hub.deciding_heads();
+        let (who, route) = match escalation(hub) {
+            Some((set, main)) => (vec![main], Some(set)),
+            None => (hub.deciding_heads(), None),
+        };
         if who.is_empty() {
             return Err(AskError::NoHead(no_head_for_a_question()));
         }
@@ -222,7 +237,11 @@ impl Answers {
             let mut g = self.lock();
             g.insert(req_id.clone(), Slot::Waiting);
             drop(g);
-            hub.publish(pose_question(&req_id, q, deadline_ms));
+            let card = pose_question(&req_id, q, deadline_ms);
+            hub.publish(card.clone());
+            if let Some(set) = &route {
+                set.post(relayed(card, hub, set), self.clone());
+            }
             self.wait(&req_id, budget)
         };
 
@@ -230,7 +249,11 @@ impl Answers {
         // unclosed `DecisionRequested` stays in the head's open set for the life of the
         // session, and the hub then accepts an answer to a question that is over.
         let close = |outcome: WireOutcome, by: Decider, basis: String| {
-            hub.publish(close_question(&req_id, outcome, by, basis));
+            let closed = close_question(&req_id, outcome, by, basis);
+            if let Some(set) = &route {
+                set.settle(&req_id, closed.clone());
+            }
+            hub.publish(closed);
         };
 
         match waited {
@@ -311,6 +334,38 @@ impl Answers {
             }
         }
     }
+}
+
+/// The daemon's pending set and the main session's name, when `hub` has no deciding head of its
+/// own and its cards go there. A main session is never escalated to itself.
+fn escalation(
+    hub: &Arc<Hub>,
+) -> Option<(Arc<letibot_sessionlog::pending_asks::PendingAsks>, String)> {
+    if !hub.deciding_heads().is_empty() {
+        return None;
+    }
+    let set = hub.escalation()?;
+    let main = set.main().filter(|m| !Arc::ptr_eq(m, hub))?;
+    Some((set, format!("the main session {}", main.session_id())))
+}
+
+/// The copy of `card` the main session shows: it names the asking session when the card did not
+/// already name a subagent, so the head says whose ask it is.
+fn relayed(
+    mut card: SessionEvent,
+    hub: &Arc<Hub>,
+    set: &letibot_sessionlog::pending_asks::PendingAsks,
+) -> SessionEvent {
+    let root = set.main().map(|m| m.session_id()).unwrap_or_default();
+    if let SessionEvent::DecisionRequested { subagent, .. } = &mut card {
+        let ask = subagent.get_or_insert_with(|| SubagentAsk {
+            handle: hub.session_id(),
+            task: String::new(),
+            root: String::new(),
+        });
+        ask.root = root;
+    }
+    card
 }
 
 /// The wire's answer, as the tool's own shape. A field-by-field copy and not a `From`
@@ -1096,6 +1151,9 @@ impl Adjudicator for EscalateOnTimeout {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod escalate_tests;
 
 #[cfg(test)]
 mod tell_tests {

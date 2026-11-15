@@ -56,6 +56,7 @@ pub mod metrics_tap;
 pub mod origin;
 // The pane contract's document (`docs/plugins-slice1.md`, C3): the shapes a `pane_<name>`
 pub mod pane;
+pub mod pending_asks;
 // Which process connected, from the kernel: a head and a tool call run as the same user, so
 // the socket's mode decides nothing and the peer's own pid is the fact. See [`peer`].
 pub mod peer;

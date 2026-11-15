@@ -2147,6 +2147,8 @@ fn seat_in(
     if inside {
         held.can_decide = false;
     }
+    // The asks no other head could answer go on the main session first, so its snapshot has them.
+    registry.pending_asks().deliver(&hub);
     let a = hub.attach(kind, identity, held, since_seq);
     let head_id = a.head_id.clone();
     let session_id = hub.session_id();

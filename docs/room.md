@@ -1203,7 +1203,12 @@ project.
   `room read`, and the pane is the one reader that does not show them.
 - A claim is checked only against the merge queue's rows and the target's gate. A `decision`, a todo
   row or a port is `NOT COVERED` by construction - there is no row to read.
-- A head gets chat by polling `read` or `inbox`. There is no push to a head.
+- A head that has never chatted gets chat only by polling `read` or `inbox`. Asks are pushed: the
+  daemon keeps one pending set (`letibot_sessionlog::pending_asks`) of the cards no head of the
+  asking session can answer - the review queue's board asks and the gatekeeper's and reviewers'
+  live permission and question cards. Each is a card on the main session, a head attaching there is
+  given every open one, and an ask settled anywhere (the main head, the asker's own head, its
+  board) comes off every head.
 - The first start of the room costs a terminal line when the arbiter's provider has no key. A
   once-per-box note would fix it.
 - A tag's agent is never closed, does not rule its own disputes, and its notes are unbounded. The pane
