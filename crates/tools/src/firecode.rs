@@ -10,6 +10,7 @@ use std::time::Duration;
 use crate::backend::{BackendError, Command, DirEntry, ExecBackend, Output};
 use crate::exec::{Boundary, ConfinePlan, Confinement, ExecError, HostProcesses};
 
+pub mod boot;
 pub mod held;
 pub mod keep;
 
@@ -323,6 +324,8 @@ pub struct FirecodeBackend {
     /// The wall clock on one control command in the guest, a field only so a test that measures
     /// the deadline can set it to a second instead of waiting out the constant.
     guest_timeout: Duration,
+    /// [`boot::Admitted::note`]: how long the boot queued and what deadline the load gave it.
+    boot: Option<String>,
     /// The perimeter's pairs: what a guest command is spelled with, and what it must be refused
     /// over, because `firecode in` carries no stdin and no descriptor to hand a secret's value on.
     env: Vec<(String, String)>,
@@ -458,6 +461,8 @@ pub struct FirecodeSpec {
     pub state: Option<PathBuf>,
     /// Where firecode keeps a run's own directory (`FIRECODE_RUNS`), from `[firecode] runs`.
     pub runs: Option<PathBuf>,
+    /// The box's boot queue. `None` boots at once, still with the load-scaled deadline.
+    pub boot: Option<boot::BootQueue>,
 }
 
 impl FirecodeSpec {
@@ -473,6 +478,7 @@ impl FirecodeSpec {
         spec.ephemeral = true;
         spec.state = settings.firecode_state;
         spec.runs = settings.firecode_runs;
+        spec.boot = Some(boot::BootQueue::for_box());
         spec
     }
 
@@ -507,6 +513,7 @@ impl FirecodeSpec {
             ephemeral: true,
             state: None,
             runs: None,
+            boot: None,
             copy_max: std::env::var("LETIBOT_FIRECODE_COPY_MAX")
                 .ok()
                 .and_then(|v| v.trim().parse().ok())
@@ -584,6 +591,14 @@ impl FirecodeBackend {
             b.joined = Some(run);
             return Ok(b);
         }
+        // The slot is held through the copy, the boot and the first command, and released when
+        // `admitted` drops, on every path out of here.
+        let admitted = match &spec.boot {
+            Some(q) => q
+                .admit(&spec.name, &boot::LoadSample::read)
+                .map_err(BackendError::Io)?,
+            None => boot::Admitted::unqueued(boot::LoadSample::read()),
+        };
         let mounted = spec.mount_rw || mounts(&spec.source);
         let project = if mounted {
             spec.source.clone()
@@ -665,7 +680,7 @@ impl FirecodeBackend {
             args.push("--verify".to_string());
             args.push(check.clone());
         }
-        let up = match crate::rpc::run_bounded_env(&bin, &args, UP_TIMEOUT, &firecode_env(spec)) {
+        let up = match crate::rpc::run_bounded_env(&bin, &args, admitted.up, &firecode_env(spec)) {
             crate::rpc::Ended::Answered(out) => out,
             crate::rpc::Ended::TimedOut => {
                 // A boot nobody can see the end of is not a VM to hand to a session. The run
@@ -673,10 +688,11 @@ impl FirecodeBackend {
                 // [`CLIENT_TIMEOUT`] is what `down` is given - and the copy goes with it.
                 unwind.vm = true;
                 return Err(BackendError::Io(format!(
-                    "`firecode up` did not answer within {} s: it was killed together with \
+                    "`firecode up` did not answer within {} s ({}): it was killed together with \
                      everything it had started, the VM it may have booted is being brought down, \
                      and the copy of {} it was booted on is removed. Nothing was placed",
-                    UP_TIMEOUT.as_secs(),
+                    admitted.up.as_secs(),
+                    admitted.said(),
                     spec.source.display()
                 )));
             }
@@ -684,8 +700,9 @@ impl FirecodeBackend {
         };
         if !up.status.success() {
             return Err(BackendError::Io(format!(
-                "firecode up refused ({}): {}",
+                "firecode up refused ({}, at {}): {}",
                 up.status,
+                admitted.said(),
                 String::from_utf8_lossy(&up.stderr).trim()
             )));
         }
@@ -736,6 +753,7 @@ impl FirecodeBackend {
             mount_rw: spec.mount_rw,
             joined: None,
             guest_timeout: GUEST_TIMEOUT,
+            boot: None,
             env: Vec::new(),
             env_secrets: Vec::new(),
             base: None,
@@ -749,8 +767,14 @@ impl FirecodeBackend {
         }
         // Prove the door works before handing the backend over: a VM that came
         // up and cannot take a command is a boot, not a backend.
-        b.guest("true")
-            .map_err(|e| BackendError::Io(format!("the VM is up but takes no command: {e}")))?;
+        b.guest_within(&b.project, "true", admitted.probe)
+            .map_err(|e| {
+                BackendError::Io(format!(
+                    "the VM is up but takes no command (at {}): {e}",
+                    admitted.said()
+                ))
+            })?;
+        b.boot = admitted.note();
         Ok(b)
     }
 
@@ -799,6 +823,7 @@ impl FirecodeBackend {
             mount_rw: false,
             joined: None,
             guest_timeout: GUEST_TIMEOUT,
+            boot: None,
             env: Vec::new(),
             env_secrets: Vec::new(),
             base: None,
@@ -833,6 +858,7 @@ impl FirecodeBackend {
             mount_rw: false,
             joined: None,
             guest_timeout: GUEST_TIMEOUT,
+            boot: None,
             env: Vec::new(),
             env_secrets: Vec::new(),
             base: None,
@@ -847,6 +873,12 @@ impl FirecodeBackend {
         FirecodeSpec::new(PathBuf::new(), session_id)
             .cache
             .join(session_id)
+    }
+
+    /// How long this VM's boot queued and the deadline the load gave it, when either was not the
+    /// ordinary one. The session shows it as a row.
+    pub fn boot_note(&self) -> Option<&str> {
+        self.boot.as_deref()
     }
 
     /// Whether this backend brought its VM up - `false` when attached to an ancestor's.
@@ -1690,6 +1722,11 @@ impl ExecBackend for FirecodeBackend {
             .as_deref()
             .map(|l| format!(". {l}"))
             .unwrap_or_default()
+            + &self
+                .boot
+                .as_deref()
+                .map(|l| format!(". {l}"))
+                .unwrap_or_default()
     }
 }
 
@@ -1718,11 +1755,6 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(120);
 /// a timeout is not fatal - a copy with no inherited layer still boots on its base image, and
 /// [`ExecBackend::describe`] says so.
 const LAYER_TIMEOUT: Duration = Duration::from_secs(300);
-
-/// The wall clock on `firecode up`: it installs a layer and boots a kernel, which is minutes when
-/// the layer is cold. Ten, and a timeout is a failed placement rather than a slow one - the copy
-/// goes with it, because a boot nobody can see the end of is not a VM to hand to a session.
-const UP_TIMEOUT: Duration = Duration::from_secs(600);
 
 /// What a guest call that lost its reply says: what happened, that the outcome is unknown, and
 /// which retry is safe. It never quotes the command, which may carry a file's bytes or a long path.

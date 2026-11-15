@@ -1309,3 +1309,48 @@ fn a_copied_worktree_gets_a_repository_of_its_own() {
         "the copy has its own object directory for its own commits"
     );
 }
+
+/// R234: a second boot on a box whose one slot is held waits for it instead of failing, and the
+/// backend it gets names the wait; with the slot never freed it is refused naming the load.
+#[test]
+fn a_vm_boot_queues_for_the_boxs_boot_slot() {
+    let root = tmp("bootqueue");
+    let src = root.join("src");
+    file(&src.join("a.txt"), 10);
+    let bin = stub_firecode(&root.join("fc"), HAPPY);
+    let q = boot::BootQueue {
+        dir: root.join("slots"),
+        slots: 1,
+        budget: Duration::from_secs(20),
+        poll: Duration::from_millis(20),
+    };
+    let held = q.admit("s-other", &|| None).unwrap();
+    let freer = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(1100));
+        drop(held);
+    });
+    let mut spec = spec_with(&src, &root.join("cache"), &bin);
+    spec.boot = Some(q.clone());
+    let b = FirecodeBackend::up(&spec).expect("queued, then booted");
+    freer.join().unwrap();
+    let note = b.boot_note().expect("the wait is said").to_string();
+    assert!(note.contains("waited 1s for one of 1 boot slots"), "{note}");
+    assert!(b.describe().contains(&note), "{}", b.describe());
+    drop(b);
+
+    let _held = q.admit("s-other", &|| None).unwrap();
+    let mut spec = spec_with(&src, &root.join("cache2"), &bin);
+    spec.boot = Some(boot::BootQueue {
+        budget: Duration::from_millis(100),
+        ..q.clone()
+    });
+    let e = FirecodeBackend::up(&spec).expect_err("no slot came free");
+    let e = format!("{e:?}");
+    assert!(e.contains("no VM boot slot came free"), "{e}");
+    assert!(e.contains("s-other for"), "{e}");
+    assert!(
+        !root.join("cache2").join("child").exists(),
+        "a refused boot made a copy"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}

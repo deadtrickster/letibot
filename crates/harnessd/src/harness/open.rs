@@ -1251,6 +1251,10 @@ impl Harness {
             // The perimeter's pairs reach the guest's own shell: `firecode in` has no env flag, so a
             // spelled pair goes in front of the command it wraps.
             let fc = fc.with_env(placement_env.clone(), placement_secrets.clone());
+            // A boot that queued for a slot or was given a longer deadline says so on the session.
+            if let Some(note) = fc.boot_note() {
+                hub.warn(VM_BOOT, note.to_string());
+            }
             // A promoted run's output has a file here too: the drain is this process's, so the
             // file lands in this daemon's scratch directory, where the model's `read` can open it.
             if let Some(h) = fc.host_processes() {

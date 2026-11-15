@@ -74,6 +74,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R232 | Kimi's usage endpoint is asked only on a refusal | Code work | left: a background poll of the preset's `usage_url`, cached like `listed_models`, and the model card / status row showing it (`5h 44% · resets 07:07`) |
 | R233 | Rate-limit decisions as config values or a fuel-capped wasm call | Needs the operator | built on branch `r233-hook`: a `limit_decide` layer decides every rate/quota refusal after the ladder (`wait`/`switch`/`new_session`/`ask_user`/`call`/`stop`), its state kept per episode in `<logs>/<session>/limit-hook.json` and destroyed on the first success, a failure, fuel or malformed answer falling back to the fixed rules with a `limit_hook_fallback` row; `new_session` forks the conversation and continues the turn there (operator's ruling 2026-11-15), on the `/fork` store fork (J15); left: `usage` from R232's poll, and `when` on anything but `wait` |
 | R234 | VMs do not boot at load 100-240, and packages fall back to host subagents | Code work | left: a measurement of boot time against load, then a queue or an admission rule |
+| R234 | VMs do not boot at load 100-240, and packages fall back to host subagents | Code work | built: measured (`docs/findings/vm-boot-under-load-2026-11-15.md`), a cross-daemon boot queue (2 slots), a load-scaled `firecode up` deadline, a `vm_boot` row and failures that name the load; left: the live run on a box over load 100, firecode's own iteration-counted wait (operator note), no row on the caller's side when it restarts the work on the host |
 | R235 | A Claude Code session starts a new `until [ -s ... ]` wait loop every few minutes and never stops the old ones | Needs the operator | an observation about Claude Code's waiters, not a letibot defect; left: the operator's call on whether letibot's own docs or skills warn about it |
 | R236 | `sudo_ask` failed once under load: a run judged unreadable because "one of its processes belongs to another user" | Code work | built: branch `flakes` (exiting processes skipped, an empty scope is not unreadable); 80 of 80 parallel runs green at load 120-180, was 2 of 64 red; left: land |
 | R237 | `daemon_takes_a_new_session` missed its 60 s turn deadline once under load | Code work | built: branch `flakes` (a private `XDG_RUNTIME_DIR`, a fake that skips bad connections, the daemon's log on failure); 18 of 18 parallel runs green, was 4 of 12 red; left: land, and R223 for why the shared rundir stalls a turn |
@@ -975,7 +976,7 @@ z.ai: glm-limit is on main and sets `usage_url` (`usage::ZAI_QUOTA`) on the GLM 
 
 ## R234 - VMs do not boot at load 100-240, and packages fall back to host subagents
 
-**Status:** open, 2026-11-14. left: the measurement, then a queue or admission rule.
+**Status:** built, 2026-11-15. left: a live boot on a box over load 100; firecode's own readiness wait counts loop iterations, not seconds (an operator note, firecode is not edited here); a caller that restarts the work on the host after a refusal still says nothing on its own side.
 
 During db-fuzz's 48 h fuzz campaign (from 2026-11-12) the box ran at load 100-240, and firecode VMs did not boot there: packages asked for a VM and fell back to host subagents, so work meant to run isolated ran on the host. Nothing measured how boot time grows with load, and nothing holds a VM start until there is room for it or tells the caller why it did not come up.
 
@@ -984,6 +985,10 @@ First measure: boot time (start to guest ready) at idle and at a range of loads,
 **Still open?** start a firecode package on a loaded box (`uptime` load over 100) and see whether it boots or falls back.
 
 **Done when:** the measurement is recorded in the entry or a findings file, and a VM start under load either queues and boots or is refused with a sentence naming the load, never a silent fallback to the host.
+
+Measured in `docs/findings/vm-boot-under-load-2026-11-15.md` from 110 of firecode's boot logs against sysstat's load, and one fresh boot (24 s at load 22). The guest's own boot is 6 s idle and 14-16 s at load 100-335. Host preparation grows: 10 s idle, 70-90 s at load 100-335. The one boot that failed was one of two preparing together at load 202: 598 s before the VMM started, killed by letibot's flat 600 s `firecode up` deadline.
+
+Built in `crates/tools/src/firecode/boot.rs`: every daemon of the user shares a boot queue of `LETIBOT_VM_BOOT_SLOTS` (default 2) file-locked slots in `$XDG_RUNTIME_DIR/letibot/vm-boot`, held through the copy, `firecode up` and the first guest command. A boot with no slot waits up to 30 minutes, then is refused naming the load and each slot's holder. `firecode up` gets 600 s up to 4 load per core and proportionally more past it, at most 1800 s; the first guest command scales from 120 s the same way. A boot that queued or got a longer deadline is a `vm_boot` row on the session and part of the backend's description, and every boot failure names the load. Tests: `firecode::boot::tests` (deadline, queue with a fake holder, refusal, released slot) and `firecode::tests::a_vm_boot_queues_for_the_boxs_boot_slot` (a stub `firecode` through `FirecodeBackend::up`).
 
 ## R236 - `sudo_ask` failed once under load: a run judged unreadable because "one of its processes belongs to another user"
 

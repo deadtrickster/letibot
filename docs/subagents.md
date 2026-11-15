@@ -105,6 +105,12 @@ nothing spawned: `where: firecode` on a box with no `firecode` binary, or `host:
 operator never declared, is a failed call and not a silent fallback to the host. Running here and
 calling it a VM is the boundary claim this design exists not to make.
 
+A local VM boot queues for one of the box's boot slots (`LETIBOT_VM_BOOT_SLOTS`, default 2,
+shared by every daemon), because two boots preparing at once at high load is what timed out
+([R234](findings/vm-boot-under-load-2026-11-15.md)). `firecode up` gets 600 s up to 4 load per core
+and proportionally more past it, at most 1800 s. A boot that waited or got longer says so in a
+`vm_boot` row; one refused after 30 minutes in the queue names the load and the slot holders.
+
 `where: firecode` with `host:NAME` is one placement, a VM on that machine, spelled either
 `--where firecode --host NAME` or `where: "host:NAME:vm"`. `FirecodeBackend` holds this box's paths, so
 a guest elsewhere has no transport through them: the same client runs on the host over the session's ssh

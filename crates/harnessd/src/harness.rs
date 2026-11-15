@@ -163,6 +163,8 @@ const BOUNDARY_NEEDS: &str = "a delegated cgroup v2 subtree and a usable unprivi
 /// The warning code for a session whose tools run on another machine - where its tree is,
 /// the branch that comes back, and what stayed here (`docs/remote-hosts.md`).
 const REMOTE_PLACEMENT: &str = "remote_placement";
+/// A VM boot that queued for a slot, or was given a load-scaled deadline (R234).
+const VM_BOOT: &str = "vm_boot";
 
 /// "workspace gone", in one sentence - said when a session opens or wakes on a workspace that
 /// no longer exists.
