@@ -382,8 +382,10 @@ impl Harness {
              ends here."
         );
         if let Err(e) = self.record_notice(&said) {
-            self.hub
-                .warn("limit_hook_unsaved", format!("{said} The row was not written: {e}"));
+            self.hub.warn(
+                "limit_hook_unsaved",
+                format!("{said} The row was not written: {e}"),
+            );
         }
         self.hub.warn("limit_new_session", said.clone());
         Ok(said)
