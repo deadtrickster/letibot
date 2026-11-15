@@ -103,6 +103,8 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // head keeps it as the state behind the progress line, so one compaction leaves one row;
     // a head that does not know the code draws the sentence, as it did before.
     ("compacting", Class::Routine, Action::Nothing),
+    // A compaction asked for mid-turn, waiting for that turn to end. State behind the status row.
+    ("compaction_pending", Class::Routine, Action::Nothing),
     // The built-in embedding model is being fetched for the first time; said once at start.
     ("embedder_fetching", Class::Routine, Action::Nothing),
     // A plugin or a model misbehaved and the harness handled it: a layer that failed while
@@ -766,6 +768,12 @@ pub const TABLE: &[(&str, Class, Action)] = &[
         "auto_compact_failed",
         Class::Failure,
         Action::Do("`/compact` by hand"),
+    ),
+    // A compaction asked for by hand or by the model did not land; the conversation is unchanged.
+    (
+        "compact_failed",
+        Class::Failure,
+        Action::Do("`/compact` again"),
     ),
     // The summary turn proposed tool calls, so it was refused and its rows taken back: the session
     // is still over budget and `/compact` is the move. A row and not a hint, because a refusal

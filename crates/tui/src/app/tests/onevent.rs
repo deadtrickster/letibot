@@ -199,6 +199,7 @@ fn no_warning_is_a_row_of_the_conversation() {
         if matches!(
             *code,
             "compacting"
+                | "compaction_pending"
                 | "turn_failed"
                 | "store_newer"
                 | "prefix_current"

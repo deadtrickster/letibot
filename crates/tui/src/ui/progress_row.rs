@@ -138,8 +138,35 @@ impl App {
                 more: false,
             });
         }
+        if self.compacting.is_none()
+            && let Some((waits, since)) = &self.compaction_pending
+        {
+            // The pending phase, in the daemon's words for what it waits on.
+            out.push(Progress {
+                label: capital(waits),
+                role: Role::Pending,
+                bar: None,
+                counts: None,
+                advice: None,
+                since_ms: *since,
+                detail: format!(
+                    "{waits}\n\nThe summary turn starts as soon as it can; the conversation \
+                     is kept either way."
+                ),
+                more: false,
+            });
+        }
         if let Some(c) = &self.compacting {
-            let label = format!("Compacting half {} of {}", c.half, c.halves);
+            // One summary turn names the model writing it; the local plan's halves are counted.
+            let label = if c.halves <= 1 {
+                if self.model.is_empty() {
+                    "Compacting · summary turn".to_string()
+                } else {
+                    format!("Compacting · summary turn on {}", self.model)
+                }
+            } else {
+                format!("Compacting half {} of {}", c.half, c.halves)
+            };
             // Reading, then writing - the two phases of a fold, minutes apart. While the half's
             // prompt is read the bar measures it; once the model writes, the count of what it has
             // written is the only number there is.
@@ -171,7 +198,8 @@ impl App {
                 label,
                 role: Role::Pending,
                 bar,
-                counts: Some(counts),
+                // Nothing read or written yet is no count: the clock is the only fact.
+                counts: (c.processed > 0 || c.written > 0).then_some(counts),
                 advice: None,
                 since_ms: self.compacting_since,
                 more: true,

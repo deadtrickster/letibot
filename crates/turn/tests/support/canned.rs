@@ -59,6 +59,8 @@ impl Frame {
 pub struct Canned {
     pub endpoint: Endpoint,
     handle: Option<JoinHandle<()>>,
+    /// Each request's body length in bytes, in arrival order: what the client sent, measured.
+    sizes: std::sync::Arc<std::sync::Mutex<Vec<usize>>>,
 }
 
 /// What the server answers ONE request with: the SSE frames of a turn, or an HTTP error status
@@ -85,6 +87,8 @@ impl Canned {
     pub fn serve_replies(scripts: Vec<Reply>, requests: usize) -> Canned {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind an ephemeral port");
         let addr = listener.local_addr().unwrap();
+        let sizes = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen = sizes.clone();
         let handle = std::thread::spawn(move || {
             for i in 0..requests {
                 let Ok((stream, _)) = listener.accept() else {
@@ -94,13 +98,20 @@ impl Canned {
                 // A client that closes early - a guard trip, an urgent steering
                 // message - makes these writes fail. That is the abort working, not
                 // an error.
-                let _ = answer(stream, script);
+                let _ = answer(stream, script, &seen);
             }
         });
         Canned {
             endpoint: Endpoint::new(addr.ip().to_string(), addr.port()),
             handle: Some(handle),
+            sizes,
         }
+    }
+
+    /// The body length of every request answered so far, in arrival order.
+    #[allow(dead_code)]
+    pub fn request_sizes(&self) -> Vec<usize> {
+        self.sizes.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 }
 
@@ -115,7 +126,11 @@ impl Drop for Canned {
     }
 }
 
-fn answer(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
+fn answer(
+    mut stream: TcpStream,
+    reply: &Reply,
+    sizes: &std::sync::Mutex<Vec<usize>>,
+) -> std::io::Result<()> {
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut content_length = 0usize;
     loop {
@@ -133,6 +148,10 @@ fn answer(mut stream: TcpStream, reply: &Reply) -> std::io::Result<()> {
     }
     let mut body = vec![0u8; content_length];
     reader.read_exact(&mut body)?;
+    sizes
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push(content_length);
 
     // A refusal is a whole response, not a frame list: a status line, the body with a length,
     // and nothing after it. Content-length framing, because there is exactly one body and the

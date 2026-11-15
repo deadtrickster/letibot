@@ -3971,11 +3971,9 @@ impl Harness {
             });
     }
 
-    /// Run the summary turn and pair every row it appended: one door, because the two callers forgetting is the
-    /// defect this closes. `run_compaction` appends through the sink and `reconcile` hands the hub the row's body, so
-    /// a caller that skipped it announced rows and never filled them. The slice is taken AFTER the turn.
+    /// Run the summary turn as the compaction's progress line. Its rows are never announced: they are the old
+    /// transcript's, the fork replaces them, and the record is read from the `compacted` row.
     pub(crate) fn run_summary_turn(
-        hub: &Arc<Hub>,
         engine: &mut TurnEngine,
         session: &mut Session,
         sink: &mut CapturingSink,
@@ -3983,21 +3981,17 @@ impl Harness {
         ladder: &mut letibot_http::retry::Ladder,
         ask: Option<&letibot_turn::SummaryAsk<'_>>,
     ) -> Result<CompactionOutcome, HarnessError> {
-        let mark = session.items.len();
         // The summary turn is a provider call, so it walks the same ladder and its failure is said with the count
         // in it: a compaction that failed on a blip must not end the session's only chance to fold, with no way to
         // tell one attempt from six.
-        let outcome =
-            run_compaction(engine, session, sink, answerer, ladder, ask).map_err(|e| match e {
+        letibot_turn::run_compaction_as_progress(engine, session, sink, answerer, ladder, ask)
+            .map_err(|e| match e {
                 TurnFailure::Http(e) => HarnessError::Endpoint {
                     said: ladder.ending(&e),
                     cause: e,
                 },
                 other => HarnessError::Turn(other),
-            })?;
-        let added: Vec<TranscriptItem> = session.items[mark..].to_vec();
-        reconcile_rows(hub, sink, &added);
-        Ok(outcome)
+            })
     }
 
     /// Write every ledger row that has not reached the store yet, and persist and announce the todo list if the

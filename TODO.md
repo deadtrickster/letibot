@@ -1904,6 +1904,32 @@ Cause: nothing ever took a `job` need off a row. The board kept the edge and eve
 
 **Left:** a seat's board (`bridge/src/seat.rs`) still judges job needs per read. `pid` needs are not swept.
 
+## R298 - A compaction the model asks for: no context check, three visible phases, a folded record
+
+**Status:** built, 2026-11-15. Branch `compact-fix`.
+
+Seen live in rano's session `s-1794057745451974498` (store `c74d1fd17483`, rows 2984-2989 of `#t15`). At 23:03:00 the model called `compact_self` and was told "compacting this conversation when the turn ends". The same round's reasoning said "And my context is very long — I should compact before continuing.", so the harness injected `[context check] Don't size the work by context; the harness handles it. Do the work the task needs.` (metrics: `context.claim slapped`, 927,283 of 1,048,576). The turn ended at 23:03:08. The operator saw nothing for minutes, then the whole summary drawn inline: a file list and a `## Commands` section of ~30 full shell lines. The header still said `928.3k ctx` after the compaction landed.
+
+**What the store and metrics.db measured:**
+- The compaction did run at the turn's end. `worker.cmd compact` starts at 23:03:08 and runs 283,961 ms; the fork `#t16` lands at 23:07:52. The wait was the summary turn itself (4m44s on kimi), not a queue. It ran with no visible state because it streamed as an ordinary turn.
+- The context did shrink: 927,436 -> 44,027 estimated, 34,030 measured on the next round (`wall helped`). The header kept the last round's 928.3k until a new round measured.
+- The summary turn reused 927,232 tokens of kimi's cache. Reuse works.
+- The log line `dead -> compacted, base 3114171 -> 3115483 ledger tokens (transcript #t15); summary turn reused nothing the server reported` was the operator's `/reseat` at 22:54:28 (a re-ingest, nothing summarised). `cli.rs` printed every `Outcome::Compacted` as "compacted", and a carried-across base reads as growth.
+- `## Commands` came from the fidelity gate: `COMMANDS_FLOOR` was 80%, so a record that did not name 80% of every bash command run was sent back. The budget was 15% of the room, about 150k tokens on a 1M window, and the instruction said "USE IT".
+
+**Change:**
+- `context_claim`: a round that proposes `compact_self`/`reseat_self` is judged quiet, and an accepted one quiets the rest of the turn (`Check::compaction_accepted`, `accepted_compaction`). Still logged.
+- Pending: `compact_self` publishes `compaction_pending` ("compaction pending - runs when this turn ends"). The TUI draws it on the status row.
+- Running: `Harness::compact` publishes `compacting` ("summary turn on <model>: ..."). The summary turn runs through `letibot_turn::run_compaction_as_progress`, so heads get `CompactionProgress` and never its rows or deltas. The TUI's status row reads `Compacting · summary turn on <model> · <clock>`.
+- Done: the record rides the `compacted` row's detail after the sentence, which the head folds to one line. `compact_failed` is said when a requested compaction fails, and ends both phases.
+- Header: `compacted`/`reseated` set the header's context to the fork's after-count (`notice_card::compaction_after`).
+- Log: `sessions::compaction_logged` says `compacted: history N -> new base M ledger tokens` or `re-seated, nothing summarised: ...`.
+- Record: commands are counted and no longer gated (`COMMANDS_FLOOR` 0). The instruction asks for the state of the work and names a command only when the next step needs it. `MAX_SUMMARY_TOKENS` caps any record at 12,000 tokens (`by: "cap"`). Template id `compaction/2026-11-15`.
+
+**Tests:** `tests/context_claim.rs::an_accepted_compact_self_is_not_told_to_stop_sizing_by_context`; `tests/wall_refusal.rs::compact_self_is_pending_then_runs_first_and_the_next_request_is_smaller` (pending row, the compaction runs before a prompt queued after it, no turn rows during the summary turn, the record in the report, the next request body smaller, measured on the fake provider); `tui statusrow::a_compaction_is_pending_then_running_then_one_folded_row`; unit tests in `context_claim.rs`, `selfverbs.rs`, `sessions.rs`, `compaction.rs`, `fidelity.rs`.
+
+**Left:** `reseat_self` has no pending row yet. The summary turn's cost no longer reaches a head's `$` meter, since its `TurnFinished` is not forwarded (metrics.db still records it).
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.

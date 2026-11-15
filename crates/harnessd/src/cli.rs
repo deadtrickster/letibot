@@ -2028,12 +2028,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             // count in the provider's units is the `compacted:` line the session printed just
             // above this one.
             Outcome::Compacted(r) => eprintln!(
-                "  {session} · {} -> compacted, base {} -> {} ledger tokens (transcript {}); {}",
+                "  {session} · {} -> {}",
                 cmd.identity,
-                r.fork.was_tokens,
-                r.fork.base_tokens,
-                r.fork.transcript_id,
-                crate::sessions::summary_turn_reuse(&r.summary_turn)
+                crate::sessions::compaction_logged(r)
             ),
             Outcome::Failed(e) => eprintln!("  {session} · {} -> {e}", cmd.identity),
             Outcome::Ignored => {}

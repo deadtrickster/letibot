@@ -1201,6 +1201,9 @@ pub struct App {
     /// chosen. State and not a note, so it can be the progress line's click while the one row a
     /// compaction leaves is its report.
     pub(crate) compacting_why: Option<String>,
+    /// A compaction asked for and not yet running, in the daemon's words for what it waits on, and
+    /// when this head heard it. Drawn on the status row; `compacting` or the fork's report ends it.
+    pub(crate) compaction_pending: Option<(String, u64)>,
     /// What a click on the status row opens, as the last frame drew it: `(title, text)`, or `None`
     /// when the row said everything it had. A cut flash notice, or a progress whose row form left
     /// something out. See [`App::status_row`].
@@ -1631,6 +1634,7 @@ impl App {
             compacting: None,
             compacting_since: 0,
             compacting_why: None,
+            compaction_pending: None,
             status_click: None,
             held: None,
             activity: letibot_sessionlog::activity::Activity::Quiet,

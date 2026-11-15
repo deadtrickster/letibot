@@ -989,3 +989,140 @@ fn a_manual_compact_reports_the_count_it_compacted_from() {
         "the window as given"
     );
 }
+
+/// rano's compaction, end to end on a fake provider: the model calls `compact_self` mid-turn, the
+/// head is told it is pending until the turn ends, the compaction is the next thing the session
+/// runs - before a prompt queued after it - and the summary turn is the progress line, never a
+/// turn of the conversation. The request after it carries a smaller context than the one before.
+#[test]
+fn compact_self_is_pending_then_runs_first_and_the_next_request_is_smaller() {
+    use letibot_sessionlog::hub::CommandKind;
+    use support::qwen::a_call_turn;
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let dir = TempDir::new("harnessd-compact-self-phases");
+    let path = dir.path().join("sessions.db");
+    let session_id = "compact-self-phases";
+    let mut cfg = config(&path, session_id);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let vocab = &parts.vocab;
+    let prompt = the_prompt_this_box_composes("harnessd-compact-self-prompt", &parts, &cfg);
+    cfg.context_window = Some(a_window_the_fold_fits_in(&cfg, prompt));
+    let plain = |text: &str| Reply::Frames(a_plain_answer_turn(vocab, "thinking", text, 30));
+    let serv = canned::Canned::serve_replies(
+        vec![
+            Reply::Frames(a_call_turn(
+                vocab,
+                "the history is long, compacting",
+                "Compacting while the queue reviews:",
+                "\n<function=compact_self>\n</function>\n",
+                30,
+            )),
+            plain("Compacting this conversation now."),
+            plain("## Objective\n- answer the question\n## Next Move\n1. (none)"),
+            plain("the next answer"),
+            plain("spare"),
+        ],
+        6,
+    );
+    cfg.endpoint = serv.endpoint.clone();
+    let registry = Registry::new();
+    registry
+        .create(session_id, "", Sessions::wiring(&cfg))
+        .expect("the session is in the registry");
+    let hub = registry.get(session_id).expect("the hub is the registry's");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
+    let words = "a question with some length to it, so the fork is smaller. ".repeat(200);
+    sessions
+        .submit(session_id, &words)
+        .expect("the turn that asks for the compaction is answered");
+    let before = *serv.request_sizes().last().expect("the turn sent requests");
+
+    let codes = |hub: &Hub| -> Vec<(String, String)> {
+        hub.retained()
+            .iter()
+            .filter_map(|e| match &e.event {
+                SessionEvent::Warning { code, detail, .. } => Some((code.clone(), detail.clone())),
+                _ => None,
+            })
+            .collect()
+    };
+    // Pending, and saying what it waits on; nothing has started.
+    let said = codes(&hub);
+    assert!(
+        said.iter().any(|(c, d)| c == "compaction_pending"
+            && d == "compaction pending - runs when this turn ends"),
+        "{said:#?}"
+    );
+    assert!(!said.iter().any(|(c, _)| c == "compacting"), "{said:#?}");
+
+    // A prompt queued behind it, as a head would after the turn: the compaction runs first.
+    hub.submit_daemon(
+        "dead",
+        "req-next",
+        CommandKind::Prompt {
+            text: "and the next thing".into(),
+            attachments: Vec::new(),
+            context: None,
+            from: None,
+        },
+    );
+    let first = hub.try_command().expect("the compaction is queued");
+    assert_eq!(
+        first.kind,
+        CommandKind::Compact,
+        "the compaction runs first"
+    );
+    let seq_before = hub.retained().last().map(|e| e.seq).unwrap_or(0);
+    let _ = sessions.dispatch(session_id, &first);
+
+    // Running, then landed; the summary turn never drew as a turn.
+    let events: Vec<SessionEvent> = hub
+        .retained()
+        .iter()
+        .filter(|e| e.seq > seq_before)
+        .map(|e| e.event.clone())
+        .collect();
+    let at = |code: &str| {
+        events
+            .iter()
+            .position(|e| matches!(e, SessionEvent::Warning { code: c, .. } if c == code))
+    };
+    let running = at("compacting").expect("the running phase is said");
+    let landed = at("compacted").expect("the compaction lands");
+    assert!(running < landed);
+    assert!(
+        events
+            .iter()
+            .any(|e| matches!(e, SessionEvent::CompactionProgress { .. })),
+        "the summary turn is the progress line"
+    );
+    // The only rows announced are the new base's, which the fork publishes.
+    assert!(
+        !events[running..landed].iter().any(|e| match e {
+            SessionEvent::TurnStarted { .. } => true,
+            SessionEvent::TranscriptAppended { item_id, .. } => !item_id.contains("#t1."),
+            _ => false,
+        }),
+        "the summary turn is not drawn as a turn: {:#?}",
+        &events[running..landed]
+    );
+    // The record is in the report, after its sentence, for a head to fold.
+    let Some(SessionEvent::Warning { detail, .. }) = events.get(landed) else {
+        unreachable!()
+    };
+    assert!(detail.contains("\n\n## Objective"), "{detail}");
+
+    let next = hub.try_command().expect("the prompt waited behind it");
+    let _ = sessions.dispatch(session_id, &next);
+    let after = *serv
+        .request_sizes()
+        .last()
+        .expect("the next turn sent a request");
+    assert!(
+        after < before,
+        "the request after the compaction carries less: {before} bytes before, {after} after"
+    );
+}

@@ -4016,7 +4016,20 @@ impl<'a> Sessions<'a> {
                         }
                         Outcome::Compacted(Box::new(r))
                     }
-                    Err(e) => Outcome::Failed(e.to_string()),
+                    Err(e) => {
+                        // Ends the pending and running phases on a head, which only a landed
+                        // fork or a failure does.
+                        if let Some(hub) = &hub {
+                            hub.warn(
+                                "compact_failed",
+                                format!(
+                                    "the compaction did not land: {e}. The conversation is as \
+                                     it was."
+                                ),
+                            );
+                        }
+                        Outcome::Failed(e.to_string())
+                    }
                 }
             }
             // A re-seat is a compaction that lands on a different prompt, so it runs through the
@@ -4100,7 +4113,7 @@ impl<'a> Sessions<'a> {
                                         summary_turn: r.summary_turn.clone(),
                                         gained: Vec::new(),
                                         lost: Vec::new(),
-                                        summary_was_streamed: true,
+                                        summary_was_streamed: false,
                                     },
                                     "reseated",
                                     // `Config::scale` and not the measurement alone: the
@@ -4130,8 +4143,8 @@ impl<'a> Sessions<'a> {
                             summary_turn: r.summary_turn,
                             gained: r.gained,
                             lost: r.lost,
-                            // A re-seat runs the ordinary compaction, which streams.
-                            summary_was_streamed: true,
+                            // The summary turn ran as a progress line; nobody watched it.
+                            summary_was_streamed: false,
                         }))
                     }
                     Err(e) => {
@@ -5114,6 +5127,26 @@ impl From<Option<(u64, u64)>> for Scales {
     }
 }
 
+/// The daemon log's line for a fork. Both numbers are LEDGER tokens and are named as what they
+/// are: the history before, and the new base after. A re-seat summarised nothing, so it has no
+/// summary turn to account for and its base is the history carried across, not a growth.
+pub(crate) fn compaction_logged(r: &crate::harness::CompactReport) -> String {
+    if r.summary_turn.summary.is_empty() {
+        return format!(
+            "re-seated, nothing summarised: {} ledger tokens of history carried onto the new \
+             prompt as a {}-token base (transcript {})",
+            r.fork.was_tokens, r.fork.base_tokens, r.fork.transcript_id
+        );
+    }
+    format!(
+        "compacted: history {} -> new base {} ledger tokens (transcript {}); {}",
+        r.fork.was_tokens,
+        r.fork.base_tokens,
+        r.fork.transcript_id,
+        summary_turn_reuse(&r.summary_turn)
+    )
+}
+
 /// How the summary turn was paid for, said only with what was measured.
 pub(crate) fn summary_turn_reuse(o: &letibot_turn::CompactionOutcome) -> String {
     match (o.cached_tokens, o.reusable) {
@@ -5201,9 +5234,7 @@ pub(crate) fn compaction_said(
     }
     if !r.summary_was_streamed {
         said.push_str(&format!(
-            " Nothing of the summary turn reached this screen — it ran over a scratch \
-             transcript — so here is what the model now reads in place of everything \
-             before it:\n\n{}",
+            " What the model now reads in place of everything before it:\n\n{}",
             r.summary_turn.summary
         ));
     }
@@ -5833,6 +5864,27 @@ mod the_wire_report {
             summary_turn_reuse(&o(0, 0)),
             "summary turn reused nothing the server reported"
         );
+    }
+
+    /// The log names both ledger numbers as what they are, and a re-seat is not called a
+    /// compaction: its base is the history carried across, which reads as growth under that name.
+    #[test]
+    fn the_log_line_says_what_its_numbers_measure() {
+        let compacted = compaction_logged(&report("a summary", Vec::new(), 0, ""));
+        assert!(
+            compacted.starts_with("compacted: history 240000 -> new base 9000 ledger tokens"),
+            "{compacted}"
+        );
+        let mut carried = report("", Vec::new(), 0, "");
+        carried.fork.was_tokens = 3_114_171;
+        carried.fork.base_tokens = 3_115_483;
+        let reseated = compaction_logged(&carried);
+        assert!(
+            reseated.starts_with("re-seated, nothing summarised"),
+            "{reseated}"
+        );
+        assert!(!reseated.contains("compacted"), "{reseated}");
+        assert!(!reseated.contains("summary turn"), "{reseated}");
     }
 
     /// What the record kept, and what it was allowed: the levels a reader needs to judge a

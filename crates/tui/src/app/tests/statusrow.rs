@@ -759,3 +759,77 @@ fn a_daemon_older_than_its_store_says_so_in_red_and_stays() {
         );
     }
 }
+
+/// A compaction the model asked for, in its three phases: pending says what it waits on, running
+/// is a summary turn with a clock, and done is one folded row - the record is never drawn inline,
+/// and the header's context is the new base the moment the fork lands.
+#[test]
+fn a_compaction_is_pending_then_running_then_one_folded_row() {
+    let (mut a, _hub) = conversation(false);
+    let seq = a.seq;
+    let header = |screen: &[String]| screen[0].clone();
+    let before = a.screen(W, H);
+    assert!(header(&before).contains("1000 ctx"), "{}", header(&before));
+
+    a.apply(ServerFrame::Event(env(
+        seq + 1,
+        boot(
+            "compaction_pending",
+            "compaction pending - runs when this turn ends",
+        ),
+    )));
+    let pending = a.screen(W, H);
+    still(
+        &before,
+        &pending,
+        &before,
+        "Compaction pending - runs when this turn ends",
+    );
+
+    a.apply(ServerFrame::Event(env(
+        seq + 2,
+        boot(
+            "compacting",
+            "summary turn on k3.1-pro: one record replaces the history when it lands",
+        ),
+    )));
+    a.clock(13_000);
+    let running = a.screen(W, H);
+    let at = still(&before, &running, &before, "Compacting · summary turn");
+    assert!(!running[at].contains("pending"), "{}", running[at]);
+    assert!(
+        running[at].contains("12.0s"),
+        "the clock runs: {}",
+        running[at]
+    );
+
+    a.apply(ServerFrame::Event(env(
+        seq + 3,
+        boot(
+            "compacted",
+            "compacted: 1000 → ≈ 300 tokens, kept a 40-character summary, nothing dropped, \
+             estimated until the next round measures it, on transcript s#t2. What the model \
+             now reads in place of everything before it:\n\n## Objective\n- the record body",
+        ),
+    )));
+    let done = a.screen(W, H);
+    let all = done.join("\n");
+    assert!(
+        !all.contains("Compacting"),
+        "the running line ended:\n{all}"
+    );
+    assert!(!all.contains("pending"), "the pending line ended:\n{all}");
+    assert!(
+        !all.contains("## Objective"),
+        "the record is folded, not spilled:\n{all}"
+    );
+    assert!(
+        !all.contains("the record body"),
+        "the record is folded:\n{all}"
+    );
+    assert!(
+        done.iter().filter(|r| r.contains("compacted")).count() <= 1,
+        "at most one row:\n{all}"
+    );
+    assert!(header(&done).contains("300 ctx"), "{}", header(&done));
+}

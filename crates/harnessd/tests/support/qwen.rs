@@ -55,3 +55,44 @@ pub fn a_plain_answer_turn(
     });
     frames
 }
+
+/// The tokens Qwen spells a tool call with.
+pub const TOOL_CALL_OPEN: u32 = 248058;
+pub const TOOL_CALL_CLOSE: u32 = 248059;
+
+/// A round that thinks, says `text` and makes one call, spelled in Qwen's call syntax
+/// (`<function=name>…</function>`). The turn goes on to the next round.
+pub fn a_call_turn(
+    vocab: &Vocab,
+    thought: &str,
+    text: &str,
+    call: &str,
+    n_prompt: u64,
+) -> Vec<Frame> {
+    let thought_ids = ids(vocab, thought);
+    let text_ids = ids(vocab, text);
+    let call_ids = ids(vocab, call);
+    let mut frames = vec![Frame::Progress {
+        total: n_prompt,
+        processed: n_prompt,
+    }];
+    frames.extend(spoken(vocab, &thought_ids));
+    frames.extend(spoken(vocab, &[THINK_CLOSE]));
+    frames.extend(spoken(vocab, &text_ids));
+    frames.push(Frame::Token {
+        id: TOOL_CALL_OPEN,
+        text: "<tool_call>",
+    });
+    frames.extend(spoken(vocab, &call_ids));
+    frames.push(Frame::Token {
+        id: TOOL_CALL_CLOSE,
+        text: "</tool_call>",
+    });
+    frames.push(Frame::Final {
+        stop_type: "eos",
+        n_decoded: (thought_ids.len() + text_ids.len() + call_ids.len() + 3) as u64,
+        n_prompt,
+        cache_n: 0,
+    });
+    frames
+}

@@ -71,9 +71,30 @@ impl App {
                 // The fork has two halves: this warning precedes it, `compacted` and `reseated` follow. Resolving at the first
                 // stops an echo saying `queued` for ever over a row the fork summarised away. An announcement is state, not a
                 // row: it says why the fold is running, which the progress line's click shows.
+                // The pending phase: a compaction asked for mid-turn, waiting on that turn. State,
+                // drawn on the status row until the running phase or the report replaces it.
+                if code == "compaction_pending" {
+                    self.compaction_pending = Some((detail.clone(), self.now_ms));
+                    return Disposition::Filtered;
+                }
                 if code == "compacting" {
                     self.mark_fork();
                     self.compacting_why = Some(detail.clone());
+                    self.compaction_pending = None;
+                    // The running phase starts on the announcement, so the line and its clock are
+                    // up before the summary turn's first progress, which a cloud model may take
+                    // minutes to send.
+                    if self.compacting.is_none() {
+                        self.compacting_since = self.now_ms;
+                        self.compacting = Some(CompactionLine {
+                            half: 1,
+                            halves: 1,
+                            prompt_tokens: 0,
+                            processed: 0,
+                            written: 0,
+                            unit: "tokens".into(),
+                        });
+                    }
                     return Disposition::Filtered;
                 }
                 // An older daemon sends the same announcement under this code: mark the fork and
@@ -85,15 +106,39 @@ impl App {
                 // `cleared` is the third fork's report (`/clear`), and the same resolution.
                 if code == "compacted" || code == "reseated" || code == "cleared" {
                     self.resolve_fork();
+                    // The new base is what the header's context now is: the last round's prompt
+                    // was the history this fork replaced.
+                    if let Some(after) =
+                        crate::ui::transcript::notice_card::compaction_after(&detail)
+                        && let Some(u) = self.usage.as_mut()
+                    {
+                        u.prompt_tokens = after;
+                        u.cached_tokens = 0;
+                        self.usage_cache_measured = false;
+                    }
                     // The progress event is ephemeral - it carries no "done" - so the
                     // durable warning that the fork landed is what ends the walking line.
                     // A fold that failed ends it too, below: not a fold still running.
                     self.compacting = None;
                     self.compacting_why = None;
                 }
-                if code == "auto_compact_failed" {
+                if matches!(
+                    code.as_str(),
+                    "auto_compact_failed" | "compact_failed" | "summary_refused"
+                ) {
                     self.compacting = None;
                     self.compacting_why = None;
+                }
+                if matches!(
+                    code.as_str(),
+                    "compacted"
+                        | "reseated"
+                        | "cleared"
+                        | "auto_compact_failed"
+                        | "compact_failed"
+                        | "summary_refused"
+                ) {
+                    self.compaction_pending = None;
                 }
                 // The "N rows are being loaded" line is this head's own claim, so the
                 // daemon's `resume_failed` is the one fact that ends it without rows. A

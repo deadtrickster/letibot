@@ -685,6 +685,10 @@ impl Harness {
     }
 
     pub fn compact(&mut self) -> Result<CompactReport, HarnessError> {
+        // The running phase, said before the summary turn starts: a head draws it as the progress
+        // line with its clock, and the `compacted` row ends it.
+        self.hub
+            .warn("compacting", compacting_said(&self.model_name()));
         self.compact_with(crate::wall::Fold::Ordinary)
     }
 
@@ -1075,7 +1079,6 @@ impl Harness {
             let mark = self.session.items.len();
             let witness = self.session.witness().cloned();
             let ran = Self::run_summary_turn(
-                &self.hub,
                 &mut self.engine,
                 &mut self.session,
                 &mut sink,
@@ -1451,7 +1454,6 @@ impl Harness {
                 let mark = self.session.items.len();
                 let witness = self.session.witness().cloned();
                 let ran = Self::run_summary_turn(
-                    &self.hub,
                     &mut self.engine,
                     &mut self.session,
                     &mut sink,
@@ -1491,9 +1493,9 @@ impl Harness {
                     summary_turn: outcome,
                     gained,
                     lost,
-                    // This arm ran `run_compaction` through the session's own
-                    // sink, so every head watched the summary being written.
-                    summary_was_streamed: true,
+                    // The summary turn ran as the progress line, so the record is published with
+                    // the report, where a head folds it.
+                    summary_was_streamed: false,
                 })
             }
 
@@ -2451,4 +2453,12 @@ impl letibot_turn::evict::BodyStore for Spilled<'_> {
         // span, which is the safe half of the choice, and the record is asked about it.
         self.0.put(tool, body).ok()
     }
+}
+
+/// The running phase of a compaction someone asked for: what runs and on which model.
+pub(crate) fn compacting_said(model: &str) -> String {
+    format!(
+        "summary turn on {model}: one record replaces the history when it lands, and the \
+         conversation is kept either way"
+    )
 }

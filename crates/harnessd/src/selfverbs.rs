@@ -11,6 +11,12 @@ use std::sync::Arc;
 use letibot_sessionlog::hub::{CommandKind, Hub};
 use letibot_tools::builtins::session_self::{NagAsk, SessionSelf};
 
+/// The warning a head keeps as the pending phase of a compaction.
+pub const COMPACTION_PENDING: &str = "compaction_pending";
+
+/// What a compaction the model asked for waits on: the turn that asked must end first.
+pub const PENDING_UNTIL_TURN_ENDS: &str = "compaction pending - runs when this turn ends";
+
 /// One session's desk: its id, and the queue its own verbs land in.
 pub struct SessionAsks {
     session: String,
@@ -48,13 +54,16 @@ impl SessionSelf for SessionAsks {
     }
 
     fn compact(&self) -> Result<String, String> {
-        self.queue(
+        let said = self.queue(
             CommandKind::Compact,
             "compact",
             "compacting this conversation when the turn ends: one summary replaces the history, \
              and the summary is the base every later turn reads"
                 .into(),
-        )
+        )?;
+        // The pending phase, for the head: nothing runs until this turn ends.
+        self.hub.warn(COMPACTION_PENDING, PENDING_UNTIL_TURN_ENDS);
+        Ok(said)
     }
 
     fn nag_pause(&self, ask: NagAsk) -> Result<String, String> {
@@ -125,6 +134,19 @@ mod tests {
 
         // And the other two verbs are the daemon's own commands, not a second implementation.
         desk.compact().expect("taken");
+        let pending: Vec<String> = hub
+            .retained()
+            .iter()
+            .filter_map(|e| match &e.event {
+                letibot_sessionlog::event::SessionEvent::Warning { code, detail, .. }
+                    if code == COMPACTION_PENDING =>
+                {
+                    Some(detail.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(pending, vec![PENDING_UNTIL_TURN_ENDS.to_string()]);
         assert_eq!(
             hub.try_command().expect("queued").kind,
             CommandKind::Compact
