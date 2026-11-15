@@ -1432,6 +1432,12 @@ pub struct SkillKeys {
     /// Skills never offered or listed as usable, whatever their score: the operator's veto for
     /// skills that name tools this box lacks and that the automatic filter cannot see.
     pub never_offer: Vec<String>,
+    /// Skills hidden from the model and kept for the operator's `/skills`, like the frontmatter's
+    /// `disable-model-invocation: true`. A union, so a project cannot unhide what the operator hid.
+    pub hide: Vec<String>,
+    /// Whether a session on a brief (subagent, package, review queue, one-shot) is offered skills.
+    /// `None` is the default, off: the brief already names what it needs.
+    pub offer_children: Option<bool>,
     /// Per skill, what it needs of a seat before it applies at all.
     pub when: std::collections::BTreeMap<String, letibot_tools::builtins::skill::SkillWhen>,
 }
@@ -1460,6 +1466,8 @@ impl SkillKeys {
         SkillKeys {
             pin: union(&self.pin, &other.pin),
             never_offer: union(&self.never_offer, &other.never_offer),
+            hide: union(&self.hide, &other.hide),
+            offer_children: other.offer_children.or(self.offer_children),
             when,
         }
     }
@@ -1467,7 +1475,11 @@ impl SkillKeys {
     /// Whether the file said anything at all, for the disclosure, which must not claim a
     /// setting nobody made.
     pub fn is_empty(&self) -> bool {
-        self.pin.is_empty() && self.never_offer.is_empty() && self.when.is_empty()
+        self.pin.is_empty()
+            && self.never_offer.is_empty()
+            && self.hide.is_empty()
+            && self.offer_children.is_none()
+            && self.when.is_empty()
     }
 }
 
@@ -1480,19 +1492,25 @@ struct SkillTable {
     #[serde(default)]
     never_offer: Option<Vec<String>>,
     #[serde(default)]
+    hide: Option<Vec<String>>,
+    #[serde(default)]
+    offer_children: Option<bool>,
+    #[serde(default)]
     when: std::collections::BTreeMap<String, letibot_tools::builtins::skill::SkillWhen>,
 }
 
 fn skill_keys(value: &toml::Value) -> Result<SkillKeys, String> {
     let t: SkillTable = value.clone().try_into().map_err(|e| {
         format!(
-            "[skills]: {e}; the keys are `pin` and `never_offer` (lists of skill names) and \
-             `when.<name>` (a table of `requires` and `unless`)"
+            "[skills]: {e}; the keys are `pin`, `never_offer` and `hide` (lists of skill names), \
+             `offer_children` (a bool) and `when.<name>` (a table of `requires` and `unless`)"
         )
     })?;
     Ok(SkillKeys {
         pin: t.pin.unwrap_or_default(),
         never_offer: t.never_offer.unwrap_or_default(),
+        hide: t.hide.unwrap_or_default(),
+        offer_children: t.offer_children,
         when: t.when,
     })
 }

@@ -148,6 +148,8 @@ NAME: `top-level`, `subagent`, or a child perimeter `task` names. Lists join per
 |---|---|---|---|---|
 | `pin` | list of skills | [] | both, joined | skills kept loaded |
 | `never_offer` | list of skills | [] | both, joined | skills never offered |
+| `hide` | list of skills | [] | both, joined | skills hidden from the model (listing, find, load, offers); the operator's /skills still loads them; frontmatter disable-model-invocation: true is the per-skill form |
+| `offer_children` | bool | false | both, project wins | offer skills to subagents, packages, review queue sessions and one-shots |
 
 ## `[skills.when.<name>]`
 

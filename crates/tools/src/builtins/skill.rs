@@ -103,6 +103,9 @@ pub struct Skill {
     pub unless: Vec<String>,
     /// The `SKILL.md` it was read from; `None` for a skill compiled in or held on a shelf.
     pub path: Option<PathBuf>,
+    /// The frontmatter's `disable-model-invocation: true`: kept for the operator's `/skills`, and
+    /// out of every door the model has (listing, find, load, offers, the index).
+    pub model_hidden: bool,
 }
 
 impl Skill {
@@ -124,6 +127,7 @@ impl Skill {
             requires: Vec::new(),
             unless: Vec::new(),
             path: None,
+            model_hidden: false,
         }
     }
 
@@ -402,6 +406,9 @@ pub struct SkillRegistry {
     /// `[skills.when.<name>]`, both levels resolved: what an operator says a skill needs of a seat,
     /// over what its frontmatter says. Read here because every door asks it.
     when: BTreeMap<String, SkillWhen>,
+    /// `[skills] hide`: names kept for the operator and hidden from the model, like the
+    /// frontmatter's `disable-model-invocation`.
+    hide: BTreeSet<String>,
     shelf: Mutex<Option<Arc<dyn SkillShelf>>>,
     /// The folders' skills as last read, under the modification times they were read at.
     live: Mutex<Option<(Stamp, Vec<Skill>)>>,
@@ -426,6 +433,7 @@ impl SkillRegistry {
             dirs: None,
             pins: BTreeSet::new(),
             when: BTreeMap::new(),
+            hide: BTreeSet::new(),
             shelf: Mutex::new(None),
             live: Mutex::new(None),
         }
@@ -437,6 +445,34 @@ impl SkillRegistry {
     pub fn with_when(mut self, when: BTreeMap<String, SkillWhen>) -> Self {
         self.when = when;
         self
+    }
+
+    /// The registry with `[skills] hide`: names the model never sees, whatever their frontmatter.
+    pub fn with_hidden<I, S>(mut self, names: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.hide = names.into_iter().map(Into::into).collect();
+        self
+    }
+
+    /// Why the model may not see this skill, or `None`. The operator's own `/skills` ignores it.
+    pub fn hidden(&self, skill: &Skill) -> Option<&'static str> {
+        if self.hide.contains(&skill.name) {
+            Some("`[skills] hide`")
+        } else if skill.model_hidden {
+            Some("`disable-model-invocation`")
+        } else {
+            None
+        }
+    }
+
+    /// [`Self::live_skills`] without the ones hidden from the model: what every model door reads.
+    pub fn model_skills(&self) -> Vec<Skill> {
+        let mut live = self.live_skills();
+        live.retain(|s| self.hidden(s).is_none());
+        live
     }
 
     /// Why this seat cannot use this skill, or `None`. The one answer every door reads, so a name
@@ -622,11 +658,24 @@ impl SkillRegistry {
         })
     }
 
+    /// [`Self::load_any`] for the model's `skill load`: a skill hidden from the model is refused
+    /// as absent, so the name it was kept under is not confirmed either.
+    pub fn load_for_model(&self, key: &str) -> Result<Skill, String> {
+        let skill = self.load_any(key)?;
+        match self.hidden(&skill) {
+            Some(_) => Err(format!(
+                "no skill named `{key}` is open to the model. `skill` action=\"list\" names the \
+                 skills there are."
+            )),
+            None => Ok(skill),
+        }
+    }
+
     /// Every skill there is, usable ones first and then the ones this seat cannot use, each with
     /// the reason. Naming the reason is the point: a model that silently loses a skill from the
     /// list cannot tell a rule from a bug, and picks the wrong one of two that answer one job.
     fn list(&self, seat: Option<&BTreeSet<String>>) -> String {
-        let skills = self.live_skills();
+        let skills = self.model_skills();
         let why = |s: &Skill| seat.and_then(|seat| self.unmet(s, seat));
         let (hidden, usable): (Vec<&Skill>, Vec<&Skill>) =
             skills.iter().partition(|s| why(s).is_some());
@@ -690,7 +739,9 @@ impl SkillRegistry {
     /// source priority, then the shelf's rows. A shelf that cannot be read comes back as the
     /// sentence, never as an empty shelf.
     pub fn index_rows(&self) -> (Vec<IndexRow>, Option<String>) {
-        self.rows_of(&self.skills)
+        let mut skills = self.skills.clone();
+        skills.retain(|s| self.hidden(s).is_none());
+        self.rows_of(&skills)
     }
 
     /// [`Self::index_rows`] over the skills as the disk has them now, for a head's listing: the
@@ -812,7 +863,7 @@ impl SkillRegistry {
         most: usize,
         tier: Option<&crate::similarity::Tier>,
     ) -> Vec<(String, f64)> {
-        let docs = self.documents(&self.live_skills());
+        let docs = self.documents(&self.model_skills());
         let corpus = crate::similarity::Corpus::of_texts(&docs);
         // Filled from THIS registry, through the door that keys it as the score reads it. A fill
         // that cannot answer leaves no vectors, so the words stand alone.
@@ -828,7 +879,7 @@ impl SkillRegistry {
     /// would key one name to two texts.
     pub fn ranked_by_keywords(&self, query: &str, most: usize) -> Vec<(String, f64)> {
         let docs: Vec<(PathBuf, String)> = self
-            .live_skills()
+            .model_skills()
             .iter()
             .filter(|s| !s.keywords.is_empty())
             .map(|s| (PathBuf::from(&s.name), s.keywords.join(" ")))
@@ -1074,6 +1125,7 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
     let mut keywords = Vec::new();
     let mut requires = Vec::new();
     let mut unless = Vec::new();
+    let mut model_hidden = false;
     // A block list is written under its key, one name a line, so the key that ended the last
     // value is remembered: `requires:` with nothing after it opens one.
     let mut open = Names::None;
@@ -1113,6 +1165,11 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
             }
         } else if let Some(v) = line.strip_prefix("keywords:") {
             keywords = name_list(v);
+        } else if let Some(v) = line.strip_prefix("disable-model-invocation:") {
+            model_hidden = v
+                .trim()
+                .trim_matches(['"', '\''])
+                .eq_ignore_ascii_case("true");
         }
     }
     let name = name.filter(|n| !n.is_empty())?;
@@ -1128,6 +1185,7 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
         requires,
         unless,
         path: None,
+        model_hidden,
     })
 }
 
@@ -1279,7 +1337,7 @@ impl Tool for SkillTool {
                          the names `skill` action=\"list\" reported.",
                     );
                 };
-                match self.registry.load_any(name) {
+                match self.registry.load_for_model(name) {
                     Ok(skill) => match seat.and_then(|st| self.registry.unmet(&skill, st)) {
                         Some(why) => Invocation::failed(
                             format!("`{name}` is not for this seat"),
@@ -2346,5 +2404,70 @@ mod tests {
         );
         // No seat known (a runtime with no daemon behind it) filters nothing.
         assert!(r.list(None).contains("2 skill(s) —"), "{}", r.list(None));
+    }
+
+    /// `disable-model-invocation: true` and `[skills] hide` keep a skill from every model door -
+    /// listing, find, load, ranking and the pinned index - and the operator's `load_any` still
+    /// hands it over.
+    #[test]
+    fn a_skill_hidden_from_the_model_is_kept_for_the_operator() {
+        let own = from_text(
+            "---\nname: release\ndescription: publish a versioned build\n\
+             disable-model-invocation: true\n---\nsteps\n",
+            SkillSource::Operator,
+        )
+        .expect("parses");
+        assert!(own.model_hidden);
+        let r = SkillRegistry::new(vec![
+            own,
+            Skill::new(
+                "deploy",
+                "roll out to production servers",
+                "b",
+                SkillSource::Operator,
+            ),
+            Skill::new(
+                "tarball-check",
+                "verify archive checksums",
+                "b",
+                SkillSource::Operator,
+            ),
+        ])
+        .with_hidden(["deploy"])
+        .with_pins(["release", "deploy", "tarball-check"]);
+        let listed = r.list(None);
+        assert!(listed.contains("1 skill(s) —"), "{listed}");
+        assert!(
+            !listed.contains("- release") && !listed.contains("- deploy"),
+            "{listed}"
+        );
+        let ranked = r.ranked(
+            "publish a versioned build, roll it to production servers, verify archive checksums",
+            5,
+        );
+        assert!(
+            ranked.iter().all(|(n, _)| n == "tarball-check"),
+            "{ranked:?}"
+        );
+        // `deploy` is hidden by the table alone: without it the same query reaches it.
+        let open = SkillRegistry::new(r.skills.clone());
+        let q =
+            "publish a versioned build, roll it to production servers, verify archive checksums";
+        assert!(open.ranked(q, 5).iter().any(|(n, _)| n == "deploy"));
+        assert!(r.ranked_by_keywords("release", 5).is_empty());
+        for name in ["release", "deploy"] {
+            assert!(
+                r.load_for_model(name).is_err(),
+                "{name} loads for the model"
+            );
+            assert!(r.load_any(name).is_ok(), "{name} is the operator's still");
+        }
+        assert!(r.load_for_model("tarball-check").is_ok());
+        let (rows, _) = r.index_rows();
+        assert_eq!(
+            rows.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+            ["tarball-check"]
+        );
+        assert_eq!(r.hidden(&r.skills[1]), Some("`[skills] hide`"));
     }
 }

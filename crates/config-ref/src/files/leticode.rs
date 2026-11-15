@@ -191,6 +191,8 @@ pub const LETICODE: File = File {
             keys: &[
                 k("pin", "list of skills", "[]", UNION, "skills kept loaded", "[\"fix-report\"]"),
                 k("never_offer", "list of skills", "[]", UNION, "skills never offered", "[\"fix-report\"]"),
+                k("hide", "list of skills", "[]", UNION, "skills hidden from the model (listing, find, load, offers); the operator's /skills still loads them; frontmatter disable-model-invocation: true is the per-skill form", "[\"fix-report\"]"),
+                k("offer_children", "bool", "false", PW, "offer skills to subagents, packages, review queue sessions and one-shots", "true"),
             ],
         },
         Table {

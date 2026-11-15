@@ -87,7 +87,8 @@ impl Parts {
                 .with_pins(cfg.skills_pin().iter().cloned())
                 // And what the operator's files say each skill needs of a seat, which every door
                 // asks before it lists, offers, ranks or loads one.
-                .with_when(cfg.skills_when().clone()),
+                .with_when(cfg.skills_when().clone())
+                .with_hidden(cfg.skills_hide().iter().cloned()),
         );
         let lsp = std::sync::Arc::new(letibot_tools::builtins::lsp::LspConfig::default());
         let tasks = std::sync::Arc::new(crate::tasks::TaskJournal::new(

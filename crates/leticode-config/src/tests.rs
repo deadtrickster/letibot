@@ -819,6 +819,29 @@ fn the_two_levels_pin_skills_by_union() {
     );
 }
 
+/// `hide` unions like a pin, so a project cannot unhide; `offer_children` is a plain setting the
+/// project overrides, and unset is off.
+#[test]
+fn hide_unions_and_offer_children_defaults_off() {
+    let user_dir = project_dir("skills-hide-user");
+    let user_path = write_file(
+        &user_dir,
+        "[skills]\nhide = [\"a\"]\noffer_children = true\n",
+    );
+    let user = LeticodeConfig::load_as(&user_path, Level::User).expect("the user file parses");
+    let project_root = project_dir("skills-hide-project");
+    let project_path = write_file(
+        &project_root,
+        "[skills]\nhide = [\"b\"]\noffer_children = false\n",
+    );
+    let project = LeticodeConfig::load(&project_path).expect("the project file parses");
+    let both = user.overridden_by(&project).skills;
+    assert_eq!(both.hide, ["a", "b"]);
+    assert_eq!(both.offer_children, Some(false));
+    assert_eq!(user.skills.offer_children, Some(true));
+    assert_eq!(LeticodeConfig::default().skills.offer_children, None);
+}
+
 /// `[skills.when.<name>]` is a table per skill, and a key this build does not know is refused by
 /// name - the same loudness every other table in this file has.
 #[test]

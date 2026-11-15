@@ -1896,6 +1896,27 @@ impl Config {
         &self.leticode.skills.never_offer
     }
 
+    /// `[skills] hide`, both levels: skills the model never sees.
+    pub fn skills_hide(&self) -> &[String] {
+        &self.leticode.skills.hide
+    }
+
+    /// Whether this session runs on a brief rather than for the operator: a subagent, a package,
+    /// the review queue, a one-shot or a shadow.
+    pub fn is_child(&self) -> bool {
+        self.parent_session_id.is_some()
+            || self.parent_seat.is_some()
+            || self.one_shot
+            || self.seat == Seat::Shadow
+            || letibot_sessionlog::is_gatekeeper_session(&self.session_id)
+    }
+
+    /// Whether this session gets skill offers: an operator's always, a child only with
+    /// `[skills] offer_children`, since its brief already names what it needs.
+    pub fn offers_skills(&self) -> bool {
+        !self.is_child() || self.leticode.skills.offer_children == Some(true)
+    }
+
     /// `[skills.when.<name>]`, both levels resolved: what each skill needs of a seat, over what its
     /// own frontmatter says. The operator's table wins a name both files speak about, whole.
     pub fn skills_when(

@@ -2349,3 +2349,29 @@ fn the_prose_nudge_is_picked_per_model_and_the_flag_overrides_it() {
     c.intent_prose = true;
     assert_eq!(c.prose_nudge("acme/small"), (true, "--intent-prose".into()));
 }
+
+/// A session on a brief gets no skill offers unless `[skills] offer_children` says so; the
+/// operator's own session always does.
+#[test]
+fn a_child_session_is_offered_no_skills_by_default() {
+    let base = std::env::temp_dir().join(format!("harnessd-offer-children-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let mut cfg = Config::for_this_box(&base);
+    cfg.session_id = "s-top".into();
+    assert!(!cfg.is_child() && cfg.offers_skills());
+    let children: [&dyn Fn(&mut Config); 4] = [
+        &|c| c.parent_session_id = Some("s-parent".into()),
+        &|c| c.parent_seat = Some("cc@letibot".into()),
+        &|c| c.one_shot = true,
+        &|c| c.session_id = "s-gatekeeper-c74d1fd17483".into(),
+    ];
+    for make in children {
+        let mut c = cfg.clone();
+        make(&mut c);
+        assert!(c.is_child() && !c.offers_skills(), "{}", c.session_id);
+        c.leticode.skills.offer_children = Some(true);
+        assert!(c.offers_skills());
+    }
+    let _ = std::fs::remove_dir_all(&base);
+}
