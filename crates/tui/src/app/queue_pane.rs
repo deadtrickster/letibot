@@ -451,7 +451,7 @@ impl App {
     }
 
     /// The entry the row under the cursor names, when the drawn pane is a plugin's - what the
-    /// person's `a`/`v`/`r`/`d` act on. Read from the act the row CARRIES (`{"verb":...,"id":...}`),
+    /// person's `a`/`v`/`r`/`del` act on. Read from the act the row CARRIES (`{"verb":...,"id":...}`),
     /// not from the host's own enumeration, which is what lets a plugin row say which entry it means.
     pub(crate) fn queue_plugin_entry(&self) -> Option<String> {
         let (_, act) = self.queue_plugin_row()?;

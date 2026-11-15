@@ -336,7 +336,8 @@ fn a_rebound_key_is_honoured_and_a_global_chord_is_not_rebindable() {
         ("nowhere.d", "f", "names no surface"),
         ("todos.z", "f", "is not a key of the todos"),
         ("todos.d", "zz", "is not a key this head spells"),
-        ("todos.d", "n", "already taken on the todos"),
+        ("todos.d", "c", "already taken on the todos"),
+        ("todos.d", "tab", "is a shared key on every list pane"),
     ] {
         let (_, said) = KeyOverrides::resolve(&leticode_config::KeyKeys {
             rebind: vec![rebind(name, key)],
@@ -397,4 +398,86 @@ fn the_global_chords_are_the_ones_the_tables_advertise() {
             "`{c}` is on the refusal list and its own parser does not recognise it"
         );
     }
+}
+
+/// The verb table holds across panes: a shared key means its one class on every list pane and in
+/// the editor pane, a letter is never a shared verb, and a letter means one act on every surface.
+#[test]
+fn every_pane_keeps_the_verb_table() {
+    use crate::app::keys::bindings::{Class, verb_class};
+    use std::collections::HashMap;
+    let mut letters: HashMap<char, (Surface, Act)> = HashMap::new();
+    for s in Surface::ALL {
+        for b in s.bindings() {
+            for on in b.on {
+                let class = b.act.class(*on);
+                if s.is_list()
+                    && let Some(want) = verb_class(&on.label())
+                {
+                    assert_eq!(class, want, "{s:?} binds {} to {:?}", on.label(), b.act);
+                }
+                if let On::Char(c) = on {
+                    assert_eq!(
+                        class,
+                        Class::Own,
+                        "{s:?}'s `{c}` is a shared verb: {:?}",
+                        b.act
+                    );
+                    let (first, act) = *letters.entry(*c).or_insert((s, b.act));
+                    assert_eq!(
+                        act, b.act,
+                        "`{c}` is {act:?} on {first:?} and {:?} on {s:?}",
+                        b.act
+                    );
+                }
+            }
+        }
+    }
+    // The editor pane's rows: a chord rano's table shares with the list panes keeps their class.
+    for row in rano::agent::keys::SHARED {
+        let class = match row.action {
+            "deactivate-mark" => Class::Leave,
+            _ => Class::Own,
+        };
+        let chord = crate::app::shared_keys::chord(row);
+        if let Some(want) = verb_class(&chord) {
+            assert_eq!(
+                class, want,
+                "the editor pane binds {chord} to {}",
+                row.action
+            );
+        }
+    }
+    assert_eq!(verb_class("esc"), Some(Class::Leave));
+}
+
+/// PgDn pages every list pane: the cursor moves a page of stops, and PgUp brings it back.
+#[test]
+fn pgdn_pages_every_list_pane() {
+    for s in Surface::ALL.into_iter().filter(|s| s.is_list()) {
+        let b = s
+            .bindings()
+            .iter()
+            .find(|b| b.on.contains(&On::Page))
+            .unwrap_or_else(|| panic!("{s:?} has no page key"));
+        assert_eq!(b.act, Act::Page, "{s:?}");
+    }
+    let mut a = app();
+    a.screen_rows = 5;
+    a.standing = (0..10)
+        .map(|n| letibot_sessionlog::protocol::NoteEntry {
+            path: format!("/notes/{n}.md"),
+            abstract_line: None,
+            abstract_written: false,
+            form: letibot_sessionlog::protocol::NoteForm::Verbatim,
+        })
+        .collect();
+    a.push_surface(Surface::Standing);
+    a.key(Key::PageDown);
+    assert_eq!(a.standing_sel, 4);
+    a.key(Key::PageDown);
+    a.key(Key::PageDown);
+    assert_eq!(a.standing_sel, 9, "a page clamps at the last row");
+    a.key(Key::PageUp);
+    assert_eq!(a.standing_sel, 5);
 }

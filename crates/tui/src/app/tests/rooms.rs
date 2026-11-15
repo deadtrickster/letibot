@@ -416,40 +416,40 @@ fn the_roster_is_asked_for_on_every_poll_without_a_key() {
 fn the_roster_key_toggles_the_offline_members() {
     let mut a = opened(1_000);
     assert!(!a.rooms.roster_all);
-    a.key(Key::Char('r'));
+    a.key(Key::Char('z'));
     assert!(a.rooms.roster_all);
-    a.key(Key::Char('r'));
+    a.key(Key::Char('z'));
     assert!(!a.rooms.roster_all);
 }
 
-/// The bar says what `r` would DO now. It offered `roster: lists the offline members` over a
+/// The bar says what `z` would DO now. It offered `roster: lists the offline members` over a
 /// roster that already listed them, so the press undid what the words promised.
 #[test]
 fn the_bar_says_what_the_roster_key_would_do() {
     let mut a = opened(1_000);
     let bar = a.hint_bar(200);
-    assert!(bar.contains("r roster: lists the offline members"), "{bar}");
-    a.key(Key::Char('r'));
+    assert!(bar.contains("z roster: lists the offline members"), "{bar}");
+    a.key(Key::Char('z'));
     let bar = a.hint_bar(200);
-    assert!(bar.contains("r roster: hides the offline members"), "{bar}");
+    assert!(bar.contains("z roster: hides the offline members"), "{bar}");
     assert!(!bar.contains("lists the offline"), "{bar}");
     // The help lists both, because it is read without a pane in front of it.
     let (_, help) = a
         .surface_help(Surface::Rooms)
         .expect("rooms is in the help");
     assert!(
-        help.contains("r roster: lists or hides the offline members"),
+        help.contains("z roster: lists or hides the offline members"),
         "{help}"
     );
 }
 
 #[test]
-fn a_typed_r_is_a_letter_not_the_roster_key() {
+fn a_typed_z_is_a_letter_not_the_roster_key() {
     let mut a = opened(1_000);
     a.set_composer("a");
-    a.key(Key::Char('r'));
+    a.key(Key::Char('z'));
     assert!(!a.rooms.roster_all);
-    assert_eq!(a.editor.text(), "ar");
+    assert_eq!(a.editor.text(), "az");
 }
 
 #[test]
@@ -604,7 +604,7 @@ fn a_transport_error_lands_on_the_send_it_names() {
 }
 
 /// Only the send that landed goes. Another send's failure survives its neighbour's success,
-/// and Enter resends the failed line while `d` dismisses it.
+/// and Enter resends the failed line while `del` dismisses it.
 #[test]
 fn a_landed_send_clears_only_itself_and_the_keys_deal_with_the_rest() {
     let mut a = opened(1_000);
@@ -634,7 +634,7 @@ fn a_landed_send_clears_only_itself_and_the_keys_deal_with_the_rest() {
         "the superseded record stayed"
     );
 
-    // It fails again, and `d` dismisses it: read, understood, not sent again.
+    // It fails again, and `del` dismisses it: read, understood, not sent again.
     let again = a.rooms.sends[0].id.clone();
     reply_as(
         &mut a,
@@ -642,20 +642,23 @@ fn a_landed_send_clears_only_itself_and_the_keys_deal_with_the_rest() {
         json!({"type": "refused", "id": again, "why": "unknown_thread"}),
     );
     a.set_composer("");
-    a.key(Key::Char('d'));
-    assert!(a.rooms.sends.is_empty(), "the failed line stayed after `d`");
+    a.key(Key::Delete);
+    assert!(
+        a.rooms.sends.is_empty(),
+        "the failed line stayed after `del`"
+    );
     let all = screen(&mut a, 80).join("\n");
     assert!(!all.contains("✗ first words"), "{all}");
 }
 
-/// A `d` typed as part of a message is a letter, exactly as `r` is: the key is the composer's
+/// An `m` typed as part of a message is a letter, exactly as `z` is: the key is the composer's
 /// while anything is in it.
 #[test]
-fn a_typed_d_is_a_letter_not_the_dismiss_key() {
+fn a_typed_m_is_a_letter_not_the_dm_key() {
     let mut a = opened(1_000);
     a.set_composer("a");
-    a.key(Key::Char('d'));
-    assert_eq!(a.editor.text(), "ad");
+    a.key(Key::Char('m'));
+    assert_eq!(a.editor.text(), "am");
     assert!(a.rooms.sends.is_empty());
 }
 
@@ -1116,16 +1119,16 @@ fn the_roster_column_shows_connected_members_with_markers_by_default() {
 }
 
 #[test]
-fn r_lists_the_offline_members_and_again_hides_them() {
+fn z_lists_the_offline_members_and_again_hides_them() {
     let mut a = opened(1_000);
     host_roster(&mut a);
-    a.key(Key::Char('r'));
+    a.key(Key::Char('z'));
     let rows = screen(&mut a, 120);
     assert!(
         row_with(&rows, "○ s").contains("the doc writer"),
         "{rows:?}"
     );
-    a.key(Key::Char('r'));
+    a.key(Key::Char('z'));
     assert!(!screen(&mut a, 120).join("\n").contains('○'));
 }
 
@@ -1550,9 +1553,9 @@ fn a_sessions_unread_dm_counts_on_its_row() {
     assert_eq!(a.rooms.unread(&c), 1);
 }
 
-/// Enter on a selected session switches to it. `d` opens the DM with it. A click is Enter.
+/// Enter on a selected session switches to it. `m` opens the DM with it. A click is Enter.
 #[test]
-fn enter_and_click_switch_to_a_session_and_d_opens_the_dm() {
+fn enter_and_click_switch_to_a_session_and_m_opens_the_dm() {
     let mut a = opened(1_000);
     with_sessions(&mut a);
     let c = crate::app::rooms::Chan::Session("s-x".into());
@@ -1563,7 +1566,7 @@ fn enter_and_click_switch_to_a_session_and_d_opens_the_dm() {
     let _ = a.command("rooms");
 
     a.rooms_go(c.clone());
-    a.key(Key::Char('d'));
+    a.key(Key::Char('m'));
     assert_eq!(
         a.rooms.selected(),
         Some(crate::app::rooms::Chan::Dm("s-x".into()))

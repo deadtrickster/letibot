@@ -98,6 +98,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R279 | grep and glob ignore `.gitignore`; `@` in the composer completes handles only | Code work | built (audit J10, plan 1.4 + 2.9): `walk_ignoring` with `.gitignore` rules, a named path bypasses them, a miss counts the ignored files; `@path` completes files in the room composer; left: the attachment chip on choosing a file, `.git/info/exclude` and the global excludes file |
 | R283 | Markdown command files: `.letibot/commands/*.md` and the user's become `/name args` | Code work | built (J13, plan 2.12): project, `.claude/commands` and user scopes (nearest wins), opencode's `$ARGUMENTS` / `$1..$9`, frontmatter `description` / `argument-hint` / `allowed-tools` / `model`, sent as the operator's prompt, listed in `/help` and Tab via the `daemon.commands` row; left: `allowed-tools` and `model` are read but not applied, subdirectories are not namespaced, a new file shows after the next settings refresh |
 | R292 | One concept has several spellings: the stored-session verbs are six launcher flags | Code work | built (audit J16, plan 1.27): `letibot session list\|show\|rename\|archive\|unarchive\|delete` in `letibot-multi` and the launcher, `--show-session` in harnessd, the old flags as aliases with a note on stderr; left: dropping the aliases next release, `export`, `--session`/`--since` split by name, old spellings in bridge, sessionlog and tui strings |
+| R289 | One verb table for list panes: the same key does the same thing in every pane | Code work | built: `VERBS` in `crates/tui/src/app/keys/bindings.rs` gives enter, del, `/`, pgup/pgdn, tab, esc and the arrows one class each, every list pane keeps it (withdraw, kill, retire and dismiss moved to `del`, the todos toggle to `x`, nag to `c`, the roster to `z`, a session's DM to `m`, the subagents `o` alias gone), pgup/pgdn page the cursor on every list pane, a `[keys]` move onto a shared key with another meaning is refused, and `every_pane_keeps_the_verb_table` walks every surface and rano's editor-pane rows; left: no pane has a `/` filter yet (`/` on an empty composer is still a slash command), and the hint bar's conversation half (`ui/hint_bar.rs` `CONVERSATION`) is not read from the table |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -4721,6 +4722,35 @@ Tests: `letibot-http` `a_glm_code_decides_between_a_rate_limit_a_window_and_a_re
 Left: the refusal body is not kept anywhere a later diagnosis can read it (the `limit_park`
 warning should reach the store or the daemon log). A probe re-runs the whole retry ladder rather
 than one call. The live check on a real z.ai limit.
+
+## R289 - The same key means different things in different panes
+
+Plan 1.23 (`PLAN-fable-5.2.md`), package J7. `d`, `r`, `n`, `o`, Tab and Enter each had two or three
+meanings across panes, the session list was the only list that paged, and only rooms had a filter.
+
+**Status:** built on branch `j7-verbs`. left: a `/` filter per pane, and the conversation half of the
+hint bar read from the table.
+
+**Built:**
+- `VERBS` and `Class` in `crates/tui/src/app/keys/bindings.rs`: Move (arrows), Open (enter), Remove
+  (del), Filter (`/`), Page (pgup/pgdn), NextView (tab), Leave (esc). `Act::class` says which class an
+  act is; everything a pane does that is not shared is `Class::Own` and goes on a letter.
+- Moved to keep the table: queue withdraw `d` -> `del`; jobs and a job's output kill `x` -> `del`;
+  monitors retire `x` -> `del`; rooms dismiss `d` -> `del`, a session's DM `d` -> `m`, roster `r` -> `z`;
+  todos toggle/unfold tab -> `x`, nag pause `n` -> `c`; the subagents `o` alias for enter removed.
+- pgup/pgdn move the cursor a page on every list pane (`App::page_act`), and the window a page with it,
+  so rows past the last stop are reached; rooms page its chat.
+- `[keys]`: a move onto a shared key that would give it another class on a list pane is refused with the
+  class named. Moves within a surface keep working as before.
+- Tests: `app::tests::bindings::every_pane_keeps_the_verb_table` (each list pane's shared keys hold
+  their class, a letter is never a shared verb and means one act on every surface, rano's `SHARED` rows
+  keep esc as Leave) and `pgdn_pages_every_list_pane`.
+
+**Left:**
+- `/` filter: only rooms (`/search`) and the picker's typed path filter. `/` on an empty composer starts
+  a slash command, so a filter key needs the composer's first `/` decided per pane first.
+- The conversation half of the bar (`ui/hint_bar.rs` `CONVERSATION`) is still literals; the surface
+  half is generated from the tables.
 
 ## R267 - A streaming assistant line is drawn over an earlier row of the history
 

@@ -519,7 +519,7 @@ fn the_queue_pane_and_the_edge_are_scoped_to_the_sessions_repository() {
     );
     a.queue_sel = stop_of(&a, "agent/theirs");
     assert_eq!(
-        a.key(Key::Char('d')),
+        a.key(Key::Delete),
         Some(Action::Slash {
             line: "queue all rm theirs".into()
         }),
@@ -1379,7 +1379,7 @@ fn the_hint_line_names_the_person_verbs() {
     let mut a = layer(app());
     a.command("queue");
     let bar = a.hint_bar(160);
-    for want in ["a approve", "v veto", "d withdraw", "r restart"] {
+    for want in ["a approve", "v veto", "del withdraw", "r restart"] {
         assert!(bar.contains(want), "the bar names `{want}`: {bar}");
     }
 }

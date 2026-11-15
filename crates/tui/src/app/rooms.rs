@@ -1040,18 +1040,23 @@ impl App {
         ControlFlow::Break(act)
     }
 
-    /// `d` on an empty composer: drop the newest failed line of the selected channel. The
+    /// `del` on an empty composer: drop the newest failed line of the selected channel. The
     /// operator has read the reason and chosen not to send it again.
     pub(crate) fn rooms_dismiss_send(&mut self) -> ControlFlow<Option<Action>> {
-        if let Some(Chan::Session(id)) = self.rooms.selected() {
-            self.rooms_open_dm(id);
-            return ControlFlow::Break(None);
-        }
         if let Some(chan) = self.rooms.selected()
             && let Some(failed) = self.rooms.failed_of(&chan).map(|s| s.id.clone())
         {
             self.rooms.sends.retain(|s| s.id != failed);
         }
+        ControlFlow::Break(None)
+    }
+
+    /// `m` on a session row opens its DM; on any other row the letter is the composer's.
+    pub(crate) fn rooms_dm_selected(&mut self) -> ControlFlow<Option<Action>> {
+        let Some(Chan::Session(id)) = self.rooms.selected() else {
+            return ControlFlow::Continue(());
+        };
+        self.rooms_open_dm(id);
         ControlFlow::Break(None)
     }
 

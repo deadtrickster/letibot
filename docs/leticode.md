@@ -86,7 +86,8 @@ the same name is replaced. **A bad value says its file and line** - `[nag] after
 is refused where it was written, not silently read as a minute. And **a binding is rebound within
 its surface, never the head's global chords**: `esc`, `ctrl-c` and the pane chords are refused as
 a target and as a source, because a surface never sees them and the bar would advertise a press
-that does nothing (W8 of the first review).
+that does nothing (W8 of the first review). A move onto a shared list key (`enter`, `del`, `tab`,
+`pgup`/`pgdn`) is refused when it would give that key another meaning on a list pane.
 
 A mute is by KIND and not by copy, which is the point of the table: the 127
 `model_slow_first_byte` dismissals a head's `head.toml` can carry are one line here. `head.toml`

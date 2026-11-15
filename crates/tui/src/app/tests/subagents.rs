@@ -524,12 +524,8 @@ fn switching_into_a_subagent_drops_the_parents_tree_and_coming_back_rebuilds_it(
     };
     a.apply(ServerFrame::Event(env(1, spawn.clone())));
     a.key(Key::CtrlG);
-    // `o` is the alias and Enter is the key, and both are the same act - the switch.
-    // This test reads the pane's key for the way IN; the way here is the older spelling.
-    assert_eq!(
-        a.key(Key::Char('o')),
-        Some(Action::Switch("s-sub-1".into()))
-    );
+    // Enter is the way in.
+    assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
     assert!(!a.is_open(Surface::Subagents), "switching closes the pane");
 
     a.apply(hello(
@@ -587,11 +583,6 @@ fn an_opening_subagent_is_listed_but_cannot_be_entered() {
         "Enter switched into a session that is not open"
     );
     assert_eq!(
-        a.key(Key::Char('o')),
-        None,
-        "`o` switched into a session that is not open"
-    );
-    assert_eq!(
         a.key(Key::Char('p')),
         None,
         "`p` read a session that is not open"
@@ -619,14 +610,9 @@ fn an_opening_subagent_is_listed_but_cannot_be_entered() {
     assert_eq!(a.subagents.len(), 1);
     assert_eq!(a.key(Key::Enter), Some(Action::Switch("s-sub-1".into())));
     // ...and that closed the pane, because the head is leaving the session the pane
-    // belongs to. Put it back for the alias and the read, which are the other two keys.
+    // belongs to. Put it back for the read, which is the other key.
     a.key(Key::CtrlG);
     assert_eq!(a.key(Key::Char('p')), Some(Action::Peek("s-sub-1".into())));
-    a.sub_out_pending = None;
-    assert_eq!(
-        a.key(Key::Char('o')),
-        Some(Action::Switch("s-sub-1".into()))
-    );
 }
 
 /// Enter on a subagent row IS the switch into that subagent's session, which is where the rest of
@@ -771,7 +757,7 @@ fn a_peeked_subagent_shows_its_tool_output_and_spills_the_whole_view() {
 }
 
 #[test]
-fn esc_leaves_the_output_and_enter_and_o_both_switch_into_the_subagent() {
+fn esc_leaves_the_output_and_enter_switches_into_the_subagent() {
     let mut a = app();
     // `running`, not `done` - a finished child is under the folded `finished` group and is
     // not a stop, and this test is about the keys acting on a child that is one.
@@ -812,15 +798,9 @@ fn esc_leaves_the_output_and_enter_and_o_both_switch_into_the_subagent() {
     a.key(Key::Esc);
     assert!(a.sub_out.is_none());
     assert!(a.is_open(Surface::Subagents), "back to the tree");
-    // Enter is the way in now, and `o` is the same act under the key this pane has
-    // always used for it.
+    // Enter is the way in.
     assert!(matches!(
         a.key(Key::Enter),
-        Some(Action::Switch(id)) if id == "s-sub-1"
-    ));
-    a.key(Key::CtrlG);
-    assert!(matches!(
-        a.key(Key::Char('o')),
         Some(Action::Switch(id)) if id == "s-sub-1"
     ));
 }

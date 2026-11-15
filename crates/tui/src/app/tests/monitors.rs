@@ -82,16 +82,16 @@ fn a_watching_monitor_is_counted_and_the_count_opens_its_pane() {
 }
 
 /// `/monitors` opens it, and `x` retires the one under the cursor through the daemon's verb,
-/// so the record says the operator did it. With nothing live, `x` is the composer's letter.
+/// so the record says the operator did it. With nothing live, `del` does nothing.
 #[test]
-fn x_retires_the_monitor_under_the_cursor() {
+fn del_retires_the_monitor_under_the_cursor() {
     let mut a = attached();
     a.apply(table(vec![live("tick"), live("port")]));
     a.command("monitors");
     assert!(a.is_open(Surface::Monitors));
     a.key(Key::Down);
     assert_eq!(
-        a.key(Key::Char('x')),
+        a.key(Key::Delete),
         Some(Action::Slash {
             line: "monitor retire port".into()
         })
@@ -100,7 +100,7 @@ fn x_retires_the_monitor_under_the_cursor() {
         "port",
         "retired by the operator after 9s",
     )]));
-    assert_eq!(a.key(Key::Char('x')), None, "nothing live to retire");
+    assert_eq!(a.key(Key::Delete), None, "nothing live to retire");
     assert!(
         !a.box_top(100).0.contains("monitor"),
         "an ended monitor is not counted"

@@ -283,7 +283,9 @@ line and Enter posts it to the selected channel as `operator`. A room's members 
 | key | does |
 |---|---|
 | up, down | select the previous or next channel |
-| `r` (empty prompt) | the roster lists the offline members too (`○`), or drops them again |
+| `z` (empty prompt) | the roster lists the offline members too (`○`), or drops them again |
+| `del` (empty prompt) | drops the selected channel's failed line |
+| `m` (empty prompt) | on a session row, opens its DM |
 | click a member | puts `@handle ` in the prompt |
 | pgup, pgdn, wheel | scroll the chat. The view follows the newest message until scrolled back. At the first line it asks the coordinator for the page before it (`read` with `before`), until the stored history starts |
 | `>14 text` | post as a reply to message 14 |

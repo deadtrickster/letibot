@@ -60,7 +60,7 @@ impl On {
     }
 
     /// The key as the bar and the help spell it.
-    fn label(self) -> String {
+    pub(crate) fn label(self) -> String {
         match self {
             On::Up => "↑".into(),
             On::Down => "↓".into(),
@@ -100,7 +100,7 @@ pub(crate) enum Act {
     Page,
     /// The row's act: switch, open, read, change.
     Open,
-    /// The todos pane's second act on the row (Tab).
+    /// The todos pane's second act on the row (`x`).
     Alt,
     /// Read a subagent's output without leaving.
     Peek,
@@ -117,15 +117,15 @@ pub(crate) enum Act {
     View,
     /// One of the person's queue verbs on the entry under the cursor.
     Verb(Verb),
-    /// The todos pane's `n`: pause this session's plan-checks, or resume them - `/nag pause` or
+    /// The todos pane's `c`: pause this session's plan-checks, or resume them - `/nag pause` or
     /// `/nag resume`, by which one holds now.
     NagToggle,
     /// The todos pane's `w`: open the job or the child the selected row waits on - the keyboard's
     /// half of a click on the row's `waits on …` link.
     WaitsOn,
-    /// The monitors pane's `x`: retire the monitor under the cursor (`/monitor retire NAME`).
+    /// The monitors pane's `del`: retire the monitor under the cursor (`/monitor retire NAME`).
     Retire,
-    /// The jobs pane's and a job's output's `x`: kill the running job (`/job kill ID`).
+    /// The jobs pane's and a job's output's `del`: kill the running job (`/job kill ID`).
     KillJob,
     /// The queue's `o`: go into the session of the reviewer working the row.
     Reviewer,
@@ -141,11 +141,13 @@ pub(crate) enum Act {
     /// The session list's `del`: put the row under the cursor out of sight - [`App::archive_selected`],
     /// asked twice: the first press names what would go, the second does it. See `app::archive`.
     Remove,
-    /// The rooms view's `r`: the roster also lists the offline members, or drops them.
+    /// The rooms view's `z`: the roster also lists the offline members, or drops them.
     Roster,
-    /// The rooms view's `d`: drop the newest failed line of the selected channel, once its
+    /// The rooms view's `del`: drop the newest failed line of the selected channel, once its
     /// reason has been read.
     DismissSend,
+    /// The rooms view's `m`: open the DM of the session under the cursor.
+    RoomDm,
     /// The rooms view's Enter on an empty composer: send the channel's failed line again, under
     /// a new id.
     ResendSend,
@@ -170,6 +172,54 @@ pub(crate) enum Act {
     RoomTail,
     /// The rooms view's `n` and `N`: the next or the previous search hit. P4 fills it.
     RoomSearchStep(bool),
+}
+
+/// The verb a shared key stands for. [`VERBS`] gives each shared key one class, and every list pane
+/// and the editor pane keep it; a pane's own verbs are [`Class::Own`] and go on letters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Class {
+    Move,
+    Page,
+    Open,
+    Remove,
+    Filter,
+    NextView,
+    Leave,
+    Own,
+}
+
+/// The one verb table for list panes, keyed by the bar's spelling of the key.
+pub(crate) const VERBS: &[(&str, Class)] = &[
+    ("↑", Class::Move),
+    ("↓", Class::Move),
+    ("enter", Class::Open),
+    ("del", Class::Remove),
+    ("/", Class::Filter),
+    ("pgup/pgdn", Class::Page),
+    ("tab", Class::NextView),
+    ("esc", Class::Leave),
+];
+
+/// The class [`VERBS`] gives a key, or `None` for a key that is not shared.
+pub(crate) fn verb_class(word: &str) -> Option<Class> {
+    VERBS.iter().find(|(w, _)| *w == word).map(|(_, c)| *c)
+}
+
+impl Act {
+    /// The verb class this act is. A scroll on a page key is a page, on an arrow a move.
+    pub(crate) fn class(self, on: On) -> Class {
+        match self {
+            Act::Scroll if on == On::Page => Class::Page,
+            Act::Cursor | Act::Scroll => Class::Move,
+            Act::Page => Class::Page,
+            Act::Open | Act::ResendSend => Class::Open,
+            Act::Remove | Act::Verb(Verb::Rm) | Act::KillJob | Act::Retire | Act::DismissSend => {
+                Class::Remove
+            }
+            Act::View | Act::RoomCursor => Class::NextView,
+            _ => Class::Own,
+        }
+    }
 }
 
 /// What the bar and the help say about a binding.
@@ -210,6 +260,8 @@ const UPDOWN: &[On] = &[On::Up, On::Down];
 const PAGE: Binding = b(&[On::Page], Always, Act::Scroll, Text("scroll"));
 const WHEEL: Binding = b(&[On::Wheel], Always, Act::Scroll, Nothing);
 const LIST: Binding = b(UPDOWN, Always, Act::Cursor, Text("moves"));
+// A list's page key moves its cursor a page, so the window that follows the cursor moves with it.
+const LIST_PAGE: Binding = b(&[On::Page], Always, Act::Page, Text("pages"));
 
 // ↑↓ scroll a reading surface, as they do on every other one: they fell through to
 // the composer and recalled history under /help, and the Enter that followed was swallowed.
@@ -244,10 +296,7 @@ const PICKER: &[Binding] = &[
         Act::Undo,
         Text("brings the last archived back"),
     ),
-    // A page of rows at a time: the list's window follows the cursor, so a page IS a cursor move.
-    // It clamps at the last stop rather than wrapping, because a page that wrapped would jump
-    // from the bottom of the list to its top.
-    b(&[On::Page], Always, Act::Page, Text("pages")),
+    LIST_PAGE,
     // A notch is three rows of the same walk, like every other list's.
     b(&[On::Wheel], Always, Act::Page, Nothing),
 ];
@@ -259,22 +308,22 @@ const CONFIG: &[Binding] = &[
         Act::Open,
         Text("changes a row marked ✎"),
     ),
-    PAGE,
+    LIST_PAGE,
     WHEEL,
 ];
 const TODOS: &[Binding] = &[
     LIST,
     b(&[On::Enter], Empty, Act::Open, Row),
-    b(&[On::Tab], Empty, Act::Alt, Row),
+    b(&[On::Char('x')], Empty, Act::Alt, Row),
     b(&[On::Char('w')], Empty, Act::WaitsOn, Row),
     b(
-        &[On::Char('n')],
+        &[On::Char('c')],
         Empty,
         Act::NagToggle,
         Text("pauses or resumes the plan-checks"),
     ),
-    // `d` folds the done group away, a plain letter like the pane's other two toggles (`tab`,
-    // `n`). Its words are the switch's own, so the bar never offers `fold` over a group that is
+    // `d` folds the done group away, a plain letter like the pane's other two toggles (`x`,
+    // `c`). Its words are the switch's own, so the bar never offers `fold` over a group that is
     // already shut.
     b(
         &[On::Char('d')],
@@ -282,7 +331,7 @@ const TODOS: &[Binding] = &[
         Act::FoldDone,
         Says::Switch("folds the done group, or shows it again"),
     ),
-    PAGE,
+    LIST_PAGE,
     WHEEL,
 ];
 
@@ -322,12 +371,7 @@ const QUEUE: &[Binding] = &[
         Text("approve"),
     ),
     b(&[On::Char('v')], Empty, Act::Verb(Verb::Veto), Text("veto")),
-    b(
-        &[On::Char('d')],
-        Empty,
-        Act::Verb(Verb::Rm),
-        Text("withdraw"),
-    ),
+    b(&[On::Delete], Empty, Act::Verb(Verb::Rm), Text("withdraw")),
     b(
         &[On::Char('r')],
         Empty,
@@ -355,7 +399,7 @@ const QUEUE: &[Binding] = &[
         Act::Verb(Verb::Regate),
         Text("the target gated again"),
     ),
-    PAGE,
+    LIST_PAGE,
     WHEEL,
 ];
 const QUEUE_ENTRY: &[Binding] = &[
@@ -377,7 +421,7 @@ const STANDING: &[Binding] = &[
         Act::Open,
         Text("opens the note in the editor"),
     ),
-    PAGE,
+    LIST_PAGE,
     WHEEL,
 ];
 /// The skills: Enter opens the row's file in the editor like the standing notes. Handing a
@@ -396,15 +440,14 @@ const SKILLS: &[Binding] = &[
         Act::Hand,
         Text("hands the skill to the session"),
     ),
-    PAGE,
+    LIST_PAGE,
     WHEEL,
 ];
 const SUBAGENTS: &[Binding] = &[
     LIST,
     b(&[On::Enter], Always, Act::Open, Row),
-    b(&[On::Char('o')], Empty, Act::Open, Nothing),
     b(&[On::Char('p')], Empty, Act::Peek, Text("reads its output")),
-    PAGE,
+    LIST_PAGE,
     WHEEL,
 ];
 const SUB_OUT: &[Binding] = &[
@@ -417,12 +460,12 @@ const JOBS: &[Binding] = &[
     LIST,
     b(&[On::Enter], Always, Act::Open, Row),
     b(
-        &[On::Char('x')],
+        &[On::Delete],
         Empty,
         Act::KillJob,
         Text("kills the running one under the cursor"),
     ),
-    PAGE,
+    LIST_PAGE,
     WHEEL,
 ];
 const MONITORS: &[Binding] = &[
@@ -434,12 +477,12 @@ const MONITORS: &[Binding] = &[
         Text("shows it whole, and the call that armed it"),
     ),
     b(
-        &[On::Char('x')],
+        &[On::Delete],
         Empty,
         Act::Retire,
         Text("retires the one under the cursor"),
     ),
-    PAGE,
+    LIST_PAGE,
     WHEEL,
 ];
 const JOB_OUT: &[Binding] = &[
@@ -447,7 +490,7 @@ const JOB_OUT: &[Binding] = &[
     b(&[On::Right], Empty, Act::PageOut, Text("next page")),
     b(&[On::Left], Empty, Act::PageOut, Text("back")),
     b(&[On::Enter], Always, Act::PageOut, Text("reads on")),
-    b(&[On::Char('x')], Empty, Act::KillJob, Text("kills it")),
+    b(&[On::Delete], Empty, Act::KillJob, Text("kills it")),
     PAGE,
     WHEEL,
 ];
@@ -457,16 +500,22 @@ const JOB_OUT: &[Binding] = &[
 const ROOMS: &[Binding] = &[
     b(UPDOWN, Always, Act::Cursor, Text("switches room")),
     b(
-        &[On::Char('r')],
+        &[On::Char('z')],
         Empty,
         Act::Roster,
         Says::Switch("roster: lists or hides the offline members"),
     ),
     b(
-        &[On::Char('d')],
+        &[On::Delete],
         Empty,
         Act::DismissSend,
-        Text("dismisses the failed line; on a session, opens its DM"),
+        Text("dismisses the failed line"),
+    ),
+    b(
+        &[On::Char('m')],
+        Empty,
+        Act::RoomDm,
+        Text("on a session, opens its DM"),
     ),
     b(
         &[On::Enter],
@@ -513,7 +562,7 @@ const ROOMS: &[Binding] = &[
     // open, and the bar does not spell a key that would do nothing on this frame.
     b(&[On::Char('n')], Empty, Act::RoomSearchStep(true), Nothing),
     b(&[On::Char('N')], Empty, Act::RoomSearchStep(false), Nothing),
-    PAGE,
+    LIST_PAGE,
     WHEEL,
 ];
 // The arrows scroll a listing of text and walk the `/pane` listing's rows, whose Enter opens
@@ -521,7 +570,7 @@ const ROOMS: &[Binding] = &[
 const LISTING: &[Binding] = &[
     b(UPDOWN, Always, Act::Cursor, Row),
     b(&[On::Enter], Empty, Act::Open, Row),
-    PAGE,
+    b(&[On::Page], Always, Act::Page, Row),
     WHEEL,
 ];
 // A plugin's pane: the host's keys, and the plugin's own behind them. The panel keys and the
@@ -535,7 +584,7 @@ const PLUGIN: &[Binding] = &[
         Act::Open,
         Text("reads the selected row whole"),
     ),
-    PAGE,
+    LIST_PAGE,
     WHEEL,
     b(&[On::Any], Empty, Act::PluginKey, Nothing),
 ];
@@ -597,6 +646,32 @@ impl Surface {
             Surface::JobOut => "esc back to the jobs",
             Surface::PluginDetail => "esc back to the pane",
             _ => "esc closes",
+        }
+    }
+
+    /// A pane whose arrows walk rows, and so whose shared keys [`VERBS`] holds to one meaning.
+    /// Exhaustive, so a new surface has to say which it is.
+    pub(crate) fn is_list(self) -> bool {
+        match self {
+            Surface::Picker
+            | Surface::Config
+            | Surface::Todos
+            | Surface::Queue
+            | Surface::Standing
+            | Surface::Skills
+            | Surface::Subagents
+            | Surface::Jobs
+            | Surface::Monitors
+            | Surface::PluginPane
+            | Surface::Listing
+            | Surface::Rooms => true,
+            Surface::Help
+            | Surface::Stats
+            | Surface::TodoRow
+            | Surface::QueueEntry
+            | Surface::SubOut
+            | Surface::JobOut
+            | Surface::PluginDetail => false,
         }
     }
 
@@ -790,9 +865,10 @@ impl App {
     /// The words for a row-dependent binding, from the row under the cursor.
     fn row_says(&self, s: Surface, b: &Binding) -> Option<String> {
         match (s, b.act) {
-            (Surface::Listing, Act::Cursor) if self.listed_panes().is_empty() => {
+            (Surface::Listing, Act::Cursor | Act::Page) if self.listed_panes().is_empty() => {
                 Some("scroll".to_string())
             }
+            (Surface::Listing, Act::Page) => Some("pages".to_string()),
             (Surface::Listing, Act::Cursor) => Some("moves".to_string()),
             (Surface::Listing, Act::Open) => {
                 (!self.listed_panes().is_empty()).then(|| "opens the pane".to_string())
@@ -837,7 +913,7 @@ impl App {
             (Surface::Subagents, _) => Some(
                 match self.subagent_stops().get(self.subagents_sel) {
                     Some(SubStop::Finished) => "unfolds finished",
-                    _ => "(or o) goes into it",
+                    _ => "goes into it",
                 }
                 .to_string(),
             ),
@@ -1051,6 +1127,18 @@ impl KeyOverrides {
                 Some(on) => on,
                 None => continue,
             };
+            // A move onto a shared key keeps the verb table: `enter` cannot come to mean withdraw.
+            let moved = surface.bindings().iter().find(|b| b.on.contains(&from));
+            if surface.is_list()
+                && let Some(want) = verb_class(&to.label())
+                && moved.is_some_and(|b| b.act.class(to) != want)
+            {
+                problems.push(format!(
+                    "{}: [keys] `{}` is a shared key on every list pane and means {want:?} there",
+                    r.from, r.key
+                ));
+                continue;
+            }
             if let Some(clash) = surface
                 .bindings()
                 .iter()

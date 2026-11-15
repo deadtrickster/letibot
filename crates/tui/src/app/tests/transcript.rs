@@ -1824,11 +1824,11 @@ fn the_family_views_fold_glyph_says_open_because_its_rows_are_shown() {
     );
 }
 
-/// Tab unfolds and enter does not: it completes a `/command` while one is typed and, with the
+/// `x` unfolds and enter does not. Tab completes a `/command` while one is typed and, with the
 /// composer empty, unfolds the row under the cursor. Enter reads the row whole in an overlay, which
 /// is where the read went.
 #[test]
-fn tab_unfolds_an_item_and_still_completes_a_command() {
+fn x_unfolds_an_item_and_tab_still_completes_a_command() {
     let dir = std::env::temp_dir().join(format!(
         "letibot-todo-tab-{}-{:?}",
         std::process::id(),
@@ -1850,14 +1850,14 @@ fn tab_unfolds_an_item_and_still_completes_a_command() {
     a.key(Key::CtrlT);
     assert!(!a.screen(110, 30).join("\n").contains("the body line"));
     // The cursor starts on the add control, which is the head of `todos_stops`, so one Down reaches the
-    // first item, and the row Enter and Tab act on is the row the pane drew.
+    // first item, and the row Enter and `x` act on is the row the pane drew.
     a.key(Key::Down);
-    a.key(Key::Tab);
+    a.key(Key::Char('x'));
     assert!(
         a.screen(110, 30).join("\n").contains("the body line"),
-        "tab unfolds"
+        "x unfolds"
     );
-    a.key(Key::Tab);
+    a.key(Key::Char('x'));
     assert!(
         !a.screen(110, 30).join("\n").contains("the body line"),
         "and folds"
@@ -1878,10 +1878,10 @@ fn tab_unfolds_an_item_and_still_completes_a_command() {
 }
 
 /// An item's detail is under it in the file and was thrown away: the pane showed the first line and
-/// the item trailed off mid-sentence. Tab unfolds it and Enter reads it whole, the same body lines
+/// the item trailed off mid-sentence. `x` unfolds it and Enter reads it whole, the same body lines
 /// in an overlay.
 #[test]
-fn an_items_continuation_lines_are_kept_and_unfold_on_tab() {
+fn an_items_continuation_lines_are_kept_and_unfold_on_x() {
     // Written with explicit newlines rather than `\`-continuations: that
     // escape eats the leading whitespace of the next line, which is exactly
     // the indentation this test is about.
@@ -1956,18 +1956,18 @@ fn an_items_continuation_lines_are_kept_and_unfold_on_tab() {
         "the cursor is not on an item yet: {screen}"
     );
 
-    // One Down is what reaches the first item, and Tab unfolds it.
+    // One Down is what reaches the first item, and `x` unfolds it.
     a.key(Key::Down);
     let screen = a.screen(110, 40).join("\n");
     assert!(
         on(&screen, "T1 vendor the deps"),
         "down reached T1: {screen}"
     );
-    assert_eq!(a.key(Key::Tab), None);
+    assert_eq!(a.key(Key::Char('x')), None);
     let screen = a.screen(110, 40).join("\n");
     assert!(
         on(&screen, "T1 vendor the deps"),
-        "Tab does not move the cursor: {screen}"
+        "x does not move the cursor: {screen}"
     );
     assert!(
         screen.contains("scripts/bootstrap.sh (yason 0c84b29)."),
@@ -1979,10 +1979,10 @@ fn an_items_continuation_lines_are_kept_and_unfold_on_tab() {
         "unfolded drops the mark: {screen}"
     );
 
-    // Tab again folds it; an arrow moves on and folds what it leaves.
-    a.key(Key::Tab);
+    // `x` again folds it; an arrow moves on and folds what it leaves.
+    a.key(Key::Char('x'));
     assert!(!a.screen(110, 40).join("\n").contains("bootstrap.sh"));
-    a.key(Key::Tab);
+    a.key(Key::Char('x'));
     a.key(Key::Down);
     let screen = a.screen(110, 40).join("\n");
     assert!(

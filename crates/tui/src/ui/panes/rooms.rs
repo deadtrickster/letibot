@@ -162,7 +162,7 @@ fn send_lines(sends: &[Send], c: &Chan, rw: usize) -> Vec<Line> {
                         Role::Failure,
                     )]));
                 }
-                for row in wrap(&format!("{why} · enter resends, d dismisses"), cols) {
+                for row in wrap(&format!("{why} · enter resends, del dismisses"), cols) {
                     out.push(pane::faint(format!("  {row}")));
                 }
             }
@@ -368,7 +368,7 @@ impl RoomsView {
                     .is_some_and(|c| self.failed_of(&c).is_some())
                 {
                     format!(
-                        "posting as {OPERATOR} · enter resends the failed line · d dismisses it"
+                        "posting as {OPERATOR} · enter resends the failed line · del dismisses it"
                     )
                 } else {
                     format!("posting as {OPERATOR} · >N text replies to #N")

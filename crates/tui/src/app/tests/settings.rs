@@ -1830,22 +1830,22 @@ fn the_picker_marks_a_paused_session() {
     );
 }
 
-/// The todos pane's `n` is `/nag pause`, and `/nag resume` while paused - declared in the
+/// The todos pane's `c` is `/nag pause`, and `/nag resume` while paused - declared in the
 /// binding table, so the hint bar names it.
 #[test]
-fn n_in_the_todos_pane_pauses_and_resumes_the_plan_checks() {
+fn c_in_the_todos_pane_pauses_and_resumes_the_plan_checks() {
     let mut a = app();
     a.session_id = "s1".into();
     a.push_surface(Surface::Todos);
     assert_eq!(
-        a.key(Key::Char('n')),
+        a.key(Key::Char('c')),
         Some(Action::Slash {
             line: "nag pause".into()
         })
     );
     a.nags_paused = Some("until 14:30".into());
     assert_eq!(
-        a.key(Key::Char('n')),
+        a.key(Key::Char('c')),
         Some(Action::Slash {
             line: "nag resume".into()
         })

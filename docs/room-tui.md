@@ -97,7 +97,7 @@ TUI (`crates/tui`)
   roster, paging, and pending sends (`crates/tui/src/app/rooms.rs:105-160`). Polls every 2 s open and every
   10 s closed (`rooms.rs:14-16`, `:411-427`).
 - Sending: a line is a `say` or `dm`; `>14 text` replies to 14 (`rooms.rs:376-389`, `:592-637`). Failed sends
-  keep their words and reason, Enter resends, `d` dismisses (`rooms.rs:642-668`).
+  keep their words and reason, Enter resends, `del` dismisses (`rooms.rs:642-668`).
 - `@operator` detection (`rooms.rs:355-373`). A click on a member inserts `@handle ` (`rooms.rs:718-731`).
 - Drawing: channel list with unread counts (`crates/tui/src/ui/panes/rooms.rs:96-109`, `:406-426`), member
   column or strip (`:266-362`), the chat body (`:452-492`), stick-to-tail and page-back keeping place
@@ -105,7 +105,7 @@ TUI (`crates/tui`)
 - A message is `seq! HH:MM <author> text`, text through `clean_line` and `wrap`, no markdown
   (`panes/rooms.rs:157-226`). Session ids are shown as titles via `rooms_names` (`panes/rooms.rs:430-450`),
   but only for the author column, not for `@s-...` inside the text.
-- Keys: Up and Down switch room, `r` roster, `d` dismiss (`crates/tui/src/app/keys/bindings.rs:405-430`).
+- Keys: Up and Down switch room, `z` roster, `del` dismiss, `m` opens a session's DM (`crates/tui/src/app/keys/bindings.rs:405-430`).
 - 61 tests in `crates/tui/src/app/tests/rooms.rs`.
 
 What the TUI already has elsewhere and the room does not use

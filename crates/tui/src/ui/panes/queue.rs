@@ -217,7 +217,7 @@ impl App {
     }
 
     /// The entry the row under the cursor NAMES: what `/queue approve` and the overlay take, and what
-    /// the person's `a`/`v`/`r`/`d` act on. A plugin row answers with the entry its own act carries,
+    /// the person's `a`/`v`/`r`/`del` act on. A plugin row answers with the entry its own act carries,
     /// which is the point of `Act::Verb`: a row can draw one entry and mean it.
     pub(crate) fn queue_selected_id(&self) -> Option<String> {
         self.queue_plugin_entry()

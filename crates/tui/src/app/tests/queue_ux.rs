@@ -267,7 +267,12 @@ fn the_queue_pane_reads_for_somebody_who_has_never_seen_it() {
     // The bar names the keys that would act on the row under the cursor - and only those. On
     // the row a reviewer is reading, approve and withdraw both move it.
     let bar = a.hint_bar(80);
-    for want in ["enter opens it whole", "a approve", "v veto", "d withdraw"] {
+    for want in [
+        "enter opens it whole",
+        "a approve",
+        "v veto",
+        "del withdraw",
+    ] {
         assert!(bar.contains(want), "the bar names `{want}`: {bar}");
     }
 
@@ -279,7 +284,7 @@ fn the_queue_pane_reads_for_somebody_who_has_never_seen_it() {
     }
     a.screen(80, 40);
     let bar = a.hint_bar(80);
-    assert!(bar.contains("d withdraw"), "{bar}");
+    assert!(bar.contains("del withdraw"), "{bar}");
     assert!(
         !bar.contains("a approve"),
         "approve does nothing here: {bar}"

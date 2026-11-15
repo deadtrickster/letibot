@@ -111,12 +111,13 @@ impl App {
                 self.scroll_pane(up, by);
                 ControlFlow::Break(None)
             }
-            Act::Cursor => self.cursor_act(s, up),
+            Act::Cursor => self.cursor_by(s, up, None),
             // A page key on a list whose window is drawn around its cursor: a scroll moves the
             // picture, and the picture is a function of the cursor - so the page is a cursor move.
             Act::Page => self.page_act(s, k),
             Act::Roster => self.rooms_toggle_roster(),
             Act::DismissSend => self.rooms_dismiss_send(),
+            Act::RoomDm => self.rooms_dm_selected(),
             // Enter on an empty composer in `/rooms` reads the message under the cursor first - its
             // picture, its first link - and only then the failed line's resend it has always been.
             Act::ResendSend => match self.rooms_enter() {
@@ -159,7 +160,7 @@ impl App {
             // `o` goes into the reviewer's session: the row under the cursor, or the one opened
             // whole.
             Act::Reviewer => ControlFlow::Break(self.go_to_reviewer()),
-            // `x` retires the monitor under the cursor; with none live the letter is the composer's.
+            // `del` kills the job or retires the monitor under the cursor; with none live it declines.
             Act::KillJob => match self.kill_selected_job(s) {
                 Some(a) => ControlFlow::Break(Some(a)),
                 None => ControlFlow::Continue(()),
@@ -222,33 +223,41 @@ impl App {
     }
 
     /// A page key on a list: the cursor moves a page of stops, so the window that follows it moves
-    /// too. Only the session list is such a list - every other surface scrolls its window and leaves
-    /// the cursor where it was (`Act::Scroll`).
+    /// too. The rooms view's page keys scroll its chat, which is the list a reader pages there.
     fn page_act(&mut self, s: Surface, k: &Key) -> ControlFlow<Option<Action>> {
+        // A page is the window less one row: the row above the new page keeps the reader's place.
+        let by = match (s, k) {
+            (_, Key::WheelUp | Key::WheelDown) => WHEEL_STOPS,
+            (Surface::Picker, _) => self.picker_height().saturating_sub(1).max(1),
+            _ => self.screen_rows.saturating_sub(1).max(1),
+        };
+        // The window moves a page too, so rows past the last stop are reached; the picker's
+        // window is drawn around its cursor and has none.
         match s {
-            Surface::Picker => {
-                let n = self.picker_rows().len();
-                if n == 0 {
-                    return ControlFlow::Continue(());
-                }
-                // A page is the window less one row: the row above the new page is the context a
-                // reader keeps track of where they are with.
-                let by = match k {
-                    Key::WheelUp | Key::WheelDown => WHEEL_STOPS,
-                    _ => self.picker_height().saturating_sub(1).max(1),
-                };
-                self.picker_seat_pending = false;
-                self.picker_sel = page(self.picker_sel.min(n - 1), n, upward(k), by);
+            Surface::Picker => {}
+            Surface::Rooms => {
+                self.scroll_pane(upward(k), self.screen_rows.max(1));
+                return ControlFlow::Break(None);
             }
-            _ => return ControlFlow::Continue(()),
+            _ => self.scroll_pane(upward(k), by),
         }
-        ControlFlow::Break(None)
+        self.cursor_by(s, upward(k), Some(by))
     }
 
     /// Up/down on a list: the cursor moves through the list's ONE enumeration of stops - the same
     /// list the drawn `▸`, Enter and a click read - wrapping at the ends, with the window
     /// following it so the cursor is never walked out of the window. An empty list declines.
-    fn cursor_act(&mut self, s: Surface, up: bool) -> ControlFlow<Option<Action>> {
+    /// `by` is a page: that many stops, clamped instead of wrapped.
+    fn cursor_by(
+        &mut self,
+        s: Surface,
+        up: bool,
+        by: Option<usize>,
+    ) -> ControlFlow<Option<Action>> {
+        let mv = |at: usize, n: usize| match by {
+            None => step(at, n, up),
+            Some(by) => page(at, n, up, by),
+        };
         match s {
             Surface::Picker => {
                 let n = self.picker_rows().len();
@@ -256,12 +265,12 @@ impl App {
                     return ControlFlow::Continue(());
                 }
                 self.picker_seat_pending = false;
-                self.picker_sel = step(self.picker_sel.min(n - 1), n, up);
+                self.picker_sel = mv(self.picker_sel.min(n - 1), n);
             }
             // The view follows the config cursor, its `from …` line too (`config_follow`).
             Surface::Config => {
                 let n = self.config_rows().len().max(1);
-                self.config_sel = step(self.config_sel.min(n - 1), n, up);
+                self.config_sel = mv(self.config_sel.min(n - 1), n);
                 self.config_follow();
             }
             Surface::Todos => {
@@ -270,7 +279,7 @@ impl App {
                     return ControlFlow::Continue(());
                 }
                 let n = stops.len();
-                self.todos_sel = step(self.todos_sel.min(n - 1), n, up);
+                self.todos_sel = mv(self.todos_sel.min(n - 1), n);
                 self.sync_repo_from_stop(&stops);
                 self.scroll_into_view(self.todos_row_of());
             }
@@ -279,7 +288,7 @@ impl App {
                 if n == 0 {
                     return ControlFlow::Continue(());
                 }
-                self.queue_sel = step(self.queue_sel.min(n - 1), n, up);
+                self.queue_sel = mv(self.queue_sel.min(n - 1), n);
                 self.scroll_into_view(self.queue_row_of());
             }
             Surface::Standing => {
@@ -287,7 +296,7 @@ impl App {
                 if n == 0 {
                     return ControlFlow::Continue(());
                 }
-                self.standing_sel = step(self.standing_sel.min(n - 1), n, up);
+                self.standing_sel = mv(self.standing_sel.min(n - 1), n);
                 self.scroll_into_view(self.standing_row_of());
             }
             Surface::Skills => {
@@ -295,7 +304,7 @@ impl App {
                 if n == 0 {
                     return ControlFlow::Continue(());
                 }
-                self.skills_sel = step(self.skills_sel.min(n - 1), n, up);
+                self.skills_sel = mv(self.skills_sel.min(n - 1), n);
                 self.scroll_into_view(self.skills_row_of());
             }
             Surface::Subagents => {
@@ -303,7 +312,7 @@ impl App {
                 if n == 0 {
                     return ControlFlow::Continue(());
                 }
-                self.subagents_sel = step(self.subagents_sel.min(n - 1), n, up);
+                self.subagents_sel = mv(self.subagents_sel.min(n - 1), n);
                 self.scroll_into_view(self.subagents_row_of());
             }
             Surface::Jobs => {
@@ -311,7 +320,7 @@ impl App {
                 if n == 0 {
                     return ControlFlow::Continue(());
                 }
-                self.jobs_sel = step(self.jobs_sel.min(n - 1), n, up);
+                self.jobs_sel = mv(self.jobs_sel.min(n - 1), n);
                 self.scroll_into_view(self.jobs_row_of());
             }
             Surface::Monitors => {
@@ -319,7 +328,7 @@ impl App {
                 if n == 0 {
                     return ControlFlow::Continue(());
                 }
-                self.monitors_sel = step(self.monitors_sel.min(n - 1), n, up);
+                self.monitors_sel = mv(self.monitors_sel.min(n - 1), n);
                 self.scroll_into_view(self.monitors_row_of());
             }
             // A plugin's pane: the cursor walks its STOPS - the lines and rows with an id, the
@@ -329,7 +338,7 @@ impl App {
                 if n == 0 {
                     return ControlFlow::Continue(());
                 }
-                self.plugin_sel = step(self.plugin_sel.min(n - 1), n, up);
+                self.plugin_sel = mv(self.plugin_sel.min(n - 1), n);
                 self.scroll_into_view(self.plugin_row_of());
             }
             Surface::Rooms => {
@@ -344,10 +353,12 @@ impl App {
             Surface::Listing => {
                 let n = self.listed_panes().len();
                 if n == 0 {
-                    self.scroll_pane(up, 1);
+                    if by.is_none() {
+                        self.scroll_pane(up, 1);
+                    }
                     return ControlFlow::Break(None);
                 }
-                self.pane_listing_sel = step(self.pane_listing_sel.min(n - 1), n, up);
+                self.pane_listing_sel = mv(self.pane_listing_sel.min(n - 1), n);
                 if let Some(r) = self.pane_listing_rows.get(self.pane_listing_sel).cloned() {
                     self.scroll_into_view(r.end.saturating_sub(1));
                     self.scroll_into_view(r.start);
@@ -522,7 +533,7 @@ impl App {
         ControlFlow::Break(None)
     }
 
-    /// Tab is the todos pane's own acts: the card on the control, the toggle on one of the
+    /// `x` is the todos pane's own acts: the card on the control, the toggle on one of the
     /// operator's rows, the unfold on a repo item. On the model's rows there is no act to perform,
     /// said rather than left as a key that does nothing. Half-typed, tab completes a `/command`.
     fn todos_alt(&mut self) -> ControlFlow<Option<Action>> {

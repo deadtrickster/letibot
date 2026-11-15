@@ -33,7 +33,7 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
     let bar = a.hint_bar(200);
     assert!(bar.contains("↑↓ moves"), "the movement key is named: {bar}");
     assert!(
-        bar.contains("enter or tab opens the card"),
+        bar.contains("enter or x opens the card"),
         "the add control's act is opening the card, not unfolding anything: {bar}"
     );
     assert!(
@@ -42,13 +42,13 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
     );
     assert!(!bar.contains("unfolds"), "nothing here unfolds: {bar}");
 
-    // One of the operator's own rows - one Down from the add control. TAB toggles it, which
+    // One of the operator's own rows - one Down from the add control. `x` toggles it, which
     // is the sentence rano's pinned footer got wrong, and `/todo rm` is named because deletion is
     // the operator's own act and this is the only place it is spelled.
     a.todos_sel = 1;
     let bar = a.hint_bar(200);
     assert!(
-        bar.contains("tab toggles it done"),
+        bar.contains("x toggles it done"),
         "the act on the operator's row is the toggle: {bar}"
     );
     assert!(
@@ -65,7 +65,7 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
     );
 
     // A repo item unfolds, which is the one stop where the old sentence was true - and it is
-    // still said, so the fix is a correction rather than a deletion. Enter reads it; Tab unfolds it.
+    // still said, so the fix is a correction rather than a deletion. Enter reads it; `x` unfolds it.
     a.repo_todos = Some(vec![TodoRow {
         indent: 0,
         mark: Some(TodoMark::Open),
@@ -76,7 +76,7 @@ fn the_todos_pane_footer_names_the_keys_the_pane_answers() {
     a.todos_sel = 2;
     let bar = a.hint_bar(200);
     assert!(
-        bar.contains("tab unfolds the item"),
+        bar.contains("x unfolds the item"),
         "the repo's own act is still named: {bar}"
     );
 
@@ -2135,10 +2135,10 @@ fn enter_reads_the_row_under_the_cursor_and_esc_goes_back_to_it() {
 /// Enter reads one of the person's own rows and Tab toggles it: the toggle is what the typed door sends, and a read
 /// that took Enter without leaving the toggle somewhere would have made this pane's own act unreachable.
 #[test]
-fn tab_toggles_one_of_the_operators_rows_and_enter_reads_it() {
+fn x_toggles_one_of_the_operators_rows_and_enter_reads_it() {
     use letibot_sessionlog::event::{TodoBy, TodoStatus};
     let mut a = todos_head(&[(TodoBy::Operator, "the operator's own row")]);
-    // The board is read unfolded, since the second Tab has to find the row the first one moved: under the folded
+    // The board is read unfolded, since the second `x` has to find the row the first one moved: under the folded
     // default the row leaves the drawn list, the cursor falls back to the add control, and the toggle is one-way.
     a.todos_fold_done = false;
     // The pane's own open (`ListTodos`) is drained first, so what is left is what the keys sent.
@@ -2152,15 +2152,15 @@ fn tab_toggles_one_of_the_operators_rows_and_enter_reads_it() {
     assert!(a.take_actions().is_empty(), "reading a row sends nothing");
     a.key(Key::Esc);
 
-    // Tab toggles it, and again puts it back - a cursor that can only go one way is one you cannot
+    // `x` toggles it, and again puts it back - a cursor that can only go one way is one you cannot
     // correct.
-    match a.key(Key::Tab) {
+    match a.key(Key::Char('x')) {
         Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items[0].status, TodoStatus::Completed, "{items:?}");
         }
         other => panic!("expected the toggle, got {other:?}"),
     }
-    match a.key(Key::Tab) {
+    match a.key(Key::Char('x')) {
         Some(Action::SetOperatorTodos { items, .. }) => {
             assert_eq!(items[0].status, TodoStatus::Pending, "{items:?}");
         }
@@ -2934,7 +2934,7 @@ fn toggling_a_row_into_the_group_takes_the_cursor_with_it() {
     a.key(Key::Down);
     a.key(Key::Down);
     assert!(
-        matches!(a.key(Key::Tab), Some(Action::SetOperatorTodos { .. })),
+        matches!(a.key(Key::Char('x')), Some(Action::SetOperatorTodos { .. })),
         "the toggle is the operator's row's own act"
     );
     let screen = a.screen(110, 40);
