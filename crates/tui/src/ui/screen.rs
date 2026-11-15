@@ -703,6 +703,24 @@ impl App {
                 target: Target::QueueStandings,
                 stops: Vec::new(),
             });
+            // `N stuck` on top of it, read off the same drawn row; `hit_at` takes the later hit.
+            let stuck = self.queue_standings().stuck;
+            if stuck > 0
+                && let Some((x, w)) = drawn_span(&out[row], &format!("{stuck} stuck"))
+                && x >= col
+                && x + w <= col + cols
+            {
+                self.hits.push(Hit {
+                    rect: Rect {
+                        x: x + gutter,
+                        y: row,
+                        w,
+                        h: 1,
+                    },
+                    target: Target::QueueStuck,
+                    stops: Vec::new(),
+                });
+            }
         }
         // The caret is the affordance. It goes where the composer says, and the
         // terminal draws it as a steady block because `term::enter` asked for one.

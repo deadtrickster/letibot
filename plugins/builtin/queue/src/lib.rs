@@ -33,6 +33,9 @@ struct Feed {
     /// first, so the pane agrees with the strip the person pressed.
     #[serde(default)]
     view: String,
+    /// `stuck` when the host asks for the stuck rows only - the edge's `N stuck`, clicked.
+    #[serde(default)]
+    filter: String,
     /// The entry whose detail the host is reading, if any. It is drawn even when it is history,
     /// because an overlay must not vanish under the row it is reading.
     #[serde(default)]
@@ -77,6 +80,8 @@ struct Counts {
     #[serde(default)]
     merge: usize,
     #[serde(default)]
+    stuck: usize,
+    #[serde(default)]
     finished: usize,
 }
 
@@ -97,6 +102,12 @@ struct Review {
     kind: String,
     #[serde(default)]
     live: bool,
+    /// The host's `stuck`: the edge counts this row, so the pane lists it outside the history.
+    #[serde(default)]
+    stuck: bool,
+    /// The one line under a stuck row, in the host's words.
+    #[serde(default)]
+    stuck_why: String,
     #[serde(default)]
     state: String,
     #[serde(default)]
@@ -147,6 +158,12 @@ struct Merge {
     id: String,
     #[serde(default)]
     live: bool,
+    /// The host's `stuck`: the edge counts this row, so the pane lists it outside the history.
+    #[serde(default)]
+    stuck: bool,
+    /// The one line under a stuck row, in the host's words.
+    #[serde(default)]
+    stuck_why: String,
     #[serde(default)]
     state: String,
     #[serde(default)]
@@ -444,12 +461,16 @@ fn review_row(r: &Review, feed: &Feed, show_repo: bool, picked: bool) -> Out {
     if let Some(v) = what_you_can_do(&r.verbs) {
         facts.push(Cell::role(v, Role::Pending));
     }
-    let mut under = vec![reason_of(
-        r.fixes.as_deref(),
-        r.verdict.as_deref(),
-        &r.reasons,
-        &r.evidence,
-    )];
+    let mut under = vec![if r.stuck && !r.stuck_why.is_empty() {
+        r.stuck_why.clone()
+    } else {
+        reason_of(
+            r.fixes.as_deref(),
+            r.verdict.as_deref(),
+            &r.reasons,
+            &r.evidence,
+        )
+    }];
     // The address is only under the cursor. The id exists so it can be typed into `/queue approve`;
     // repeating it on every row was half of what made the pane illegible.
     if picked {
@@ -489,6 +510,7 @@ fn merge_row(m: &Merge, feed: &Feed, show_repo: bool, picked: bool) -> Out {
         facts.push(Cell::role(v, Role::Pending));
     }
     let mut under = vec![match &m.waits_on {
+        _ if m.stuck && !m.stuck_why.is_empty() => m.stuck_why.clone(),
         // What it is waiting for, in the pane's own words (`gate running on 1f2a3b4 for 2m`).
         Some(w) => format!("waits for the gate: {w}"),
         // Or what its own gate is doing, when the row is the one gating.
@@ -598,8 +620,8 @@ fn role_of(state: &str) -> Role {
 /// the next answer, and a pane nobody has opened asks for nothing.
 fn history_row(feed: &Feed, folded: bool) -> Out {
     let n = feed.counts.finished;
-    let shown = feed.reviews.iter().filter(|r| !r.live).count()
-        + feed.merges.iter().filter(|m| !m.live).count();
+    let shown = feed.reviews.iter().filter(|r| !r.live && !r.stuck).count()
+        + feed.merges.iter().filter(|m| !m.live && !m.stuck).count();
     Out {
         id: "finished".to_string(),
         cells: vec![Cell::role(
@@ -796,8 +818,19 @@ fn answer(bytes: &[u8]) -> Option<String> {
     // The queue the person is looking at goes first. `tab` is the head's, and a pane whose header
     // did not say which half was drawn would be a pane the strip lied about.
     let reviews_first = feed.view != "merge";
-    let live_review = || feed.reviews.iter().filter(|r| r.live);
-    let live_merge = || feed.merges.iter().filter(|m| m.live);
+    // Stuck rows stand with the live ones: the edge counts them, so the pane never folds them away.
+    // Filtered to `stuck`, they are all it lists.
+    let only_stuck = feed.filter == "stuck";
+    let live_review = || {
+        feed.reviews
+            .iter()
+            .filter(move |r| if only_stuck { r.stuck } else { r.live })
+    };
+    let live_merge = || {
+        feed.merges
+            .iter()
+            .filter(move |m| if only_stuck { m.stuck } else { m.live })
+    };
     let picked = |id: &str| !feed.cursor.is_empty() && feed.cursor == id;
     let push_review = |rows: &mut Vec<Value>, r: &Review| {
         rows.push(row_value(&review_row(r, &feed, show_repo, picked(&r.id))));
@@ -819,24 +852,64 @@ fn answer(bytes: &[u8]) -> Option<String> {
         }
     }
     let live = rows.len();
-    // The entry whose detail is being read is drawn even when it is history, so the overlay the host
-    // holds over the pane outlives the row landing or being withdrawn under it.
-    if !feed.open.is_empty() && !folded {
-        if let Some(r) = feed.reviews.iter().find(|r| r.id == feed.open && !r.live) {
+    if !only_stuck {
+        for m in feed.merges.iter().filter(|m| m.stuck && !m.live) {
+            push_merge(&mut rows, m);
+        }
+        for r in feed.reviews.iter().filter(|r| r.stuck && !r.live) {
             push_review(&mut rows, r);
         }
-        if let Some(m) = feed.merges.iter().find(|m| m.id == feed.open && !m.live) {
+    }
+    // The entry whose detail is being read is drawn even when it is history, so the overlay the host
+    // holds over the pane outlives the row landing or being withdrawn under it.
+    if !feed.open.is_empty() && (!folded || only_stuck) {
+        let drawn_r = |r: &Review| {
+            if only_stuck {
+                r.stuck
+            } else {
+                r.live || r.stuck
+            }
+        };
+        let drawn_m = |m: &Merge| {
+            if only_stuck {
+                m.stuck
+            } else {
+                m.live || m.stuck
+            }
+        };
+        if let Some(r) = feed
+            .reviews
+            .iter()
+            .find(|r| r.id == feed.open && !drawn_r(r))
+        {
+            push_review(&mut rows, r);
+        }
+        if let Some(m) = feed
+            .merges
+            .iter()
+            .find(|m| m.id == feed.open && !drawn_m(m))
+        {
             push_merge(&mut rows, m);
         }
     }
     // The history, only when it is open. The folded row is always drawn; its rows are not, which is
     // what keeps twelve finished landings from burying two live ones.
-    if folded {
+    if folded && !only_stuck {
         let mut done: Vec<Value> = Vec::new();
-        for r in feed.reviews.iter().filter(|r| !r.live).take(HISTORY_MAX) {
+        for r in feed
+            .reviews
+            .iter()
+            .filter(|r| !r.live && !r.stuck)
+            .take(HISTORY_MAX)
+        {
             push_review(&mut done, r);
         }
-        for m in feed.merges.iter().filter(|m| !m.live).take(HISTORY_MAX) {
+        for m in feed
+            .merges
+            .iter()
+            .filter(|m| !m.live && !m.stuck)
+            .take(HISTORY_MAX)
+        {
             push_merge(&mut done, m);
         }
         rows.extend(done);
@@ -854,10 +927,21 @@ fn answer(bytes: &[u8]) -> Option<String> {
     // Both queues' counts, the drawn view first - the strip that says which half `tab` is on. The
     // words are what the halves are: a branch in review is waiting for a reviewer, a landing is on
     // its way through the gate.
-    let strip = |first: &str, n: usize, other: &str, m: usize| format!("{n} {first} · {m} {other}");
+    let stuck = if feed.counts.stuck > 0 {
+        format!(" · {} stuck", feed.counts.stuck)
+    } else {
+        String::new()
+    };
+    let strip =
+        |first: &str, n: usize, other: &str, m: usize| format!("{n} {first} · {m} {other}{stuck}");
     panels.push(json!({
         "id": "rows",
-        "title": if live == 0 {
+        "title": if only_stuck {
+            format!(
+                "{} stuck - the rows a person has to move · `/queue` shows both queues",
+                feed.counts.stuck
+            )
+        } else if live == 0 && feed.counts.stuck == 0 {
             "nothing in either queue".to_string()
         } else if reviews_first {
             strip("in review", feed.counts.review, "to land", feed.counts.merge)
@@ -866,10 +950,14 @@ fn answer(bytes: &[u8]) -> Option<String> {
         },
         "summary": [{"tree": {
             "rows": rows,
-            "empty": empty_of(&feed.view),
+            "empty": if only_stuck {
+                "nothing is stuck"
+            } else {
+                empty_of(&feed.view)
+            },
         }}],
     }));
-    if feed.counts.finished > 0 {
+    if feed.counts.finished > 0 && !only_stuck {
         panels.push(json!({
             "id": "history",
             "title": "finished: the rows that left the two queues".to_string(),

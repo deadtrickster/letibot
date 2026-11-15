@@ -1471,3 +1471,110 @@ fn withdraw_is_offered_on_a_gating_landing_and_not_on_a_landed_one() {
     let failed = queue_merge_row("m-failed", "failed");
     assert_eq!(verb_moves(Verb::Restart, &Selected::Merge(&failed)), Ok(()));
 }
+
+/// The edge's `N stuck` and the pane its click opens read one predicate: a conflict row is counted
+/// and listed with its evidence line, and an older failed row of the same branch, superseded by
+/// it, is neither. A stuck row of another repository is outside the edge's scope and the pane's.
+#[test]
+fn a_click_on_n_stuck_lists_exactly_the_rows_the_edge_counts() {
+    let mut a = layer(app());
+    a.now_ms = 62_500;
+    let mut old = queue_merge_row("m-k5-old", "failed");
+    old.branch = "agent/k5-migration".into();
+    old.created_ms = 500;
+    let mut live = queue_merge_row("m-k5", "conflict");
+    live.branch = "agent/k5-migration".into();
+    live.created_ms = 1_000;
+    live.evidence = "`agent/k5-migration` does not rebase onto `main` at \
+                     b66c78d1f9284aea093efcf2c3a0619493c0bf94: git rebase --onto b66c78d\n\
+                     CONFLICT (content): Merge conflict in docs/keys.md\n\
+                     hint: Resolve all conflicts manually"
+        .into();
+    let elsewhere = in_repo(queue_merge_row("m-other", "conflict"), OTHER, |m, r| {
+        m.repository = r
+    });
+    let mut snap = queues(
+        Vec::new(),
+        vec![old, live, elsewhere, queue_merge_row("m-done", "landed")],
+    );
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    a.queues_got_ms = 62_500;
+
+    let screen = a.screen(140, 30);
+    assert_eq!(
+        a.queue_standings().stuck,
+        1,
+        "the superseded row is not counted"
+    );
+    assert!(
+        edge_row(&screen).contains("1 stuck"),
+        "{:?}",
+        edge_row(&screen)
+    );
+    let stuck = a
+        .hits
+        .iter()
+        .find(|h| h.target == Target::QueueStuck)
+        .map(|h| h.rect)
+        .expect("`1 stuck` is a target of its own");
+    let row = &screen[stuck.y];
+    assert_eq!(column_of(row, "1 stuck"), stuck.x, "{row:?}");
+    assert_eq!(stuck.w, "1 stuck".chars().count());
+
+    a.key(Key::Click {
+        x: stuck.x as u16,
+        y: stuck.y as u16,
+    });
+    assert_eq!(a.top_surface(), Some(Surface::Queue));
+    assert!(
+        a.queue_stuck_only,
+        "the click filters the pane to the stuck rows"
+    );
+    let pane = a.screen(140, 30).join("\n");
+    let view = a.queue_held.as_ref().expect("the layer drew the pane");
+    let ids: Vec<String> = (0..a.queue_plugin_stops)
+        .filter_map(|i| {
+            match crate::ui::panes::plugin::target_of(
+                view,
+                crate::ui::panes::plugin::Screen::Overview,
+                i,
+            )? {
+                crate::ui::panes::plugin::Target::Row(r) => Some(r.id().to_string()),
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(ids, vec!["m-k5".to_string()], "{pane}");
+    assert!(
+        pane.contains("conflict: docs/keys.md does not rebase onto main"),
+        "the row's evidence line: {pane}"
+    );
+
+    // `/queue` again is both queues, unfiltered, and the stuck row is still not behind the fold.
+    a.command("queue");
+    a.command("queue");
+    assert!(!a.queue_stuck_only);
+    let pane = a.screen(140, 30).join("\n");
+    assert!(pane.contains("agent/k5-migration"), "{pane}");
+}
+
+/// The words under a stuck row: the state, the files when git named them, the target, and none of
+/// the shas or git's hints.
+#[test]
+fn a_stuck_rows_evidence_line_is_one_short_sentence() {
+    use crate::ui::panes::queue::stuck_why;
+    assert_eq!(
+        stuck_why(
+            "conflict",
+            "agent/k5",
+            "`agent/k5` does not rebase onto `master` at b66c78d1f9284aea: git rebase ...\nhint: x"
+        ),
+        "conflict: does not rebase onto master"
+    );
+    assert_eq!(
+        stuck_why("timed_out", "b", "the gate's step 2 ran past 30m"),
+        "timed out: the gate's step 2 ran past 30m"
+    );
+    assert_eq!(stuck_why("failed", "b", ""), "failed");
+}

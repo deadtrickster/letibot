@@ -634,12 +634,16 @@ impl App {
             // The merge queue, which is not this session's: there is one queue, so the pane asks for the whole thing
             // and the daemon answers with it, scoped to this session's repository unless a word says otherwise.
             "queue" => {
-                if !self.is_open(Surface::Queue) && self.queue_scope != QueueScope::Here {
-                    self.queue_scope = QueueScope::Here;
-                    self.rescope_queues();
+                if !self.is_open(Surface::Queue) {
+                    self.queue_stuck_only = false;
+                    if self.queue_scope != QueueScope::Here {
+                        self.queue_scope = QueueScope::Here;
+                        self.rescope_queues();
+                    }
                 }
                 self.toggle_surface(Surface::Queue)
             }
+            _ if verb_arg(cmd, "queue") == Some("stuck") => self.queue_stuck(),
             _ if verb_arg(cmd, "queue") == Some("builtin") => {
                 self.say(
                     "there is no built-in queue pane any more - the `queue` layer draws it, and \

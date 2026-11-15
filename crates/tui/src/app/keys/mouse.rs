@@ -65,7 +65,8 @@ impl App {
             Target::CountLabel(_)
             | Target::GitField
             | Target::HeaderRepo
-            | Target::QueueStandings => true,
+            | Target::QueueStandings
+            | Target::QueueStuck => true,
             // A link is drawn by whatever screen is up - the reply, a note, a pane - so the
             // record is the frame's own and nothing can have closed under it. A link the frame
             // no longer has is not in `link_targets`, which the click checks before it acts.
@@ -164,6 +165,7 @@ impl App {
             // `/queue` keeps: the pane opens on THIS session's repository, not on whatever scope
             // the last `/queue all` left - and a second click closes it, as the verb would.
             (Target::QueueStandings, _) => return ControlFlow::Break(self.command("queue")),
+            (Target::QueueStuck, _) => return ControlFlow::Break(self.command("queue stuck")),
             // A `file://` link opens in the editor pane at the line it names; anything else goes
             // to the platform's opener, the only process that can open a URL from here - this head
             // takes the mouse, so the terminal never gets the click to open it itself.
@@ -386,6 +388,7 @@ impl App {
             | Target::GitField
             | Target::HeaderRepo
             | Target::QueueStandings
+            | Target::QueueStuck
             | Target::FlashNotice
             // A line of the window with no window up - `still_drawn` has already refused
             // this one, so it is here for the enum and not for a pointer that can reach it.

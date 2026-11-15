@@ -98,6 +98,8 @@ pub(crate) enum Target {
     /// count; a click opens the queue pane. The rectangle is read off the drawn row
     /// (`screen::drawn_span`) because the edge truncates from the right.
     QueueStandings,
+    /// The `N stuck` word inside the standings: a click opens the pane on the stuck rows only.
+    QueueStuck,
     /// A link the frame drew (OSC 8), exactly the cells it covers, read off the finished row.
     /// The terminal cannot answer this one: the head takes the mouse, so the click is forwarded
     /// here and this program opens the URL itself.

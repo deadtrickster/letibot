@@ -999,3 +999,36 @@ fn the_open_row_is_drawn_even_when_it_is_history() {
     let drawn = rows(&closed_view);
     assert!(!drawn.iter().any(|r| r["id"] == "r-done-0"));
 }
+
+/// A stuck row is listed with the live ones, never behind the fold, with its evidence line; filtered
+/// to `stuck`, the pane lists the stuck rows and nothing else.
+#[test]
+fn a_stuck_row_stands_outside_the_history_and_the_filter_lists_only_stuck_rows() {
+    let mut feed = a_queue();
+    let mut stuck = a_merge("m-stuck", "conflict", false);
+    stuck["stuck"] = json!(true);
+    stuck["stuck_why"] = json!("conflict: docs/keys.md does not rebase onto master");
+    feed["merges"].as_array_mut().unwrap().push(stuck);
+    feed["counts"]["stuck"] = json!(1);
+
+    let view = view_of(&feed, &[]);
+    let ids: Vec<&str> = rows(&view)
+        .iter()
+        .map(|r| r["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["r-live-1", "r-live-2", "m-live", "m-stuck", "finished"]
+    );
+
+    feed["filter"] = json!("stuck");
+    let view = view_of(&feed, &[("finished", true)]);
+    let drawn = rows(&view);
+    let ids: Vec<&str> = drawn.iter().map(|r| r["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, vec!["m-stuck"], "only the stuck row, history or not");
+    assert!(
+        view.to_string()
+            .contains("conflict: docs/keys.md does not rebase onto master"),
+        "the evidence line is under the row: {view}"
+    );
+}

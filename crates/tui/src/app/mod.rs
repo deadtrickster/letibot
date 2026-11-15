@@ -745,6 +745,8 @@ pub struct App {
     pub(crate) queues_all: letibot_sessionlog::event::QueueSnapshot,
     /// Whose queues the pane shows. See [`QueueScope`].
     pub(crate) queue_scope: QueueScope,
+    /// The pane lists only the stuck rows - opened from the edge's `N stuck` or `/queue stuck`.
+    pub(crate) queue_stuck_only: bool,
     /// When this head received `queues`, by its own clock: an age the pane draws is the
     /// snapshot's own plus how long ago it arrived. `0` until one has arrived.
     pub(crate) queues_got_ms: u64,
@@ -1518,6 +1520,7 @@ impl App {
             queues: Default::default(),
             queues_all: Default::default(),
             queue_scope: QueueScope::default(),
+            queue_stuck_only: false,
             queues_got_ms: 0,
             queues_asked_ms: 0,
             gate_tails: Default::default(),

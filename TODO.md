@@ -93,6 +93,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R275 | A GLM coding-plan limit parked rano for 5h on a window that lifted 3 minutes later | Code work | built: GLM 429s classified by business code (`crates/http/src/zai.rs`), `next_flush_time` read as UTC+8, `Resets at`/`将在` parsed, z.ai's quota endpoint on the GLM coding doors, every park re-tries on `[provider] limit_probe` (2m, 5m, 15m, 30m, 1h); left: the refusal body is not persisted anywhere, so this diagnosis is inferred from timings |
 | R267 | A streaming assistant line is drawn over an earlier row of the history | Code work | built: the live marker's join is taken back before the walk and only by its whole joined line; test `a_streaming_row_never_rewrites_an_earlier_row` |
 | R273 | A parked turn's end line reads `interrupted: paused until ... (nothing kept)` and the spinner stays up | Code work | built: `TurnState::Parked` and `TurnInterrupted::park` (protocol 75), the head draws its own park and interrupt lines, the park's ending is published under the refused round's id; left: the live check on a real limit |
+| R309 | The edge says `1 stuck` and the queue pane it opens is empty | Code work | built: `review_stuck` / `merge_stuck` are the one predicate for the edge's count, the Queues row's `person` and the pane's stuck rows; a row a later row of the same branch supersedes is neither counted nor listed; stuck rows stand with the live ones, never behind the history fold; a click on `N stuck` (or `/queue stuck`) opens the pane on the edge's scope filtered to those rows, each with a one-line evidence (`conflict: docs/keys.md does not rebase onto master`); left: the daemon's conflict evidence keeps git's stderr only, so the conflicted files are not named in it yet |
 | R287 | A re-paged row loses its duration and approval, facts match by position, and the hover lights another unit than the click | Code work | built (audit J5, plan 1.12 + 1.13): a result row is bound to its call by call id within its round when its body lands; durations and decisions outlive the window, bounded at 1024 rows; a resync keeps decisions bound live; the hover lights the rows whose click does the same act (`App::conversation_act`); left: the facts are not stored on the row, so a head restart or a resync loses durations and older rounds' decisions |
 | R265 | A usage-limit park cannot be ended or moved: Esc does nothing and `/models` leaves the turn parked on the old model's reset | Code work | built: Esc ends the parked turn with a row naming the limit and the reset, a switch by any door retries the parked request on the new model, the status row names the reset and both ways out; left: the live check on a real Kimi limit |
 | R266 | Reaper remainder: a job across a stop that is not a handover, a start grace for a new owner, d.3 and the store-key rule written down | Code work | built (audit H1, R241's left): the reaper's daemon stop leaves the restart marker so host jobs are kept for the next daemon, the idle exit drains on a running job, a daemon's first 5 minutes judge no owner idle or orphaned, d.3 and the store-key rule written down; left: a plain `letibot --stop` still ends every job, by design |
@@ -4817,6 +4818,23 @@ hint bar read from the table.
   a slash command, so a filter key needs the composer's first `/` decided per pane first.
 - The conversation half of the bar (`ui/hint_bar.rs` `CONVERSATION`) is still literals; the surface
   half is generated from the tables.
+## R309 - The edge says `1 stuck` and the queue pane it opens is empty
+
+**Status:** built, 2026-11-16.
+
+Seen in rano: the composer edge said `queue: 1 stuck · 13 done`, the pane opened from it listed nothing. The stuck row was merge_queue `m-agent-k5-migration-8fee6b08-1794783394774` (`agent/k5-migration`, approved 58c8097), state `conflict`: the rebase onto master b66c78d failed in docs/keys.md.
+
+Cause: two predicates. `standings_where` counted `conflict`, `failed`, `timed_out`, `blocked` and `landed_local` landings as stuck. The feed marked a landing `live` only for `queued`, `gating` and `blocked` (`merge_open`), and the `queue` layer draws live rows and folds every other row into the history line. So a `conflict` row was counted on the edge and hidden behind `finished: N rows`. The scope was not the cause: both read this session's repository. The counter also counted rows a later row of the same branch had superseded.
+
+**Built.**
+1. `review_stuck` / `merge_stuck` (`crates/tui/src/ui/panes/queue.rs`) are the one predicate: the edge's `stuck`, the Queues row's `person` (`app/queue_rows.rs`), the feed's per-row `stuck` and `counts.stuck`. A row is superseded when a later row of either queue names the same branch in the same repository; a landing's own review never supersedes it.
+2. The feed carries stuck rows with the live ones, outside the finished budget, with a `stuck_why` line. The layer draws them after the live rows and never behind the fold.
+3. `N stuck` on the edge is its own click target (`Target::QueueStuck`), read off the drawn row. It runs `/queue stuck`: the edge's scope, `filter: "stuck"` in the feed, and the layer lists only the stuck rows.
+
+Tests: `a_click_on_n_stuck_lists_exactly_the_rows_the_edge_counts`, `a_stuck_rows_evidence_line_is_one_short_sentence`, and the layer's `a_stuck_row_stands_outside_the_history_and_the_filter_lists_only_stuck_rows`.
+
+**Left.** The daemon's conflict evidence is git's stderr (`mergequeue/git.rs`, `rebase_in`); the `CONFLICT ... Merge conflict in <file>` lines are on stdout, so the evidence line names a file only once the daemon records them.
+
 ## R287 - Row facts by call id, hover by the click's table
 
 **Status:** built, 2026-11-15. Audit package J5, plan 1.12 and 1.13 (`/build/oss-harnesses/PLAN-fable-5.2.md`).

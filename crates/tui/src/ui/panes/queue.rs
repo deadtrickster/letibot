@@ -4,7 +4,7 @@
 
 use crate::app::*;
 use crate::ui::render::row_strings;
-use letibot_sessionlog::event::QueueSnapshot;
+use letibot_sessionlog::event::{QueueMerge, QueueReview, QueueSnapshot};
 use rano::agent::pane::{self, PaneLines};
 
 /// How long a heartbeat may be silent before the pane calls the owner STALE - the daemon's
@@ -250,6 +250,7 @@ impl App {
     /// `/queue all` and `/queue /PATH` - the pane, on that scope. Opening it asks for a
     /// fresh snapshot; switching an open pane's scope only re-cuts the one it has.
     pub(crate) fn queue_in(&mut self, scope: QueueScope) -> Option<Action> {
+        self.queue_stuck_only = false;
         self.queue_scope = scope;
         self.queue_sel = 0;
         self.rescope_queues();
@@ -258,6 +259,16 @@ impl App {
         } else {
             self.open_surface(Surface::Queue)
         }
+    }
+}
+
+impl App {
+    /// `/queue stuck`, and a click on the edge's `N stuck`: the pane on the edge's own scope, listing
+    /// only the rows that count counts.
+    pub(crate) fn queue_stuck(&mut self) -> Option<Action> {
+        let out = self.queue_in(QueueScope::Here);
+        self.queue_stuck_only = true;
+        out
     }
 }
 
@@ -401,38 +412,125 @@ impl Standings {
     }
 }
 
+/// Is this review stuck: stopped until a person rules, and the newest row of its branch. The edge's
+/// `stuck` count and the pane's stuck rows are both this predicate, so neither can show a row the
+/// other does not.
+pub(crate) fn review_stuck(q: &QueueSnapshot, r: &QueueReview) -> bool {
+    // `cannot_decide` is terminal *until a person rules*, so it waits on a person like `blocked`.
+    matches!(r.state.as_str(), "blocked" | "cannot_decide")
+        && !(r.kind == "target" && target_green(q, &r.repository, &r.target))
+        && !superseded(q, &r.repository, review_key(r), r.created_ms, "")
+}
+
+/// Is this landing stuck - see [`review_stuck`].
+pub(crate) fn merge_stuck(q: &QueueSnapshot, m: &QueueMerge) -> bool {
+    matches!(
+        m.state.as_str(),
+        "blocked" | "failed" | "timed_out" | "conflict" | "landed_local"
+    ) && !superseded(
+        q,
+        &m.repository,
+        Key::Branch(&m.branch),
+        m.created_ms,
+        &m.review_id,
+    )
+}
+
+/// What a row is about: a branch (a review of it or its landing), or a target's own red tip.
+#[derive(PartialEq, Eq)]
+enum Key<'a> {
+    Branch(&'a str),
+    Target(&'a str),
+}
+
+fn review_key(r: &QueueReview) -> Key<'_> {
+    if r.kind == "target" {
+        Key::Target(&r.target)
+    } else {
+        Key::Branch(&r.branch)
+    }
+}
+
+/// Does a later row of either queue speak for the same branch in the same repository? Then this
+/// one is history: the branch went back to review or to the gate after it stopped. `own_review` is
+/// a landing's own review, which never supersedes it.
+fn superseded(q: &QueueSnapshot, repo: &str, key: Key<'_>, at: u64, own_review: &str) -> bool {
+    let later = |r: &str, k: Key<'_>, created: u64| r == repo && k == key && created > at;
+    q.reviews
+        .iter()
+        .any(|r| r.id != own_review && later(&r.repository, review_key(r), r.created_ms))
+        || q.merges
+            .iter()
+            .any(|m| later(&m.repository, Key::Branch(&m.branch), m.created_ms))
+}
+
+fn target_green(q: &QueueSnapshot, repo: &str, target: &str) -> bool {
+    q.targets
+        .iter()
+        .any(|t| t.repository == repo && t.target == target && t.state == "green")
+}
+
+/// The one line under a stuck row: the state, then what stopped it, without the branch the row
+/// already names or the shas and git chatter behind it.
+pub(crate) fn stuck_why(state: &str, branch: &str, evidence: &str) -> String {
+    let state = state.replace('_', " ");
+    let files: Vec<&str> = evidence
+        .lines()
+        .filter_map(|l| l.split_once("Merge conflict in ").map(|(_, f)| f.trim()))
+        .filter(|f| !f.is_empty())
+        .collect();
+    let first = evidence.lines().next().unwrap_or("").trim();
+    let first = first.strip_prefix(&format!("`{branch}` ")).unwrap_or(first);
+    // `... onto `master` at <sha>: <git's words>` - the sha and git's words are the detail's.
+    let head = match first.find(" at ") {
+        Some(i)
+            if first[i + 4..]
+                .split(|c: char| !c.is_ascii_hexdigit())
+                .next()
+                .is_some_and(|h| h.len() >= 7) =>
+        {
+            &first[..i]
+        }
+        _ => first,
+    };
+    let head = head.replace('`', "");
+    match (files.is_empty(), head.is_empty()) {
+        (false, _) => format!("{state}: {} {head}", files.join(", ")),
+        (true, false) => format!("{state}: {head}"),
+        (true, true) => state,
+    }
+}
+
 /// The standings of the rows `keep` admits, as of `now` - the snapshot's clock carried forward,
 /// because `landed` asks about a window and `at_ms` is a moment. The snapshot holds every row the
-/// store ever had, so a terminal row inflates no live column: `stuck` is open-and-stopped only.
+/// store ever had, so a terminal row inflates no live column: `stuck` is [`review_stuck`] and
+/// [`merge_stuck`], nothing else.
 pub(crate) fn standings_where(
     q: &QueueSnapshot,
     now: u64,
     keep: impl Fn(&str) -> bool,
 ) -> Standings {
-    let green = |repo: &str, target: &str| {
-        q.targets
-            .iter()
-            .any(|t| t.repository == repo && t.target == target && t.state == "green")
-    };
     let recent = |ms: u64| now.saturating_sub(ms) <= RECENT_MS;
     let mut s = Standings::default();
     for r in q.reviews.iter().filter(|r| keep(&r.repository)) {
-        if r.kind == "target" && green(&r.repository, &r.target) {
+        if review_stuck(q, r) {
+            s.stuck += 1;
             continue;
         }
-        match r.state.as_str() {
-            "waiting" | "reviewing" => s.review += 1,
-            // `cannot_decide` is here and not in the live columns: the store calls it
-            // terminal *until a person rules*, and a row waiting on a person is what this column
-            // is for.
-            "blocked" | "cannot_decide" => s.stuck += 1,
-            _ => {}
+        if r.kind == "target" && target_green(q, &r.repository, &r.target) {
+            continue;
+        }
+        if matches!(r.state.as_str(), "waiting" | "reviewing") {
+            s.review += 1;
         }
     }
     for m in q.merges.iter().filter(|m| keep(&m.repository)) {
+        if merge_stuck(q, m) {
+            s.stuck += 1;
+            continue;
+        }
         match m.state.as_str() {
             "queued" | "gating" => s.merging += 1,
-            "blocked" | "failed" | "timed_out" | "conflict" | "landed_local" => s.stuck += 1,
             "landed" if recent(m.state_ms) => s.landed += 1,
             _ => {}
         }

@@ -4,7 +4,7 @@
 
 use crate::app::rooms::ListRow;
 use crate::app::*;
-use crate::ui::panes::queue::{QueueScope, repo_name};
+use crate::ui::panes::queue::{QueueScope, merge_stuck, repo_name, review_stuck};
 
 /// A target's standing as the row draws it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,21 +61,26 @@ impl App {
                     Health::Unjudged
                 };
                 let (mut waiting, mut gating, mut person) = (0, 0, 0);
+                // `person` is the edge's `stuck`: the one predicate, so the two never disagree.
                 for r in q.reviews.iter().filter(|r| r.repository == repo) {
+                    if review_stuck(q, r) {
+                        person += 1;
+                        continue;
+                    }
                     match r.state.as_str() {
                         "waiting" => waiting += 1,
                         "reviewing" => gating += 1,
-                        "blocked" | "cannot_decide" => person += 1,
                         _ => {}
                     }
                 }
                 for m in q.merges.iter().filter(|m| m.repository == repo) {
+                    if merge_stuck(q, m) {
+                        person += 1;
+                        continue;
+                    }
                     match m.state.as_str() {
                         "queued" => waiting += 1,
                         "gating" => gating += 1,
-                        "blocked" | "failed" | "timed_out" | "conflict" | "landed_local" => {
-                            person += 1
-                        }
                         _ => {}
                     }
                 }

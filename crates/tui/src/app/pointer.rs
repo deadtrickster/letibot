@@ -231,7 +231,8 @@ impl App {
             Target::CountLabel(_)
             | Target::GitField
             | Target::HeaderRepo
-            | Target::QueueStandings => Some(Hovered::one(
+            | Target::QueueStandings
+            | Target::QueueStuck => Some(Hovered::one(
                 row,
                 Some((hit.rect.x, hit.rect.x + hit.rect.w)),
             )),

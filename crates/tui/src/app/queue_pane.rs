@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 use crate::app::*;
 use crate::ui::panes::queue::{
     Filter, LEASE_STALE_MS, QueueScope, Selected, Verb, gates_running, mark_of, merge_open,
-    owner_word, repo_name, review_open, verb_moves,
+    merge_stuck, owner_word, repo_name, review_open, review_stuck, stuck_why, verb_moves,
 };
 use letibot_plugin::pane::Act;
 
@@ -107,13 +107,17 @@ impl App {
             }
         };
         let review_of = |r: &QueueReview| {
-            let whole = review_open(&r.state) || r.id == open;
+            let stuck = review_stuck(q, r);
+            let whole = review_open(&r.state) || stuck || r.id == open;
             json!({
                 "queue": "review",
                 "id": r.id,
                 // `branch`, or `target` - the target's own red tip.
                 "kind": r.kind,
                 "live": review_open(&r.state),
+                // The edge's `stuck` predicate, so the pane lists exactly the rows the edge counts.
+                "stuck": stuck,
+                "stuck_why": if stuck { stuck_why(&r.state, &r.branch, &r.evidence) } else { String::new() },
                 "state": r.state,
                 "state_words": r.state.replace('_', " "),
                 "mark": mark_of(&r.state).0,
@@ -142,12 +146,15 @@ impl App {
             })
         };
         let merge_of = |m: &QueueMerge| {
-            let whole = merge_open(&m.state) || m.id == open;
+            let stuck = merge_stuck(q, m);
+            let whole = merge_open(&m.state) || stuck || m.id == open;
             json!({
                 "queue": "merge",
                 "id": m.id,
                 "review_id": m.review_id,
                 "live": merge_open(&m.state),
+                "stuck": stuck,
+                "stuck_why": if stuck { stuck_why(&m.state, &m.branch, &m.evidence) } else { String::new() },
                 "state": m.state,
                 "state_words": m.state.replace('_', " "),
                 "mark": mark_of(&m.state).0,
@@ -187,25 +194,25 @@ impl App {
                 "verbs": verbs_of(&Selected::Merge(m)),
             })
         };
+        // A stuck row travels with the live ones, outside the finished budget, so a long history
+        // can never push a row the edge counts out of the feed.
+        let review_now = |r: &QueueReview| review_open(&r.state) || review_stuck(q, r);
+        let merge_now = |m: &QueueMerge| merge_open(&m.state) || merge_stuck(q, m);
         let mut reviews: Vec<Value> = q
             .reviews
             .iter()
-            .filter(|r| review_open(&r.state))
+            .filter(|r| review_now(r))
             .map(review_of)
             .collect();
         let mut merges: Vec<Value> = q
             .merges
             .iter()
-            .filter(|m| merge_open(&m.state))
+            .filter(|m| merge_now(m))
             .map(merge_of)
             .collect();
         // The finished rows, newest first, within the budget. The counts still say the true
         // numbers, so the layer's folded line says `the last N` rather than pretending.
-        let mut done: Vec<&QueueReview> = q
-            .reviews
-            .iter()
-            .filter(|r| !review_open(&r.state))
-            .collect();
+        let mut done: Vec<&QueueReview> = q.reviews.iter().filter(|r| !review_now(r)).collect();
         done.sort_by_key(|r| std::cmp::Reverse(r.state_ms));
         let mut spent = 0usize;
         for r in done.into_iter().take(FINISHED_MAX) {
@@ -216,8 +223,7 @@ impl App {
             spent += serde_json::to_string(&v).map_or(0, |s| s.len());
             reviews.push(v);
         }
-        let mut done: Vec<&QueueMerge> =
-            q.merges.iter().filter(|m| !merge_open(&m.state)).collect();
+        let mut done: Vec<&QueueMerge> = q.merges.iter().filter(|m| !merge_now(m)).collect();
         done.sort_by_key(|m| std::cmp::Reverse(m.state_ms));
         let mut spent = 0usize;
         for m in done.into_iter().take(FINISHED_MAX) {
@@ -299,6 +305,8 @@ impl App {
                 }).unwrap_or_default(),
             },
             "view": self.queue_view.word(),
+            // `stuck` when the pane was opened from the edge's `N stuck`: only those rows.
+            "filter": if self.queue_stuck_only { "stuck" } else { "" },
             // The entry whose detail the overlay is reading, so the layer draws that row even
             // when it has left the live list - an overlay must not vanish under the row it reads.
             "open": open,
@@ -320,8 +328,10 @@ impl App {
             "counts": {
                 "review": q.reviews.iter().filter(|r| review_open(&r.state)).count(),
                 "merge": q.merges.iter().filter(|m| merge_open(&m.state)).count(),
-                "finished": q.reviews.iter().filter(|r| !review_open(&r.state)).count()
-                    + q.merges.iter().filter(|m| !merge_open(&m.state)).count(),
+                "stuck": q.reviews.iter().filter(|r| review_stuck(q, r)).count()
+                    + q.merges.iter().filter(|m| merge_stuck(q, m)).count(),
+                "finished": q.reviews.iter().filter(|r| !review_now(r)).count()
+                    + q.merges.iter().filter(|m| !merge_now(m)).count(),
                 "red_targets": q.targets.iter().filter(|t| t.state == "red").count(),
                 "unjudged_targets": q
                     .targets
