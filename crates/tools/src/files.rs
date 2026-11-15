@@ -26,21 +26,101 @@ pub struct Seen {
     pub digest: String,
     pub bytes: usize,
     table: Vec<Option<u64>>,
+    /// Lines shown only in part (a clipped prefix, a `column_offset` window): the line's
+    /// fingerprint and the byte ranges of it displayed, sorted and merged.
+    parts: BTreeMap<usize, (u64, Vec<(usize, usize)>)>,
+}
+
+/// Where a match of `len` bytes at byte `at` of `text` lies: its first line and the byte column
+/// it starts at there, its last line and the byte column it ends at (exclusive) there.
+pub fn hit_span(text: &str, at: usize, len: usize) -> (usize, usize, usize, usize) {
+    let at = at.min(text.len());
+    let start_of = |b: usize| text[..b].rfind('\n').map_or(0, |i| i + 1);
+    let first = text[..at].matches('\n').count() + 1;
+    let first_col = at - start_of(at);
+    let end = (at + len).min(text.len());
+    let last_byte = end.saturating_sub(1).max(at);
+    let last = text[..last_byte].matches('\n').count() + 1;
+    let last_start = start_of(last_byte);
+    let line_len = text[last_start..]
+        .find('\n')
+        .unwrap_or(text.len() - last_start);
+    (first, first_col, last, (end - last_start).min(line_len))
 }
 
 impl Seen {
     /// May an edit replace lines `first..=last`, given the file's current lines?
     pub fn check(&self, lines: &[&str], first: usize, last: usize) -> Cover {
+        let end = lines.get(last.wrapping_sub(1)).map_or(0, |l| l.len());
+        self.check_span(lines, first, 0, last, end)
+    }
+
+    /// May an edit replace the bytes from column `first_col` of line `first` to column `last_end`
+    /// of line `last`? A line shown in part covers a change that lies inside a shown range.
+    pub fn check_span(
+        &self,
+        lines: &[&str],
+        first: usize,
+        first_col: usize,
+        last: usize,
+        last_end: usize,
+    ) -> Cover {
         for n in first..=last {
-            match (self.table.get(n - 1), lines.get(n - 1)) {
-                (Some(Some(was)), Some(is)) if fp_line(is) == *was => continue,
-                (Some(Some(_)), Some(_)) => return Cover::Stale,
-                // No stored line, or a line the current file does not have:
-                // either way the model was never shown what it is replacing.
-                _ => return Cover::Never,
+            let Some(is) = lines.get(n.wrapping_sub(1)) else {
+                return Cover::Never;
+            };
+            match self.table.get(n - 1) {
+                Some(Some(was)) if fp_line(is) == *was => continue,
+                Some(Some(_)) => return Cover::Stale,
+                _ => {}
+            }
+            let Some((was, ranges)) = self.parts.get(&n) else {
+                // Never stored: the model was never shown what it is replacing.
+                return Cover::Never;
+            };
+            if fp_line(is) != *was {
+                return Cover::Stale;
+            }
+            let a = if n == first { first_col } else { 0 };
+            let b = if n == last { last_end } else { is.len() };
+            if !ranges.iter().any(|&(x, y)| x <= a && b <= y) {
+                return Cover::Never;
             }
         }
         Cover::Covered
+    }
+
+    /// Bytes `from..to` of line `n` were displayed. A line shown whole by now is moved to the table.
+    pub fn mark_part(&mut self, lines: &[&str], n: usize, from: usize, to: usize) {
+        let Some(line) = lines.get(n.wrapping_sub(1)) else {
+            return;
+        };
+        let fp = fp_line(line);
+        if matches!(self.table.get(n - 1), Some(Some(was)) if *was == fp) {
+            return;
+        }
+        let slot = self.parts.entry(n).or_insert((fp, Vec::new()));
+        if slot.0 != fp {
+            *slot = (fp, Vec::new());
+        }
+        slot.1.push((from.min(line.len()), to.min(line.len())));
+        slot.1.sort_unstable();
+        let mut merged: Vec<(usize, usize)> = Vec::new();
+        for (x, y) in slot.1.drain(..) {
+            match merged.last_mut() {
+                Some(last) if x <= last.1 => last.1 = last.1.max(y),
+                _ => merged.push((x, y)),
+            }
+        }
+        if merged
+            .first()
+            .is_some_and(|&(x, y)| x == 0 && y >= line.len())
+        {
+            self.parts.remove(&n);
+            self.mark(lines, n, n);
+        } else {
+            slot.1 = merged;
+        }
     }
 
     /// Move the table across this session's own edit. Lines above the change
@@ -63,6 +143,19 @@ impl Seen {
             }
         }
         self.table = out;
+        self.parts = std::mem::take(&mut self.parts)
+            .into_iter()
+            .filter_map(|(n, p)| {
+                if n < span.first {
+                    Some((n, p))
+                } else if n > span.last_before {
+                    Some(((n as isize + delta) as usize, p))
+                } else {
+                    None
+                }
+            })
+            .filter(|(n, _)| *n >= 1 && *n <= after_lines)
+            .collect();
     }
 
     pub fn mark(&mut self, lines: &[&str], first: usize, last: usize) {
@@ -76,6 +169,7 @@ impl Seen {
         }
         for n in first..=last {
             self.table[n - 1] = Some(fp_line(lines[n - 1]));
+            self.parts.remove(&n);
         }
     }
 
@@ -105,10 +199,16 @@ impl Seen {
                 format!("{a}-{b}")
             });
         }
-        if runs.is_empty() {
-            "none of it".to_string()
-        } else {
-            format!("lines {}", runs.join(", "))
+        let parts: Vec<String> = self.parts.keys().map(|n| n.to_string()).collect();
+        match (runs.is_empty(), parts.is_empty()) {
+            (true, true) => "none of it".to_string(),
+            (false, true) => format!("lines {}", runs.join(", ")),
+            (true, false) => format!("part of line(s) {}", parts.join(", ")),
+            (false, false) => format!(
+                "lines {} and part of line(s) {}",
+                runs.join(", "),
+                parts.join(", ")
+            ),
         }
     }
 }
@@ -152,6 +252,7 @@ impl FileLedger {
         s.digest = crate::spill::content_hash(content);
         s.bytes = content.len();
         s.table = Vec::new();
+        s.parts.clear();
         s.mark(&lines, 1, lines.len());
     }
 
@@ -170,6 +271,18 @@ impl FileLedger {
         }
     }
 
+    /// Part of line `n` was displayed: bytes `from..to` of it. The digest is recorded as in
+    /// [`FileLedger::mark_read`], since the bytes were read.
+    pub fn mark_part(&self, path: &str, content: &[u8], n: usize, from: usize, to: usize) {
+        let text = String::from_utf8_lossy(content);
+        let lines: Vec<&str> = display_lines(&text);
+        let mut g = self.entry();
+        let s = g.entry(normalise(path)).or_default();
+        s.digest = crate::spill::content_hash(content);
+        s.bytes = content.len();
+        s.mark_part(&lines, n, from, to);
+    }
+
     /// Search hits, with any context the same call displayed. No digest: a
     /// search says nothing about the file as a whole.
     pub fn mark_hits(&self, path: &str, lines: &[(usize, &str)]) {
@@ -183,6 +296,7 @@ impl FileLedger {
             s.table.resize(total, None);
             if n >= 1 {
                 s.table[n - 1] = Some(fp_line(text));
+                s.parts.remove(&n);
             }
         }
     }
@@ -216,6 +330,19 @@ impl FileLedger {
         }
     }
 
+    /// [`Seen::check_span`] for `path`.
+    pub fn check_span(
+        &self,
+        path: &str,
+        lines: &[&str],
+        (first, first_col, last, last_end): (usize, usize, usize, usize),
+    ) -> Cover {
+        match self.entry().get(&normalise(path)) {
+            Some(s) => s.check_span(lines, first, first_col, last, last_end),
+            None => Cover::Never,
+        }
+    }
+
     /// The whole-file fact `write` gates on: `(digest, bytes)` at the last
     /// whole-file read or this session's own write. A path only ever touched by
     /// a search has no whole-file fact: its entry exists, its digest does not.
@@ -241,6 +368,7 @@ impl FileLedger {
             Some(s) => {
                 let mut t = s.clone();
                 t.table.truncate(total);
+                t.parts.retain(|n, _| *n <= total);
                 t.describe()
             }
             None => "none of it".to_string(),
@@ -302,6 +430,31 @@ mod tests {
         let lines: Vec<&str> = after.iter().map(|s| s.as_str()).collect();
         assert_eq!(l.check("a.rs", &lines, 12, 12), Cover::Covered);
         assert_eq!(l.check("a.rs", &lines, 900, 900), Cover::Stale);
+    }
+
+    #[test]
+    fn a_part_shown_covers_a_change_inside_it_and_moves_with_an_edit_above() {
+        let mut s = Seen::default();
+        let before = "head\n0123456789abcdef\n";
+        let lines: Vec<&str> = before.lines().collect();
+        s.mark_part(&lines, 2, 4, 10);
+        assert_eq!(s.check_span(&lines, 2, 5, 2, 9), Cover::Covered);
+        assert_eq!(s.check_span(&lines, 2, 3, 2, 9), Cover::Never);
+        assert_eq!(s.check(&lines, 2, 2), Cover::Never);
+        assert_eq!(hit_span(before, 9, 4), (2, 4, 2, 8));
+        assert_eq!(hit_span(before, 0, 6), (1, 0, 2, 1));
+
+        // A line added above moves the part down with its line.
+        let after = "new\nhead\n0123456789abcdef\n";
+        s.reseat(before, after);
+        let lines: Vec<&str> = after.lines().collect();
+        assert_eq!(s.check_span(&lines, 3, 5, 3, 9), Cover::Covered);
+
+        // The rest shown too: the line is whole now.
+        s.mark_part(&lines, 3, 0, 4);
+        s.mark_part(&lines, 3, 10, 16);
+        assert_eq!(s.check(&lines, 3, 3), Cover::Covered);
+        assert!(s.parts.is_empty());
     }
 
     #[test]

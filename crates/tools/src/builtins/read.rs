@@ -36,6 +36,8 @@ impl Tool for Read {
                     "path": {"type": "string", "description": "File to read, relative to the session root."},
                     "offset": {"type": "integer", "description": "First line to return, 1-based."},
                     "limit": {"type": "integer", "description": "How many lines to return."},
+                    "column_offset": {"type": "integer", "description": "Zero-based character offset into line `offset`. With it (or `columns`) the call reads that one line, from this character on, so a line too long to show whole is read in pieces and each piece can be edited."},
+                    "columns": {"type": "integer", "description": "How many characters of line `offset` to return from `column_offset`; at most 32768, the default."},
                     "ranges": {
                         "type": "array",
                         "description": "Several windows of THIS file in one call, instead of one `read` per window. Each is `offset` (1-based) and optional `limit`. Use it when you already know two or three places to look — it is one call and one gate decision instead of several. Overrides `offset`/`limit`.",
@@ -146,6 +148,23 @@ impl Tool for Read {
             .filter(|n| *n > 0)
             .map(|n| n as usize);
 
+        let column_offset = args.get("column_offset").and_then(|v| v.as_i64());
+        let columns = args.get("columns").and_then(|v| v.as_i64());
+        if column_offset.is_some() || columns.is_some() {
+            if args.get("ranges").is_some() {
+                return Invocation::failed(
+                    "`column_offset` and `columns` read one line, and `ranges` reads several",
+                    "call `read` with `offset` and `column_offset` (and optionally `columns`), \
+                     without `ranges`.",
+                );
+            }
+            let col = column_offset.unwrap_or(0).max(0) as usize;
+            let want = columns
+                .filter(|n| *n > 0)
+                .map_or(usize::MAX, |n| n as usize);
+            return column_window(ctx, path, &bytes, &lines, want_offset, col, want, lossy);
+        }
+
         let mut notes = Vec::new();
         if lossy {
             notes.push(format!(
@@ -208,6 +227,9 @@ impl Tool for Read {
         // line clipped at the character cap is not added: the model saw a prefix
         // of it, and an edit aimed from that prefix is aimed at a memory.
         let mut shown: Vec<usize> = Vec::new();
+        // Lines shown as a prefix: the line and the prefix's length in bytes and characters.
+        let mut prefixes: Vec<(usize, usize, usize)> = Vec::new();
+        let mut named_clip: Option<(usize, usize)> = None;
         for &(w_offset, w_end, named) in &windows {
             let line_cap = if named {
                 ctx.limits.max_read_bytes
@@ -229,6 +251,11 @@ impl Tool for Read {
                 }
                 if clipped {
                     truncated += 1;
+                    let head = chars_head(line, line_cap).len();
+                    prefixes.push((w_offset + i, head, line_cap));
+                    if named {
+                        named_clip.get_or_insert((w_offset + i, line_cap));
+                    }
                 } else {
                     shown.push(w_offset + i);
                 }
@@ -249,13 +276,21 @@ impl Tool for Read {
             ctx.files.mark_whole(path, &bytes);
         } else {
             ctx.files.mark_read(path, &bytes, &shown);
+            for &(n, head, _) in &prefixes {
+                ctx.files.mark_part(path, &bytes, n, 0, head);
+            }
         }
 
-        if truncated > 0 {
+        if let Some((n, at)) = named_clip {
+            notes.push(format!(
+                "line {n} is longer than {at} characters and is clipped there; call read \
+                 with offset={n} and column_offset={at} for the rest"
+            ));
+        } else if truncated > 0 {
             notes.push(format!(
                 "{truncated} line(s) were longer than read shows and are clipped; read one \
-                 with offset=N and limit=1 to see it whole (up to {} characters) so it can \
-                 be edited, or grep the file for the text you need",
+                 with offset=N and limit=1 to see it whole (up to {} characters), and past \
+                 that with column_offset, or grep the file for the text you need",
                 ctx.limits.max_read_bytes
             ));
         }
@@ -296,6 +331,63 @@ impl Tool for Read {
         inv.notes = notes;
         inv
     }
+}
+
+/// One line from character `col`, `want` characters of it at most and never more than the byte
+/// budget's worth. The piece shown is marked in the ledger, so an edit inside it lands.
+#[allow(clippy::too_many_arguments)] // one call site; a struct would only rename the arguments
+fn column_window(
+    ctx: &mut InvokeCtx<'_>,
+    path: &str,
+    bytes: &[u8],
+    lines: &[&str],
+    n: usize,
+    col: usize,
+    want: usize,
+    lossy: bool,
+) -> Invocation {
+    let Some(line) = lines.get(n - 1) else {
+        return Invocation::failed(
+            format!("{path} has no line {n}; it has {} line(s)", lines.len()),
+            "call `read` with an `offset` inside the file.",
+        );
+    };
+    let len = line.chars().count();
+    if col > len || (col == len && len > 0) {
+        return Invocation::failed(
+            format!("column_offset {col} is past the end of line {n}, which has {len} characters"),
+            "call `read` with a smaller `column_offset`, or without one to see the line from \
+             its start.",
+        );
+    }
+    let take = want.min(ctx.limits.max_read_bytes).min(len - col);
+    let byte_at = |c: usize| line.char_indices().nth(c).map_or(line.len(), |(b, _)| b);
+    let (from, to) = (byte_at(col), byte_at(col + take));
+    let end = col + take;
+    let mut notes = Vec::new();
+    if lossy {
+        notes.push(format!(
+            "{path} is not valid UTF-8; undecodable bytes are shown as U+FFFD"
+        ));
+    }
+    if col > 0 || end < len {
+        notes.push(if end < len {
+            format!(
+                "line {n}, characters {col}-{end} of {len}; call read with offset={n} and \
+                 column_offset={end} for the rest"
+            )
+        } else {
+            format!("line {n}, characters {col}-{end} of {len}, to its end")
+        });
+    }
+    if from == 0 && to == line.len() {
+        ctx.files.mark_read(path, bytes, &[n]);
+    } else {
+        ctx.files.mark_part(path, bytes, n, from, to);
+    }
+    let mut inv = Invocation::ok(format!("{n:>6}| {}\n", &line[from..to]));
+    inv.notes = notes;
+    inv
 }
 
 /// The first `max` characters of a line, whether anything was cut, and the cap named: a reader
@@ -602,6 +694,99 @@ mod tests {
         );
         assert!(r.is_grounded(), "{}", r.render());
         assert!(h.read_file("t.md").contains("cell last |"));
+    }
+
+    /// A line over the byte budget is read in pieces with `column_offset`, each piece is marked
+    /// shown, and an edit inside a shown piece lands while one past it is refused by name.
+    #[test]
+    fn a_line_over_the_budget_is_read_in_pieces_and_edited_inside_one() {
+        let mut h = crate::testing::writable_harness();
+        let row = format!("{}MIDDLE{}TAIL", "a".repeat(40_000), "b".repeat(30_000));
+        h.write_file("big.md", &format!("# t\n{row}\nend\n"));
+
+        let r = h.call("read", r#"{"path":"big.md","offset":2,"limit":1}"#);
+        let notes = r.notes.join(" ");
+        assert!(notes.contains("column_offset=32768"), "{notes}");
+
+        let r = h.call(
+            "edit",
+            r#"{"path":"big.md","old_string":"aMIDDLEb","new_string":"aCENTREb"}"#,
+        );
+        assert!(!r.is_grounded(), "{}", r.render());
+        assert!(r.render().contains("column_offset=39999"), "{}", r.render());
+
+        let r = h.call(
+            "read",
+            r#"{"path":"big.md","offset":2,"column_offset":32768}"#,
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+        assert!(r.payload.starts_with("     2| a"), "{}", &r.payload[..40]);
+        assert!(r.payload.contains("MIDDLE"));
+        let notes = r.notes.join(" ");
+        assert!(
+            notes.contains("characters 32768-65536 of 70010")
+                && notes.contains("column_offset=65536"),
+            "{notes}"
+        );
+        // The tail is past the piece shown.
+        let r = h.call(
+            "edit",
+            r#"{"path":"big.md","old_string":"bTAIL","new_string":"bEND"}"#,
+        );
+        assert!(!r.is_grounded(), "{}", r.render());
+        let r = h.call(
+            "read",
+            r#"{"path":"big.md","offset":2,"column_offset":69990,"columns":100}"#,
+        );
+        assert!(r.payload.contains("bbbTAIL"), "{}", r.payload);
+        assert!(r.notes.join(" ").contains("to its end"), "{:?}", r.notes);
+        let r = h.call(
+            "edit",
+            r#"{"path":"big.md","old_string":"bTAIL","new_string":"bEND"}"#,
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+        let r = h.call(
+            "edit",
+            r#"{"path":"big.md","old_string":"aMIDDLEb","new_string":"aCENTREb"}"#,
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+        let after = h.read_file("big.md");
+        assert!(after.contains("aCENTREb") && after.contains("bEND"));
+    }
+
+    /// The clipped prefix of an unbounded read was displayed, so an edit inside it lands.
+    #[test]
+    fn an_edit_inside_the_shown_prefix_of_a_clipped_line_lands() {
+        let mut h = crate::testing::writable_harness();
+        let row = format!("START{}", "x".repeat(5_000));
+        h.write_file("m.js", &format!("{row}\n"));
+        let r = h.call("read", r#"{"path":"m.js"}"#);
+        assert!(r.payload.contains("[line clipped at 2000 characters]"));
+        let r = h.call(
+            "edit",
+            r#"{"path":"m.js","old_string":"STARTxx","new_string":"BEGINxx"}"#,
+        );
+        assert!(r.is_grounded(), "{}", r.render());
+        assert!(h.read_file("m.js").starts_with("BEGINxx"));
+    }
+
+    #[test]
+    fn a_column_read_past_the_line_or_with_ranges_is_refused_by_name() {
+        let mut h = crate::testing::harness();
+        h.write_file("s.txt", "short\n");
+        let r = h.call("read", r#"{"path":"s.txt","offset":1,"column_offset":9}"#);
+        assert!(!r.is_grounded());
+        assert!(r.render().contains("has 5 characters"), "{}", r.render());
+        let r = h.call(
+            "read",
+            r#"{"path":"s.txt","column_offset":1,"ranges":[{"offset":1}]}"#,
+        );
+        assert!(!r.is_grounded());
+        let r = h.call(
+            "read",
+            r#"{"path":"s.txt","offset":1,"column_offset":2,"columns":2}"#,
+        );
+        assert!(r.payload.contains("     1| or"), "{}", r.payload);
     }
 
     #[test]

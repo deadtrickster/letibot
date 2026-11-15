@@ -325,22 +325,22 @@ fn batch(ctx: &mut InvokeCtx<'_>, path: &str, args: &Value) -> Invocation {
         }
         {
             let lines_now: Vec<&str> = text.lines().collect();
-            let line_of = |byte: usize| text[..byte.min(text.len())].matches('\n').count() + 1;
-            let mut uncovered: Option<(usize, usize, crate::files::Cover)> = None;
+            let mut uncovered: Option<((usize, usize, usize, usize), crate::files::Cover)> = None;
             for &at in &hits {
-                let first = line_of(at);
-                let last = line_of(at + needle.len().saturating_sub(1));
+                let span = crate::files::hit_span(&text, at, needle.len());
+                let (first, first_col, last, last_end) = span;
                 let cover = match shown.as_ref() {
-                    Some(s) => s.check(&lines_now, first, last),
+                    Some(s) => s.check_span(&lines_now, first, first_col, last, last_end),
                     None => crate::files::Cover::Never,
                 };
                 if cover != crate::files::Cover::Covered {
-                    uncovered = Some((first, last, cover));
+                    uncovered = Some((span, cover));
                     break;
                 }
             }
-            if let Some((first, last, cover)) = uncovered {
-                return unshown_refusal(ctx.files, path, first, last, cover, lines_now.len())
+            if let Some((span, cover)) = uncovered {
+                let long = long_line_column(&lines_now, span, ctx.limits.max_read_line_chars);
+                return unshown_refusal(ctx.files, path, span, long, cover, lines_now.len())
                     .with_note(format!("step {n} of {} is the one refused", steps.len()));
             }
         }
@@ -424,15 +424,20 @@ fn excerpt(needle: &str) -> String {
 fn unshown_refusal(
     files: &crate::files::FileLedger,
     path: &str,
-    first: usize,
-    last: usize,
+    (first, _, last, _): (usize, usize, usize, usize),
+    long: Option<usize>,
     cover: crate::files::Cover,
     total: usize,
 ) -> Invocation {
-    let read = format!(
-        "call `read` with offset={first} and limit={} and edit again",
-        last + 1 - first
-    );
+    let read = match long {
+        Some(col) => format!(
+            "call `read` with offset={first}, limit=1 and column_offset={col} and edit again"
+        ),
+        None => format!(
+            "call `read` with offset={first} and limit={} and edit again",
+            last + 1 - first
+        ),
+    };
     // What was shown, unless nothing was: the reason already says these lines were not.
     let shown = match files.describe(path, total) {
         none if none == "none of it" => String::new(),
@@ -469,25 +474,37 @@ fn shown_gate(
     hits: &[usize],
 ) -> Option<Invocation> {
     let lines = display_lines(&file.lf);
-    let mut uncovered: Option<(usize, usize, crate::files::Cover)> = None;
+    let mut uncovered: Option<((usize, usize, usize, usize), crate::files::Cover)> = None;
     for &at in hits {
-        let first = file.line_of(at);
-        let last = file.line_of(at + old.len().saturating_sub(1));
-        let cover = ctx.files.check(path, &lines, first, last);
+        let span = crate::files::hit_span(&file.lf, at, old.len());
+        let cover = ctx.files.check_span(path, &lines, span);
         if cover != crate::files::Cover::Covered {
-            uncovered = Some((first, last, cover));
+            uncovered = Some((span, cover));
             break;
         }
     }
-    let (first, last, cover) = uncovered?;
+    let (span, cover) = uncovered?;
+    let long = long_line_column(&lines, span, ctx.limits.max_read_line_chars);
     Some(unshown_refusal(
         ctx.files,
         path,
-        first,
-        last,
+        span,
+        long,
         cover,
         lines.len(),
     ))
+}
+
+/// For a match inside one line longer than `read` shows by default: the character column it
+/// starts at, so the refusal can name the `column_offset` read that shows it.
+fn long_line_column(
+    lines: &[&str],
+    (first, first_col, last, _): (usize, usize, usize, usize),
+    clip: usize,
+) -> Option<usize> {
+    let line = lines.get(first.wrapping_sub(1))?;
+    (first == last && line.chars().count() > clip)
+        .then(|| line[..first_col.min(line.len())].chars().count())
 }
 
 /// The write, and everything that has to be true at the moment it happens.
