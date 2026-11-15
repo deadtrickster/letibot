@@ -1,19 +1,21 @@
-//! An MCP client for `letibot-tools`' catalogue seam: stdio and plain-HTTP JSON-RPC, blocking,
-//! one lock per server. Servers start in parallel at [`Catalog::start`]; one that fails is kept
-//! as a [`Failure`] and the rest serve anyway.
+//! An MCP client for `letibot-tools`' catalogue seam: stdio and streamable-HTTP JSON-RPC,
+//! blocking, one lock per server. Servers start in parallel at [`Catalog::start`]; one that fails
+//! is kept as a [`Failure`] and the rest serve anyway. One that dies later is restarted on a later
+//! call, with backoff.
 
 mod wire;
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
-use std::time::Duration;
+use std::path::PathBuf;
+use std::sync::{Mutex, RwLock};
+use std::time::{Duration, Instant};
 
 use letibot_tools::builtins::external::mcp::{
     McpCallResult, McpCatalog, McpError, McpServer, McpToolSpec,
 };
 use serde_json::{Value, json};
 
-use wire::{Wire, WireError};
+use wire::{TOOLS_CHANGED, Wire, WireError};
 
 /// The protocol revision this client speaks first; a server answering an older one is accepted.
 pub const PROTOCOL_VERSION: &str = "2025-06-18";
@@ -29,8 +31,10 @@ pub enum Transport {
         command: String,
         args: Vec<String>,
         env: BTreeMap<String, String>,
+        /// The directory it runs in; `None` is the daemon's own.
+        cwd: Option<PathBuf>,
     },
-    /// Streamable HTTP over `http://`. No TLS: the shared client has none.
+    /// Streamable HTTP over `http://` or `https://`.
     Http {
         url: String,
         headers: BTreeMap<String, String>,
@@ -51,6 +55,12 @@ pub struct ServerSpec {
 pub struct Failure {
     pub server: String,
     pub why: String,
+}
+
+/// The reconnect ladder: the first retry is at once, then 500 ms doubling to 30 s.
+fn backoff(failed: u32) -> Duration {
+    let ms = 500u64.saturating_mul(1 << failed.saturating_sub(1).min(16));
+    Duration::from_millis(ms.min(30_000))
 }
 
 /// One live connection.
@@ -162,6 +172,14 @@ impl Client {
         Ok(answer.get("result").cloned().unwrap_or(Value::Null))
     }
 
+    /// Whether the server said its tool list changed since this was last asked.
+    fn tools_changed(&mut self) -> bool {
+        if self.dead.is_some() {
+            return false;
+        }
+        self.wire.take_notices().iter().any(|m| m == TOOLS_CHANGED)
+    }
+
     fn call(&mut self, tool: &str, args: &Value) -> Result<McpCallResult, McpError> {
         let result = self.request("tools/call", json!({"name": tool, "arguments": args}))?;
         Ok(McpCallResult {
@@ -227,10 +245,85 @@ fn err_text(e: &McpError) -> String {
     }
 }
 
+/// A server's connection, and when it may be tried again after it went down.
+struct Link {
+    client: Option<Client>,
+    /// Why it went down, failed reconnects since, and the earliest next try.
+    down: Option<(String, u32, Instant)>,
+}
+
 struct Entry {
-    name: String,
-    tools: Vec<McpToolSpec>,
-    client: Mutex<Client>,
+    spec: ServerSpec,
+    /// Behind its own lock so a listing never waits on a call in flight.
+    tools: RwLock<Vec<McpToolSpec>>,
+    link: Mutex<Link>,
+}
+
+impl Entry {
+    fn set_tools(&self, tools: Vec<McpToolSpec>) {
+        *self.tools.write().unwrap_or_else(|e| e.into_inner()) = tools;
+    }
+
+    /// List again if the server said its tools changed.
+    fn refresh(&self, link: &mut Link) {
+        if let Some(c) = link.client.as_mut()
+            && c.tools_changed()
+            && let Ok(tools) = c.list_tools()
+        {
+            self.set_tools(tools);
+        }
+    }
+
+    /// A live client, reconnecting one that went down once its backoff has passed.
+    fn up<'a>(&self, link: &'a mut Link) -> Result<&'a mut Client, McpError> {
+        if let Some((why, failed, next)) = link.down.clone() {
+            let now = Instant::now();
+            if now < next {
+                return Err(McpError::Transport(format!(
+                    "the server is down ({why}); the next restart is in {:.1}s",
+                    (next - now).as_secs_f64()
+                )));
+            }
+            match Client::connect(&self.spec) {
+                Ok((client, tools)) => {
+                    self.set_tools(tools);
+                    link.client = Some(client);
+                    link.down = None;
+                }
+                Err(e) => {
+                    let failed = failed + 1;
+                    let wait = backoff(failed);
+                    link.client = None;
+                    link.down = Some((why.clone(), failed, Instant::now() + wait));
+                    return Err(McpError::Transport(format!(
+                        "the server is down ({why}) and did not restart: {e}; the next restart \
+                         is in {:.1}s",
+                        wait.as_secs_f64()
+                    )));
+                }
+            }
+        }
+        link.client
+            .as_mut()
+            .ok_or_else(|| McpError::Transport("the server is not connected".into()))
+    }
+
+    fn call(&self, tool: &str, args: &Value) -> Result<McpCallResult, McpError> {
+        let mut link = self.link.lock().unwrap_or_else(|e| e.into_inner());
+        self.refresh(&mut link);
+        let client = self.up(&mut link)?;
+        let out = client.call(tool, args);
+        if let Some(why) = client.dead.clone() {
+            // The call in flight is not retried: it may have acted before the server died.
+            link.client = None;
+            link.down = Some((why.clone(), 0, Instant::now()));
+            return Err(McpError::Transport(format!(
+                "{why}; it is restarted on the next call"
+            )));
+        }
+        self.refresh(&mut link);
+        out
+    }
 }
 
 /// Every configured server, connected or failed.
@@ -245,28 +338,32 @@ impl Catalog {
         let outcomes: Vec<_> = std::thread::scope(|s| {
             let handles: Vec<_> = specs
                 .iter()
-                .map(|spec| s.spawn(move || (spec.name.clone(), Client::connect(spec))))
+                .map(|spec| s.spawn(move || Client::connect(spec)))
                 .collect();
             handles
                 .into_iter()
-                .zip(specs)
-                .map(|(h, spec)| {
-                    h.join().unwrap_or_else(|_| {
-                        (spec.name.clone(), Err("the start thread panicked".into()))
-                    })
+                .map(|h| {
+                    h.join()
+                        .unwrap_or_else(|_| Err("the start thread panicked".into()))
                 })
                 .collect()
         });
         let mut entries = Vec::new();
         let mut failures = Vec::new();
-        for (name, outcome) in outcomes {
+        for (spec, outcome) in specs.iter().zip(outcomes) {
             match outcome {
                 Ok((client, tools)) => entries.push(Entry {
-                    name,
-                    tools,
-                    client: Mutex::new(client),
+                    spec: spec.clone(),
+                    tools: RwLock::new(tools),
+                    link: Mutex::new(Link {
+                        client: Some(client),
+                        down: None,
+                    }),
                 }),
-                Err(why) => failures.push(Failure { server: name, why }),
+                Err(why) => failures.push(Failure {
+                    server: spec.name.clone(),
+                    why,
+                }),
             }
         }
         Catalog { entries, failures }
@@ -289,28 +386,36 @@ impl McpCatalog for Catalog {
     fn servers(&self) -> Vec<McpServer> {
         self.entries
             .iter()
-            .map(|e| McpServer {
-                name: e.name.clone(),
-                tools: e.tools.clone(),
+            .map(|e| {
+                // A server busy with a call keeps its last list; the call refreshes it after.
+                if let Ok(mut link) = e.link.try_lock() {
+                    e.refresh(&mut link);
+                }
+                McpServer {
+                    name: e.spec.name.clone(),
+                    tools: e.tools.read().unwrap_or_else(|e| e.into_inner()).clone(),
+                }
             })
             .collect()
     }
 
     fn call(&self, server: &str, tool: &str, args: &Value) -> Result<McpCallResult, McpError> {
-        let Some(entry) = self.entries.iter().find(|e| e.name == server) else {
+        let Some(entry) = self.entries.iter().find(|e| e.spec.name == server) else {
             return Err(McpError::Transport(format!(
                 "no MCP server `{server}` is connected"
             )));
         };
-        let mut client = entry.client.lock().unwrap_or_else(|e| e.into_inner());
-        client.call(tool, args)
+        entry.call(tool, args)
     }
 
     fn describe(&self) -> String {
         let up: Vec<String> = self
             .entries
             .iter()
-            .map(|e| format!("{} ({} tools)", e.name, e.tools.len()))
+            .map(|e| {
+                let n = e.tools.read().unwrap_or_else(|e| e.into_inner()).len();
+                format!("{} ({n} tools)", e.spec.name)
+            })
             .collect();
         let mut s = if up.is_empty() {
             "none connected".to_string()
@@ -328,6 +433,16 @@ impl McpCatalog for Catalog {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ladder_starts_at_once_then_doubles_from_half_a_second_to_thirty() {
+        let ms: Vec<u128> = (1..=9).map(|n| backoff(n).as_millis()).collect();
+        assert_eq!(
+            ms,
+            [500, 1000, 2000, 4000, 8000, 16000, 30000, 30000, 30000]
+        );
+        assert_eq!(backoff(u32::MAX).as_millis(), 30000);
+    }
 
     #[test]
     fn content_renders_text_and_names_the_rest() {

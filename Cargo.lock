@@ -1669,10 +1669,10 @@ dependencies = [
 name = "letibot-mcp-client"
 version = "0.6.0"
 dependencies = [
- "letibot-http",
  "letibot-tools",
  "letibot-transcript",
  "serde_json",
+ "ureq",
 ]
 
 [[package]]

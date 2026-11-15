@@ -2099,3 +2099,73 @@ fn an_mcp_name_that_cannot_be_split_or_an_unknown_key_is_refused() {
     let e = LeticodeConfig::load(&bad).unwrap_err();
     assert!(e.contains("`comand` is not a key"), "{e}");
 }
+
+#[test]
+fn a_projects_mcp_json_is_read_in_the_shared_shape() {
+    let dir = project_dir("mcp_json");
+    assert_eq!(mcp_json(&dir).unwrap(), None, "no file");
+    std::fs::write(
+        dir.join(MCP_JSON),
+        r#"{"mcpServers": {
+            "fs": {"command": "npx", "args": ["-y", "srv"], "env": {"A": "1"}, "autoApprove": []},
+            "docs": {"type": "http", "url": "https://example.com/mcp", "headers": {"X": "y"}},
+            "old": {"type": "sse", "url": "https://example.com/sse"},
+            "off": {"command": "x", "disabled": true},
+            "a__b": {"command": "x"}
+        }}"#,
+    )
+    .unwrap();
+    let servers = mcp_json(&dir).unwrap().unwrap();
+    let fs = servers["fs"].as_ref().unwrap();
+    assert_eq!(fs.command.as_deref(), Some("npx"));
+    assert_eq!(fs.args, ["-y", "srv"]);
+    assert_eq!(fs.env["A"], "1");
+    assert_eq!(
+        fs.cwd.as_deref(),
+        Some(dir.as_path()),
+        "runs in the checkout"
+    );
+    assert!(fs.enabled);
+    let docs = servers["docs"].as_ref().unwrap();
+    assert_eq!(docs.url.as_deref(), Some("https://example.com/mcp"));
+    assert_eq!(docs.headers["X"], "y");
+    assert!(servers["old"].as_ref().unwrap_err().contains("`sse`"));
+    assert!(!servers["off"].as_ref().unwrap().enabled);
+    assert!(servers["a__b"].as_ref().unwrap_err().contains("`__`"));
+
+    std::fs::write(dir.join(MCP_JSON), "{not json").unwrap();
+    assert!(mcp_json(&dir).unwrap_err().contains(MCP_JSON));
+}
+
+#[test]
+fn only_the_user_file_trusts_a_checkout_and_trust_covers_what_is_under_it() {
+    let dir = project_dir("mcp_trust");
+    let repo = sub(&dir, "repo");
+    let inner = sub(&repo, "inner");
+    let path = write_file(
+        &dir,
+        &format!("[mcp_projects]\ntrusted = [\"{}\"]\n", repo.display()),
+    );
+    let user = LeticodeConfig::load_as(&path, Level::User).unwrap();
+    assert_eq!(user.mcp_trusted, std::slice::from_ref(&repo));
+    assert!(mcp_trusts(&user.mcp_trusted, &repo));
+    assert!(mcp_trusts(&user.mcp_trusted, &inner));
+    assert!(!mcp_trusts(&user.mcp_trusted, &dir));
+
+    let project = LeticodeConfig::load(&path).unwrap();
+    assert!(
+        LeticodeConfig::default()
+            .overridden_by(&project)
+            .mcp_trusted
+            .is_empty(),
+        "a repository cannot trust itself"
+    );
+    assert_eq!(user.overridden_by(&project).mcp_trusted, user.mcp_trusted);
+
+    let bad = write_file(&dir, "[mcp_projects]\ntrusted = [\"rel/dir\"]\n");
+    let e = LeticodeConfig::load(&bad).unwrap_err();
+    assert!(e.contains("not an absolute path"), "{e}");
+    let bad = write_file(&dir, "[mcp_projects]\ntrust = []\n");
+    let e = LeticodeConfig::load(&bad).unwrap_err();
+    assert!(e.contains("`trust` is not a key"), "{e}");
+}

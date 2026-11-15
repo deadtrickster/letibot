@@ -29,6 +29,7 @@ fn fake(name: &str, args: &[&str]) -> ServerSpec {
             command: fake_bin(),
             args: args.iter().map(|a| a.to_string()).collect(),
             env: BTreeMap::new(),
+            cwd: None,
         },
         timeout: Duration::from_secs(20),
     }
@@ -64,7 +65,7 @@ fn tools_are_listed_searched_and_called() {
         .iter()
         .map(|t| t.name.clone())
         .collect();
-    assert_eq!(tools, ["echo", "big", "fail", "crash"]);
+    assert_eq!(tools, ["echo", "big", "fail", "crash", "grow", "pwd"]);
     let mut h = harness(Arc::new(cat), allow_all_mcp());
 
     let r = h.call("mcp_search", r#"{"query":"echo"}"#);
@@ -126,6 +127,7 @@ fn a_server_that_fails_to_start_is_reported_and_the_rest_start() {
                 command: "/nonexistent/letibot-mcp-server".into(),
                 args: vec![],
                 env: BTreeMap::new(),
+                cwd: None,
             },
             timeout: Duration::from_secs(5),
         },
@@ -151,7 +153,7 @@ fn a_server_that_fails_to_start_is_reported_and_the_rest_start() {
 }
 
 #[test]
-fn a_server_that_crashes_mid_call_is_reported_and_stays_down() {
+fn a_server_that_crashes_mid_call_is_reported_and_restarted_on_the_next_call() {
     let mut h = harness(
         Arc::new(Catalog::start(&[fake("fake", &[])])),
         allow_all_mcp(),
@@ -165,16 +167,94 @@ fn a_server_that_crashes_mid_call_is_reported_and_stays_down() {
     let said = r.render();
     assert!(said.contains("exited"), "{said}");
     assert!(said.contains("crashing on purpose"), "{said}");
+    assert!(said.contains("restarted on the next call"), "{said}");
     let r = h.call(
         "mcp_call",
-        r#"{"tool":"fake__echo","arguments":{"text":"x"}}"#,
+        r#"{"tool":"fake__echo","arguments":{"text":"back"}}"#,
     );
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
+    assert!(r.payload.contains("back"), "{}", r.payload);
+}
+
+#[test]
+fn a_restart_that_fails_waits_out_its_backoff_before_the_next() {
+    let dir = std::env::temp_dir().join(format!("letibot-mcp-once-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let marker = dir.join("started");
+    let _ = std::fs::remove_file(&marker);
+    let cat = Catalog::start(&[fake("fake", &["--once", marker.to_str().unwrap()])]);
+    assert!(cat.failures().is_empty(), "{:?}", cat.failures());
+    assert!(cat.call("fake", "crash", &serde_json::json!({})).is_err());
+
+    // The marker is still there, so the restart fails and arms the 500 ms rung.
+    let e = cat
+        .call("fake", "echo", &serde_json::json!({}))
+        .unwrap_err();
+    let said = format!("{e:?}");
+    assert!(said.contains("did not restart"), "{said}");
+    assert!(said.contains("started once already"), "{said}");
+    assert!(said.contains("next restart is in 0.5s"), "{said}");
+    std::fs::remove_file(&marker).unwrap();
+    let e = cat
+        .call("fake", "echo", &serde_json::json!({}))
+        .unwrap_err();
     assert!(
-        matches!(r.outcome, ToolOutcome::Failed { .. }),
-        "{:?}",
-        r.outcome
+        format!("{e:?}").contains("the next restart is in"),
+        "inside the backoff nothing is spawned: {e:?}"
     );
-    assert!(r.render().contains("exited"), "{}", r.render());
+    assert!(!marker.exists(), "no start was tried");
+
+    std::thread::sleep(Duration::from_millis(600));
+    let r = cat
+        .call("fake", "echo", &serde_json::json!({"text": "up"}))
+        .unwrap();
+    assert_eq!(r.text, "up");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_list_changed_notice_lists_the_tools_again() {
+    let cat = Arc::new(Catalog::start(&[fake("fake", &[])]));
+    let names = |c: &Catalog| -> Vec<String> {
+        c.servers()[0]
+            .tools
+            .iter()
+            .map(|t| t.name.clone())
+            .collect()
+    };
+    assert!(!names(&cat).contains(&"extra".to_string()));
+    cat.call("fake", "grow", &serde_json::json!({})).unwrap();
+    // The notice follows the answer on the pipe, so it is read on a later listing.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !names(&cat).contains(&"extra".to_string()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never relisted: {:?}",
+            names(&cat)
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let mut h = harness(cat, allow_all_mcp());
+    let r = h.call("mcp_call", r#"{"tool":"fake__extra"}"#);
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
+    assert!(r.payload.contains("extra ran"), "{}", r.payload);
+}
+
+#[test]
+fn a_stdio_server_runs_in_its_cwd() {
+    let dir = std::env::temp_dir().join(format!("letibot-mcp-cwd-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut spec = fake("fake", &[]);
+    if let Transport::Stdio { cwd, .. } = &mut spec.transport {
+        *cwd = Some(dir.clone());
+    }
+    let cat = Catalog::start(&[spec]);
+    let r = cat.call("fake", "pwd", &serde_json::json!({})).unwrap();
+    assert_eq!(
+        std::path::Path::new(&r.text).canonicalize().unwrap(),
+        dir.canonicalize().unwrap()
+    );
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

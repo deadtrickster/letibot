@@ -1,4 +1,4 @@
-//! The two transports: a child's stdio, and streamable HTTP over the shared blocking client.
+//! The two transports: a child's stdio, and streamable HTTP over ureq with rustls.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio as Piped};
@@ -31,14 +31,29 @@ pub(crate) trait Wire: Send {
     /// Send one request and wait for the response with the same id.
     fn request(&mut self, id: u64, msg: &Value, timeout: Duration) -> Result<Value, WireError>;
     fn notify(&mut self, msg: &Value) -> Result<(), WireError>;
+    /// The methods of the notifications seen since the last call, pending ones drained first.
+    fn take_notices(&mut self) -> Vec<String>;
 }
+
+/// The one notification acted on: the server's tool list changed, so it is listed again.
+pub(crate) const TOOLS_CHANGED: &str = "notifications/tools/list_changed";
 
 pub(crate) fn open(spec: &ServerSpec) -> Result<Box<dyn Wire>, String> {
     match &spec.transport {
-        Transport::Stdio { command, args, env } => {
-            Ok(Box::new(StdioWire::spawn(command, args, env)?))
+        Transport::Stdio {
+            command,
+            args,
+            env,
+            cwd,
+        } => Ok(Box::new(StdioWire::spawn(
+            command,
+            args,
+            env,
+            cwd.as_deref(),
+        )?)),
+        Transport::Http { url, headers } => {
+            Ok(Box::new(HttpWire::new(url, headers, spec.timeout)?))
         }
-        Transport::Http { url, headers } => Ok(Box::new(HttpWire::new(url, headers)?)),
     }
 }
 
@@ -50,6 +65,9 @@ struct StdioWire {
     stdin: ChildStdin,
     lines: Receiver<String>,
     stderr: Arc<Mutex<Vec<u8>>>,
+    /// Closed when the stderr drain reaches EOF, so a crash report waits for the last bytes.
+    stderr_done: Receiver<()>,
+    notices: Vec<String>,
 }
 
 impl StdioWire {
@@ -57,8 +75,13 @@ impl StdioWire {
         command: &str,
         args: &[String],
         env: &std::collections::BTreeMap<String, String>,
+        cwd: Option<&std::path::Path>,
     ) -> Result<StdioWire, String> {
-        let mut child = Command::new(command)
+        let mut cmd = Command::new(command);
+        if let Some(dir) = cwd {
+            cmd.current_dir(dir);
+        }
+        let mut child = cmd
             .args(args)
             .envs(env)
             .stdin(Piped::piped())
@@ -80,8 +103,10 @@ impl StdioWire {
         });
         let stderr = Arc::new(Mutex::new(Vec::new()));
         let tail = stderr.clone();
+        let (done, stderr_done) = channel::<()>();
         // Drained so a chatty server cannot block on a full pipe; only the tail is kept.
         std::thread::spawn(move || {
+            let _done = done;
             let mut buf = [0u8; 4096];
             while let Ok(n) = err.read(&mut buf) {
                 if n == 0 {
@@ -98,6 +123,8 @@ impl StdioWire {
             stdin,
             lines,
             stderr,
+            stderr_done,
+            notices: Vec::new(),
         })
     }
 
@@ -113,6 +140,8 @@ impl StdioWire {
                 _ => break None,
             }
         };
+        // A grandchild holding the pipe open would keep it from EOF, hence the bound.
+        let _ = self.stderr_done.recv_timeout(Duration::from_millis(500));
         let tail = {
             let t = self.stderr.lock().unwrap_or_else(|e| e.into_inner());
             String::from_utf8_lossy(&t).trim().to_string()
@@ -152,6 +181,17 @@ impl StdioWire {
         };
         self.write(&reply)
     }
+
+    /// A message that is not the answer waited for: a request is answered, a notice kept.
+    fn aside(&mut self, v: &Value) -> Result<(), WireError> {
+        if v.get("id").is_some() {
+            return self.answer(v);
+        }
+        if let Some(m) = v.get("method").and_then(Value::as_str) {
+            self.notices.push(m.to_string());
+        }
+        Ok(())
+    }
 }
 
 impl Wire for StdioWire {
@@ -167,9 +207,7 @@ impl Wire for StdioWire {
                         continue;
                     };
                     if v.get("method").is_some() {
-                        if v.get("id").is_some() {
-                            self.answer(&v)?;
-                        }
+                        self.aside(&v)?;
                         continue;
                     }
                     if v.get("id").and_then(Value::as_u64) == Some(id) {
@@ -185,6 +223,18 @@ impl Wire for StdioWire {
     fn notify(&mut self, msg: &Value) -> Result<(), WireError> {
         self.write(msg)
     }
+
+    fn take_notices(&mut self) -> Vec<String> {
+        while let Ok(line) = self.lines.try_recv() {
+            if let Ok(v) = serde_json::from_str::<Value>(&line)
+                && v.get("method").is_some()
+            {
+                // A dead pipe is found by the next request, which names the exit.
+                let _ = self.aside(&v);
+            }
+        }
+        std::mem::take(&mut self.notices)
+    }
 }
 
 impl Drop for StdioWire {
@@ -195,92 +245,81 @@ impl Drop for StdioWire {
 }
 
 struct HttpWire {
-    host: String,
-    port: u16,
-    path: String,
+    url: String,
+    agent: ureq::Agent,
     headers: Vec<(String, String)>,
     session: Option<String>,
+    notices: Vec<String>,
 }
 
 impl HttpWire {
     fn new(
         url: &str,
         headers: &std::collections::BTreeMap<String, String>,
+        timeout: Duration,
     ) -> Result<Self, String> {
-        if url.starts_with("https://") {
-            return Err(format!(
-                "`{url}`: https needs TLS and this build's HTTP client has none; use a stdio \
-                 server or a local http:// proxy"
-            ));
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            return Err(format!("`{url}` is not an http:// or https:// URL"));
         }
-        let rest = url
-            .strip_prefix("http://")
-            .ok_or_else(|| format!("`{url}` is not an http:// URL"))?;
-        let (authority, path) = match rest.find('/') {
-            Some(i) => (&rest[..i], rest[i..].to_string()),
-            None => (rest, "/".to_string()),
-        };
-        let (host, port) = match authority.rsplit_once(':') {
-            Some((h, p)) => (
-                h.to_string(),
-                p.parse().map_err(|e| format!("`{url}`: port `{p}`: {e}"))?,
-            ),
-            None => (authority.to_string(), 80),
-        };
-        if host.is_empty() {
-            return Err(format!("`{url}` has no host"));
-        }
+        let agent = ureq::Agent::config_builder()
+            .http_status_as_error(false)
+            .timeout_global(Some(timeout))
+            .build()
+            .into();
         Ok(HttpWire {
-            host,
-            port,
-            path,
+            url: url.to_string(),
+            agent,
             headers: headers
                 .iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect(),
             session: None,
+            notices: Vec::new(),
         })
     }
 
-    fn post(&mut self, msg: &Value, timeout: Duration) -> Result<letibot_http::Body, WireError> {
-        let mut endpoint = letibot_http::Endpoint::new(self.host.clone(), self.port);
-        endpoint.read_timeout = timeout;
-        let body = msg.to_string();
-        let mut owned: Vec<(String, String)> = vec![
-            ("Content-Type".into(), "application/json".into()),
-            (
-                "Accept".into(),
-                "application/json, text/event-stream".into(),
-            ),
-            (
-                "MCP-Protocol-Version".into(),
-                crate::PROTOCOL_VERSION.into(),
-            ),
-        ];
+    fn post(&mut self, msg: &Value) -> Result<ureq::http::Response<ureq::Body>, WireError> {
+        let mut req = self
+            .agent
+            .post(&self.url)
+            .header("Content-Type", "application/json")
+            .header("Accept", "application/json, text/event-stream")
+            .header("MCP-Protocol-Version", crate::PROTOCOL_VERSION);
         if let Some(s) = &self.session {
-            owned.push(("Mcp-Session-Id".into(), s.clone()));
+            req = req.header("Mcp-Session-Id", s);
         }
-        owned.extend(self.headers.iter().cloned());
-        let headers: Vec<(&str, &str)> = owned
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
-        let req = letibot_http::Request {
-            method: "POST",
-            path: &self.path,
-            headers: &headers,
-            body: Some(&body),
-        };
-        let res = letibot_http::send(&endpoint, req).map_err(|e| match e {
-            letibot_http::HttpError::Io(io) if io.kind() == std::io::ErrorKind::WouldBlock => {
-                WireError::Timeout(timeout)
-            }
-            letibot_http::HttpError::Io(io) if io.kind() == std::io::ErrorKind::TimedOut => {
-                WireError::Timeout(timeout)
-            }
+        for (k, v) in &self.headers {
+            req = req.header(k, v);
+        }
+        let res = req.send(msg.to_string()).map_err(|e| match e {
+            ureq::Error::Timeout(_) => WireError::Timeout(Duration::ZERO),
             other => WireError::Other(other.to_string()),
         })?;
-        if let Some(s) = res.header("mcp-session-id") {
+        let status = res.status().as_u16();
+        if status == 404 && self.session.is_some() {
+            // The spec's signal that the session is gone: only a new `initialize` serves.
+            return Err(WireError::Gone(format!(
+                "the server ended session {} (404)",
+                self.session.as_deref().unwrap_or("")
+            )));
+        }
+        if !(200..300).contains(&status) {
+            let text = res.into_body().read_to_string().unwrap_or_default();
+            let hint = if status == 401 {
+                "; OAuth is not supported, set an `Authorization` header in `headers`"
+            } else {
+                ""
+            };
+            return Err(WireError::Other(format!(
+                "HTTP {status}{hint}: {}",
+                text.trim()
+            )));
+        }
+        if let Some(s) = res
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+        {
             self.session = Some(s.to_string());
         }
         Ok(res)
@@ -289,35 +328,69 @@ impl HttpWire {
 
 impl Wire for HttpWire {
     fn request(&mut self, id: u64, msg: &Value, timeout: Duration) -> Result<Value, WireError> {
-        let res = self.post(msg, timeout)?;
+        let res = self.post(msg).map_err(|e| match e {
+            WireError::Timeout(_) => WireError::Timeout(timeout),
+            e => e,
+        })?;
         let sse = res
-            .header("content-type")
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
             .is_some_and(|c| c.contains("text/event-stream"));
+        let mut body = res.into_body();
         if !sse {
-            let text = res
+            let text = body
                 .read_to_string()
                 .map_err(|e| WireError::Other(e.to_string()))?;
             return serde_json::from_str(&text)
                 .map_err(|e| WireError::Other(format!("not a JSON-RPC answer ({e}): {text}")));
         }
-        let mut found = None;
-        res.for_each_event(|data| {
-            if let Ok(v) = serde_json::from_str::<Value>(data)
-                && v.get("method").is_none()
-                && v.get("id").and_then(Value::as_u64) == Some(id)
-            {
-                found = Some(v);
-                return Ok(letibot_http::Flow::Stop);
+        let mut data = String::new();
+        for line in BufReader::new(body.as_reader()).lines() {
+            let line = line.map_err(|e| WireError::Other(e.to_string()))?;
+            if let Some(d) = line.strip_prefix("data:") {
+                if !data.is_empty() {
+                    data.push('\n');
+                }
+                data.push_str(d.strip_prefix(' ').unwrap_or(d));
+                continue;
             }
-            Ok(letibot_http::Flow::Continue)
-        })
-        .map_err(|e| WireError::Other(e.to_string()))?;
-        found.ok_or_else(|| WireError::Other(format!("the stream ended without an answer to {id}")))
+            if !line.is_empty() || data.is_empty() {
+                continue;
+            }
+            let event = std::mem::take(&mut data);
+            let Ok(v) = serde_json::from_str::<Value>(&event) else {
+                continue;
+            };
+            if let Some(m) = v.get("method").and_then(Value::as_str) {
+                // A server request on this stream cannot be answered on it; only notices count.
+                if v.get("id").is_none() {
+                    self.notices.push(m.to_string());
+                }
+                continue;
+            }
+            if v.get("id").and_then(Value::as_u64) == Some(id) {
+                return Ok(v);
+            }
+        }
+        // A stream may end on its last event without the blank line.
+        if let Ok(v) = serde_json::from_str::<Value>(&data)
+            && v.get("id").and_then(Value::as_u64) == Some(id)
+        {
+            return Ok(v);
+        }
+        Err(WireError::Other(format!(
+            "the stream ended without an answer to {id}"
+        )))
     }
 
     fn notify(&mut self, msg: &Value) -> Result<(), WireError> {
-        let res = self.post(msg, Duration::from_secs(10))?;
-        let _ = res.read_to_string();
+        let res = self.post(msg)?;
+        let _ = res.into_body().read_to_string();
         Ok(())
+    }
+
+    fn take_notices(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.notices)
     }
 }

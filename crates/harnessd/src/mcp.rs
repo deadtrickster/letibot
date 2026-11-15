@@ -1,33 +1,104 @@
 //! The daemon's MCP servers: started once per distinct `[mcp]` config and shared by every
 //! session that opens under it, so a failure is reported by the open that started the pool.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
+use crate::config::Config;
 use crate::leticode_config::McpServerKeys;
 
-/// Whether any enabled server is configured: what seats the two doors.
-pub fn configured(tables: &std::collections::BTreeMap<String, McpServerKeys>) -> bool {
-    tables.values().any(|k| k.enabled)
+/// Each server a session may start, or why it cannot, by name.
+pub type Tables = BTreeMap<String, Result<McpServerKeys, String>>;
+
+/// The user's `[mcp]` tables, joined by the workspace's `.mcp.json` when `[mcp_projects]` trusts
+/// it, and a warning for each project server left unstarted. The user's table wins a name.
+pub fn servers(cfg: &Config) -> (Tables, Vec<String>) {
+    let mut tables: Tables = cfg
+        .leticode_user
+        .mcp
+        .iter()
+        .map(|(n, k)| (n.clone(), Ok(k.clone())))
+        .collect();
+    let mut warnings = Vec::new();
+    if !cfg.read_project_config {
+        return (tables, warnings);
+    }
+    let file = cfg.workspace.join(crate::leticode_config::MCP_JSON);
+    let project = match crate::leticode_config::mcp_json(&cfg.workspace) {
+        Ok(Some(p)) if !p.is_empty() => p,
+        Ok(_) => return (tables, warnings),
+        Err(why) => {
+            warnings.push(format!("{why}. Its MCP servers are not started."));
+            return (tables, warnings);
+        }
+    };
+    if !crate::leticode_config::mcp_trusts(&cfg.leticode_user.mcp_trusted, &cfg.workspace) {
+        let names: Vec<&str> = project.keys().map(String::as_str).collect();
+        warnings.push(format!(
+            "{} declares MCP server(s) {} and a checkout starts no process until the user \
+             leticode.toml trusts it: [mcp_projects] trusted = [\"{}\"].",
+            file.display(),
+            names.join(", "),
+            cfg.workspace.display()
+        ));
+        return (tables, warnings);
+    }
+    for (name, k) in project {
+        if tables.contains_key(&name) {
+            warnings.push(format!(
+                "{} declares MCP server `{name}`, and the user leticode.toml's [mcp.{name}] is \
+                 the one started.",
+                file.display()
+            ));
+            continue;
+        }
+        tables.insert(name, k.map(|k| in_checkout(k, &cfg.workspace)));
+    }
+    (tables, warnings)
 }
 
-/// The specs a user file's `[mcp]` tables resolve to, disabled ones left out, and a failure for
-/// each table that names neither or both of `command` and `url`.
-pub fn specs(
-    tables: &std::collections::BTreeMap<String, McpServerKeys>,
-) -> (
-    Vec<letibot_mcp_client::ServerSpec>,
-    Vec<letibot_mcp_client::Failure>,
-) {
+/// A relative command path is the checkout's, not the daemon's working directory.
+fn in_checkout(mut k: McpServerKeys, workspace: &std::path::Path) -> McpServerKeys {
+    if let Some(c) = &k.command
+        && c.contains('/')
+        && std::path::Path::new(c).is_relative()
+    {
+        k.command = Some(workspace.join(c).display().to_string());
+    }
+    k
+}
+
+/// Whether any enabled server is configured: what seats the two doors.
+pub fn configured(tables: &Tables) -> bool {
+    tables
+        .values()
+        .any(|k| k.as_ref().map_or(true, |k| k.enabled))
+}
+
+/// The specs the tables resolve to, disabled ones left out, and a failure for each entry that
+/// could not be read or names neither or both of `command` and `url`.
+pub fn specs(tables: &Tables) -> (Vec<letibot_mcp_client::ServerSpec>, Vec<letibot_mcp_client::Failure>) {
     let mut specs = Vec::new();
     let mut bad = Vec::new();
-    for (name, k) in tables.iter().filter(|(_, k)| k.enabled) {
+    for (name, k) in tables {
+        let k = match k {
+            Ok(k) if !k.enabled => continue,
+            Ok(k) => k,
+            Err(why) => {
+                bad.push(letibot_mcp_client::Failure {
+                    server: name.clone(),
+                    why: why.clone(),
+                });
+                continue;
+            }
+        };
         let transport = match (&k.command, &k.url) {
             (Some(command), None) => letibot_mcp_client::Transport::Stdio {
                 command: command.clone(),
                 args: k.args.clone(),
                 env: k.env.clone(),
+                cwd: k.cwd.clone(),
             },
             (None, Some(url)) => letibot_mcp_client::Transport::Http {
                 url: url.clone(),
@@ -91,4 +162,88 @@ pub fn failure_lines(catalog: &letibot_mcp_client::Catalog) -> Vec<String> {
             )
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn checkout(test: &str) -> std::path::PathBuf {
+        let d =
+            std::env::temp_dir().join(format!("letibot-mcp-json-{}-{test}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join(".mcp.json"),
+            r#"{"mcpServers": {"local": {"command": "./bin/srv"}, "fs": {"command": "npx"}}}"#,
+        )
+        .unwrap();
+        d
+    }
+
+    fn cfg_at(ws: &std::path::Path) -> Config {
+        let mut cfg = Config::for_this_box(ws.to_str().unwrap());
+        cfg.workspace = ws.to_path_buf();
+        cfg.leticode_user = Default::default();
+        cfg.read_project_config = true;
+        cfg
+    }
+
+    #[test]
+    fn an_untrusted_checkouts_servers_are_named_and_not_started() {
+        let ws = checkout("untrusted");
+        let (tables, warnings) = servers(&cfg_at(&ws));
+        assert!(tables.is_empty(), "{tables:?}");
+        assert!(
+            !configured(&tables),
+            "no doors for a repository's own say-so"
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("fs, local"), "{}", warnings[0]);
+        assert!(
+            warnings[0].contains("[mcp_projects] trusted"),
+            "{}",
+            warnings[0]
+        );
+    }
+
+    #[test]
+    fn a_trusted_checkouts_servers_run_in_it_and_the_user_table_wins_a_name() {
+        let ws = checkout("trusted");
+        let mut cfg = cfg_at(&ws);
+        cfg.leticode_user.mcp_trusted = vec![ws.clone()];
+        cfg.leticode_user.mcp.insert(
+            "fs".into(),
+            McpServerKeys {
+                command: Some("mine".into()),
+                enabled: true,
+                ..Default::default()
+            },
+        );
+        let (tables, warnings) = servers(&cfg);
+        assert!(configured(&tables));
+        assert_eq!(
+            tables["fs"].as_ref().unwrap().command.as_deref(),
+            Some("mine")
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(warnings[0].contains("[mcp.fs]"), "{}", warnings[0]);
+        let (specs, bad) = specs(&tables);
+        assert!(bad.is_empty(), "{bad:?}");
+        let local = specs.iter().find(|s| s.name == "local").unwrap();
+        let letibot_mcp_client::Transport::Stdio { command, cwd, .. } = &local.transport else {
+            panic!("{local:?}");
+        };
+        assert_eq!(command, &ws.join("./bin/srv").display().to_string());
+        assert_eq!(cwd.as_deref(), Some(ws.as_path()));
+    }
+
+    #[test]
+    fn no_project_config_reads_no_mcp_json() {
+        let ws = checkout("noproject");
+        let mut cfg = cfg_at(&ws);
+        cfg.read_project_config = false;
+        cfg.leticode_user.mcp_trusted = vec![ws.clone()];
+        let (tables, warnings) = servers(&cfg);
+        assert!(tables.is_empty() && warnings.is_empty());
+    }
 }

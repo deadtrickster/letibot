@@ -2120,9 +2120,14 @@ impl Harness {
                 Err(why) => return Err(HarnessError::Setup(format!("--web-fetch: {why}"))),
             }
         }
-        // MCP servers from the user file only; a project file's `[mcp]` is named and not started.
-        if crate::mcp::configured(&cfg.leticode_user.mcp) {
-            let (specs, bad) = crate::mcp::specs(&cfg.leticode_user.mcp);
+        // MCP servers from the user file, and a checkout's `.mcp.json` only where the user file
+        // trusts it; a project leticode.toml's `[mcp]` is named and not started.
+        let (mcp_tables, mcp_warnings) = crate::mcp::servers(&cfg);
+        for line in mcp_warnings {
+            hub.warn("mcp_server", line);
+        }
+        if crate::mcp::configured(&mcp_tables) {
+            let (specs, bad) = crate::mcp::specs(&mcp_tables);
             let (catalog, started) = crate::mcp::pool(&specs, bad);
             if started {
                 for line in crate::mcp::failure_lines(&catalog) {
@@ -4775,7 +4780,7 @@ pub(crate) fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     }
     // The MCP doors seat on the same rule: only with a server configured, so a session without
     // `[mcp]` keeps its prefix. A reviewer does not get them.
-    if crate::mcp::configured(&cfg.leticode_user.mcp)
+    if crate::mcp::configured(&crate::mcp::servers(cfg).0)
         && !matches!(seat, Seat::Runner | Seat::NotesKeeper | Seat::Gatekeeper)
     {
         for door in [

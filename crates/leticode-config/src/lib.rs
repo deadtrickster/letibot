@@ -576,6 +576,8 @@ pub struct LeticodeConfig {
     /// The `[mcp.NAME]` tables: MCP servers a session reaches through `mcp_search` and
     /// `mcp_call`. Read at both levels; only the user file's start. See [`McpServerKeys`].
     pub mcp: BTreeMap<String, McpServerKeys>,
+    /// `[mcp_projects] trusted`: checkouts whose `.mcp.json` servers may start. User file only.
+    pub mcp_trusted: Vec<PathBuf>,
     /// The `[provider]` table: what a session does when its provider says the model is limited.
     /// See [`ProviderKeys`] and [`LeticodeConfig::limit_policy`].
     pub provider: ProviderKeys,
@@ -1267,6 +1269,165 @@ pub struct McpServerKeys {
     pub timeout_seconds: Option<u64>,
     /// `false` keeps the table and starts nothing.
     pub enabled: bool,
+    /// Where a stdio server runs: set for a project file's servers, which run in the checkout.
+    pub cwd: Option<PathBuf>,
+}
+
+/// The project file read for MCP servers, the shape pi, Claude Code and Cursor share.
+pub const MCP_JSON: &str = ".mcp.json";
+
+/// A server name `server__tool` can be split back into.
+fn mcp_name_ok(name: &str) -> bool {
+    !name.is_empty()
+        && !name.contains("__")
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// `<workspace>/.mcp.json`'s `mcpServers`, each a server or why it cannot be one. Keys other
+/// clients define are ignored, since the file is shared with them. `Ok(None)` is no file.
+///
+/// ```json
+/// {"mcpServers": {"fs": {"command": "npx", "args": ["-y", "server-fs", "."]},
+///                 "docs": {"type": "http", "url": "https://example.com/mcp"}}}
+/// ```
+#[allow(clippy::type_complexity)]
+pub fn mcp_json(
+    workspace: &Path,
+) -> Result<Option<BTreeMap<String, Result<McpServerKeys, String>>>, String> {
+    let path = workspace.join(MCP_JSON);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
+    let Some(servers) = v.get("mcpServers") else {
+        return Ok(Some(BTreeMap::new()));
+    };
+    let servers = servers
+        .as_object()
+        .ok_or_else(|| format!("{}: `mcpServers` is an object", path.display()))?;
+    let mut out = BTreeMap::new();
+    for (name, s) in servers {
+        out.insert(name.clone(), mcp_json_server(name, s, workspace));
+    }
+    Ok(Some(out))
+}
+
+fn mcp_json_server(
+    name: &str,
+    v: &serde_json::Value,
+    workspace: &Path,
+) -> Result<McpServerKeys, String> {
+    if !mcp_name_ok(name) {
+        return Err("a server name is letters, digits, `-` and `_`, without `__`".into());
+    }
+    let o = v.as_object().ok_or("its entry is not an object")?;
+    let string = |key: &str| -> Result<Option<String>, String> {
+        match o.get(key) {
+            None => Ok(None),
+            Some(x) => x
+                .as_str()
+                .map(|s| Some(s.to_string()))
+                .ok_or_else(|| format!("`{key}` is not a string")),
+        }
+    };
+    let strings = |key: &str| -> Result<BTreeMap<String, String>, String> {
+        let Some(x) = o.get(key) else {
+            return Ok(BTreeMap::new());
+        };
+        x.as_object()
+            .ok_or_else(|| format!("`{key}` is not an object of strings"))?
+            .iter()
+            .map(|(k, v)| {
+                v.as_str()
+                    .map(|s| (k.clone(), s.to_string()))
+                    .ok_or_else(|| format!("`{key}.{k}` is not a string"))
+            })
+            .collect()
+    };
+    match string("type")?.as_deref() {
+        None | Some("stdio" | "http" | "streamable-http" | "streamableHttp") => {}
+        Some(other) => {
+            return Err(format!(
+                "transport `{other}` is not supported; stdio and streamable http are"
+            ));
+        }
+    }
+    let args = match o.get("args") {
+        None => Vec::new(),
+        Some(a) => a
+            .as_array()
+            .and_then(|a| {
+                a.iter()
+                    .map(|x| x.as_str().map(str::to_string))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .ok_or("`args` is not a list of strings")?,
+    };
+    Ok(McpServerKeys {
+        command: string("command")?,
+        args,
+        env: strings("env")?,
+        url: string("url")?,
+        headers: strings("headers")?,
+        timeout_seconds: None,
+        enabled: !o.get("disabled").and_then(|d| d.as_bool()).unwrap_or(false),
+        cwd: Some(workspace.to_path_buf()),
+    })
+}
+
+/// Whether `workspace` is at or under a directory in `[mcp_projects] trusted`.
+pub fn mcp_trusts(trusted: &[PathBuf], workspace: &Path) -> bool {
+    let Ok(ws) = workspace.canonicalize() else {
+        return false;
+    };
+    trusted
+        .iter()
+        .filter_map(|t| t.canonicalize().ok())
+        .any(|t| ws.starts_with(t))
+}
+
+/// `[mcp_projects]`: the checkouts whose `.mcp.json` the user lets start processes.
+fn mcp_projects(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<Vec<PathBuf>, String> {
+    let keys = "the one key is `trusted`, a list of directories";
+    let t = table_at(value, path, text, "mcp_projects", keys)?;
+    let from = at(path, text, "[mcp_projects]", user);
+    let mut out = Vec::new();
+    for (key, v) in t {
+        if key != "trusted" {
+            return Err(format!(
+                "{from}: [mcp_projects] `{key}` is not a key; {keys}"
+            ));
+        }
+        let list = v
+            .as_array()
+            .and_then(|a| a.iter().map(|x| x.as_str()).collect::<Option<Vec<_>>>())
+            .ok_or_else(|| format!("{from}: [mcp_projects] `trusted` is a list of strings"))?;
+        for dir in list {
+            let p = match dir.strip_prefix("~/") {
+                Some(rest) => std::env::var_os("HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_default()
+                    .join(rest),
+                None => PathBuf::from(dir),
+            };
+            if !p.is_absolute() {
+                return Err(format!(
+                    "{from}: [mcp_projects] `trusted` entry `{dir}` is not an absolute path"
+                ));
+            }
+            out.push(p);
+        }
+    }
+    Ok(out)
 }
 
 const MCP_KEYS: &str = "the keys are `command`, `args`, `env` (stdio), `url`, `headers` (http), \
@@ -1289,12 +1450,7 @@ fn mcp_tables(
     for (name, v) in servers {
         let from = at(path, text, &format!("[mcp.{name}]"), user);
         // `__` splits `server__tool`, so a name holding it could not be called.
-        if name.is_empty()
-            || name.contains("__")
-            || !name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
-        {
+        if !mcp_name_ok(name) {
             return Err(format!(
                 "{from}: [mcp.{name}]: a server name is letters, digits, `-` and `_`, without `__`"
             ));
@@ -2819,6 +2975,10 @@ impl LeticodeConfig {
                 Some(v) => mcp_tables(v, path, &text, level == Level::User)?,
                 None => BTreeMap::new(),
             },
+            mcp_trusted: match &file.mcp_projects {
+                Some(v) => mcp_projects(v, path, &text, level == Level::User)?,
+                None => Vec::new(),
+            },
             provider: match &file.provider {
                 Some(v) => provider_keys(v, path, &text, level == Level::User)?,
                 None => ProviderKeys::default(),
@@ -3003,6 +3163,7 @@ impl LeticodeConfig {
             // The user file's only: a project file starting processes would run whatever a
             // cloned repository names.
             mcp: self.mcp.clone(),
+            mcp_trusted: self.mcp_trusted.clone(),
             output: OutputKeys {
                 inline_bytes: other.output.inline_bytes.or(self.output.inline_bytes),
                 inline_lines: other.output.inline_lines.or(self.output.inline_lines),
@@ -3474,6 +3635,9 @@ struct LeticodeConfigFile {
     /// The `[mcp.NAME]` tables, see [`McpServerKeys`].
     #[serde(default)]
     mcp: Option<toml::Value>,
+    /// The `[mcp_projects]` table, see [`mcp_trusts`].
+    #[serde(default)]
+    mcp_projects: Option<toml::Value>,
     /// The fallback list and its budget, see [`fallback_list`] and [`fallback_timeouts`].
     /// Raw here so a value of the wrong shape is refused by name rather than by serde's
     /// message, which names the table and not the key the operator wrote.

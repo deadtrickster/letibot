@@ -9,7 +9,8 @@ repository.workspace = true
 [dependencies]
 # The `McpCatalog` seam this crate fills; the client lives here so `tools` spawns no servers.
 letibot-tools.workspace = true
-letibot-http.workspace = true
+# Blocking, rustls: the same client `letibot-provider` uses, so https needs no second TLS stack.
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 serde_json.workspace = true
 
 # The fake stdio server the tests drive. A bin so `CARGO_BIN_EXE_` names it; nothing installs it.

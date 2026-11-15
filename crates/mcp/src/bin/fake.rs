@@ -1,5 +1,7 @@
-//! A stdio MCP server for tests. `--die-at-start` exits before answering anything; otherwise it
-//! serves `echo`, `big` (`bytes` of text), `fail` (`isError`) and `crash` (exits mid-call).
+//! A stdio MCP server for tests. `--die-at-start` exits before answering anything, and
+//! `--once FILE` does so when FILE exists, making it otherwise. It serves `echo`, `big` (`bytes`
+//! of text), `fail` (`isError`), `crash` (exits mid-call), `pwd`, and `grow`, which adds `extra` and
+//! sends `notifications/tools/list_changed`.
 
 use std::io::{BufRead, Write};
 
@@ -11,6 +13,15 @@ fn main() {
         eprintln!("fake: refusing to start");
         std::process::exit(3);
     }
+    if let Some(i) = args.iter().position(|a| a == "--once") {
+        let marker = &args[i + 1];
+        if std::path::Path::new(marker).exists() {
+            eprintln!("fake: started once already");
+            std::process::exit(4);
+        }
+        std::fs::write(marker, b"").unwrap();
+    }
+    let mut grown = false;
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     // A log line on stdout, which a client must skip.
@@ -30,7 +41,8 @@ fn main() {
                 "capabilities": {"tools": {}},
                 "serverInfo": {"name": "fake", "version": "0"},
             }),
-            "tools/list" => json!({"tools": [
+            "tools/list" => {
+                let mut tools = json!([
                 {"name": "echo", "description": "Echo the text back.",
                  "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}}},
                 {"name": "big", "description": "Return many bytes of text.",
@@ -39,7 +51,17 @@ fn main() {
                  "inputSchema": {"type": "object"}},
                 {"name": "crash", "description": "Exit while answering.",
                  "inputSchema": {"type": "object"}},
-            ]}),
+                {"name": "grow", "description": "Offer one more tool.",
+                 "inputSchema": {"type": "object"}},
+                {"name": "pwd", "description": "Say the working directory.",
+                 "inputSchema": {"type": "object"}},
+                ]);
+                if grown {
+                    tools.as_array_mut().unwrap().push(json!({"name": "extra",
+                        "description": "Offered after grow.", "inputSchema": {"type": "object"}}));
+                }
+                json!({"tools": tools})
+            }
             "tools/call" => {
                 let args = msg
                     .pointer("/params/arguments")
@@ -55,6 +77,12 @@ fn main() {
                     }
                     Some("fail") => json!({"content": [{"type": "text", "text": "it broke"}],
                                            "isError": true}),
+                    Some("grow") => {
+                        grown = true;
+                        text("grown")
+                    }
+                    Some("extra") => text("extra ran"),
+                    Some("pwd") => text(&std::env::current_dir().unwrap().display().to_string()),
                     Some("crash") => {
                         eprintln!("fake: crashing on purpose");
                         std::process::exit(7);
@@ -78,6 +106,14 @@ fn main() {
             "{}",
             json!({"jsonrpc": "2.0", "id": id, "result": result})
         );
+        // After the answer, so the client reads it between calls.
+        if msg.pointer("/params/name").and_then(Value::as_str) == Some("grow") {
+            let _ = writeln!(
+                out,
+                "{}",
+                json!({"jsonrpc": "2.0", "method": "notifications/tools/list_changed"})
+            );
+        }
         let _ = out.flush();
     }
 }

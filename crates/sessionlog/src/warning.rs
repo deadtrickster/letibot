@@ -200,6 +200,13 @@ pub const TABLE: &[(&str, Class, Action)] = &[
         Class::Failure,
         Action::Do("write the plan again"),
     ),
+    // An MCP server that did not start, a project file's servers left unstarted, or an
+    // `.mcp.json` that would not parse: tools the reader configured are not offered.
+    (
+        "mcp_server",
+        Class::Failure,
+        Action::Do("fix the server's table, or trust the checkout"),
+    ),
     // Three ways something did not land where it was meant to: words a turn took and did
     // not read (they ride the next turn), a round's context measurement the store refused, and
     // a fork whose rows are not all stored.

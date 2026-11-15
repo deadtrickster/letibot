@@ -138,16 +138,24 @@ pub const LETICODE: File = File {
         },
         Table {
             path: "mcp.<name>",
-            note: "One MCP server per NAME (letters, digits, `-`, `_`, no `__`), stdio by `command` or streamable HTTP by `url` (http:// only, no TLS). Its tools are reached through `mcp_search` and `mcp_call` as `NAME__tool`; the two doors seat only when a server is configured. Every call is a network call under the gate; preapprove with permission.json `{\"mcp_call\": {\"NAME__*\": \"allow\"}}`. Results fall under [output]. Started once per daemon; a server that fails is reported once and the rest start. A project file's [mcp] is reported and never started.",
+            note: "One MCP server per NAME (letters, digits, `-`, `_`, no `__`), stdio by `command` or streamable HTTP by `url` (http:// or https://; no OAuth, a token goes in `headers`). Its tools are reached through `mcp_search` and `mcp_call` as `NAME__tool`; the two doors seat only when a server is configured. Every call is a network call under the gate; preapprove with permission.json `{\"mcp_call\": {\"NAME__*\": \"allow\"}}`. Results fall under [output]. Started once per daemon; a server that fails to start is reported once and the rest start. One that dies later is restarted on the next call, retried at 0.5 s doubling to 30 s. A `notifications/tools/list_changed` lists its tools again. A project leticode.toml's [mcp] is reported and never started; a checkout's `.mcp.json` starts only under [mcp_projects].",
             needs: "",
             keys: &[
                 k("command", "string", "none", U, "program to run as a stdio server; set this or url", "\"npx\""),
                 k("args", "list of strings", "[]", U, "its arguments", "[\"-y\", \"@modelcontextprotocol/server-filesystem\", \"/srv\"]"),
                 k("env", "table of strings", "{}", U, "variables added to its environment", "{ LOG = \"warn\" }"),
-                k("url", "string", "none", U, "http:// endpoint of a streamable HTTP server; set this or command", "\"http://127.0.0.1:8931/mcp\""),
+                k("url", "string", "none", U, "http:// or https:// endpoint of a streamable HTTP server; set this or command", "\"http://127.0.0.1:8931/mcp\""),
                 k("headers", "table of strings", "{}", U, "headers sent with every HTTP request", "{ Authorization = \"Bearer x\" }"),
                 k("timeout_seconds", "int >= 1", "60", U, "deadline for start, listing and each call", "60"),
                 k("enabled", "bool", "true", U, "false keeps the table and starts nothing", "true"),
+            ],
+        },
+        Table {
+            path: "mcp_projects",
+            note: "A checkout's `.mcp.json` (`{\"mcpServers\": {NAME: {command, args, env} or {type: \"http\", url, headers}}}`, the file pi, Claude Code and Cursor read) starts its servers only when the workspace is at or under a directory listed here, because a cloned repository would otherwise start processes. Its stdio servers run in the workspace. A name the user's [mcp] also has is the user's. Untrusted, the file's servers are named in one `mcp_server` warning per open and not started.",
+            needs: "",
+            keys: &[
+                k("trusted", "list of paths", "[]", U, "absolute directories (`~/` allowed) whose checkouts' .mcp.json servers may start", "[\"~/Projects/mine\"]"),
             ],
         },
         Table {
