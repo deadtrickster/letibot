@@ -4,7 +4,7 @@
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::{Arc, Condvar, Mutex, Weak};
 use std::time::{Duration, Instant};
@@ -34,6 +34,10 @@ const SAID_KEEP: usize = 256;
 /// Most ring entries one pass reads: a backlog drains over the next passes instead of firing a
 /// burst at one turn.
 const PER_PASS: usize = 32;
+
+/// The shortest pass a watcher makes. Doubled for each pass in a row that learned nothing, up to
+/// [`TICK`], so a `wait` that answers early for any reason costs a few passes a tick, not a core.
+const MIN_PASS: Duration = Duration::from_millis(250);
 
 /// Longest turn-end text a notification carries; `leticode_transcript` has the rest.
 const MAX_MESSAGE: usize = 1500;
@@ -71,6 +75,8 @@ pub struct Outbox {
     /// Set when this outbox's watcher returns, so a head is not dropped under its last pass.
     ended: Mutex<bool>,
     ended_bell: Condvar,
+    /// Passes its watcher has made: the instrument a spin shows up on.
+    passes: AtomicU64,
 }
 
 impl Outbox {
@@ -85,6 +91,7 @@ impl Outbox {
             told: AtomicBool::new(false),
             ended: Mutex::new(false),
             ended_bell: Condvar::new(),
+            passes: AtomicU64::new(0),
         })
     }
 
@@ -143,6 +150,11 @@ impl Outbox {
             .wait_timeout_while(g, patience, |ended| !*ended)
             .unwrap_or_else(|e| e.into_inner());
         *g
+    }
+
+    /// How many passes this outbox's watcher has made.
+    pub fn passes(&self) -> u64 {
+        self.passes.load(Ordering::Relaxed)
     }
 
     fn end(&self) {
@@ -341,11 +353,14 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>, rules: Arc<Rules>) {
     };
     let mut last_limit = 0u64;
     let mut last_key: Option<String> = None;
+    let mut unchanged = 0u32;
     loop {
         let Some(head) = weak.upgrade() else {
             return;
         };
-        let deadline = Instant::now() + TICK;
+        outbox.passes.fetch_add(1, Ordering::Relaxed);
+        let began = Instant::now();
+        let deadline = began + TICK;
         let attention = head.wait(deadline);
         let over = head.is_over();
         let word = head.word();
@@ -371,10 +386,11 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>, rules: Arc<Rules>) {
             outbox.record(note.0, note.1);
             continue;
         }
+        let mut news = false;
         if let Some((key, note)) = event {
             // A limit event is reported instead of this pass's event, so it `continue`s above.
             if let Some((key, note)) = offer(&rules, &session, (key, note)) {
-                outbox.record(key, note);
+                news |= outbox.record(key, note);
             }
         }
         job_cursor = page.next;
@@ -393,7 +409,7 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>, rules: Arc<Rules>) {
             }
             let (key, note) = job_event(&who, &session, e);
             if let Some((key, note)) = offer(&rules, &session, (key, note)) {
-                outbox.record(key, note);
+                news |= outbox.record(key, note);
             }
         }
         // Between turns with work still open is the state an orchestrator has no other event
@@ -402,7 +418,7 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>, rules: Arc<Rules>) {
             && let Some((key, note)) = idle_event(&who, &session, &jobs, rows)
             && let Some((key, note)) = offer(&rules, &session, (key, note))
         {
-            outbox.record(key, note);
+            news |= outbox.record(key, note);
         }
         // A closed head answers `wait` at once forever, and so does an ask nobody answers: the
         // first ends the watcher, the second rests out the tick instead of re-deciding it.
@@ -417,8 +433,25 @@ fn run(weak: Weak<Head>, outbox: Arc<Outbox>, rules: Arc<Rules>) {
         ) {
             std::thread::sleep(rest);
         }
+        unchanged = if news || key != last_key {
+            0
+        } else {
+            unchanged.saturating_add(1)
+        };
+        if let Some(pause) = floor(unchanged, began.elapsed()) {
+            std::thread::sleep(pause);
+        }
         last_key = key;
     }
+}
+
+/// What a pass that took `spent` still sleeps: [`MIN_PASS`], doubled for each of `unchanged`
+/// passes in a row that learned nothing, capped at [`TICK`].
+pub fn floor(unchanged: u32, spent: Duration) -> Option<Duration> {
+    let min = MIN_PASS
+        .checked_mul(1u32 << unchanged.min(8))
+        .map_or(TICK, |d| d.min(TICK));
+    min.checked_sub(spent).filter(|d| !d.is_zero())
 }
 
 /// How long a pass that learned nothing new sleeps: the rest of its tick when `wait` answered
@@ -1023,6 +1056,20 @@ mod tests {
         assert_eq!(rest(None, Some("ask:7"), deadline, now), None);
         assert_eq!(rest(Some("ask:7"), None, deadline, now), None);
         assert_eq!(rest(Some("ask:7"), Some("ask:7"), deadline, deadline), None);
+    }
+
+    #[test]
+    fn a_pass_that_learns_nothing_backs_off_to_a_tick() {
+        let none = Duration::ZERO;
+        assert_eq!(floor(0, none), Some(MIN_PASS));
+        assert_eq!(floor(1, none), Some(MIN_PASS * 2));
+        assert_eq!(floor(2, none), Some(MIN_PASS * 4));
+        assert_eq!(floor(4, none), Some(TICK));
+        assert_eq!(floor(u32::MAX, none), Some(TICK));
+        // A pass that already took its floor, by waiting or by resting, goes straight on.
+        assert_eq!(floor(0, MIN_PASS), None);
+        assert_eq!(floor(9, TICK), None);
+        assert_eq!(floor(0, MIN_PASS / 2), Some(MIN_PASS / 2));
     }
 
     #[test]

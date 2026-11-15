@@ -33,6 +33,7 @@
 //! the waiter recomputes, which is the same shape the daemon's own hub uses.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -1579,6 +1580,8 @@ struct Shared {
     /// Run once when the connection ends. Taken under this lock after `closed` is set, so a hook
     /// set concurrently either is taken here or sees `closed` and runs itself.
     on_closed: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// How many times a `wait` has looked at the state: the instrument a spin shows up on.
+    wakes: AtomicU64,
 }
 
 /// One attached head, and the session it holds.
@@ -1657,6 +1660,7 @@ impl Head {
             bell: Condvar::new(),
             tap: Mutex::new(tap),
             on_closed: Mutex::new(None),
+            wakes: AtomicU64::new(0),
         });
         let client = Arc::new(Mutex::new(client));
         {
@@ -1869,6 +1873,11 @@ impl Head {
                 _ => None,
             })
             .collect()
+    }
+
+    /// How many times a [`Head::wait`] on this head has looked at the state since it attached.
+    pub fn wakes(&self) -> u64 {
+        self.shared.wakes.load(Ordering::Relaxed)
     }
 
     /// Whether nothing more can arrive on this head: the daemon said `Bye`, or its boot failed.
@@ -2389,6 +2398,7 @@ impl Head {
         });
         let grace = Instant::now() + START_GRACE;
         loop {
+            self.shared.wakes.fetch_add(1, Ordering::Relaxed);
             if let Some(a) = g.asks.first() {
                 return Attention::Ask(Box::new(a.clone()));
             }
@@ -2452,8 +2462,9 @@ impl Head {
                 return Attention::Timeout;
             }
             // A session that has never turned waits the whole deadline: there is no grace
-            // question to ask about a session with no turn to have ended.
-            let until = if armed || !g.turned {
+            // question to ask about a session with no turn to have ended. Past the grace it is
+            // the deadline too, or a busy session that is not armed polls with a zero timeout.
+            let until = if armed || !g.turned || now >= grace {
                 deadline
             } else {
                 deadline.min(grace)
