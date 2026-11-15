@@ -486,6 +486,48 @@ pub(crate) fn wake_arg(args: &Value) -> Result<Option<WantedNow>, Invocation> {
     }
 }
 
+/// What a foreground run meets, for the schema: said from the policy, so the text names the move
+/// at the threshold when it is on and the kill at the default deadline when it is off.
+fn foreground_sentence(policy: &ForegroundPolicy) -> String {
+    let stop = "An operator's interrupt ends a foreground command (SIGTERM, then SIGKILL after \
+                3 s) and returns its output so far, marked interrupted.";
+    if policy.auto_background {
+        format!(
+            "A foreground command with no `timeout_ms` is not killed: at {}s it is moved to the \
+             background, keeps running as a job, and its completion is delivered to you. With \
+             `timeout_ms` it is killed at that deadline. {stop} Use `background: true` for \
+             anything you expect to take longer.",
+            policy.threshold.as_secs()
+        )
+    } else {
+        format!(
+            "A foreground command is killed at `timeout_ms` (default {}s). {stop} Use \
+             `background: true` for anything longer.",
+            DEFAULT_TIMEOUT_MS / 1000
+        )
+    }
+}
+
+/// The `timeout_ms` argument's text, from the same policy as [`foreground_sentence`].
+fn timeout_arg(policy: &ForegroundPolicy) -> String {
+    let default = if policy.auto_background {
+        format!(
+            "Without it there is no deadline: a run still going at {}s is moved to the \
+             background instead of killed.",
+            policy.threshold.as_secs()
+        )
+    } else {
+        format!("Defaults to {DEFAULT_TIMEOUT_MS} ms.")
+    };
+    format!(
+        "A deadline: past it the command is killed and the result says so. {default} Ignored \
+         when background is true, and a background job has no deadline of its own: \
+         `job_extend` gives it one. A command you expect to take over a minute belongs in the \
+         background (`background: true`, its completion is delivered to you) rather than behind \
+         a raised timeout_ms."
+    )
+}
+
 /// The default foreground threshold: half of [`DEFAULT_TIMEOUT_MS`], so the move or the
 /// reminder comes while the call is still runnable.
 pub const SLOW_FOREGROUND: Duration = Duration::from_secs(60);
@@ -523,12 +565,13 @@ impl Tool for Bash {
             "Run a shell command in the session's workspace and return its output. \
              Give `command`; optionally `cwd` (relative to the workspace), \
              `timeout_ms`, `slug` and `background: true` to start it and return \
-             immediately. A foreground command is killed at `timeout_ms` (default \
-             120 s); use `background: true` for anything longer. Every run is a job \
+             immediately. "
+                .to_string()
+                + &foreground_sentence(&self.foreground)
+                + " Every run is a job \
              with an id: output is capped inline and the rest is read with \
              `job_output`. A background job's completion is not something you wait \
              for: "
-                .to_string()
                 + super::DELIVERED
                 + " **Give `slug` when the job is one a person \
              will want to recognise** (`release-build`, `fold-tests`): your own name \
@@ -557,7 +600,7 @@ impl Tool for Bash {
                 "properties": {
                     "command": {"type": "string", "description": "The command line, run by /bin/sh in the workspace."},
                     "cwd": {"type": "string", "description": "Directory to run in, relative to the workspace root. Defaults to the root."},
-                    "timeout_ms": {"type": "integer", "description": "How long this command may run before it is killed and the result says so. Defaults to 120000 (2 minutes). Ignored when background is true, and a background job has no deadline of its own: `job_extend` gives it one. A command you expect to take over a minute belongs in the background — `background: true` runs it with no deadline and its completion is delivered to you — rather than behind a raised timeout_ms."},
+                    "timeout_ms": {"type": "integer", "description": timeout_arg(&self.foreground)},
                     "background": {"type": "boolean", "description": "Start the command and return its job id at once instead of waiting. **It has no deadline of its own**: it runs until it ends, until `job_kill`, or until the dead check ends it — no output and no CPU for `[exec] job_dead_after_seconds` (thirty minutes by default), which is how a wedged run is told from a silent build. `job_extend` gives it a hard deadline, `job_output` reads what it has written, and its completion reaches you on its own. `letibot --restart` keeps it running, except in a VM."},
                     "wake": {"type": "string", "enum": ["now", "later"], "description": "With background: `later` says you do not need waking for it, so the result is shown at your next turn and a `wait` does not hold on it; use it for a server you leave running. `now`: the moment it ends, even mid-turn. Absent (the default): its end wakes you."},
                     "slug": {"type": "string", "description": "A short name for this job, in your own words — `release-build`, `fold-tests`. It is what the transcript calls this job (and what the jobs pane reads beside the job id), and what `job_output`, `job_kill` and `job_wait` accept in place of the id. It is your stated intent for the work and never a restatement of the command; omit it when you have no name, and no name is derived from the command line."},
@@ -925,7 +968,14 @@ impl Tool for Bash {
             });
         }
         let waited_from = std::time::Instant::now();
-        let foreground = wait_with_progress(ctx, host, &id, timeout, self.foreground);
+        // A turn-scoped run is the turn's and ends with a stop; a longer scope was a choice to
+        // keep it, so a stop ends only the wait. The operator's own run is stopped by their console.
+        let on_stop = match scope {
+            _ if ctx.tty => None,
+            ScopeKind::Turn => Some(OnStop::Kill),
+            kept => Some(OnStop::Leave(kept)),
+        };
+        let foreground = wait_with_progress(ctx, host, &id, timeout, self.foreground, on_stop);
         // The run is over, so whatever card was up for it comes down: after the wait and before every
         // branch below, because a state, a promotion and a deadline all mean this tool is no longer
         // waiting, and a card that outlived its command would be a person answering nothing.
@@ -1028,8 +1078,12 @@ impl Tool for Bash {
             return inv;
         }
 
-        let state = match foreground {
-            Foreground::State(s) => s,
+        let (state, stopped) = match foreground {
+            Foreground::State(s) => (s, None),
+            Foreground::Interrupted(st) => (
+                host.job(&id).map(|v| v.state).unwrap_or(JobState::Running),
+                Some(st),
+            ),
             Foreground::Promoted(_) => unreachable!("handled above"),
         };
         // What the kernel counted for this job's memory, read at its settle.
@@ -1037,6 +1091,7 @@ impl Tool for Bash {
         let used = job.as_ref().and_then(|j| j.memory_used());
         let killed_at_cap = used.is_some_and(|u| u.killed_at_cap());
         let mut inv = match &state {
+            _ if let Some(st) = &stopped => interrupted(&body, &label, &id, st),
             // The deadline: the command outlived `timeout_ms`, so it is killed and not promoted.
             // The second way it arrives here is the host's watchdog having already ended the run,
             // settled as `Killed` with the deadline's own reason; both render the same sentence.
@@ -1156,7 +1211,8 @@ impl Tool for Bash {
         let deadline_answered = matches!(
             &state,
             JobState::Killed { by, .. } if by == crate::exec::DEADLINE_KILL
-        ) || (matches!(&state, JobState::Running) && timeout.is_some());
+        ) || (matches!(&state, JobState::Running) && timeout.is_some())
+            || stopped.is_some();
         if let Some(note) =
             slow_foreground(waited_from.elapsed(), ctx.tty, self.foreground.threshold)
             && !deadline_answered
@@ -1226,6 +1282,73 @@ enum Foreground {
     /// A person moved the command to the background from a head. The promotion is
     /// the record; the job is still running and recoverable.
     Promoted(Promotion),
+    /// The operator stopped the turn while the command ran.
+    Interrupted(Stopped),
+}
+
+/// What a stop does to the run [`wait_with_progress`] is waiting on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OnStop {
+    Kill,
+    /// The caller gave the run this scope, which outlives the turn: the stop ends the wait only.
+    Leave(ScopeKind),
+}
+
+/// What the stop did.
+enum Stopped {
+    Killed(Result<crate::exec::Reaping, crate::exec::ExecError>),
+    Left(ScopeKind),
+}
+
+/// Who a stop's kill is recorded as, in [`JobState::Killed`].
+pub const INTERRUPT_KILL: &str = "the operator's interrupt";
+
+/// Between SIGTERM and the cgroup kill: opencode's grace, long enough for a program to flush.
+const STOP_GRACE: Duration = Duration::from_secs(3);
+
+/// SIGTERM to the run's processes, [`STOP_GRACE`] for them to go, then the `job_kill` path, which
+/// SIGKILLs whatever is left in the cgroup and records the reaping.
+fn stop_run(
+    host: &dyn ProcessHost,
+    id: &crate::exec::JobId,
+) -> Result<crate::exec::Reaping, crate::exec::ExecError> {
+    let pids = host.job_pids(id);
+    for pid in &pids {
+        // SAFETY: a pid read from this job's own cgroup a moment ago; the cgroup holds only the
+        // run's processes, never this daemon or its ancestors.
+        unsafe {
+            libc::kill(*pid as libc::pid_t, libc::SIGTERM);
+        }
+    }
+    if !pids.is_empty() {
+        let _ = host.wait_job(id, STOP_GRACE);
+    }
+    host.kill_job_as(id, INTERRUPT_KILL)
+}
+
+/// The result of a run the operator's stop reached: the output so far and what became of the run.
+fn interrupted(body: &str, label: &str, id: &crate::exec::JobId, st: &Stopped) -> Invocation {
+    let what = match st {
+        Stopped::Killed(Ok(_)) => format!(
+            "[interrupted] the operator stopped the turn, so `{label}` was ended: SIGTERM, then \
+             SIGKILL to its cgroup after {}s. The output above is what it wrote before the stop.",
+            STOP_GRACE.as_secs()
+        ),
+        Stopped::Killed(Err(e)) => format!(
+            "[interrupted] the operator stopped the turn and `{label}` was to be ended, but the \
+             kill did not complete: {e}. `job_kill` with job=\"{id}\" tries again."
+        ),
+        Stopped::Left(scope) => format!(
+            "[interrupted] the operator stopped the turn. `{label}` runs in the `{}` scope it \
+             was given, so it was NOT killed: `job_output` with job=\"{id}\" reads it and \
+             `job_kill` ends it.",
+            scope.as_str()
+        ),
+    };
+    Invocation::failed(
+        format!("`{label}` was interrupted"),
+        format!("{body}\n\n{what}"),
+    )
 }
 
 /// What has already been said about this run, so one question is one card and one inability is one
@@ -1275,6 +1398,7 @@ fn wait_with_progress(
     id: &crate::exec::JobId,
     timeout: Option<Duration>,
     policy: ForegroundPolicy,
+    on_stop: Option<OnStop>,
 ) -> Foreground {
     let started = std::time::Instant::now();
     let step = Duration::from_millis(500);
@@ -1297,6 +1421,16 @@ fn wait_with_progress(
                 Ok(p) => Foreground::Promoted(p),
                 Err(_) => Foreground::State(JobState::Running),
             };
+        }
+        // A queued stop, checked each beat so the run ends within one tick of it.
+        if let Some(on) = on_stop
+            && ctx.backend.interrupt_requested()
+            && host.job(id).is_some_and(|v| v.state.is_running())
+        {
+            return Foreground::Interrupted(match on {
+                OnStop::Kill => Stopped::Killed(stop_run(host, id)),
+                OnStop::Leave(scope) => Stopped::Left(scope),
+            });
         }
         // Past the threshold the runtime moves the call exactly as Ctrl+O would, unless it is
         // the operator's own run.

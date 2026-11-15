@@ -268,11 +268,31 @@ pub trait ExecBackend: Send + Sync {
         None
     }
 
+    /// The operator asked this turn to stop. Read, not taken: the turn takes the stop at its next
+    /// boundary, after the blocked tool returns. `false` by default.
+    fn interrupt_requested(&self) -> bool {
+        false
+    }
+
     /// The session is over: release what the backend holds and say where its work went, if
     /// anywhere a caller should know about. `None` by default. A firecode backend brings its VM
     /// down and names the sibling directory the guest's tree landed in.
     fn close(&self) -> Option<String> {
         None
+    }
+}
+
+/// See [`HostBackend::with_interrupt_probe`]. A newtype so the backend keeps its `Debug`.
+#[derive(Clone, Default)]
+struct InterruptProbe(Option<Arc<dyn Fn() -> bool + Send + Sync>>);
+
+impl std::fmt::Debug for InterruptProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "InterruptProbe(wired)"
+        } else {
+            "InterruptProbe(none)"
+        })
     }
 }
 
@@ -294,6 +314,8 @@ pub struct HostBackend {
     /// `None` when no request is pending. Wired by the daemon from the session's
     /// hub; the `bash` tool's wait loop reads it.
     promote: Arc<std::sync::Mutex<Option<String>>>,
+    /// Whether the operator asked the turn to stop, peeked from the session's hub.
+    interrupt: InterruptProbe,
     /// `Some` only via [`HostBackend::executable`]. Shared, because the job table
     /// and the scope tree are session state and a `HostBackend` is cloned freely.
     processes: Option<std::sync::Arc<crate::exec::HostProcesses>>,
@@ -322,6 +344,7 @@ impl HostBackend {
             writable: false,
             home,
             promote: Arc::new(std::sync::Mutex::new(None)),
+            interrupt: InterruptProbe::default(),
             processes: None,
             scratch: None,
             session_tmp: None,
@@ -354,6 +377,16 @@ impl HostBackend {
     /// built without it simply never sees a request.
     pub fn with_promote_channel(mut self, channel: Arc<std::sync::Mutex<Option<String>>>) -> Self {
         self.promote = channel;
+        self
+    }
+
+    /// Wire the hub's "a stop is queued" question, so a `bash` wait loop blocked in a call can
+    /// end its command instead of holding the stop until the command exits.
+    pub fn with_interrupt_probe(
+        mut self,
+        probe: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.interrupt = InterruptProbe(Some(Arc::new(probe)));
         self
     }
 
@@ -973,6 +1006,10 @@ impl ExecBackend for HostBackend {
             .unwrap_or(&dir)
             .to_string_lossy()
             .into_owned())
+    }
+
+    fn interrupt_requested(&self) -> bool {
+        self.interrupt.0.as_ref().is_some_and(|p| p())
     }
 
     fn promote_requested(&self) -> Option<String> {

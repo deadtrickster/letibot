@@ -1065,3 +1065,99 @@ fn a_call_past_the_threshold_is_not_moved_when_auto_background_is_off() {
     );
     assert_eq!(r.outcome, ToolOutcome::Timeout, "{}", r.render());
 }
+
+// ------------------------------------------------------------------- the interrupt
+
+/// Whether a pid is still a live process, a zombie counted as gone.
+fn alive(pid: u32) -> bool {
+    std::fs::read_to_string(format!("/proc/{pid}/stat"))
+        .ok()
+        .and_then(|s| s.rsplit(") ").next().map(|r| !r.starts_with('Z')))
+        .unwrap_or(false)
+}
+
+/// Set the harness's stop after `after`, as a head's interrupt would while `bash` blocks.
+fn interrupt_after(
+    h: &letibot_tools::testing::Harness,
+    after: std::time::Duration,
+) -> std::sync::mpsc::Receiver<std::time::Instant> {
+    let stop = h.interrupt.clone().expect("an interrupt probe");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        std::thread::sleep(after);
+        stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        let _ = tx.send(std::time::Instant::now());
+    });
+    rx
+}
+
+/// An interrupt ends the foreground run within 2 s and the result keeps what it wrote.
+#[test]
+fn an_interrupt_ends_a_foreground_command_and_keeps_its_output() {
+    let mut h = runner!("interrupt_foreground");
+    let sent = interrupt_after(&h, std::time::Duration::from_millis(800));
+    let r = h.call(
+        "bash",
+        &serde_json::json!({"command": "echo pid=$$; exec sleep 300"}).to_string(),
+    );
+    let at = sent.recv().expect("the interrupt was sent");
+    let rendered = r.render();
+    assert!(
+        matches!(&r.outcome, ToolOutcome::Failed { reason } if reason.contains("interrupted")),
+        "{rendered}"
+    );
+    assert!(rendered.contains("interrupted"), "{rendered}");
+    let pid: u32 = r
+        .payload
+        .split("pid=")
+        .nth(1)
+        .and_then(|t| t.split_whitespace().next())
+        .and_then(|t| t.parse().ok())
+        .unwrap_or_else(|| panic!("the partial output is in the result: {rendered}"));
+    while alive(pid) && at.elapsed() < std::time::Duration::from_secs(2) {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    assert!(!alive(pid), "sleep {pid} outlived the interrupt by 2 s");
+    assert!(
+        at.elapsed() < std::time::Duration::from_secs(2),
+        "{:?}",
+        at.elapsed()
+    );
+}
+
+/// A background job and a foreground run given a longer scope are not the turn's to kill.
+#[test]
+fn an_interrupt_leaves_background_and_kept_jobs_running() {
+    let mut h = runner!("interrupt_spares_kept");
+    let host = h.processes.clone().unwrap();
+    let bg = h.call(
+        "bash",
+        &serde_json::json!({"command": "sleep 300", "background": true}).to_string(),
+    );
+    let bg = JobId(job_id_anywhere(&bg.payload).expect("a background job id"));
+
+    let _sent = interrupt_after(&h, std::time::Duration::from_millis(600));
+    let kept = h.call(
+        "bash",
+        &serde_json::json!({"command": "sleep 300", "scope": "session"}).to_string(),
+    );
+    let rendered = kept.render();
+    assert!(rendered.contains("NOT killed"), "{rendered}");
+    let kept = JobId(job_id_anywhere(&kept.payload).expect("the kept job's id"));
+
+    // A turn-scoped run in the same stop is ended, so the stop did reach this host.
+    let ended = h.call(
+        "bash",
+        &serde_json::json!({"command": "sleep 300"}).to_string(),
+    );
+    assert!(ended.render().contains("was ended"), "{}", ended.render());
+
+    for id in [&bg, &kept] {
+        assert!(
+            host.job(id).is_some_and(|v| v.state.is_running()),
+            "`{}` was killed by the interrupt",
+            id.0
+        );
+        let _ = host.kill_job(id);
+    }
+}

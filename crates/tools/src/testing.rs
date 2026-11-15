@@ -69,6 +69,8 @@ pub struct Harness {
     /// The promote channel the backend reads, for a test to simulate a head's Ctrl+B
     /// by setting it before a `bash` call runs.
     pub promote: Option<Arc<std::sync::Mutex<Option<String>>>>,
+    /// The operator's stop as the backend sees it, for a test to interrupt a running `bash`.
+    pub interrupt: Option<Arc<std::sync::atomic::AtomicBool>>,
     /// Held so the tree outlives the backend.
     _dir: TempDir,
     /// Held so the session's scratch directory outlives the backend, for the
@@ -319,6 +321,7 @@ fn runner_harness_writing(
     fixture_tree(dir.path());
     let host = Arc::new(crate::exec::HostProcesses::new(dir.path())?);
     let promote: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+    let interrupt = Arc::new(std::sync::atomic::AtomicBool::new(false));
     // A session scratch directory, because a promoted run's output has to have somewhere to go:
     // the daemon wires this from `harness::scratch_dir()`, and a fixture without it would measure
     // the no-scratch branch instead of the one that matters.
@@ -326,6 +329,10 @@ fn runner_harness_writing(
     let backend = crate::backend::HostBackend::executable_with(dir.path(), Arc::clone(&host))
         .expect("fixture root")
         .with_promote_channel(promote.clone())
+        .with_interrupt_probe({
+            let stop = interrupt.clone();
+            move || stop.load(std::sync::atomic::Ordering::SeqCst)
+        })
         .with_scratch_dir(scratch.path());
     let mut registry =
         crate::runner_tools_with(Arc::new(Unavailable), foreground).expect("built-ins register");
@@ -347,6 +354,7 @@ fn runner_harness_writing(
         processes: Some(host),
         mount: Default::default(),
         promote: Some(promote),
+        interrupt: Some(interrupt),
         _dir: dir,
         _scratch: Some(scratch),
         _notes_global: TempDir::new(),
@@ -377,6 +385,7 @@ pub fn text_only_runner_harness() -> Harness {
         processes: None,
         mount: Default::default(),
         promote: None,
+        interrupt: None,
         _dir: dir,
         _scratch: None,
         _notes_global: TempDir::new(),
@@ -456,6 +465,7 @@ pub fn confined_harness_with_gate(
         processes: Some(host),
         mount: Default::default(),
         promote: None,
+        interrupt: None,
         _dir: dir,
         _scratch: None,
         _notes_global: TempDir::new(),
@@ -532,6 +542,7 @@ pub fn harness_over(
         processes: None,
         mount: Default::default(),
         promote: None,
+        interrupt: None,
         _dir: TempDir::new(),
         _scratch: None,
         _notes_global: TempDir::new(),
@@ -686,6 +697,7 @@ fn build_ext(
         processes: None,
         mount,
         promote: None,
+        interrupt: None,
         _dir: dir,
         _scratch: scratch,
         _notes_global: notes_global,

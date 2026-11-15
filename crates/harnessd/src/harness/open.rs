@@ -1072,6 +1072,12 @@ impl Harness {
         // A head's Ctrl+B reaches the `bash` wait loop through the hub's promote
         // channel, so the request is honoured while the worker is blocked inside it.
         let backend = backend.with_promote_channel(hub.promote_channel());
+        // A stop reaches the same loop by a peek at the hub's queue; the turn still takes it after
+        // the call returns. Weak, so the backend does not keep the hub alive.
+        let stops = Arc::downgrade(&hub);
+        let backend = backend.with_interrupt_probe(move || {
+            stops.upgrade().is_some_and(|h| h.has_queued_interrupt())
+        });
         // The owner's memory share, on the cgroup this session's commands join: one throttle for
         // everything the owner runs, chosen once at open so a job's cap is not the only bound.
         let backend = backend.with_owner_memory_high(crate::memory_high::owner_high());

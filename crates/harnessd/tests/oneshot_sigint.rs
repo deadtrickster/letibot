@@ -412,8 +412,10 @@ fn the_first_ctrl_c_interrupts_the_turn_and_the_one_shot_goes_in_seconds() {
             matches!(
                 r,
                 TranscriptItem::ToolResult { outcome, .. }
-                    if serde_json::to_string(outcome)
-                        .is_ok_and(|o| o.contains("killed by the daemon stopping"))
+                    // The interrupt ends the run from `bash`'s own wait loop, or the stop does.
+                    if serde_json::to_string(outcome).is_ok_and(|o| {
+                        o.contains("killed by the daemon stopping") || o.contains("was interrupted")
+                    })
             )
         })
         .unwrap_or_else(|| {
