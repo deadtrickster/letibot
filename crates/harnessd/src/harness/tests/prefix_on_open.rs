@@ -358,3 +358,41 @@ fn a_transcript_that_does_not_rebuild_is_forked_onto_the_prefix_its_rows_chain_f
     assert!(note.contains("token 7"), "{note}");
     assert!(note.contains("4 tokens long"), "{note}");
 }
+
+/// A shadow's record holds the watched session's prompt and is seated with no tools. It has no
+/// model loop, so opening it in a head finds nothing stale and offers no reseat; another seat on
+/// the same record does, which is what shows the check runs at all.
+#[test]
+fn opening_a_shadow_session_raises_no_stale_prompt() {
+    for (role, stale) in [("shadow", false), ("planner", true)] {
+        let dir = Scratch::new(&format!("prefix-shadow-{role}"));
+        let id = format!("s-w-{role}-shadow");
+        let cfg = byte_vocab_config(&dir, &id);
+        let parts = parts(&cfg);
+        // One row, so the reopen is a resume and not an empty transcript re-seated in silence.
+        let mut first = Harness::open(&parts, cfg.clone(), Hub::new(&id)).expect("the first open");
+        first
+            .append_offer_rows(&mut vec![TranscriptItem::Offer {
+                kind: letibot_transcript::OfferKind::Shadow,
+                title: "turn_end · none".into(),
+                body: String::new(),
+            }])
+            .expect("a row");
+        drop(first);
+        let store = Store::open(&dir.0.join("sessions.db")).expect("the store");
+        store
+            .connection_of("session")
+            .execute(
+                "UPDATE session SET role = ?1 WHERE id = ?2",
+                letibot_tokencore::rusqlite::params![role, id],
+            )
+            .expect("the record's role");
+        let h = Harness::open(&parts, cfg, Hub::new(&id)).expect("the reopen");
+        assert_eq!(
+            h.lifecycle_facts.prompt.is_some(),
+            stale,
+            "{role}: {:?}",
+            h.lifecycle_facts.prompt
+        );
+    }
+}

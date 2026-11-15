@@ -1705,7 +1705,9 @@ impl Harness {
                             .and_then(|r| r.prefix_fingerprint.clone())
                             .unwrap_or_else(|| own_fingerprint.clone()),
                     };
-                    if seated != prefix_fingerprint(cfg.seat, prefix) {
+                    // A shadow's record is display-only, with no model loop and no tools, so a
+                    // prompt that moved under it is no finding and there is nothing to reseat.
+                    if cfg.seat != Seat::Shadow && seated != prefix_fingerprint(cfg.seat, prefix) {
                         let (was, is) = (
                             tool_schemas(&own_prefix.tools_json),
                             tool_schemas(&prefix.tools_json),
