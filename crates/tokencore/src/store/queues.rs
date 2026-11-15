@@ -955,6 +955,16 @@ impl Store {
         Ok(())
     }
 
+    /// Drop the conversation a Claude review would resume: it was never written, so the next run
+    /// starts a new one.
+    pub fn forget_claude_conversation(&self, entry_id: &str) -> Result<()> {
+        self.exec(
+            "UPDATE claude_review SET session_id = NULL WHERE entry_id = ?1",
+            params![entry_id],
+        )?;
+        Ok(())
+    }
+
     /// Move a review row from `from` to `to`, only if it is still in `from` (and owned by
     /// `mv.expect_owner` when one is named), appending the transition in the same transaction.
     /// `Ok(false)` is *somebody else moved it first* - a fact, not an error.
@@ -1444,8 +1454,15 @@ impl Store {
     }
 
     /// Recovery, and only the recovery a lease entitles: rows of `repository` that an owner other
-    /// than me held mid-work, put back in line.
-    pub fn recover_queue(&self, repository: &str, me: &str, now_ms: u64) -> Result<usize> {
+    /// than me held mid-work. A review whose reviewer is a stored session stays claimed, by me, so
+    /// the next pass reopens that session; anything else is put back in line.
+    pub fn recover_queue(
+        &self,
+        repository: &str,
+        me: &str,
+        now_ms: u64,
+        review_limit_ms: u64,
+    ) -> Result<usize> {
         let mut moved = 0;
         for m in self.merge_rows(Some(repository))? {
             if m.state == MergeState::Gating && m.owner != me {
@@ -1469,6 +1486,34 @@ impl Store {
         }
         for r in self.review_rows(Some(repository))? {
             if r.state == ReviewState::Reviewing && r.owner != me {
+                // A Claude run is a process of the gone daemon, not a session: it goes back in line
+                // and its claim resumes the conversation (`claude_review.session_id`).
+                let process = match r.reviewer.as_deref() {
+                    Some(child) => self
+                        .claude_review(&r.id)?
+                        .is_some_and(|c| c.handle.as_deref() == Some(child)),
+                    None => false,
+                };
+                if let (Some(child), false) = (r.reviewer.as_deref(), process) {
+                    let why = format!(
+                        "the daemon whose reviewer was on it ({}) is gone; {me} takes the claim and \
+                         reopens reviewer {child} on its stored session",
+                        r.owner
+                    );
+                    if self.move_review(
+                        &r.id,
+                        ReviewState::Reviewing,
+                        ReviewState::Reviewing,
+                        &Move::new(me, why)
+                            .owned_by(r.owner.clone())
+                            .set("owner", me)
+                            .set("deadline_ms", now_ms + review_limit_ms),
+                        now_ms,
+                    )? {
+                        moved += 1;
+                    }
+                    continue;
+                }
                 let why = format!(
                     "the daemon whose reviewer was on it ({}) is gone, so it waits for a reviewer \
                      again",

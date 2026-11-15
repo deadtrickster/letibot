@@ -49,7 +49,7 @@ fn the_schema_is_the_queues_own_verdict_and_nothing_else() {
 #[test]
 fn the_argv_names_the_prompt_the_schema_the_mode_and_the_tools() {
     let s = settings();
-    let args = argv(&s, "review this", None);
+    let args = argv(&s, "review this", None, None);
     assert_eq!(args[0], "-p");
     assert_eq!(args[1], "review this");
     let at = |flag: &str| args.iter().position(|a| a == flag).map(|i| i + 1);
@@ -74,7 +74,7 @@ fn the_argv_names_the_prompt_the_schema_the_mode_and_the_tools() {
     // A project's own tools replace the default list rather than joining it.
     let mut own = s.clone();
     own.allowed_tools = vec!["Read".into(), "Bash(git diff:*)".into()];
-    let args = argv(&own, "p", None);
+    let args = argv(&own, "p", None, None);
     let tools_at = args.iter().position(|a| a == "--allowedTools").unwrap() + 1;
     assert_eq!(&args[tools_at..], &["Read", "Bash(git diff:*)"]);
 }
@@ -83,7 +83,7 @@ fn the_argv_names_the_prompt_the_schema_the_mode_and_the_tools() {
 /// because `--allowedTools` would otherwise swallow the id as another tool name.
 #[test]
 fn a_review_with_a_conversation_resumes_it() {
-    let argv = argv(&settings(), "the next head", Some("cc-7"));
+    let argv = argv(&settings(), "the next head", Some("cc-7"), Some("ignored"));
     let resume = argv.iter().position(|a| a == "--resume").expect("--resume");
     assert_eq!(argv[resume + 1], "cc-7");
     let tools = argv
@@ -91,6 +91,25 @@ fn a_review_with_a_conversation_resumes_it() {
         .position(|a| a == "--allowedTools")
         .expect("the tools");
     assert!(resume < tools, "the id is not a tool: {argv:?}");
+    assert!(!argv.iter().any(|a| a == "--session-id"), "{argv:?}");
+}
+
+/// A run with nothing to resume is started under an id the queue chose, so the conversation of a
+/// run its daemon loses can still be resumed.
+#[test]
+fn a_fresh_run_is_started_under_the_id_the_queue_keeps() {
+    let id = fresh_session_id().expect("an id");
+    assert_eq!(id.len(), 36, "{id}");
+    assert_eq!(id.as_bytes()[14], b'4', "a v4 uuid: {id}");
+    let argv = argv(&settings(), "p", None, Some(&id));
+    let at = argv
+        .iter()
+        .position(|a| a == "--session-id")
+        .expect("--session-id");
+    assert_eq!(argv[at + 1], id);
+    assert!(no_conversation(
+        "No conversation found with session ID: 1234"
+    ));
 }
 
 /// The docs' result object, read as the queue's verdict: the id a re-review resumes and the

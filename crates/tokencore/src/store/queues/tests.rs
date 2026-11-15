@@ -487,7 +487,7 @@ fn recovery_moves_only_the_rows_a_gone_owner_held_in_this_repository() {
         )
         .unwrap();
     }
-    assert_eq!(s.recover_queue("/repo", "B", 3).unwrap(), 1);
+    assert_eq!(s.recover_queue("/repo", "B", 3, 60_000).unwrap(), 1);
     assert_eq!(
         s.review_row("r-gone").unwrap().unwrap().state,
         ReviewState::Waiting

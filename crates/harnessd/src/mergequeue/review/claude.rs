@@ -100,11 +100,18 @@ pub fn schema() -> Value {
 /// One run's argv, without the binary: the prompt, the three flags the queue needs, and `--resume`
 /// when this review already has a conversation. `--resume` goes before the tool list because
 /// `--allowedTools` takes every argument until the next flag.
-pub fn argv(settings: &Settings, prompt: &str, resume: Option<&str>) -> Vec<String> {
+pub fn argv(
+    settings: &Settings,
+    prompt: &str,
+    resume: Option<&str>,
+    fresh: Option<&str>,
+) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    if let Some(id) = resume {
-        out.push("--resume".to_string());
-        out.push(id.to_string());
+    // A fresh run is given its id up front, so a run its daemon loses is still resumable.
+    match (resume, fresh) {
+        (Some(id), _) => out.extend(["--resume".to_string(), id.to_string()]),
+        (None, Some(id)) => out.extend(["--session-id".to_string(), id.to_string()]),
+        (None, None) => {}
     }
     out.push("-p".to_string());
     out.push(prompt.to_string());
@@ -300,12 +307,25 @@ impl Runs {
         cwd: &Path,
         resume: Option<&str>,
     ) -> Result<String, String> {
+        self.start_with(entry_id, settings, prompt, cwd, resume, None)
+    }
+
+    /// [`Runs::start`], with `fresh` the id a run with nothing to resume is started under.
+    pub fn start_with(
+        &self,
+        entry_id: &str,
+        settings: &Settings,
+        prompt: &str,
+        cwd: &Path,
+        resume: Option<&str>,
+        fresh: Option<&str>,
+    ) -> Result<String, String> {
         static SEQ: AtomicU64 = AtomicU64::new(0);
         let handle = format!(
             "claude-{entry_id}-{}",
             SEQ.fetch_add(1, Ordering::Relaxed) + 1
         );
-        let args = argv(settings, prompt, resume);
+        let args = argv(settings, prompt, resume, fresh);
         let mut child = Command::new(&settings.binary)
             .args(&args)
             .current_dir(cwd)
@@ -483,3 +503,28 @@ pub fn prompt(req: &ReviewRequest, shaped: Option<&letibot_plugin::review::Brief
 
 #[cfg(test)]
 mod tests;
+
+/// A random v4 UUID, the shape `claude --session-id` takes. `None` when the kernel gives no bytes.
+pub fn fresh_session_id() -> Option<String> {
+    let mut b = [0u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut f| f.read_exact(&mut b))
+        .ok()?;
+    b[6] = (b[6] & 0x0f) | 0x40;
+    b[8] = (b[8] & 0x3f) | 0x80;
+    let h: String = b.iter().map(|x| format!("{x:02x}")).collect();
+    Some(format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    ))
+}
+
+/// Whether a failed run failed because the conversation it resumed was never written - a run its
+/// daemon lost before the first turn was saved. The next run starts the conversation again.
+pub fn no_conversation(why: &str) -> bool {
+    why.contains("No conversation found")
+}

@@ -2446,6 +2446,39 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         ))
     }
 
+    /// A child of this session reopened on its stored session under its own id: the transcript is
+    /// resumed and its turn continues with a restart notice. Only a child this session parented and
+    /// nothing holds now.
+    fn reopen(
+        &self,
+        handle: &str,
+        prompt: &str,
+        spec: &letibot_tools::builtins::task::TaskSpec,
+    ) -> Result<String, String> {
+        let held = self
+            .slot(handle)
+            .is_some_and(|s| !s.has_exited() && !s.is_parked());
+        let stored = self
+            .registry
+            .resumable(handle)
+            .filter(|_| !held)
+            .ok_or_else(|| {
+                format!("`{handle}` is open or not in the store, so it was not reopened")
+            })?;
+        if stored.parent_session_id.as_deref() != Some(self.base.session_id.as_str()) {
+            return Err(format!(
+                "`{handle}` is not a child of `{}`, so it was not reopened",
+                self.base.session_id
+            ));
+        }
+        self.slots
+            .lock()
+            .expect("task slots")
+            .retain(|(h, s)| h != handle || !s.has_exited());
+        let notice = crate::subagent_record::child_notice(letibot_sessionlog::registry::now_ms());
+        self.spawn_child(handle.to_string(), prompt, spec, None, Some(notice))
+    }
+
     /// Arrange the tree, then start the child: the worktree is created BEFORE the spawn, and a path that
     /// already exists is refused by name and without spawning. The default is never the main tree, which
     /// takes the explicit argument, and the branch is never pushed because a merge queue lands it.

@@ -2925,7 +2925,8 @@ fn a_new_lease_holder_recovers_what_the_old_one_held_and_the_old_one_stops() {
     };
     assert_eq!(previous.unwrap().owner, "test/old");
     assert_eq!(
-        s.recover_queue(&w.key(), &new.owner, later).unwrap(),
+        s.recover_queue(&w.key(), &new.owner, later, 60_000)
+            .unwrap(),
         1,
         "the gating row the old owner held"
     );

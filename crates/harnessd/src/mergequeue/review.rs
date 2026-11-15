@@ -428,6 +428,29 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
     let rows = p.store.review_rows(None)?;
     p.machines.refresh(p.reviewer_hosts.as_deref());
 
+    // ---- Reopen the reviewer of every row this daemon claimed whose reviewer is on no desk.
+    for r in rows
+        .iter()
+        .filter(|r| r.state == ReviewState::Reviewing && r.owner == p.me)
+    {
+        let Some(child) = r.reviewer.as_deref() else {
+            continue;
+        };
+        if p.desk.is_open_for(&r.id)
+            || p.claude.is_some_and(|runs| runs.owns(child))
+            || !matches!(
+                p.runner.collect(child, std::time::Duration::ZERO),
+                TaskStatus::Unknown
+            )
+        {
+            continue;
+        }
+        if reseat(p, r, child)?.is_some() {
+            out.started += 1;
+        }
+        out.moved = true;
+    }
+
     // ---- Start a reviewer for every row this daemon claimed and nobody is on.
     for r in rows
         .iter()
@@ -570,6 +593,9 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                 claude::Polled::Failed(why) | claude::Polled::TimedOut(why) => {
                     out.moved = true;
                     p.keep_the_conversation(&r, None)?;
+                    if claude::no_conversation(&why) {
+                        p.store.forget_claude_conversation(&r.id)?;
+                    }
                     p.attempt_failed(&r, why)?;
                 }
             }
@@ -746,6 +772,17 @@ fn age_of(path: &Path) -> Option<std::time::Duration> {
 /// Start one reviewer: which KIND of reviewer this project reviews with, then where it runs, on
 /// what tree, with which prompt.
 fn start_reviewer(p: &Pool, r: &ReviewRow, local_only: bool) -> Result<Started, CouldNotStart> {
+    start_or_reopen(p, r, local_only, None)
+}
+
+/// [`start_reviewer`], or with `reopen` the stored session of a letibot reviewer brought back
+/// under its own id. A Claude reviewer has no session to reopen: its run resumes its conversation.
+fn start_or_reopen(
+    p: &Pool,
+    r: &ReviewRow,
+    local_only: bool,
+    reopen: Option<&str>,
+) -> Result<Started, CouldNotStart> {
     let repo = PathBuf::from(&r.repository);
     // The kind is the project's: a `[queue.claude]` table makes its reviewers headless `claude -p`
     // runs (R116), and a project without one keeps the letibot child this queue has always started.
@@ -762,7 +799,7 @@ fn start_reviewer(p: &Pool, r: &ReviewRow, local_only: bool) -> Result<Started, 
              daemon holds no runner for one"
                 .to_string(),
         )),
-        (None, _) => start_a_session(p, r, &repo, local_only),
+        (None, _) => start_a_session(p, r, &repo, local_only, reopen),
     }
 }
 
@@ -835,8 +872,19 @@ fn start_a_claude_run(
             ))
         })?
         .and_then(|c| c.session_id);
+    let fresh = match resume {
+        Some(_) => None,
+        None => claude::fresh_session_id(),
+    };
     let handle = runs
-        .start(&r.id, settings, &prompt, &dir, resume.as_deref())
+        .start_with(
+            &r.id,
+            settings,
+            &prompt,
+            &dir,
+            resume.as_deref(),
+            fresh.as_deref(),
+        )
         .map_err(CouldNotStart::Runner)?;
     // The run is in the store before its row says so, because the row's handle is what tells the
     // queue's liveness check that this reviewer is a process and not a session.
@@ -845,7 +893,7 @@ fn start_a_claude_run(
             &r.id,
             &r.repository,
             &r.branch,
-            None,
+            fresh.as_deref(),
             Some(&handle),
             now_ms(),
         )
@@ -869,6 +917,7 @@ fn start_a_session(
     r: &ReviewRow,
     repo: &Path,
     local_only: bool,
+    reopen: Option<&str>,
 ) -> Result<Started, CouldNotStart> {
     let pool = p.reviewer_hosts.as_deref();
     let chosen = if local_only {
@@ -951,15 +1000,84 @@ fn start_a_session(
             }
         }
     };
-    let handle = p
-        .runner
-        .start(&prompt, &spec)
-        .map_err(CouldNotStart::Runner)?;
+    let handle = match reopen {
+        Some(id) => p.runner.reopen(id, &prompt, &spec),
+        None => p.runner.start(&prompt, &spec),
+    }
+    .map_err(CouldNotStart::Runner)?;
     Ok(Started {
         handle,
         req,
         machine,
     })
+}
+
+/// A claimed row whose reviewer runs nowhere here - its daemon stopped, or the queue's session was
+/// reopened - gets that reviewer back on its stored session. A fresh reviewer only when the stored
+/// one cannot be reopened, and either way no attempt is counted: nothing was judged.
+fn reseat(p: &Pool, r: &ReviewRow, child: &str) -> Result<Option<String>, StoreError> {
+    let process = p
+        .store
+        .claude_review(&r.id)?
+        .is_some_and(|c| c.handle.as_deref() == Some(child));
+    let reopened = match process {
+        true => Err(CouldNotStart::Runner(format!(
+            "`{child}` was a Claude run, which has no session to reopen"
+        ))),
+        false => start_or_reopen(p, r, false, Some(child)),
+    };
+    let (started, why) = match reopened {
+        Ok(started) => {
+            let why = format!(
+                "reviewer {child} reopened on its stored session at {}",
+                r.head_sha
+            );
+            (started, why)
+        }
+        Err(CouldNotStart::Runner(refused)) => match start_reviewer(p, r, false) {
+            Ok(started) => {
+                let why = format!(
+                    "reviewer {child} could not be reopened ({refused}), so reviewer {} started \
+                     on {}",
+                    started.handle, r.head_sha
+                );
+                (started, why)
+            }
+            Err(CouldNotStart::Full(why)) => return p.wait_for_room(r, why).map(|_| None),
+            Err(CouldNotStart::Tree(why)) => return p.wait_for_tree(r, why).map(|_| None),
+            Err(CouldNotStart::Runner(why)) => {
+                return p
+                    .attempt_failed(
+                        r,
+                        format!("a reviewer for `{}` could not start: {why}", r.branch),
+                    )
+                    .map(|_| None);
+            }
+        },
+        Err(CouldNotStart::Full(why)) => return p.wait_for_room(r, why).map(|_| None),
+        Err(CouldNotStart::Tree(why)) => return p.wait_for_tree(r, why).map(|_| None),
+    };
+    let Started {
+        handle,
+        req,
+        machine,
+    } = started;
+    if p.mv(
+        r,
+        ReviewState::Reviewing,
+        Move::new(p.me, why)
+            .owned_by(p.me)
+            .set("reviewer", handle.clone()),
+    )? {
+        if let Some(m) = &machine {
+            p.machines.started(&handle, m);
+        }
+        p.desk.opened(p.host, &handle, &r.id, req);
+        Ok(Some(handle))
+    } else {
+        p.stop(&handle, now_ms());
+        Ok(None)
+    }
 }
 
 /// A reviewer that started, and the machine a `host` placement sent it to (the per-host cap
@@ -1581,3 +1699,6 @@ mod claude_tests;
 
 #[cfg(test)]
 mod placement_tests;
+
+#[cfg(test)]
+mod reseat_tests;

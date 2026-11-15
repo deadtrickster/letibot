@@ -942,6 +942,11 @@ impl RepoQueue {
                         && r.reviewer
                             .as_deref()
                             .is_some_and(|c| !self.env.door.session_live(c));
+                    // A reviewer on no desk was lost with a daemon or a gatekeeper: the review pass
+                    // reopens its stored session, so it is given the start grace to do so first.
+                    let gone = gone
+                        && (self.env.desk.as_ref().is_none_or(|d| d.is_open_for(&r.id))
+                            || now.saturating_sub(r.state_ms) > self.env.reviewer_start_grace_ms);
                     let late = r.deadline_ms.is_some_and(|d| now > d);
                     // A reviewer that has handed its verdict in is not gone, whatever its session says: its
                     // last act is the submission and its turn ending, so `gone` alone would re-seat a row that
@@ -3513,8 +3518,12 @@ impl QueueService {
                             eprintln!("  merge queue: {key}: {r}");
                         }
                     }
-                    let recovered =
-                        store.recover_queue(&key, &self.env.me.owner, gate::now_ms())?;
+                    let recovered = store.recover_queue(
+                        &key,
+                        &self.env.me.owner,
+                        gate::now_ms(),
+                        self.env.review_deadline_ms,
+                    )?;
                     // : a tip whose last verdict was red, blocked or timed out is
                     // gated again by the daemon that takes the queue - a restart is a re-gate.
                     match super::verbs::regate_at_start(store, &key, &self.env.me.owner) {

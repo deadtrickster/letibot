@@ -930,6 +930,15 @@ pub trait TaskRunner: Send + Sync {
              be resumed. Nothing was spawned."
         ))
     }
+
+    /// Start `handle` again on its stored session, with the prompt and spec a fresh start would
+    /// get - the review queue's door for a reviewer its daemon lost, whose children are not
+    /// recorded. `Ok` is the handle; `Err` is why, with nothing spawned.
+    fn reopen(&self, handle: &str, _prompt: &str, _spec: &TaskSpec) -> Result<String, String> {
+        Err(format!(
+            "this runner cannot reopen a stored child, so `{handle}` was not reopened"
+        ))
+    }
 }
 
 /// Whether a restart brings children back, or only says what they were doing.
