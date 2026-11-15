@@ -2563,7 +2563,7 @@ A decision, an account, a live run on real hosts, or an install. Do not start th
 
 ## R233 - Rate-limit decisions as config values or a fuel-capped wasm call
 
-**Status:** needs the operator, 2026-11-14. Not started. left: the shape of the hook record.
+**Status:** shape given by the operator, 2026-11-15. Not started. left: all of the code.
 
 Operator idea, 2026-11-13. Decisions the provider layer makes on a rate limit today are fixed in code: whether to wait out a limit whose reset is near (`wait_if_within`) and which fallback model or provider to take. The idea is config keys that take either a value or a plugin call, a wasm module run fuel-capped like the other plugin hooks, so an operator can say "wait if the reset is within 10 minutes, else fall back to X" or hand the choice to code.
 
@@ -2572,6 +2572,21 @@ Question for the operator: which decisions get a hook (wait/fallback only, or re
 **Still open?** `grep -rn 'wait_if_within' crates` for a hook.
 
 **Done when:** the operator has given the record's shape and this entry is moved to Code work with it.
+
+
+Operator's shape (2026-11-15): "if user gives a callback than the callback decides. we only have to figure out how to give it the state. so our state machine holds the state, returned from the hook, and then destroys it when we are free to go, hook returns new session and time when to run".
+
+- **The callback decides everything.** With a hook configured, the hook alone decides what happens on a rate limit or quota refusal, and the fixed logic (`wait_if_within`, `[fallback]`, `[limits] on_limit`) does not run. With no hook, the fixed logic runs as it does today.
+- **Opaque state, owned by letibot, written by the hook.** Each call returns a state blob with its decision. letibot's limit state machine stores the blob per session, keyed by the limited provider and model, durable across a daemon restart. It passes the blob back unchanged on the next call for the same limit episode. letibot never interprets it.
+- **The episode ends when we are free to go.** That means the first request that succeeds after the decision. letibot then destroys the blob, so the next limit starts fresh.
+- **Input to one call:** the refusal (status, provider, model, window, reset if known, attempt count), the usage from R232 where there is any, the session (id, seat, origin, whether a turn is in flight), the configured candidates, and the stored state blob (empty on the first call of an episode).
+- **Output:** `{ state, session, run_at }`. `session` says where to continue: the same session, or the same session on another provider or model, or a new session. `run_at` is when to run it, and now means immediately.
+- **The hook runs with a fuel cap** (wasm, the plugin runtime's existing fuel accounting). A hook that fails, runs out of fuel or returns a malformed answer is recorded visibly, and that episode falls back to the fixed logic. Code is not allowed to retry the hook in a loop.
+- **Visible:** each call, its decision and its fallback are a row in the session record. The state blob is shown in the row's details.
+
+**Open for whoever builds it:** what "new session" means for a running turn, and whether a turn in flight is resumed on the new target or restarted. Settle it with the operator before landing.
+
+**Done when:** a test hook that keeps a counter in its state returns wait-then-switch across two refusals. letibot carries the state between the calls, destroys it after the first success, and a hook that exhausts its fuel falls back to the fixed logic with a visible row.
 
 ## R235 - A Claude Code session starts a new `until [ -s ... ]` wait loop every few minutes and never stops the old ones
 
