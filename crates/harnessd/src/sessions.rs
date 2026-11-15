@@ -5340,7 +5340,12 @@ impl StoreSessions {
                 // The session's own model and workspace, from its row. The dialect and endpoint are this
                 // daemon's - they are not stored per session, and a plausible guess on a picker row is a
                 // guess somebody quotes.
-                model: s.model_id,
+                // The switch the row recorded is what a resume reseats on. `local` names no
+                // model, so the row's own id says more.
+                model: s
+                    .provider_choice
+                    .filter(|c| !c.is_empty() && c != "local")
+                    .unwrap_or(s.model_id),
                 workspace: s.workspace_root,
                 ..self.wiring.clone()
             },

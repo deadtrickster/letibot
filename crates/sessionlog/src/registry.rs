@@ -1593,6 +1593,20 @@ impl Registry {
         self.assemble(rows, stored)
     }
 
+    /// The model this session is seated on now. The wiring is written at open from the daemon's
+    /// default, and a resume or a switch reseats the session after that.
+    pub fn set_model(&self, session_id: &str, model: &str) {
+        let mut g = self.lock();
+        let Some(e) = g.entry_mut(session_id) else {
+            return;
+        };
+        if e.wiring.model == model {
+            return;
+        }
+        e.wiring.model = model.to_string();
+        g.roster_changes += 1;
+    }
+
     /// What a session is attached to. Empty for a session nobody registered.
     pub fn wiring(&self, session_id: &str) -> SessionWiring {
         self.lock()
