@@ -121,7 +121,21 @@ impl App {
     /// one place a [`Waiting`] is spelled. A child is named by its slug, not its id, and a kind
     /// that repeats is counted - the order stays the daemon's (`Waiting::rank`).
     fn waiting_words(&self) -> String {
-        let list = self.activity.waiting_on();
+        // While a card is up it says its own ask, and the delivery behind it, better than this line.
+        let card_up = !self.open.is_empty();
+        let shown = |w: &&Waiting| match w {
+            Waiting::Delivery => !card_up,
+            Waiting::Ask(id) => !self.open.iter().any(|d| &d.req_id == id),
+            _ => true,
+        };
+        let list: Vec<Waiting> = self
+            .activity
+            .waiting_on()
+            .iter()
+            .filter(shown)
+            .cloned()
+            .collect();
+        let list = list.as_slice();
         if list.is_empty() {
             return String::new();
         }

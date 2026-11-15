@@ -103,6 +103,7 @@ pub fn card(ask: &Ask, gatekeeper: &str, root: &str) -> SessionEvent {
             handle: ask.asker.clone(),
             task: todo_title(&ask.row).chars().take(100).collect(),
             root: root.to_string(),
+            ..Default::default()
         }),
         kind: "question".into(),
         call_id: None,
@@ -124,6 +125,51 @@ pub fn card(ask: &Ask, gatekeeper: &str, root: &str) -> SessionEvent {
         deadline: None,
         on_timeout: OnTimeout::Ask,
     }
+}
+
+/// The queue's sessions as the operator knows them: each reviewer of `rows` by the branch it
+/// judges, and the gatekeeper by the queue. `label` is the project's room label (`rano`), and
+/// `clones` the directory review clones live in.
+pub fn askers(
+    gatekeeper: &str,
+    label: &str,
+    clones: &std::path::Path,
+    rows: &[letibot_tokencore::store::ReviewRow],
+) -> Vec<(String, letibot_sessionlog::pending_asks::Asker)> {
+    use letibot_sessionlog::pending_asks::Asker;
+    let queue = format!("{label} review queue");
+    let mut out = vec![(
+        gatekeeper.to_string(),
+        Asker {
+            role: format!("{queue}'s gatekeeper"),
+            ..Asker::default()
+        },
+    )];
+    for r in rows {
+        let Some(reviewer) = r
+            .reviewer
+            .as_deref()
+            .filter(|id| in_queue_tree(gatekeeper, id))
+        else {
+            continue;
+        };
+        let work = match r.branch.trim() {
+            "" => r.id.as_str(),
+            b => b,
+        };
+        out.push((
+            reviewer.to_string(),
+            Asker {
+                role: format!("reviewer of {work} ({queue})"),
+                workspace: clones
+                    .join(format!("review-{}", r.id))
+                    .display()
+                    .to_string(),
+                workspace_short: format!("review clone of {work}"),
+            },
+        ));
+    }
+    out
 }
 
 /// Cards answered recently, by `req_id`, so a pass does not post one again before the row moves.
@@ -165,7 +211,11 @@ pub fn relay(
             at: at.clone(),
             answered: answered.clone(),
         });
-        if set.post(card(ask, gatekeeper, &root.session_id()), sink) {
+        let mut posted_card = card(ask, gatekeeper, &root.session_id());
+        if let Some(asker) = set.asker(&ask.asker) {
+            posted_card = letibot_sessionlog::pending_asks::named(posted_card, &asker);
+        }
+        if set.post(posted_card, sink) {
             root.warn(
                 "waiting_on_operator",
                 format!(

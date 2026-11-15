@@ -4935,3 +4935,18 @@ Operator, watching rano's session move from glm-coding to deepseek when the 5h w
 - Bridge: a park was counted twice (its `limit_park` warning and its `ProviderTrouble`), and a switch read as the provider's raw words because `LimitNews::line` matched only `limited`. Now one report each, and a switch reads `M limited until X, switched to Y`.
 
 **Left:** R233's limit hook decision is not on main; add its code to `LIMIT_NOTICES` when it lands. The window length (`5h`) is not in the line because the refusal does not carry it.
+## R299 - A relayed queue ask's permission card names the reviewer by id and brief and offers a box-wide rule
+
+**Status:** built, 2026-11-15, branch `relay-card`. Related: R245 (H3, the relay itself).
+
+The card rano's head showed for a reviewer's `clippy-driver --version` named the asker as `a subagent's call - s-gatekeeper-c74d1fd17483-sub-1794780037103219957 · You are the gatekeeper. ...` (the reviewer's whole brief), printed layer A's empty reading (`ask - intents [unknown] over []`) with the clause that explains a known one, the oracle state under a mode that has no oracle, the clone path in full, and the main session's mode and grant sentence. Its third rung wrote a box-wide `permission.json` rule from a reviewer's request. Under the card, `waiting on: delivery · ask adj-...-0039` repeated it.
+
+**Built.**
+1. `SubagentAsk.role`: the daemon names the queue's sessions each review pass (`queue_asks::askers` from the review rows, into `PendingAsks::name_askers`), and the relayed copy carries `reviewer of agent-p2-followups (rano review queue)` or `rano review queue's gatekeeper`. The clone path in `because` is written `review clone of <branch>` (`pending_asks::named`). Board-ask cards get the same naming.
+2. The TUI draws a relayed card's asker as `from the <role>` under the question, not the id and the brief. A detail line whose intents are all `unknown` with no regions or tier is left off, and so is the access clause on that card. The `no oracle was consulted` line is drawn only when the mode is unknown or `automode*`, and never on a relayed card (the asker's mode is not this head's).
+3. Grants. The session rung stays: the answer goes back to the asking reviewer's `AdjudicatedGate`, so the grant is the reviewer's session's and never the operator's. The card now says `a session grant covers the asking session only, not this one`, without the main session's mode. The durable rung is dropped from relayed cards (both copies, `answers::without_durable`), with `options_note` saying why. A scoped "always allow for review-queue reviewers" would need a rule scope `permission.json` does not have, and a box-wide rule from a reviewer's ask is the wrong default. An `allow_always` sent anyway settles as unavailable and nothing runs.
+4. While a decision card is up, the waiting line leaves out the asks it holds and `delivery`.
+
+**Tests.** `harnessd` `answers/escalate_tests.rs`: `a_relayed_card_names_the_reviewer_and_offers_no_box_wide_rule`, `a_session_grant_from_a_relayed_ask_lands_on_the_reviewers_gate`. `queue_asks/tests.rs`: `the_queue_sessions_are_named_by_role_and_work`. `tui` `app/tests/subagents.rs`: `a_relayed_reviewer_card_names_the_reviewer_and_drops_the_debug_lines`, `a_known_reading_and_an_oracle_mode_keep_their_lines`, `the_waiting_line_does_not_repeat_the_card_on_screen`.
+
+**Left.** A queue-scoped durable rule, if reviewers keep asking for the same command. A plain subagent card (not relayed) still shows the id and task.

@@ -21,6 +21,7 @@ fn the_card_says_when_the_call_is_a_subagents_and_names_it() {
         handle: "s-sub-3".into(),
         task: "count the rows the store never reads".into(),
         root: "s-root".into(),
+        ..Default::default()
     });
     let drawn = a.decision_lines(&child, 100).join("\n");
     // The handle - what `task_result` collects by and what a head attaches to - and the
@@ -55,6 +56,7 @@ fn the_card_says_when_the_call_is_a_subagents_and_names_it() {
         handle: "s-sub-4".into(),
         task: String::new(),
         root: "s-root".into(),
+        ..Default::default()
     });
     let drawn = a.decision_lines(&bare, 100).join("\n");
     assert!(drawn.contains("a subagent's call — s-sub-4"), "{drawn}");
@@ -1614,4 +1616,133 @@ fn resuming_a_stored_session_also_stops_drawing_the_one_being_left() {
         during.contains("switching to a conversation on disk"),
         "{during}"
     );
+}
+
+/// The live card a review-queue reviewer raised, relayed to the main session: `adj-…-0039` as it
+/// reached rano's head, with the daemon's role and short workspace on it.
+fn relayed_reviewer_card() -> OpenDecision {
+    use letibot_sessionlog::event::{OptionKind, SubagentAsk};
+    let mut d = decision_with(&[
+        OptionKind::AllowOnce,
+        OptionKind::AllowSession,
+        OptionKind::RejectOnce,
+        OptionKind::RejectAlways,
+    ]);
+    d.req_id = "adj-s-gatekeeper-c74d1fd17483-sub-1794780037103219957-0039".into();
+    d.summary = "`bash` wants exec access to `clippy-driver --version`".into();
+    d.target = "clippy-driver --version".into();
+    d.access = "exec".into();
+    d.detail = "ask — intents [unknown] over []".into();
+    d.because = "workspace: review clone of agent-p2-followups".into();
+    d.options_note =
+        "no always-allow here: a rule from a queue session's ask would cover the whole box".into();
+    d.subagent = Some(SubagentAsk {
+        handle: "s-gatekeeper-c74d1fd17483-sub-1794780037103219957".into(),
+        task: "You are the gatekeeper. A subagent has finished work on a branch, and you judge \
+               whether it may land."
+            .into(),
+        root: "s-main".into(),
+        role: "reviewer of agent-p2-followups (rano review queue)".into(),
+    });
+    d
+}
+
+/// A relayed reviewer's card names the asker by role and work, not by its id and brief, and drops
+/// the lines that only a debugger reads.
+#[test]
+fn a_relayed_reviewer_card_names_the_reviewer_and_drops_the_debug_lines() {
+    let mut a = app();
+    a.apply(mode_settings("allow-all", MODES));
+    let drawn = a.decision_lines(&relayed_reviewer_card(), 160).join("\n");
+
+    assert!(
+        drawn.contains("from the reviewer of agent-p2-followups (rano review queue)"),
+        "{drawn}"
+    );
+    assert!(!drawn.contains("s-gatekeeper-c74d1fd17483-sub"), "{drawn}");
+    assert!(!drawn.contains("You are the gatekeeper"), "{drawn}");
+    assert!(!drawn.contains("a subagent's call"), "{drawn}");
+    // The asker sits under the question, above the command.
+    let who = drawn.find("from the reviewer").unwrap();
+    assert!(drawn.find("? ").unwrap() < who, "{drawn}");
+    assert!(
+        who < drawn.find("clippy-driver --version").unwrap(),
+        "{drawn}"
+    );
+
+    assert!(!drawn.contains("intents [unknown]"), "{drawn}");
+    assert!(!drawn.contains("the access is what asks"), "{drawn}");
+    assert!(!drawn.contains("no oracle was consulted"), "{drawn}");
+    assert!(
+        drawn.contains("because: workspace: review clone of agent-p2-followups"),
+        "{drawn}"
+    );
+    assert!(!drawn.contains("/tmp/letibot-review-clones"), "{drawn}");
+
+    // The grant is the reviewer's, and this session's mode is not the reviewer's.
+    assert!(
+        drawn.contains("a session grant covers the asking session only, not this one"),
+        "{drawn}"
+    );
+    assert!(!drawn.contains("until the daemon stops"), "{drawn}");
+    assert!(!drawn.contains("mode `allow-all`"), "{drawn}");
+    assert!(!drawn.contains("permission.json"), "{drawn}");
+    assert!(drawn.contains("no always-allow here"), "{drawn}");
+}
+
+/// A reading that found something keeps its line and the clause that explains it, and a mode that
+/// has a model decide keeps the oracle line.
+#[test]
+fn a_known_reading_and_an_oracle_mode_keep_their_lines() {
+    use letibot_sessionlog::event::OptionKind;
+    let mut a = app();
+    a.apply(mode_settings("automode", MODES));
+    let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+    d.access = "exec".into();
+    d.detail = "ask — intents [process_control] over [host_other]".into();
+    let drawn = a.decision_lines(&d, 160).join("\n");
+    assert!(drawn.contains("intents [process_control]"), "{drawn}");
+    assert!(drawn.contains("the access is what asks"), "{drawn}");
+    assert!(drawn.contains("no oracle was consulted"), "{drawn}");
+
+    // Under `allow-all` no model decides, so the oracle line says nothing.
+    a.apply(mode_settings("allow-all", MODES));
+    let drawn = a.decision_lines(&d, 160).join("\n");
+    assert!(!drawn.contains("no oracle was consulted"), "{drawn}");
+}
+
+/// The waiting line under the card does not repeat the card: its ask, and the delivery behind it,
+/// are left off while the card is up, and come back when it is put away.
+#[test]
+fn the_waiting_line_does_not_repeat_the_card_on_screen() {
+    use letibot_sessionlog::activity::{Activity, Waiting};
+    let mut a = app();
+    let d = relayed_reviewer_card();
+    let id = d.req_id.clone();
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::ActivityChanged {
+            activity: Activity::of(vec![Waiting::Delivery, Waiting::Ask(id.clone())]),
+        },
+    )));
+    assert!(a.turn_status(200).contains(&format!("ask {id}")));
+
+    a.open.push(d);
+    let line = a.turn_status(200);
+    assert!(!line.contains("waiting on"), "{line:?}");
+
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::ActivityChanged {
+            activity: Activity::of(vec![
+                Waiting::Delivery,
+                Waiting::Job("j1".into()),
+                Waiting::Ask(id.clone()),
+            ]),
+        },
+    )));
+    let line = a.turn_status(200);
+    assert!(line.contains("job j1"), "{line:?}");
+    assert!(!line.contains("ask"), "{line:?}");
+    assert!(!line.contains("delivery"), "{line:?}");
 }

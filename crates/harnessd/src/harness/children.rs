@@ -3937,6 +3937,7 @@ impl HarnessTaskRunner {
                 // surface does.
                 task: title.clone(),
                 root: sub_tree_root.clone(),
+                ..Default::default()
             },
             sub_head,
         );

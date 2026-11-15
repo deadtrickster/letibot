@@ -93,6 +93,7 @@ fn a_reviewers_live_permission_card_reaches_the_main_session_and_its_answer_the_
         handle: REVIEWER.into(),
         task: "review red-master".into(),
         root: GATEKEEPER.into(),
+        ..Default::default()
     };
     let adj = SubagentAdjudicator::new(
         reviewer,
@@ -241,4 +242,190 @@ fn with_no_main_session_a_queue_card_still_fails_closed() {
     gatekeeper.set_escalation(PendingAsks::new());
     let d = HeadAdjudicator::new(gatekeeper, answers).decide(&request());
     assert_eq!(d.by, "gate:no-head", "{d:?}");
+}
+
+const CLONE: &str = "/tmp/letibot-review-clones/review-agent-p2-followups-34db3e56";
+
+fn reviewer_ask() -> SubagentAsk {
+    SubagentAsk {
+        handle: REVIEWER.into(),
+        task: "You are the gatekeeper. A subagent has finished work on a branch".into(),
+        root: GATEKEEPER.into(),
+        ..Default::default()
+    }
+}
+
+fn name_reviewer(set: &PendingAsks) {
+    use letibot_sessionlog::pending_asks::Asker;
+    set.name_askers(
+        GATEKEEPER,
+        [(
+            REVIEWER.to_string(),
+            Asker {
+                role: "reviewer of agent-p2-followups (rano review queue)".into(),
+                workspace: CLONE.into(),
+                workspace_short: "review clone of agent-p2-followups".into(),
+            },
+        )],
+    );
+}
+
+/// The main session's copy of a reviewer's card names the reviewer by role and work, shows its
+/// clone in short, and offers no always-allow: that rule would be box-wide. The asker's own copy
+/// has no always-allow either, and an `allow_always` sent anyway runs nothing.
+#[test]
+fn a_relayed_card_names_the_reviewer_and_offers_no_box_wide_rule() {
+    let w = world();
+    name_reviewer(&w.set);
+    let adj = SubagentAdjudicator::new(
+        reviewer_ask(),
+        Some(
+            HeadAdjudicator::new(w.gatekeeper.clone(), w.answers.clone())
+                .with_budget(Duration::from_secs(10)),
+        ),
+    );
+    let mut req = request();
+    req.id = "adj-reviewer-0002".into();
+    req.session_id = REVIEWER.into();
+    req.boundary_facts = vec![format!("workspace: {CLONE}-92726-0")];
+    assert!(
+        req.options
+            .iter()
+            .any(|o| o.kind == ToolOptionKind::AllowAlways),
+        "the fixture offers the durable rung"
+    );
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let (main, head, gk) = (w.main.clone(), w.head.clone(), w.gatekeeper.clone());
+    let answerer = answer_when_open(w.main.clone(), stop.clone(), move |d| {
+        let own = open_of(&gk);
+        main.submit(
+            &head,
+            "c1",
+            0,
+            CommandKind::Answer {
+                req_id: d.req_id.clone(),
+                reply: Reply::Permission {
+                    option_id: "allow_always".into(),
+                    pattern: None,
+                    note: None,
+                },
+            },
+        );
+        (d.clone(), own)
+    });
+    let d = adj.decide(&req);
+    stop.store(true, Ordering::SeqCst);
+    let (card, own) = answerer
+        .join()
+        .unwrap()
+        .expect("the card reached the main session");
+
+    let named = card.subagent.clone().expect("the card names who asks");
+    assert_eq!(named.handle, REVIEWER);
+    assert_eq!(
+        named.role,
+        "reviewer of agent-p2-followups (rano review queue)"
+    );
+    assert_eq!(
+        card.because,
+        "workspace: review clone of agent-p2-followups"
+    );
+    for c in std::iter::once(&card).chain(own.iter()) {
+        assert!(
+            c.options.iter().all(|o| o.kind != OptionKind::AllowAlways),
+            "{:?}",
+            c.options
+        );
+        assert!(
+            c.options_note.contains(RELAYED_NO_DURABLE),
+            "{}",
+            c.options_note
+        );
+    }
+    assert_eq!(d.outcome, DecisionOutcome::Unavailable, "{d:?}");
+    assert!(w.answers.take_pattern(&req.id).is_none());
+}
+
+/// "Allow for the rest of the session" on a relayed card is the reviewer's grant: it stands on the
+/// reviewer's gate, and the reviewer's next call of the class asks nobody.
+#[test]
+fn a_session_grant_from_a_relayed_ask_lands_on_the_reviewers_gate() {
+    use letibot_tools::schema::Access;
+    use letibot_tools::{AdjudicatedGate, Gate as _, GateCall, GateDecision};
+    let w = world();
+    name_reviewer(&w.set);
+    let adj = SubagentAdjudicator::new(
+        reviewer_ask(),
+        Some(
+            HeadAdjudicator::new(w.gatekeeper.clone(), w.answers.clone())
+                .with_budget(Duration::from_secs(10)),
+        ),
+    );
+    let mut reviewer_gate =
+        AdjudicatedGate::new(Box::new(adj)).with_mode(letibot_tools::mode::Mode::WRITES_ALLOWED);
+
+    let cards = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (main, head, seen, stop2) = (w.main.clone(), w.head.clone(), cards.clone(), stop.clone());
+    let answerer = std::thread::spawn(move || {
+        let mut answered = std::collections::HashSet::new();
+        while !stop2.load(Ordering::SeqCst) {
+            if let Some(d) = open_of(&main).first()
+                && answered.insert(d.req_id.clone())
+            {
+                assert!(
+                    d.options.iter().any(|o| o.option_id == "allow_session"),
+                    "{:?}",
+                    d.options
+                );
+                seen.fetch_add(1, Ordering::SeqCst);
+                main.submit(
+                    &head,
+                    "c1",
+                    0,
+                    CommandKind::Answer {
+                        req_id: d.req_id.clone(),
+                        reply: Reply::Permission {
+                            option_id: "allow_session".into(),
+                            pattern: None,
+                            note: None,
+                        },
+                    },
+                );
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    });
+
+    let args = serde_json::json!({"query": "x"});
+    let call = |id: &'static str| GateCall {
+        name: "web_search",
+        access: Access::Network,
+        args: &args,
+        turn_id: "t1",
+        call_id: id,
+        workspace: CLONE,
+        target_exists: None,
+        scripts: &[],
+        preview: &[],
+    };
+    let first = reviewer_gate.admit(&call("c1"));
+    let second = reviewer_gate.admit(&call("c2"));
+    stop.store(true, Ordering::SeqCst);
+    answerer.join().unwrap();
+
+    assert!(matches!(first, GateDecision::Admit), "{first:?}");
+    assert!(matches!(second, GateDecision::Admit), "{second:?}");
+    assert_eq!(
+        reviewer_gate.grants().len(),
+        1,
+        "the grant is the reviewer's"
+    );
+    assert_eq!(
+        cards.load(Ordering::SeqCst),
+        1,
+        "the reviewer's second call was covered by its own grant"
+    );
+    assert!(open_of(&w.main).is_empty());
 }

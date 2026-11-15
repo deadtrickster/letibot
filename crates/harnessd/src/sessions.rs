@@ -2914,12 +2914,24 @@ impl<'a> Sessions<'a> {
         let set = self.registry.pending_asks();
         set.set_main(&root);
         if let Some(gk) = self.registry.get(&self.gatekeeper) {
-            gk.set_escalation(set);
+            gk.set_escalation(set.clone());
         }
         let at = self.base.store_at();
         let Some(store) = at.as_ref().and_then(|a| a.open().ok()) else {
             return 0;
         };
+        // The cards name the queue's sessions by role and work, not by id and brief.
+        let handle = gatekeeper::room_handle(&self.base.workspace);
+        let label = handle.strip_prefix("gatekeeper@").unwrap_or(&handle);
+        let clones =
+            self.base.review_clones.clone().unwrap_or_else(|| {
+                std::env::temp_dir().join(crate::mergequeue::review::CLONES_DIR)
+            });
+        let rows = store.review_rows(None).unwrap_or_default();
+        set.name_askers(
+            &self.gatekeeper,
+            crate::queue_asks::askers(&self.gatekeeper, label, &clones, &rows),
+        );
         let asks = crate::queue_asks::open_asks(&store, &self.gatekeeper);
         crate::queue_asks::relay(
             &root,

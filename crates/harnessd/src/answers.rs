@@ -136,7 +136,10 @@ impl Answers {
             let mut g = self.lock();
             g.insert(req.id.clone(), Slot::Waiting);
             drop(g);
-            let card = pose(req, deadline_ms, subagent);
+            let mut card = pose(req, deadline_ms, subagent);
+            if route.is_some() {
+                card = without_durable(card);
+            }
             hub.publish(card.clone());
             if let Some(set) = &route {
                 set.post(relayed(card, hub, set), self.clone());
@@ -157,6 +160,16 @@ impl Answers {
 
         let latency_ms = started.elapsed().as_millis() as u64;
         let decision = match waited {
+            Waited::Answered { reply, by } if route.is_some() && durable_reply(req, &reply) => {
+                AdjudicationDecision::unavailable(
+                    req,
+                    "gate:relayed",
+                    &format!(
+                        "{by} answered `allow_always` on a relayed card, which does not offer it: \
+                         a rule from a queue session's ask would cover the whole box. Nothing ran."
+                    ),
+                )
+            }
             Waited::Answered { reply, by } => {
                 if let Reply::Permission {
                     pattern: Some(p), ..
@@ -349,6 +362,35 @@ fn escalation(
     Some((set, format!("the main session {}", main.session_id())))
 }
 
+/// Why a relayed card has no always-allow rung, on the card where the rung would be.
+pub const RELAYED_NO_DURABLE: &str = "no always-allow here: a rule from a queue session's ask \
+                                      would cover the whole box";
+
+/// A relayed permission card without its durable rung: the rule it writes is box-wide, and the
+/// ask is a queue session's. The session rung stays, and lands on the asking session's gate.
+fn without_durable(mut card: SessionEvent) -> SessionEvent {
+    if let SessionEvent::DecisionRequested {
+        options,
+        options_note,
+        ..
+    } = &mut card
+        && options.iter().any(|o| o.kind == OptionKind::AllowAlways)
+    {
+        options.retain(|o| o.kind != OptionKind::AllowAlways);
+        *options_note = match options_note.trim() {
+            "" => RELAYED_NO_DURABLE.to_string(),
+            had => format!("{had} · {RELAYED_NO_DURABLE}"),
+        };
+    }
+    card
+}
+
+/// Whether `reply` picks a durable rung of `req`, which a relayed card never offers.
+fn durable_reply(req: &AdjudicationRequest, reply: &Reply) -> bool {
+    matches!(reply, Reply::Permission { option_id, .. }
+        if req.option(option_id).is_some_and(|o| o.kind == ToolOptionKind::AllowAlways))
+}
+
 /// The copy of `card` the main session shows: it names the asking session when the card did not
 /// already name a subagent, so the head says whose ask it is.
 fn relayed(
@@ -362,8 +404,12 @@ fn relayed(
             handle: hub.session_id(),
             task: String::new(),
             root: String::new(),
+            ..Default::default()
         });
         ask.root = root;
+        if let Some(asker) = set.asker(&ask.handle) {
+            return letibot_sessionlog::pending_asks::named(card, &asker);
+        }
     }
     card
 }

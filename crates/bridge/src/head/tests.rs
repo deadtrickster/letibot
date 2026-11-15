@@ -1066,6 +1066,7 @@ fn a_relayed_ask_names_the_session_it_is_for() {
                 handle: "s-gatekeeper-k".into(),
                 task: "Raise the cap".into(),
                 root: "s-main".into(),
+                ..Default::default()
             }),
             kind: "question".into(),
             call_id: None,

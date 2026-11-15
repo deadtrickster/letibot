@@ -19,6 +19,7 @@ fn card(req_id: &str) -> SessionEvent {
             handle: ASKER.into(),
             task: "review".into(),
             root: MAIN.into(),
+            ..Default::default()
         }),
         kind: "question".into(),
         call_id: None,

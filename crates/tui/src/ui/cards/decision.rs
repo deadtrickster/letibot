@@ -121,18 +121,48 @@ fn words_for_kind(kind: letibot_sessionlog::event::OptionKind) -> Words {
 fn grant_sentence(d: &OpenDecision, mode: &str) -> Option<String> {
     use letibot_sessionlog::event::OptionKind as K;
     let mut said: Vec<&str> = Vec::new();
+    // A relayed ask's grant is the asking session's gate's, and this head's mode is not its mode.
+    let relayed = relayed_role(d).is_some();
     if d.options.iter().any(|o| o.kind == K::AllowSession) {
-        said.push("a session grant lasts until the daemon stops");
+        said.push(match relayed {
+            true => "a session grant covers the asking session only, not this one",
+            false => "a session grant lasts until the daemon stops",
+        });
     }
     if d.options.iter().any(|o| o.kind == K::AllowAlways) {
         said.push("a durable rule is written to ~/.config/letibot/permission.json");
     }
     let mode = match mode.trim() {
+        _ if relayed => String::new(),
         "" => String::new(),
         m => format!("mode `{m}` · "),
     };
     (!said.is_empty()).then(|| format!("{mode}{}", said.join(" · ")))
 }
+
+/// Who asks, by role and work, when the card is relayed from a review queue.
+pub(crate) fn relayed_role(d: &OpenDecision) -> Option<&str> {
+    d.subagent
+        .as_ref()
+        .map(|s| s.role.as_str())
+        .filter(|r| !r.is_empty())
+}
+
+/// Layer A's line when it read nothing about the action: `ask — intents [unknown] over []`. It
+/// says no more than the headline, so the card leaves it off.
+pub(crate) fn reading_is_empty(detail: &str) -> bool {
+    let Some((_, rest)) = detail.split_once(" — intents [") else {
+        return false;
+    };
+    let Some((intents, rest)) = rest.split_once(']') else {
+        return false;
+    };
+    let rest = rest.strip_prefix(" over []").unwrap_or(rest);
+    rest.trim().is_empty() && intents.split_whitespace().all(|i| i == "unknown")
+}
+
+/// rano's sentence for a card no oracle saw.
+const NO_ORACLE: &str = "  no oracle was consulted for this one — the judgement is yours alone";
 
 /// A ladder row with its number: the digit that marks it is drawn on it, `1`-`9`; a row past the
 /// ninth has no digit and is padded to line up.
@@ -337,6 +367,25 @@ impl App {
         let (mut content, rano) = view.split(w);
         let p = self.cfg.palette();
         let question = d.kind == "question";
+        // A relayed card names its asker by role, under the question, where rano names a child.
+        if let Some(role) = relayed_role(d) {
+            let at = 1.min(content.len());
+            for (i, l) in rano::agent::text::wrap(&format!("    from the {role}"), w)
+                .into_iter()
+                .enumerate()
+            {
+                content.insert(at + i, rano::agent::text::one(l, rano::style::Role::Faint));
+            }
+        }
+        if !question && d.advice.is_none() && !self.oracle_matters(d) {
+            let n = rano::agent::text::wrap(NO_ORACLE, w).len();
+            if let Some(at) = content
+                .iter()
+                .position(|l| l.plain().starts_with("  no oracle was consulted"))
+            {
+                content.drain(at..(at + n).min(content.len()));
+            }
+        }
         // rano's rungs stay for a question, whose answers are the model's prose; a permission's are
         // this head's, so a digit and a click cannot disagree about what row two is.
         let cut = view.choice_rows(w).last().map_or(0, |r| r.end);
@@ -416,6 +465,18 @@ impl App {
         (content, row_strings(&choices, p))
     }
 
+    /// Whether *no oracle was consulted* tells the operator anything: only where this session's
+    /// mode has a model decide (`automode`), or the mode is not known. A relayed card's asker runs
+    /// under its own mode, which this head does not know.
+    fn oracle_matters(&self, d: &OpenDecision) -> bool {
+        if relayed_role(d).is_some() {
+            return false;
+        }
+        let mode = self.mode_current();
+        let mode = mode.trim();
+        mode.is_empty() || mode.starts_with("automode")
+    }
+
     /// The card's facts, in rano's words: the ask and target, whose call it is, the files it would write, layer A's
     /// reading, the model's reason, the guard's verdict, the ladder with this head's highlighted row, and the deadline.
     /// `decision_card` drops rano's ladder rows for this head's; nothing here preselects an option.
@@ -425,14 +486,19 @@ impl App {
             kind: d.kind.clone(),
             summary: d.summary.clone(),
             target: d.target.clone(),
-            subagent: d.subagent.as_ref().map(|s| card::SubagentAsk {
-                // The child by its name when this head knows one (`fix-login · …tail`).
-                handle: match self.child_label(&s.handle) {
-                    named if named.contains(" · ") => named,
-                    _ => s.handle.clone(),
-                },
-                task: s.task.clone(),
-            }),
+            // A relayed card's asker is drawn by `decision_card`, by role and not by id and brief.
+            subagent: d
+                .subagent
+                .as_ref()
+                .filter(|_| relayed_role(d).is_none())
+                .map(|s| card::SubagentAsk {
+                    // The child by its name when this head knows one (`fix-login · …tail`).
+                    handle: match self.child_label(&s.handle) {
+                        named if named.contains(" · ") => named,
+                        _ => s.handle.clone(),
+                    },
+                    task: s.task.clone(),
+                }),
             write_targets: d
                 .write_targets
                 .iter()
@@ -441,8 +507,15 @@ impl App {
                     unresolved: t.unresolved,
                 })
                 .collect(),
-            detail: d.detail.clone(),
-            access: d.access.clone(),
+            // A reading that found nothing is left off, and so is the clause that explains it.
+            detail: match reading_is_empty(&d.detail) {
+                true => String::new(),
+                false => d.detail.clone(),
+            },
+            access: match reading_is_empty(&d.detail) {
+                true => String::new(),
+                false => d.access.clone(),
+            },
             because: d.because.clone(),
             advice: d.advice.as_ref().map(model_advice),
             options: d

@@ -276,3 +276,101 @@ fn a_board_ask_is_pending_under_the_relayed_cards_id() {
         )]
     );
 }
+
+/// The queue's sessions are named by role and work from the rows: a reviewer by the branch it
+/// judges, with its clone in short, and a row whose reviewer is outside the tree is not named.
+#[test]
+fn the_queue_sessions_are_named_by_role_and_work() {
+    use letibot_tokencore::store::{MergePriority, ReviewKind, ReviewRow, ReviewState};
+    let row = |id: &str, branch: &str, reviewer: Option<&str>| ReviewRow {
+        id: id.into(),
+        repository: "/r".into(),
+        target: "master".into(),
+        kind: ReviewKind::Branch,
+        session_id: "s-author".into(),
+        branch: branch.into(),
+        worktree: None,
+        base_sha: "b".into(),
+        head_sha: "h".into(),
+        brief: "You are the gatekeeper.".into(),
+        priority: MergePriority::Subagent,
+        fixes: None,
+        state: ReviewState::Reviewing,
+        owner: String::new(),
+        reviewer: reviewer.map(Into::into),
+        deadline_ms: None,
+        attempts: 0,
+        failure: String::new(),
+        verdict: None,
+        verdict_by: None,
+        reviewed_sha: None,
+        reasons: vec![],
+        files: vec![],
+        commands: vec![],
+        evidence: String::new(),
+        created_ms: 1,
+        state_ms: 1,
+        updated_ms: 1,
+    };
+    let clones = std::path::Path::new("/tmp/letibot-review-clones");
+    let named: HashMap<_, _> = askers(
+        GATEKEEPER,
+        "rano",
+        clones,
+        &[
+            row(
+                "agent-p2-followups-34db3e56",
+                "agent-p2-followups",
+                Some(REVIEWER),
+            ),
+            row("other-1", "other", Some("s-gatekeeper-elsewhere-sub-9")),
+        ],
+    )
+    .into_iter()
+    .collect();
+    assert_eq!(named.len(), 2, "{named:?}");
+    assert_eq!(named[GATEKEEPER].role, "rano review queue's gatekeeper");
+    let r = &named[REVIEWER];
+    assert_eq!(r.role, "reviewer of agent-p2-followups (rano review queue)");
+    assert_eq!(
+        r.workspace,
+        "/tmp/letibot-review-clones/review-agent-p2-followups-34db3e56"
+    );
+    assert_eq!(r.workspace_short, "review clone of agent-p2-followups");
+
+    let card = letibot_sessionlog::pending_asks::named(
+        SessionEvent::DecisionRequested {
+            req_id: "adj-1".into(),
+            subagent: Some(SubagentAsk {
+                handle: REVIEWER.into(),
+                ..Default::default()
+            }),
+            kind: "permission".into(),
+            call_id: None,
+            access: String::new(),
+            summary: String::new(),
+            target: String::new(),
+            write_targets: Vec::new(),
+            edits: Vec::new(),
+            detail: String::new(),
+            options: Vec::new(),
+            options_note: String::new(),
+            choices: Vec::new(),
+            because:
+                "workspace: /tmp/letibot-review-clones/review-agent-p2-followups-34db3e56-92726-0"
+                    .into(),
+            advice: None,
+            deadline: None,
+            on_timeout: OnTimeout::Deny,
+        },
+        r,
+    );
+    let SessionEvent::DecisionRequested {
+        subagent, because, ..
+    } = card
+    else {
+        panic!("a card");
+    };
+    assert_eq!(because, "workspace: review clone of agent-p2-followups");
+    assert_eq!(subagent.unwrap().role, r.role);
+}

@@ -600,6 +600,7 @@ fn child_ask() -> SubagentAsk {
         handle: "s-sub-3".into(),
         task: "count the rows the store never reads".into(),
         root: "root".into(),
+        ..Default::default()
     }
 }
 

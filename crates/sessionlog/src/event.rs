@@ -989,7 +989,7 @@ pub const RESTORING_ROWS: &str = "restoring the stored conversation";
 
 /// A subagent's call, named, on a card its own session cannot draw: a child has no head
 /// attached, so the card is raised where a person can see it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SubagentAsk {
     /// The child's handle, which is its session id.
     pub handle: String,
@@ -998,6 +998,10 @@ pub struct SubagentAsk {
     /// The session this card is posted to: the tree's root, the only session in a
     /// subagent tree that has a head.
     pub root: String,
+    /// Who asks, by role and work, on a card relayed from a review queue:
+    /// `reviewer of agent-p2-followups (rano review queue)`. Empty on every other card.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub role: String,
 }
 
 /// Which of the two facts a prompt card is raised on: the reading, or the absence of one.

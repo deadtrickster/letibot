@@ -988,6 +988,7 @@ fn an_open_card_is_pending_typed_and_a_childs_names_the_child() {
             handle: "s-sub-1".into(),
             task: "run it".into(),
             root: "s".into(),
+            ..Default::default()
         });
     }
     hub.publish(child);

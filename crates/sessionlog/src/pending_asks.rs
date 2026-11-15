@@ -21,6 +21,41 @@ struct Entry {
 struct Inner {
     main: Option<Weak<Hub>>,
     open: BTreeMap<String, Entry>,
+    askers: BTreeMap<String, Asker>,
+}
+
+/// A queue session named for the operator: its role and work, and its workspace in short.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Asker {
+    /// `reviewer of agent-p2-followups (rano review queue)`.
+    pub role: String,
+    /// The workspace path's prefix as the gate writes it, and the words it is shown as.
+    pub workspace: String,
+    pub workspace_short: String,
+}
+
+/// `card` with its asker named by `asker`: the role on the `SubagentAsk`, and every word of
+/// `because` under the asker's workspace written in short.
+pub fn named(mut card: SessionEvent, asker: &Asker) -> SessionEvent {
+    if let SessionEvent::DecisionRequested {
+        subagent, because, ..
+    } = &mut card
+    {
+        if let Some(s) = subagent.as_mut() {
+            s.role = asker.role.clone();
+        }
+        if !asker.workspace.is_empty() {
+            *because = because
+                .split(' ')
+                .map(|w| match w.starts_with(&asker.workspace) {
+                    true => asker.workspace_short.as_str(),
+                    false => w,
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+        }
+    }
+    card
 }
 
 /// The set, one per daemon. Keyed by the card's `req_id`, which is the ask's id on every surface.
@@ -130,6 +165,20 @@ impl PendingAsks {
             }
         }
         posted
+    }
+
+    /// Name the sessions of the queue tree `tree` (the gatekeeper and its `-sub-` children):
+    /// replaces what was known about that tree.
+    pub fn name_askers(&self, tree: &str, askers: impl IntoIterator<Item = (String, Asker)>) {
+        let sub = format!("{tree}-sub-");
+        let mut g = self.lock();
+        g.askers.retain(|id, _| id != tree && !id.starts_with(&sub));
+        g.askers.extend(askers);
+    }
+
+    /// What `session` is known as, when it is a named queue session.
+    pub fn asker(&self, session: &str) -> Option<Asker> {
+        self.lock().askers.get(session).cloned()
     }
 
     /// Every open ask, typed.
