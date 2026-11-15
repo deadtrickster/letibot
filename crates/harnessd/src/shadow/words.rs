@@ -13,6 +13,8 @@ pub enum Author {
     Peer(String),
     /// The watched session's model.
     Assistant,
+    /// A tool's output, a file or a fetched page: shown as evidence, never quotable as a note.
+    Tool,
 }
 
 impl Author {
@@ -22,6 +24,7 @@ impl Author {
             Author::Operator => "the operator".into(),
             Author::Peer(from) => format!("{from} (an agent, not the operator)"),
             Author::Assistant => "the assistant".into(),
+            Author::Tool => "a tool's output".into(),
         }
     }
 }

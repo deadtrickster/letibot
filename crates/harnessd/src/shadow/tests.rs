@@ -884,12 +884,14 @@ mod turn_end_acting {
     }
 
     /// The live case: an agent's process rule is shown under its handle, and a note quoting it
-    /// is dropped. The operator's own correction is kept, with its row.
+    /// voids the verdict. A note may quote the operator's words or the model's own finding, never
+    /// a tool's output.
     #[test]
-    fn a_note_quotes_only_the_operators_own_words() {
+    fn a_note_quotes_only_the_operator_or_the_models_own_words() {
         use super::super::words;
         let rule = "That shape works; keep it: one item per turn, commands first.";
         let fix = "no, the gate runs on lab2x1, not on the laptop";
+        let found = "the flake is the 2s deadline: it passes at 5s on lab2x1 every time";
         let items = vec![
             operator(fix),
             assistant("Moving the gate to lab2x1."),
@@ -901,7 +903,13 @@ mod turn_end_acting {
         assert_eq!(said[0].author, words::Author::Operator);
         assert_eq!(said[0].row, 0);
         assert_eq!(said[1].author, words::Author::Peer("cc@rano".into()));
-        let shown = turn_end::shown(&said, "I will run the gate next.", &[], &[]);
+        let mut shown = turn_end::shown(&said, &format!("Measured: {found}."), &[], &[]);
+        shown.push_said(
+            "tool output:",
+            words::Author::Tool,
+            Some(9),
+            "test result: ok. 12 passed; 0 failed",
+        );
         assert!(
             shown
                 .data
@@ -909,31 +917,27 @@ mod turn_end_acting {
             "{}",
             shown.data
         );
-        let agents = format!(r#"{{"verdict":"none","note":"{rule}"}}"#);
-        let c = verdict::check(Job::TurnEnd, &agents, &shown);
-        assert!(
-            matches!(
-                &c.verdict,
-                Ok(Verdict::TurnEnd {
-                    note: None,
-                    reminder: Reminder::None
-                })
-            ),
-            "{:?}",
-            c
-        );
-        assert!(
-            c.log.iter().any(|l| l.starts_with("drop note")),
-            "{:?}",
-            c.log
-        );
-        let operators = format!(r#"{{"verdict":"none","note":"{fix}"}}"#);
+        let note = |q: &str| format!(r#"{{"verdict":"none","note":"{q}"}}"#);
+        for (quote, why) in [
+            (rule, "an agent's bridge line"),
+            ("test result: ok. 12 passed", "a tool result"),
+        ] {
+            let c = verdict::check(Job::TurnEnd, &note(quote), &shown);
+            let err = c.verdict.expect_err(why);
+            assert!(err.starts_with("note author"), "{why}: {err}");
+        }
         let Ok(Verdict::TurnEnd { note: Some(q), .. }) =
-            verdict::check(Job::TurnEnd, &operators, &shown).verdict
+            verdict::check(Job::TurnEnd, &note(fix), &shown).verdict
         else {
             panic!("the operator's correction is a note");
         };
         assert_eq!((q.author.as_str(), q.row), ("the operator", Some(0)));
+        let Ok(Verdict::TurnEnd { note: Some(q), .. }) =
+            verdict::check(Job::TurnEnd, &note(found), &shown).verdict
+        else {
+            panic!("the model's own finding is a note");
+        };
+        assert_eq!(q.author, "the assistant");
         // A promise must be the assistant's: quoting the operator's row voids the verdict.
         let wrong = format!(r#"{{"verdict":"owed","promise":"{fix}"}}"#);
         let why = verdict::check(Job::TurnEnd, &wrong, &shown)

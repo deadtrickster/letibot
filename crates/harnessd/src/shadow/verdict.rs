@@ -294,9 +294,13 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
                 }
                 log.pass("author");
             }
+            // A note is memory: the operator's words or the model's own statement of what it found.
+            // Tool output, fetched content and another agent's line are not, until the model says it.
             let note = match r.note.is_empty() {
                 true => None,
-                false => match shown.authored(&r.note, |a| *a == Author::Operator) {
+                false => match shown.authored(&r.note, |a| {
+                    matches!(a, Author::Operator | Author::Assistant)
+                }) {
                     Some(span) => {
                         log.pass("note author");
                         Some(Quoted {
@@ -305,13 +309,14 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
                             row: span.row,
                         })
                     }
-                    // Unsure means no proposal: the reminder stands, the note is dropped.
                     None => {
-                        log.0.push(format!(
-                            "drop note: {:?} is not the operator's own words",
-                            r.note
-                        ));
-                        None
+                        return log.reject(
+                            "note author",
+                            format!(
+                                "note {:?} is neither the operator's nor the model's own words",
+                                r.note
+                            ),
+                        );
                     }
                 },
             };

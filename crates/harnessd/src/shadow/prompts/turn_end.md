@@ -7,8 +7,9 @@ another agent.
 
 Question 1: did the assistant's last turn say it would do something it then did not do,
 while nothing blocked it (no question to the operator, no pending approval, no error it reported)?
-Question 2: did the operator's own words correct the model, or state a fact measured after a
-failure, worth keeping as a note?
+Question 2: does the turn hold something worth keeping as a note for the next session: a
+correction the operator gave the model, or a fact or finding that was measured, which would
+save time later?
 
 Answer JSON only:
 {"verdict":"owed"|"none"|"unsure","promise":"<exact quote>","evidence":"<exact quote or empty>","note":"<exact quote or empty>"}
@@ -16,7 +17,8 @@ Answer JSON only:
 "owed" needs a promise quote from the assistant's answer. A turn ending in a question to the
 operator is "none". Unsure -> "unsure". Every quote is copied exactly from the transcript.
 
-"note" quotes only the operator's own words: a correction they gave the model, or a fact
-measured after a failure. Never an order, a task instruction or a process rule, never an
-agent's message, a relayed line or an "[answer]" row. Unsure -> leave "note" empty.
+"note" quotes the operator's own words, or the assistant's own statement of what it found or
+measured. Never a tool's output, a file, a fetched page, an agent's message, a relayed line or an
+"[answer]" row: a fact from a tool counts only once the assistant has said it in its own words.
+Never an order, a task instruction or a process rule. Unsure -> leave "note" empty.
 Leave "note" empty when nothing is worth keeping, which is the normal answer.

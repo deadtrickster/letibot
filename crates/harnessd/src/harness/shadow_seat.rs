@@ -224,7 +224,18 @@ impl Harness {
             blocked.push("a todo row is waiting on the operator".to_string());
         }
         let words = crate::shadow::words::recent(&self.session.items);
-        let shown = turn_end::shown(&words, reply, &todos, &blocked);
+        let mut shown = turn_end::shown(&words, reply, &todos, &blocked);
+        // The answer's own row, so a note quoting the model names where it said it.
+        let at = self
+            .session
+            .items
+            .iter()
+            .rposition(|i| matches!(i, TranscriptItem::Assistant { .. }));
+        for s in shown.spans.iter_mut() {
+            if s.author == crate::shadow::words::Author::Assistant {
+                s.row = at;
+            }
+        }
         if let Some(s) = self.shadow.get() {
             s.submit(Job::TurnEnd, shown);
         }
