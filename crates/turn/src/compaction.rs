@@ -51,8 +51,8 @@ empty:\n\
 ## Objective\n\
 - one or two brief sentences: what the operator is trying to accomplish\n\
 ## Important Details\n\
-- constraints, preferences, decisions and why they were taken, commands run and what \
-they did, facts and assumptions, numbers still needed — or \"(none)\"\n\
+- constraints, preferences, decisions and why they were taken, facts and assumptions, \
+numbers still needed — or \"(none)\"\n\
 ## Work State\n\
 ### Completed\n\
 - finished work, verified facts, changes made; otherwise \"(none)\"\n\
@@ -66,6 +66,8 @@ they did, facts and assumptions, numbers still needed — or \"(none)\"\n\
 ## Relevant Files\n\
 - file or directory path: why it matters, or \"(none)\"\n\
 Rules: terse bullets, not prose paragraphs. Drop tool output bodies and reasoning. \
+Write the state of the work, not its history: no log of the commands that ran - name a \
+command only when the next step needs it. \
 Preserve exact file paths, symbols, commands, error strings, URLs and identifiers \
 where you know them. If you read or were sent an IMAGE, say so and say what was in it \
 — the picture itself does not survive this record and cannot be looked at again, so \
@@ -99,6 +101,10 @@ pub const SUMMARY_FIDELITY_PER_MILLE: u64 = 150;
 /// How much of the record's room its pins may take, in per-mille: a quarter, so the record still has
 /// room to say what it did while `AGENTS.md` is carried verbatim (X15's `pinned_tokens`).
 pub const PINNED_PER_MILLE: u64 = 250;
+
+/// The most a record may be, whatever the window: a record is the state of the work, and a window of
+/// a million tokens at [`SUMMARY_FIDELITY_PER_MILLE`] asked for a history of every command instead.
+pub const MAX_SUMMARY_TOKENS: u64 = 12_000;
 
 /// The least a budget may be, so a small window still buys a record that can enumerate something.
 /// Never above what the summary turn can actually write - see [`summary_budget`].
@@ -162,6 +168,11 @@ impl SummaryBudget {
                  had left after its own ask",
                 self.tokens, self.room
             ),
+            "cap" => format!(
+                "the record was allowed {} of {} ledger tokens - the cap on any record, which \
+                 is the state of the work and not its history",
+                self.tokens, self.room
+            ),
             _ => format!(
                 "the record was allowed {} of {} ledger tokens, {} per mille of the room the \
                  conversation leaves",
@@ -195,13 +206,21 @@ pub fn summary_budget(
     let for_the_record = writable.saturating_sub(ASK_ROOM);
     let tokens = share
         .min(for_the_record)
+        .min(MAX_SUMMARY_TOKENS)
         .max(MIN_SUMMARY_TOKENS.min(for_the_record));
+    let by = if tokens == MAX_SUMMARY_TOKENS && share > MAX_SUMMARY_TOKENS {
+        "cap"
+    } else if tokens == share {
+        "room"
+    } else {
+        "turn"
+    };
     SummaryBudget {
         room,
         share,
         writable,
         tokens,
-        by: if tokens == share { "room" } else { "turn" },
+        by,
     }
 }
 
@@ -271,7 +290,7 @@ pub const SECTIONS: [Section; 8] = [
         heading: "## Important Details",
         ask: Some(
             "- one line per thing that constrains the work: a preference, a decision and why it was \
-             taken, a command and what it did, a number still needed, an assumption",
+             taken, a number still needed, an assumption",
         ),
     },
     Section {
@@ -292,7 +311,10 @@ pub const SECTIONS: [Section; 8] = [
     },
     Section {
         heading: "## Next Move",
-        ask: Some("- one numbered line per next action, most immediate first"),
+        ask: Some(
+            "- one numbered line per next action, most immediate first, with the exact command \
+             when the action is one",
+        ),
     },
     Section {
         heading: "## Relevant Files",
@@ -305,14 +327,14 @@ pub const SECTIONS: [Section; 8] = [
 
 /// The rules the record is written by, after its sections: the order is the instruction's.
 pub const RULES: [&str; 6] = [
-    "- One line per thing. A file, a command, a decision, an open question: each gets its own line.",
+    "- One line per thing. A file, a decision, an open question: each gets its own line.",
     "- Never write \"various\", \"and others\" or \"etc.\"; never fold a group of items into one \
      entry; never drop an item for being small. A reader who has your record and nothing else cannot \
      recover what you did not write.",
     "- Exact strings for exact things: file paths, symbols, commands, error strings, URLs and \
      identifiers, spelled as they appeared.",
-    "- Drop tool output bodies and reasoning. Carry what was concluded, what was run, what failed and \
-     what is left.",
+    "- Write the state of the work, not its history. Drop tool output bodies, reasoning and the log \
+     of commands that ran; carry what was concluded, what failed and what is left.",
     "- If you read or were sent an IMAGE, say so and say what was in it: the picture does not survive \
      this record.",
     "- Do not call tools. Do not write about this record or about the conversation being shortened.",
@@ -373,9 +395,9 @@ pub fn instruction_with(budget: &SummaryBudget, template: &Template) -> String {
     let mut out = String::new();
     out.push_str(RECORD_LEAD);
     out.push_str(&format!(
-        "\nYou have room for about {tokens} tokens - roughly {chars} characters, or {lines} lines at \
-         120 characters. USE IT. A record much shorter than that has dropped work that was in the \
-         conversation, and it will be sent back to be written again.\n",
+        "\nYou have room for up to about {tokens} tokens - roughly {chars} characters, or {lines} \
+         lines at 120 characters. Spend it on the state of the work: a record that drops a decision, \
+         an open item or a file that matters will be sent back to be written again.\n",
         tokens = budget.tokens,
         chars = budget.chars(),
         lines = budget.lines(),
@@ -457,9 +479,9 @@ mod the_record_has_a_size {
 The conversation above is what this record stands in for: it is what a reader will have \
 instead of it, and anything you do not carry into it is lost.
 \
-You have room for about {tokens} tokens - roughly {chars} characters, or {lines} lines at 120 \
-characters. USE IT. A record much shorter than that has dropped work that was in the \
-conversation, and it will be sent back to be written again.
+You have room for up to about {tokens} tokens - roughly {chars} characters, or {lines} lines at \
+120 characters. Spend it on the state of the work: a record that drops a decision, an open item \
+or a file that matters will be sent back to be written again.
 \
 Write the record in exactly these sections, in this order, and keep every one of them even when \
 it is empty:
@@ -471,7 +493,7 @@ it is empty:
 ## Important Details
 \
 - one line per thing that constrains the work: a preference, a decision and why it was taken, a \
-command and what it did, a number still needed, an assumption
+number still needed, an assumption
 \
 ## Work State
 \
@@ -489,7 +511,8 @@ command and what it did, a number still needed, an assumption
 \
 ## Next Move
 \
-- one numbered line per next action, most immediate first
+- one numbered line per next action, most immediate first, with the exact command when the \
+action is one
 \
 ## Relevant Files
 \
@@ -498,7 +521,7 @@ exact path, then why it matters
 \
 Rules, and the second one is what a record this size gets wrong:
 \
-- One line per thing. A file, a command, a decision, an open question: each gets its own line.
+- One line per thing. A file, a decision, an open question: each gets its own line.
 \
 - Never write \"various\", \"and others\" or \"etc.\"; never fold a group of items into one \
 entry; never drop an item for being small. A reader who has your record and nothing else cannot \
@@ -507,8 +530,8 @@ recover what you did not write.
 - Exact strings for exact things: file paths, symbols, commands, error strings, URLs and \
 identifiers, spelled as they appeared.
 \
-- Drop tool output bodies and reasoning. Carry what was concluded, what was run, what failed and \
-what is left.
+- Write the state of the work, not its history. Drop tool output bodies, reasoning and the log \
+of commands that ran; carry what was concluded, what failed and what is left.
 \
 - If you read or were sent an IMAGE, say so and say what was in it: the picture does not survive \
 this record.
@@ -578,10 +601,15 @@ Answer with the record and nothing else.",
     fn the_record_that_was_produced_is_a_fraction_of_what_it_was_allowed() {
         let b = the_measured_session();
         assert_eq!(b.writable, 1_440_006 - 1_352_917);
-        assert_eq!(b.tokens, b.writable - ASK_ROOM, "less the ask's own room");
-        assert_eq!(b.by, "turn");
         assert!(
-            b.tokens > 2_250 * 20,
+            b.writable - ASK_ROOM > MAX_SUMMARY_TOKENS,
+            "the turn had room for more"
+        );
+        assert_eq!(b.tokens, MAX_SUMMARY_TOKENS, "the cap bound it");
+        assert_eq!(b.by, "cap");
+        assert!(b.said().contains("the cap on any record"), "{}", b.said());
+        assert!(
+            b.tokens > 2_250 * 5,
             "{} against the 2,250 it wrote",
             b.tokens
         );
@@ -605,9 +633,16 @@ Answer with the record and nothing else.",
     fn which_bound_chose_the_budget() {
         let early = summary_budget(1_000_000, 10_000, 62_500, 100_000);
         assert_eq!(early.room, 927_500);
-        assert_eq!(early.tokens, 927_500 * 150 / 1_000);
-        assert_eq!(early.by, "room");
-        assert!(early.said().contains("150 per mille"), "{}", early.said());
+        assert_eq!(
+            early.tokens, MAX_SUMMARY_TOKENS,
+            "a million-token window is capped"
+        );
+        assert_eq!(early.by, "cap");
+
+        let small = summary_budget(64_000, 4_000, 4_000, 10_000);
+        assert_eq!(small.tokens, 56_000 * 150 / 1_000);
+        assert_eq!(small.by, "room");
+        assert!(small.said().contains("150 per mille"), "{}", small.said());
 
         let wall = summary_budget(262_144, 6_880, 16_384, 250_000);
         assert_eq!(wall.tokens, 262_144 - 250_000 - ASK_ROOM);
@@ -726,7 +761,7 @@ Answer with the record and nothing else.",
     fn how_much_of_the_budget_a_record_used() {
         let b = the_measured_session();
         assert_eq!(b.chars(), b.tokens * 4);
-        assert_eq!(b.used_per_cent(2_250 * 4), 2);
+        assert_eq!(b.used_per_cent(2_250 * 4), 18);
         assert_eq!(
             b.used_per_cent(b.chars() as usize * 2),
             100,
@@ -883,6 +918,23 @@ pub fn run_compaction(
         undo_failed_fold(session, mark);
     }
     out
+}
+
+/// [`run_compaction`] with its stream carried out as the compaction's own progress line: a head
+/// draws a fold that is running, never the record being typed out as a turn of the conversation.
+/// Nothing of the summary turn reaches `sink` but [`TurnEvent::CompactionProgress`].
+pub fn run_compaction_as_progress(
+    engine: &mut TurnEngine,
+    session: &mut Session,
+    sink: &mut dyn EventSink,
+    answerer: &Answerer<'_>,
+    ladder: &mut letibot_http::retry::Ladder,
+    ask: Option<&SummaryAsk<'_>>,
+) -> Result<CompactionOutcome, TurnFailure> {
+    let prompt_tokens = session.ledger.len() as u64;
+    run_half(sink, 1, 1, prompt_tokens, |progress| {
+        run_compaction(engine, session, progress, answerer, ladder, ask)
+    })
 }
 
 /// Undo what a fold appended that did not become a record: the instruction, and the notices a

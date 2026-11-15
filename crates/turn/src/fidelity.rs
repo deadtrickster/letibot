@@ -12,11 +12,12 @@ pub const MAX_FACTS: usize = 400;
 /// How many missing names a re-ask spells out before it says how many more there are.
 pub const SHOWN: usize = 12;
 
-/// The share of each level a record has to name, in per cent of that level's total. Files and
-/// commands are exact strings the record either carries or does not; a plan row is prose and is
-/// compared by its words, so it is held to a lower bar.
+/// The share of each level a record has to name, in per cent of that level's total. Files are
+/// exact strings the record either carries or does not; a plan row is prose and is compared by its
+/// words, so it is held to a lower bar. Commands are counted and not gated: a record is the state of
+/// the work, and gating them made every record a log of what ran.
 pub const FILES_FLOOR: usize = 80;
-pub const COMMANDS_FLOOR: usize = 80;
+pub const COMMANDS_FLOOR: usize = 0;
 pub const DECISIONS_FLOOR: usize = 50;
 
 /// The words of a plan row that must appear for the row to count as carried: half of its words of
@@ -445,7 +446,9 @@ mod tests {
             ask.contains("and 35 more"),
             "twelve names, then the count of the rest: {ask}"
         );
-        assert!(ask.contains("cargo test -p pkg0 --lib"), "{ask}");
+        // Commands are counted, not asked for: a record is the state of the work.
+        assert!(!ask.contains("cargo test -p pkg0 --lib"), "{ask}");
+        assert!(!ask.contains("- commands:"), "{ask}");
     }
 
     /// A fact the verbatim tail carries is in the new base and is not a fact this record dropped.

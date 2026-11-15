@@ -977,7 +977,7 @@ pub struct CompactionBudget {
 
 /// The template tag a compaction report carries: a date, bumped by hand when the summary
 /// instruction changes, so a report can be read against the template that produced it.
-pub const COMPACTION_TEMPLATE: &str = "compaction/2026-11-02";
+pub const COMPACTION_TEMPLATE: &str = "compaction/2026-11-15";
 
 /// The sections a compaction's record has, from the daemon that asks for them: a settings row
 /// on the existing key, so a head can draw what it did not witness.
