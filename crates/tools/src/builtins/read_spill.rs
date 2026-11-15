@@ -54,7 +54,8 @@ impl Tool for ReadSpill {
         });
 
         match ctx.spiller.store.get(hash, range) {
-            Ok(bytes) => {
+            Ok(mut bytes) => {
+                bytes.truncate(window(ctx, args, &bytes));
                 let (text, lossy) = text_of(&bytes);
                 let mut inv = Invocation::ok(text);
                 let full = held.iter().find(|e| e.hash == hash).map(|e| e.bytes);
@@ -83,6 +84,40 @@ impl Tool for ReadSpill {
                     .to_string(),
             ),
         }
+    }
+}
+
+/// How much of `bytes` fits under the session's own inline cap. A window that fit would otherwise
+/// spill again under the same hash and hand back the same head and tail.
+fn window(ctx: &InvokeCtx<'_>, args: &Value, bytes: &[u8]) -> usize {
+    let at = crate::spill::SpillContext {
+        tool: "read_spill",
+        args,
+        bytes: bytes.len(),
+    };
+    let mut end = bytes.len();
+    if let Some(cap) = ctx.spiller.budget.max_inline_bytes(&at) {
+        end = end.min(cap);
+    }
+    if let Some(lines) = ctx.spiller.budget.max_inline_lines(&at)
+        && let Some((i, _)) = bytes[..end]
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| **b == b'\n')
+            .nth(lines.saturating_sub(1))
+    {
+        end = i + 1;
+    }
+    if end == bytes.len() {
+        return end;
+    }
+    // A cut on a line end where one is in the second half, else on a char boundary.
+    match bytes[..end].iter().rposition(|b| *b == b'\n') {
+        Some(i) if (i + 1) * 2 >= end => i + 1,
+        _ => match std::str::from_utf8(&bytes[..end]) {
+            Err(e) if e.error_len().is_none() => e.valid_up_to(),
+            _ => end,
+        },
     }
 }
 
@@ -130,13 +165,17 @@ mod tests {
         assert_eq!(part.payload.len(), 200);
         assert!(part.payload.contains("filler line 0"), "{}", part.payload);
 
-        // Asking for all of it under the same budget spills again, to the same locator, because
-        // the locator is a content hash. That is not a loop: the notice says to take a range, and
-        // the hash already in hand stays valid.
+        // Asking for all of it comes back a window at a time under the same cap rather than
+        // spilling again behind the same locator.
         let whole = h.call("read_spill", &format!(r#"{{"hash":"{}"}}"#, spill.hash));
-        let again = whole.spill.expect("the full output exceeds the cap again");
-        assert_eq!(again.hash, spill.hash);
-        assert_eq!(again.full_bytes, spill.full_bytes);
+        assert!(whole.spill.is_none(), "{}", whole.payload);
+        assert!(whole.payload.len() <= 600, "{}", whole.payload.len());
+        assert!(whole.payload.ends_with('\n'), "cut on a line end");
+        assert!(
+            whole.notes.iter().any(|n| n.contains("offset=")),
+            "{:?}",
+            whole.notes
+        );
     }
 
     #[test]

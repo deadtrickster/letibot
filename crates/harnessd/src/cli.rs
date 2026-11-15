@@ -968,7 +968,10 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 cfg.stall_rounds = next()?.parse().map_err(|e| format!("{arg}: {e}"))?
             }
             "--spill-inline" => {
-                cfg.spill = SpillPolicy::Inline(next()?.parse().map_err(|e| format!("{arg}: {e}"))?)
+                cfg.spill = match next()?.parse().map_err(|e| format!("{arg}: {e}"))? {
+                    0 => SpillPolicy::Off,
+                    n => SpillPolicy::Inline(n),
+                }
             }
             "--spill-dir" => cfg.spill_storage = SpillStorage::Dir(PathBuf::from(next()?)),
             "--dialect" => {

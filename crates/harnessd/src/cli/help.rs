@@ -344,7 +344,7 @@ pub(super) const FLAGS: &[Flag] = &[
     flag(
         &["--spill-inline"],
         Some("BYTES"),
-        "over this, a result is spilled to a file with a locator",
+        "inline byte cap for every result, over [output]; 0 = off",
         None,
     ),
     flag(

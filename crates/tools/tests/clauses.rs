@@ -233,7 +233,7 @@ fn clause5_a_large_output_is_bounded_recoverable_and_never_silently_cut() {
         .expect("a 30 KB file under a 1 KB cap must spill");
 
     let seen = r.render();
-    assert!(seen.contains("Omitted"), "{seen}");
+    assert!(seen.contains("omitted; read_spill"), "{seen}");
     assert!(seen.contains(&spill.hash), "{seen}");
     // The inline body respects the cap; the notice and the repair lines are the envelope around
     // it.
@@ -541,7 +541,15 @@ fn clause5_a_write_tools_output_spills_like_everything_else() {
     let spill = r.spill.as_ref().expect("a 26 KB refusal must spill");
     assert!(spill.full_bytes > spill.inline_bytes);
 
-    let back = h.call("read_spill", &format!(r#"{{"hash":"{}"}}"#, spill.hash));
+    // Fetched a window at a time under the same cap, so the last line is at the end.
+    let back = h.call(
+        "read_spill",
+        &format!(
+            r#"{{"hash":"{}","offset":{}}}"#,
+            spill.hash,
+            spill.full_bytes - 400
+        ),
+    );
     assert!(
         back.render().contains("their line 1999"),
         "the rest is fetchable"

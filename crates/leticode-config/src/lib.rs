@@ -571,6 +571,8 @@ pub struct LeticodeConfig {
     pub browser: BrowserKeys,
     /// The `[exec]` table: the foreground threshold and whether passing it backgrounds.
     pub exec: ExecKeys,
+    /// The `[output]` table: the inline cap every tool result falls under. See [`output_cap`].
+    pub output: OutputKeys,
     /// The `[provider]` table: what a session does when its provider says the model is limited.
     /// See [`ProviderKeys`] and [`LeticodeConfig::limit_policy`].
     pub provider: ProviderKeys,
@@ -985,6 +987,70 @@ pub fn job_dead_after(
         }
     }
     window
+}
+
+/// `[output]` in a `leticode.toml`: the cap a tool result is spilled at, the head and tail kept
+/// inline and the middle behind a `read_spill` locator. `0` turns that half of the cap off.
+///
+/// ```toml
+/// [output]
+/// inline_bytes = 51200
+/// inline_lines = 2000
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct OutputKeys {
+    pub inline_bytes: Option<u64>,
+    pub inline_lines: Option<u64>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutputTable {
+    #[serde(default)]
+    inline_bytes: Option<u64>,
+    #[serde(default)]
+    inline_lines: Option<u64>,
+}
+
+fn output_keys(value: &toml::Value) -> Result<OutputKeys, String> {
+    let t: OutputTable = value.clone().try_into().map_err(|e| {
+        format!(
+            "[output]: {e}; the keys are `inline_bytes` and `inline_lines` (integers, 0 turns \
+             that cap off)"
+        )
+    })?;
+    Ok(OutputKeys {
+        inline_bytes: t.inline_bytes,
+        inline_lines: t.inline_lines,
+    })
+}
+
+/// The generic output cap a session runs under: 50 KiB / 2000 lines, then the user file, then
+/// the nearest project file. A tool's own tighter cap is unaffected.
+pub fn output_cap(
+    user: &LeticodeConfig,
+    workspace: &Path,
+    read_project: bool,
+) -> letibot_tools::OutputCap {
+    let mut cap = letibot_tools::OutputCap::default();
+    let mut apply = |k: &OutputKeys| {
+        if let Some(b) = k.inline_bytes {
+            cap.bytes = (b > 0).then_some(b as usize);
+        }
+        if let Some(l) = k.inline_lines {
+            cap.lines = (l > 0).then_some(l as usize);
+        }
+    };
+    apply(&user.output);
+    if read_project && let Some(path) = LeticodeConfig::discover(workspace) {
+        match LeticodeConfig::load(&path) {
+            Ok(project) => apply(&project.output),
+            Err(why) => {
+                eprintln!("  leticode.toml: {why} - this session's [output] is the level below")
+            }
+        }
+    }
+    cap
 }
 
 /// Thirty minutes of neither output nor CPU: what a wedged job costs before the harness calls it
@@ -2204,6 +2270,10 @@ impl LeticodeConfig {
                 Some(v) => exec_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
                 None => ExecKeys::default(),
             },
+            output: match &file.output {
+                Some(v) => output_keys(v).map_err(|why| format!("{}: {why}", path.display()))?,
+                None => OutputKeys::default(),
+            },
             provider: match &file.provider {
                 Some(v) => provider_keys(v, path, &text, level == Level::User)?,
                 None => ProviderKeys::default(),
@@ -2377,6 +2447,10 @@ impl LeticodeConfig {
             fallback_after_timeouts: other
                 .fallback_after_timeouts
                 .or(self.fallback_after_timeouts),
+            output: OutputKeys {
+                inline_bytes: other.output.inline_bytes.or(self.output.inline_bytes),
+                inline_lines: other.output.inline_lines.or(self.output.inline_lines),
+            },
             exec: ExecKeys {
                 auto_background: other.exec.auto_background.or(self.exec.auto_background),
                 foreground_seconds: other
@@ -2746,6 +2820,9 @@ struct LeticodeConfigFile {
     /// The `[exec]` table, see [`ExecKeys`].
     #[serde(default)]
     exec: Option<toml::Value>,
+    /// The `[output]` table, see [`OutputKeys`].
+    #[serde(default)]
+    output: Option<toml::Value>,
     /// The fallback list and its budget, see [`fallback_list`] and [`fallback_timeouts`].
     /// Raw here so a value of the wrong shape is refused by name rather than by serde's
     /// message, which names the table and not the key the operator wrote.

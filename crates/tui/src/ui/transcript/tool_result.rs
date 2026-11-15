@@ -73,7 +73,7 @@ pub(crate) fn tool_result_row_lines(
     // The envelope is the model's, so it is noise on a screen. The bytes are the command's, and an
     // escape that reaches the terminal is a mode change nobody asked for - so each line is walked by
     // `letibot_ui::ansi::line`: SGR painted into the palette's roles, everything else removed whole.
-    let payload = payload.lines().map(letibot_ui::ansi::line).collect();
+    let payload = payload.lines().map(payload_line).collect();
     let p = cfg.palette();
     let w = cfg.width.saturating_sub(ind).max(20);
     // A call the person ran says so: a tool row names its call and never its author, which is right
@@ -171,6 +171,27 @@ pub(crate) fn tool_result_row_lines(
     (RowClass::Activity, step_in(rendered, ind))
 }
 
+/// One payload line as drawn. A spill seam is the model's sentence, too long for a row and read as
+/// prose; it is drawn short and in its own role so the cut is visible where it is.
+fn payload_line(l: &str) -> rano::render::Line {
+    match letibot_transcript::seam::Seam::parse(l) {
+        Some(seam) => seam_line(&seam),
+        None => letibot_ui::ansi::line(l),
+    }
+}
+
+fn seam_line(seam: &letibot_transcript::seam::Seam) -> rano::render::Line {
+    rano::render::Line::new(vec![rano::render::Span::role(
+        format!(
+            "··· {} · {} lines not shown · read_spill {} ···",
+            crate::ui::render::bytes_human(seam.bytes as u64),
+            seam.lines,
+            seam.hash
+        ),
+        rano::style::Role::Info,
+    )])
+}
+
 /// The lines a FOLDED tool row leaves under its `… +N lines` seam: the marker's own count, and the rule
 /// that says which row `ctrl-v` opens. Zero for a fold that keeps everything - one line rides the header,
 /// an edit draws its diff, and a failed call with no sentence draws its whole body, `body_lines` of it.
@@ -206,4 +227,31 @@ pub(crate) fn folded_rest(it: &SnapshotItem, body_lines: usize) -> usize {
         })
         .count()
         .saturating_sub(kept)
+}
+
+#[cfg(test)]
+mod seam_tests {
+    use super::*;
+
+    #[test]
+    fn a_spill_seam_is_drawn_short_and_in_its_own_role() {
+        let seam = letibot_transcript::seam::Seam {
+            bytes: 152_340,
+            lines: 3_011,
+            hash: "0123456789abcdef".into(),
+            offset: 25_000,
+        };
+        let drawn = payload_line(&seam.render());
+        assert_eq!(
+            drawn.plain(),
+            "··· 148.8 KB · 3011 lines not shown · read_spill 0123456789abcdef ···"
+        );
+        assert!(
+            drawn
+                .spans
+                .iter()
+                .all(|s| s.style == rano::render::Style::of(rano::style::Role::Info))
+        );
+        assert_eq!(payload_line("line 7").plain(), "line 7");
+    }
 }

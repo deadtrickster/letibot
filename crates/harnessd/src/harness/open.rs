@@ -4851,15 +4851,9 @@ pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
     env
 }
 
-fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {
-    use letibot_tools::{FixedBudget, MemoryStore, NoBudget, Spiller};
-    let budget: Box<dyn letibot_tools::InlineBudget> = match cfg.spill {
-        // unset is a genuine no-op, not a hidden constant. The daemon says so
-        // at startup (`Config::disclosures`) so that "nothing spilled" is read as
-        // "nothing was configured to" rather than as "nothing was big enough".
-        SpillPolicy::Unset => Box::new(NoBudget),
-        SpillPolicy::Inline(n) => Box::new(FixedBudget(n)),
-    };
+pub(crate) fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {
+    use letibot_tools::{MemoryStore, Spiller};
+    let budget: Box<dyn letibot_tools::InlineBudget> = Box::new(cfg.output_cap());
     let store: Box<dyn letibot_tools::SpillStore> = match &cfg.spill_storage {
         SpillStorage::Memory => Box::new(MemoryStore::new()),
         SpillStorage::Dir(d) => Box::new(

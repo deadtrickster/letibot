@@ -77,6 +77,15 @@ NAME is a seat a spawn uses, or `subagent`, the floor under every spawn. Window 
 | `foreground_seconds` | int >= 1 | 60 | both, project wins | foreground threshold |
 | `job_dead_after_seconds` | int | 1800 | both, project wins | a job with no output and no CPU this long is dead; 0 = check off |
 
+## `[output]`
+
+Over either cap a tool result keeps its head and tail inline and one seam line naming the read_spill locator for the middle. A tool's own tighter cap still applies; --spill-inline wins over inline_bytes.
+
+| key | type | default | level | meaning |
+|---|---|---|---|---|
+| `inline_bytes` | int | 51200 | both, project wins | most bytes a result keeps inline; 0 = no byte cap |
+| `inline_lines` | int | 2000 | both, project wins | most lines a result keeps inline; 0 = no line cap |
+
 ## `[memory]`
 
 Amounts: a size (64M, 2G) or a fraction of free memory (0.5, 50%). Over providers.toml [memory].

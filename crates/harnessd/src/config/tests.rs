@@ -1805,15 +1805,58 @@ fn turning_the_progress_check_off_is_a_declared_state() {
 }
 
 #[test]
-fn the_default_is_no_spill_and_it_says_so() {
-    let c = Config::for_this_box("/tmp");
-    assert_eq!(c.spill, SpillPolicy::Unset);
+fn the_default_caps_every_tool_at_50_kib_and_2000_lines_and_says_so() {
+    let dir = crate::mergequeue::serve::tests::TempDir::new("output-cap");
+    let c = Config::for_this_box(&dir.0);
+    assert_eq!(c.spill, SpillPolicy::Files);
+    let cap = c.output_cap();
+    assert_eq!(cap.bytes, Some(50 * 1024));
+    assert_eq!(cap.lines, Some(2000));
+    let spiller = crate::harness::open::build_spiller(&c).unwrap();
+    assert_eq!(
+        spiller.budget.describe(),
+        letibot_tools::InlineBudget::describe(&cap)
+    );
+    let said: Vec<String> = c
+        .disclosures(&GateWiring::read_only())
+        .iter()
+        .map(|d| d.to_string())
+        .collect();
+    assert!(
+        said.iter().any(|d| d.contains("51200 bytes / 2000 lines")),
+        "{said:?}"
+    );
+}
+
+#[test]
+fn spill_inline_zero_turns_the_cap_off_and_the_daemon_says_so() {
+    let dir = crate::mergequeue::serve::tests::TempDir::new("output-cap");
+    let mut c = Config::for_this_box(&dir.0);
+    c.spill = SpillPolicy::Off;
+    let cap = c.output_cap();
+    assert_eq!((cap.bytes, cap.lines), (None, None));
     assert!(
         c.disclosures(&GateWiring::read_only())
             .iter()
-            .any(|d| d.to_string().contains("spill: UNSET")),
-        "a daemon that does not disclose an unset budget is the defect"
+            .any(|d| d.to_string().contains("spill: OFF")),
+        "a daemon that does not disclose an uncapped session is the defect"
     );
+}
+
+#[test]
+fn the_project_output_table_moves_the_cap_and_the_flag_moves_it_again() {
+    let dir = crate::mergequeue::serve::tests::TempDir::new("output-cap");
+    std::fs::write(
+        dir.0.join("leticode.toml"),
+        "[output]\ninline_bytes = 8000\ninline_lines = 0\n",
+    )
+    .unwrap();
+    let mut c = Config::for_this_box(&dir.0);
+    c.read_project_config = true;
+    let cap = c.output_cap();
+    assert_eq!((cap.bytes, cap.lines), (Some(8000), None));
+    c.spill = SpillPolicy::Inline(4000);
+    assert_eq!(c.output_cap().bytes, Some(4000));
 }
 
 /// The defect this replaced: the adjudication line asserted "M1 is read-only tools, which never

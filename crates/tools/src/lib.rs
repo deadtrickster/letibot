@@ -111,8 +111,8 @@ pub use runtime::{
 };
 pub use schema::{Access, DescriptionFinding, ToolSchema, lint_description};
 pub use spill::{
-    FixedBudget, InlineBudget, MemoryStore, NoBudget, PerToolBudget, PredictedBudget, SpillContext,
-    SpillEntry, SpillRef, SpillStore, Spiller,
+    FixedBudget, InlineBudget, MemoryStore, NoBudget, OutputCap, PerToolBudget, PredictedBudget,
+    SpillContext, SpillEntry, SpillRef, SpillStore, Spiller,
 };
 pub use view::{ViewAccess, ViewAsk, ViewGrants};
 

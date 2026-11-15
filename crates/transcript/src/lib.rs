@@ -25,6 +25,10 @@ pub mod text;
 /// shape, and the room and the session log cannot see each other.
 pub mod pending;
 
+/// The one line a spill leaves where it took the middle out. The tools write it and a head draws
+/// it, so its spelling lives here once.
+pub mod seam;
+
 /// Who asked for a tool call. An enum rather than a `bool` because a second origin (a
 /// peer agent, a seat, a scheduled job) is a variant rather than another field on a
 /// struct that already has one.

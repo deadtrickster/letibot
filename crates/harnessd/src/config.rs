@@ -16,24 +16,24 @@ use crate::dialect::Dialect;
 /// `mergequeue::settings`, because the project file is where a PROJECT says it.
 pub use crate::mergequeue::settings::Reviewers;
 
-/// The budget, as configuration. `Unset` is the default and it is correct, per
-/// nothing spills until somebody configures a budget, and `harnessd --spill-inline N` is
-/// where that gap stops being invisible.
+/// The inline cap, as configuration. With no flag the generic cap is on: `[output]` in
+/// `leticode.toml`, else 50 KiB / 2000 lines, so a new or plugin tool cannot flood the context.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum SpillPolicy {
-    /// No budget. Every payload reaches the model whole. The daemon says so at
-    /// startup rather than letting a reader assume spill is on.
+    /// No flag: the files, then the default. See [`Config::output_cap`].
     #[default]
-    Unset,
-    /// One inline ceiling for every tool, in bytes.
+    Files,
+    /// `--spill-inline 0`: every payload reaches the model whole. The daemon says so at startup.
+    Off,
+    /// `--spill-inline BYTES`: the byte cap for every tool; the line cap stays the files'.
     Inline(usize),
 }
 
 /// Where a spilled payload is kept.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpillStorage {
-    /// In this process. Dies with the daemon, which makes `read_spill` a lie across a restart -
-    /// tolerable only while the budget is `Unset` and nothing can spill.
+    /// In this process. Dies with the daemon, so `read_spill` fails across a restart; the
+    /// daemon discloses that at startup.
     Memory,
     /// Under a directory, one subdirectory per session.
     Dir(PathBuf),
@@ -1765,7 +1765,7 @@ impl Config {
             intent_prose: false,
             nudge: Default::default(),
             shadow: Default::default(),
-            spill: SpillPolicy::Unset,
+            spill: SpillPolicy::Files,
             spill_storage: SpillStorage::Memory,
             // Unbounded on purpose: `stall_rounds` is the stop that measures progress, and a round
             // count never could. See the field.
@@ -2572,15 +2572,7 @@ impl Config {
             out.push(row("vm.args", self.vm_args.join(" "), "", ""));
         }
         // Tool results.
-        out.push(row(
-            "spill",
-            match self.spill {
-                SpillPolicy::Unset => "unset — nothing spills".into(),
-                SpillPolicy::Inline(n) => format!("inline budget {n} bytes"),
-            },
-            "--spill-inline",
-            "",
-        ));
+        out.push(row("spill", self.output_cap_said(), "--spill-inline", ""));
         out.push(row(
             "spill.storage",
             match &self.spill_storage {
@@ -2680,6 +2672,35 @@ impl Config {
             .unwrap_or_else(crate::harness::scratch_dir)
     }
 
+    /// The generic output cap this session spills at: `--spill-inline`, else the project's then
+    /// the user's `[output]`, else 50 KiB / 2000 lines.
+    pub fn output_cap(&self) -> letibot_tools::OutputCap {
+        let mut cap = crate::leticode_config::output_cap(
+            &self.leticode_user,
+            &self.workspace,
+            self.read_project_config,
+        );
+        match self.spill {
+            SpillPolicy::Files => {}
+            SpillPolicy::Off => (cap.bytes, cap.lines) = (None, None),
+            SpillPolicy::Inline(n) => cap.bytes = Some(n),
+        }
+        cap
+    }
+
+    fn output_cap_said(&self) -> String {
+        let cap = self.output_cap();
+        match (cap.bytes, cap.lines) {
+            (None, None) => "off - nothing spills".into(),
+            (b, l) => format!(
+                "inline cap {} / {}, every tool but {}",
+                b.map_or("no byte cap".into(), |b| format!("{b} bytes")),
+                l.map_or("no line cap".into(), |l| format!("{l} lines")),
+                cap.exempt.join(", ")
+            ),
+        }
+    }
+
     /// The things that are off, and why - a daemon that does not say *spill is unset* is one whose
     /// operator finds out when a 40 MB grep result lands in the prompt. It takes [`GateWiring`]
     /// rather than deciding, because a disclosure that guesses is what this list exists to prevent.
@@ -2724,27 +2745,24 @@ impl Config {
             "session model",
             self.model_source.render(&self.prompt_model_name()),
         ));
-        match &self.spill {
-            SpillPolicy::Unset => out.push(Disclosure::off(
+        let cap = self.output_cap();
+        if cap.bytes.is_none() && cap.lines.is_none() {
+            out.push(Disclosure::off(
                 "spill",
-                "UNSET",
-                "no inline budget is configured, so no tool result will ever spill and \
-                 every payload reaches the model whole (D6: unset is a genuine no-op). \
-                 Pass --spill-inline BYTES to enable it.",
-            )),
-            SpillPolicy::Inline(n) => {
-                out.push(Disclosure::on(
-                    "spill",
-                    format!("inline budget {n} bytes, all tools"),
+                "OFF",
+                "no inline cap is set, so no tool result will ever spill and every payload \
+                 reaches the model whole. Drop --spill-inline 0, or set [output] inline_bytes \
+                 in leticode.toml.",
+            ));
+        } else {
+            out.push(Disclosure::on("spill", self.output_cap_said()));
+            if self.spill_storage == SpillStorage::Memory {
+                out.push(Disclosure::off(
+                    "spill store",
+                    "MEMORY",
+                    "a spilled payload does not survive a restart, so `read_spill` \
+                     fails after one. Pass --spill-dir.",
                 ));
-                if self.spill_storage == SpillStorage::Memory {
-                    out.push(Disclosure::off(
-                        "spill store",
-                        "MEMORY",
-                        "a spilled payload does not survive a restart, so `read_spill` \
-                         fails after one. Pass --spill-dir.",
-                    ));
-                }
             }
         }
         // The stop condition, said out loud. A turn that can only be stopped by a

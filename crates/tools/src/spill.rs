@@ -5,6 +5,7 @@
 use std::collections::BTreeMap;
 use std::sync::Mutex;
 
+use letibot_transcript::seam::Seam;
 use sha2::{Digest, Sha256};
 
 /// What is being spilled, for a policy that wants to know before it decides.
@@ -24,6 +25,11 @@ pub trait InlineBudget: Send + Sync {
     /// The most bytes this output may occupy inline, or `None` for no opinion,
     /// which is a genuine no-op and not an unlimited budget chosen by default.
     fn max_inline_bytes(&self, ctx: &SpillContext<'_>) -> Option<usize>;
+
+    /// The most lines this output may occupy inline, `None` for no line limit.
+    fn max_inline_lines(&self, _ctx: &SpillContext<'_>) -> Option<usize> {
+        None
+    }
 
     /// How this policy describes itself in `EXPLAIN`: a number nobody can trace
     /// back to a decision is worse than none.
@@ -78,6 +84,55 @@ impl InlineBudget for PerToolBudget {
             Some(d) => format!("per-tool [{}], default {d}", per.join(", ")),
             None => format!("per-tool [{}], otherwise unset", per.join(", ")),
         }
+    }
+}
+
+/// The daemon's default ceiling, opencode's numbers: 50 KiB and 2000 lines.
+pub const DEFAULT_INLINE_BYTES: usize = 50 * 1024;
+pub const DEFAULT_INLINE_LINES: usize = 2000;
+
+/// The generic cap every tool falls under, a new or plugin tool included. A tool's own tighter
+/// cap (`bash` keeps a 30 KB tail) bites first and this never sees the excess.
+#[derive(Debug, Clone)]
+pub struct OutputCap {
+    pub bytes: Option<usize>,
+    pub lines: Option<usize>,
+    /// Tools that bound themselves with an offset and report it; spilling them again only
+    /// moves the same bytes behind a second locator.
+    pub exempt: Vec<String>,
+}
+
+impl Default for OutputCap {
+    fn default() -> Self {
+        OutputCap {
+            bytes: Some(DEFAULT_INLINE_BYTES),
+            lines: Some(DEFAULT_INLINE_LINES),
+            exempt: vec!["job_output".into(), "recall".into()],
+        }
+    }
+}
+
+impl OutputCap {
+    fn applies(&self, tool: &str) -> bool {
+        !self.exempt.iter().any(|t| t == tool)
+    }
+}
+
+impl InlineBudget for OutputCap {
+    fn max_inline_bytes(&self, ctx: &SpillContext<'_>) -> Option<usize> {
+        self.bytes.filter(|_| self.applies(ctx.tool))
+    }
+    fn max_inline_lines(&self, ctx: &SpillContext<'_>) -> Option<usize> {
+        self.lines.filter(|_| self.applies(ctx.tool))
+    }
+    fn describe(&self) -> String {
+        let bytes = self
+            .bytes
+            .map_or("no byte cap".into(), |b| format!("{b} bytes"));
+        let lines = self
+            .lines
+            .map_or("no line cap".into(), |l| format!("{l} lines"));
+        format!("{bytes} / {lines}, except {}", self.exempt.join(", "))
     }
 }
 
@@ -304,25 +359,41 @@ impl Spiller {
         Spiller { budget, store }
     }
 
-    /// Bound one output: what goes inline, and where the rest is if it spilled.
+    /// Bound one output: what goes inline, and where the rest is if it spilled. The head and the
+    /// tail stay; the middle is replaced by one [`Seam`] line naming its size and locator.
     pub fn apply(&self, payload: String, ctx: &SpillContext<'_>) -> (String, Option<SpillRef>) {
-        let Some(cap) = self.budget.max_inline_bytes(ctx) else {
-            return (payload, None);
-        };
-        if payload.len() <= cap {
+        let byte_cap = self.budget.max_inline_bytes(ctx);
+        let line_cap = self.budget.max_inline_lines(ctx);
+        let over_bytes = byte_cap.is_some_and(|c| payload.len() > c);
+        let over_lines = line_cap.is_some_and(|c| payload.lines().count() > c);
+        if !over_bytes && !over_lines {
             return (payload, None);
         }
 
-        // The reserve assumes the worst case: the omitted count can never have more
-        // digits than the full length has.
-        let digits = decimal_digits(payload.len());
-        let hash_width = 16;
-        let reserve = notice(&"9".repeat(digits), ctx.tool, &"0".repeat(hash_width)).len();
+        // Every number in the seam is at most the payload's length, so a seam drawn with that
+        // number everywhere is the widest one this payload can get.
+        let n = payload.len();
+        let widest = Seam {
+            bytes: n,
+            lines: n,
+            hash: "0".repeat(16),
+            offset: n,
+        };
+        let reserve = widest.render().len() + 2;
 
-        // Preview, join and notice must fit the cap; if they cannot, spill is
-        // abandoned and the original is left inline untruncated.
-        let Some(budget) = cap.checked_sub(reserve + 2).filter(|b| *b > 0) else {
-            return (payload, None);
+        // Preview, seam and joins must fit the cap; if they cannot, spill is abandoned and the
+        // original is left inline untruncated.
+        let byte_budget = match byte_cap {
+            Some(c) => match c.checked_sub(reserve).filter(|b| *b > 0) {
+                Some(b) => b,
+                None => return (payload, None),
+            },
+            None => n,
+        };
+        let line_budget = match line_cap {
+            Some(c) if c < 3 => return (payload, None),
+            Some(c) => c - 1,
+            None => usize::MAX,
         };
 
         let hash = match self.store.put(ctx.tool, payload.as_bytes()) {
@@ -332,70 +403,87 @@ impl Spiller {
             Err(_) => return (payload, None),
         };
 
-        let preview = head_tail(&payload, budget);
-        let notice = notice(
-            &(payload.len() - preview.len()).to_string(),
-            ctx.tool,
-            &hash,
-        );
-        let inline = format!("{preview}\n\n{notice}");
+        let (h, t) = head_tail(&payload, byte_budget, line_budget);
+        let (head, middle, tail) = (&payload[..h], &payload[h..t], &payload[t..]);
+        let seam = Seam {
+            bytes: middle.len(),
+            lines: middle.lines().count(),
+            hash: hash.clone(),
+            offset: h,
+        }
+        .render();
+        let join = if head.is_empty() || head.ends_with('\n') {
+            ""
+        } else {
+            "\n"
+        };
+        let inline = format!("{head}{join}{seam}\n{tail}");
         debug_assert!(
-            inline.len() <= cap,
-            "spill arithmetic overran the cap: {} > {cap}",
+            byte_cap.is_none_or(|c| inline.len() <= c),
+            "spill arithmetic overran the cap: {} > {byte_cap:?}",
             inline.len()
         );
-        let full_bytes = payload.len();
         (
             inline,
             Some(SpillRef {
                 hash,
-                full_bytes,
-                inline_bytes: preview.len(),
+                full_bytes: n,
+                inline_bytes: head.len() + tail.len(),
             }),
         )
     }
 }
 
-fn notice(omitted: &str, kind: &str, locator: &str) -> String {
-    format!(
-        "(Omitted {omitted} bytes. Full {kind} result stored at: {locator}. \
-         Call read_spill with hash={locator} — and a byte range if you only need part \
-         of it — to get the rest.)"
-    )
+/// Where the head ends and the tail starts: half of each budget each way, on a char boundary
+/// and, where that costs less than half, on a line boundary, so `[h..t]` is a run of whole
+/// lines `read_spill` can hand back as they were.
+fn head_tail(s: &str, bytes: usize, lines: usize) -> (usize, usize) {
+    let (head_bytes, tail_bytes) = (bytes.div_ceil(2), bytes / 2);
+    let (head_lines, tail_lines) = (lines.div_ceil(2), lines / 2);
+
+    let mut h = floor_char_boundary(s, head_bytes);
+    match after_nth_newline(s, head_lines) {
+        Some(i) if i <= h => h = i,
+        _ => {
+            if let Some(i) = s[..h].rfind('\n')
+                && (i + 1) * 2 >= h
+            {
+                h = i + 1;
+            }
+        }
+    }
+
+    let mut t = ceil_char_boundary(s, s.len().saturating_sub(tail_bytes));
+    let last = start_of_last_lines(s, tail_lines);
+    if last >= t {
+        t = last;
+    } else if t > 0
+        && s.as_bytes()[t - 1] != b'\n'
+        && let Some(i) = s[t..].find('\n')
+        && i * 2 <= s.len() - t
+    {
+        t += i + 1;
+    }
+    (h, t.max(h))
 }
 
-fn decimal_digits(n: usize) -> usize {
-    let mut d = 1;
-    let mut n = n;
-    while n >= 10 {
-        n /= 10;
-        d += 1;
+/// The byte after the `n`th newline, or `None` when there are fewer.
+fn after_nth_newline(s: &str, n: usize) -> Option<usize> {
+    if n == 0 {
+        return Some(0);
     }
-    d
+    s.match_indices('\n').nth(n - 1).map(|(i, _)| i + 1)
 }
 
-/// Half the budget each way, shrunk to a char boundary and, where free, to a line
-/// boundary: a head cut mid-line joined to a tail cut mid-line reads as one line
-/// that never existed.
-fn head_tail(s: &str, budget: usize) -> String {
-    if s.len() <= budget {
-        return s.to_string();
+/// Where the last `n` lines start; a trailing newline ends the last line rather than opening one.
+fn start_of_last_lines(s: &str, n: usize) -> usize {
+    if n == 0 {
+        return s.len();
     }
-    let head_budget = budget.div_ceil(2);
-    // One byte of the budget goes to the newline that joins the halves.
-    let tail_budget = (budget / 2).saturating_sub(1);
-
-    let head_end = floor_char_boundary(s, head_budget);
-    let head = trim_to_last_newline(&s[..head_end]);
-
-    let tail_start = ceil_char_boundary(s, s.len().saturating_sub(tail_budget));
-    let tail = trim_to_first_newline(&s[tail_start..]);
-
-    if tail.is_empty() {
-        head.to_string()
-    } else {
-        format!("{head}\n{tail}")
-    }
+    let body = s.strip_suffix('\n').unwrap_or(s);
+    body.rmatch_indices('\n')
+        .nth(n - 1)
+        .map_or(0, |(i, _)| i + 1)
 }
 
 fn floor_char_boundary(s: &str, mut i: usize) -> usize {
@@ -412,22 +500,6 @@ fn ceil_char_boundary(s: &str, mut i: usize) -> usize {
         i += 1;
     }
     i
-}
-
-fn trim_to_last_newline(s: &str) -> &str {
-    match s.rfind('\n') {
-        // Only if it does not throw away most of the half: a single very long line
-        // would otherwise produce an empty preview.
-        Some(i) if i * 2 >= s.len() => &s[..i],
-        _ => s,
-    }
-}
-
-fn trim_to_first_newline(s: &str) -> &str {
-    match s.find('\n') {
-        Some(i) if i * 2 <= s.len() => &s[i + 1..],
-        _ => s,
-    }
 }
 
 #[cfg(test)]
@@ -462,7 +534,10 @@ mod tests {
         let (inline, spill) = s.apply(full.clone(), &ctx(&args, full.len()));
         let spill = spill.expect("a 2.8 KB payload under a 400 byte cap must spill");
         assert!(inline.len() <= cap, "{} > {cap}", inline.len());
-        assert!(inline.contains("Omitted"));
+        assert_eq!(
+            inline.lines().filter(|l| Seam::parse(l).is_some()).count(),
+            1
+        );
         // Never truncated: the whole original is retrievable by its locator.
         let back = s.store.get(&spill.hash, None).unwrap();
         assert_eq!(String::from_utf8(back).unwrap(), full);

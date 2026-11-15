@@ -100,6 +100,15 @@ pub const LETICODE: File = File {
             ],
         },
         Table {
+            path: "output",
+            note: "Over either cap a tool result keeps its head and tail inline and one seam line naming the read_spill locator for the middle. A tool's own tighter cap still applies; --spill-inline wins over inline_bytes.",
+            needs: "",
+            keys: &[
+                k("inline_bytes", "int", "51200", PW, "most bytes a result keeps inline; 0 = no byte cap", "51200"),
+                k("inline_lines", "int", "2000", PW, "most lines a result keeps inline; 0 = no line cap", "2000"),
+            ],
+        },
+        Table {
             path: "memory",
             note: "Amounts: a size (64M, 2G) or a fraction of free memory (0.5, 50%). Over providers.toml [memory].",
             needs: "",
