@@ -1180,3 +1180,68 @@ fn a_skill_this_session_wrote_is_not_offered_back() {
     assert!(!writer.compose(&registry, &latex(), None));
     let _ = std::fs::remove_dir_all(&root);
 }
+
+fn pick(name: &str) -> Pick {
+    Pick {
+        name: name.into(),
+        quote: "make the talk slides".into(),
+    }
+}
+
+/// The shadow's picks become the round's offers, with its quote in the tail and the log, and the
+/// rules no model may loosen still hold: hidden, vetoed, loaded, unknown, offered once, at most two.
+#[test]
+fn the_shadows_picks_are_the_offers_under_the_same_rules() {
+    let mut all = registry().skills;
+    all.push(Skill::new(
+        "kept",
+        "the operator's own",
+        "b",
+        SkillSource::Operator,
+    ));
+    let registry = SkillRegistry::new(all).with_hidden(["kept"]);
+    let never = ["release".to_string()];
+    let tools: Vec<String> = Vec::new();
+    let mut offers = Offers::new().with_seat(tools.iter(), never.iter());
+    offers.skip_names(["postgres-migrations".to_string()].iter());
+    let picks = [
+        pick("kept"),
+        pick("release"),
+        pick("postgres-migrations"),
+        pick("no-such-skill"),
+        pick("latex-presentation"),
+    ];
+    assert!(offers.adopt(&registry, &picks, "s1-shadow"));
+    let names: Vec<&str> = offers.open.iter().map(|o| o.name.as_str()).collect();
+    assert_eq!(names, ["latex-presentation"]);
+    let tail = format!("{:?}", offers.tail());
+    assert!(tail.contains("shadow reviewer picked it"), "{tail}");
+    assert!(tail.contains("make the talk slides"), "{tail}");
+    let logs = std::env::temp_dir().join(format!(
+        "harnessd-skills-adopt-{}-{}",
+        std::process::id(),
+        now_secs()
+    ));
+    offers.settle(&logs, "s1", &[]);
+    let log = std::fs::read_to_string(logs.join(LOG)).unwrap();
+    assert!(log.contains("\"by\":\"shadow\""), "{log}");
+    assert!(log.contains("never_offer"), "the veto is logged: {log}");
+    // Offered once: the same pick next round says nothing.
+    assert!(!offers.adopt(&registry, &[pick("latex-presentation")], "s1-shadow"));
+    assert!(offers.tail().is_empty());
+    let _ = std::fs::remove_dir_all(&logs);
+}
+
+/// An empty pick is no offer, even when similarity would have offered: the shadow decides.
+#[test]
+fn an_empty_pick_offers_nothing_where_similarity_would() {
+    let registry = registry();
+    let text = subject(&prompt("make latex beamer slides for the talk"), &[]);
+    assert!(
+        Offers::new().compose(&registry, &text, None),
+        "similarity offers"
+    );
+    let mut offers = Offers::new();
+    assert!(!offers.adopt(&registry, &[], "s1-shadow"));
+    assert!(offers.tail().is_empty());
+}

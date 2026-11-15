@@ -1,5 +1,6 @@
 //! The `during` job's trigger and data: drift, skill offers and note recall, checked at a change of
-//! subject or every [`EVERY`] tool calls. Observe-only: its verdicts are recorded and do not act.
+//! subject or every [`EVERY`] tool calls. Only the skill-offer pick acts ([`skill_picks`]); drift
+//! and note picks are recorded and do nothing.
 
 use std::collections::BTreeSet;
 
@@ -16,6 +17,9 @@ pub const LAST_CALLS: usize = 6;
 
 /// Most shortlist entries a check is shown: the similarity pre-filter's cut.
 pub const SHORTLIST: usize = 8;
+
+/// Of [`SHORTLIST`], the most skills: the rest is left for notes.
+pub const SKILLS_SHORT: usize = 5;
 
 /// How much of one call's arguments is shown.
 const ARGS_CHARS: usize = 200;
@@ -210,6 +214,82 @@ pub fn shortlist(entries: &[Entry], window: &str, skip: &BTreeSet<String>) -> Ve
         .take(SHORTLIST)
         .map(|(_, e)| e.clone())
         .collect()
+}
+
+/// The pre-filter: `ranked` skills (the offers' blended score, embedding plus lexical) up to
+/// [`SKILLS_SHORT`], then notes by shared words. Names in `skip` are left out.
+pub fn shortlist_ranked(
+    ranked: &[(String, f64)],
+    entries: &[Entry],
+    window: &str,
+    skip: &BTreeSet<String>,
+) -> Vec<Entry> {
+    let mut out: Vec<Entry> = ranked
+        .iter()
+        .filter(|(n, _)| !skip.contains(n))
+        .filter_map(|(n, _)| entries.iter().find(|e| &e.name == n).cloned())
+        .take(SKILLS_SHORT)
+        .collect();
+    let notes: Vec<Entry> = entries
+        .iter()
+        .filter(|e| e.name.starts_with("note:"))
+        .cloned()
+        .collect();
+    let room = SHORTLIST - out.len();
+    out.extend(shortlist(&notes, window, skip).into_iter().take(room));
+    out
+}
+
+/// Whether the operator spoke after the row the verdict judged at `position`, counted as the
+/// shadow counts (assistant rows and operator rows). A pick for an older request is stale.
+pub fn operator_since(items: &[TranscriptItem], position: u64) -> bool {
+    let mut n = 0u64;
+    for i in items {
+        let operator = matches!(
+            i,
+            TranscriptItem::User {
+                speaker: Speaker::Operator,
+                ..
+            }
+        );
+        if !(operator || matches!(i, TranscriptItem::Assistant { .. })) {
+            continue;
+        }
+        n += 1;
+        if operator && n > position {
+            return true;
+        }
+    }
+    false
+}
+
+/// The skill picks a during outcome acts on, or why it acts on none. A timeout, a void reply, an
+/// `unsure` verdict or a stale one is no offer; note picks are observe-only and never offered.
+pub fn skill_picks(
+    outcome: &super::runner::Outcome,
+    stale: bool,
+) -> Result<Vec<super::verdict::Pick>, String> {
+    use super::runner::Outcome;
+    use super::verdict::{Drift, Verdict};
+    let Outcome::Verdict(Verdict::During { drift, offers }) = outcome else {
+        return Err("no verdict".into());
+    };
+    let skills: Vec<_> = offers
+        .iter()
+        .filter(|p| !p.name.starts_with("note:"))
+        .take(super::verdict::MAX_OFFERS)
+        .cloned()
+        .collect();
+    if skills.is_empty() {
+        return Err("no skill picked".into());
+    }
+    if *drift == Drift::Unsure {
+        return Err("the verdict is unsure".into());
+    }
+    if stale {
+        return Err("stale: the operator spoke after the judged row".into());
+    }
+    Ok(skills)
 }
 
 /// The data a `during` check is shown: the stated plan, the open todos, the last calls, and the

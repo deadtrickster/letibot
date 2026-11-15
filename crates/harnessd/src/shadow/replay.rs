@@ -327,6 +327,9 @@ pub struct LoggedOffer {
     pub skill: String,
     #[serde(default)]
     pub taken: bool,
+    /// `subject`, `prompt` or `shadow`. A shadow-made offer is not a baseline to score it against.
+    #[serde(default)]
+    pub by: String,
 }
 
 /// The during replay's tally against what the rounds took: an offer the shadow keeps and the
@@ -499,7 +502,7 @@ fn logged_offers(scope: &Scope) -> Vec<LoggedOffer> {
                 out.extend(
                     text.lines()
                         .filter_map(|l| serde_json::from_str::<LoggedOffer>(l).ok())
-                        .filter(|o| &o.session == id),
+                        .filter(|o| &o.session == id && o.by != "shadow"),
                 );
             }
         }

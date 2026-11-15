@@ -50,7 +50,7 @@ impl Harness {
     }
 
     /// At a round boundary: queue the during check when the subject changed or enough calls ran.
-    /// Observe-only, so nothing here waits or acts.
+    /// Nothing here waits; the verdict's skill pick is read at a later round.
     pub(crate) fn shadow_during_round(&mut self) {
         if !self.shadow.get().is_some_and(|s| s.is_on(Job::During)) {
             return;
@@ -110,7 +110,7 @@ impl Harness {
         };
         let mut out = Vec::new();
         let mut written = std::collections::BTreeSet::new();
-        for s in self.skills.live_skills() {
+        for s in self.skills.model_skills() {
             let dir = s
                 .path
                 .as_deref()
@@ -187,7 +187,16 @@ impl Harness {
             .map(letibot_sessionlog::view::body_of)
             .collect::<Vec<_>>()
             .join("\n");
-        let mut short = crate::shadow::during::shortlist(&entries, &window, &loaded);
+        // The pre-filter is the similarity offers' own score, embedding plus lexical, over the
+        // subject they read; the shadow picks from what it leaves.
+        let subject = crate::skills_offer::subject(&self.session.items, todos);
+        let ranked = self.skills.ranked_with(
+            &subject,
+            crate::shadow::during::SHORTLIST,
+            self.cfg.tier().as_ref(),
+        );
+        let mut short =
+            crate::shadow::during::shortlist_ranked(&ranked, &entries, &window, &loaded);
         for e in entries.iter().filter(|e| fresh.contains(&e.name)) {
             if !short.iter().any(|s| s.name == e.name) {
                 short.push(e.clone());
@@ -234,16 +243,17 @@ impl Harness {
         let Some((events, recorder, shadow_id)) = self.shadow.parts() else {
             return Vec::new();
         };
-        let events: Vec<crate::shadow::Event> = {
-            let mut q = events.lock().unwrap_or_else(|e| e.into_inner());
-            q.drain(..).collect()
-        };
         let mut notices = Vec::new();
         let mut rows = Vec::new();
+        let events: Vec<crate::shadow::Event> = {
+            let mut q = events.lock().unwrap_or_else(|e| e.into_inner());
+            let (mine, rest): (std::collections::VecDeque<_>, _) = std::mem::take(&mut *q)
+                .into_iter()
+                .partition(|e| e.job == Job::TurnEnd);
+            *q = rest;
+            mine.into()
+        };
         for e in events {
-            if e.job != Job::TurnEnd {
-                continue;
-            }
             let held = self.shadow_held.take();
             let reminded = turn_end::reminded_since_operator(&self.session.items);
             let (act, said) = turn_end::decide(&e.outcome, held.as_deref(), reminded, &shadow_id);
@@ -267,6 +277,47 @@ impl Harness {
             let _ = self.append_offer_rows(&mut rows);
         }
         notices
+    }
+
+    /// Who decides this round's skill offers. `None` is similarity, as with no shadow: the during
+    /// job is off or paused. `Some((picks, shadow id))` is the shadow's verified picks since the last
+    /// round, empty for no offer; each pick acted on or dropped is a row in the shadow session.
+    pub(crate) fn shadow_skill_picks(
+        &mut self,
+    ) -> Option<(Vec<crate::shadow::verdict::Pick>, String)> {
+        let s = self.shadow.get()?;
+        let during = s.states().into_iter().find(|(j, _)| *j == Job::During)?.1;
+        if during.mode == Mode::Paused {
+            return None;
+        }
+        let (events, recorder, shadow_id) = self.shadow.parts()?;
+        let mine: Vec<crate::shadow::Event> = {
+            let mut q = events.lock().unwrap_or_else(|e| e.into_inner());
+            let (mine, rest): (std::collections::VecDeque<_>, _) = std::mem::take(&mut *q)
+                .into_iter()
+                .partition(|e| e.job == Job::During);
+            *q = rest;
+            mine.into()
+        };
+        let mut picks = Vec::new();
+        for e in mine {
+            let stale = crate::shadow::during::operator_since(&self.session.items, e.position);
+            match crate::shadow::during::skill_picks(&e.outcome, stale) {
+                Ok(p) => {
+                    let names: Vec<&str> = p.iter().map(|p| p.name.as_str()).collect();
+                    recorder.row(
+                        &format!("during · offer · {} · at #{}", names.join(", "), e.position),
+                        "the pick acts: offered in the watched session's next request",
+                    );
+                    picks = p;
+                }
+                Err(why) if why != "no skill picked" && why != "no verdict" => {
+                    recorder.row(&format!("during · no offer · at #{}", e.position), &why)
+                }
+                Err(_) => {}
+            }
+        }
+        Some((picks, shadow_id))
     }
 
     /// The shadow's last turn_end verdict about the final answer, for the restart check: `Some(word,

@@ -61,8 +61,9 @@ impl Job {
         self.deadline() / 2
     }
 
-    /// Whether the job's verdict changes the session. Only turn_end does; the other two are
-    /// observe-only, so a late verdict of theirs is still a measurement and is not dropped as stale.
+    /// Whether the runner drops a late verdict as stale. Only turn_end's: a late during verdict is
+    /// still a drift measurement, and its skill pick has its own stale rule where it acts
+    /// (`during::operator_since`). Permission is observe-only.
     pub fn acts(self) -> bool {
         self == Job::TurnEnd
     }
@@ -178,8 +179,21 @@ pub fn open_for(cfg: &crate::config::Config, watched_model: &str, wake: Wake) ->
     let on_outcome = |job: Job| -> runner::OnOutcome {
         let (events, wake) = (events.clone(), wake.clone());
         Box::new(move |position, outcome| {
-            // Only turn_end acts; during and permission are observe-only, recorded and no more.
-            if job != Job::TurnEnd || *outcome == runner::Outcome::Superseded {
+            // turn_end acts at the next wake. A during verdict waits for the next round, where
+            // its skill pick may act. Permission is observe-only, recorded and no more.
+            let during = job == Job::During && matches!(outcome, runner::Outcome::Verdict(_));
+            if !(job == Job::TurnEnd || during) || *outcome == runner::Outcome::Superseded {
+                return;
+            }
+            if during {
+                // The newest during verdict replaces one not yet acted on: it judged later rows.
+                let mut q = events.lock().unwrap_or_else(|e| e.into_inner());
+                q.retain(|e| e.job != Job::During);
+                q.push_back(Event {
+                    job,
+                    position,
+                    outcome: outcome.clone(),
+                });
                 return;
             }
             events

@@ -2052,18 +2052,31 @@ impl Harness {
                     &self.prefix.system,
                     &self.session.items,
                 );
-                // Score a skill against the prompt, plan and the model's latest text and reasoning, not just the note's subject.
-                // Session contents are re-read each round so an already-loaded body is not offered again.
-                skill_offers.skip_loaded(&self.session.items);
-                skill_offers.observe(&self.session.items);
-                // The person's own newest row scores beside the subject: at the tail of a session a
-                // follow-up names the thing in one word the plan and the tool output have buried.
-                let words = crate::recall_offer::operator_text(&self.session.items);
-                skill_offers.compose(
-                    &self.skills,
-                    &crate::skills_offer::subject(&self.session.items, &self.todos.snapshot()),
-                    Some(&words),
-                );
+                // A child runs on a brief that names its skills; only `[skills] offer_children`
+                // offers it more. Re-read each round so a loaded body is not offered again.
+                if self.cfg.offers_skills() {
+                    skill_offers.skip_loaded(&self.session.items);
+                    skill_offers.observe(&self.session.items);
+                    match self.shadow_skill_picks() {
+                        // The shadow's during job decides while it is on and not paused.
+                        Some((picks, shadow)) => {
+                            skill_offers.adopt(&self.skills, &picks, &shadow);
+                        }
+                        // The operator's newest row scores beside the subject: at the tail of a
+                        // session a follow-up names the thing in one word the plan has buried.
+                        None => {
+                            let words = crate::recall_offer::operator_text(&self.session.items);
+                            skill_offers.compose(
+                                &self.skills,
+                                &crate::skills_offer::subject(
+                                    &self.session.items,
+                                    &self.todos.snapshot(),
+                                ),
+                                Some(&words),
+                            );
+                        }
+                    }
+                }
                 // The box's embedder answers for every caller, so its first failure is said ONCE
                 // here - and each caller has already fallen back to its own words by then.
                 if let Some(said) = crate::embeddings::fault_note(self.cfg.embedder.get()) {

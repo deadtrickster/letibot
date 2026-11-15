@@ -14,6 +14,8 @@ use letibot_transcript::{Speaker, ToolCall, TranscriptItem, UserPart};
 
 use letibot_embeddings::Tier;
 
+use crate::shadow::verdict::Pick;
+
 /// The score a skill must reach to be offered, apart from `skill find`'s floor.
 /// Set above words merely shared with a frontmatter: once a reader learns to ignore the line, the feature is dead.
 pub const OFFER_FLOOR: f64 = 0.18;
@@ -35,6 +37,8 @@ pub const LOG: &str = "skills-offers.jsonl";
 pub enum By {
     Subject,
     Prompt,
+    /// The shadow's `during` job picked it, with a verified quote.
+    Shadow,
 }
 
 impl By {
@@ -42,6 +46,7 @@ impl By {
         match self {
             By::Subject => "subject",
             By::Prompt => "prompt",
+            By::Shadow => "shadow",
         }
     }
 }
@@ -58,6 +63,8 @@ pub struct Offer {
     pub blended: bool,
     /// Set by `settle`: the round loaded it.
     pub taken: bool,
+    /// The shadow's quote showing the need, and the shadow session's id, for a [`By::Shadow`] offer.
+    pub pick: Option<(String, String)>,
 }
 
 impl Offer {
@@ -65,6 +72,22 @@ impl Offer {
     /// assembly renders it after everything the session holds, and the next round composes a fresh
     /// one. It names the skill and the verb that loads it, and it stops there.
     pub fn tail(&self) -> TranscriptItem {
+        if let Some((quote, _)) = &self.pick {
+            return TranscriptItem::User {
+                speaker: Speaker::Agent,
+                parts: vec![UserPart::Text {
+                    text: format!(
+                        "[skill offer - the harness's own line, not the operator's] `{}` looks \
+                         relevant to what you are doing now: this session's shadow reviewer \
+                         picked it for {quote:?}. Its body is not in this prompt. If it is worth \
+                         the context, load it - `skill` action=\"load\", name=\"{}\". This line \
+                         is composed for this round and is gone from the next one; the skill, once \
+                         loaded, is not.",
+                        self.name, self.name
+                    ),
+                }],
+            };
+        }
         TranscriptItem::User {
             speaker: Speaker::Agent,
             parts: vec![UserPart::Text {
@@ -77,7 +100,7 @@ impl Offer {
                     self.name,
                     self.score,
                     match (self.by, self.blended) {
-                        (By::Prompt, _) =>
+                        (By::Prompt | By::Shadow, _) =>
                             "lexical over the skill's keywords, which the operator's own prompt named",
                         (By::Subject, true) => "lexical over its frontmatter, and its meaning",
                         (By::Subject, false) =>
@@ -385,8 +408,57 @@ impl Offers {
                 by,
                 blended: by == By::Subject && self.tier.is_some(),
                 taken: false,
+                pick: None,
             })
             .collect();
+        !self.open.is_empty()
+    }
+
+    /// The shadow's picks as this round's offers, in place of [`Offers::compose`]. Its guardrails
+    /// already ran; these are the rules no model may loosen: hidden, vetoed, not for this seat,
+    /// loaded, written by this session, or offered once already.
+    pub fn adopt(&mut self, registry: &SkillRegistry, picks: &[Pick], shadow: &str) -> bool {
+        self.open.clear();
+        self.open_hits.clear();
+        let live = registry.model_skills();
+        for p in picks {
+            if self.open.len() >= OFFERS_MAX {
+                break;
+            }
+            let Some(skill) = live.iter().find(|s| s.name == p.name) else {
+                continue;
+            };
+            if self.taken.contains(&p.name)
+                || self.offered.contains(&p.name)
+                || self.wrote_it(&live, &p.name)
+                || self.open.iter().any(|o| o.name == p.name)
+            {
+                continue;
+            }
+            let why = match self.never.contains(&p.name) {
+                true => Some("never_offer".to_string()),
+                false => self
+                    .seat
+                    .as_ref()
+                    .and_then(|seat| registry.unmet(skill, seat)),
+            };
+            if let Some(why) = why {
+                if !self.skipped.iter().any(|(n, _)| *n == p.name) {
+                    self.skipped.push((p.name.clone(), why));
+                }
+                continue;
+            }
+            self.open_hits
+                .insert(p.name.clone(), (Vec::new(), version_of(skill)));
+            self.open.push(Offer {
+                name: p.name.clone(),
+                score: 1.0,
+                by: By::Shadow,
+                blended: false,
+                taken: false,
+                pick: Some((p.quote.clone(), shadow.to_string())),
+            });
+        }
         !self.open.is_empty()
     }
 

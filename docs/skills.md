@@ -32,6 +32,7 @@ Everything below the second `---` is the body. It is what the model reads when i
 | `unless` | optional. Capabilities whose PRESENCE hides the skill - two skills for one job, and which fits is whichever this seat can do |
 | `allowed-tools` | optional. Tool names only. It can narrow what a session may call, never grant anything |
 | `origin` | optional. Where an installed skill came from, shown as its label |
+| `disable-model-invocation` | optional. `true` hides the skill from the model (listing, `find`, `load`, offers, the index) and keeps it for the operator's `/skills NAME` |
 
 A file with no `name`, or with no frontmatter at all, is skipped rather than loaded half way. Keys
 this build does not know are ignored. `Bash(git:*)` is read as `bash`: the qualifier is Claude
@@ -152,7 +153,26 @@ loses a skill from a listing cannot tell a rule from a bug. The operator's own `
 hands the body over: that door is theirs, and the condition is an author's or their own file's
 opinion rather than a permission.
 
+## Hiding a skill from the model
+
+`disable-model-invocation: true` in a skill's frontmatter, or its name in `[skills] hide` in either
+`leticode.toml`, keeps the skill out of every door the model has: `skill list`, `skill find`,
+`skill load`, the offers and the pinned index. The operator's `/skills NAME` still hands it over.
+`hide` unions across the two levels, so a project cannot unhide what the operator hid. This is
+crush's `disable-model-invocation` and `disable-skill`.
+
 ## The offer
+
+Only the operator's own sessions are offered skills. A subagent, a package, the review queue's
+sessions and a one-shot run on a brief that already names what they need; `[skills]
+offer_children = true` offers them skills too.
+
+With the shadow's `during` job on (`[shadow]` in providers.toml, see `docs/config/providers.toml.md`)
+and not paused, the shadow decides the offers. The score below is only its pre-filter: the best five
+skills by that score go on its shortlist, and it picks at most two, each with a quote from the
+session that its reply must contain exactly. A timeout, a void reply, an `unsure` verdict, or a pick
+judged before the operator's latest message is no offer. Its line names the quote instead of a
+score, and the log writes `"by":"shadow"`. With the job off or paused, the score decides, as below.
 
 Every round, before the request is sent, the harness scores the skills this box holds against a
 subject: the plan's rows (the ones the model wrote, not the queue's), the person's latest prompt,

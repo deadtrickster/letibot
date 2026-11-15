@@ -6,6 +6,7 @@ fn skill(taken: bool) -> skills_offer::Offer {
         score: 0.41,
         by: skills_offer::By::Subject,
         blended: false,
+        pick: None,
         taken,
     }
 }

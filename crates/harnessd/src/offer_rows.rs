@@ -30,12 +30,19 @@ fn with_body(head: String, body: Option<&str>) -> String {
 
 /// The headline line, then the skill's body for the click.
 pub fn skill_detail(o: &skills_offer::Offer, body: Option<&str>) -> String {
-    let head = format!(
-        "skill offered: {} ({:.2}){}",
-        o.name,
-        o.score,
-        state(o.taken, "loaded")
-    );
+    let head = match &o.pick {
+        Some((quote, shadow)) => format!(
+            "skill offered: {} (picked by shadow {shadow} for {quote:?}){}",
+            o.name,
+            state(o.taken, "loaded")
+        ),
+        None => format!(
+            "skill offered: {} ({:.2}){}",
+            o.name,
+            o.score,
+            state(o.taken, "loaded")
+        ),
+    };
     with_body(head, body)
 }
 

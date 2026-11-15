@@ -1108,12 +1108,14 @@ mod observe_only {
                 session: "s".into(),
                 skill: "parser-testing".into(),
                 taken: true,
+                by: "subject".into(),
             },
             replay::LoggedOffer {
                 at: 1,
                 session: "s".into(),
                 skill: "parser-testing".into(),
                 taken: false,
+                by: "subject".into(),
             },
         ];
         let rows = [(
@@ -1125,4 +1127,76 @@ mod observe_only {
         let o = replay::score_offers(&offers, &rows, offers_judge.as_ref());
         assert_eq!((o.kept_taken, o.dropped_ignored), (1, 1));
     }
+}
+
+fn operator(text: &str) -> letibot_transcript::TranscriptItem {
+    letibot_transcript::TranscriptItem::User {
+        speaker: letibot_transcript::Speaker::Operator,
+        parts: vec![letibot_transcript::UserPart::Text { text: text.into() }],
+    }
+}
+
+fn said(text: &str) -> letibot_transcript::TranscriptItem {
+    letibot_transcript::TranscriptItem::Assistant {
+        text: text.into(),
+        tool_calls: Vec::new(),
+        truncated: false,
+    }
+}
+
+/// A pick is stale once the operator spoke after the row it judged; assistant rows alone are not.
+#[test]
+fn a_pick_is_stale_only_after_a_new_operator_message() {
+    let items = vec![operator("make slides"), said("on it"), said("still on it")];
+    assert!(!super::during::operator_since(&items, 1));
+    assert!(!super::during::operator_since(&items, 3));
+    let mut more = items.clone();
+    more.push(operator("no, a pane"));
+    assert!(super::during::operator_since(&more, 3));
+    assert!(!super::during::operator_since(&more, 4));
+}
+
+/// Only a verdict with skill picks acts. Unsure, stale, void, timeout and note picks are no offer,
+/// and at most two picks act.
+#[test]
+fn only_a_sure_fresh_verdict_with_skill_picks_acts() {
+    use super::during::skill_picks;
+    use super::verdict::Pick;
+    let p = |n: &str| Pick {
+        name: n.into(),
+        quote: "make the talk slides".into(),
+    };
+    let v = |drift: Drift, offers: Vec<Pick>| Outcome::Verdict(Verdict::During { drift, offers });
+    let ok = skill_picks(&v(Drift::OnPlan, vec![p("slides"), p("note:a.md")]), false).unwrap();
+    assert_eq!(ok, vec![p("slides")]);
+    assert!(skill_picks(&v(Drift::Unsure, vec![p("slides")]), false).is_err());
+    assert!(skill_picks(&v(Drift::OnPlan, vec![p("slides")]), true).is_err());
+    assert!(skill_picks(&v(Drift::OnPlan, vec![p("note:a.md")]), false).is_err());
+    assert!(skill_picks(&Outcome::TimedOut, false).is_err());
+    assert!(skill_picks(&Outcome::Void("schema".into()), false).is_err());
+    let three = v(Drift::OnPlan, vec![p("a"), p("b"), p("c")]);
+    assert_eq!(skill_picks(&three, false).unwrap().len(), 2);
+}
+
+/// The pre-filter takes skills in the blended order the offers score, then notes by shared words.
+#[test]
+fn the_shortlist_is_the_ranked_skills_then_the_notes() {
+    use super::during::{Entry, SKILLS_SHORT, shortlist_ranked};
+    let e = |n: &str, about: &str| Entry {
+        name: n.into(),
+        about: about.into(),
+    };
+    let mut entries: Vec<Entry> = (0..7).map(|i| e(&format!("skill-{i}"), "x")).collect();
+    entries.push(e("note:build.md", "the build needs parser tests"));
+    entries.push(e("note:other.md", "unrelated words"));
+    let ranked: Vec<(String, f64)> = (0..7)
+        .rev()
+        .map(|i| (format!("skill-{i}"), i as f64 / 10.0))
+        .collect();
+    let skip = ["skill-6".to_string()].into_iter().collect();
+    let short = shortlist_ranked(&ranked, &entries, "run the parser tests", &skip);
+    let names: Vec<&str> = short.iter().map(|e| e.name.as_str()).collect();
+    assert_eq!(names.len(), SKILLS_SHORT + 1, "{names:?}");
+    assert_eq!(names[0], "skill-5");
+    assert_eq!(names.last(), Some(&"note:build.md"));
 }
