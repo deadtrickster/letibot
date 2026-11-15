@@ -54,6 +54,8 @@ impl RanoLoader {
         )
         .map_err(|why| from.refusal(&why))?;
         COMPILES.fetch_add(1, Ordering::SeqCst);
+        #[cfg(test)]
+        COMPILES_HERE.with(|n| n.set(n.get() + 1));
         let module: Arc<dyn Module> = Arc::new(RanoModule {
             plugin,
             calling: Mutex::new(()),
@@ -65,6 +67,17 @@ impl RanoLoader {
 /// How many modules this process has compiled. A `static` beside the cache because the cache is
 /// one: two hosts in one process cannot hold two answers about the same bytes.
 static COMPILES: AtomicUsize = AtomicUsize::new(0);
+
+// The misses of this thread: tests run in parallel and fill the one cache, so a test counts its own.
+#[cfg(test)]
+thread_local! {
+    static COMPILES_HERE: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn compiles_here() -> usize {
+    COMPILES_HERE.with(|n| n.get())
+}
 
 impl Loader for RanoLoader {
     /// The bytes are read here and compiled from memory, so the hash that keys the cache is
@@ -221,7 +234,8 @@ mod tests {
     use super::*;
 
     /// `compiles` is a MISS count, so a test cannot assume a cold process cache: it asserts what
-    /// the second build adds, which is the claim, whichever test filled the cache first.
+    /// the second build adds, which is the claim, whichever test filled the cache first. It counts
+    /// this thread's misses only, since another test may be compiling meanwhile.
     #[test]
     fn a_second_host_build_compiles_no_builtin() {
         let mut stack_a = letibot_plugins::Stack::discover(None, None, None, Arc::new(RanoLoader));
@@ -232,12 +246,12 @@ mod tests {
 
         // A second host, its own stack and its own loader: the same process, and so the same
         // compiled modules.
-        let before = RanoLoader::compiles();
+        let before = compiles_here();
         let mut stack_b = letibot_plugins::Stack::discover(None, None, None, Arc::new(RanoLoader));
         let failed = letibot_builtins::install(&mut stack_b);
         assert!(failed.is_empty(), "every built-in loads: {failed:?}");
         assert_eq!(
-            RanoLoader::compiles() - before,
+            compiles_here() - before,
             0,
             "the second host build found every module compiled"
         );
@@ -250,10 +264,10 @@ mod tests {
     fn the_bytes_are_the_key_and_not_the_name() {
         let wasm = builtin("todo");
         let one = RanoLoader.load_builtin("a", wasm, &[]).expect("compiles");
-        let compiled = RanoLoader::compiles();
+        let compiled = compiles_here();
         let same = RanoLoader.load_builtin("b", wasm, &[]).expect("a hit");
         assert_eq!(
-            RanoLoader::compiles(),
+            compiles_here(),
             compiled,
             "the second name compiled nothing"
         );
@@ -290,12 +304,12 @@ mod tests {
     /// A module that is not wasm is refused by name, with the source in the sentence.
     #[test]
     fn a_refusal_names_what_the_bytes_came_from() {
-        let before = RanoLoader::compiles();
+        let before = compiles_here();
         let Err(why) = RanoLoader.load_bytes("nonsense", b"not a module", &[]) else {
             panic!("a file that is not a module must be refused");
         };
         assert!(why.starts_with("built-in `nonsense`:"), "{why}");
-        assert_eq!(RanoLoader::compiles(), before, "a failure is not kept");
+        assert_eq!(compiles_here(), before, "a failure is not kept");
     }
 
     fn builtin(name: &str) -> &'static [u8] {
