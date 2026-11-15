@@ -1453,6 +1453,62 @@ Built.
 
 Left. Nothing writes a proposed note yet, so the provenance the row carries ("quoted from X at T (row N)") is not yet copied into a written note. The head draws a queued echo only for its own prompts, so an agent's prompt shows when its row lands, not while queued. Only the bridge names a sender; another programmatic head (flowy, acp) still sends as the operator. The live 30% void rate on turn_end was not re-measured on the live session itself, whose recent rows hold no human labels.
 
+## R268 - Spills are durable: kept in the data dir, bounded by a budget, evicted visibly
+
+**Status:** open, 2026-11-15. Queued after R264. left: all of it.
+
+R263 made the generic output cap the default. A spill's middle lives in memory unless the daemon runs with `--spill-dir`, so a daemon restart loses every stored middle. The transcript row still says `read_spill hash=H`, so the conversation refers to bytes that no longer exist.
+
+A spill is part of the conversation, so it follows the transcript's lifetime, not the daemon's. The scratch dir (`$XDG_RUNTIME_DIR/letibot/scratch-<pid>`) is the wrong home: it is tmpfs, held in RAM, tied to one daemon process, and removed when that daemon exits.
+
+**Change:**
+- Spills are stored by default under `~/.local/share/letibot/spills/<project>/<hash>`, addressed by content hash.
+- There is a per-project size budget, e.g. 2 GiB, as a config key. Past it, the least recently read spill is evicted.
+- `read_spill` on an evicted hash answers "evicted on <date>, N bytes". The answer is never a silent miss.
+- Spills are a holding in `letibot holds` and `letibot gc`.
+- Archiving a session does not drop its spills, because archive only hides.
+
+A single spill is already bounded: a command's capture is an 8 MiB tail ring (`DEFAULT_CAPTURE_BYTES`, `exec/host.rs:1142`; `Capture`, `exec/jobs.rs:308`).
+
+**Done when:**
+- a spill survives a daemon restart and `read_spill` returns its middle;
+- going over the budget evicts the least recently read spill, and `read_spill` on it says so;
+- `letibot holds` lists the spill store's size.
+
+## R269 - Per-job disk and IO accounting, an IO throttle and a disk floor
+
+**Status:** open, 2026-11-15. Queued after R268. left: all of it.
+
+The question was "can we track that a particular command causes disk hog?" A `dd of=file` writing a terabyte is not touched by spills, and the memory caps do not limit disk. Operator: "if it hogs iops it is equally bad". So bytes written, space held and IO rate all count.
+
+**Now:** every job has its own cgroup (`session.job-jNNNN`), but the user manager delegates only `cpu memory pids`. `io.stat`, `io.max` and `io.pressure` do not exist in job cgroups. Measured 2026-11-15:
+
+    user@1000.service controllers: cpu memory pids
+    session.job-j3820/io.stat: No such file or directory
+
+**Change (operator's choice: option 1 with option 2 as a fallback, plus the disk floor):**
+1. **Delegated io controller, the primary path.** This is a one-time root setup, run by the operator:
+
+       sudo mkdir -p /etc/systemd/system/user@.service.d && printf '[Service]\nDelegate=cpu memory pids io\n' | sudo tee /etc/systemd/system/user@.service.d/delegate-io.conf && sudo systemctl daemon-reload
+
+   It takes effect at the next login, or with `systemctl restart user@1000`.
+   - letibot enables `io` in its subtree and reads each job's `io.stat` (`rbytes wbytes rios wios`, including exited children) and `io.pressure`.
+   - The job row and `job_list` show bytes written and the IO rate.
+   - `io.max` (bps and iops) is the throttle: a job over a configured rate is throttled before it is killed.
+   - The daemon says at startup whether io is delegated, and prints the setup line when it is not.
+2. **Fallback without delegation.** Sum `/proc/<pid>/io` `write_bytes` and `syscw` over the job cgroup's `cgroup.procs`, sampled. It undercounts children that exit between samples, and the row says that it is sampled.
+3. **Disk floor.**
+   - Watch free space on each running job's filesystems: its workspace, the target dirs, and /build.
+   - When free space drops below a threshold (`[exec] disk_floor`, e.g. 5% or 20G), attribute the growth to the jobs with the most bytes written in that window, then pause them (SIGSTOP the cgroup with `cgroup.freeze`), or kill them by policy.
+   - Write a visible row naming the job, the bytes and the filesystem.
+   - The same mechanism serves IO pressure: a job whose `io.pressure` "full" stays high past a threshold is throttled through `io.max`, and the row says so.
+
+**Done when:**
+- with io delegated, a test job that writes 1 GiB shows `wbytes` of about 1 GiB on its row;
+- an iops-heavy job is throttled by `io.max` at the configured rate;
+- with a fake filesystem under the floor, the top writer is frozen and a row says why;
+- without delegation, the sampled fallback is used and the startup line names the setup.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.
