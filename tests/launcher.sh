@@ -1537,7 +1537,7 @@ STUB
   out="$(RUN_PATH_EXTRA="$T/noscope:" run "$DEFAULT_ONLY" "one question")"
   spent=$(($(date +%s) - started))
   expect "a manager that never answers is given up on" "$out" \
-    "the user manager did not answer within 10s"
+    "the systemd user manager is not answering"
   if [ "$spent" -le 30 ]; then
     echo "ok   ...within seconds of the probe's bound (${spent}s)"
   else

@@ -140,6 +140,8 @@ fn latest(store: &Path) -> (i32, String, String) {
         .arg("--latest-session")
         .arg("--scope")
         .arg(WS)
+        // The walked-past rows are said under -v only; this file checks they are said at all.
+        .env("LETIBOT_VERBOSE", "1")
         .output()
         .expect("running harnessd");
     (
