@@ -2537,8 +2537,8 @@ impl Harness {
         Ok(())
     }
 
-    /// The round's calls, run in proposed order, each as its appended row.
-    /// Order is the contract: GLM's template sorts results by call order, so any other order rewrites bytes the KV cache holds.
+    /// The round's calls, each as its appended row. Adjacent reads run in a pool and every other call alone;
+    /// rows keep call order, because GLM's template sorts results by it and any other order rewrites cached bytes.
     /// Answers the rows and whether one gave the floor back to the operator.
     fn run_the_rounds_calls(
         &mut self,
@@ -2552,76 +2552,102 @@ impl Harness {
         // `pair_tool_calls`' answering window, so a `User` row inserted before the result makes the model read
         // *no result was recorded* beside the real one.
         let mut asked: Vec<TranscriptItem> = Vec::new();
-        for call in calls {
-            // Call order, and appended in call order. `self.tool_sink` is the log sink wrapped in the intent
-            // encoder, so every result is measured on its way past. And the slot is emptied immediately before the
-            // call runs, so nothing an earlier call left can be read as this one's answer.
+        for batch in self.runtime.batches(calls) {
+            let batch = &calls[batch];
+            // The slot is emptied immediately before the batch runs, so nothing an earlier call left can be read
+            // as this one's answer. A pooled batch holds only reads, and none of them fills it.
             self.asked.lock().unwrap_or_else(|e| e.into_inner()).take();
-            let started = Instant::now();
-            let r = self.runtime.invoke(turn_id, call, &mut self.tool_sink);
-            self.meter.tool(&self.cfg.session_id, &r, started);
-            let mut item = ToolRuntime::transcript_item(&r);
-            // A question the model asked is an exchange with a person, and the
-            // person's half of it is theirs. The tool returns the answer; the
-            // session writes it down, here, where every other result is appended.
-            if call.name == ASK_USER_QUESTION {
-                asked.extend(self.settle_asked(&mut item));
-            }
-            // A plugin layer sees the result before the model does (`docs/plugins-plan.md`),
-            // and before the harness's own intercept below: the layer is about what the
-            // CALL produced, and `pr_watch`'s sentence is the harness's own reading of it.
-            if let TranscriptItem::ToolResult {
-                outcome, payload, ..
-            } = &mut item
-            {
-                // A successful result only. A call that failed did nothing to react to,
-                // and its result is the failure's own words - which the model has to read
-                // exactly, not through a layer's opinion of them.
-                let how = match outcome {
-                    letibot_transcript::ToolOutcome::Ok => Some(letibot_plugin::tool_result::OK),
-                    letibot_transcript::ToolOutcome::Backgrounded { .. } => {
-                        Some(letibot_plugin::tool_result::BACKGROUNDED)
-                    }
-                    _ => None,
-                };
-                if let Some(how) = how {
-                    self.plugin_result(call, how, payload);
-                }
-            }
-            // A pull request this call opened is watched from here on (`pr_watch`), and
-            // the call's own result says so.
-            if let TranscriptItem::ToolResult {
-                outcome: letibot_transcript::ToolOutcome::Ok,
-                payload,
-                ..
-            } = &mut item
-                && let Some((url, n)) = crate::pr_watch::opened(call, payload)
-            {
-                let said = self.watch_opened_pr(&url, n);
-                payload.push_str(&said);
-            }
-            // The progress encoder reads the *rendered* result, which is the
-            // string the model will actually get to read. Digesting anything
-            // else would measure novelty the model never saw.
-            if let TranscriptItem::ToolResult {
-                outcome, payload, ..
-            } = &item
-            {
-                progress.observe(call, outcome, payload);
-                // Backgrounding is the operator reaching for the floor; see the
-                // yield at the end of this round.
+            let ran = if batch.len() > 1 {
+                self.runtime
+                    .invoke_pooled(turn_id, batch, &mut self.tool_sink)
+            } else {
+                let started = Instant::now();
+                vec![(
+                    self.runtime.invoke(turn_id, &batch[0], &mut self.tool_sink),
+                    started,
+                )]
+            };
+            // Settled in call order whatever order the pool finished in.
+            for (call, (r, started)) in batch.iter().zip(ran) {
+                let item = self.settle_call(call, &r, started, progress, &mut asked);
                 if matches!(
-                    outcome,
-                    letibot_transcript::ToolOutcome::Backgrounded { .. }
+                    &item,
+                    TranscriptItem::ToolResult {
+                        outcome: letibot_transcript::ToolOutcome::Backgrounded { .. },
+                        ..
+                    }
                 ) {
                     backgrounded = true;
                 }
+                results.push(item);
             }
-            results.push(item);
         }
         results.extend(asked);
         self.hand_over_guidance(calls);
         (results, backgrounded)
+    }
+
+    /// One finished call made into its row: metered, the person's half of a question set aside, the
+    /// plugin layer and `pr_watch` applied, and the progress detector fed.
+    fn settle_call(
+        &mut self,
+        call: &ToolCall,
+        r: &letibot_tools::result::ToolResult,
+        started: Instant,
+        progress: &mut crate::progress::ProgressDetector,
+        asked: &mut Vec<TranscriptItem>,
+    ) -> TranscriptItem {
+        self.meter.tool(&self.cfg.session_id, r, started);
+        let mut item = ToolRuntime::transcript_item(r);
+        // A question the model asked is an exchange with a person, and the
+        // person's half of it is theirs. The tool returns the answer; the
+        // session writes it down, here, where every other result is appended.
+        if call.name == ASK_USER_QUESTION {
+            asked.extend(self.settle_asked(&mut item));
+        }
+        // A plugin layer sees the result before the model does (`docs/plugins-plan.md`),
+        // and before the harness's own intercept below: the layer is about what the
+        // CALL produced, and `pr_watch`'s sentence is the harness's own reading of it.
+        if let TranscriptItem::ToolResult {
+            outcome, payload, ..
+        } = &mut item
+        {
+            // A successful result only. A call that failed did nothing to react to,
+            // and its result is the failure's own words - which the model has to read
+            // exactly, not through a layer's opinion of them.
+            let how = match outcome {
+                letibot_transcript::ToolOutcome::Ok => Some(letibot_plugin::tool_result::OK),
+                letibot_transcript::ToolOutcome::Backgrounded { .. } => {
+                    Some(letibot_plugin::tool_result::BACKGROUNDED)
+                }
+                _ => None,
+            };
+            if let Some(how) = how {
+                self.plugin_result(call, how, payload);
+            }
+        }
+        // A pull request this call opened is watched from here on (`pr_watch`), and
+        // the call's own result says so.
+        if let TranscriptItem::ToolResult {
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload,
+            ..
+        } = &mut item
+            && let Some((url, n)) = crate::pr_watch::opened(call, payload)
+        {
+            let said = self.watch_opened_pr(&url, n);
+            payload.push_str(&said);
+        }
+        // The progress encoder reads the *rendered* result, which is the
+        // string the model will actually get to read. Digesting anything
+        // else would measure novelty the model never saw.
+        if let TranscriptItem::ToolResult {
+            outcome, payload, ..
+        } = &item
+        {
+            progress.observe(call, outcome, payload);
+        }
+        item
     }
 
     /// The `AGENTS.md` of every directory this round's calls touched, for a SUBAGENT and once -

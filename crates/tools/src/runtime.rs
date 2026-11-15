@@ -1609,6 +1609,10 @@ impl Registry {
     }
 }
 
+/// How many read-class calls of one round run at once. Ten, as dsh does: past that a round
+/// is waiting on the disk or the network, not on the pool.
+pub const POOL_WIDTH: usize = 10;
+
 /// The runtime proper.
 pub struct ToolRuntime {
     pub registry: Registry,
@@ -2023,6 +2027,97 @@ impl ToolRuntime {
         sink: &mut dyn ToolEventSink,
     ) -> ToolResult {
         self.run(turn_id, call, sink, false)
+    }
+
+    /// Whether a call may run beside its neighbours in the round. Declared `Read` only: a
+    /// narrowed class is read off salvaged arguments, and a guess before salvage could let a
+    /// write run concurrently.
+    pub fn runs_pooled(&self, call: &ToolCall) -> bool {
+        self.registry
+            .get(&call.name)
+            .is_some_and(|t| t.schema().access == Access::Read)
+    }
+
+    /// A round split into batches, in call order: each run of pooled calls is one batch, and
+    /// every other call is a batch of its own, so a write is a barrier on both sides.
+    pub fn batches(&self, calls: &[ToolCall]) -> Vec<std::ops::Range<usize>> {
+        let mut out: Vec<std::ops::Range<usize>> = Vec::new();
+        let mut open: Option<usize> = None;
+        for (i, call) in calls.iter().enumerate() {
+            if self.runs_pooled(call) {
+                open.get_or_insert(i);
+                continue;
+            }
+            if let Some(start) = open.take() {
+                out.push(start..i);
+            }
+            out.push(i..i + 1);
+        }
+        if let Some(start) = open {
+            out.push(start..calls.len());
+        }
+        out
+    }
+
+    /// Runs calls concurrently, at most [`POOL_WIDTH`] at once, and answers in call order with
+    /// each call's start. Events reach `sink` on this thread as they happen, keyed by call id,
+    /// so a head sees every call live while the rows still commit in model order.
+    pub fn invoke_pooled(
+        &self,
+        turn_id: &str,
+        calls: &[ToolCall],
+        sink: &mut dyn ToolEventSink,
+    ) -> Vec<(ToolResult, std::time::Instant)> {
+        if calls.len() <= 1 {
+            return calls
+                .iter()
+                .map(|c| {
+                    let started = std::time::Instant::now();
+                    (self.invoke(turn_id, c, sink), started)
+                })
+                .collect();
+        }
+        enum Msg {
+            Event(ToolEvent),
+            Done(usize, ToolResult, std::time::Instant),
+        }
+        struct Forward(std::sync::mpsc::Sender<Msg>);
+        impl ToolEventSink for Forward {
+            fn emit(&mut self, event: ToolEvent) {
+                let _ = self.0.send(Msg::Event(event));
+            }
+        }
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let mut slots: Vec<Option<(ToolResult, std::time::Instant)>> =
+            (0..calls.len()).map(|_| None).collect();
+        std::thread::scope(|s| {
+            let (tx, rx) = std::sync::mpsc::channel::<Msg>();
+            for _ in 0..calls.len().min(POOL_WIDTH) {
+                let tx = tx.clone();
+                let next = &next;
+                s.spawn(move || {
+                    let mut fwd = Forward(tx.clone());
+                    loop {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(call) = calls.get(i) else { break };
+                        let started = std::time::Instant::now();
+                        let r = self.invoke(turn_id, call, &mut fwd);
+                        let _ = tx.send(Msg::Done(i, r, started));
+                    }
+                });
+            }
+            drop(tx);
+            for msg in rx {
+                match msg {
+                    Msg::Event(e) => sink.emit(e),
+                    Msg::Done(i, r, started) => slots[i] = Some((r, started)),
+                }
+            }
+        });
+        slots
+            .into_iter()
+            .map(|s| s.expect("every pooled call answers before its worker exits"))
+            .collect()
     }
 
     /// The body of both, with the gate the one thing that varies.

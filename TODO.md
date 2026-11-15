@@ -1272,6 +1272,25 @@ Audit package H6 (`STATUS-fable-5.2-2026-11-15.md`), plan item 1.14, and R242's 
 - Tests: `a_line_over_the_budget_is_read_in_pieces_and_edited_inside_one`, `an_edit_inside_the_shown_prefix_of_a_clipped_line_lands`, `a_column_read_past_the_line_or_with_ranges_is_refused_by_name`, `a_part_shown_covers_a_change_inside_it_and_moves_with_an_edit_above`; rano `a_line_wider_than_the_screen_is_read_whole_in_the_window`, `hidden_marker_lines_are_counted_on_the_header`.
 
 **Done when:** a line over 32 KiB is read in pieces with `column_offset` and `columns`, and an edit whose match lies inside a shown piece lands; a 400-column line is fully readable in the window at 80 columns; the header's count plus the stated hidden marker lines equals the payload's lines.
+
+## R284 - Tool calls of one message run one at a time
+
+**Status:** built, 2026-11-15. Package J11, plan item 1.2.
+
+A round with three `read` calls waited for each in turn, so a model that batches its lookups gained nothing from batching them.
+
+**Built.**
+- `ToolRuntime::batches` (`tools/src/runtime.rs`) splits a round in call order: each run of adjacent calls whose declared class is `Read` is one batch, and every other call, an unknown name included, is a batch of its own. A write, exec, network or session call is a barrier on both sides.
+- `ToolRuntime::invoke_pooled` runs a batch as dsh's rolling pool: `POOL_WIDTH` (10) workers take the next call as each finishes. Events are forwarded to the session's sink on the harness thread as they happen, keyed by call id, and results come back in call order.
+- `run_the_rounds_calls` (`harnessd/src/harness/turns.rs`) runs batch by batch and settles each result in call order (`settle_call`: meter, ask, plugin layer, `pr_watch`, progress), so the rows the template sorts by call order are unchanged.
+- The class is the schema's declared one, not `access_for`'s narrowing: narrowing reads salvaged arguments, and a guess before salvage could let a write run in the pool.
+- Tests (`tools/tests/pool.rs`): `three_reads_of_200_ms_finish_under_400_ms_in_call_order`, `a_write_between_two_reads_runs_alone`, `the_pool_holds_at_most_its_width_at_once`, `an_unknown_tool_is_a_barrier`.
+
+**Left.**
+- A tool declared `Write` whose verb narrows to `Read` (`notes list`, `queue status`) still runs alone.
+- The pool is tested through the runtime, the same composition the harness runs. No harness-level test drives a scripted model round through it.
+- Head events of a pooled batch arrive in completion order, interleaved by call id. A head that assumed one call at a time between `Started` and `Finished` would need to key by call id; the sinks in tree already do.
+
 ## R264 - An `external` wait silences the plan-check forever
 
 **Status:** built, 2026-11-15. The operator approved both proposed defaults.
