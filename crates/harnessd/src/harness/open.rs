@@ -3528,6 +3528,7 @@ impl Harness {
             operator_added_at: None,
             nag_next: None,
             stale_told: None,
+            auto_reseat_refused: None,
             unsealed_fork: None,
             meter: Default::default(),
             intent,
@@ -3666,6 +3667,9 @@ impl Harness {
         // What a head attaching to this session should be told, left in the registry for `seat_in`: a session no
         // harness has opened has no entry, and this is a no-op. HERE, after the republish, because a live note is filed
         // at the seam it arrives at, and said before the rows it would be drawn above the whole conversation.
+        // A session that reseats before its turn is not told the update is the person's call.
+        let stale_for_model =
+            stale_for_model.filter(|_| self.cfg.on_stale() != crate::config::OnStale::Reseat);
         self.session_registry
             .set_stale_prefix(&self.cfg.session_id, stale, stale_for_model);
     }

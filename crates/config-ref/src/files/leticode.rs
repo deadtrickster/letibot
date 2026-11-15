@@ -275,6 +275,19 @@ pub const LETICODE: File = File {
             ],
         },
         Table {
+            path: "sessions",
+            note: "",
+            needs: "",
+            keys: &[k(
+                "auto_reseat",
+                "bool",
+                "true",
+                PW,
+                "daemon-run sessions move to the current prompt before a turn; false asks",
+                "false",
+            )],
+        },
+        Table {
             path: "warnings",
             note: "Read by the head. Codes: letibot_sessionlog::warning::TABLE.",
             needs: "",

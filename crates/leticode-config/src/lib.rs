@@ -585,6 +585,8 @@ pub struct LeticodeConfig {
     pub room: RoomKeys,
     /// The `[ui]` table: head layout switches. See [`UiKeys`].
     pub ui: UiKeys,
+    /// The `[sessions]` table. See [`SessionKeys`].
+    pub sessions: SessionKeys,
     /// The `[warnings]` table: what the head files and never draws. Read by the head, in
     /// `tui/src/prefs.rs`, because the codes are that process's vocabulary.
     pub warnings: WarningKeys,
@@ -1855,6 +1857,39 @@ pub struct UiKeys {
     pub rooms_sidebar_width: Option<u16>,
 }
 
+/// `[sessions]` in a `leticode.toml`. `auto_reseat: None` is on: a seat nobody answers moves to
+/// the current prompt before its turn.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionKeys {
+    pub auto_reseat: Option<bool>,
+}
+
+fn session_keys(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<SessionKeys, String> {
+    let keys = "the key is `auto_reseat` (true or false)";
+    let table = table_at(value, path, text, "sessions", keys)?;
+    let mut out = SessionKeys::default();
+    for (key, v) in table {
+        let from = at(path, text, key, user);
+        match key.as_str() {
+            "auto_reseat" => {
+                out.auto_reseat = Some(v.as_bool().ok_or_else(|| {
+                    format!(
+                        "{from}: [sessions] auto_reseat is true or false, not {}",
+                        kind_of(v)
+                    )
+                })?);
+            }
+            other => return Err(format!("{from}: [sessions] `{other}` is not a key; {keys}")),
+        }
+    }
+    Ok(out)
+}
+
 fn ui_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result<UiKeys, String> {
     let keys = "the keys are `rooms_sidebar` (true or false) and `rooms_sidebar_width` (columns)";
     let table = table_at(value, path, text, "ui", keys)?;
@@ -2296,6 +2331,10 @@ impl LeticodeConfig {
                 Some(v) => ui_keys(v, path, &text, level == Level::User)?,
                 None => UiKeys::default(),
             },
+            sessions: match &file.sessions {
+                Some(v) => session_keys(v, path, &text, level == Level::User)?,
+                None => SessionKeys::default(),
+            },
             warnings: match &file.warnings {
                 Some(v) => warning_keys(v, path, &text, level == Level::User)?,
                 None => WarningKeys::default(),
@@ -2546,6 +2585,9 @@ impl LeticodeConfig {
                 rooms_sidebar: other.ui.rooms_sidebar.or(self.ui.rooms_sidebar),
                 rooms_sidebar_width: other.ui.rooms_sidebar_width.or(self.ui.rooms_sidebar_width),
             },
+            sessions: SessionKeys {
+                auto_reseat: other.sessions.auto_reseat.or(self.sessions.auto_reseat),
+            },
             warnings: self.warnings.overridden_by(&other.warnings),
             keys: self.keys.overridden_by(&other.keys),
             verbosity: self.verbosity.overridden_by(&other.verbosity),
@@ -2573,6 +2615,12 @@ impl LeticodeConfig {
     /// The `[queue] mute` names, both levels unioned.
     pub fn queue_mute(&self) -> &[String] {
         &self.queue.mute
+    }
+
+    /// Whether a seat nobody answers reseats itself on a stale prompt: `[sessions] auto_reseat`,
+    /// on by default.
+    pub fn auto_reseat(&self) -> bool {
+        self.sessions.auto_reseat.unwrap_or(true)
     }
 
     /// How long a session may hold room lines nothing rang for before they are said as one digest
@@ -2790,6 +2838,9 @@ struct LeticodeConfigFile {
     /// The `[ui]` table, see [`UiKeys`].
     #[serde(default)]
     ui: Option<toml::Value>,
+    /// The `[sessions]` table, see [`SessionKeys`].
+    #[serde(default)]
+    sessions: Option<toml::Value>,
     /// The `[warnings]` table, see [`WarningKeys`].
     #[serde(default)]
     warnings: Option<toml::Value>,

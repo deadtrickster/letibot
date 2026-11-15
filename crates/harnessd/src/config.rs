@@ -79,7 +79,49 @@ pub enum Seat {
     Shadow,
 }
 
+/// What a session does when its seated prompt is not the one this daemon composes now.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OnStale {
+    /// Tell the head and the model; the person decides (`/reseat`).
+    Ask,
+    /// Carry the conversation onto the current prompt before the next turn. For seats no
+    /// person answers.
+    Reseat,
+    /// Neither: the seat's prompt is owned elsewhere.
+    Exempt,
+}
+
 impl Seat {
+    /// Every seat, so a test can hold each to the properties a seat must state.
+    pub const ALL: [Seat; 9] = [
+        Seat::Orchestrator,
+        Seat::Planner,
+        Seat::Researcher,
+        Seat::Coder,
+        Seat::Runner,
+        Seat::Leticode,
+        Seat::Gatekeeper,
+        Seat::NotesKeeper,
+        Seat::Shadow,
+    ];
+
+    /// The seat's own answer to a stale prompt. Exhaustive on purpose: a new seat states it.
+    pub fn on_stale(self) -> OnStale {
+        match self {
+            // The person's seats: a card they answer.
+            Seat::Orchestrator
+            | Seat::Planner
+            | Seat::Researcher
+            | Seat::Coder
+            | Seat::Runner
+            | Seat::Leticode => OnStale::Ask,
+            // The daemon's seats: nobody reads their card.
+            Seat::Gatekeeper | Seat::NotesKeeper => OnStale::Reseat,
+            // A shadow's prefix is the shadow job's.
+            Seat::Shadow => OnStale::Exempt,
+        }
+    }
+
     pub fn as_str(&self) -> &'static str {
         match self {
             Seat::Orchestrator => "orchestrator",
@@ -1370,6 +1412,31 @@ fn mode_beyond_the_mode(mode: &letibot_tools::mode::Mode) -> &'static str {
 }
 
 impl Config {
+    /// What THIS session does on a stale prompt: its seat's answer, with `[sessions]
+    /// auto_reseat = false` turning every reseat back into a card. The review queue's session
+    /// sits on the default seat with its own role, and a person's seat in a package, a one-shot
+    /// or under a parent has no person at the card, so those reseat too.
+    pub fn on_stale(&self) -> OnStale {
+        let seat = match crate::sessions::gatekeeper::is_the_queue_session(self) {
+            true => OnStale::Reseat,
+            false => self.seat.on_stale(),
+        };
+        let unattended =
+            self.one_shot || self.parent_seat.is_some() || self.parent_session_id.is_some();
+        match seat {
+            OnStale::Ask if unattended => self.auto_reseat_or_ask(),
+            OnStale::Reseat => self.auto_reseat_or_ask(),
+            other => other,
+        }
+    }
+
+    fn auto_reseat_or_ask(&self) -> OnStale {
+        match self.leticode.auto_reseat() {
+            true => OnStale::Reseat,
+            false => OnStale::Ask,
+        }
+    }
+
     /// The model API deadlines for a session on `pc` (`None` is the local route, which has the
     /// defaults). `provider_timeout`, when set, is the answer budget over the file's.
     pub fn deadlines_for(&self, pc: Option<&ProviderConfig>) -> crate::leticode_config::Deadlines {

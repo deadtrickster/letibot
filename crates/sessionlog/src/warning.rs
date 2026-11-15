@@ -793,6 +793,9 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // A caveat that a check could not be made: the carry was not verified against the
     // window, and the monitors will be polled rather than woken.
     ("reseat_unchecked", Class::Failure, Action::Nothing),
+    // A daemon-run session's prompt is stale and its automatic reseat was refused; it runs on
+    // the old prompt and the same target is not retried.
+    ("auto_reseat_failed", Class::Failure, Action::Nothing),
     ("monitor_wake_not_armed", Class::Failure, Action::Nothing),
     // Refused: the dominant case is *there is nothing to re-seat*, and the other branch
     // leaves the transcript unchanged with *"try again"*. Both put nothing at risk but the
@@ -1640,15 +1643,15 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_89_routine_15_refused_and_102_failures() {
+    fn the_table_is_89_routine_15_refused_and_103_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k, _)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 206, "the table's size");
+        assert_eq!(TABLE.len(), 207, "the table's size");
         assert_eq!(count(Class::Routine), 89, "the four limits are routine");
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 102);
+        assert_eq!(count(Class::Failure), 103);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);

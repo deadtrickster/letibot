@@ -228,6 +228,12 @@ Read by the head.
 | `rooms_sidebar` | bool | false | both, project wins | Rooms, Sessions and Queues beside the transcript |
 | `rooms_sidebar_width` | columns | the head's own | both, project wins | starting width; head.toml's dragged width wins |
 
+## `[sessions]`
+
+| key | type | default | level | meaning |
+|---|---|---|---|---|
+| `auto_reseat` | bool | true | both, project wins | daemon-run sessions move to the current prompt before a turn; false asks |
+
 ## `[warnings]`
 
 Read by the head. Codes: letibot_sessionlog::warning::TABLE.

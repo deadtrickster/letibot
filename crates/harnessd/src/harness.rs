@@ -332,6 +332,9 @@ pub struct Harness {
     /// the person's and it stares at them from their own head. Compared by text, so a different
     /// sentence is told again, and cleared by the fork that re-seats.
     stale_told: Option<String>,
+    /// The prompt an automatic reseat last failed onto, by fingerprint: the same target is not
+    /// tried again before every turn, only a prompt that moved since.
+    auto_reseat_refused: Option<String>,
     /// A fork whose rows are not all stored yet - sealed by [`Harness::seal_fork`]
     /// once they are.
     unsealed_fork: Option<UnsealedFork>,

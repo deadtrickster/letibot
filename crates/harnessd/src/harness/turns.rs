@@ -1576,6 +1576,11 @@ impl Harness {
         // The prompt's clock starts before the rows go in: from the moment a turn has words it is in flight, and
         // the append below publishes, so a waiting head reads `turn` rather than a gap. Idempotent, since a
         // wall-continuation comes back with the clock already running.
+        // Between turns, before the clock: the reseat forks the conversation the rows go into.
+        let mut items = items;
+        if let Some(said) = self.auto_reseat_before_turn() {
+            items.insert(0, said);
+        }
         self.begin_turn_clock(letibot_sessionlog::event::now_ms());
         let mut sink = CapturingSink::new(self.hub.clone());
         self.session.append_items(&self.engine, &items, &mut sink)?;

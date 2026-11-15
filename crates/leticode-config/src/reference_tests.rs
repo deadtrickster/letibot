@@ -86,6 +86,7 @@ fn hand_read_keys_are_listed() {
         "boundary",
         "perimeter.<name>",
         "ui",
+        "sessions",
         "warnings",
         "verbosity.<name>",
         "nag",

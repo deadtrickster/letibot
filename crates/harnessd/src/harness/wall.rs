@@ -227,6 +227,26 @@ fn grown_schemas(was: &[String], is: &[String]) -> Vec<String> {
         .collect()
 }
 
+/// The row an automatic reseat leaves: what changed, in the stale card's terms.
+pub(crate) fn auto_reseated_line(instructions: bool, r: &ReseatReport) -> String {
+    let mut moved: Vec<String> = Vec::new();
+    if instructions {
+        moved.push("the system instructions changed".into());
+    }
+    for (word, names) in [("added", &r.gained), ("gone", &r.lost), ("grew", &r.grew)] {
+        if !names.is_empty() {
+            moved.push(format!("{word} {}", names.join(", ")));
+        }
+    }
+    if moved.is_empty() {
+        moved.push("the prompt changed".into());
+    }
+    format!(
+        "reseated: {}. The conversation was carried across whole.",
+        moved.join("; ")
+    )
+}
+
 /// What the model is told when a reseat lands: one line, and the three things it must not say - no token
 /// count, no request to restate the re-seat (a restatement is not work), and no stop asking for `/reseat`,
 /// which planted the word it forbade.
@@ -938,6 +958,51 @@ impl Harness {
             );
         }
         Ok(out)
+    }
+
+    /// Before a turn of a session no person answers: when the prompt it speaks is stale by the
+    /// same fingerprint the open's card reads, carry the conversation onto the current one. Returns
+    /// the model's `[reseat]` line for the turn to open with. A refusal is said once per target.
+    pub(crate) fn auto_reseat_before_turn(&mut self) -> Option<TranscriptItem> {
+        if self.cfg.on_stale() != crate::config::OnStale::Reseat
+            || self.compacting
+            || self.prompt_in_flight.load(Ordering::SeqCst)
+            || self.store.is_none()
+        {
+            return None;
+        }
+        let next = self.reseat_candidate()?;
+        let want = prefix_fingerprint(self.cfg.seat, &next);
+        if want == prefix_fingerprint(self.cfg.seat, &self.prefix)
+            || self.auto_reseat_refused.as_deref() == Some(want.as_str())
+        {
+            return None;
+        }
+        let was = self.prefix.clone();
+        match self.reingest() {
+            Ok(r) => {
+                let instructions = instructions_of(&was.system) != instructions_of(&next.system);
+                self.hub
+                    .warn("reseated", auto_reseated_line(instructions, &r));
+                let text = reseated_for_the_model(false, &r);
+                self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
+                Some(TranscriptItem::User {
+                    speaker: letibot_transcript::Speaker::Agent,
+                    parts: vec![UserPart::Text { text }],
+                })
+            }
+            Err(e) => {
+                self.auto_reseat_refused = Some(want);
+                self.hub.warn(
+                    "auto_reseat_failed",
+                    format!(
+                        "this session's prompt is stale and moving it to the current one \
+                         failed, so it runs on the old prompt: {e}"
+                    ),
+                );
+                None
+            }
+        }
     }
 
     /// Re-seat and summarise, replacing the conversation with the summary. This is `/reseat summarise`: the lossy
