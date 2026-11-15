@@ -481,6 +481,19 @@ impl TaskSlot {
 /// What a child's thread leaves behind when `run_to_completion` returns: a refusal that came
 /// before the child's own [`AnswerOnce`] existed becomes the slot's answer, because nothing else
 /// will ever settle it. A slot already settled keeps what it has.
+/// How a child stopped while it was opening settles: it never ran a turn.
+pub(crate) const STOPPED_BEFORE_ITS_TURN: &str =
+    "stopped by `job_kill` while it was opening, before its first turn ran — this is not an answer";
+
+/// What `kill` says of a child it stopped before its session opened.
+fn stopped_while_opening(handle: &str) -> String {
+    format!(
+        "`{handle}` was still opening, so it is marked stopped: it ends as soon as its session \
+         opens, without running its turn. `task_result` on it says it was stopped rather than \
+         answered."
+    )
+}
+
 pub(crate) fn finish_child_thread(
     slot: &TaskSlot,
     ran: Result<String, String>,
@@ -2647,7 +2660,23 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 ),
             });
         };
-        let Some(hub) = self.registry.get(handle) else {
+        // A child still opening has no hub yet: the mark is the stop, read by the spawn once it
+        // registers. The registry is read again after the mark, so one side always sees the other.
+        let hub = match self.registry.get(handle) {
+            Some(hub) => Some(hub),
+            None => {
+                let opening = self.registry.opening(handle);
+                if opening {
+                    slot.kill();
+                }
+                match self.registry.get(handle) {
+                    Some(hub) => Some(hub),
+                    None if opening => return Ok(stopped_while_opening(handle)),
+                    None => None,
+                }
+            }
+        };
+        let Some(hub) = hub else {
             return Err(format!(
                 "`{handle}` has already settled, or its session is gone, so there is no \
                  turn left to interrupt. Nothing was stopped."
@@ -3524,6 +3553,10 @@ impl HarnessTaskRunner {
         restart: Option<&str>,
     ) -> Result<String, String> {
         use letibot_tools::builtins::task::Placement;
+        // Stopped before anything was placed: no VM is booted and no tree is copied for it.
+        if slot.was_killed() {
+            return Err(STOPPED_BEFORE_ITS_TURN.into());
+        }
         let role = spec.role.as_str();
         // The downgrade is a union: whatever this session was denied, its
         // children are denied, plus what this call asks, plus what the ROLE itself refuses
@@ -3948,6 +3981,12 @@ impl HarnessTaskRunner {
             trees: &self.trees,
             id: &sub_id,
         };
+        // A kill that reached the slot while the child was opening: no first turn is run.
+        if slot.was_killed() {
+            sub.close_backend();
+            self.retire_an_empty_tree(&sub_id);
+            return Err(fail(STOPPED_BEFORE_ITS_TURN.into()));
+        }
         // THE CHILD'S OWN STACK, installed before its first turn can call a tool. Without a host every
         // hook in a child was a no-op, so a reviewer's `review_verdict` could not be guarded
         // (`docs/plugin-extension-points-wide.md` §1.1, X11).
@@ -4531,5 +4570,86 @@ mod subagent_model_tests {
             "THE DEFECT: a local child of a cloud session never inherits the cloud window"
         );
         assert!(!runs_on_the_parents_model(&ds("deepseek-flash"), &None));
+    }
+}
+
+#[cfg(test)]
+mod opening_kill_tests {
+    use super::*;
+    use letibot_tools::builtins::task::{TaskRunner as _, TaskSpec, TaskStatus};
+
+    /// A runner over this box's vocabulary and a temp store, or `None` when the box has none.
+    fn runner(dir: &std::path::Path) -> Option<HarnessTaskRunner> {
+        let gguf = crate::vocab_gguf()?;
+        let mut cfg = Config::for_this_box(dir);
+        cfg.vocab_gguf = Some(gguf);
+        cfg.store = Some(dir.join("sessions.db"));
+        cfg.session_id = "s-parent".into();
+        cfg.http_retries = 0;
+        let parts = Parts::load(&cfg).expect("the vocabulary must load");
+        let registry = letibot_sessionlog::registry::Registry::new();
+        Some(HarnessTaskRunner::for_enqueue(
+            &parts,
+            cfg,
+            registry,
+            Vec::new(),
+        ))
+    }
+
+    /// The merge queue kills a reviewer whose row moved before the child registered (R276).
+    /// The kill is recorded on the slot, and the spawn reads it and ends with no turn run.
+    #[test]
+    fn a_kill_between_spawn_and_registration_ends_the_child_with_no_turn() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-opening-kill-{}-{}",
+            std::process::id(),
+            letibot_sessionlog::registry::now_ms()
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let Some(runner) = runner(&dir) else {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        // The state `start` leaves: a slot and an announced spawn, no session yet.
+        let handle = "s-parent-sub-opening".to_string();
+        let slot = Arc::new(TaskSlot::new("s-parent"));
+        runner
+            .slots
+            .lock()
+            .expect("task slots")
+            .push((handle.clone(), slot.clone()));
+        runner.registry.announce_spawn(&handle);
+
+        let said = runner
+            .kill(&handle)
+            .expect("a child still opening can be stopped");
+        assert!(said.contains("still opening"), "{said}");
+        assert!(
+            slot.was_killed(),
+            "the stop is recorded where the spawn reads it"
+        );
+
+        // The spawn's thread reaching its body after the kill: nothing is placed or opened.
+        let ran = runner.run_to_completion(
+            &handle,
+            "review this branch",
+            &TaskSpec::default(),
+            &slot,
+            &mut |_| {},
+            None,
+        );
+        assert_eq!(ran, Err(STOPPED_BEFORE_ITS_TURN.to_string()));
+        assert!(runner.registry.get(&handle).is_none(), "no session opened");
+        finish_child_thread(&slot, ran, &runner.registry);
+        runner.registry.spawn_settled(&handle);
+        slot.mark_exited();
+        match runner.collect(&handle, std::time::Duration::ZERO) {
+            TaskStatus::Failed { why } => assert!(why.contains("before its first turn"), "{why}"),
+            other => panic!("a child stopped while opening reads {other:?}"),
+        }
+
+        // Once its thread has ended a kill is refused as before, not reported as a stop.
+        assert!(runner.kill(&handle).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
