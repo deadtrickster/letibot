@@ -162,7 +162,9 @@ fn a_wait_holds_on_a_running_job_and_trusts_the_daemons_quiet() {
         std::thread::sleep(Duration::from_millis(10));
     }
     // The settlement and the turn it wakes, from another thread: the wait is what is being
-    // measured, so nothing it is waiting for may be published by the thread calling it.
+    // measured, so nothing it is waiting for may be published by the thread calling it. The clock
+    // starts before the settler's sleep, so `took` cannot be short of it however late this resumes.
+    let began = Instant::now();
     let awakening = hub.clone();
     let settler = std::thread::spawn(move || {
         std::thread::sleep(PAST_THE_GRACE);
@@ -173,7 +175,6 @@ fn a_wait_holds_on_a_running_job_and_trusts_the_daemons_quiet() {
         });
     });
 
-    let began = Instant::now();
     let answer = head.wait(Instant::now() + Duration::from_secs(30));
     let took = began.elapsed();
     settler.join().expect("the settler thread");
@@ -215,7 +216,6 @@ fn a_wait_holds_on_a_running_job_and_trusts_the_daemons_quiet() {
         );
         std::thread::sleep(Duration::from_millis(10));
     }
-    let began = Instant::now();
     let answer = head.wait(Instant::now() + Duration::from_secs(20));
     let took = began.elapsed();
     match answer {
