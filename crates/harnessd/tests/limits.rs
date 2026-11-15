@@ -1712,3 +1712,81 @@ fn a_limit_hook_out_of_fuel_falls_back_to_the_fixed_rules() {
         None
     );
 }
+
+/// R233's ruling on `new_session` mid-turn: the conversation is forked into a new session, the
+/// turn continues there on the hook's target, and the old session's row names the fork.
+#[test]
+fn a_limit_hooks_new_session_forks_the_conversation_and_continues_the_turn_there() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("hook-fork");
+    let glm = model(&[Act::Refuse(300)]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let cfg = config(&scratch, &gguf, "hook-fork", ("glm", "glm-5.3"), Vec::new());
+    let workspace = cfg.workspace.clone();
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+    let seen = with_limit_hook(
+        &sessions,
+        &id,
+        &workspace,
+        Arc::new(|_| {
+            Ok(serde_json::json!({"state": {}, "do": "new_session",
+                "provider": "deepseek", "model": "deepseek-flash"}))
+        }),
+    );
+
+    let _ = sessions.submit(&id, PROMPT);
+    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert_eq!(glm.count(), 1);
+    assert!(
+        seen.lock().unwrap()[0]["session"]["turn_in_flight"]
+            .as_bool()
+            .unwrap_or(false),
+        "the hook was asked mid-turn"
+    );
+    let fork: Vec<String> = sessions
+        .registry()
+        .live_ids()
+        .into_iter()
+        .filter(|s| *s != id)
+        .collect();
+    assert_eq!(fork.len(), 1, "one new session: {fork:?}");
+    let fork = fork[0].clone();
+    let rows = said(&hub, "limit_new_session");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(
+        rows[0].contains(&format!("forked this conversation into {fork}")),
+        "{rows:?}"
+    );
+
+    let fork_hub = sessions.registry().get(&fork).expect("the fork is live");
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while let letibot_sessionlog::hub::OwnWork::Command(cmd) =
+        fork_hub.take_own_work_until(Some(deadline))
+    {
+        let _ = sessions.dispatch(&fork, &cmd);
+        if deepseek.count() > 0 {
+            break;
+        }
+    }
+    assert_eq!(deepseek.count(), 1, "the turn continued on the new model");
+    assert_eq!(glm.count(), 1, "and not on the refusing one");
+    assert!(answered(&fork_hub), "the fork's turn answered");
+    let h = sessions.harness_of(&fork).expect("the fork is open");
+    assert_eq!(h.model_name(), "deepseek/deepseek-flash");
+    let carried = h.items().iter().any(|i| {
+        matches!(i, TranscriptItem::User { parts, .. } if parts.iter().any(|p| matches!(
+            p, letibot_transcript::UserPart::Text { text } if text == PROMPT)))
+    });
+    assert!(carried, "the fork holds the conversation: {:?}", h.items());
+    let sent = deepseek.seen.lock().unwrap()[0].clone();
+    assert!(
+        sent.contains(PROMPT),
+        "the request carried the conversation: {sent}"
+    );
+}

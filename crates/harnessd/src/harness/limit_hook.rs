@@ -328,8 +328,9 @@ impl Harness {
         })
     }
 
-    /// `new_session`: the turn ends here with a row naming the new session, which opens on the
-    /// target with a brief carrying the operator's last message.
+    /// `new_session`: this conversation is forked into a new session, as `/fork` does, and the
+    /// turn continues there on the target. Operator's ruling (R233): fork, never a cold brief.
+    /// This session ends its turn with a row naming the fork.
     fn limit_new_session(
         &mut self,
         provider: &str,
@@ -338,59 +339,47 @@ impl Harness {
         by: &str,
     ) -> Result<String, String> {
         let me = self.cfg.session_id.clone();
-        let id = letibot_sessionlog::registry::new_id();
+        let keep = self.session.items.len();
+        let (id, _) = self
+            .fork_into_new_session(keep)
+            .map_err(|e| format!("`new_session` could not fork this conversation: {e}"))?;
+        // On the store row, so the fork opens on the target: a `/models` queued ahead of the
+        // turn is refused while the fork is not open yet.
+        let target = format!("{provider}/{model}");
+        self.store
+            .as_ref()
+            .ok_or("`new_session` forked into a store this session no longer has")?
+            .set_provider_choice(&id, Some(&target))
+            .map_err(|e| format!("`new_session` could not put the fork {id} on {target}: {e}"))?;
         let wiring = letibot_sessionlog::registry::SessionWiring {
             workspace: self.cfg.workspace.display().to_string(),
             ..Default::default()
         };
         let hub = self
             .session_registry
-            .create(id.clone(), format!("continued from {me}"), wiring)
-            .map_err(|e| format!("`new_session` could not create a session: {e}"))?;
-        let last = self
-            .items()
-            .iter()
-            .rev()
-            .find_map(|item| match item {
-                TranscriptItem::User { speaker, parts }
-                    if *speaker == letibot_transcript::Speaker::Operator =>
-                {
-                    parts.iter().find_map(|p| match p {
-                        UserPart::Text { text } => Some(text.clone()),
-                        _ => None,
-                    })
-                }
-                _ => None,
-            })
-            .unwrap_or_default();
-        let brief = format!(
-            "[limit] this session continues {me}, which {here} refused on a usage limit; the \
-             limit hook `{by}` moved the work to {provider}/{model}. The operator's last message \
-             there:\n\n{last}"
+            .create(id.clone(), format!("forked from {me}"), wiring)
+            .map_err(|e| format!("`new_session` could not open the fork {id}: {e}"))?;
+        let resume = format!(
+            "[limit] {here} refused on a usage limit mid-turn and the limit hook `{by}` forked \
+             this conversation from {me} onto {target}. Continue the turn."
         );
-        let identity = format!("agent:{me}");
         let queued = hub.submit_daemon(
-            identity.clone(),
-            "limit-models",
-            CommandKind::Slash {
-                line: format!("models {provider}/{model}"),
-            },
-        ) && hub.submit_daemon(
-            identity,
-            "limit-brief",
+            format!("agent:{me}"),
+            "limit-continue",
             CommandKind::Prompt {
-                text: brief,
+                text: resume,
                 attachments: Vec::new(),
                 context: None,
                 from: Some(me.clone()),
             },
         );
         if !queued {
-            return Err(format!("the new session {id}'s queue refused its brief"));
+            return Err(format!("the fork {id}'s queue refused the turn"));
         }
         let said = format!(
-            "[limit] {here} refused on a usage limit and the limit hook `{by}` continued the work \
-             in a new session, {id}, on {provider}/{model}. This turn ends here."
+            "[limit] {here} refused on a usage limit and the limit hook `{by}` forked this \
+             conversation into {id}, where the turn continues on {target}. This turn \
+             ends here."
         );
         if let Err(e) = self.record_notice(&said) {
             self.hub

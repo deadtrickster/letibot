@@ -76,6 +76,22 @@ impl Harness {
                 messages.len()
             )));
         };
+        let (session_id, transcript_id) = self.fork_into_new_session(keep)?;
+        Ok(ForkOutcome::Forked {
+            session_id,
+            transcript_id,
+            at,
+            rows: keep,
+            left: self.session.items.len() - keep,
+        })
+    }
+
+    /// A new store session holding this conversation's first `keep` rows: its id and transcript.
+    /// The limit hook's `new_session` forks through here as `/fork` does.
+    pub(crate) fn fork_into_new_session(
+        &mut self,
+        keep: usize,
+    ) -> Result<(String, String), HarnessError> {
         // Rows still in memory would be missing from the copy.
         self.persist()?;
         let Some(store) = self.store.as_ref() else {
@@ -94,13 +110,7 @@ impl Harness {
         let transcript_id = store
             .fork_session(&self.cfg.session_id, &session_id, keep as u32)
             .map_err(|e| HarnessError::Store(e.to_string()))?;
-        Ok(ForkOutcome::Forked {
-            session_id,
-            transcript_id,
-            at,
-            rows: keep,
-            left: self.session.items.len() - keep,
-        })
+        Ok((session_id, transcript_id))
     }
 }
 
