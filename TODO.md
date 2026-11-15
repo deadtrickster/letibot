@@ -80,6 +80,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R255 | The multicall binary and the launcher are both named `letibot`, so an install copies the ELF over the command a person types | Code work | built: the multicall is `letibot-multi`, every install path refuses a non-script under a launcher name, `check-dist-names.sh --built` is a gate step (R222 settled); left: a box's own `target/release` needs a release build before the launcher's verbs find `letibot-multi`, and units installed from the old `letibot` path |
 | R256 | Long lines end to end: `read` cannot reach past 32 KiB of a line, and the tool window cuts every line at the screen edge | Code work | built (audit H6, plan 1.14, R242's remainder): `read` takes `column_offset` and `columns`, the ledger keeps shown pieces and `edit` lands inside one; rano `c07e8ea` wraps the open window and counts hidden marker lines on the header; left: the unfolded (`/t`) row still cuts at the edge, and `grep` hits on a long line are still cut at 400 chars |
 | R261 | Skill offers under control: the shadow picks them, children get none, a skill can be hidden from the model | Code work | built: the during job's verified pick is the skill offer while it is on and not paused, similarity otherwise; no skill offers for child sessions unless `[skills] offer_children`; `disable-model-invocation` and `[skills] hide` keep a skill from the model; left: R244's remainder, note offers for children, a replay score for the pick |
+| R246 | A seat's and a session's wait is untyped, so a permission ask cannot be told from a question | Code work | filed: audit package H2, plan 1.32; R217's `!` mark |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -1117,6 +1118,18 @@ With the internal tier on, the rano session was offered `fuzz-harness-writing`, 
 Left: description words were measured as evidence and rejected - a 26-skill registry ranks plain English (`work`, `caller`, `protocol`) as rare, and every unrelated skill found hits. A background corpus would fix that. `an_unrelated_subject_is_not_offered_under_the_real_tier` needs `LETIBOT_TEST_MINILM` or the checkpoint under the data dir, which the gate's moved HOME hides.
 
 **Done when:** evidence counts description words against a background corpus without passing the measured unrelated skills, and the gate runs the real-model test.
+
+## R246 - A seat's and a session's wait is untyped, so a permission ask cannot be told from a question
+
+**Status:** filed, 2026-11-15. Audit `STATUS-fable-5.2-2026-11-15.md` package H2, plan item 1.32.
+
+The seat's `SeatState::Waiting` is one list of worded reasons (`the operator's card`, `ask #4 of cc`, `item #2 (q): ...`), and the sessions feed carries `waits_on`, a count of board asks that misses live cards. A head that wants to mark a permission ask has to parse words. R217 left the sessions pane's `!` mark out for this reason.
+
+**Reference.** dsh exposes `pendingInput: ('approval'|'question'|'other')[]` per session (`dsh:api/session-controller/src/state/controller.ts:164-171`). Copy dsh.
+
+**Change.** One typed entry, `Pending { kind, session, ask }`, with `kind` one of `approval`, `question`, `other`, the session that asked and the ask's id, on `SeatFacts`, `SeatState::Waiting`, `SessionBrief` and the sessions feed. The roster, the sessions pane gutter (`!` for an approval, `?` for the rest), `leticode_status` and `leticode_list` read the kind. R245's follow-up (H3, plan 2.13) builds the coordinator's pending set on these entries, so each carries the asking session and the ask id.
+
+**Done when:** a seat blocked on a permission ask shows the `!` mark in the roster and the sessions pane with no text parsing.
 
 ## R245 - The review queue's sessions are not reseated after a daemon restart, and their asks reach nobody
 
