@@ -119,7 +119,13 @@ pub fn write_header(path: &Path, f: &cref::File) -> Result<bool, String> {
     if new == old {
         return Ok(false);
     }
+    // The file holds API keys: the backup and the rewrite keep its mode, never the umask's.
+    let perms = std::fs::metadata(path)
+        .map_err(|e| format!("{}: {e}", path.display()))?
+        .permissions();
     std::fs::write(bak(path), &old).map_err(|e| format!("{}: {e}", bak(path)))?;
+    std::fs::set_permissions(bak(path), perms.clone())
+        .map_err(|e| format!("{}: {e}", bak(path)))?;
     let tmp = path.with_file_name(format!(
         ".{}.tmp",
         path.file_name()
@@ -127,6 +133,7 @@ pub fn write_header(path: &Path, f: &cref::File) -> Result<bool, String> {
             .unwrap_or_default()
     ));
     std::fs::write(&tmp, &new).map_err(|e| format!("{}: {e}", tmp.display()))?;
+    std::fs::set_permissions(&tmp, perms).map_err(|e| format!("{}: {e}", tmp.display()))?;
     std::fs::rename(&tmp, path).map_err(|e| format!("{}: {e}", path.display()))?;
     Ok(true)
 }
@@ -165,6 +172,24 @@ provider   =   \"glm\"   # trailing comment\n\
 \t[model.\"local.glm\"]\n\
 temperature=0.6\n\
 # no newline at the end";
+
+    /// A key file stays private: the rewrite and its `.bak` keep the file's 0600, not the umask's.
+    #[test]
+    fn the_header_keeps_the_files_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("letibot-config-mode-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("providers.toml");
+        std::fs::write(&path, ODD).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let f = cref::find("providers.toml").unwrap();
+        assert!(write_header(&path, f).unwrap());
+        let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&dir.join("providers.toml.bak")), 0o600);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// The header round trip on a hand-edited file: `.bak` holds the old bytes, the new file is
     /// the block plus the old bytes, a second run writes nothing, and the TOML still parses.

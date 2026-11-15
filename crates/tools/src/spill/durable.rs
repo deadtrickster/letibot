@@ -254,7 +254,7 @@ impl SpillStore for DirStore {
 
     fn list(&self) -> Vec<SpillEntry> {
         let mut all = self.spills();
-        all.sort_by(|a, b| b.2.cmp(&a.2));
+        all.sort_by_key(|a| std::cmp::Reverse(a.2));
         all.into_iter()
             .map(|(hash, bytes, _)| SpillEntry {
                 hash,
