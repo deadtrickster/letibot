@@ -2066,6 +2066,18 @@ Operator screenshot (rano, `read-edits`): a `[N thinking lines]` marker between 
 
 **Tests:** `crates/tui/src/app/tests/thinkindent.rs` - the marker between two cards is at the card `▸` column with no blank on either side, a marker between prose keeps its brackets, `ctrl-r` opens and folds it, and a click on it opens the thought.
 
+## R304 - Toolchain probes read as `[unknown]` and ask under allow-all
+
+**Status:** done, 2026-11-15.
+
+Seen live: `clippy-driver --version` asked under allow-all, because layer A had no row for it and read it as `[unknown]`.
+
+**Change:** `is_toolchain_probe` in `crates/tools/src/intent.rs`, checked first in `name_intents`, reads these as `Inspect`: `--version`/`-V`/`-vV` of rustc, rustdoc, cargo, clippy-driver, rustfmt, cargo-clippy, cargo-fmt, rust-analyzer, rustup (with a leading `+toolchain`); `cargo version`, `cargo metadata`, `cargo tree`, `cargo clippy|fmt --version`; `rustc --print X [--target T]`; `rustup show [active-toolchain|home|profile]`, `rustup which`, `rustup toolchain|target|component list`. Anything else falls through to the existing arms, so `cargo build` and `cargo test` are still `ExecuteCode, WriteFile, ReadFile`. `rustc --print` with a source file, or `--print native-static-libs`, compiles and is not a probe.
+
+`cargo metadata` and `cargo tree` can write `Cargo.lock` and fetch the index when the lock is missing. Read as `Inspect` on purpose, as the brief asked.
+
+Tests: `intent::tests::toolchain_probes_are_reads_and_builds_are_not` in `crates/tools`.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.

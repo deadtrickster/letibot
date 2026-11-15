@@ -1063,6 +1063,9 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
     use Intent::*;
     let arg = |i: usize| argv.get(i).and_then(|w| w.text()).unwrap_or("");
     let has = |s: &str| argv.iter().any(|w| w.text() == Some(s));
+    if is_toolchain_probe(program, argv) {
+        return vec![Inspect];
+    }
     match program {
         // Read-only inspection.
         "ls" | "stat" | "file" | "du" | "df" | "pwd" | "basename" | "dirname" | "readlink"
@@ -1347,6 +1350,80 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
         "vi" | "vim" | "nvim" | "nano" | "emacs" => vec![ReadFile, WriteFile],
         _ => vec![Unknown],
     }
+}
+
+/// A toolchain asked about itself: a version, a `--print` query, the dependency graph. These
+/// run no build script and no code from the tree, so they read as `Inspect` before the build
+/// arm reads `cargo` and `rustc` as executing code. Any word this does not know falls through.
+fn is_toolchain_probe(program: &str, argv: &[Word]) -> bool {
+    // A word the parser could not fix (a substitution, a glob) is not a probe.
+    let Some(words) = argv.iter().map(|w| w.text()).collect::<Option<Vec<_>>>() else {
+        return false;
+    };
+    // `cargo +nightly -V`: the rustup proxy's toolchain pick changes which binary answers.
+    let words: &[&str] = match words.split_first() {
+        Some((first, rest)) if first.starts_with('+') => rest,
+        _ => &words,
+    };
+    let version_only = |ws: &[&str]| {
+        !ws.is_empty()
+            && ws
+                .iter()
+                .all(|w| matches!(*w, "--version" | "-V" | "-vV" | "-Vv" | "--verbose" | "-v"))
+            && ws.iter().any(|w| w.contains('V') || *w == "--version")
+    };
+    match program {
+        "rustc" | "rustdoc" => version_only(words) || rustc_print_only(words),
+        "clippy-driver" | "rustfmt" | "cargo-clippy" | "cargo-fmt" | "rust-analyzer"
+        | "rust-gdb" | "rust-lldb" => version_only(words),
+        "cargo" => match words.split_first() {
+            _ if version_only(words) => true,
+            Some((&"version", rest)) => rest.iter().all(|w| matches!(*w, "-v" | "--verbose")),
+            // Resolve and print the graph; neither compiles a crate.
+            Some((&("metadata" | "tree"), _)) => true,
+            Some((&("clippy" | "fmt"), rest)) => version_only(rest),
+            _ => false,
+        },
+        "rustup" => match words {
+            _ if version_only(words) => true,
+            ["show", rest @ ..] => matches!(rest, [] | ["active-toolchain" | "home" | "profile"]),
+            ["which", _, ..] => true,
+            ["toolchain" | "target" | "component", "list", ..] => true,
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+/// `rustc --print X` queries the compiler and compiles nothing, unless it is handed a source
+/// file, and `native-static-libs` only prints as a side effect of a real build.
+fn rustc_print_only(words: &[&str]) -> bool {
+    let mut printed = false;
+    let mut i = 0;
+    while i < words.len() {
+        let (flag, value) = match words[i].split_once('=') {
+            Some((f, v)) => (f, Some(v)),
+            None => (words[i], None),
+        };
+        let value = match value {
+            Some(v) => v,
+            None if matches!(flag, "--print" | "--target") => {
+                i += 1;
+                match words.get(i) {
+                    Some(v) => *v,
+                    None => return false,
+                }
+            }
+            None => return false,
+        };
+        match flag {
+            "--print" if !value.starts_with("native-static-libs") => printed = true,
+            "--target" => {}
+            _ => return false,
+        }
+        i += 1;
+    }
+    printed
 }
 
 /// git's subcommand, past its global options, and whatever follows it. An unrecognised leading

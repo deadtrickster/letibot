@@ -1703,3 +1703,62 @@ fn the_grant_is_named_by_the_stage_that_does_the_work() {
         None
     );
 }
+
+/// Toolchain probes print a version or a query and build nothing, so they read as reads. A real
+/// build, and a `--print` handed a source file, stay what they were.
+#[test]
+fn toolchain_probes_are_reads_and_builds_are_not() {
+    for cmd in [
+        "clippy-driver --version",
+        "clippy-driver -V",
+        "rustc --version",
+        "rustc -vV",
+        "rustc +nightly --version --verbose",
+        "rustc --print sysroot",
+        "rustc --print=cfg --target x86_64-unknown-linux-gnu",
+        "rustdoc --version",
+        "rustfmt --version",
+        "cargo --version",
+        "cargo -V",
+        "cargo +stable -vV",
+        "cargo version",
+        "cargo clippy --version",
+        "cargo fmt -V",
+        "cargo metadata --format-version 1 --no-deps",
+        "cargo tree -p letibot-tools",
+        "rustup --version",
+        "rustup show",
+        "rustup show active-toolchain",
+        "rustup which rustc",
+        "rustup toolchain list",
+        "rustup target list --installed",
+    ] {
+        let base = b(cmd);
+        assert_eq!(base.intents, BTreeSet::from([Intent::Inspect]), "{cmd}");
+        assert!(base.reads_only(), "{cmd} :: {:?}", base.intents);
+    }
+
+    for cmd in [
+        "cargo build",
+        "cargo test -p letibot-tools",
+        "cargo clippy -p letibot-tools -- -D warnings",
+        "cargo +nightly build",
+        "rustc main.rs",
+        "rustc --print native-static-libs lib.rs",
+        "rustc --print crate-name main.rs",
+    ] {
+        let base = b(cmd);
+        assert!(!base.reads_only(), "{cmd} :: {:?}", base.intents);
+        assert!(
+            base.intents.contains(&Intent::ExecuteCode),
+            "{cmd} :: {:?}",
+            base.intents
+        );
+    }
+    assert!(!b("clippy-driver main.rs").reads_only());
+    assert_eq!(
+        b("cargo build").intents,
+        BTreeSet::from([Intent::ExecuteCode, Intent::WriteFile, Intent::ReadFile])
+    );
+    assert!(b("rustup update").intents.contains(&Intent::PackageChange));
+}
