@@ -9,6 +9,7 @@
 //! path = "/build/target"
 //! quota = "200G"
 //! idle_days = 3                    # unused for this long and it goes too
+//! targets_cap = "600G"             # in [gc]: `letibot gc --targets` keeps /build/target-* under it
 //!
 //! [gc.logs]
 //! max = "32M"                      # a daemon log past this is rotated
@@ -46,6 +47,8 @@ pub struct Settings {
     pub shared: Vec<SharedTarget>,
     /// `[gc] disk_every`: the period of the daemons' disk half, run by one daemon per box.
     pub disk_every_ms: Option<i64>,
+    /// `[gc] targets_cap`: the total `letibot gc --targets` keeps the per-package target dirs under.
+    pub targets_cap: Option<u64>,
     /// `FIRECODE_STATE`: where firecode keeps a project's layers.
     pub firecode_state: Option<PathBuf>,
     /// `FIRECODE_RUNS`: where firecode keeps a run's own directory.
@@ -109,6 +112,13 @@ impl Settings {
                                 path.display()
                             )
                         })?,
+                ),
+                None => None,
+            };
+            out.targets_cap = match &gc.targets_cap {
+                Some(q) => Some(
+                    bytes(q)
+                        .map_err(|e| format!("{}: [gc] targets_cap {q:?}: {e}", path.display()))?,
                 ),
                 None => None,
             };
@@ -176,6 +186,8 @@ struct GcTable {
     disk_every: Option<String>,
     #[serde(default)]
     shared: Vec<SharedTable>,
+    #[serde(default)]
+    targets_cap: Option<String>,
     /// `[gc.docker]`, read by [`crate::docker::config::Settings`] from this same file - the opt-in
     /// prune policy. Accepted here and not interpreted, so a box that writes it is not a box whose
     /// `[gc] root` this reader refuses.
@@ -270,6 +282,7 @@ mod tests {
             r#"
 [gc]
 root = "/build/letibot"
+targets_cap = "600G"
 [[gc.shared]]
 path = "/build/target"
 quota = "200G"
@@ -282,6 +295,7 @@ runs = "/build/firecode/runs"
         )
         .expect("a file a person wrote");
         assert_eq!(s.root.as_deref(), Some(Path::new("/build/letibot")));
+        assert_eq!(s.targets_cap, Some(600 * 1024 * 1024 * 1024));
         assert_eq!(s.shared.len(), 1);
         assert_eq!(s.shared[0].path, PathBuf::from("/build/target"));
         assert_eq!(s.shared[0].quota, Some(200 * 1024 * 1024 * 1024));

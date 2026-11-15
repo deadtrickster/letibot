@@ -61,6 +61,11 @@ letibot gc [OWNER] [--folder DIR] [--json] [--log | --now [--json]]
                  `[gc.logs] keep`. Every act is journaled, and an act is done when the thing is
                  ABSENT.
 
+  --targets      the `target-*` dirs under /build (or `--build DIR`): size, last use and the
+                 processes working in them. Unused ones are stale, or with `[gc] targets_cap` the
+                 unused ones oldest first until the total is under the cap. With `--now`, the
+                 stale ones are removed; a dir in use never is.
+
   --settle OWNER   settle an owner's work NOW, without waiting out the grace
   --restore OWNER  put an owner's archived branches back; with `--worktree`, also a tree at the
                    archived head with its uncommitted work checked out over it
@@ -83,7 +88,8 @@ letibot gc [OWNER] [--folder DIR] [--json] [--log | --now [--json]]
     letibot gc --settle s-1794509750373521593
     letibot gc --restore s-1794509750373521593 --worktree
     letibot gc --adopt 'wt-pk-*' --now
-    letibot gc --archive-settled";
+    letibot gc --archive-settled
+    letibot gc --targets --now";
 
 const USAGE_HOLD: &str = "\
 letibot hold OWNER [--for 2d]
@@ -174,6 +180,10 @@ struct Args {
     older: Option<i64>,
     /// `gc --archive-settled`: the settled sessions, listed; with `--now`, archived.
     archive_settled: bool,
+    /// `gc --targets`: the per-package `target-*` dirs instead of the owners.
+    targets: bool,
+    /// `gc --build DIR`: where those dirs are, `/build` by default.
+    build: Option<PathBuf>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
@@ -194,6 +204,8 @@ fn parse(args: &[String]) -> Result<Args, String> {
         adopt: None,
         older: None,
         archive_settled: false,
+        targets: false,
+        build: None,
     };
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
@@ -225,6 +237,11 @@ fn parse(args: &[String]) -> Result<Args, String> {
                 out.older = Some(span_ms(span)?);
             }
             "--docker-report" => out.docker_report = true,
+            "--targets" => out.targets = true,
+            "--build" => {
+                let dir = it.next().ok_or("`--build` needs a directory after it")?;
+                out.build = Some(PathBuf::from(dir));
+            }
             "--for" => {
                 let span = it
                     .next()
@@ -454,6 +471,15 @@ fn gc(args: &[String]) -> Result<(), String> {
     }
     if parsed.docker_report {
         return docker_report(parsed.json);
+    }
+    if parsed.targets {
+        let cap = lifecycle::Settings::load()?.targets_cap;
+        let build = parsed.build.unwrap_or_else(|| PathBuf::from("/build"));
+        print!(
+            "{}",
+            crate::targets::gc(&build, Path::new("/proc"), cap, parsed.now, parsed.json)
+        );
+        return Ok(());
     }
     if parsed.now {
         // Opening for a write is the one thing this verb family does not do read-only, so it is

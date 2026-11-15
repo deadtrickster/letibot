@@ -671,7 +671,7 @@ fn floors_parse_and_judge_free_space() {
 }
 
 #[test]
-fn a_target_dir_without_a_live_gate_warns_with_its_rm() {
+fn a_target_dir_without_a_live_gate_warns_with_the_gc() {
     let fx = Fx::new("targets");
     fx.file("build/target-dead/debug/big", &vec![1u8; 8192]);
     fx.file("build/target-live/debug/x", b"x");
@@ -688,10 +688,7 @@ fn a_target_dir_without_a_live_gate_warns_with_its_rm() {
     assert_eq!(c.len(), 2, "{c:#?}");
     let dead = find(&c, &fx.at("build/target-dead").display().to_string());
     assert_eq!(dead.status, Status::Warn);
-    assert_eq!(
-        dead.fix,
-        vec![format!("rm -rf {}", fx.at("build/target-dead").display())]
-    );
+    assert_eq!(dead.fix, vec!["letibot gc --targets --now".to_string()]);
     let live = find(&c, &fx.at("build/target-live").display().to_string());
     assert_eq!(live.status, Status::Ok);
 }

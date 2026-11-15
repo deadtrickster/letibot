@@ -425,6 +425,7 @@ pub const LETICODE: File = File {
             keys: &[
                 k("root", "path", "the data dir", U, "base for owner roots", "\"/build/owners\""),
                 k("disk_every", "span (10m, 1h)", "10m", U, "period of the disk sweep, one daemon per box", "\"10m\""),
+                k("targets_cap", "size (600G)", "none: every unused one", U, "total gc --targets keeps /build/target-* under", "\"600G\""),
             ],
         },
         Table {

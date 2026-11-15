@@ -64,6 +64,7 @@ mod roles;
 mod rooms;
 mod session;
 mod stats;
+mod targets;
 mod whereis;
 
 /// What this invocation is being asked to be. No catch-all variant: an unknown name is an

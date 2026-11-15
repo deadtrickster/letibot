@@ -1814,73 +1814,8 @@ pub fn free_check(label: &str, path: &Path, floor: Floor, floor_src: &str) -> Ch
     }
 }
 
-/// Bytes under `dir`, counted until `deadline`; `false` when the walk was cut short.
-fn dir_size(dir: &Path, deadline: Instant) -> (u64, bool) {
-    let mut total = 0u64;
-    let mut stack = vec![dir.to_path_buf()];
-    while let Some(d) = stack.pop() {
-        if Instant::now() > deadline {
-            return (total, false);
-        }
-        let Ok(rd) = std::fs::read_dir(&d) else {
-            continue;
-        };
-        for e in rd.flatten() {
-            let Ok(m) = e.metadata() else { continue };
-            total += m.blocks() * 512;
-            if m.is_dir() {
-                stack.push(e.path());
-            }
-        }
-    }
-    (total, true)
-}
-
-/// Whether a process works in `dir`: its cwd, an open file or its command line is under it.
-fn in_use(proc_root: &Path, dir: &Path) -> bool {
-    let Ok(rd) = std::fs::read_dir(proc_root) else {
-        return false;
-    };
-    let needle = dir.to_string_lossy().into_owned();
-    for e in rd.flatten() {
-        if e.file_name()
-            .to_str()
-            .and_then(|s| s.parse::<u32>().ok())
-            .is_none()
-        {
-            continue;
-        }
-        let d = e.path();
-        if std::fs::read_link(d.join("cwd")).is_ok_and(|c| c.starts_with(dir)) {
-            return true;
-        }
-        if std::fs::read(d.join("cmdline"))
-            .is_ok_and(|b| String::from_utf8_lossy(&b).contains(&needle))
-        {
-            return true;
-        }
-        if let Ok(fds) = std::fs::read_dir(d.join("fd")) {
-            for f in fds.flatten() {
-                if std::fs::read_link(f.path()).is_ok_and(|l| l.starts_with(dir)) {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
 pub fn targets(build_dir: &Path, proc_root: &Path, bound: Duration) -> Vec<Check> {
-    let mut dirs: Vec<PathBuf> = std::fs::read_dir(build_dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter(|e| e.file_name().to_string_lossy().starts_with("target-"))
-                .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
-                .map(|e| e.path())
-                .collect()
-        })
-        .unwrap_or_default();
-    dirs.sort();
+    let dirs = crate::targets::scan(build_dir, proc_root, bound);
     if dirs.is_empty() {
         return vec![row(
             Status::Info,
@@ -1888,30 +1823,19 @@ pub fn targets(build_dir: &Path, proc_root: &Path, bound: Duration) -> Vec<Check
             "none",
         )];
     }
-    let deadline = Instant::now() + bound;
-    let sizes: Vec<(u64, bool)> = std::thread::scope(|s| {
-        let hs: Vec<_> = dirs
-            .iter()
-            .map(|d| s.spawn(move || dir_size(d, deadline)))
-            .collect();
-        hs.into_iter()
-            .map(|h| h.join().unwrap_or((0, false)))
-            .collect()
-    });
     dirs.iter()
-        .zip(sizes)
-        .map(|(d, (size, whole))| {
-            let shown = if whole {
-                human(size)
+        .map(|d| {
+            let shown = if d.whole {
+                human(d.bytes)
             } else {
-                format!("at least {}", human(size))
+                format!("at least {}", human(d.bytes))
             };
-            let label = d.display().to_string();
-            if in_use(proc_root, d) {
-                row(Status::Ok, label, format!("{shown}, in use"))
-            } else {
+            let label = d.path.display().to_string();
+            if d.users.is_empty() {
                 row(Status::Warn, label, format!("{shown}, no live gate"))
-                    .fix([format!("rm -rf {}", d.display())])
+                    .fix(["letibot gc --targets --now".to_string()])
+            } else {
+                row(Status::Ok, label, format!("{shown}, in use"))
             }
         })
         .collect()
