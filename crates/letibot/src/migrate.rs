@@ -709,7 +709,7 @@ impl Move {
 
     fn nowhere(&self, endpoint: &Endpoint) -> String {
         format!(
-            "no session {} in {} ({}). Nothing was moved. `letibot --sessions` here prints where \
+            "no session {} in {} ({}). Nothing was moved. `letibot session list` here prints where \
              a session lives, if it is somewhere else.",
             self.session, endpoint.name, endpoint.store
         )
@@ -1433,7 +1433,7 @@ impl Move {
         if ws.is_empty() {
             return Err(format!(
                 "{} is not in `{}`'s store any more. Nothing was re-established — run \
-                 `letibot --sessions` here to see where it went.",
+                 `letibot session list` here to see where it went.",
                 self.session, self.to.name
             ));
         }
@@ -2051,7 +2051,7 @@ letibot migrate SESSION --to HOST [--copy-keys] [--hosts FILE] [--store PATH]
   Moves a session's whole daemon - its rows, its checkout and a harnessd on the host -
   and leaves a marked copy here. `--to local` brings it back.
 
-  SESSION                 the session to move (`letibot --sessions` lists them)
+  SESSION                 the session to move (`letibot session list` lists them)
   --to local|NAME         where it goes: `local`, or a `[host.NAME]` in the host table;
                           required, unless --reattach
   --copy-keys             copy this box's providers.toml to the host, mode 600, never printed

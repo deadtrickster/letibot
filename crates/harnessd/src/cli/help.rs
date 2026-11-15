@@ -439,6 +439,12 @@ pub(super) const FLAGS: &[Flag] = &[
         None,
     ),
     flag(
+        &["--show-session"],
+        Some("ID"),
+        "one session's stored facts, one per line",
+        None,
+    ),
+    flag(
         &["--archived"],
         None,
         "list the archived ones beside the rest",

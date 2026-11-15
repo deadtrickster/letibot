@@ -980,7 +980,7 @@ fn a_workspace_holding_nothing_but_children_says_so() {
     );
     assert!(said.contains("/ws"), "and where: {said}");
     assert!(
-        said.contains("--session ID") && said.contains("--sessions"),
+        said.contains("--session ID") && said.contains("session list"),
         "and what a person can do about it: {said}"
     );
 
@@ -1246,4 +1246,19 @@ fn no_flag_appears_twice() {
             "{name} is removed and still in the table"
         );
     }
+}
+
+#[test]
+fn show_session_prints_one_fact_per_line_and_the_archive_reason() {
+    let mut s = stored(&[("s-1", Some("gate red"))]).remove(0);
+    let now = s.created_ms + 3 * 3_600_000;
+    let out = show_session(&s, now);
+    assert!(out.contains("id        s-1\n"), "{out}");
+    assert!(out.contains("title     gate red\n"), "{out}");
+    assert!(out.contains("role      -\n"), "{out}");
+    assert!(out.contains("created   3h ago\n"), "{out}");
+    assert!(out.ends_with("archived  no\n"), "{out}");
+    s.archived_ms = Some(now - 120_000);
+    s.archived_reason = Some("landed".into());
+    assert!(show_session(&s, now).ends_with("archived  2m ago: landed\n"));
 }

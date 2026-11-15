@@ -273,7 +273,7 @@ fn an_unknown_session_id_names_the_real_ones_and_where_to_list_them() {
             "the first line names the id nobody has: {stderr:?}"
         );
         assert!(
-            lines[1].contains("letibot --sessions"),
+            lines[1].contains("letibot session list"),
             "the second says where the real ids are: {stderr:?}"
         );
     }

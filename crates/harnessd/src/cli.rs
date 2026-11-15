@@ -624,6 +624,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 query = Some(Query::Archive { id, reason });
             }
             "--unarchive" => query = Some(Query::Unarchive(next()?)),
+            "--show-session" => query = Some(Query::Show(next()?)),
             // Which sessions `--list-sessions` shows, by archive state. `Archived::Any` is the
             // `--archived` reading: put that one back in the list as well as the ones in it.
             "--archived" => show_archived = letibot_tokencore::store::Archived::Any,
@@ -2401,7 +2402,7 @@ fn resume_disclosure(n: u64, store: Option<&std::path::Path>) -> Disclosure {
         subject: "resume".into(),
         state: format!("{n} ON DISK"),
         detail: format!(
-            "every one of them can be brought back: `letibot --sessions` lists them, \
+            "every one of them can be brought back: `letibot session list` lists them, \
              `letibot --continue` reopens the newest in this workspace, and ctrl-s in \
              the head shows them alongside the live ones. A resumed session replays \
              the stored TOKENS — the assistant rows were cut from the ids the server \
@@ -2432,6 +2433,8 @@ enum Query {
         reason: String,
     },
     Unarchive(String),
+    /// One session's stored facts, one per line.
+    Show(String),
     Listen(Vec<String>),
     Calibrate {
         write: bool,
@@ -2474,7 +2477,7 @@ enum Query {
 /// The id is the mistake, so the second line is how to find the right one. `not found: session
 /// s-nope` named what was missing and left a person to guess which verb lists the ones there are.
 fn no_such_session(e: impl std::fmt::Display) -> String {
-    format!("{e}\n         `letibot --sessions` lists the sessions this store holds")
+    format!("{e}\n         `letibot session list` lists the sessions this store holds")
 }
 
 /// Answer a question about the store and exit. No socket, no vocabulary, no model.
@@ -2560,7 +2563,7 @@ fn run_query(
         Query::Handover { session, .. } | Query::NoteContinued { session, .. } => {
             session_project(&at, session).unwrap_or(at)
         }
-        Query::Delete(id) => session_project(&at, id).unwrap_or(at),
+        Query::Delete(id) | Query::Show(id) => session_project(&at, id).unwrap_or(at),
         _ => at,
     };
     // The verbs below read one file's rows: a replay and a measurement want the history, which a
@@ -2836,7 +2839,7 @@ fn run_query(
                     e => format!("archiving {id}: {e}"),
                 })?;
             println!(
-                "{id} archived{} — `--sessions` leaves it out now, `--sessions --archived` \
+                "{id} archived{} — `session list` leaves it out now, `session list --archived` \
                  lists it, and `--session {id}` opens it and puts it back",
                 match reason.trim() {
                     "" => String::new(),
@@ -2859,6 +2862,14 @@ fn run_query(
                 e => format!("unarchiving {id}: {e}"),
             })?;
             println!("{id} is in the list again");
+            Ok(0)
+        }
+        Query::Show(id) => {
+            let s = store
+                .session(&id)
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| no_such_session(format!("no such session: {id}")))?;
+            print!("{}", show_session(&s, now_ms()));
             Ok(0)
         }
         Query::Resolve(name) => {
@@ -3377,16 +3388,52 @@ fn nothing_to_continue(latest: &Latest, scope: Option<&std::path::Path>) -> Stri
         return format!(
             "the {} session(s){here} are all sub-sessions — task children and the merge \
              queue's reviewers — and a sub-session is not a conversation to continue. \
-             `letibot` starts a new one here, `--sessions` lists the conversations on disk, \
+             `letibot` starts a new one here, `letibot session list` lists the conversations on disk, \
              and `--session ID` opens a sub-session by id.",
             latest.in_scope
         );
     }
     format!(
         "every conversation{here} is empty: {} session(s) with no rows, nothing ever said \
-         in them. `letibot` starts a new one, and `--sessions` shows what is on disk.",
+         in them. `letibot` starts a new one, and `letibot session list` shows what is on disk.",
         latest.empty
     )
+}
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
+
+/// `session show`: one `key value` line per fact, so a shell can `awk` a field out of it.
+pub(crate) fn show_session(s: &letibot_tokencore::store::StoredSession, now: i64) -> String {
+    let or_dash = |v: Option<&str>| match v {
+        Some(v) if !v.is_empty() => v.to_string(),
+        _ => "-".to_string(),
+    };
+    let archived = match s.archived_ms {
+        None => "no".to_string(),
+        Some(at) => match s.archived_reason.as_deref().map(str::trim) {
+            Some(r) if !r.is_empty() => format!("{} ago: {r}", age(now - at)),
+            _ => format!("{} ago", age(now - at)),
+        },
+    };
+    let rows = [
+        ("id", s.id.clone()),
+        ("title", or_dash(s.title.as_deref())),
+        ("workspace", s.workspace_root.clone()),
+        ("model", or_dash(Some(&s.model_id))),
+        ("role", or_dash(s.role.as_deref())),
+        ("origin", or_dash(s.origin.as_deref())),
+        ("parent", or_dash(s.parent_session_id.as_deref())),
+        ("rows", s.items.to_string()),
+        ("created", format!("{} ago", age(now - s.created_ms))),
+        ("active", format!("{} ago", age(now - s.last_activity_ms))),
+        ("archived", archived),
+    ];
+    rows.iter().map(|(k, v)| format!("{k:<10}{v}\n")).collect()
 }
 
 /// A duration, in the largest unit that is still a small number.

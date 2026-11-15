@@ -62,6 +62,7 @@ pub mod migrate;
 mod notes;
 mod roles;
 mod rooms;
+mod session;
 mod stats;
 mod whereis;
 
@@ -323,6 +324,8 @@ fn main() -> ExitCode {
                     // `letibot attach github <org|owner/repo>`: a source and then a scope, checked
                     // before anything is polled so a typo is not a seat on somebody else's repo.
                     github::run(&tail())
+                } else if word == "session" {
+                    session::run(&tail())
                 } else if word == "doctor" {
                     doctor::run(&tail())
                 } else if word == "--config-reference" {
@@ -390,6 +393,8 @@ VERBS
   attach github <scope>       the reviewer seat on an org or `owner/repo`: one session per
                               open pull request, one review per push, drafts until
                               `[github] post` and a token are set
+  session VERB [ARGS]         the stored sessions: list, show, rename, archive, unarchive,
+                              delete (`letibot session --help`)
   where [FOLDER]              the socket this folder's daemon listens on and whether it is up:
                               `--ensure` starts it, `--json` prints socket, live, project
                               and folder in one object (`letibot --where` is the same verb)

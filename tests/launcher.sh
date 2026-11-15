@@ -286,8 +286,7 @@ refusal() { # refusal NAME RC OUTPUT FIRST SECOND -- a mistake, in two lines and
 }
 
 # --- a verb left without its argument: what is missing, and where that verb is explained ---
-for spec in "a delete with no id|--delete|ID" "a session with no id|--session|ID" \
-  "a rename with no id|--rename|ID" "a handover with no session|--handover|SESSION DIR" \
+for spec in "a session with no id|--session|ID" "a handover with no session|--handover|SESSION DIR" \
   "a revert with no backup|--revert|TRANSCRIPT BACKUP" "a note with no text|--note|TRANSCRIPT TEXT" \
   "a reattach with no id|--reattach|ID"; do
   name="${spec%%|*}"
@@ -298,6 +297,23 @@ for spec in "a delete with no id|--delete|ID" "a session with no id|--session|ID
                                         rc=$?
   refusal "$name names the $what and the verb's help" "$rc" "$out" \
     "^letibot: $verb needs $what" "run \`letibot $verb --help\`"
+done
+
+# The session verbs, and their old flags, which are refused under the new spelling.
+for spec in "session delete|ID" "session show|ID" "session unarchive|ID" \
+  "session rename|ID \[TITLE\]" "session archive|ID \[REASON\]" \
+  "--delete|session delete needs ID" "--rename|session rename needs ID"; do
+  verb="${spec%%|*}"
+  what="${spec#*|}"
+  # shellcheck disable=SC2086 # the verb is two words on purpose
+  out="$(run "$DEFAULT_ONLY" $verb)"
+  rc=$?
+  case "$verb" in
+    --*) refusal "$verb with no id is refused as its new spelling" "$rc" "$out" \
+      "^note: .letibot $verb. is now" "$what" ;;
+    *) refusal "$verb with no id names the $what and the verb's help" "$rc" "$out" \
+      "^letibot: $verb needs $what" "run \`letibot $verb --help\`" ;;
+  esac
 done
 
 # --- and `attach`, which has two words to be left without --------------------------------
@@ -352,8 +368,8 @@ refusal "--attach with no daemon says so and names the command that starts one" 
   "^letibot: no harnessd for" "run \`letibot\` there to start one"
 
 # --- a verb's own page, not the wall ------------------------------------------------------
-for spec in "--delete|letibot --delete ID" "--session|letibot --session ID" \
-  "--rename|letibot --rename ID" "--migrate|--to HOST" "--reattach|letibot --reattach SESSION" \
+for spec in "--delete|letibot session delete ID" "--session|letibot --session ID" \
+  "--rename|letibot session rename ID" "--sessions|letibot session list" "--migrate|--to HOST" "--reattach|letibot --reattach SESSION" \
   "--stop|--force" "--restart|letibot --restart" "--room|--stop" "--handover|letibot --handover SESSION DIR" \
   "--note-continued|letibot --note-continued" "--list-claude|letibot --list-claude" \
   "--ls|letibot --ls" "--attach|letibot --attach" \
@@ -1465,9 +1481,35 @@ expect "migrate reaches its own help, with this box's store" "$out" \
 
 # **`--tsv` IS THE LISTING'S OTHER FORM, NOT A FLAG TO DROP.** The arm took no arguments, so
 # `--sessions --tsv` answered the grouped view and said nothing about the flag.
-out="$(run "$DEFAULT_ONLY" --sessions --tsv)"
-expect "--sessions --tsv hands --tsv on to the listing" "$out" \
-  "^harnessd --store \S+ --list-sessions --tsv$"
+out="$(run "$DEFAULT_ONLY" session list --tsv)"
+expect "session list --tsv hands --tsv on to the listing" "$out" \
+  "^letibot-multi session list --tsv --store \S+$"
+refuse "  ...and starts no daemon for it" "$out" "^harnessd "
+
+# **EACH SESSION VERB, AND EACH OLD FLAG RUNS THE SAME LINE** (plan 1.27): the alias adds one
+# note on stderr and nothing else.
+for spec in "session list|--sessions" "session list|--list" "session list --archived|--sessions --archived" \
+  "session rename s-1 t|--rename s-1 t" "session archive s-1 why|--archive s-1 why" \
+  "session unarchive s-1|--unarchive s-1" "session delete s-1|--delete s-1" "session show s-1|"; do
+  new="${spec%%|*}"
+  old="${spec#*|}"
+  # shellcheck disable=SC2086 # each side is a word list on purpose
+  new_out="$(run "$DEFAULT_ONLY" $new)"
+  expect "$new reaches the session verb" "$new_out" "^letibot-multi $new --store \S+$"
+  [ -n "$old" ] || continue
+  # shellcheck disable=SC2086
+  old_out="$(run "$DEFAULT_ONLY" $old)"
+  if [ "$(printf '%s\n' "$old_out" | grep -v '^note: ')" = "$new_out" ]; then
+    echo "ok   $old runs the same line as $new"
+  else
+    echo "FAIL $old runs something else than $new:"
+    printf '%s\n' "$old_out" "--- $new:" "$new_out" | sed 's/^/     /'
+    fails=$((fails + 1))
+  fi
+  expect "  ...and says its new spelling" "$old_out" "^note: .letibot ${old%% *}. is now .letibot session "
+done
+out="$(run "$DEFAULT_ONLY" session bogus)"
+expect "session with an unknown verb is refused by name" "$out" "^letibot: session has no verb bogus"
 
 # **`--help` FITS ON A SCREEN, AND EVERY FLAG IT NAMES PARSES.** The two are the item's own bar:
 # a person asking for help reads seven lines, and neither page may offer a flag the parser

@@ -630,16 +630,17 @@ letibot --session ID|NAME
     letibot --session s-1789919514688401228
 EOF
       ;;
-    --sessions)
+    --sessions | --list)
       cat <<'EOF'
-letibot --sessions
+letibot session list
   What is on disk, grouped: your conversations first, then the harness's own work
   (subagents, the review queue, packages, one-shots), one line each with a count.
+  `--sessions` is its old spelling.
 
-  no arguments; `--tsv` is the plain five-column form
+  `--tsv` is the plain five-column form; `--archived`, `--archived-only` the archived ones
 
   example:
-    letibot --sessions
+    letibot session list
 EOF
       ;;
     --new | -n)
@@ -656,26 +657,26 @@ EOF
       ;;
     --rename)
       cat <<'EOF'
-letibot --rename ID [TITLE]
-  Name a stored session.
+letibot session rename ID [TITLE]
+  Name a stored session. `--rename` is its old spelling.
 
-  ID      the session id (`letibot --sessions` lists them)
+  ID      the session id (`letibot session list` lists them)
   TITLE   the new name; an empty title clears the name
 
   example:
-    letibot --rename s-1789919514688401228 'gate red'
+    letibot session rename s-1789919514688401228 'gate red'
 EOF
       ;;
     --delete)
       cat <<'EOF'
-letibot --delete ID
+letibot session delete ID
   Remove a stored session that has no rows. A session with rows is refused by name,
-  never deleted.
+  never deleted. `--delete` is its old spelling.
 
-  ID   the session id (`letibot --sessions` lists them)
+  ID   the session id (`letibot session list` lists them)
 
   example:
-    letibot --delete s-1789919514688401228
+    letibot session delete s-1789919514688401228
 EOF
       ;;
     --migrate)
@@ -920,7 +921,7 @@ flags_table() {
 --status               |daily |       |is it up, and on what
 --ls                   |daily |       |every folder's daemon and the live sessions inside it, numbered
 --no-bash              |daily |       |seat no shell (the shell is on by default)
---sessions --list      |more  |       |what is on disk, grouped: yours first, then the harness's own work
+--sessions --list      |more  |       |old spelling of `session list`
 --tsv                  |more  |       |a listing in its plain form, one line each with no grouping
 --list-claude --claude-sessions |more |  |what Claude Code has on this box, and the id `--session cc-<id>` takes
 --providers            |more  |       |every provider: built-ins, `[provider.NAME]` entries, env base URLs
@@ -929,12 +930,12 @@ flags_table() {
 --note-continued       |more  |SESSION FILE |the same line, composed, plus the Markdown handover
 --revert               |more  |TRANSCRIPT BACKUP |put that transcript back from the backup, byte for byte
 --new -n               |more  |       |start a fresh session in the running daemon (`--new TITLE` names it)
---rename               |more  |ID     |name a stored session (an empty title clears it)
---delete               |more  |ID     |remove a stored session that has no rows
---archive              |more  |ID     |put a stored session out of sight and KEEP it (`--archive ID REASON`)
---unarchive            |more  |ID     |put it back in the list
---archived             |more  |       |list the archived ones beside the rest
---archived-only        |more  |       |list nothing but the archived ones
+--rename               |more  |ID     |old spelling of `session rename`
+--delete               |more  |ID     |old spelling of `session delete`
+--archive              |more  |ID     |old spelling of `session archive`
+--unarchive            |more  |ID     |old spelling of `session unarchive`
+--archived             |more  |       |with `session list`: the archived ones beside the rest
+--archived-only        |more  |       |with `session list`: nothing but the archived ones
 --migrate              |more  |       |move a session's whole daemon to a host: `--migrate ID --to HOST`
 --reattach             |more  |ID     |re-establish a moved session's daemon and forwarded socket
 --to                   |more  |HOST   |where `--migrate` goes; `--to local` brings it back
@@ -1056,8 +1057,9 @@ already up, then attaches the TUI head to it.
 
   letibot --help all          every flag this command takes: sessions, migration, the seat,
                               the model, remote hosts, the room, the VM
-  letibot <verb> --help       a verb's own page: stats, boundary, notes, browser, rooms,
-                              holds, gc, where, migrate, fb, attach
+  letibot session list        what is on disk; also show, rename, archive, unarchive, delete
+  letibot <verb> --help       a verb's own page: session, stats, boundary, notes, browser,
+                              rooms, holds, gc, where, migrate, fb, attach
   letibot --help removed      what this release took away, and what replaced it
 
 Every setting that lives in a file stays in a file: ~/.config/letibot/providers.toml for
@@ -1089,6 +1091,7 @@ EOF
   cat <<'EOF'
 
 VERBS
+  session list|show|rename|archive|unarchive|delete   the stored sessions
   stats, boundary, notes, browser, rooms, holds, gc, where, migrate, fb, attach, doctor
   `letibot <verb> --help` is that verb's own page; a verb with no page prints this list.
 
@@ -2676,13 +2679,34 @@ fi
 # Questions about the store need no socket, no model and no vocabulary. They are
 # answered before any of that is checked, so `letibot --sessions` still works on a
 # box whose model server is down -- which is exactly when you want to look.
+# The old session flags stay one release as aliases: each names its new spelling on stderr and
+# runs it, so the two cannot drift apart.
 case "${1:-}" in
-  --sessions | --list)
-    # The flags after it are `harnessd --list-sessions`'s: `--tsv`, and `--archived` /
-    # `--archived-only` for the sessions put out of sight. A session is not filtered here: one
-    # writer of that rule, in the binary that owns the store.
+  --sessions | --list | --rename | --delete | --archive | --unarchive)
+    case "$1" in
+      --sessions | --list) new_verb=list ;;
+      *) new_verb="${1#--}" ;;
+    esac
+    echo "note: \`$ME $1\` is now \`$ME session $new_verb\`" >&2
+    set -- session "$new_verb" "${@:2}"
+    ;;
+esac
+
+case "${1:-}" in
+  # Only with one of its verbs after it, so a prompt that starts with the word stays a prompt.
+  # The ID is checked here so the refusal names the launcher's line; the store query is the
+  # multicall's, which runs it in-process as the daemon would.
+  session)
+    case "${2:-}" in
+      "" | --help | -h | list) ;;
+      show | delete | unarchive) [ $# -ge 3 ] || need "ID" "session $2" ;;
+      rename) [ $# -ge 3 ] || need "ID [TITLE]" "session rename" ;;
+      archive) [ $# -ge 3 ] || need "ID [REASON]" "session archive" ;;
+      *) die "session has no verb ${2}: list, show, rename, archive, unarchive, delete" ;;
+    esac
+    [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the session verbs live there)"
     shift
-    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --list-sessions "$@"
+    exec "${NOGPU[@]}" "$BIN/letibot-multi" session "$@" --store "$STORE"
     ;;
   # **What Claude Code has on this box** (Package H): the ids `letibot --session cc-<id>`
   # takes, so a person can find a uuid without opening the JSONL. No store, no socket.
@@ -2720,24 +2744,6 @@ case "${1:-}" in
   --revert)
     [ $# -ge 3 ] || need "TRANSCRIPT BACKUP" --revert
     exec "${NOGPU[@]}" "$BIN/harnessd" --revert "$2" "$3"
-    ;;
-  --rename)
-    [ $# -ge 2 ] || need "ID [TITLE]" --rename
-    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --rename "$2" "${3:-}"
-    ;;
-  --delete)
-    [ $# -ge 2 ] || need "ID" --delete
-    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --delete "$2"
-    ;;
-  # Out of sight, and kept. Nothing is deleted, so the id still opens - which is the whole of the
-  # difference between this and `--delete`, and why `--session ID` is the way back.
-  --archive)
-    [ $# -ge 2 ] || need "ID [REASON]" --archive
-    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --archive "$2" "${3:-}"
-    ;;
-  --unarchive)
-    [ $# -ge 2 ] || need "ID" --unarchive
-    exec "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --unarchive "$2"
     ;;
   --where)
     # **Which socket this folder's daemon listens on, and whether it is up** — for a program
