@@ -1070,10 +1070,10 @@ impl App {
                                 t.status = status;
                             }
                         }
-                        TodoBy::Parent(who) => {
+                        TodoBy::Parent(who) | TodoBy::Peer(who) => {
                             self.say(&format!(
-                                "that row is {who}'s — a parent's rows are the parent's to retire, \
-                                 and a state set here would be taken back by its next write"
+                                "that row is {who}'s — rows a parent or a driver wrote are theirs \
+                                 to retire, and a state set here would be taken back by its next write"
                             ));
                             return None;
                         }

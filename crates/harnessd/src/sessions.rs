@@ -4346,6 +4346,29 @@ impl<'a> Sessions<'a> {
                 }
                 Outcome::Ignored
             }
+            CommandKind::DriverTodos { from, rows } => {
+                let rows: Vec<_> = rows
+                    .iter()
+                    .map(|r| (r.content.clone(), status_from_the_wire(r.status)))
+                    .collect();
+                let wrote = match self.open.get_mut(session_id) {
+                    Some(h) => h.set_driver_todos(from, &rows),
+                    None => Err(format!("`{session_id}` is not open in this daemon")),
+                };
+                match wrote {
+                    Ok(true) => self.rearm_todo_nag_after_an_operator_add(session_id),
+                    Ok(false) => self.rearm_todo_nag(session_id),
+                    Err(why) => {
+                        if let Some(hub) = &hub {
+                            hub.warn(
+                                "driver_todos_refused",
+                                format!("{from}'s rows were not written: {why}"),
+                            );
+                        }
+                    }
+                }
+                Outcome::Ignored
+            }
             CommandKind::WithdrawPrompts => Outcome::Ignored,
             // The operator answered a row's question, and the session is between turns - so the
             // answer is applied and the model is told AT ONCE, as a turn of its own

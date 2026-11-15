@@ -12,7 +12,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. Both sides compare it at ATTACH and refuse a
 /// mismatch by name.
-pub const PROTOCOL_VERSION: u32 = 76;
+pub const PROTOCOL_VERSION: u32 = 77;
 
 /// The first version whose heads read [`crate::SessionEvent::TurnEnded`]. An older head is sent
 /// none, and gets the prompt's end as a `TurnFinished` with `ends_turn` instead.
@@ -675,6 +675,17 @@ pub enum ClientFrame {
         /// a person, set aside or lifted again.
         #[serde(default)]
         moved: Vec<crate::event::TodoState>,
+    },
+    /// An agent head driving the session writes rows under its own handle: an upsert in `rows`
+    /// order, so a row it names again moves to that place. Refused from a head that may not decide.
+    DriverTodos {
+        client_request_id: String,
+        expected_seq: u64,
+        /// The driver's handle (`cc@rano`); empty reads as the head's identity.
+        #[serde(default)]
+        from: String,
+        #[serde(default)]
+        rows: Vec<crate::event::TodoState>,
     },
     /// Stop the daemon, not just this head: the same bell `SIGTERM` rings, so there is one shutdown
     /// sequence and a shared session's other heads learn of it.

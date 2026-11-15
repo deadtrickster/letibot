@@ -32,6 +32,8 @@ pub const MODE_PATIENCE: Duration = Duration::from_secs(120);
 
 /// How long `leticode_status` waits for the daemon's settings answer before it says null.
 const IDLE_EXIT_PATIENCE: Duration = Duration::from_millis(500);
+/// How long `leticode_todo` waits for the board to show its rows; the daemon writes them between turns.
+const TODO_PATIENCE: Duration = Duration::from_secs(30);
 
 /// What the bridge holds: one attached head per session it started or joined, by session id.
 /// A `HashMap` behind a mutex rather than an actor: the tools are called one at a time, and the
@@ -882,6 +884,27 @@ impl Bridge {
         Ok(json!({ "queued": true, "session": session, "held": false, "seq": seq }))
     }
 
+    /// Rows on a held session's board under this seat's handle: created, moved to the order given,
+    /// or given a new status. The session's model is told at its next turn.
+    pub fn todo(&self, session: &str, rows: &Value) -> Result<Value, String> {
+        let rows: Vec<letibot_sessionlog::event::TodoState> = serde_json::from_value(rows.clone())
+            .map_err(|e| {
+                format!(
+                    "`rows` is a list of `{{content, status}}`, status one of pending, \
+                     in_progress, completed, postponed, cancelled: {e}"
+                )
+            })?;
+        if rows.is_empty() {
+            return Err("`rows` is empty: name at least one row".into());
+        }
+        let h = self.head(session)?;
+        let todos = h.driver_todos(rows, TODO_PATIENCE)?;
+        Ok(json!({
+            "session": session,
+            "todos": serde_json::to_value(&todos).unwrap_or(Value::Null),
+        }))
+    }
+
     fn is_gone(&self, session: &str) -> bool {
         self.gone
             .lock()
@@ -1573,6 +1596,33 @@ pub fn list() -> Value {
             }),
         ),
         tool(
+            "leticode_todo",
+            "Write rows on the board of a session this bridge drives (attached with `watch_only: \
+              false` or started here). Rows are stored under this seat's handle, never as the \
+              operator's or the model's. A row named again takes the new status, and the rows take \
+              the order given, rows left out after them. The model is told at its next turn. \
+              Waits while a turn runs, since the board is written between turns.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "The id `leticode_start` answered, or the session's name in this folder." },
+                    "rows": {
+                        "type": "array",
+                        "description": "This seat's rows, in the order they should stand.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "content": { "type": "string" },
+                                "status": { "type": "string", "enum": ["pending", "in_progress", "completed", "postponed", "cancelled"] }
+                            },
+                            "required": ["content", "status"]
+                        }
+                    }
+                },
+                "required": ["session", "rows"]
+            }),
+        ),
+        tool(
             "leticode_status",
             "What the session is doing: `running`, `idle`, `asking` or `failed`, the last \
               assistant message, the todos, the last turn's tokens and cost, and which asks \
@@ -1952,6 +2002,7 @@ fn leticode_names() -> Vec<&'static str> {
         "leticode_start",
         "leticode_attach",
         "leticode_send",
+        "leticode_todo",
         "leticode_status",
         "leticode_events",
         "leticode_transcript",
@@ -2049,6 +2100,10 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             &session_arg(bridge, args)?,
             &arg_str(args, "text")?,
             args.get("because").and_then(Value::as_u64),
+        ),
+        "leticode_todo" => bridge.todo(
+            &session_arg(bridge, args)?,
+            args.get("rows").ok_or("`rows` is required")?,
         ),
         "leticode_status" => bridge.status(&session_arg(bridge, args)?),
         "leticode_events" => {

@@ -17,6 +17,7 @@ fn every_frame_is_accounted_for_at_this_version() {
             | ClientFrame::CloseSession { .. }
             | ClientFrame::CompactSession { .. }
             | ClientFrame::Detach
+            | ClientFrame::DriverTodos { .. }
             | ClientFrame::Feedback { .. }
             | ClientFrame::FetchDiagnostic { .. }
             | ClientFrame::FetchRow { .. }
@@ -158,8 +159,10 @@ fn every_frame_is_accounted_for_at_this_version() {
     let _ = event;
     let _ = server;
     assert_eq!(
-        PROTOCOL_VERSION, 76,
-        "the match above was last reconciled with the frame list at 76. 76 added \
+        PROTOCOL_VERSION, 77,
+        "the match above was last reconciled with the frame list at 77. 77 added \
+             `ClientFrame::DriverTodos` and the `Peer <handle>` todo author: a driving head's rows \
+             on the session's board. 76 added \
              `SessionEvent::TurnEnded`: a round's end and the prompt's end were one frame, \
              `TurnFinished` with `ends_turn`. A head older than 76 is sent no `TurnEnded` and \
              gets the prompt's end as the `TurnFinished` it reads (`compat::OlderHead`). 75 added \

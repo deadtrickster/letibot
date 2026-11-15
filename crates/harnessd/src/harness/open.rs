@@ -3663,6 +3663,7 @@ impl Harness {
             claude: parts.claude.clone(),
             gatekeepers: Default::default(),
             restart_notices: Vec::new(),
+            board_notices: Vec::new(),
             kept_jobs,
             workspace_gone_said: false,
             late_scope_said: false,

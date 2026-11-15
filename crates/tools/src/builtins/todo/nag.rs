@@ -192,6 +192,7 @@ fn a_row_in_the_input(row: &TodoItem, children: &ChildSessions) -> letibot_plugi
         letibot_tokencore::store::TodoBy::Queue => "queue".to_string(),
         // A parent's author string verbatim, as every other sentence about a row spells it.
         letibot_tokencore::store::TodoBy::Parent(author) => author.clone(),
+        letibot_tokencore::store::TodoBy::Peer(handle) => format!("Peer {handle}"),
     };
     let waits = row.needs.iter().map(a_wait_in_words).collect();
     the_row(row, by, waits, queue_review_in_flight(row, children))

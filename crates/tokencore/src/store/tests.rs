@@ -1271,9 +1271,22 @@ fn a_parents_row_round_trips_with_the_authors_own_string() {
         .to_string();
     assert!(
         err.starts_with(
-            "`the cat` is not a todo author: model, operator, queue, or `Parent <session-id>`"
+            "`the cat` is not a todo author: model, operator, queue, `Parent <session-id>` or \
+             `Peer <handle>`"
         ),
         "the refusal names the word it did not understand: {err}"
+    );
+}
+
+/// A driving head's row keeps its handle through the store, and is nobody else's.
+#[test]
+fn a_drivers_row_round_trips_under_its_handle() {
+    let raw = r#"[{"content":"rebase on main","status":"pending","by":"Peer cc@rano"}]"#;
+    let rows: Vec<TodoItem> = serde_json::from_str(raw).expect("a peer's word is known");
+    assert_eq!(rows[0].by, TodoBy::Peer("cc@rano".into()));
+    assert_eq!(
+        serde_json::to_string(&rows[0].by).expect("serialises"),
+        r#""Peer cc@rano""#
     );
 }
 

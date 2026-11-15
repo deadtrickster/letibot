@@ -459,6 +459,7 @@ fn author_words(by: &TodoBy) -> String {
         TodoBy::Model => "the model".into(),
         TodoBy::Parent(who) => clean_line(who),
         TodoBy::Queue => "the merge queue".into(),
+        TodoBy::Peer(handle) => clean_line(handle),
     }
 }
 

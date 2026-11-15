@@ -324,6 +324,16 @@ impl Harness {
                 });
             }
         }
+        // What a driver did to the board since the last turn, as the harness's row before the words.
+        let board = std::mem::take(&mut self.board_notices);
+        if !board.is_empty() {
+            let said = board.join("\n\n");
+            self.trail.say(Speaker::Agent, &said, Some(Instant::now()));
+            items.push(TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Agent,
+                parts: vec![UserPart::Text { text: said }],
+            });
+        }
         self.trail.say(speaker, text, Some(Instant::now()));
         items.push(TranscriptItem::User {
             speaker: row,
@@ -449,6 +459,8 @@ impl Harness {
         // And the children a restart brought back, one line each, saying which came back and which could not.
         // Counted with the queue's notices, since both are facts the daemon found in the store rather than
         // settlements that arrived.
+        let board_taken = std::mem::take(&mut self.board_notices);
+        notices.extend(self.say_all(&Facts::Steer, board_taken.clone()));
         let restart_taken = self.restart_notices.clone();
         let restarts = std::mem::take(&mut self.restart_notices);
         notices.extend(self.say_all(
@@ -693,6 +705,9 @@ impl Harness {
             let mut back = restart_taken;
             back.append(&mut self.restart_notices);
             self.restart_notices = back;
+            let mut board = board_taken;
+            board.append(&mut self.board_notices);
+            self.board_notices = board;
             self.monitor_cursor.store(cursor_before, Ordering::SeqCst);
         }
         out.map(Some)
@@ -4188,6 +4203,9 @@ impl Harness {
                 // author is a name and not a string, so there is nothing to carry. A head that
                 // predates it cannot decode it, which is what moved `PROTOCOL_VERSION` to 42.
                 letibot_tokencore::store::TodoBy::Queue => letibot_sessionlog::event::TodoBy::Queue,
+                letibot_tokencore::store::TodoBy::Peer(handle) => {
+                    letibot_sessionlog::event::TodoBy::Peer(handle)
+                }
             },
             status: match t.status {
                 letibot_tokencore::store::TodoStatus::Pending => WireTodoStatus::Pending,

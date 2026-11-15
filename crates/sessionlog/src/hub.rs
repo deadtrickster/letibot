@@ -233,6 +233,11 @@ pub enum CommandKind {
         items: Vec<crate::event::TodoEntry>,
         moved: Vec<crate::event::TodoState>,
     },
+    /// A driving head's rows, upserted under its handle in the order given.
+    DriverTodos {
+        from: String,
+        rows: Vec<crate::event::TodoState>,
+    },
     /// A head settled an open request; which kind is [`Reply`]. One variant rather than two
     /// because every consumer that only cares that an answer arrived destructures with `..`,
     /// so a second variant would silently skip those arms.
@@ -328,6 +333,7 @@ impl CommandKind {
             CommandKind::OperatorShellResult { .. } => "operator-shell-result",
             CommandKind::WithdrawPrompts => "take-back",
             CommandKind::SetOperatorTodos { .. } => "operator todos",
+            CommandKind::DriverTodos { .. } => "driver todos",
             CommandKind::Promote => "promote",
         }
     }
@@ -1709,10 +1715,12 @@ impl Hub {
             };
 
             // A row's question and a mode's consent are answered only by somebody who may decide:
-            // a watching head is not a person who may decide.
+            // a watching head is not a person who may decide. Nor does it write the board.
             if matches!(
                 kind,
-                CommandKind::AnswerTodo { .. } | CommandKind::ModeConsent { .. }
+                CommandKind::AnswerTodo { .. }
+                    | CommandKind::ModeConsent { .. }
+                    | CommandKind::DriverTodos { .. }
             ) && !can_decide
             {
                 return ServerFrame::Rejected {
@@ -1811,6 +1819,9 @@ impl Hub {
                         (0, m) => format!("the operator's {m} row(s) moved"),
                         (n, m) => format!("the operator's {n} todo(s) sent and {m} row(s) moved"),
                     }
+                }
+                (CommandKind::DriverTodos { from, rows }, _) => {
+                    format!("{} row(s) from {from} sent", rows.len())
                 }
                 (CommandKind::Promote, _) => "background requested".into(),
                 // The skill is named because the operator is about to read a long body:

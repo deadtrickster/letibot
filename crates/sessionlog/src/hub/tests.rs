@@ -775,6 +775,45 @@ fn a_read_only_head_cannot_answer() {
 }
 
 #[test]
+fn a_read_only_head_cannot_write_a_drivers_rows() {
+    let hub = Hub::new("s");
+    let rows = vec![crate::event::TodoState {
+        content: "rebase".into(),
+        status: crate::event::TodoStatus::Pending,
+    }];
+    let watcher = hub.attach(
+        "remote",
+        "mcp",
+        Caps {
+            can_decide: false,
+            ..Caps::default()
+        },
+        0,
+    );
+    let f = hub.submit(
+        &watcher.head_id,
+        "c1",
+        0,
+        CommandKind::DriverTodos {
+            from: "cc@rano".into(),
+            rows: rows.clone(),
+        },
+    );
+    assert!(matches!(f, ServerFrame::Rejected { ref reason, .. } if reason == REJECT_READ_ONLY));
+    let driver = attach(&hub, 64);
+    let f = hub.submit(
+        &driver.head_id,
+        "c2",
+        0,
+        CommandKind::DriverTodos {
+            from: "cc@rano".into(),
+            rows,
+        },
+    );
+    assert!(matches!(f, ServerFrame::Accepted { .. }), "{f:?}");
+}
+
+#[test]
 fn a_question_answer_settles_the_same_request_a_permission_would() {
     let hub = Hub::new("s");
     let a = attach(&hub, 64);

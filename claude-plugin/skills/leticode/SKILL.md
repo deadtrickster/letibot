@@ -46,6 +46,8 @@ provider is in trouble.
 - `leticode_send` queues a line behind the running turn; the daemon starts a turn for it. That is
   how a child is corrected — not by stopping it. The line is stored under this seat's handle, never
   as the operator's words.
+- `leticode_todo {session, rows}` writes rows on the board of a session you drive, under this
+  seat's handle, in the order given. Its model is told at its next turn. Refused on a watch.
 - Talk to a session through the bridge or the room, never by typing into a head over tmux. A head
   cannot tell that from the operator typing.
 - `leticode_asks` then `leticode_answer {session, ask, option, note}`. Answer the gate's routine

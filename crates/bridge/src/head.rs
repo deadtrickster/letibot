@@ -2264,6 +2264,60 @@ impl Head {
         ))
     }
 
+    /// Write this head's rows on the session's board, under its handle, and wait until the board
+    /// shows them. `rows` is the order they take; a watching head is refused.
+    pub fn driver_todos(
+        &self,
+        rows: Vec<letibot_sessionlog::event::TodoState>,
+        patience: Duration,
+    ) -> Result<Vec<TodoEntry>, String> {
+        self.may_write()?;
+        let from = self.speaks_as.clone().unwrap_or_else(crate::rooms::handle);
+        let by = letibot_sessionlog::event::TodoBy::Peer(from.clone());
+        let refused_before = {
+            let g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+            g.rejection.clone()
+        };
+        self.said_client()?
+            .driver_todos(0, &from, rows.clone())
+            .map_err(|e| e.to_string())?;
+        let landed = |todos: &[TodoEntry]| {
+            let mine: Vec<&TodoEntry> = todos.iter().filter(|t| t.by == by).collect();
+            rows.iter().enumerate().all(|(i, r)| {
+                mine.get(i)
+                    .is_some_and(|t| t.content.trim() == r.content.trim() && t.status == r.status)
+            })
+        };
+        let deadline = Instant::now() + patience;
+        let mut g = self.shared.state.lock().unwrap_or_else(|e| e.into_inner());
+        loop {
+            if landed(&g.todos) {
+                return Ok(g.todos.clone());
+            }
+            if let Some(why) = g.rejection.clone()
+                && g.rejection != refused_before
+            {
+                return Err(why);
+            }
+            if let Some(why) = &g.closed {
+                return Err(format!("the daemon closed this connection: {why}"));
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(format!(
+                    "the board did not show {from}'s rows within {patience:?}; the daemon's \
+                     warning, if it refused them, is in `leticode_events`"
+                ));
+            }
+            g = self
+                .shared
+                .bell
+                .wait_timeout(g, left)
+                .unwrap_or_else(|e| e.into_inner())
+                .0;
+        }
+    }
+
     /// Ask the daemon to put a confirmation in front of a person - `leticode_mode`.
     /// The one route to `allow-all` this bridge has, and deliberately not a set: the daemon
     /// lets any head attached to the session EXCEPT this one answer, so the answer is a person's.

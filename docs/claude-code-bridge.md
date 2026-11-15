@@ -89,6 +89,7 @@ one head connection per session it started or attached to, so asks reach it.
 | `leticode_start` | `{worktree, brief, model, mode, host, vm}` - starts the folder's daemon if needed, opens a session, sends the brief, stays attached |
 | `leticode_attach` | `{worktree, session, watch_only}` - joins a running daemon, or starts it to reopen a stored id; `session` is an id or `gatekeeper` |
 | `leticode_send` | `{session, text}` - a line from this seat, queued behind a running turn and stored under the seat's handle (`cc@rano`), never as the operator's words |
+| `leticode_todo` | `{session, rows: [{content, status}]}` - rows on a driven session's board under the seat's handle (`Peer cc@rano`), upserted in the order given; the model gets a notice naming the seat at its next turn. Refused on a watch, by the bridge and by the daemon |
 | `leticode_status` | `{session}` - `state`, `model`, `last_trouble`, `placement`, `turn`, `todos`, `last_message`, `report?`, `cost_usd`, `tokens`, `spent`, `pending_asks`, `activity`, `waiting_on`, `last_rejection` |
 | `leticode_events` | `{session, since, limit}` - the progress since the cursor: calls, jobs, failures, asks, turns, **subagents**, and a `provider` entry when the provider itself was stuck |
 | `leticode_transcript` | `{session, since, limit, reasoning}` - the CONVERSATION, row by row, up to the stated `cap` (B8) |
@@ -261,8 +262,8 @@ on a session somebody else opened:
   its transcript. Any other id is a refusal naming the socket. `leticode_send` on a session this
   bridge held until its daemon stopped reopens it the same way.
 - **`watch_only` (the default) is a real cap, not a promise.** A watching head never sends a prompt,
-  never answers a card, never interrupts; `leticode_send`, `leticode_answer` and `leticode_stop`
-  refuse on it.
+  never answers a card, never interrupts; `leticode_send`, `leticode_todo`, `leticode_answer` and
+  `leticode_stop` refuse on it.
 - **`session: "gatekeeper"`** is THIS folder's review-queue session, **one per daemon**: the id is
   `s-gatekeeper-<workspace key>`, derived by `letibot_sessionlog::gatekeeper_session` from the same
   key the launcher names the folder's socket with, because every daemon on the box shares one store

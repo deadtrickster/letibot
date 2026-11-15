@@ -1206,6 +1206,9 @@ pub enum TodoBy {
     /// session at all. Its rows on a session's board are the operator's queue seen as work, so one
     /// queue is not a second board.
     Queue,
+    /// An agent head driving the session wrote it: the bare handle (`cc@rano`), stored on the wire
+    /// as `Peer <handle>`. Never the model's plan and never the operator's words.
+    Peer(String),
 }
 
 impl TodoBy {
@@ -1223,6 +1226,7 @@ impl serde::Serialize for TodoBy {
             // The variant CARRIES the author string, so the wire form is the string itself.
             TodoBy::Parent(author) => s.serialize_str(author),
             TodoBy::Queue => s.serialize_str("queue"),
+            TodoBy::Peer(handle) => s.serialize_str(&format!("Peer {handle}")),
         }
     }
 }
@@ -1238,8 +1242,10 @@ impl<'de> serde::Deserialize<'de> for TodoBy {
             // anything else is a word this reader does not know, refused by name rather than
             // read as the model's the way a catch-all would.
             other if other.starts_with("Parent ") => Ok(TodoBy::Parent(other.to_string())),
+            other if other.starts_with("Peer ") => Ok(TodoBy::Peer(other["Peer ".len()..].into())),
             other => Err(serde::de::Error::custom(format!(
-                "`{other}` is not a todo author: model, operator, queue, or `Parent <session-id>`"
+                "`{other}` is not a todo author: model, operator, queue, `Parent <session-id>` \
+                 or `Peer <handle>`"
             ))),
         }
     }

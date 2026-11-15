@@ -355,6 +355,23 @@ impl HeadClient {
         Ok(client_request_id)
     }
 
+    /// A driving head's rows on the session's board, under `from`. `rows` is the order they take.
+    pub fn driver_todos(
+        &mut self,
+        expected_seq: u64,
+        from: &str,
+        rows: Vec<crate::event::TodoState>,
+    ) -> Result<String, ClientError> {
+        let client_request_id = self.next_id();
+        self.writer.write(&ClientFrame::DriverTodos {
+            client_request_id: client_request_id.clone(),
+            expected_seq,
+            from: from.to_string(),
+            rows,
+        })?;
+        Ok(client_request_id)
+    }
+
     /// This session's background jobs, as the daemon's process table has them.
     /// The head renders what comes back; it does not decide what is in it.
     pub fn list_jobs(&mut self) -> Result<(), ClientError> {

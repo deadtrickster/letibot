@@ -64,6 +64,7 @@ pub fn door(frame: &ClientFrame) -> Option<&'static str> {
         ClientFrame::Prompt { .. } => "typing a prompt to the model",
         ClientFrame::WithdrawPrompts { .. } => "taking back a queued prompt",
         ClientFrame::SetOperatorTodos { .. } => "writing the operator's todo rows",
+        ClientFrame::DriverTodos { .. } => "writing a driver's todo rows",
         ClientFrame::Stop { .. } => "stopping the daemon",
         ClientFrame::CloseSession { .. } => "closing the session",
         ClientFrame::Interrupt { .. } => "interrupting the running turn",

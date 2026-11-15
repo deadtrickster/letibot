@@ -83,6 +83,8 @@ pub enum TodoBy {
     /// The daemon refills this half from the store every pass and replaces it, so a row leaves when
     /// its entry's verdict arrives; an entry's STATE lives on the store's row, never here.
     Queue,
+    /// An agent head driving the session wrote it, by its bare handle; `Peer <handle>` on the wire.
+    Peer(String),
 }
 
 impl TodoBy {
@@ -100,6 +102,7 @@ impl Serialize for TodoBy {
             // The variant carries the author string, so the wire form is the string itself.
             TodoBy::Parent(author) => s.serialize_str(author),
             TodoBy::Queue => s.serialize_str("queue"),
+            TodoBy::Peer(handle) => s.serialize_str(&format!("Peer {handle}")),
         }
     }
 }
@@ -114,8 +117,10 @@ impl<'de> Deserialize<'de> for TodoBy {
             // `Parent ...` is the one open spelling; any other word is refused by name rather
             // than read as the model's, which is what a catch-all would do.
             other if other.starts_with("Parent ") => Ok(TodoBy::Parent(other.to_string())),
+            other if other.starts_with("Peer ") => Ok(TodoBy::Peer(other["Peer ".len()..].into())),
             other => Err(serde::de::Error::custom(format!(
-                "`{other}` is not a todo author: model, operator, queue, or `Parent <session-id>`"
+                "`{other}` is not a todo author: model, operator, queue, `Parent <session-id>` \
+                 or `Peer <handle>`"
             ))),
         }
     }

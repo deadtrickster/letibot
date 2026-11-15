@@ -340,3 +340,52 @@ fn a_target_with_no_children_behind_it_is_refused_by_name() {
     assert!(said.contains("no children's boards"), "{}", said);
     assert!(own.snapshot().is_empty(), "and this board stayed empty");
 }
+
+/// A driver's write creates, completes and reorders its own rows, and nobody else's move.
+#[test]
+fn a_drivers_write_orders_its_own_rows_and_leaves_the_rest() {
+    let b = TodoBoard::new(vec![item("the model's step", TodoStatus::InProgress)]);
+    let driver = TodoBy::Peer("cc@rano".into());
+    let words = |b: &TodoBoard| {
+        b.snapshot()
+            .into_iter()
+            .map(|t| t.content)
+            .collect::<Vec<_>>()
+    };
+
+    let (changed, moved) = b
+        .upsert_driver(
+            &[
+                ("rebase".into(), TodoStatus::Pending),
+                ("push".into(), TodoStatus::Pending),
+            ],
+            &driver,
+        )
+        .unwrap();
+    assert_eq!((changed, moved), (2, false));
+    assert_eq!(words(&b), ["the model's step", "rebase", "push"]);
+
+    // Naming `push` first moves it ahead; `rebase`, left out, follows.
+    let (changed, moved) = b
+        .upsert_driver(&[("push".into(), TodoStatus::Completed)], &driver)
+        .unwrap();
+    assert_eq!((changed, moved), (1, true));
+    assert_eq!(words(&b), ["the model's step", "push", "rebase"]);
+    let rows = b.parent_snapshot();
+    assert_eq!(rows[0].status, TodoStatus::Completed);
+    assert!(rows.iter().all(|t| t.by == driver), "{rows:?}");
+    assert_eq!(b.model_snapshot().len(), 1, "the model's half is untouched");
+
+    // The same write again changes nothing and moves no version.
+    let v = b.version();
+    assert_eq!(
+        b.upsert_driver(&[("push".into(), TodoStatus::Completed)], &driver)
+            .unwrap(),
+        (0, false)
+    );
+    assert_eq!(b.version(), v);
+    assert!(
+        b.upsert_driver(&[(" ".into(), TodoStatus::Pending)], &driver)
+            .is_err()
+    );
+}

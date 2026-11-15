@@ -61,6 +61,58 @@ impl Harness {
         }
     }
 
+    /// A driving head's rows, under its handle. Answers whether it added a row; the model is told
+    /// what changed at its next turn, since a board moved by someone else is easy to miss.
+    pub fn set_driver_todos(
+        &mut self,
+        from: &str,
+        rows: &[(String, letibot_tokencore::store::TodoStatus)],
+    ) -> Result<bool, String> {
+        let by = letibot_tokencore::store::TodoBy::Peer(from.to_string());
+        let before: Vec<TodoItem> = self
+            .todos
+            .parent_snapshot()
+            .into_iter()
+            .filter(|r| r.by == by)
+            .collect();
+        let (changed, reordered) = self.todos.upsert_driver(rows, &by)?;
+        if changed == 0 && !reordered {
+            return Ok(false);
+        }
+        let mut said = Vec::new();
+        let mut added = false;
+        for (content, status) in rows {
+            use letibot_tokencore::store::TodoStatus as S;
+            let word = match status {
+                S::Pending => "pending",
+                S::InProgress => "in progress",
+                S::Completed => "completed",
+                S::Postponed => "postponed",
+                S::Cancelled => "cancelled",
+            };
+            match before.iter().find(|r| r.content.trim() == content.trim()) {
+                None => {
+                    added = true;
+                    said.push(format!("added `{}` ({word})", content.trim()));
+                }
+                Some(r) if r.status != *status => {
+                    said.push(format!("marked `{}` {word}", content.trim()))
+                }
+                Some(_) => {}
+            }
+        }
+        if reordered {
+            said.push("reordered its rows".into());
+        }
+        self.board_notices.push(format!(
+            "{from}, the agent driving this session, changed your todo board: {}. Its rows are \
+             work it asked for, not the operator's words; `todo_write` cannot change them.",
+            said.join("; ")
+        ));
+        self.flush_todos_or_say("a driver's row");
+        Ok(added)
+    }
+
     /// The children this daemon is running, as the plan-check reads them: the journal says which are running, the
     /// registry how long, the child's hub what it last showed. Taken per ask rather than held, since it is the one input
     /// that moves while nothing else does, and a cached snapshot could not see a child stop.

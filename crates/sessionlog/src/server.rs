@@ -1763,6 +1763,28 @@ pub fn serve_conn_rooted(
                 );
                 writer.lock().unwrap().write(&f)?;
             }
+            Ok(ClientFrame::DriverTodos {
+                client_request_id,
+                expected_seq,
+                from,
+                rows,
+            }) => {
+                // The handle the head declared, else its identity: a row always has an author.
+                let from = if from.trim().is_empty() {
+                    seat.hub
+                        .identity_of(&seat.head_id)
+                        .unwrap_or_else(|| seat.head_id.clone())
+                } else {
+                    from
+                };
+                let f = seat.hub.submit(
+                    &seat.head_id,
+                    client_request_id,
+                    expected_seq,
+                    CommandKind::DriverTodos { from, rows },
+                );
+                writer.lock().unwrap().write(&f)?;
+            }
             Ok(ClientFrame::WithdrawPrompts {
                 client_request_id,
                 expected_seq,

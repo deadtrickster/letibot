@@ -55,7 +55,8 @@ impl TodoBoard {
         for t in initial {
             match t.by {
                 TodoBy::Model => mine.push(t),
-                TodoBy::Parent(_) => told.push(t),
+                // A driver's rows are told work too, and share the parent's half.
+                TodoBy::Parent(_) | TodoBy::Peer(_) => told.push(t),
                 TodoBy::Operator => theirs.push(t),
                 // The queue's rows are restored like any other, and that is safe precisely
                 // because they are a view: whatever the store's todo table held survives a restart
@@ -581,6 +582,68 @@ impl TodoBoard {
             self.version.fetch_add(1, Ordering::SeqCst);
         }
         Ok(changed)
+    }
+
+    /// A driving head's write: an upsert of its own rows, which then take the order `rows`
+    /// names, with rows it left out after them. Other authors' rows keep their places. Answers
+    /// how many rows changed and whether the order moved.
+    pub fn upsert_driver(
+        &self,
+        rows: &[(String, TodoStatus)],
+        by: &TodoBy,
+    ) -> Result<(usize, bool), String> {
+        if rows.iter().any(|(c, _)| c.trim().is_empty()) {
+            return Err("a row needs words: one of these is empty".into());
+        }
+        let rows: Vec<(String, TodoStatus, Vec<TodoNeed>)> = rows
+            .iter()
+            .map(|(c, s)| (c.clone(), *s, Vec::new()))
+            .collect();
+        let mut half = self.parent.lock().unwrap_or_else(|e| e.into_inner());
+        check_rows(&half, &rows)?;
+        let mut changed = 0usize;
+        for (content, status, _) in &rows {
+            let want = content.trim();
+            match half
+                .iter_mut()
+                .find(|t| t.by == *by && t.content.trim() == want)
+            {
+                Some(hit) if hit.status != *status => {
+                    hit.status = *status;
+                    changed += 1;
+                }
+                Some(_) => {}
+                None => {
+                    half.push(TodoItem {
+                        content: want.to_string(),
+                        status: *status,
+                        by: by.clone(),
+                        when: None,
+                        needs: Vec::new(),
+                    });
+                    changed += 1;
+                }
+            }
+        }
+        let slots: Vec<usize> = (0..half.len()).filter(|&i| half[i].by == *by).collect();
+        let mut mine: Vec<TodoItem> = slots.iter().map(|&i| half[i].clone()).collect();
+        let rank = |t: &TodoItem| {
+            rows.iter()
+                .position(|(c, _, _)| c.trim() == t.content.trim())
+                .unwrap_or(usize::MAX)
+        };
+        mine.sort_by_key(rank);
+        let mut reordered = false;
+        for (&i, row) in slots.iter().zip(mine) {
+            if half[i].content != row.content {
+                reordered = true;
+            }
+            half[i] = row;
+        }
+        if changed > 0 || reordered {
+            self.version.fetch_add(1, Ordering::SeqCst);
+        }
+        Ok((changed, reordered))
     }
 
     /// The model's own rows, as an upsert that never deletes: a matched row moves its state and
@@ -1645,6 +1708,7 @@ pub fn whose_row(by: &TodoBy) -> &str {
         // person, and not the model's own plan.
         TodoBy::Queue => "the merge queue's",
         TodoBy::Model => "yours",
+        TodoBy::Peer(handle) => handle.as_str(),
     }
 }
 
@@ -1748,6 +1812,10 @@ pub fn unfinished_plan_for(
         }
         TodoBy::Parent(_) => {
             "Your parent asked for it: do it and say so in your reply; they retire the row."
+        }
+        TodoBy::Peer(_) => {
+            "The agent driving this session asked for it: do it and say so in your reply; it \
+             retires the row."
         }
         // The queue's rows are the one kind whose disposal is not a tool call: the verdict takes
         // the row off, so the advice names the two acts that are left.
@@ -4100,6 +4168,7 @@ fn render_rows(todos: &[TodoItem], keep: impl Fn(&TodoItem) -> bool) -> String {
             // disposes of: the verdict takes it off, and the daemon replaces the half from the store.
             TodoBy::Queue => "the merge queue's".to_string(),
             TodoBy::Model => "yours".to_string(),
+            TodoBy::Peer(handle) => format!("{handle}'s (driving this session)"),
         };
         out.push_str(&format!(
             "  {}. {} {}  — {}{}\n",

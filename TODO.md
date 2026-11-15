@@ -1550,7 +1550,7 @@ When the session finally called `room_inbox to_me`, the result was empty, with `
 
 ## R260 - A head driving a session cannot write that session's todo board
 
-**Status:** open, 2026-11-15. left: all of it.
+**Status:** built, 2026-11-15. left: a TUI verb for an agent author (below).
 
 From cc@rano (#1574): a head attached with `watch_only=false` cannot `todo_write` the session's board. The refusal is "target must be a session THIS session spawned with task". The operator wants a driver to create and reorder rows. Today only the session itself, or the parent that spawned it with `task`, can write a board. A bridge or head that drives a session it did not spawn has no door.
 
@@ -1562,6 +1562,12 @@ From cc@rano (#1574): a head attached with `watch_only=false` cannot `todo_write
 Add it as a bridge tool, e.g. `leticode_todo` on a held session, or as `todo_write target=` widened to sessions this head drives.
 
 **Done when:** from a bridge holding a session, a row is created, reordered and completed on that session's board. The session's model sees a notice naming the driver, and a watch-only head is refused.
+
+**Built.** A fifth author, `TodoBy::Peer(handle)` (`Peer cc@rano` on the wire and in the store), in both copies of the enum. `ClientFrame::DriverTodos {from, rows}` / `CommandKind::DriverTodos` carry a driver's rows (`PROTOCOL_VERSION` 76); `Hub::submit` refuses it from a head with `can_decide: false` (`REJECT_READ_ONLY`), which is what a watch-only bridge head declares. The daemon applies it between turns (`Harness::set_driver_todos`): `TodoBoard::upsert_driver` upserts the driver's rows in the parent's (told) half and puts them in the order the call names, rows left out after them; other authors' rows do not move. The write is flushed and published, the plan-check is re-armed as for an operator's add, and a notice naming the driver and what it added, marked and reordered goes into `board_notices`, said before the words of the next turn (prompt, nag or wake). The bridge tool is `leticode_todo {session, rows}`; `Head::driver_todos` refuses a watched session (`may_write`) and waits until the board shows the rows. The model's `todo_write` cannot change a driver's rows; the TUI's `/todo` refuses them as it does a parent's.
+
+**Tests.** `bridge/tests/driver_todo.rs`: a bridge-started session gets two rows, then one completed and moved first; the next turn's request carries the notice with the handle, the add, the completion and the reorder; a watching bridge is refused and the board is unchanged. `sessionlog` `hub::tests::a_read_only_head_cannot_write_a_drivers_rows`, `tools` `todo::tests::children::a_drivers_write_orders_its_own_rows_and_leaves_the_rest`, `tokencore` `a_drivers_row_round_trips_under_its_handle`.
+
+**Left.** The TUI is the operator's head, so its rows stay `operator`; there is no TUI verb that writes as an agent. A driver cannot reorder or move the model's or the operator's rows, only its own. Rows carry no `needs` edges from a driver.
 
 ## R252 - Foreground bash does not stop on interrupt, and its schema text describes a kill that never happens
 
