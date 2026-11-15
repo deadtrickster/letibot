@@ -29,35 +29,10 @@ pub fn url(preset: &Preset, creds: &Credentials) -> Option<String> {
 }
 
 /// When the plan's limit lifts, Unix millis: the latest reset among its exhausted windows, since
-/// nothing lifts until every one of them has. `None` when the door declares no endpoint, the
-/// request fails, or no window is exhausted - the caller then reads the refusal's own prose.
-pub fn exhausted_reset_ms(preset: &Preset, creds: &Credentials) -> Option<u64> {
-    let url = url(preset, creds)?;
-    let agent = ureq::Agent::new_with_config(
-        ureq::Agent::config_builder()
-            .timeout_global(Some(TIMEOUT))
-            .build(),
-    );
-    // Z.ai's monitor takes the bare key: `Bearer <key>` is a 401 there.
-    let (auth, agent_name) = if url.contains(ZAI_QUOTA) {
-        (creds.key.clone(), "letibot")
-    } else {
-        (format!("Bearer {}", creds.key), crate::kimi::USER_AGENT)
-    };
-    let body: Value = agent
-        .get(&url)
-        .header("Authorization", &auth)
-        .header("User-Agent", agent_name)
-        .call()
-        .ok()?
-        .body_mut()
-        .read_json()
-        .ok()?;
-    reset_of(&body)
-}
-
-/// The reading itself: `usages.<window>.used_ratio >= 1` beside its `reset_time`. `limits[].detail`
-/// (`used >= limit`, `resetTime`) is the same fact a second later, read only when `usages` is silent.
+/// nothing lifts until every one of them has. `None` when no window is exhausted - the caller then
+/// reads the refusal's own prose. `usages.<window>.used_ratio >= 1` beside its `reset_time`;
+/// `limits[].detail` (`used >= limit`, `resetTime`) is the same fact a second later, read only when
+/// `usages` is silent.
 pub fn reset_of(body: &Value) -> Option<u64> {
     let named = body["usages"]
         .as_object()

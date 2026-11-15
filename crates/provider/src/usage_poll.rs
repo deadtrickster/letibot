@@ -3,8 +3,8 @@
 //! session watching it; it ends before its next request once no watcher is still on the preset.
 
 use std::collections::BTreeMap;
-use std::sync::Mutex;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
@@ -184,6 +184,11 @@ fn civil(z: i64) -> (i64, i64, i64) {
 
 /// One request to the endpoint, parsed. `None` on any failure: the last reading stands.
 pub fn fetch(url: &str, creds: &Credentials) -> Option<Vec<Window>> {
+    let w = windows(&fetch_body(url, creds)?);
+    (!w.is_empty()).then_some(w)
+}
+
+fn fetch_body(url: &str, creds: &Credentials) -> Option<Value> {
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
             .timeout_global(Some(crate::usage::TIMEOUT))
@@ -195,7 +200,7 @@ pub fn fetch(url: &str, creds: &Credentials) -> Option<Vec<Window>> {
     } else {
         (format!("Bearer {}", creds.key), crate::kimi::USER_AGENT)
     };
-    let body: Value = agent
+    agent
         .get(url)
         .header("Authorization", &auth)
         .header("User-Agent", ua)
@@ -203,9 +208,7 @@ pub fn fetch(url: &str, creds: &Credentials) -> Option<Vec<Window>> {
         .ok()?
         .body_mut()
         .read_json()
-        .ok()?;
-    let w = windows(&body);
-    (!w.is_empty()).then_some(w)
+        .ok()
 }
 
 /// What a watcher is handed each reading.
@@ -217,14 +220,25 @@ pub struct Watcher {
     pub tell: Tell,
 }
 
+/// One answer of the endpoint: its windows, the latest reset among its spent ones, and when.
+#[derive(Clone)]
+struct Reading {
+    windows: Vec<Window>,
+    spent_reset_ms: Option<u64>,
+    at: Instant,
+}
+
 #[derive(Default)]
 struct Poll {
-    reading: Option<Vec<Window>>,
+    reading: Option<Reading>,
     watchers: BTreeMap<String, Watcher>,
     running: bool,
 }
 
 static POLLS: Mutex<BTreeMap<String, Poll>> = Mutex::new(BTreeMap::new());
+
+/// One request at a time per endpoint, so a caller arriving while one is out reads its answer.
+static GATES: Mutex<BTreeMap<String, Arc<Mutex<()>>>> = Mutex::new(BTreeMap::new());
 
 fn polls() -> std::sync::MutexGuard<'static, BTreeMap<String, Poll>> {
     POLLS.lock().unwrap_or_else(|e| e.into_inner())
@@ -256,7 +270,7 @@ pub fn watch(
         let creds = creds.clone();
         std::thread::spawn(move || run(url, creds, every));
     }
-    poll.reading.clone()
+    poll.reading.as_ref().map(|r| r.windows.clone())
 }
 
 /// `who` is on no endpoint any more.
@@ -268,21 +282,56 @@ pub fn unwatch(who: &str) {
 
 /// The last reading of `url`, without watching it.
 pub fn reading(url: &str) -> Option<Vec<Window>> {
-    polls().get(url).and_then(|p| p.reading.clone())
+    polls()
+        .get(url)
+        .and_then(|p| p.reading.as_ref())
+        .map(|r| r.windows.clone())
+}
+
+/// The latest reset among the spent windows of a reading of `url`: the poll's own when it is
+/// younger than `fresh` and shows one, else one request made now, which every watcher is told.
+pub fn spent_reset_ms(url: &str, creds: &Credentials, fresh: Duration) -> Option<u64> {
+    read(url, creds, fresh, true)?.spent_reset_ms
+}
+
+/// A reading younger than `fresh` (one with a spent window, if `spent`), else a request now.
+fn read(url: &str, creds: &Credentials, fresh: Duration, spent: bool) -> Option<Reading> {
+    let gate = GATES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(url.to_string())
+        .or_default()
+        .clone();
+    let _one = gate.lock().unwrap_or_else(|e| e.into_inner());
+    let kept = polls().get(url).and_then(|p| p.reading.clone());
+    if let Some(r) =
+        kept.filter(|r| r.at.elapsed() < fresh && (!spent || r.spent_reset_ms.is_some()))
+    {
+        return Some(r);
+    }
+    let body = fetch_body(url, creds)?;
+    let r = Reading {
+        windows: windows(&body),
+        spent_reset_ms: crate::usage::reset_of(&body),
+        at: Instant::now(),
+    };
+    if r.windows.is_empty() {
+        return Some(r);
+    }
+    let mut g = polls();
+    let p = g.entry(url.to_string()).or_default();
+    for watcher in p.watchers.values() {
+        (watcher.tell)(&r.windows);
+    }
+    p.reading = Some(r.clone());
+    Some(r)
 }
 
 fn run(url: String, creds: Credentials, every: Duration) {
     // The first request needs no check: `watch` was the proof someone is on the preset.
     loop {
-        if let Some(w) = fetch(&url, &creds) {
-            let mut g = polls();
-            if let Some(p) = g.get_mut(&url) {
-                for watcher in p.watchers.values() {
-                    (watcher.tell)(&w);
-                }
-                p.reading = Some(w);
-            }
-        }
+        // A reading somebody else took since the last one serves this round.
+        read(&url, &creds, every, false);
         std::thread::sleep(every);
         let mut g = polls();
         let Some(p) = g.get_mut(&url) else { return };

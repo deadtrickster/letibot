@@ -42,7 +42,13 @@ impl Harness {
         let preset = letibot_provider::registry::lookup(&pc.name, file).ok()?;
         preset.usage_url?;
         let creds = letibot_provider::keys::resolve(preset, pc.api_key.as_deref(), file).ok()?;
-        let at = letibot_provider::usage::exhausted_reset_ms(preset, &creds)?;
+        // The poll's reading serves when it shows the spent window, so one park is one request.
+        let url = letibot_provider::usage::url(preset, &creds)?;
+        let at = letibot_provider::usage_poll::spent_reset_ms(
+            &url,
+            &creds,
+            letibot_provider::usage_poll::EVERY,
+        )?;
         let now = self.limit_now_ms();
         // A reset already past is a stale report: the window in the prose is the better reading.
         (at > now).then(|| (at - now).div_ceil(1000))
