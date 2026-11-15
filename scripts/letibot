@@ -523,6 +523,15 @@ need() { # need WHAT VERB
          run \`$ME $2 --help\` for what it takes"
 }
 
+# The config reference is the multicall's verb and parses its own flags (`--markdown`, `--as`),
+# so it is handed over before the flag guard can refuse them.
+case "${1:-}" in
+  --config-reference | --config-header)
+    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the config reference lives there)"
+    exec "$BIN/letibot" "$@"
+    ;;
+esac
+
 # **`<verb> --help` answers for that verb.** One wall of text for every question is what this
 # was: a person asking about `--delete` read twenty commands to find the one they typed.
 verb_help() { # verb_help VERB
@@ -875,6 +884,8 @@ flags_table() {
 --where                |more  |[FOLDER] |the socket this folder's daemon listens on, and whether it is up
 --ensure               |more  |       |with `--where`: start the daemon when none is running
 --json                 |more  |       |with `--where`: one object - socket, live, project, folder
+--config-reference     |more  |       |every option of every config file, or of one (`letibot --config-reference --help`)
+--config-header        |more  |       |write the reference block into a TOML config file's header: `--config-header FILE`
 --attach               |more  |[N/DIR] |connect only, never start: this folder's daemon, or another's by number
 --listen               |more  |[WORDS] |which repositories of this folder's sessions hear gate news
 --read-only            |more  |       |no write tools at all (the orchestrator seat)
