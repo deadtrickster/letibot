@@ -14,7 +14,15 @@ pub struct ShadowConfig {
     /// `[default]` as one model spelling, for a job that is on with no model line. `local` when
     /// there is no `[default]`, which is what a daemon started bare would answer on.
     default: String,
+    /// One fresh call per trigger instead of a running conversation: the fallback and the
+    /// comparison.
+    stateless: bool,
+    /// Every Nth persistent question is also asked statelessly; 0 is never.
+    fresh_every: u32,
 }
+
+/// How often a persistent question is checked against a fresh call when the file does not say.
+pub const FRESH_EVERY: u32 = 10;
 
 impl ShadowConfig {
     /// The operator's file, or `file` for a test. A fault in it is every job off, said by name.
@@ -39,8 +47,17 @@ impl ShadowConfig {
         let job = |s: &str| Job::parse(s).ok_or_else(|| format!("[shadow] `{s}` is not a job"));
         let mut out = ShadowConfig {
             default,
+            stateless: lines.mode.as_deref() == Some("stateless"),
+            fresh_every: lines.fresh_every.unwrap_or(FRESH_EVERY),
             ..ShadowConfig::default()
         };
+        if let Some(m) = lines.mode.as_deref()
+            && !letibot_provider::keys::SHADOW_MODES.contains(&m)
+        {
+            return Err(format!(
+                "[shadow] mode `{m}` is not persistent or stateless"
+            ));
+        }
         for j in &lines.enabled {
             out.enabled.insert(job(j)?);
         }
@@ -52,6 +69,22 @@ impl ShadowConfig {
 
     pub fn is_on(&self, job: Job) -> bool {
         self.enabled.contains(&job)
+    }
+
+    /// Each job a running conversation (R257), unless `mode = "stateless"`.
+    pub fn persistent(&self) -> bool {
+        !self.stateless
+    }
+
+    pub fn fresh_every(&self) -> u32 {
+        self.fresh_every
+    }
+
+    /// For a test or a caller that picks the mode in code.
+    pub fn with_mode(mut self, persistent: bool, fresh_every: u32) -> ShadowConfig {
+        self.stateless = !persistent;
+        self.fresh_every = fresh_every;
+        self
     }
 
     pub fn any_on(&self) -> bool {
@@ -79,12 +112,20 @@ impl ShadowConfig {
 
     /// One line per job that is on, for the shadow session's first row and `--status`.
     pub fn disclose(&self, watched: &str) -> Vec<String> {
-        Job::ALL
+        let mut out: Vec<String> = Job::ALL
             .into_iter()
             .map(|j| match self.model_for(j, watched) {
                 Some(m) => format!("{}: on, {m}", j.as_str()),
                 None => format!("{}: off", j.as_str()),
             })
-            .collect()
+            .collect();
+        out.push(match self.persistent() {
+            true => format!(
+                "mode: persistent, a fresh call every {} questions",
+                self.fresh_every
+            ),
+            false => "mode: stateless".to_string(),
+        });
+        out
     }
 }

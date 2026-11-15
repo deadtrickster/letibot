@@ -3641,6 +3641,7 @@ impl Harness {
             shadow: Default::default(),
             shadow_held: None,
             shadow_counted: (0, 0),
+            shadow_fed: 0,
             shadow_cell,
             shadow_during: Default::default(),
         };

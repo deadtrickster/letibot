@@ -589,7 +589,15 @@ pub struct ShadowLines {
     pub enabled: Vec<String>,
     /// Job, then watched-model key (`provider/model`, `provider/*`, `*`), then the model it runs on.
     pub models: BTreeMap<String, BTreeMap<String, String>>,
+    /// `persistent` (the default) or `stateless`: one running conversation per job, or one fresh
+    /// call per trigger.
+    pub mode: Option<String>,
+    /// Every Nth persistent question is also asked of a fresh stateless call; 0 is never.
+    pub fresh_every: Option<u32>,
 }
+
+/// The spellings `[shadow] mode` takes.
+pub const SHADOW_MODES: [&str; 2] = ["persistent", "stateless"];
 
 /// Read `[shadow]` and `[shadow.JOB]`. `Ok` default is no file or no section, which is every job off.
 pub fn shadow(file: Option<&Path>) -> Result<ShadowLines, Unreadable> {
@@ -634,6 +642,22 @@ pub fn shadow(file: Option<&Path>) -> Result<ShadowLines, Unreadable> {
                         out.enabled.push(job.to_string());
                     }
                 }
+            } else if k == "mode" {
+                let mode = v.trim().trim_matches(['"', '\'']);
+                if !SHADOW_MODES.contains(&mode) {
+                    return Err(fault(format!(
+                        "[shadow] mode = {v} is not one of {}",
+                        SHADOW_MODES.join(", ")
+                    )));
+                }
+                out.mode = Some(mode.to_string());
+            } else if k == "fresh_every" {
+                let n = v.trim().parse::<u32>().map_err(|_| {
+                    fault(format!(
+                        "[shadow] fresh_every = {v} is not a count; write `fresh_every = 10`"
+                    ))
+                })?;
+                out.fresh_every = Some(n);
             } else if known(k) {
                 let model = v.trim();
                 if model.is_empty() {
@@ -645,7 +669,7 @@ pub fn shadow(file: Option<&Path>) -> Result<ShadowLines, Unreadable> {
                     .insert("*".into(), model.to_string());
             } else {
                 return Err(fault(format!(
-                    "[shadow] `{k}` is not a key: the keys are `enabled` and the jobs, {}",
+                    "[shadow] `{k}` is not a key: the keys are `enabled`, `mode`, `fresh_every` and the jobs, {}",
                     SHADOW_JOBS.join(", ")
                 )));
             }
@@ -1422,6 +1446,14 @@ mod tests {
         let lines = &t.models["turn_end"];
         assert_eq!(lines["*"], "deepseek/deepseek-flash");
         assert_eq!(lines["kimi-code-global/*"], "local");
+        assert_eq!(t.mode, None);
+        let f = tmp_providers(
+            "shadow_mode",
+            "[shadow]\nenabled = [\"turn_end\"]\nmode = \"stateless\"\nfresh_every = 4\n",
+        );
+        let t = shadow(Some(&f)).unwrap();
+        assert_eq!(t.mode.as_deref(), Some("stateless"));
+        assert_eq!(t.fresh_every, Some(4));
     }
 
     #[test]
@@ -1433,6 +1465,16 @@ mod tests {
                 "names `offers`",
             ),
             ("shadow_key", "[shadow]\nturn_ends = \"x\"\n", "not a key"),
+            (
+                "shadow_mode",
+                "[shadow]\nmode = \"forever\"\n",
+                "is not one of",
+            ),
+            (
+                "shadow_every",
+                "[shadow]\nfresh_every = \"often\"\n",
+                "not a count",
+            ),
             (
                 "shadow_list",
                 "[shadow]\nenabled = \"turn_end\"\n",

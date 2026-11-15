@@ -40,6 +40,13 @@ impl Harness {
         }
         self.shadow_counted = (items.len(), n);
         s.advance(n);
+        // A persistent shadow is fed every new row once, with its author. A watched transcript
+        // that shrank (compacted) is fed from where it now ends.
+        if s.persistent() {
+            let from = self.shadow_fed.min(items.len());
+            s.feed(crate::shadow::feed::rows_of(items, from));
+            self.shadow_fed = items.len();
+        }
     }
 
     /// At a round boundary: queue the during check when the subject changed or enough calls ran.
@@ -197,8 +204,10 @@ impl Harness {
         }
         let mut shown = crate::shadow::during::shown(&self.session.items, todos, &short, &loaded);
         shown.data = format!("triggered by: {why}\n\n{}", shown.data);
+        let q = crate::shadow::during::question(&why, todos, &short, &loaded);
+        self.tend_shadow();
         if let Some(s) = self.shadow.get() {
-            s.submit(Job::During, shown);
+            s.submit_asking(Job::During, shown, q);
         }
     }
 
@@ -236,8 +245,9 @@ impl Harness {
                 s.row = at;
             }
         }
+        let q = turn_end::question(turn_end::turn_start(&self.session.items), &todos, &blocked);
         if let Some(s) = self.shadow.get() {
-            s.submit(Job::TurnEnd, shown);
+            s.submit_asking(Job::TurnEnd, shown, q);
         }
     }
 

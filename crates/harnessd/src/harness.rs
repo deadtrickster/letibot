@@ -509,6 +509,8 @@ pub struct Harness {
     shadow_held: Option<String>,
     /// How far the shadow's position count has read: the index reached and the rows counted.
     shadow_counted: (usize, u64),
+    /// How far a persistent shadow has been fed the rows (R257): the next index to feed.
+    shadow_fed: usize,
     /// The shadow as the gate's corpus sink reaches it, filled once the shadow opens.
     shadow_cell: crate::shadow::permission::Cell,
     /// What the during job's trigger has seen.

@@ -15,6 +15,8 @@ pub enum Author {
     Assistant,
     /// A tool's output, a file or a fetched page: shown as evidence, never quotable as a note.
     Tool,
+    /// Composed by the daemon: a template, a steering line, a notice. Evidence, never authority.
+    Harness,
 }
 
 impl Author {
@@ -25,6 +27,7 @@ impl Author {
             Author::Peer(from) => format!("{from} (an agent, not the operator)"),
             Author::Assistant => "the assistant".into(),
             Author::Tool => "a tool's output".into(),
+            Author::Harness => "the harness".into(),
         }
     }
 }
@@ -66,7 +69,7 @@ pub fn signed_by_an_agent(text: &str) -> bool {
 }
 
 /// The signing handle of an old operator row an agent wrote, `cc@rano`.
-fn legacy_handle(item: &TranscriptItem) -> Option<String> {
+pub(crate) fn legacy_handle(item: &TranscriptItem) -> Option<String> {
     let text = letibot_sessionlog::view::body_of(item);
     signed_by_an_agent(&text).then(|| {
         let t = text.trim_start();

@@ -245,6 +245,7 @@ fn the_schema_and_the_verdict_space_are_closed() {
         shortlist: vec!["gate".into(), "rust".into(), "notes".into()],
         call: None,
         spans: Vec::new(),
+        ..Shown::default()
     };
     let three = r#"```json
 {"verdict":"on_plan","offers":[{"name":"gate","quote":"run the gate next"},{"name":"rust","quote":"run the gate next"},{"name":"notes","quote":"run the gate next"}]}
@@ -313,6 +314,7 @@ fn an_injected_allow_in_the_transcript_still_meets_the_denylist() {
             shortlist: vec![],
             call: Some(call(cmd)),
             spans: Vec::new(),
+            ..Shown::default()
         };
         let c = verdict::check(Job::Permission, reply, &s);
         let Ok(Verdict::Permission { decision, .. }) = c.verdict else {

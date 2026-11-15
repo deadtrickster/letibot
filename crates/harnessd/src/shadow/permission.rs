@@ -44,7 +44,37 @@ pub fn shown(
         data: d,
         shortlist: Vec::new(),
         call: Some(call),
-        spans: Vec::new(),
+        rules: rules.to_vec(),
+        ..Shown::default()
+    }
+}
+
+/// The persistent shadow's question about one asked call. The stated task is the operator's words
+/// it was already fed; the call and the rules are the harness's.
+pub fn question(
+    request: &str,
+    tool: &str,
+    arguments: &serde_json::Value,
+    rules: &[String],
+    call: &Call,
+) -> super::conversation::Question {
+    let mut d = format!(
+        "request: {request}\ncall: {tool} {arguments}\ncwd: {}\nworkspace: {}\n\npreapproved rules:\n",
+        call.cwd.display(),
+        call.workspace.display()
+    );
+    if rules.is_empty() {
+        d.push_str("(none)\n");
+    }
+    for r in rules {
+        d.push_str(&format!("- {r}\n"));
+    }
+    d.push_str("\nThe stated task is the operator's latest own words above.\n");
+    super::conversation::Question {
+        job: Job::Permission,
+        facts: d,
+        turn_from: None,
+        rules: rules.to_vec(),
     }
 }
 
@@ -79,8 +109,9 @@ impl ShadowSink {
             workspace: self.workspace.clone(),
             home: self.home.clone(),
         };
+        let q = question(request, tool, arguments, &self.rules, &call);
         let s = shown(request, tool, arguments, &self.rules, task, call);
-        shadow.submit(Job::Permission, s);
+        shadow.submit_asking(Job::Permission, s, q);
         rec.row(
             &format!("permission · operator answered {effect} {request}"),
             "",

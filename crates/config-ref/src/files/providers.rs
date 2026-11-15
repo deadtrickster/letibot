@@ -49,6 +49,8 @@ pub const PROVIDERS: File = File {
             needs: "",
             keys: &[
                 k("enabled", "list of turn_end | during | permission", "[] (no job runs)", "", "jobs that run", "[\"turn_end\"]"),
+                k("mode", "persistent | stateless", "persistent", "", "persistent: each job is one running conversation fed the watched rows once, with authors, and asked only at its trigger; stateless: one fresh call per trigger, the fallback", "\"persistent\""),
+                k("fresh_every", "count", "10", "", "every Nth persistent question is also asked of a fresh stateless call, and a disagreement is a row in the shadow session; 0 is never", "10"),
                 k("turn_end", "model", "[default]", "", "model the turn_end job runs on (asleep reminder, note capture); the `*` line of [shadow.turn_end]", "\"deepseek/deepseek-flash\""),
                 k("during", "model", "[default]", "", "model the during job runs on (drift, skill and note offers); its skill-offer pick replaces similarity offers while it is on and not paused, drift and notes are observe-only", "\"local\""),
                 k("permission", "model", "[default]", "", "model the permission job runs on (allow or ask, never deny); observe-only", "\"glm-coding/glm-5.3\""),

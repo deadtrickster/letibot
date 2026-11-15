@@ -9,7 +9,9 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
 use super::Job;
-use super::judge::Judge;
+use super::conversation::{Asked, Conversation, Question};
+use super::feed::Log;
+use super::judge::{Judge, Usage};
 use super::record::Recorder;
 use super::verdict::{self, Shown, Verdict};
 
@@ -44,7 +46,10 @@ impl Timing {
 /// One trigger's request: what the shadow is shown, stamped with the transcript position it is about.
 pub struct Request {
     pub position: u64,
+    /// The stateless data: what a fresh call is shown, and all a stateless job sends.
     pub shown: Shown,
+    /// A persistent job's question at this trigger; without one the job asks statelessly.
+    pub question: Option<Question>,
     reply: Option<mpsc::Sender<Outcome>>,
 }
 
@@ -53,10 +58,33 @@ impl Request {
         Request {
             position,
             shown,
+            question: None,
             reply: None,
         }
     }
+
+    pub fn asking(position: u64, shown: Shown, question: Question) -> Request {
+        Request {
+            question: Some(question),
+            ..Request::new(position, shown)
+        }
+    }
 }
+
+/// What makes a job persistent: the rows every job is fed, and how often a question is also asked
+/// of a fresh stateless call.
+pub struct Persist {
+    pub log: Arc<Mutex<Log>>,
+    pub fresh_every: u32,
+    /// History bytes before compaction.
+    pub budget: usize,
+}
+
+/// One call to make on the judge, off the worker thread.
+type Call = Box<dyn FnOnce(&dyn Judge) -> Result<(String, Option<Usage>), String> + Send>;
+
+/// A call's answer: `Err(())` is the deadline passing.
+type Got = Result<Result<(String, Option<Usage>), String>, ()>;
 
 /// What became of a request. Only `Verdict` may change anything; every other arm is today's behaviour.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +186,9 @@ struct Inner {
     health: Mutex<Health>,
     inflight: Arc<AtomicBool>,
     on_outcome: OnOutcome,
+    persist: Option<Persist>,
+    convo: Mutex<Conversation>,
+    asked: AtomicU64,
 }
 
 pub struct JobRunner {
@@ -185,6 +216,52 @@ impl JobRunner {
         source: String,
         on_outcome: OnOutcome,
     ) -> JobRunner {
+        Self::launch(
+            job, judge, recorder, position, timing, system, source, on_outcome, None,
+        )
+    }
+
+    /// [`JobRunner::start`] as a running conversation fed from `persist.log` (R257).
+    #[allow(clippy::too_many_arguments)] // each is a separate seam the tests replace
+    pub fn start_persistent(
+        job: Job,
+        judge: Arc<dyn Judge>,
+        recorder: Arc<dyn Recorder>,
+        position: Arc<AtomicU64>,
+        timing: Timing,
+        system: String,
+        source: String,
+        on_outcome: OnOutcome,
+        persist: Persist,
+    ) -> JobRunner {
+        Self::launch(
+            job,
+            judge,
+            recorder,
+            position,
+            timing,
+            system,
+            source,
+            on_outcome,
+            Some(persist),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn launch(
+        job: Job,
+        judge: Arc<dyn Judge>,
+        recorder: Arc<dyn Recorder>,
+        position: Arc<AtomicU64>,
+        timing: Timing,
+        system: String,
+        source: String,
+        on_outcome: OnOutcome,
+        persist: Option<Persist>,
+    ) -> JobRunner {
+        let budget = persist
+            .as_ref()
+            .map_or(super::conversation::BUDGET, |p| p.budget);
         let inner = Arc::new(Inner {
             job,
             judge,
@@ -208,6 +285,9 @@ impl JobRunner {
             }),
             inflight: Arc::new(AtomicBool::new(false)),
             on_outcome,
+            persist,
+            convo: Mutex::new(Conversation::new(budget)),
+            asked: AtomicU64::new(0),
         });
         let worker = inner.clone();
         std::thread::Builder::new()
@@ -313,45 +393,197 @@ impl Inner {
                     None => false,
                 }
             };
+            let fresh = self.sampled(&req).then(|| req.shown.clone());
             let outcome = self.exchange(&req, coalesced);
             self.breaker(probe, &outcome);
             self.publish_state();
-            self.finish(req, outcome);
+            let position = req.position;
+            self.finish(req, outcome.clone());
+            // After the verdict acted: the comparison never delays what the session is told.
+            if let Some(shown) = fresh {
+                self.fresh_check(position, &shown, &outcome);
+            }
         }
+    }
+
+    /// Whether this persistent question is one of the sampled ones a fresh call also answers.
+    fn sampled(&self, req: &Request) -> bool {
+        let Some(p) = &self.persist else {
+            return false;
+        };
+        if req.question.is_none() || p.fresh_every == 0 {
+            return false;
+        }
+        let n = self.asked.fetch_add(1, Ordering::SeqCst) + 1;
+        n.is_multiple_of(u64::from(p.fresh_every))
+    }
+
+    /// One call under the deadline. A call still running from before makes this one a miss.
+    fn call(&self, f: Call) -> Got {
+        if self.inflight.swap(true, Ordering::SeqCst) {
+            return Ok(Err(
+                "the previous call is still running past its deadline".to_string()
+            ));
+        }
+        let (tx, rx) = mpsc::channel();
+        let (judge, busy) = (self.judge.clone(), self.inflight.clone());
+        std::thread::spawn(move || {
+            let r = f(&*judge);
+            busy.store(false, Ordering::SeqCst);
+            let _ = tx.send(r);
+        });
+        rx.recv_timeout(self.timing.deadline).map_err(|_| ())
     }
 
     /// One call and its record: the prompt sent, the reply, and every check's pass or reject.
     fn exchange(&self, req: &Request, coalesced: u32) -> Outcome {
+        if let (Some(p), Some(q)) = (&self.persist, &req.question) {
+            return self.exchange_persistent(req, q, p, coalesced);
+        }
         let user = super::prompts::fence(&req.shown.data);
         let started = Instant::now();
-        let got = if self.inflight.swap(true, Ordering::SeqCst) {
-            // The last call is still running past its deadline: this one is a miss, not a pile-up.
-            Ok(Err(
-                "the previous call is still running past its deadline".to_string()
-            ))
-        } else {
-            let (tx, rx) = mpsc::channel();
-            let (judge, system, u, busy) = (
-                self.judge.clone(),
-                self.system.clone(),
-                user.clone(),
-                self.inflight.clone(),
-            );
-            std::thread::spawn(move || {
-                let r = judge.judge(&system, &u);
-                busy.store(false, Ordering::SeqCst);
-                let _ = tx.send(r);
-            });
-            rx.recv_timeout(self.timing.deadline)
-        };
+        let (system, u) = (self.system.clone(), user.clone());
+        let got = self.call(Box::new(move |j| j.judge(&system, &u).map(|r| (r, None))));
         let took = started.elapsed();
-        let (reply, checks, outcome) = match got {
-            Ok(Ok(reply)) => {
-                let checked = verdict::check(self.job, &reply, &req.shown);
+        let (reply, checks, outcome) = self.settle(req.position, got, took, &req.shown);
+        let body = format!(
+            "model: {}\nprompt: {}\nposition: #{}\ncoalesced before it: {coalesced}\n\n\
+             --- system\n{}\n--- user\n{user}\n--- reply\n{reply}\n--- checks\n{}\n--- outcome\n{}\n",
+            self.judge.label(),
+            self.source,
+            req.position,
+            self.system,
+            checks.join("\n"),
+            self.said(&outcome),
+        );
+        self.record(req.position, took, &outcome, body);
+        outcome
+    }
+
+    /// The persistent turn: the new rows and the question on top of the running conversation.
+    fn exchange_persistent(
+        &self,
+        req: &Request,
+        q: &Question,
+        p: &Persist,
+        coalesced: u32,
+    ) -> Outcome {
+        let asked: Asked = {
+            let log = p.log.lock().unwrap_or_else(|e| e.into_inner());
+            self.convo
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .ask(&log, q)
+        };
+        if let Some(note) = &asked.compacted {
+            self.recorder
+                .row(&format!("compacted · {} · {note}", self.job.as_str()), "");
+        }
+        let system = format!("{}{}", self.system, super::conversation::addendum(self.job));
+        let started = Instant::now();
+        let (sys, msgs) = (system.clone(), asked.messages.clone());
+        let got = self.call(Box::new(move |j| j.converse(&sys, &msgs)));
+        let took = started.elapsed();
+        let mut shown = asked.shown.clone();
+        shown.shortlist = req.shown.shortlist.clone();
+        shown.call = req.shown.call.clone();
+        let usage = match &got {
+            Ok(Ok((_, u))) => *u,
+            _ => None,
+        };
+        let (reply, checks, outcome) = self.settle(req.position, got, took, &shown);
+        if !matches!(outcome, Outcome::TimedOut | Outcome::Failed(_)) {
+            self.convo
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .commit(&asked, &reply);
+        }
+        let tokens = match usage {
+            Some(u) => format!(
+                "tokens: prompt {}, cached {}\n",
+                u.prompt_tokens, u.cached_tokens
+            ),
+            None => String::new(),
+        };
+        // The system prompt is the same for every turn of one conversation: shown at its first.
+        let sys = match asked.turn {
+            1 => format!("--- system\n{system}\n"),
+            n => format!(
+                "--- system\nunchanged since turn 1 ({n} turns, {} messages)\n",
+                asked.messages.len()
+            ),
+        };
+        let body = format!(
+            "model: {}\nprompt: {}\nmode: persistent, turn {}\nposition: #{}\ncoalesced before it: {coalesced}\n{tokens}\n\
+             {sys}--- new rows and question\n{}\n--- reply\n{reply}\n--- checks\n{}\n--- outcome\n{}\n",
+            self.judge.label(),
+            self.source,
+            asked.turn,
+            req.position,
+            asked.tail,
+            checks.join("\n"),
+            self.said(&outcome),
+        );
+        self.record(req.position, took, &outcome, body);
+        outcome
+    }
+
+    /// The same question, asked of a fresh stateless call, and whether it agrees. Recorded, and
+    /// never acted on; the breaker does not count it.
+    fn fresh_check(&self, position: u64, shown: &Shown, persistent: &Outcome) {
+        let user = super::prompts::fence(&shown.data);
+        let (system, u) = (self.system.clone(), user.clone());
+        let started = Instant::now();
+        let got = self.call(Box::new(move |j| j.judge(&system, &u).map(|r| (r, None))));
+        let took = started.elapsed();
+        let (reply, checks, fresh) = match got {
+            Ok(Ok((reply, _))) => {
+                let c = verdict::check(self.job, &reply, shown);
+                let o = match c.verdict {
+                    Ok(v) => Outcome::Verdict(v),
+                    Err(why) => Outcome::Void(why),
+                };
+                (reply, c.log, o)
+            }
+            Ok(Err(e)) => (String::new(), Vec::new(), Outcome::Failed(e)),
+            Err(()) => (String::new(), Vec::new(), Outcome::TimedOut),
+        };
+        let (a, b) = (persistent.word(), fresh.word());
+        let said = match agree(persistent, &fresh) {
+            Some(true) => format!("agrees · {a}"),
+            Some(false) => format!("DISAGREES · persistent {a}, fresh {b}"),
+            None => format!("no comparison · persistent {a}, fresh {b}"),
+        };
+        self.recorder.row(
+            &format!(
+                "fresh check · {} · {said} · {:.1}s · at #{position}",
+                self.job.as_str(),
+                took.as_secs_f64()
+            ),
+            &format!(
+                "persistent: {}\nfresh: {}\n\n--- user\n{user}\n--- reply\n{reply}\n--- checks\n{}\n",
+                self.said(persistent),
+                self.said(&fresh),
+                checks.join("\n")
+            ),
+        );
+    }
+
+    /// A reply read against `shown`, and the health it leaves.
+    fn settle(
+        &self,
+        position: u64,
+        got: Got,
+        took: Duration,
+        shown: &Shown,
+    ) -> (String, Vec<String>, Outcome) {
+        match got {
+            Ok(Ok((reply, _))) => {
+                let checked = verdict::check(self.job, &reply, shown);
                 let now = self.position.load(Ordering::SeqCst);
                 let outcome = match checked.verdict {
-                    Ok(_) if self.job.acts() && now > req.position => Outcome::Stale {
-                        judged: req.position,
+                    Ok(_) if self.job.acts() && now > position => Outcome::Stale {
+                        judged: position,
                         now,
                     },
                     Ok(v) => Outcome::Verdict(v),
@@ -370,14 +602,17 @@ impl Inner {
                 self.lock_health().misses += 1;
                 (String::new(), Vec::new(), Outcome::Failed(e))
             }
-            Err(_) => {
+            Err(()) => {
                 let mut h = self.lock_health();
                 h.misses += 1;
                 h.last = Some(took);
                 (String::new(), Vec::new(), Outcome::TimedOut)
             }
-        };
-        let said = match &outcome {
+        }
+    }
+
+    fn said(&self, outcome: &Outcome) -> String {
+        match outcome {
             Outcome::Stale { judged, now } => {
                 format!("dropped as stale: judged #{judged}, the session is at #{now}")
             }
@@ -386,35 +621,29 @@ impl Inner {
             Outcome::Failed(e) => format!("the call failed: {e}"),
             Outcome::Verdict(v) => format!("{v:?}"),
             other => other.word().to_string(),
-        };
+        }
+    }
+
+    /// The exchange's row. The title is what `record::last_turn_end` reads after a restart.
+    fn record(&self, position: u64, took: Duration, outcome: &Outcome, body: String) {
         let title = format!(
             "{} · {} · {:.1}s · {} · at #{}",
             self.job.as_str(),
             outcome.word(),
             took.as_secs_f64(),
             self.judge.label(),
-            req.position
-        );
-        let body = format!(
-            "model: {}\nprompt: {}\nposition: #{}\ncoalesced before it: {coalesced}\n\n\
-             --- system\n{}\n--- user\n{user}\n--- reply\n{reply}\n--- checks\n{}\n--- outcome\n{said}\n",
-            self.judge.label(),
-            self.source,
-            req.position,
-            self.system,
-            checks.join("\n"),
+            position
         );
         // The promise, apart, for a reader that acts on the record later (the restart check).
         let mut body = body;
         if let Outcome::Verdict(Verdict::TurnEnd {
             reminder: verdict::Reminder::Owed { promise, .. },
             ..
-        }) = &outcome
+        }) = outcome
         {
             body.push_str(&format!("--- promise\n{promise}\n"));
         }
         self.recorder.row(&title, &body);
-        outcome
     }
 
     /// Pause after `misses` in a row or a median over budget; a probe after the backoff resumes
@@ -482,10 +711,29 @@ impl Inner {
     }
 }
 
+/// Whether a persistent and a fresh outcome say the same: the same verdict word and, for during,
+/// the same offers. `None` when either has no verdict to compare.
+pub fn agree(a: &Outcome, b: &Outcome) -> Option<bool> {
+    let (Outcome::Verdict(x), Outcome::Verdict(y)) = (a, b) else {
+        return None;
+    };
+    let offers = |v: &Verdict| match v {
+        Verdict::During { offers, .. } => {
+            let mut n: Vec<String> = offers.iter().map(|o| o.name.clone()).collect();
+            n.sort();
+            n
+        }
+        _ => Vec::new(),
+    };
+    Some(x.word() == y.word() && offers(x) == offers(y))
+}
+
 /// The jobs that are on, for one watched session, and the position they are stamped against.
 pub struct Shadow {
     runners: BTreeMap<Job, JobRunner>,
     position: Arc<AtomicU64>,
+    /// The rows every persistent job is fed; `None` for a stateless shadow.
+    log: Option<Arc<Mutex<Log>>>,
 }
 
 impl Shadow {
@@ -505,29 +753,65 @@ impl Shadow {
         let position = Arc::new(AtomicU64::new(0));
         let mut runners = BTreeMap::new();
         let mut said = cfg.disclose(watched_model);
+        let budget = super::conversation::BUDGET;
+        let log = cfg
+            .persistent()
+            .then(|| Arc::new(Mutex::new(Log::new(2 * budget))));
         for job in cfg.enabled() {
             let model = cfg.model_for(job, watched_model).unwrap_or_default();
             let (system, source) = super::prompts::load(workspace, job);
             said.push(format!("{} prompt: {source}", job.as_str()));
-            runners.insert(
-                job,
-                JobRunner::start(
+            let (judge, timing, on) = (judge_for(job, &model), timing_for(job), on_outcome(job));
+            let r = match &log {
+                Some(log) => JobRunner::start_persistent(
                     job,
-                    judge_for(job, &model),
+                    judge,
                     recorder.clone(),
                     position.clone(),
-                    timing_for(job),
+                    timing,
                     system,
                     source,
-                    on_outcome(job),
+                    on,
+                    Persist {
+                        log: log.clone(),
+                        fresh_every: cfg.fresh_every(),
+                        budget,
+                    },
                 ),
-            );
+                None => JobRunner::start(
+                    job,
+                    judge,
+                    recorder.clone(),
+                    position.clone(),
+                    timing,
+                    system,
+                    source,
+                    on,
+                ),
+            };
+            runners.insert(job, r);
         }
         recorder.row(
             &format!("shadow started for a session on {watched_model}"),
             &said.join("\n"),
         );
-        Some(Shadow { runners, position })
+        Some(Shadow {
+            runners,
+            position,
+            log,
+        })
+    }
+
+    /// Whether the jobs are running conversations that need the watched rows fed.
+    pub fn persistent(&self) -> bool {
+        self.log.is_some()
+    }
+
+    /// Append the watched session's new rows, with their authors. A stateless shadow drops them.
+    pub fn feed(&self, rows: Vec<super::feed::Row>) {
+        if let Some(log) = &self.log {
+            log.lock().unwrap_or_else(|e| e.into_inner()).push(rows);
+        }
     }
 
     /// The watched transcript grew to `n` rows: a verdict stamped earlier is now stale.
@@ -552,6 +836,20 @@ impl Shadow {
             }
             None => false,
         }
+    }
+
+    /// Queue `job`'s check with the persistent question beside the stateless data. A stateless
+    /// shadow asks the data alone.
+    pub fn submit_asking(&self, job: Job, shown: Shown, question: Question) -> bool {
+        let Some(r) = self.runners.get(&job) else {
+            return false;
+        };
+        let req = match self.persistent() {
+            true => Request::asking(self.position(), shown, question),
+            false => Request::new(self.position(), shown),
+        };
+        r.submit(req);
+        true
     }
 
     /// The bounded wait for `job`'s verdict. `None` when the job is off.

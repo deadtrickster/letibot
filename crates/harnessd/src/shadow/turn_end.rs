@@ -54,6 +54,58 @@ pub fn shown(words: &[Said], reply: &str, todos: &[TodoItem], blocked: &[String]
     s
 }
 
+/// The persistent shadow's question at a turn end. The turn's rows were already fed; the question
+/// names where the turn began and adds the todos and what blocked it.
+pub fn question(
+    turn_from: Option<usize>,
+    todos: &[TodoItem],
+    blocked: &[String],
+) -> super::conversation::Question {
+    let mut d = match turn_from {
+        Some(r) => {
+            format!("the judged turn began at row {r} and ended with the newest assistant row\n\n")
+        }
+        None => "the judged turn ended with the newest assistant row\n\n".to_string(),
+    };
+    d.push_str("open todos:\n");
+    let open: Vec<&TodoItem> = todos
+        .iter()
+        .filter(|t| matches!(t.status, TodoStatus::Pending | TodoStatus::InProgress))
+        .collect();
+    if open.is_empty() {
+        d.push_str("(none)\n");
+    }
+    for t in open {
+        d.push_str(&format!("- {}\n", t.content.trim()));
+    }
+    d.push_str("\nblocked by: ");
+    if blocked.is_empty() {
+        d.push_str("nothing recorded\n");
+    } else {
+        d.push_str(&blocked.join("; "));
+        d.push('\n');
+    }
+    super::conversation::Question {
+        job: super::Job::TurnEnd,
+        facts: d,
+        turn_from,
+        rules: Vec::new(),
+    }
+}
+
+/// The row the turn now ending began at: the last message that drove a turn.
+pub fn turn_start(items: &[TranscriptItem]) -> Option<usize> {
+    items.iter().rposition(|i| {
+        matches!(
+            i,
+            TranscriptItem::User {
+                speaker: Speaker::Operator | Speaker::Peer { .. },
+                ..
+            }
+        )
+    })
+}
+
 /// What the session is told, from a fixed template and a verified quote.
 pub fn reminder(promise: &str, shadow_session: &str) -> String {
     format!(

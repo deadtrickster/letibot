@@ -3,7 +3,9 @@
 //! shadow's own stored session, and the guardrails here are code a prompt cannot override.
 
 pub mod config;
+pub mod conversation;
 pub mod during;
+pub mod feed;
 pub mod guard;
 pub mod judge;
 pub mod permission;
@@ -15,6 +17,8 @@ pub mod turn_end;
 pub mod verdict;
 pub mod words;
 
+#[cfg(test)]
+mod persistent_tests;
 #[cfg(test)]
 mod tests;
 

@@ -1,5 +1,5 @@
-//! The model a shadow job asks: any configured provider, or a local chat endpoint. One call, no
-//! tools, no history - the shadow session is a record, not a conversation.
+//! The model a shadow job asks: any configured provider, or a local chat endpoint. No tools. A
+//! stateless job sends one message per call; a persistent one sends its running conversation.
 
 use std::sync::Arc;
 
@@ -10,12 +10,32 @@ use super::Job;
 /// Most a verdict may spend. The schema is one short object.
 pub const MAX_TOKENS: u32 = 800;
 
+/// What a call cost, when the model said: the prompt and how much of it was served from cache.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Usage {
+    pub prompt_tokens: u64,
+    pub cached_tokens: u64,
+}
+
 /// One judgement: the prompt in, the reply text out.
 pub trait Judge: Send + Sync {
     /// `provider/model`, or `local`, for every row the shadow writes.
     fn label(&self) -> String;
     fn judge(&self, system: &str, user: &str) -> Result<String, String>;
+
+    /// One turn of a running conversation. A judge with no conversation of its own is sent the
+    /// newest message alone.
+    fn converse(
+        &self,
+        system: &str,
+        messages: &[Message],
+    ) -> Result<(String, Option<Usage>), String> {
+        let last = messages.last().map(|m| m.text.as_str()).unwrap_or("");
+        self.judge(system, last).map(|r| (r, None))
+    }
 }
+
+use super::conversation::{Message, Role};
 
 /// A provider backend, seated for one-shot verdicts.
 struct ProviderJudge {
@@ -29,10 +49,34 @@ impl Judge for ProviderJudge {
     }
 
     fn judge(&self, system: &str, user: &str) -> Result<String, String> {
-        let items = [letibot_transcript::TranscriptItem::User {
-            speaker: letibot_transcript::Speaker::Operator,
-            parts: vec![letibot_transcript::UserPart::Text { text: user.into() }],
+        let one = [Message {
+            role: Role::User,
+            text: user.into(),
         }];
+        self.converse(system, &one).map(|(r, _)| r)
+    }
+
+    fn converse(
+        &self,
+        system: &str,
+        messages: &[Message],
+    ) -> Result<(String, Option<Usage>), String> {
+        let items: Vec<letibot_transcript::TranscriptItem> = messages
+            .iter()
+            .map(|m| match m.role {
+                Role::User => letibot_transcript::TranscriptItem::User {
+                    speaker: letibot_transcript::Speaker::Operator,
+                    parts: vec![letibot_transcript::UserPart::Text {
+                        text: m.text.clone(),
+                    }],
+                },
+                Role::Assistant => letibot_transcript::TranscriptItem::Assistant {
+                    text: m.text.clone(),
+                    tool_calls: Vec::new(),
+                    truncated: false,
+                },
+            })
+            .collect();
         let req = letibot_backend::TurnRequest {
             system,
             tools_json: &[],
@@ -44,7 +88,13 @@ impl Judge for ProviderJudge {
         };
         self.backend
             .complete(&req, &mut |_| letibot_backend::StreamFlow::Continue)
-            .map(|c| reply_of(&c.text, &c.reasoning))
+            .map(|c| {
+                let usage = Usage {
+                    prompt_tokens: c.cost.prompt_tokens,
+                    cached_tokens: c.cost.cached_tokens,
+                };
+                (reply_of(&c.text, &c.reasoning), Some(usage))
+            })
             .map_err(|e| e.to_string())
     }
 }
@@ -96,12 +146,30 @@ impl Judge for LocalJudge {
     }
 
     fn judge(&self, system: &str, user: &str) -> Result<String, String> {
+        let one = [Message {
+            role: Role::User,
+            text: user.into(),
+        }];
+        self.converse(system, &one).map(|(r, _)| r)
+    }
+
+    fn converse(
+        &self,
+        system: &str,
+        messages: &[Message],
+    ) -> Result<(String, Option<Usage>), String> {
+        let mut msgs = vec![serde_json::json!({ "role": "system", "content": system })];
+        msgs.extend(messages.iter().map(|m| {
+            let role = match m.role {
+                Role::User => "user",
+                Role::Assistant => "assistant",
+            };
+            serde_json::json!({ "role": role, "content": m.text })
+        }));
         let body = serde_json::json!({
             "model": self.model,
-            "messages": [
-                { "role": "system", "content": system },
-                { "role": "user", "content": user },
-            ],
+            "messages": msgs,
+            "cache_prompt": true,
             "max_tokens": MAX_TOKENS,
             "temperature": 0.0,
             "reasoning_effort": "none",
@@ -122,7 +190,17 @@ impl Judge for LocalJudge {
         if v.pointer("/choices/0/message").is_none() {
             return Err("the reply carries no choices[0].message".to_string());
         }
-        Ok(reply_of(&field("content"), &field("reasoning_content")))
+        let n = |p: &str| v.pointer(p).and_then(|x| x.as_u64());
+        let usage = n("/usage/prompt_tokens").map(|prompt_tokens| Usage {
+            prompt_tokens,
+            cached_tokens: n("/usage/prompt_tokens_details/cached_tokens")
+                .or_else(|| n("/timings/cache_n"))
+                .unwrap_or(0),
+        });
+        Ok((
+            reply_of(&field("content"), &field("reasoning_content")),
+            usage,
+        ))
     }
 }
 

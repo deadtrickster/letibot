@@ -169,7 +169,11 @@ fn an_owed_verdict_reminds_with_the_template_and_the_quote() {
 
 #[test]
 fn a_none_verdict_replaces_the_regex_nudge_with_silence() {
-    let (mut h, rang, rows) = a_session("none", r#"{"verdict":"none"}"#);
+    // A persistent shadow's none needs the assistant's or the operator's words as evidence.
+    let (mut h, rang, rows) = a_session(
+        "none",
+        r#"{"verdict":"none","evidence":"I'll run the parser tests next"}"#,
+    );
     h.submit("fix the parser").expect("a turn runs");
     let before = h.session.items.len();
     rang.recv_timeout(Duration::from_secs(10))

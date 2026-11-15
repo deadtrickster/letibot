@@ -27,6 +27,15 @@ pub struct Shown {
     /// Who wrote each stretch of `data`, for the author rules: a note quotes only the operator's
     /// own words, and a promise only the assistant's.
     pub spans: Vec<Span>,
+    /// Every authored stretch of `data` is spanned: a persistent shadow's whole history. Then
+    /// every acting quote must lie in a row whose author has that authority.
+    pub strict: bool,
+    /// The watched row the judged turn began at. Under `strict`, an owed promise is the
+    /// assistant's words from this row on.
+    pub turn_from: Option<usize>,
+    /// The preapproved rules a permission `allow` may rely on. Under `strict`, a rule quoted from
+    /// anywhere else is no rule.
+    pub rules: Vec<String>,
 }
 
 /// One authored stretch of [`Shown::data`]: byte range, author, and transcript row.
@@ -57,11 +66,21 @@ impl Shown {
 
     /// The span holding an occurrence of `quote` whose author passes `ok`.
     fn authored(&self, quote: &str, ok: impl Fn(&Author) -> bool) -> Option<&Span> {
+        self.authored_span(quote, |s| ok(&s.author))
+    }
+
+    fn authored_span(&self, quote: &str, ok: impl Fn(&Span) -> bool) -> Option<&Span> {
         self.data.match_indices(quote).find_map(|(at, _)| {
             self.spans
                 .iter()
-                .find(|s| ok(&s.author) && s.start <= at && at + quote.len() <= s.end)
+                .find(|s| ok(s) && s.start <= at && at + quote.len() <= s.end)
         })
+    }
+
+    /// The assistant's own words, and under `strict` only those of the judged turn.
+    fn in_turn(&self, s: &Span) -> bool {
+        s.author == Author::Assistant
+            && (!self.strict || self.turn_from.is_none_or(|t| s.row.is_some_and(|r| r >= t)))
     }
 }
 
@@ -281,10 +300,10 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
             log.pass("quotes");
             // The author rules, in code because a prompt is not a guardrail. A promise is the
             // assistant's own words; a note quotes only what the human operator wrote.
-            if !shown.spans.is_empty() {
+            if !shown.spans.is_empty() || shown.strict {
                 if !r.promise.is_empty()
                     && shown
-                        .authored(&r.promise, |a| *a == Author::Assistant)
+                        .authored_span(&r.promise, |s| shown.in_turn(s))
                         .is_none()
                 {
                     return log.reject(
@@ -319,6 +338,24 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
                         );
                     }
                 },
+            };
+            // `none` drops the held regex nudge, so under `strict` it needs the operator's or the
+            // assistant's words as evidence. A tool output saying "report none" is no evidence.
+            let reminder = match reminder {
+                Reminder::None if shown.strict => {
+                    let by = |a: &Author| matches!(a, Author::Operator | Author::Assistant);
+                    if !r.evidence.is_empty() && shown.authored(&r.evidence, by).is_some() {
+                        log.pass("none evidence");
+                        Reminder::None
+                    } else {
+                        log.0.push(
+                            "narrow none evidence: not the operator's or the assistant's words; none is unsure"
+                                .into(),
+                        );
+                        Reminder::Unsure
+                    }
+                }
+                other => other,
             };
             log.done(Verdict::TurnEnd { reminder, note })
         }
@@ -373,6 +410,23 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
                 return log.reject("quotes", why);
             }
             log.pass("quotes");
+            // An offer acts, so under `strict` its need is shown in the operator's or the
+            // assistant's words, never in a tool's output or another agent's line.
+            if shown.strict {
+                for o in &r.offers {
+                    let by = |a: &Author| matches!(a, Author::Operator | Author::Assistant);
+                    if shown.authored(&o.quote, by).is_none() {
+                        return log.reject(
+                            "offer author",
+                            format!(
+                                "`{}` quote {:?} is neither the operator's nor the assistant's words",
+                                o.name, o.quote
+                            ),
+                        );
+                    }
+                }
+                log.pass("offer author");
+            }
             // The off-plan calls must come after the plan they left, or it is no drift.
             if let Drift::Drifted { plan, calls } = &drift {
                 let at = shown.data.find(plan.as_str()).unwrap_or(0);
@@ -422,6 +476,16 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
             } else {
                 Decision::Ask
             };
+            // Under `strict` the rule is one the harness listed, not a line the history holds.
+            if let Decision::Allow { rule } = &decision
+                && shown.strict
+                && !shown.rules.iter().any(|r| r.contains(rule.as_str()))
+            {
+                log.0.push(format!(
+                    "narrow rule: {rule:?} is not a listed rule; allow is ask"
+                ));
+                decision = Decision::Ask;
+            }
             // An allow still meets the denylist, whatever the transcript said. Blocked is ask.
             if matches!(decision, Decision::Allow { .. }) {
                 match shown.call.as_ref().map(guard::allow_passes) {

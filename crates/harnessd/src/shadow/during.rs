@@ -346,5 +346,46 @@ pub fn shown(
         shortlist: shortlist.iter().map(|e| e.name.clone()).collect(),
         call: None,
         spans: head.spans,
+        ..Shown::default()
+    }
+}
+
+/// The persistent shadow's question at a during trigger. The plan and the calls are rows it was
+/// already fed; the question adds what is not in the transcript: the trigger, todos, shortlist.
+pub fn question(
+    why: &str,
+    todos: &[TodoItem],
+    shortlist: &[Entry],
+    loaded: &BTreeSet<String>,
+) -> super::conversation::Question {
+    let mut d = format!("triggered by: {why}\n\nopen todos:\n");
+    let open = open_todos(todos);
+    if open.is_empty() {
+        d.push_str("(none)\n");
+    }
+    for t in open {
+        d.push_str(&format!("- {}\n", t.content.trim()));
+    }
+    d.push_str("\nshortlist:\n");
+    if shortlist.is_empty() {
+        d.push_str("(none)\n");
+    }
+    for e in shortlist {
+        d.push_str(&format!("- {}: {}\n", e.name, cut(&e.about, 160)));
+    }
+    if !loaded.is_empty() {
+        d.push_str("\nalready loaded or declined this session: ");
+        d.push_str(&loaded.iter().cloned().collect::<Vec<_>>().join(", "));
+        d.push('\n');
+    }
+    d.push_str(
+        "\nThe stated plan is the assistant's last announcement above, and the last tool calls \
+         are the newest `tool call` rows.\n",
+    );
+    super::conversation::Question {
+        job: super::Job::During,
+        facts: d,
+        turn_from: None,
+        rules: Vec::new(),
     }
 }
