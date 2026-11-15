@@ -87,7 +87,7 @@ pub use event::{
     CompactionFidelity, CompactionLevel, CompactionReport, CompactionSection, CompactionTail,
     CompactionTurn, Decider, DecisionOption, DecisionOutcome, DeltaTarget, Envelope, FinishReason,
     OnTimeout, OptionKind, PromptProgress, PromptReading, RESTORING_ROWS, SessionEvent,
-    TARGET_MAX_BYTES, Timings, Usage, display_target,
+    TARGET_MAX_BYTES, Timings, TurnPark, Usage, display_target,
 };
 pub use fleet::{Fleet, FleetReader, FleetRow, FleetState};
 pub use hub::{

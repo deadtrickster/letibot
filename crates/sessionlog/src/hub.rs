@@ -1154,6 +1154,7 @@ impl Hub {
                 ),
                 // Terminated, whatever its calls were left as - [`Hub::turn_in_flight`]'s rule.
                 crate::view::TurnState::Interrupted { .. }
+                | crate::view::TurnState::Parked { .. }
                 | crate::view::TurnState::Failed { .. } => (false, false),
             },
             None => (false, false),
@@ -1974,6 +1975,7 @@ impl Hub {
                 }
                 // A turn that was interrupted or failed is over, whatever its calls were left as.
                 crate::view::TurnState::Interrupted { .. }
+                | crate::view::TurnState::Parked { .. }
                 | crate::view::TurnState::Failed { .. } => false,
             },
             // Nothing has run here yet, or the turn in view is gone: no turn is in flight.

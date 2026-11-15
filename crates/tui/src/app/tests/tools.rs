@@ -1389,6 +1389,7 @@ fn ctrl_o_promotes_a_running_command_even_after_the_turn_went_terminal() {
             turn_id: "t1".into(),
             reason: "steering_urgent".into(),
             partial_kept: false,
+            park: None,
         },
     )));
     // Two different questions: the turn is terminal - nothing is generating - and the head

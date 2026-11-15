@@ -317,15 +317,13 @@ impl App {
             SessionEvent::TurnInterrupted {
                 reason,
                 partial_kept,
+                park,
                 ..
             } => {
                 if let Some(t) = self.turn.as_mut() {
                     t.progress = None;
                     t.ends_turn = Some(true);
-                    t.state = Some(TurnState::Interrupted {
-                        reason,
-                        partial_kept,
-                    });
+                    t.state = Some(TurnState::ended_by(&reason, partial_kept, park.as_ref()));
                 }
                 // A terminal state hands the turn's calls back to the transcript, which does not draw
                 // them while the pane is up. The history is cached, so it is invalidated from the first

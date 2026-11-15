@@ -175,6 +175,13 @@ pub enum TurnState {
         reason: String,
         partial_kept: bool,
     },
+    /// The turn parked on a usage limit. Terminal for this turn: the reset opens a new one.
+    Parked {
+        model: String,
+        until_ms: u64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        retry_at_ms: Option<u64>,
+    },
     /// The turn failed. A *terminal* state, which is the whole point of it existing: without
     /// one, `Running` was the last thing a head ever heard about a turn that died.
     Failed {
@@ -189,6 +196,25 @@ impl TurnState {
     /// one of the three forgets is a spinner nobody can stop.
     pub fn is_running(&self) -> bool {
         matches!(self, TurnState::Running)
+    }
+
+    /// The state a `TurnInterrupted` leaves: a park when it carries one, an interrupt otherwise.
+    pub fn ended_by(
+        reason: &str,
+        partial_kept: bool,
+        park: Option<&crate::event::TurnPark>,
+    ) -> TurnState {
+        match park {
+            Some(p) => TurnState::Parked {
+                model: p.model.clone(),
+                until_ms: p.until_ms,
+                retry_at_ms: p.retry_at_ms,
+            },
+            None => TurnState::Interrupted {
+                reason: reason.to_string(),
+                partial_kept,
+            },
+        }
     }
 }
 
@@ -613,15 +639,13 @@ impl SessionView {
                 turn_id,
                 reason,
                 partial_kept,
+                park,
             } => {
                 if let Some(t) = self.turn.as_mut()
                     && &t.turn_id == turn_id
                 {
                     t.progress = None;
-                    t.state = TurnState::Interrupted {
-                        reason: reason.clone(),
-                        partial_kept: *partial_kept,
-                    };
+                    t.state = TurnState::ended_by(reason, *partial_kept, park.as_ref());
                 }
             }
             // Not matched on `turn_id` alone: a turn can fail before it published a `TurnStarted` (a

@@ -11,7 +11,7 @@
 //! ToolStarted / ToolProgress / ToolFinished{call_id, outcome, ...}
 //! TurnFinished{turn_id, finish_reason, usage, timings, ends_turn,
 //!              prefix_check, dialect_template_sha}
-//! TurnInterrupted{turn_id, reason, partial_kept: bool}
+//! TurnInterrupted{turn_id, reason, partial_kept: bool, park?}
 //! TurnFailed{turn_id, error, partial_kept: bool}   - not §4.5's; see the variant
 //! ProviderTrouble{kind, model, detail, reset_ms, count, switched_to}
 //! TranscriptAppended{item_id, kind, ledger_head, item?, body_bytes}
@@ -1057,6 +1057,18 @@ pub struct Citation {
     pub body: String,
 }
 
+/// A turn parked on a usage limit: owed again at `until_ms`, or asked again earlier at
+/// `retry_at_ms` when the reset is past the park's bound.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TurnPark {
+    /// The refusing model, in `/models` spelling.
+    pub model: String,
+    /// The provider's reset, Unix millis.
+    pub until_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_at_ms: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 #[allow(clippy::large_enum_variant)] // events are built once and matched by every head and sink; boxing payloads would touch them all
@@ -1230,6 +1242,10 @@ pub enum SessionEvent {
         turn_id: String,
         reason: String,
         partial_kept: bool,
+        /// Set when the turn did not stop but parked on a usage limit. A head without the field
+        /// still ends the turn on `reason`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        park: Option<TurnPark>,
     },
     /// The turn ended in a failure. Without it a failed turn published a warning and no terminal
     /// event, so a head drew a turn that never ended.

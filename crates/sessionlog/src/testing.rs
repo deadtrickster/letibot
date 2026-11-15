@@ -279,6 +279,7 @@ pub fn one_of_each() -> Vec<SessionEvent> {
             turn_id: "t1".into(),
             reason: "operator".into(),
             partial_kept: true,
+            park: None,
         },
         appended("s.0", "user"),
         content("s.0", "hi"),

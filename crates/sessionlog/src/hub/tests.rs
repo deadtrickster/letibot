@@ -82,6 +82,7 @@ fn an_interrupt_between_rounds_stands_the_turn_down() {
         turn_id: "t1".into(),
         reason: "operator".into(),
         partial_kept: true,
+        park: None,
     });
     assert!(!hub.turn_in_flight());
     assert!(!hub.end_the_prompt(), "nothing left to end");

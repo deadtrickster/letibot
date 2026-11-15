@@ -977,7 +977,7 @@ impl State {
             None => Turn::Idle,
             Some(t) => match &t.state {
                 ViewTurnState::Running => Turn::Running,
-                ViewTurnState::Interrupted { .. } => Turn::Idle,
+                ViewTurnState::Interrupted { .. } | ViewTurnState::Parked { .. } => Turn::Idle,
                 // The round ended and its calls are running: the turn is not over. The activity's
                 // own `Calls` says the same thing; this keeps `leticode_status.state` right against
                 // a daemon too old to send one.

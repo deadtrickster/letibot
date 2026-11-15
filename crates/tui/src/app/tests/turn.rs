@@ -2001,3 +2001,101 @@ fn a_prompt_in_flight_holds_the_row_up_between_its_rounds() {
     assert!(!a.turn_busy());
     assert!(a.turn_status(120).is_empty());
 }
+
+use letibot_sessionlog::event::TurnPark;
+
+fn interrupted(reason: &str, partial_kept: bool, park: Option<TurnPark>) -> SessionEvent {
+    SessionEvent::TurnInterrupted {
+        turn_id: "t1".into(),
+        reason: reason.into(),
+        partial_kept,
+        park,
+    }
+}
+
+/// A turn parked on a usage limit reads as a park with its ways out, not as an interrupt that
+/// lost work, and the spinner stands down.
+#[test]
+fn a_parked_turn_draws_the_park_line_and_no_spinner() {
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    assert!(a.turn_status(160).contains("Responding"));
+    let until = letibot_sessionlog::event::now_ms() + 3_600_000;
+    a.apply(ServerFrame::Event(env(
+        2,
+        interrupted(
+            "paused until 23:08:20 UTC",
+            false,
+            Some(TurnPark {
+                model: "glm-coding".into(),
+                until_ms: until,
+                retry_at_ms: None,
+            }),
+        ),
+    )));
+    let screen = a.screen(160, 24).join("\n");
+    assert!(
+        screen.contains("── parked on glm-coding's limit until ")
+            && screen.contains("(local time) - esc ends the turn, /models switches"),
+        "{screen}"
+    );
+    assert!(!screen.contains("interrupted"), "{screen}");
+    assert!(!screen.contains("nothing kept"), "{screen}");
+    assert!(
+        !a.turn_status(160).contains("Responding"),
+        "{}",
+        a.turn_status(160)
+    );
+}
+
+/// A daemon without `park` sends the park as an interrupt with its words: still a park line.
+#[test]
+fn an_older_daemons_park_still_draws_as_a_park() {
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    a.apply(ServerFrame::Event(env(
+        2,
+        interrupted("paused until 23:08:20 UTC", false, None),
+    )));
+    let screen = a.screen(160, 24).join("\n");
+    assert!(
+        screen.contains(
+            "── parked on a usage limit: paused until 23:08:20 UTC - esc ends the turn, \
+             /models switches"
+        ),
+        "{screen}"
+    );
+    assert!(!screen.contains("interrupted"), "{screen}");
+    assert!(!screen.contains("nothing kept"), "{screen}");
+    assert!(!a.turn_status(160).contains("Responding"));
+}
+
+/// An interrupt says what happened to the partial answer, and only that: the turn's calls and
+/// edits are kept either way.
+#[test]
+fn an_interrupt_says_whether_the_partial_answer_is_kept() {
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    a.apply(ServerFrame::Event(env(
+        2,
+        interrupted("operator", false, None),
+    )));
+    let screen = a.screen(160, 24).join("\n");
+    assert!(
+        screen.contains("── interrupted: operator (no partial answer)"),
+        "{screen}"
+    );
+    assert!(!screen.contains("nothing kept"), "{screen}");
+
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    a.apply(ServerFrame::Event(env(
+        2,
+        interrupted("operator", true, None),
+    )));
+    let screen = a.screen(160, 24).join("\n");
+    assert!(
+        screen.contains("── interrupted: operator (the partial answer is kept)"),
+        "{screen}"
+    );
+}

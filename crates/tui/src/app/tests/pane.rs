@@ -889,6 +889,7 @@ fn a_call_the_turn_was_interrupted_in_the_middle_of_still_says_it_asked() {
             turn_id: "t1".into(),
             reason: "operator pressed esc twice".into(),
             partial_kept: true,
+            park: None,
         },
     )));
     let screen = a.screen(120, 24).join("\n");

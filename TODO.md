@@ -87,6 +87,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R272 | Host setup, working rules and failure modes are in memory and chat, not in the docs | Code work | built: `docs/install.md` host setup and the checkout install loop, `AGENTS.md` rules, the bridge's start flag in `docs/claude-code-bridge.md`, `scripts/gate-at.sh` in `docs/gate.md`, `docs/troubleshooting.md` |
 | R275 | A GLM coding-plan limit parked rano for 5h on a window that lifted 3 minutes later | Code work | built: GLM 429s classified by business code (`crates/http/src/zai.rs`), `next_flush_time` read as UTC+8, `Resets at`/`将在` parsed, z.ai's quota endpoint on the GLM coding doors, every park re-tries on `[provider] limit_probe` (2m, 5m, 15m, 30m, 1h); left: the refusal body is not persisted anywhere, so this diagnosis is inferred from timings |
 | R267 | A streaming assistant line is drawn over an earlier row of the history | Code work | built: the live marker's join is taken back before the walk and only by its whole joined line; test `a_streaming_row_never_rewrites_an_earlier_row` |
+| R273 | A parked turn's end line reads `interrupted: paused until ... (nothing kept)` and the spinner stays up | Code work | built: `TurnState::Parked` and `TurnInterrupted::park` (protocol 75), the head draws its own park and interrupt lines, the park's ending is published under the refused round's id; left: the live check on a real limit |
 | R265 | A usage-limit park cannot be ended or moved: Esc does nothing and `/models` leaves the turn parked on the old model's reset | Code work | built: Esc ends the parked turn with a row naming the limit and the reset, a switch by any door retries the parked request on the new model, the status row names the reset and both ways out; left: the live check on a real Kimi limit |
 | R266 | Reaper remainder: a job across a stop that is not a handover, a start grace for a new owner, d.3 and the store-key rule written down | Code work | built (audit H1, R241's left): the reaper's daemon stop leaves the restart marker so host jobs are kept for the next daemon, the idle exit drains on a running job, a daemon's first 5 minutes judge no owner idle or orphaned, d.3 and the store-key rule written down; left: a plain `letibot --stop` still ends every job, by design |
 | R276 | Auto-archive at settle: reviewers, one-shots, collected subagents and settled packages stay in the list | Code work | built (audit H9, plan 1.6's remainder): six rules with reasons, the never-archive guards, the daemon's pass, the one-shot's exit, `letibot gc --archive-settled [--now]`; the rano review storm was re-gates of a red tip, fixed; left: the reviewer kill race (an orphan reviewer runs a whole review) |
@@ -1318,6 +1319,30 @@ Left:
 - The pick acts without a replay score first, by operator decision; `letibot shadow replay --job during` scores it once logged sessions exist.
 
 **Done when:** the left items are settled.
+
+## R273 - A parked turn's end line reads `interrupted: paused until ... (nothing kept)` and the spinner stays up
+
+**Status:** built 2026-11-15. left: the live check.
+
+What happened: a turn parked on glm-coding's usage limit ended in the head with `── interrupted: paused until 23:08:20 UTC (nothing kept)` while the status row still said `Responding`. Operator: "wtf is (nothing kept)".
+
+Cause:
+1. The park reached the head as `TurnInterrupted` with the park's words as its reason, and `turn_footer` handed that to rano's `TurnEnd::Interrupted`, which says `interrupted: {reason} (what it had written is kept | nothing kept)`. A park read as an interrupt, and `nothing kept` read as lost work. The turn's calls and edits are stored; only a partial answer of the cut round is absent.
+2. The spinner: `take_the_round` returned `LimitParked` without recording the refused round's turn id, so `settle` published the ending under the previous round's id. The hub's view kept the refused round `Running`, `turn_shape` said a round was in flight, and the activity kept `Waiting::Turn`, which holds the head's `Responding` row up.
+
+Built:
+1. `SessionEvent::TurnInterrupted` carries `park: Option<TurnPark { model, until_ms, retry_at_ms }>`, set by `turn_tail::settle` from `Harness::limit_park`. The view's `TurnState::ended_by` turns it into `TurnState::Parked`. `reason` keeps the old words, so a version-74 head still ends the turn. Protocol 75.
+2. The head draws its own line for a park: `── parked on glm-coding's limit until 00:08 (local time) - esc ends the turn, /models switches`, with `, asking again at T` when the reset is past the park's bound. R265's status row says the same ways out.
+3. The head draws its own line for an interrupt: `(the partial answer is kept)` or `(no partial answer)`.
+4. An older daemon's park (an interrupt whose reason is `paused until`, `limited until`, `waiting ... for the reset at` or `this session is paused until`) draws `── parked on a usage limit: {reason} - esc ends the turn, /models switches`.
+5. The parked arm of `take_the_round` records `last_turn_id` before returning, as the interrupt arms already did.
+
+Tests: tui `a_parked_turn_draws_the_park_line_and_no_spinner`, `an_older_daemons_park_still_draws_as_a_park`, `an_interrupt_says_whether_the_partial_answer_is_kept`; harnessd `tests/limits.rs` `a_limit_with_a_reset_parks_the_session_and_the_same_turn_resumes_at_the_reset` asserts `!turn_in_flight` and `TurnState::Parked` after the park.
+
+Left:
+- The live check: a real limit park, the head's end line and no `Responding`.
+
+**Done when:** the live check passes.
 
 ## R265 - A usage-limit park cannot be ended or moved: Esc does nothing and `/models` leaves the turn parked on the old model's reset
 

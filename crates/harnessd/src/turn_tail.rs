@@ -254,10 +254,16 @@ fn settle(
             // spinner stays up for the session's life, and `TurnInterrupted` is the only event that
             // ends a turn without a verdict - the park's own warning has the news.
             HarnessError::LimitParked { said } => {
+                let park = h.limit_park().map(|p| letibot_sessionlog::TurnPark {
+                    model: p.model.clone(),
+                    until_ms: p.reset_ms,
+                    retry_at_ms: (p.until_ms < p.reset_ms).then_some(p.until_ms),
+                });
                 h.hub().publish(SessionEvent::TurnInterrupted {
                     turn_id: h.last_turn_id().to_string(),
                     reason: said.clone(),
                     partial_kept: false,
+                    park,
                 });
             }
             _ => {

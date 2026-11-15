@@ -137,6 +137,7 @@ impl App {
             let how = match self.turn.as_ref().and_then(|t| t.state.as_ref()) {
                 Some(TurnState::Failed { .. }) => "the turn failed",
                 Some(TurnState::Interrupted { .. }) => "the turn was interrupted",
+                Some(TurnState::Parked { .. }) => "the turn is parked on a usage limit",
                 _ => "done",
             };
             return Some(format!("{who}: {how}"));

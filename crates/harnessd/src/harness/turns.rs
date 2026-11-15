@@ -2939,6 +2939,9 @@ impl Harness {
                         if let Some(o) = self.outage.take() {
                             self.end_outage(&o, false);
                         }
+                        // The ending is published under this id: a stale one leaves the round
+                        // running in the hub's view, and the head's spinner with it.
+                        self.last_turn_id = sink.turn_id.clone().unwrap_or_default();
                         return Err(HarnessError::LimitParked { said });
                     }
                     limit::AfterTheLadder::Retry if limit_retries < self.cfg.limit_retry_rounds => {

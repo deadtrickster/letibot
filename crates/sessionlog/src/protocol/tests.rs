@@ -157,8 +157,12 @@ fn every_frame_is_accounted_for_at_this_version() {
     let _ = event;
     let _ = server;
     assert_eq!(
-        PROTOCOL_VERSION, 74,
-        "the match above was last reconciled with the frame list at 74. 74 gave \
+        PROTOCOL_VERSION, 75,
+        "the match above was last reconciled with the frame list at 75. 75 added \
+             `view::TurnState::Parked` and `SessionEvent::TurnInterrupted`'s `park`: a turn parked \
+             on a usage limit is drawn as a park, not as an interrupt. The field is defaulted, so a \
+             version-74 head still ends the turn on its reason; the new state is what moves the \
+             number, since an older head cannot decode a snapshot that carries it. 74 gave \
              `ClientFrame::NewSession` an `id`: a package's owner row and its branch are named by \
              the session id before the session exists, so the caller sends the id it wrote down. \
              `serde(default)`, so a version-73 daemon parses the frame and mints its own id - which \

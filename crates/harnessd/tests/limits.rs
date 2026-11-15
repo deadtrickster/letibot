@@ -310,6 +310,17 @@ fn a_limit_with_a_reset_parks_the_session_and_the_same_turn_resumes_at_the_reset
     let parks = said(&hub, "limit_park");
     assert_eq!(parks.len(), 1, "one park, said once: {parks:?}");
     assert!(
+        !hub.turn_in_flight(),
+        "the park ends the round it refused, so no head keeps a spinner up"
+    );
+    assert!(
+        matches!(
+            hub.snapshot().turn.map(|t| t.state),
+            Some(letibot_sessionlog::view::TurnState::Parked { .. })
+        ),
+        "the turn's state is the park, not an interrupt"
+    );
+    assert!(
         said(&hub, "turn_failed").is_empty(),
         "a limit with a reset is not a failure of the turn"
     );

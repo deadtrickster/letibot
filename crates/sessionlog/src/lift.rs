@@ -143,6 +143,7 @@ pub fn from_turn_event(e: TurnEvent) -> SessionEvent {
             turn_id,
             reason,
             partial_kept,
+            park: None,
         },
         TurnEvent::Warning { code, detail } => SessionEvent::warning(code.to_string(), detail),
     }
