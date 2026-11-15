@@ -1926,9 +1926,11 @@ Seen live in rano's session `s-1794057745451974498` (store `c74d1fd17483`, rows 
 - Log: `sessions::compaction_logged` says `compacted: history N -> new base M ledger tokens` or `re-seated, nothing summarised: ...`.
 - Record: commands are counted and no longer gated (`COMMANDS_FLOOR` 0). The instruction asks for the state of the work and names a command only when the next step needs it. `MAX_SUMMARY_TOKENS` caps any record at 12,000 tokens (`by: "cap"`). Template id `compaction/2026-11-15`.
 
-**Tests:** `tests/context_claim.rs::an_accepted_compact_self_is_not_told_to_stop_sizing_by_context`; `tests/wall_refusal.rs::compact_self_is_pending_then_runs_first_and_the_next_request_is_smaller` (pending row, the compaction runs before a prompt queued after it, no turn rows during the summary turn, the record in the report, the next request body smaller, measured on the fake provider); `tui statusrow::a_compaction_is_pending_then_running_then_one_folded_row`; unit tests in `context_claim.rs`, `selfverbs.rs`, `sessions.rs`, `compaction.rs`, `fidelity.rs`.
+**Tests:** `tests/context_claim.rs::an_accepted_compact_self_is_not_told_to_stop_sizing_by_context`; `tests/wall_refusal.rs::compact_self_is_pending_then_runs_first_and_the_next_request_is_smaller` (pending row, the compaction runs before a prompt queued after it, no turn rows during the summary turn, the record in the report, the next request body smaller, measured on the fake provider); `tui statusrow::a_compaction_is_pending_then_running_then_one_folded_row` (also: the meter grows by the summary turn's cost); unit tests in `context_claim.rs`, `selfverbs.rs`, `sessions.rs`, `compaction.rs`, `fidelity.rs`.
 
-**Left:** `reseat_self` has no pending row yet. The summary turn's cost no longer reaches a head's `$` meter, since its `TurnFinished` is not forwarded (metrics.db still records it).
+- Cost: the summary turn's endings are not forwarded, so `run_compaction_as_progress` sums their cost and the `compacted`/`reseated` report carries it (`CompactionReport::cost_micros_usd`). The head's meter adds it.
+
+**Left:** `reseat_self` has no pending row yet.
 
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 

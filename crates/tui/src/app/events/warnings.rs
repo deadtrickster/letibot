@@ -49,7 +49,11 @@ impl App {
     /// [`App::event`]'s arms, moved here verbatim; `event` hands it only these variants.
     pub(crate) fn on_warning(&mut self, e: SessionEvent, ts: u64) -> Disposition {
         match e {
-            SessionEvent::Warning { code, detail, .. } => {
+            SessionEvent::Warning {
+                code,
+                detail,
+                compaction,
+            } => {
                 // The daemon publishes both this and `TurnFailed` on purpose - one is
                 // state, one history - but on a screen they are one sentence twice.
                 // Counted as filtered, not dropped: `filtered` says "chose not to show".
@@ -106,6 +110,12 @@ impl App {
                 // `cleared` is the third fork's report (`/clear`), and the same resolution.
                 if code == "compacted" || code == "reseated" || code == "cleared" {
                     self.resolve_fork();
+                    // The summary turn's spend: its endings never reached this head, so the meter
+                    // adds it from the report, the way a turn's ending adds its own.
+                    if let Some(c) = compaction.as_ref().and_then(|r| r.cost_micros_usd) {
+                        self.spent_micros += c;
+                        self.spent_seen = true;
+                    }
                     // The new base is what the header's context now is: the last round's prompt
                     // was the history this fork replaced.
                     if let Some(after) =

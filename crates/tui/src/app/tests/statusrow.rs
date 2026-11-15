@@ -803,15 +803,42 @@ fn a_compaction_is_pending_then_running_then_one_folded_row() {
         running[at]
     );
 
+    // The summary turn's spend rides the report: its endings never reach a head.
+    let spent_before = (a.spent_seen, a.spent_micros);
+    let report: letibot_sessionlog::event::CompactionReport =
+        serde_json::from_value(serde_json::json!({
+            "kind": "compacted",
+            "tokens_before": 1000,
+            "tokens_after": 300,
+            "transcript": "s#t2",
+            "resident": 1000,
+            "window": 100000,
+            "headroom": 1000,
+            "cut_off": false,
+            "cost_micros_usd": 20800,
+            "template": "compaction/2026-11-15",
+            "sections": [],
+            "tail": {"turns": [], "carried": 0, "because": "", "dropped": 0},
+        }))
+        .expect("a report");
     a.apply(ServerFrame::Event(env(
         seq + 3,
-        boot(
-            "compacted",
-            "compacted: 1000 → ≈ 300 tokens, kept a 40-character summary, nothing dropped, \
-             estimated until the next round measures it, on transcript s#t2. What the model \
-             now reads in place of everything before it:\n\n## Objective\n- the record body",
-        ),
+        SessionEvent::Warning {
+            code: "compacted".into(),
+            detail: "compacted: 1000 → ≈ 300 tokens, kept a 40-character summary, nothing \
+                     dropped, estimated until the next round measures it, on transcript s#t2. \
+                     What the model now reads in place of everything before it:\n\n\
+                     ## Objective\n- the record body"
+                .into(),
+            compaction: Some(Box::new(report)),
+        },
     )));
+    assert_eq!(spent_before, (false, 0), "the fixture's turns are unpriced");
+    assert_eq!(
+        (a.spent_seen, a.spent_micros),
+        (true, 20_800),
+        "the meter grows by the summary turn's cost"
+    );
     let done = a.screen(W, H);
     let all = done.join("\n");
     assert!(
@@ -832,4 +859,5 @@ fn a_compaction_is_pending_then_running_then_one_folded_row() {
         "at most one row:\n{all}"
     );
     assert!(header(&done).contains("300 ctx"), "{}", header(&done));
+    assert!(header(&done).contains("$0.02"), "{}", header(&done));
 }

@@ -85,6 +85,9 @@ pub struct CompactReport {
     /// session's own sink, while the overrun paths summarise a SCRATCH transcript through a `NullSink`, because
     /// forwarding that progress made a head draw the scratch prompt's count as the session's. False means publish.
     pub summary_was_streamed: bool,
+    /// What the summary turn cost, when it ran as the progress line: its endings never reach a head,
+    /// so the `compacted` row carries the spend for the meter.
+    pub summary_cost_micros: Option<u64>,
 }
 
 /// What a re-seat did: the fork it made, the summary that carried the conversation
@@ -103,6 +106,8 @@ pub struct ReseatReport {
     /// `todo_write (\`todos[].needs[].kind\` gains \`monitor\`)` - so the model is told what to
     /// look for and not only that something moved. See [`schema_change`].
     pub grew_how: Vec<String>,
+    /// What the summary turn cost; see [`CompactReport::summary_cost_micros`].
+    pub summary_cost_micros: Option<u64>,
 }
 
 /// Each grown tool, named with what changed in it - [`grown_schemas`]'s names, each with
@@ -936,6 +941,7 @@ impl Harness {
                 lost: before.difference(&after).cloned().collect(),
                 grew: grew.clone(),
                 grew_how: grew_how.clone(),
+                summary_cost_micros: None,
             })
         })();
         self.compacting = false;
@@ -1090,7 +1096,7 @@ impl Harness {
             // walked the rows it left: the census is restated here, and again by a refusal, which
             // takes those rows back.
             self.restate_footprint();
-            let outcome = ran?;
+            let (outcome, summary_cost_micros) = ran?;
             if outcome.tool_calls > 0 {
                 self.refuse_the_summary(mark, witness, outcome.tool_calls);
                 return Err(HarnessError::Setup(format!(
@@ -1112,6 +1118,7 @@ impl Harness {
                 lost: before.difference(&after).cloned().collect(),
                 grew: grew.clone(),
                 grew_how: grew_how.clone(),
+                summary_cost_micros,
             })
         })();
         self.compacting = false;
@@ -1390,6 +1397,7 @@ impl Harness {
                         lost,
                         // The scratch summary went to a `NullSink`; nobody saw it.
                         summary_was_streamed: false,
+                        summary_cost_micros: None,
                     });
                 }
                 let answerer = Self::answerer(&self.provider, &self.prefix);
@@ -1465,7 +1473,7 @@ impl Harness {
                 // walked the rows it left: the census is restated here, and again by a refusal,
                 // which takes those rows back.
                 self.restate_footprint();
-                let outcome = ran?;
+                let (outcome, summary_cost_micros) = ran?;
                 if outcome.tool_calls > 0 {
                     self.refuse_the_summary(mark, witness, outcome.tool_calls);
                     return Err(HarnessError::Setup(format!(
@@ -1496,6 +1504,7 @@ impl Harness {
                     // The summary turn ran as the progress line, so the record is published with
                     // the report, where a head folds it.
                     summary_was_streamed: false,
+                    summary_cost_micros,
                 })
             }
 
@@ -1632,6 +1641,7 @@ impl Harness {
                     lost,
                     // The scratch summary went to a `NullSink`; nobody saw it.
                     summary_was_streamed: false,
+                    summary_cost_micros: None,
                 })
             }
         }

@@ -3980,7 +3980,7 @@ impl Harness {
         answerer: &letibot_turn::compaction::Answerer<'_>,
         ladder: &mut letibot_http::retry::Ladder,
         ask: Option<&letibot_turn::SummaryAsk<'_>>,
-    ) -> Result<CompactionOutcome, HarnessError> {
+    ) -> Result<(CompactionOutcome, Option<u64>), HarnessError> {
         // The summary turn is a provider call, so it walks the same ladder and its failure is said with the count
         // in it: a compaction that failed on a blip must not end the session's only chance to fold, with no way to
         // tell one attempt from six.

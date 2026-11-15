@@ -4114,6 +4114,7 @@ impl<'a> Sessions<'a> {
                                         gained: Vec::new(),
                                         lost: Vec::new(),
                                         summary_was_streamed: false,
+                                        summary_cost_micros: r.summary_cost_micros,
                                     },
                                     "reseated",
                                     // `Config::scale` and not the measurement alone: the
@@ -4145,6 +4146,7 @@ impl<'a> Sessions<'a> {
                             lost: r.lost,
                             // The summary turn ran as a progress line; nobody watched it.
                             summary_was_streamed: false,
+                            summary_cost_micros: r.summary_cost_micros,
                         }))
                     }
                     Err(e) => {
@@ -5285,6 +5287,7 @@ pub(crate) fn compaction_wire(
         window,
         headroom,
         cut_off: r.fork.truncated,
+        cost_micros_usd: r.summary_cost_micros,
         template: letibot_sessionlog::event::COMPACTION_TEMPLATE.to_string(),
         // The record, split by the daemon, not by the head. A missing section here means the model
         // wrote no such heading; an empty body means it wrote the heading and nothing under it.
@@ -6059,6 +6062,7 @@ mod the_wire_report {
             gained: Vec::new(),
             lost: Vec::new(),
             summary_was_streamed: false,
+            summary_cost_micros: None,
         }
     }
 

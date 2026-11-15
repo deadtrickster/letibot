@@ -908,6 +908,10 @@ pub struct CompactionReport {
     /// out of a body, because a templated record is exactly where *truncated* stops being readable
     /// out of any one section: the cut falls wherever the model ran out.
     pub cut_off: bool,
+    /// What the summary turn cost, in micro-USD. Its endings never reach a head, so this is the
+    /// spend the meter adds. `None` where nothing priced it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cost_micros_usd: Option<u64>,
     /// Which wording of the instruction produced this record, the way a corpus row carries a brief
     /// hash. Bump it when `letibot_turn::SUMMARY_INSTRUCTION` changes what it asks for: records under
     /// different templates are two datasets.

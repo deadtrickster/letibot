@@ -922,7 +922,8 @@ pub fn run_compaction(
 
 /// [`run_compaction`] with its stream carried out as the compaction's own progress line: a head
 /// draws a fold that is running, never the record being typed out as a turn of the conversation.
-/// Nothing of the summary turn reaches `sink` but [`TurnEvent::CompactionProgress`].
+/// Nothing of the summary turn reaches `sink` but [`TurnEvent::CompactionProgress`]. The second
+/// half of the answer is what its rounds cost, which the caller reports since no ending carries it.
 pub fn run_compaction_as_progress(
     engine: &mut TurnEngine,
     session: &mut Session,
@@ -930,11 +931,22 @@ pub fn run_compaction_as_progress(
     answerer: &Answerer<'_>,
     ladder: &mut letibot_http::retry::Ladder,
     ask: Option<&SummaryAsk<'_>>,
-) -> Result<CompactionOutcome, TurnFailure> {
-    let prompt_tokens = session.ledger.len() as u64;
-    run_half(sink, 1, 1, prompt_tokens, |progress| {
-        run_compaction(engine, session, progress, answerer, ladder, ask)
-    })
+) -> Result<(CompactionOutcome, Option<u64>), TurnFailure> {
+    let mut progress = CompactionSink {
+        inner: sink,
+        half: 1,
+        halves: 1,
+        prompt_tokens: session.ledger.len() as u64,
+        processed: 0,
+        chars: 0,
+        tokens: None,
+        deltas: 0,
+        cost_micros: None,
+    };
+    progress.publish();
+    let out = run_compaction(engine, session, &mut progress, answerer, ladder, ask)?;
+    progress.publish();
+    Ok((out, progress.cost_micros))
 }
 
 /// Undo what a fold appended that did not become a record: the instruction, and the notices a
@@ -2073,6 +2085,8 @@ struct CompactionSink<'a> {
     tokens: Option<u64>,
     /// Deltas seen, so the publish can be strided. See `emit`.
     deltas: u64,
+    /// What the summary turn's rounds cost, summed: dropped with their endings, and still spent.
+    cost_micros: Option<u64>,
 }
 
 impl CompactionSink<'_> {
@@ -2109,6 +2123,11 @@ impl EventSink for CompactionSink<'_> {
             TurnEvent::TokensGenerated { tokens, .. } => {
                 self.tokens = Some(tokens);
                 self.publish();
+            }
+            TurnEvent::TurnFinished { metrics, .. } => {
+                if let Some(c) = metrics.cost.micros_usd {
+                    self.cost_micros = Some(self.cost_micros.unwrap_or(0) + c);
+                }
             }
             TurnEvent::Delta { text, .. } => {
                 self.chars += text.chars().count() as u64;
@@ -2211,6 +2230,7 @@ fn run_half<T>(
         chars: 0,
         tokens: None,
         deltas: 0,
+        cost_micros: None,
     };
     progress.publish();
     let out = body(&mut progress)?;
@@ -2384,6 +2404,7 @@ mod compaction_sink {
             chars: 0,
             tokens: None,
             deltas: 0,
+            cost_micros: None,
         }
     }
 
