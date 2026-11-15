@@ -7337,3 +7337,148 @@ fn a_notice_is_drawn_as_the_sessions_own_news() {
         "a firing must never take the class the operator's own words take"
     );
 }
+
+fn ghost_say(a: &mut App, seq: u64, id: &str, text: &str) {
+    shell_row(
+        a,
+        seq,
+        id,
+        "assistant",
+        TranscriptItem::Assistant {
+            text: text.into(),
+            tool_calls: Vec::new(),
+            truncated: false,
+        },
+    );
+}
+
+fn ghost_call(a: &mut App, seq: u64, n: u64) {
+    a.apply(ServerFrame::Event(env(
+        seq,
+        testing::proposed_on("t1", &format!("c{n}"), "bash", "\"cargo test\""),
+    )));
+}
+
+fn ghost_finish(a: &mut App, seq: u64, n: u64, rid: &str) {
+    a.apply(ServerFrame::Event(env(
+        seq,
+        SessionEvent::ToolFinished {
+            turn_id: "t1".into(),
+            call_id: format!("c{n}"),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload_digest: "d".into(),
+            inline_bytes: 1,
+            full_bytes: 1,
+            spill: None,
+            repairs: 0,
+            edits: Vec::new(),
+        },
+    )));
+    shell_row(
+        a,
+        seq + 1,
+        rid,
+        "tool_result",
+        TranscriptItem::ToolResult {
+            call_id: format!("c{n}"),
+            name: "bash".into(),
+            outcome: letibot_transcript::ToolOutcome::Ok,
+            payload: format!("result {n}"),
+            edits: Vec::new(),
+            origin: None,
+            media: None,
+        },
+    );
+}
+
+/// Each row's lines in `hist_lines`, by item id, with the newest row's left out: it is the one streaming.
+fn settled_lines(a: &App, streaming: &str) -> Vec<(String, Vec<String>)> {
+    a.spans
+        .iter()
+        .filter_map(|sp| {
+            let id = a.items.get(sp.row)?.item_id.clone();
+            (id != streaming).then(|| (id, a.hist_lines[sp.at..sp.at + sp.lines].to_vec()))
+        })
+        .collect()
+}
+
+/// The newest row's text drawn into an earlier row's slot (R267). The live marker is glued to the
+/// newest line and taken back next frame by looking for a line that ends with it. When the newest
+/// row re-rendered in between, the only such line was an EARLIER row with the same marker, and it
+/// was overwritten with the newest row's text - "history just changed before my eyes".
+#[test]
+fn a_streaming_row_never_rewrites_an_earlier_row() {
+    for held in [false, true] {
+        for notice in [false, true] {
+            let mut a = app();
+            a.apply(hello(
+                "s",
+                vec![brief("s", "one", false)],
+                Hub::new("s").snapshot(),
+            ));
+            a.visibility = Visibility::of(Profile::CONVERSATION);
+            shell_row(&mut a, 1, "s.p", "user", operator_row("go"));
+            a.apply(ServerFrame::Event(env(3, testing::turn_started("t1"))));
+            ghost_say(&mut a, 4, "s.0", "First sentence.");
+            ghost_call(&mut a, 6, 0);
+            ghost_finish(&mut a, 7, 0, "s.1");
+            ghost_say(&mut a, 10, "s.2", "Newest sentence.");
+            ghost_call(&mut a, 12, 1);
+            let first = a.screen(100, 20);
+            let before = settled_lines(&a, "s.2");
+            assert!(
+                before
+                    .iter()
+                    .any(|(id, l)| id == "s.0" && l.iter().any(|l| l.contains("First sentence."))),
+                "{first:#?}"
+            );
+            if held {
+                a.anchor = Some(Held {
+                    item_id: "s.p".into(),
+                    ordinal: 0,
+                    into: 0,
+                });
+                a.screen(100, 20);
+            }
+            if notice {
+                shell_row(
+                    &mut a,
+                    13,
+                    "s.n",
+                    "user",
+                    TranscriptItem::User {
+                        speaker: letibot_transcript::Speaker::Agent,
+                        parts: vec![UserPart::Text {
+                            text: include_str!("fixtures/job_notice_meanwhile.txt").into(),
+                        }],
+                    },
+                );
+                a.screen(100, 20);
+            }
+            // The stream goes on: the newest row's text changes and the row re-renders.
+            ghost_say(&mut a, 20, "s.2", "Newest sentence, grown.");
+            for frame in 0..3 {
+                let screen = a.screen(100, 20);
+                let after = settled_lines(&a, "s.2");
+                for (id, lines) in &before {
+                    let now = after.iter().find(|(i, _)| i == id).map(|(_, l)| l);
+                    assert_eq!(
+                        now,
+                        Some(lines),
+                        "held={held} notice={notice} frame={frame}: row {id} changed:\n{}",
+                        screen.join("\n")
+                    );
+                }
+                assert_eq!(
+                    screen
+                        .iter()
+                        .filter(|l| l.contains("Newest sentence"))
+                        .count(),
+                    1,
+                    "held={held} notice={notice} frame={frame}: the newest row drawn twice:\n{}",
+                    screen.join("\n")
+                );
+            }
+        }
+    }
+}

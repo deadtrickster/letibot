@@ -84,6 +84,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R246 | A seat's and a session's wait is untyped, so a permission ask cannot be told from a question | Code work | built: `Pending { kind, session, ask }` (approval, question, other) on `SeatFacts`, `SeatState::Waiting`, `SessionBrief` and the sessions feed; `!`/`?` in the sessions gutter and the room roster from the kind; `pending` in `leticode_status`, `leticode_attach` and `leticode_list`; left: H3's pending set, the bridge's fleet rows carry no kind |
 | R263 | The generic output cap is off by default and its head/tail seam is unmarked | Code work | built (audit J2, plan 1.3): default cap 50 KiB / 2000 lines for every tool, one seam line naming bytes, lines and the `read_spill` hash/offset/length, `read_spill` pages under the cap, `[output]` in `leticode.toml`, TUI draws the seam in the Info role; left: the default store is memory so spills do not survive a restart without `--spill-dir`, and no `--spill-lines` flag |
 | R262 | Daemon-run sessions stay on a stale prompt: nobody answers their card | Code work | built: a seat states `on_stale` (ask, reseat, exempt), a session nobody answers reingests before a turn whose prompt fingerprint moved, one `reseated:` row and the model's `[reseat]` line, a refusal said once per target, `[sessions] auto_reseat`; left: a skill-pin or notes change does not trigger it (the fingerprint strips the notes section), and a profile cannot override its seat's answer |
+| R267 | A streaming assistant line is drawn over an earlier row of the history | Code work | built: the live marker's join is taken back before the walk and only by its whole joined line; test `a_streaming_row_never_rewrites_an_earlier_row` |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -4217,6 +4218,22 @@ What `e7f4e55` does, for when it is picked up (rebase it onto main; it was cut o
    repository's merge-queue lease; only the project's own daemon serves its queue.
 3. Every place that assumed `.claude/worktrees` moves with it (grants, cleanup, texts).
 
+
+## R267 - A streaming assistant line is drawn over an earlier row of the history
+
+Operator, rano head: "this line ... suddenly got duplicated to one of the previous rows - like history
+just changed before my eyes". The store held the sentence once, so the head painted it.
+
+Cause: the live marker (`[1 tool call]`) is glued to the newest non-blank line of `hist_lines` and
+recorded in `App::live_join`. The next frame took it back by `rposition` over lines ending with
+` {marker}`. When the newest row had re-rendered in between (its text grew, or a row was invalidated),
+the glued line was gone and the match was an EARLIER row whose own run marker had the same text. That
+row's line was overwritten with the newest row's text before the marker, and stayed so in the cache.
+
+Fix (`crates/tui/src/ui/transcript/window.rs`, `body_window`): the join records the whole joined line,
+is taken back before the walk, and only a line equal to it is restored. A row that re-rendered has no
+such line and is left alone. Test: `app::tests::transcript::a_streaming_row_never_rewrites_an_earlier_row`,
+held and not held, with and without a job notice landing mid-stream; it fails without the fix.
 
 ---
 

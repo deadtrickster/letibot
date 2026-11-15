@@ -1022,7 +1022,7 @@ pub struct App {
     /// reading on every frame (the loop never waits for git; see `refresh_git`).
     pub(crate) repo_rows: Vec<(String, String)>,
     /// The live marker's join, as the pair that lets it be undone: the line's text before the
-    /// marker was glued, and the marker. The marker is appended to a line in `hist_lines`, and a
+    /// marker was glued, and the line with it. The marker is appended to a line in `hist_lines`, and a
     /// cached row a derived overlay mutates cannot be recomputed. `None` while nothing is joined.
     pub(crate) live_join: Option<(String, String)>,
     /// Everything the marker draws about now, as one value, and the cache key for the row it is

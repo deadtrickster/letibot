@@ -138,6 +138,16 @@ impl App {
             .as_ref()
             .map(|t| t.turn_rows.iter().cloned().collect())
             .unwrap_or_default();
+        // The last frame's join is taken back before the walk, so the walk never meets it - and ONLY while there
+        // is live work to re-join: after hand-over the counts are 0 and the line IS the folded run's marker.
+        // Matched by the whole joined line: once the row re-renders the join is gone, and a suffix match took an
+        // earlier row's line with the same marker and wrote the newest row's text over it.
+        if let Some((original, joined)) = self.live_join.take()
+            && live.work() > 0
+            && let Some(at) = self.hist_lines.iter().rposition(|l| *l == joined)
+        {
+            self.hist_lines[at] = original;
+        }
         self.walk_history(
             &cfg,
             think,
@@ -154,18 +164,6 @@ impl App {
         // A marker with no row joins the sentence above it, and the joining happens here: the pane pushes the
         // marker while `hist_lines` is lent to the frame, so the mutation of that buffer's last line is decided
         // one statement before the borrow. The row above must be the model's prose.
-        // The join is taken back so the next walk can make it again - and ONLY while there is live
-        // work to re-join: after hand-over the counts are 0, the walk need not run again, and taking
-        // the line back would leave a folded run with no marker at all (its marker IS this line).
-        if let Some((original, marker)) = self.live_join.take()
-            && live.work() > 0
-            && let Some(at) = self
-                .hist_lines
-                .iter()
-                .rposition(|l| l.trim_end().ends_with(&format!(" {marker}")))
-        {
-            self.hist_lines[at] = original;
-        }
         // Has the walk already carried the in-flight counts? It folds them into the run the current turn is
         // working in, and if it has, a marker here would be a second one for one turn's work.
         // The runs, once: the walk built its own while it held the fields (R123.3).
@@ -238,9 +236,9 @@ impl App {
                 let original = self.hist_lines[at].trim_end().to_string();
                 let joined = format!("{original} {painted}");
                 if visible_width(&joined) <= self.cfg.width {
-                    self.hist_lines[at] = joined;
+                    self.hist_lines[at] = joined.clone();
                     // Remembered, so the next frame restores the line before deciding again.
-                    self.live_join = Some((original, painted));
+                    self.live_join = Some((original, joined));
                 }
             }
         }
