@@ -1626,6 +1626,24 @@ The question was "can we track that a particular command causes disk hog?" A `dd
 - with a fake filesystem under the floor, the top writer is frozen and a row says why;
 - without delegation, the sampled fallback is used and the startup line names the setup.
 
+## R293 - A skill that is box policy is offered like optional help, so a model ignores it
+
+**Status:** open, 2026-11-15. left: all of it.
+
+Rano's session (glm-5.3) was offered `rust-builds` mid-turn and did not load it. Asked why afterwards, it gave four reasons:
+1. "The offer looked optional, not like policy... Nothing in the offer distinguished 'background help' from 'standing rules you are currently violating'."
+2. It arrived mid-turn inside unrelated work. It "would have been read as setup rather than interruption" at session start, or at the first cargo call.
+3. Its own recipe was succeeding, so the gap was silent.
+4. It skipped loading the skill to save context, about a kilobyte. Ignoring it cost the box ~45 GB of target dirs on the root disk and a full dependency compile per worktree.
+
+The stopgap: `[skills] pin = ["rust-builds"]` in the operator's leticode.toml, so the skill is in every new session's prompt.
+
+**Change:**
+- A skill can declare itself policy in its frontmatter (`kind: policy`, or similar). A policy skill is never offered as an optional item. It is delivered as "standing rules for this box" at session start, if pinned. Or it is delivered once, the first time a tool call matches its `when` trigger: for example a bash command matching `cargo `, given as `[skills.when.rust-builds] command = "cargo"`. The delivery names it as rules to follow, not as a suggestion.
+- The shadow's during job treats a matching policy skill as required, not as an offer to weigh.
+
+**Done when:** a session whose first `cargo` call happens without the skill receives the policy text at that call, worded as rules, once per session. A non-policy skill is still offered as before.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.
