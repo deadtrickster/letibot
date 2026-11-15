@@ -415,7 +415,7 @@ fn classify(frame: ServerFrame) -> Seen {
                 "model_switch_pending" => Seen::Pending(detail.clone()),
                 "model_switch_applied" => Seen::Applied(detail.clone()),
                 "model_switch_not_applied" => Seen::NotApplied(detail.clone()),
-                "slash" => Seen::Slash(detail.clone()),
+                "slash" | "slash_listing" => Seen::Slash(detail.clone()),
                 _ => Seen::Other,
             },
             SessionEvent::TurnFailed { error, .. } => Seen::TurnFailed(error.clone()),
