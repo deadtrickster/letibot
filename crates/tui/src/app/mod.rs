@@ -316,6 +316,11 @@ pub struct App {
     /// appended at the next step boundary, so until then the words were nowhere on the screen.
     /// Each renders at the tail as `queued` until its row lands ([`App::record_item`]).
     pub(crate) pending_prompts: Vec<String>,
+    /// The entries of `pending_prompts` sent on the queue lane (Tab mid-turn): drawn as waiting
+    /// for the turn's end, and never merged with a steer typed after them.
+    pub(crate) after_turn: Vec<String>,
+    /// Set by Tab for the one `submit` it makes, so the prompt goes out on the queue lane.
+    pub(crate) queue_lane: bool,
     /// The chips in the composer: the pictures and files the person pasted, each with the text
     /// it was inserted as. The list is not the truth about what is sent, the chip text in the
     /// editor is; this is only what turns it back into an `Attachment` at send time.
@@ -1276,6 +1281,8 @@ pub struct AskedMode {
 /// states stay separate in the code ([`App::unconfirmed`]) but the reader needs one word.
 pub const QUEUED: &str = "queued";
 pub const UNCONFIRMED: &str = "queued";
+/// A prompt on the queue lane: it opens its own turn once the running one ends.
+pub const AFTER_TURN: &str = "queued for after this turn · alt-↑ edits";
 
 /// The opening delimiter of a screen sent by `/cells`, and its closing one. A marker, because two
 /// readers need the edges: the model, to know where the words stop, and this head, to fold a copy
@@ -1374,6 +1381,8 @@ impl App {
             shell_walks: 0,
             queued: Vec::new(),
             pending_prompts: Vec::new(),
+            after_turn: Vec::new(),
+            queue_lane: false,
             chips: Vec::new(),
             contexts: Vec::new(),
             outcomes: Vec::new(),

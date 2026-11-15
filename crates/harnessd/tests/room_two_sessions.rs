@@ -171,6 +171,7 @@ impl One {
                 attachments: Vec::new(),
                 context: None,
                 from: None,
+                delivery: Default::default(),
             },
         );
         assert!(

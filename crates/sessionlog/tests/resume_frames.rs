@@ -302,6 +302,7 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     let b = registry
@@ -317,6 +318,7 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
 
@@ -334,6 +336,7 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
                     attachments: Vec::new(),
                     context: None,
                     from: None,
+                    delivery: Default::default(),
                 }
             );
         }
@@ -349,6 +352,7 @@ fn making_a_session_does_not_displace_a_command_that_was_submitted_first() {
                     attachments: Vec::new(),
                     context: None,
                     from: None,
+                    delivery: Default::default(),
                 }
             );
         }

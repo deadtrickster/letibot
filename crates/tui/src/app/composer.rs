@@ -216,7 +216,17 @@ impl App {
         self.scroll = 0;
         // Held here, visibly, until the transcript takes the words over: idle, this is a one-frame acknowledgement,
         // and mid-turn it is the whole fix, since the hub queues the words and appends them at a later boundary.
-        if self.turn_busy()
+        // A queued prompt is its own turn, so it is never merged with a steer either side of it.
+        let queue = std::mem::take(&mut self.queue_lane) && self.turn_busy();
+        let last_queued = self
+            .pending_prompts
+            .last()
+            .is_some_and(|l| self.after_turn.contains(l));
+        if queue {
+            self.pending_prompts.push(text.clone());
+            self.after_turn.push(text.clone());
+        } else if self.turn_busy()
+            && !last_queued
             && let Some(last) = self.pending_prompts.last_mut()
         {
             last.push('\n');
@@ -231,11 +241,34 @@ impl App {
         self.chips.clear();
         self.contexts.clear();
         self.outcomes.clear();
-        Some(Action::Prompt(Prompt::with_context(
-            text,
-            attachments,
-            context,
-        )))
+        let mut p = Prompt::with_context(text, attachments, context);
+        if queue {
+            p.delivery = letibot_sessionlog::PromptDelivery::Queue;
+        }
+        Some(Action::Prompt(p))
+    }
+
+    /// Tab mid-turn: send the composer's prose on the queue lane. `None` when Tab means
+    /// something else here - a command line, a surface's own field, or no turn running.
+    pub(crate) fn submit_queued(&mut self) -> Option<Option<Action>> {
+        let line = self.editor.text();
+        if !self.turn_busy()
+            || line.trim().is_empty()
+            || line.starts_with('/')
+            || line.starts_with('!')
+            || self.focused_surface().is_some()
+        {
+            return None;
+        }
+        let letibot_ui::editor::Reaction::Submit(text) =
+            self.editor.key(letibot_ui::editor::Key::Enter, self.now_ms)
+        else {
+            return None;
+        };
+        self.queue_lane = true;
+        let a = self.submit(text);
+        self.queue_lane = false;
+        Some(a)
     }
 
     /// Columns the composer's text has, inside the box. One function, because the width the editor is drawn at and

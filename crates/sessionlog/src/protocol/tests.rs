@@ -619,6 +619,7 @@ fn every_frame_round_trips() {
             }],
             context: None,
             from: Some("cc@rano".into()),
+            delivery: PromptDelivery::Queue,
         },
         // A frame from a version-49 head has no `attachments` key at all, which is
         // asserted on the wire's own bytes in
@@ -630,6 +631,7 @@ fn every_frame_round_trips() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: PromptDelivery::Steer,
         },
         ClientFrame::WithdrawPrompts {
             client_request_id: "r1w".into(),

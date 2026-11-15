@@ -530,6 +530,7 @@ fn a_bridge_line_is_never_the_operators_words() {
             attachments: Vec::new(),
             context: None,
             from: Some("cc@rano".into()),
+            delivery: Default::default(),
         },
     );
     let trail = Arc::new(TrailMirror::default());
@@ -581,6 +582,7 @@ fn a_bridge_line_is_never_the_operators_words() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     let cmd = hub.try_command().expect("queued");

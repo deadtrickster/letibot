@@ -108,6 +108,9 @@ pub enum CommandKind {
         /// The agent or program that sent it, `cc@rano`. `None` is the operator. See
         /// [`QueuedCommand::peer`] for the reading every consumer uses.
         from: Option<String>,
+        /// `Queue` is not taken by a running turn's steering: it waits for the worker, which opens
+        /// a turn for it after the current one ends.
+        delivery: crate::protocol::PromptDelivery,
     },
     /// Compact the session: one summary turn, then the history is replaced by that summary
     /// through a transcript fork. Queued like a prompt because it is a turn, and accepted on
@@ -768,6 +771,7 @@ impl Hub {
                     attachments: p.attachments.clone(),
                     context: p.context.clone(),
                     from: None,
+                    delivery: Default::default(),
                 },
             });
         }
@@ -2183,8 +2187,10 @@ impl Hub {
         self.try_steering_command_of(|k| {
             matches!(
                 k,
-                CommandKind::Prompt { .. }
-                    | CommandKind::Interrupt { .. }
+                CommandKind::Prompt {
+                    delivery: crate::protocol::PromptDelivery::Steer,
+                    ..
+                } | CommandKind::Interrupt { .. }
                     | CommandKind::Message { .. }
                     | CommandKind::AnswerTodo { .. }
             )
@@ -2204,11 +2210,17 @@ impl Hub {
 
     /// Is the operator waiting to say something, without taking it:
     /// [`Self::try_steering_command`] removes what it finds, and a reader that only asks must not.
+    /// A prompt queued for after the turn is not waiting on this turn, so it does not count.
     pub fn has_queued_prompt(&self) -> bool {
-        self.lock()
-            .commands
-            .iter()
-            .any(|c| matches!(c.kind, CommandKind::Prompt { .. }))
+        self.lock().commands.iter().any(|c| {
+            matches!(
+                c.kind,
+                CommandKind::Prompt {
+                    delivery: crate::protocol::PromptDelivery::Steer,
+                    ..
+                }
+            )
+        })
     }
 
     /// Has the operator asked for a stop this turn has not taken yet, without taking it:
@@ -2441,6 +2453,7 @@ mod mode_steering_tests {
                 attachments: Vec::new(),
                 context: None,
                 from: None,
+                delivery: Default::default(),
             },
         );
         assert!(hub.journal_settled(std::time::Duration::from_secs(5)));
@@ -2508,6 +2521,7 @@ mod mode_steering_tests {
                     attachments: Vec::new(),
                     context: None,
                     from: None,
+                    delivery: Default::default(),
                 },
             );
             let taken = matches!(
@@ -2545,6 +2559,7 @@ mod mode_steering_tests {
                 attachments: Vec::new(),
                 context: None,
                 from: None,
+                delivery: Default::default(),
             },
         );
         assert!(hub.has_queued_prompt());
@@ -2561,6 +2576,76 @@ mod mode_steering_tests {
             "the prompt must still be there for the worker"
         );
         assert!(!hub.has_queued_prompt(), "and gone once it is taken");
+    }
+
+    fn prompt_on(text: &str, delivery: crate::protocol::PromptDelivery) -> CommandKind {
+        CommandKind::Prompt {
+            text: text.into(),
+            attachments: Vec::new(),
+            context: None,
+            from: None,
+            delivery,
+        }
+    }
+
+    fn text_of(c: &QueuedCommand) -> &str {
+        match &c.kind {
+            CommandKind::Prompt { text, .. } => text,
+            other => panic!("not a prompt: {other:?}"),
+        }
+    }
+
+    /// The two lanes mid-turn: a steer reaches the running turn, a queued prompt waits for the
+    /// worker and opens the next turn, and neither is mistaken for the other.
+    #[test]
+    fn a_queued_prompt_waits_for_the_turn_and_a_steer_does_not() {
+        use crate::protocol::PromptDelivery::{Queue, Steer};
+        let hub = Hub::new("s-lanes");
+        let a = hub.attach("tui", "dead", Caps::default(), 0);
+        hub.submit(&a.head_id, "c0", 0, prompt_on("start", Steer));
+        let OwnWork::Command(first) = hub.take_own_work() else {
+            panic!("the worker takes the first prompt");
+        };
+        assert_eq!(text_of(&first), "start");
+
+        // Mid-turn: queued first, steered second, so order alone would hand over the wrong one.
+        hub.submit(&a.head_id, "c1", 0, prompt_on("after this", Queue));
+        assert!(
+            !hub.has_queued_prompt(),
+            "a queued prompt is not waiting on this turn"
+        );
+        assert!(hub.try_steering_command().is_none());
+        hub.submit(&a.head_id, "c2", 0, prompt_on("and also", Steer));
+        assert!(hub.has_queued_prompt());
+        let steer = hub
+            .try_steering_command()
+            .expect("the steer reaches the turn");
+        assert_eq!(text_of(&steer), "and also");
+        assert!(
+            hub.try_steering_command().is_none(),
+            "the queued one stays queued"
+        );
+
+        // The turn ends: the worker's next command is the queued prompt, a turn of its own.
+        let OwnWork::Command(next) = hub.take_own_work() else {
+            panic!("the queued prompt is the worker's next command");
+        };
+        assert_eq!(text_of(&next), "after this");
+    }
+
+    /// A queued prompt is taken back by the head's withdraw, as a steer is.
+    #[test]
+    fn a_queued_prompt_can_be_withdrawn_before_its_turn() {
+        use crate::protocol::PromptDelivery::Queue;
+        let hub = Hub::new("s-lanes-withdraw");
+        let a = hub.attach("tui", "dead", Caps::default(), 0);
+        hub.submit(&a.head_id, "c1", 0, prompt_on("never mind", Queue));
+        hub.submit(&a.head_id, "c2", 0, CommandKind::WithdrawPrompts);
+        assert!(hub.try_withdraw_command(), "the take-back was acted on");
+        assert!(
+            hub.try_command().is_none(),
+            "nothing is left to open a turn"
+        );
     }
 
     /// An interrupt is not a prompt: it stops the turn through its own path, and a
@@ -2640,6 +2725,7 @@ mod mode_steering_tests {
                     attachments: Vec::new(),
                     context: None,
                     from: None,
+                    delivery: Default::default(),
                 },
                 "send a prompt",
             ),

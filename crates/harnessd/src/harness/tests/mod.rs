@@ -56,6 +56,7 @@ mod offer_row;
 mod operator_ask;
 mod parentage;
 mod prefix_on_open;
+mod prompt_lanes;
 mod prune;
 mod questions;
 mod recall;

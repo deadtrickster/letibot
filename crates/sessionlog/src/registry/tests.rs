@@ -440,6 +440,7 @@ fn the_worker_never_takes_a_command_off_a_hub_owned_by_its_own_thread() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     let soon = Instant::now() + std::time::Duration::from_millis(50);
@@ -649,6 +650,7 @@ fn one_worker_is_woken_by_whichever_session_was_prompted() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     a.submit(
@@ -660,6 +662,7 @@ fn one_worker_is_woken_by_whichever_session_was_prompted() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
 
@@ -673,6 +676,7 @@ fn one_worker_is_woken_by_whichever_session_was_prompted() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         }
     );
     let (id2, c2) = r.next_command().unwrap();
@@ -684,6 +688,7 @@ fn one_worker_is_woken_by_whichever_session_was_prompted() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         }
     );
 }
@@ -707,6 +712,7 @@ fn a_take_back_drops_the_issuing_heads_queued_prompts_only() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     a.submit(
@@ -718,6 +724,7 @@ fn a_take_back_drops_the_issuing_heads_queued_prompts_only() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     a.submit(
@@ -729,6 +736,7 @@ fn a_take_back_drops_the_issuing_heads_queued_prompts_only() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     a.submit(&ha.head_id, "c4", 0, CommandKind::WithdrawPrompts);
@@ -747,6 +755,7 @@ fn a_take_back_drops_the_issuing_heads_queued_prompts_only() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         }
     );
     // And the take-back itself is consumed: a second one finds nothing.
@@ -771,6 +780,7 @@ fn a_take_back_does_not_drop_a_prompt_sent_after_it() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     // Up - the recall itself
@@ -785,6 +795,7 @@ fn a_take_back_does_not_drop_a_prompt_sent_after_it() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
 
@@ -802,6 +813,7 @@ fn a_take_back_does_not_drop_a_prompt_sent_after_it() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
         "the prompt typed AFTER the take-back survives it"
     );
@@ -905,6 +917,7 @@ fn a_wake_is_served_after_every_queued_command() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
 
@@ -991,6 +1004,7 @@ fn a_due_clock_waits_behind_a_bounded_run_of_wakes_but_not_of_commands() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     assert!(
@@ -1032,6 +1046,7 @@ fn the_default_session_follows_whoever_was_last_used() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     r.next_command().unwrap();

@@ -221,6 +221,7 @@ fn every_door_of_a_session_the_daemon_holds_runs_one_tail() {
                 attachments: Vec::new(),
                 context: None,
                 from: None,
+                delivery: Default::default(),
             },
         );
         let cmd = hub.try_command().expect("the prompt is queued");
@@ -318,6 +319,7 @@ fn a_subagents_door_runs_the_same_tail() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     let began = std::time::Instant::now();

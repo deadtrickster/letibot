@@ -602,6 +602,15 @@ pub struct MarkOutcome {
     pub outcome: String,
 }
 
+/// When a prompt sent mid-turn reaches the model: opencode's `delivery: steer|queue`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptDelivery {
+    #[default]
+    Steer,
+    Queue,
+}
+
 /// Head → daemon.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "frame", rename_all = "snake_case")]
@@ -642,6 +651,10 @@ pub enum ClientFrame {
         /// Absent is the operator, which is every head that is a person's.
         #[serde(default)]
         from: Option<String>,
+        /// Steer joins the running turn at its next step boundary; queue waits for the turn to end
+        /// and opens a turn of its own. Defaulted so an older head's prompt steers, as it always did.
+        #[serde(default)]
+        delivery: PromptDelivery,
     },
     /// Take back what this head queued: every prompt from it the running turn has not consumed, plus
     /// the operator's held run.

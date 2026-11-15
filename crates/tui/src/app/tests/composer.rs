@@ -194,6 +194,53 @@ fn alt_up_recalls_the_queued_line_for_editing_and_takes_it_back() {
     assert_eq!(a.pending_prompts.len(), 1);
 }
 
+/// Tab mid-turn sends on the queue lane: its own entry, never merged with a steer, drawn as
+/// waiting for the turn, and taken back by alt-↑ with the rest.
+#[test]
+fn tab_mid_turn_queues_the_prompt_for_after_the_turn() {
+    use letibot_sessionlog::PromptDelivery;
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    typed(&mut a, "then write the changelog");
+    let Some(Action::Prompt(p)) = a.key(Key::Tab) else {
+        panic!("tab mid-turn sends");
+    };
+    assert_eq!(p.delivery, PromptDelivery::Queue);
+    assert_eq!(p.text, "then write the changelog");
+    typed(&mut a, "use the short form");
+    let Some(Action::Prompt(p)) = a.key(Key::Enter) else {
+        panic!("enter sends");
+    };
+    assert_eq!(p.delivery, PromptDelivery::Steer, "enter still steers");
+    assert_eq!(
+        a.pending_prompts.len(),
+        2,
+        "a steer does not join a queued prompt"
+    );
+    let s = a.screen(100, 30).join("\n");
+    assert!(s.contains("queued for after this turn"), "{s}");
+
+    assert_eq!(a.key(Key::AltUp), Some(Action::WithdrawPrompts));
+    assert!(
+        a.after_turn.is_empty(),
+        "the take-back cancels the queued one too"
+    );
+}
+
+/// Idle, Tab is completion as before: nothing is sent.
+#[test]
+fn tab_with_no_turn_running_sends_nothing() {
+    let mut a = app();
+    typed(&mut a, "hello");
+    assert_eq!(a.key(Key::Tab), None);
+    assert_eq!(a.input(), "hello");
+}
+
 /// Up browses history whatever is queued, as in a shell: the operator reaching for a past `/pane`
 /// with a prompt queued got the queue taken back instead.
 #[test]

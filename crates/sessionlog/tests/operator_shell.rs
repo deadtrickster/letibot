@@ -210,6 +210,7 @@ fn the_round_boundary_picker_takes_a_queued_bang_line() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     hub.submit(
@@ -257,6 +258,7 @@ fn a_recall_takes_the_queued_bang_line_back_with_the_prompts() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     hub.submit(&head.head_id, "c3", 0, CommandKind::WithdrawPrompts);

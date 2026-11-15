@@ -326,6 +326,7 @@ impl App {
             {
                 let text = self.pending_prompts.join("\n");
                 self.pending_prompts.clear();
+                self.after_turn.clear();
                 self.set_composer(&text);
                 return Some(Action::WithdrawPrompts);
             }
@@ -340,6 +341,10 @@ impl App {
             // the verbs it knows are the layer's, and a slash verb is only one of its shapes.
             if self.chat_complete() {
                 return None;
+            }
+            // Codex's key for its queue lane: Alt+Enter is the soft newline here.
+            if let Some(sent) = self.submit_queued() {
+                return sent;
             }
             if self.editor.text().starts_with('!') {
                 self.complete_shell();

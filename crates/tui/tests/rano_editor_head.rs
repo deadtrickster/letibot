@@ -260,6 +260,7 @@ fn the_editor_head_attaches_prompts_streams_answers_and_interrupts() {
         attachments,
         context,
         from,
+        ..
     } = &queued.kind
     else {
         panic!("a prompt must queue a prompt: {:?}", queued.kind);

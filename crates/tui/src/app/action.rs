@@ -23,6 +23,8 @@ pub struct Prompt {
     /// What the operator pointed at in the editor, when `alt-s` put a chip in the composer. The
     /// daemon renders it; the head never writes a word of it.
     pub context: Option<letibot_sessionlog::EditorContext>,
+    /// Steer joins the running turn; queue waits for it to end.
+    pub delivery: letibot_sessionlog::PromptDelivery,
 }
 
 impl Prompt {
@@ -32,6 +34,7 @@ impl Prompt {
             text: text.into(),
             attachments: Vec::new(),
             context: None,
+            delivery: Default::default(),
         }
     }
 
@@ -45,6 +48,7 @@ impl Prompt {
             text: text.into(),
             attachments,
             context,
+            delivery: Default::default(),
         }
     }
 }

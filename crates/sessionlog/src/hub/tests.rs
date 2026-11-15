@@ -512,6 +512,7 @@ fn a_wake_handed_to_the_own_reader_is_taken_there_and_rings_nothing() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     };
     assert!(
@@ -716,6 +717,7 @@ fn a_second_heads_prompt_is_queued_not_rejected_and_says_who() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     let ServerFrame::Accepted { note, .. } = f else {

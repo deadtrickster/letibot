@@ -1235,6 +1235,7 @@ pub(crate) fn serve_child_with(
                         attachments,
                         context,
                         from,
+                        ..
                     } => (
                         text.clone(),
                         attachments.clone(),

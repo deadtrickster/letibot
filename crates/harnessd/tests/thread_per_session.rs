@@ -263,6 +263,7 @@ fn prompt(hub: &Arc<letibot_sessionlog::Hub>, head: &Attached, request: &str, te
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     assert!(

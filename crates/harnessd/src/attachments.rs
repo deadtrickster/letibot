@@ -301,6 +301,7 @@ mod tests {
                 attachments: vec![chip(AttachmentKind::Image, &p, "shot.png")],
                 context: None,
                 from: None,
+                delivery: Default::default(),
             },
         );
 
@@ -345,6 +346,7 @@ mod tests {
                 attachments: vec![chip(AttachmentKind::Image, &p, "never-there.png")],
                 context: None,
                 from: None,
+                delivery: Default::default(),
             },
         );
         let mut steering = crate::harness::HubSteering::new(hub.clone());

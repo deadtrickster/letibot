@@ -198,6 +198,7 @@ impl App {
             // The queue is the old session's: the hub drains it into that session's transcript, and an echo of
             // words from a conversation no longer on the screen is the same lie a carried model name is.
             self.pending_prompts.clear();
+            self.after_turn.clear();
             self.unconfirmed.clear();
             // And the viewport's place, which is a place in the rows that just went
             //. Carrying it across a switch would hold the reader on a row of another
@@ -747,6 +748,7 @@ impl App {
         let queue: std::collections::HashSet<String> =
             self.pending_prompts.iter().cloned().collect();
         self.unconfirmed.retain(|u| queue.contains(u));
+        self.after_turn.retain(|u| queue.contains(u));
     }
 
     /// Bind the oldest unbound echo to a row that has just been announced. A body-less `user` row is this

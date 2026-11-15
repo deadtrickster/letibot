@@ -426,6 +426,7 @@ mod tests {
                 attachments: Vec::new(),
                 context: Some(c),
                 from: None,
+                delivery: Default::default(),
             },
         );
         assert!(

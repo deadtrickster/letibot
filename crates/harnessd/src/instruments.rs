@@ -745,6 +745,7 @@ mod tests {
                 attachments: Vec::new(),
                 context: None,
                 from: None,
+                delivery: Default::default(),
             },
         };
         let ((), got) = letibot_metrics::capture(|| {

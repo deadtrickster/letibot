@@ -2113,6 +2113,7 @@ mod journal_tests {
                 attachments: Vec::new(),
                 context: None,
                 from: None,
+                delivery: Default::default(),
             },
         );
         assert!(first.journal_settled(std::time::Duration::from_secs(30)));

@@ -345,6 +345,7 @@ fn a_stored_session_asked_for_by_a_head_is_restored_before_any_turn_runs() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     assert!(

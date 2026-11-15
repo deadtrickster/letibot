@@ -286,6 +286,7 @@ fn drive<'a>(parts: &'a Parts, cfg: &Config, id: &str, prompt: &str) -> (Session
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     let cmd = hub.try_command().expect("the prompt is queued");

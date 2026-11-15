@@ -392,6 +392,9 @@ impl App {
                     // A prompt typed while the daemon boots runs once it has started
                     //: nothing takes it before the worker runs.
                     None if booting && mark == QUEUED => QUEUED_UNTIL_STARTED.to_string(),
+                    None if mark == QUEUED && self.after_turn.iter().any(|q| q == key) => {
+                        crate::app::AFTER_TURN.to_string()
+                    }
                     None => queued_behind(mark, filling_now.as_deref()),
                 };
                 // The split, at the one place the fact is known. A remainder has a row

@@ -117,7 +117,8 @@ pub(crate) fn help_lines_with(
         ),
         (
             "tab",
-            "complete the /command being typed; more tabs walk the matches",
+            "complete the /command being typed; more tabs walk the matches. While a turn runs, \
+             a prose line is queued for after it - enter steers the running turn instead",
         ),
         (
             "click",

@@ -206,6 +206,20 @@ impl HeadClient {
         context: Option<crate::protocol::EditorContext>,
         from: Option<String>,
     ) -> Result<String, ClientError> {
+        let p = crate::protocol::PromptDelivery::Steer;
+        self.prompt_delivered(expected_seq, text, attachments, context, from, p)
+    }
+
+    /// A prompt with its lane named: steer joins the running turn, queue waits for its end.
+    pub fn prompt_delivered(
+        &mut self,
+        expected_seq: u64,
+        text: &str,
+        attachments: Vec<crate::protocol::Attachment>,
+        context: Option<crate::protocol::EditorContext>,
+        from: Option<String>,
+        delivery: crate::protocol::PromptDelivery,
+    ) -> Result<String, ClientError> {
         let client_request_id = self.next_id();
         self.writer.write(&ClientFrame::Prompt {
             client_request_id: client_request_id.clone(),
@@ -214,6 +228,7 @@ impl HeadClient {
             attachments,
             context,
             from,
+            delivery,
         })?;
         Ok(client_request_id)
     }

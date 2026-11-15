@@ -293,6 +293,7 @@ fn cmd_of(hub: &Hub, text: &str) -> letibot_sessionlog::hub::QueuedCommand {
                 attachments: Vec::new(),
                 context: None,
                 from: None,
+                delivery: Default::default(),
             },
         ),
         "the hub refused the prompt"
