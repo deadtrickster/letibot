@@ -183,7 +183,7 @@ pub const GLM_CODING: Preset = Preset {
     effort: None,
     origin: Origin::BuiltIn,
     window: None,
-    usage_url: None,
+    usage_url: Some(crate::usage::ZAI_QUOTA),
 };
 
 /// Zhipu's coding plan: the mainland host of the same product as [`GLM_CODING`].
@@ -201,7 +201,7 @@ pub const GLM_CODING_CN: Preset = Preset {
     effort: None,
     origin: Origin::BuiltIn,
     window: None,
-    usage_url: None,
+    usage_url: Some(crate::usage::ZAI_QUOTA),
 };
 
 pub const GROK: Preset = Preset {

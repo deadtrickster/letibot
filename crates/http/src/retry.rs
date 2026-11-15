@@ -111,7 +111,15 @@ impl Policy {
         match e {
             HttpError::Io(_) | HttpError::Malformed(_) => Class::Transport,
             HttpError::Status { code, body, .. } => {
-                if Self::states_a_refusal(body) {
+                if let Some(l) = crate::zai::limit(body) {
+                    // GLM's code decides, before the money words: a spent window whose prose says
+                    // "insufficient balance for extra usage" (1316) still lifts at its reset.
+                    if l == crate::zai::Limit::Refused {
+                        Class::Refused
+                    } else {
+                        Class::TryAgain
+                    }
+                } else if Self::states_a_refusal(body) {
                     // A 429 (or a 400) whose body says the account cannot pay. The status is not
                     // the instrument here: the same 429 means both *not yet* and *not ever until
                     // somebody tops up*, and only the body knows which.
@@ -155,7 +163,12 @@ impl Policy {
     pub fn trouble(e: &HttpError) -> Option<Trouble> {
         match e {
             HttpError::Status { code, body, .. } => {
-                if Self::states_a_refusal(body) {
+                if let Some(l) = crate::zai::limit(body) {
+                    match l {
+                        crate::zai::Limit::Refused => Some(Trouble::Quota),
+                        _ => Some(Trouble::RateLimit),
+                    }
+                } else if Self::states_a_refusal(body) {
                     // Money, whatever the status says: the provider's own words are the instrument,
                     // and a 400 naming an unpaid balance is the same fact as a 429 that does.
                     Some(Trouble::Quota)
@@ -187,9 +200,18 @@ impl Policy {
         else {
             return None;
         };
+        if Self::is_transient_limit(body) {
+            return None;
+        }
         retry_after
             .map(|secs| now_ms.saturating_add(secs.saturating_mul(1000)))
             .or_else(|| crate::reset::from_prose(body, now_ms))
+    }
+
+    /// A rate or concurrency limit that names a code saying so (GLM `1302`, `1305`): it has no
+    /// reset to park on, whatever numbers its prose or headers carry, so it is the long retry.
+    pub fn is_transient_limit(body: &str) -> bool {
+        crate::zai::limit(body) == Some(crate::zai::Limit::Transient)
     }
 
     /// [`Policy::reset_ms`] without the prose's six-hour ceiling: the instant the provider really
@@ -201,6 +223,9 @@ impl Policy {
         else {
             return None;
         };
+        if Self::is_transient_limit(body) {
+            return None;
+        }
         retry_after
             .map(|secs| now_ms.saturating_add(secs.saturating_mul(1000)))
             .or_else(|| crate::reset::from_prose_unbounded(body, now_ms))
@@ -278,7 +303,11 @@ impl Policy {
             // mid-answer, which is the same story as a reset.
             HttpError::Malformed(_) => "the answer did not arrive whole",
             HttpError::Status { code, body, .. } => {
-                if Self::states_a_refusal(body) {
+                if crate::zai::limit(body) == Some(crate::zai::Limit::Refused) {
+                    "the plan or account behind the key cannot serve the call"
+                } else if crate::zai::limit(body).is_some() {
+                    "the provider said to try again"
+                } else if Self::states_a_refusal(body) {
                     "the account behind the key cannot pay for the call"
                 } else if TRY_AGAIN.contains(code) {
                     "the provider said to try again"
@@ -294,7 +323,10 @@ impl Policy {
     pub fn brief(e: &HttpError) -> String {
         match e {
             HttpError::Status { code, body, .. } => {
-                if Self::states_a_refusal(body) {
+                let glm = crate::zai::limit(body);
+                if glm == Some(crate::zai::Limit::Refused)
+                    || (glm.is_none() && Self::states_a_refusal(body))
+                {
                     "the account cannot pay".to_string()
                 } else if *code == 429 || *code == 408 {
                     format!("{code} rate limited")
@@ -560,6 +592,61 @@ mod tests {
             !Policy::the_model_refused(&status(408)),
             "a 408 is the route, not a statement about the model"
         );
+    }
+
+    /// GLM's codes decide what a 429 is: rate and concurrency retry and never park, a spent window
+    /// parks on its China-time reset, and a plan that cannot serve the call is refused at once.
+    /// Bodies are the vendor's templates (docs.z.ai/api-reference/api-code) as the provider crate
+    /// renders them, the code appended.
+    #[test]
+    fn a_glm_code_decides_between_a_rate_limit_a_window_and_a_refusal() {
+        let p = Policy::standard();
+        let now = 1_794_766_098_000; // 2026-11-15 18:08:18 UTC
+        for body in [
+            "Rate limit reached for requests (1302)",
+            "High concurrency usage of this API, please reduce concurrency or try again later \
+             for 5 hour (1302)",
+            "The service may be temporarily overloaded, please try again later (1305)",
+            "您的账户已达到速率限制，请您控制请求频率 (1302)",
+        ] {
+            let e = said(429, body);
+            assert_eq!(p.class(&e), Class::TryAgain, "{body}");
+            assert_eq!(Policy::trouble(&e), Some(Trouble::RateLimit), "{body}");
+            assert_eq!(Policy::reset_unbounded_ms(&e, now), None, "{body}");
+            assert_eq!(Policy::reset_ms(&e, now), None, "{body}");
+            // Not even a Retry-After turns a rate limit into a window to park on.
+            let with_header = HttpError::Status {
+                code: 429,
+                body: body.into(),
+                retry_after: Some(18_000),
+            };
+            assert_eq!(Policy::reset_unbounded_ms(&with_header, now), None);
+            assert!(p.after(&with_header, 0).is_some(), "the ladder still waits");
+        }
+        let lifts = 1_794_766_268_000; // 18:11:08 UTC = 02:11:08 UTC+8
+        for body in [
+            "Usage limit reached for 5 hour. Your limit will reset at 2026-11-16 02:11:08 (1308)",
+            "Usage limit reached for the past 5 hours. Insufficient balance for extra usage. \
+             Resets at 2026-11-16 02:11:08. (1316)",
+            "Usage limit reached for the past 5 hours. Extra usage is not available due to \
+             monthly spend limit. Resets at 2026-11-16 02:11:08. (1318)",
+        ] {
+            let e = said(429, body);
+            assert_eq!(p.class(&e), Class::TryAgain, "{body}");
+            assert_eq!(Policy::trouble(&e), Some(Trouble::RateLimit), "{body}");
+            assert_eq!(Policy::reset_unbounded_ms(&e, now), Some(lifts), "{body}");
+        }
+        for body in [
+            "Insufficient balance or no resource package. Please recharge. (1113)",
+            "Your GLM Coding Plan package has expired and is temporarily unavailable. (1309)",
+            "Your current subscription plan does not yet include access to glm-9 (1311)",
+            "Your account's current usage pattern does not comply with the Fair Usage Policy, \
+             and your request frequency has been limited. (1313)",
+        ] {
+            let e = said(429, body);
+            assert_eq!(p.class(&e), Class::Refused, "{body}");
+            assert_eq!(Policy::trouble(&e), Some(Trouble::Quota), "{body}");
+        }
     }
 
     /// The six-times 429: a refusal that names money is one call, and a rate limit is not.

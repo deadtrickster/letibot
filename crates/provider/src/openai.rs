@@ -548,12 +548,11 @@ impl OpenAiProvider {
             // The provider's own CODE, kept beside its message: taking only the message throws away
             // the one machine-readable word in the refusal, so a 429 whose code names an unpaid
             // account reaches the retry policy as prose that matches nothing in its money list.
-            let message = match parsed.as_ref().and_then(|v| {
-                v.get("error")
-                    .and_then(|e| e.get("code"))
-                    .and_then(|c| c.as_str())
-            }) {
-                Some(code) if !message.contains(code) => format!("{message} ({code})"),
+            let message = match parsed
+                .as_ref()
+                .and_then(|v| v.get("error").and_then(|e| code_text(e.get("code")?)))
+            {
+                Some(code) if !message.contains(&code) => format!("{message} ({code})"),
                 _ => message,
             };
             // What a 403 from the coding plan most often is, said where the operator reads the
@@ -636,6 +635,13 @@ impl OpenAiProvider {
 
 /// The refusal a provider sends INSIDE its stream, which has no status of its own: the response's
 /// is `200` because the headers went out first. `None` for a chunk that is not an error.
+/// A refusal's `code`, string or number: GLM writes `"1302"`, and a number must not be dropped.
+fn code_text(c: &Value) -> Option<String> {
+    c.as_str()
+        .map(str::to_string)
+        .or_else(|| c.as_u64().map(|n| n.to_string()))
+}
+
 fn in_band_refusal(chunk: &Value, status: u16, retry_after: Option<u64>) -> Option<BackendError> {
     let err = chunk.get("error")?;
     let message = err
@@ -648,8 +654,8 @@ fn in_band_refusal(chunk: &Value, status: u16, retry_after: Option<u64>) -> Opti
         .unwrap_or_else(|| err.to_string());
     // The provider's own code, for the reason the non-2xx arm keeps it: it is the one
     // machine-readable word in a refusal, and a quota is read off it.
-    let message = match err.get("code").and_then(Value::as_str) {
-        Some(code) if !message.contains(code) => format!("{message} ({code})"),
+    let message = match err.get("code").and_then(code_text) {
+        Some(code) if !message.contains(&code) => format!("{message} ({code})"),
         _ => message,
     };
     // The status the chunk names when it names one, and the response's otherwise. Both are the
@@ -1459,5 +1465,21 @@ mod tests {
             body["messages"][1].get("reasoning_content").is_none(),
             "{body}"
         );
+    }
+
+    /// GLM's code reaches the retry policy whether the vendor wrote it as a string or a number.
+    #[test]
+    fn a_glm_code_is_kept_beside_the_message_as_a_string_or_a_number() {
+        for code in [json!("1302"), json!(1302)] {
+            let chunk =
+                json!({"error": {"code": code, "message": "Rate limit reached for requests"}});
+            let Some(BackendError::Refused { status, body, .. }) =
+                in_band_refusal(&chunk, 200, None)
+            else {
+                panic!("an error chunk is a refusal");
+            };
+            assert_eq!(body, "Rate limit reached for requests (1302)");
+            assert_eq!(status, 200, "a business code is not an HTTP status");
+        }
     }
 }

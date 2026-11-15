@@ -57,10 +57,22 @@ pub fn names_a_wall_clock(body: &str) -> bool {
     wall_clock_ms(body).is_some()
 }
 
-/// `2026-11-07 21:02:27` (or with a `T` and a trailing `Z`), read as UTC.
+/// `2026-11-07 21:02:27` (or with a `T` and a trailing `Z`) after `reset at`, `resets at` or
+/// `将在`, read as UTC - except a GLM refusal's, which is China time ([`crate::zai`]).
 fn wall_clock_ms(body: &str) -> Option<u64> {
+    let utc = naive_wall_clock_ms(body)?;
+    Some(if crate::zai::is_glm(body) {
+        utc.checked_sub(crate::zai::FLUSH_TIME_OFFSET_MS)?
+    } else {
+        utc
+    })
+}
+
+fn naive_wall_clock_ms(body: &str) -> Option<u64> {
     let at = body.to_ascii_lowercase();
-    let after = at.split_once("reset at ").map(|(_, rest)| rest)?;
+    let after = ["reset at ", "resets at ", "将在"]
+        .iter()
+        .find_map(|m| at.split_once(m).map(|(_, rest)| rest))?;
     let stamp = after.trim_start();
     let date = stamp.get(0..10)?;
     let time = stamp.get(11..19)?;
@@ -248,6 +260,29 @@ mod tests {
         // An hour before the reset, the wall clock is the earlier reading and it wins.
         let now = RESET - 3_600_000;
         assert_eq!(from_prose(GLM, now), Some(RESET));
+    }
+
+    /// GLM's `next_flush_time` is China time. 2026-11-15: a `1308` at 18:08 UTC whose window
+    /// started 13:11 UTC; read as UTC it was 02:11 next day, the window beat it, and the session
+    /// parked until 23:08 for a limit that lifted at 18:11.
+    #[test]
+    fn a_glm_coded_wall_clock_is_china_time() {
+        let body = "Usage limit reached for 5 hour. Your limit will reset at 2026-11-16 \
+                    02:11:08 (1308)";
+        // 2026-11-15 18:11:08 UTC.
+        let lifts = 1_794_766_268_000;
+        assert_eq!(wall_clock_ms(body), Some(lifts));
+        let now = lifts - 3 * 60_000;
+        assert_eq!(from_prose(body, now), Some(lifts));
+        // The 1316-1321 spelling, and the mainland one.
+        let past = "Usage limit reached for the past 5 hours. Insufficient balance for extra \
+                    usage. Resets at 2026-11-16 02:11:08. (1316)";
+        assert_eq!(from_prose(past, now), Some(lifts));
+        let cn = "已达到 5 小时使用上限。您的限额将在 2026-11-16 02:11:08 重置 (1308)";
+        assert_eq!(from_prose(cn, now), Some(lifts));
+        // No code, no zone guess: the clock stays UTC.
+        let bare = "Your limit will reset at 2026-11-16 02:11:08";
+        assert_eq!(wall_clock_ms(bare), Some(lifts + 8 * 3_600_000));
     }
 
     /// The window keeps a wrong zone from parking a session: a wall clock half a day out is not

@@ -110,7 +110,13 @@ the entry and the key. A door with no catalogue lists its models from the endpoi
 `usage` is a path on the door's own host, or a whole URL, that reports the plan's windows. A rate
 limit whose refusal names only its window (Kimi's `5-hour usage limit`) asks it once, with the
 door's key, and parks until the latest reset among the spent windows. A failed request falls back to
-the window. The built-in Kimi doors declare it.
+the window. The built-in Kimi doors declare it, and the GLM coding doors declare z.ai's
+undocumented `/api/monitor/usage/quota/limit` (bare key, `nextResetTime` in millis).
+
+GLM limits are read by their business code (`crates/http/src/zai.rs`, table from
+<https://docs.z.ai/api-reference/api-code>). `1302` rate/concurrency and `1305` overload retry and
+never park. `1308`, `1310` and `1316`-`1321` are spent windows and park on the `next_flush_time`
+the body names, which is China time (UTC+8). `1113`, `1309`, `1311`, `1313`-`1315` are refused.
 
 ## Four protocols
 

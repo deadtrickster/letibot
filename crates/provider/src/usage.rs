@@ -8,6 +8,10 @@ use serde_json::Value;
 use crate::keys::Credentials;
 use crate::presets::Preset;
 
+/// Z.ai's coding-plan quota report, the one its console draws: undocumented, read-only, and on the
+/// same origin and key as the chat door (`api.z.ai`, `open.bigmodel.cn`).
+pub const ZAI_QUOTA: &str = "/api/monitor/usage/quota/limit";
+
 /// One request on a failure path that already waited out a ladder: a few seconds, then the window.
 pub const TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -34,10 +38,16 @@ pub fn exhausted_reset_ms(preset: &Preset, creds: &Credentials) -> Option<u64> {
             .timeout_global(Some(TIMEOUT))
             .build(),
     );
+    // Z.ai's monitor takes the bare key: `Bearer <key>` is a 401 there.
+    let (auth, agent_name) = if url.contains(ZAI_QUOTA) {
+        (creds.key.clone(), "letibot")
+    } else {
+        (format!("Bearer {}", creds.key), crate::kimi::USER_AGENT)
+    };
     let body: Value = agent
         .get(&url)
-        .header("Authorization", &format!("Bearer {}", creds.key))
-        .header("User-Agent", crate::kimi::USER_AGENT)
+        .header("Authorization", &auth)
+        .header("User-Agent", agent_name)
         .call()
         .ok()?
         .body_mut()
@@ -70,7 +80,16 @@ pub fn reset_of(body: &Value) -> Option<u64> {
             let spent = count("used")? >= count("limit")?;
             spent.then(|| letibot_http::reset::rfc3339_ms(d["resetTime"].as_str()?))?
         });
-    named.max().or_else(|| listed.max())
+    // Z.ai: `data.limits[]` with `percentage` 0-100 and `nextResetTime` in Unix millis.
+    let zai = body["data"]["limits"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|l| {
+            let spent = l["percentage"].as_f64()? >= 100.0;
+            spent.then(|| l["nextResetTime"].as_u64().filter(|ms| *ms > 0))?
+        });
+    named.max().or_else(|| listed.max()).or_else(|| zai.max())
 }
 
 #[cfg(test)]
@@ -111,6 +130,42 @@ mod tests {
         }, "limits": [{"detail": {"limit": "100", "used": "40", "resetTime": "2026-11-14T01:07:07Z"}}]});
         assert_eq!(reset_of(&body), None);
         assert_eq!(reset_of(&serde_json::json!({"error": "nope"})), None);
+    }
+
+    /// Z.ai's answer in the shape its console reads (two token windows and the MCP month), the
+    /// 5-hour window spent.
+    #[test]
+    fn a_spent_zai_window_is_read_off_next_reset_time() {
+        let body = serde_json::json!({"code": 200, "success": true, "msg": "Operation successful",
+            "data": {"level": "pro", "limits": [
+                {"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 100,
+                 "nextResetTime": 1_794_766_268_000u64},
+                {"type": "TOKENS_LIMIT", "unit": 6, "number": 7, "percentage": 41,
+                 "nextResetTime": 1_795_000_000_000u64},
+                {"type": "TIME_LIMIT", "unit": 5, "number": 1, "percentage": 3,
+                 "nextResetTime": 1_797_000_000_000u64}]}});
+        assert_eq!(reset_of(&body), Some(1_794_766_268_000));
+        let mut fresh = body.clone();
+        fresh["data"]["limits"][0]["percentage"] = serde_json::json!(2);
+        assert_eq!(reset_of(&fresh), None, "nothing spent is no instant");
+    }
+
+    #[test]
+    fn the_glm_doors_ask_their_own_host() {
+        let creds = Credentials {
+            key: "k".into(),
+            from: "test".into(),
+            prices: Default::default(),
+            url: None,
+        };
+        assert_eq!(
+            url(&crate::presets::GLM_CODING, &creds).as_deref(),
+            Some("https://api.z.ai/api/monitor/usage/quota/limit")
+        );
+        assert_eq!(
+            url(&crate::presets::GLM_CODING_CN, &creds).as_deref(),
+            Some("https://open.bigmodel.cn/api/monitor/usage/quota/limit")
+        );
     }
 
     #[test]

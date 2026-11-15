@@ -4,6 +4,7 @@
 
 pub mod reset;
 pub mod retry;
+pub mod zai;
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpStream;
