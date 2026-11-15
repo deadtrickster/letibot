@@ -1794,6 +1794,7 @@ mod children;
 // The shadow's hooks into a session: its position, the turn_end trigger and what a verdict does.
 mod shadow_seat;
 // Where each open session's own watcher set and slots are, by id - see the module's header.
+pub(crate) mod admission;
 pub(crate) mod trees;
 // A session's estate - what it was still holding when it ended, what ended with it, and what
 // it handed to the session that outlives it. See the module's header for why the substrate's own

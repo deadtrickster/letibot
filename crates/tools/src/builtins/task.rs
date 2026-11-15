@@ -818,6 +818,11 @@ pub trait TaskRunner: Send + Sync {
         Vec::new()
     }
 
+    /// Whether this child is waiting for a place under the running-children cap and has not opened.
+    fn queued(&self, _handle: &str) -> bool {
+        false
+    }
+
     /// The children a handle or a name may resolve to, with their slugs: what [`resolve_child`]
     /// reads and what the sentences about a child label it by. The default is [`Self::started`]
     /// with no names, so a runner that keeps none resolves handles as before.
@@ -1309,8 +1314,19 @@ impl Tool for TaskTool {
                 },
                 first_line(prompt),
                 super::DELIVERED,
-            ),
+            ) + &queued_line(self.runner.as_ref(), &handle),
         )
+    }
+}
+
+/// The line a spawn's answer adds when the child is waiting for a place rather than running.
+fn queued_line(runner: &dyn TaskRunner, handle: &str) -> String {
+    if runner.queued(handle) {
+        "\n\nIt is QUEUED: the `[subagents]` running cap is full, and it starts by itself when a \
+         running child finishes. `job_kill` takes it out of the queue."
+            .to_string()
+    } else {
+        String::new()
     }
 }
 
@@ -1894,7 +1910,7 @@ impl Tool for TaskStartTool {
                 handle.placement.branch,
                 handle.placement.base_sha,
                 super::DELIVERED,
-            ),
+            ) + &queued_line(self.runner.as_ref(), &handle.handle),
         )
     }
 }

@@ -164,6 +164,12 @@ pub(crate) struct TaskSlot {
     /// One answer is 5-120 KB, and a handed-over answer is removed, or a tree would hold every child's whole
     /// output for the daemon's life. Cleared by each settlement: a second answer is a new debt.
     handed_over: std::sync::atomic::AtomicBool,
+    /// This child's place under `[subagents]` caps, dropped at its first settlement or thread exit.
+    permit: std::sync::Mutex<Option<super::admission::Permit>>,
+    /// Whether the child is waiting for a place and has not opened yet: a kill then has no turn to interrupt.
+    queued: std::sync::atomic::AtomicBool,
+    /// The spawn's prompt, normalised, so a second spawn of the same objective is refused.
+    objective: Option<String>,
 }
 
 /// What a slot's answer becomes once a reader has it, and what a second reader falls back to when the
@@ -224,7 +230,35 @@ impl TaskSlot {
             parked: std::sync::atomic::AtomicBool::new(false),
             handed_over: std::sync::atomic::AtomicBool::new(false),
             again_durable: std::sync::atomic::AtomicBool::new(false),
+            permit: std::sync::Mutex::new(None),
+            queued: std::sync::atomic::AtomicBool::new(false),
+            objective: None,
         }
+    }
+
+    /// The child's place under the caps, held until it first settles or its thread ends.
+    pub(crate) fn hold(&self, permit: super::admission::Permit) {
+        *self.permit.lock().unwrap_or_else(|e| e.into_inner()) = Some(permit);
+    }
+
+    fn free_place(&self) {
+        let permit = self.permit.lock().unwrap_or_else(|e| e.into_inner()).take();
+        drop(permit);
+    }
+
+    pub(crate) fn mark_queued(&self, queued: bool) {
+        self.queued
+            .store(queued, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    pub(crate) fn is_queued(&self) -> bool {
+        self.queued.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_objective(mut self, prompt: &str) -> Self {
+        self.objective = Some(super::admission::normalised_objective(prompt));
+        self
     }
 
     /// The tree this child was handed, recorded so a failure can leave it: see the field.
@@ -286,9 +320,11 @@ impl TaskSlot {
     /// answered" from "still here". Set under the state lock and announced on its condvar, or a waiter
     /// would lose the wakeup; `wait_until_exited` is the other reader.
     pub(crate) fn mark_exited(&self) {
-        let _held = self.state.lock().expect("task slot");
+        let held = self.state.lock().expect("task slot");
         self.exited.store(true, std::sync::atomic::Ordering::SeqCst);
         self.settled.notify_all();
+        drop(held);
+        self.free_place();
     }
 
     pub(crate) fn has_exited(&self) -> bool {
@@ -397,6 +433,8 @@ impl TaskSlot {
         *g = status;
         drop(g);
         self.settled.notify_all();
+        // A child that has answered no longer holds a running place; its later turns are not capped.
+        self.free_place();
     }
 
     /// What a settlement becomes on this slot: the kill rule, on its own so `say` can apply it before it
@@ -1760,6 +1798,73 @@ pub(crate) fn child_mode_source(why: Option<&str>) -> String {
 /// The depth refusal, as one pure function: `Some` refuses a `task` call past `max`, `None` is go. It
 /// refuses by NAME, so the model sees the tool and learns which knob moves, and it is assessed at the CALL
 /// because a seat can only say always or never. A `max` of 0 refuses every call, which is no nesting.
+/// What a queued child's slot says until it gets a place.
+pub(crate) const QUEUED_NOTE: &str = "queued: the `[subagents]` running cap is full; it starts \
+     when a running child finishes";
+
+/// A queued child that was stopped before it got a place.
+pub(crate) const QUEUED_STOP: &str =
+    "stopped while queued for a `[subagents]` place; it never started";
+
+/// A running child of `me` already given this objective, named, so the parent collects or steers
+/// it instead of starting a second copy of the same work.
+pub(crate) fn same_objective_refusal(
+    slots: &[(String, Arc<TaskSlot>)],
+    me: &str,
+    prompt: &str,
+) -> Option<String> {
+    let want = super::admission::normalised_objective(prompt);
+    let (handle, slot) = slots.iter().find(|(_, slot)| {
+        slot.owner == me
+            && !slot.has_exited()
+            && !slot.has_settled()
+            && slot.objective.as_deref() == Some(want.as_str())
+    })?;
+    let label = letibot_tools::builtins::task::subagent_label(slot.slug.as_deref(), handle);
+    Some(format!(
+        "`{label}` is already running this objective, so a second child for it was not \
+         started. `task_result` with task=\"{handle}\" waits for its answer, and \
+         `task_message` adds to its brief."
+    ))
+}
+
+/// The caps' answer for one spawn: a place now, a wait, or a refusal naming the running children.
+pub(crate) fn admit_under_caps(
+    admission: &Arc<super::admission::Admission>,
+    tree: usize,
+    limits: crate::leticode_config::ChildLimits,
+    slots: &[(String, Arc<TaskSlot>)],
+) -> Result<super::admission::Admit, String> {
+    use super::admission::Admit;
+    let full = match admission.try_admit(tree, limits) {
+        Ok(permit) => return Ok(Admit::Now(permit)),
+        Err(full) => full,
+    };
+    if limits.when_full == crate::leticode_config::WhenFull::Queue {
+        return Ok(Admit::Wait(limits));
+    }
+    let running: Vec<String> = slots
+        .iter()
+        .filter(|(_, s)| !s.has_exited() && !s.has_settled() && !s.is_queued())
+        .map(|(h, s)| {
+            format!(
+                "`{}`",
+                letibot_tools::builtins::task::subagent_label(s.slug.as_deref(), h)
+            )
+        })
+        .collect();
+    Err(format!(
+        "{}, so this spawn was refused. Nothing was started. Running in this tree: {}. \
+         `task_result` on one of them waits for it; spawn again when one finishes.",
+        full.which(),
+        if running.is_empty() {
+            "none (the daemon's other sessions hold the places)".to_string()
+        } else {
+            running.join(", ")
+        }
+    ))
+}
+
 pub(crate) fn subagent_depth_refusal(depth: u32, max: u32) -> Option<String> {
     if depth < max {
         return None;
@@ -1919,6 +2024,33 @@ impl HarnessTaskRunner {
     /// This session, as the heir of its children's estates - the process host a child hands its
     /// survivors to. Cloned out of the slot rather than borrowed, so the caller owns it for the
     /// call and no lock is held across a hand-over.
+    /// The duplicate rule and the caps, decided before anything is minted or recorded. The review
+    /// queue's reviewers are outside the caps: `[queue] reviewers_at_once` is theirs.
+    fn admit_spawn(&self, prompt: &str) -> Result<super::admission::Admit, String> {
+        let slots = self.slots.lock().expect("task slots").clone();
+        if let Some(why) = same_objective_refusal(&slots, &self.base.session_id, prompt) {
+            return Err(why);
+        }
+        if self.base.session_id == crate::sessions::gatekeeper::session(&self.base.workspace) {
+            return Ok(super::admission::Admit::Exempt);
+        }
+        admit_under_caps(
+            &self.trees.admission,
+            super::admission::tree_key(&self.slots),
+            self.base.leticode.child_limits(),
+            &slots,
+        )
+    }
+
+    /// A place for a child that was admitted once already: a resume or a reopen counts, never waits.
+    fn forced_admit(&self) -> super::admission::Admit {
+        super::admission::Admit::Now(
+            self.trees
+                .admission
+                .force(super::admission::tree_key(&self.slots)),
+        )
+    }
+
     fn heir(&self) -> Option<Arc<dyn letibot_tools::exec::ProcessHost>> {
         self.heir.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -2036,6 +2168,7 @@ impl HarnessTaskRunner {
         spec: &letibot_tools::builtins::task::TaskSpec,
         record: Option<crate::subagent_record::SubagentRecord>,
         restart: Option<String>,
+        admit: super::admission::Admit,
     ) -> Result<String, String> {
         // The child's name - the spec's (a fresh spawn's, made unique by `start`), else the one
         // its record would give it (`recorded_slug`'s rule: the worktree branch, then the prompt).
@@ -2047,8 +2180,21 @@ impl HarnessTaskRunner {
         self.registry.set_slug(&sub_id, &slug);
         let slot = Arc::new(TaskSlot {
             slug: Some(slug),
+            objective: Some(super::admission::normalised_objective(prompt)),
             ..TaskSlot::recorded(&self.base.session_id, record)
         });
+        let wait = match admit {
+            super::admission::Admit::Now(permit) => {
+                slot.hold(permit);
+                None
+            }
+            super::admission::Admit::Wait(limits) => {
+                slot.mark_queued(true);
+                slot.note(QUEUED_NOTE);
+                Some(limits)
+            }
+            super::admission::Admit::Exempt => None,
+        };
         self.slots
             .lock()
             .expect("task slots")
@@ -2077,6 +2223,21 @@ impl HarnessTaskRunner {
             .spawn(move || {
                 // Held for this thread's whole life; see the type's doc.
                 let _announced = announced;
+                if let Some(limits) = wait {
+                    let tree = super::admission::tree_key(&me.slots);
+                    let got = me.trees.admission.admit_or_wait(tree, limits, || {
+                        slot.was_killed() || me.registry.is_stopping()
+                    });
+                    slot.mark_queued(false);
+                    match got {
+                        Some(permit) if !slot.was_killed() => slot.hold(permit),
+                        _ => {
+                            finish_child_thread(&slot, Err(QUEUED_STOP.into()), &me.registry);
+                            slot.mark_exited();
+                            return;
+                        }
+                    }
+                }
                 let slot2 = slot.clone();
                 // The settlement is the function's own now: it happens as the turn ends, because what follows
                 // (a host child serving its queue until the hub closes) does not end until the daemon does. The
@@ -2158,6 +2319,7 @@ impl HarnessTaskRunner {
             &spec,
             Some(record),
             Some(notice),
+            self.forced_admit(),
         ) {
             Ok(_) => Ok(()),
             Err(why) => {
@@ -2362,6 +2524,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         if let Some(why) = subagent_depth_refusal(self.base.depth, self.base.max_subagent_depth) {
             return Err(why);
         }
+        let admit = self.admit_spawn(prompt)?;
         // The id is minted here rather than inside the body - it is what this call returns
         // and the body has not run yet - and it is minted UNIQUELY, which is the half that
         // was missing. See [`mint_sub_id`] for the three-children-one-id defect.
@@ -2412,7 +2575,7 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             ));
         }
         let record = self.record_start(&sub_id, prompt, &spec);
-        self.spawn_child(sub_id, prompt, &spec, record, None)
+        self.spawn_child(sub_id, prompt, &spec, record, None, admit)
     }
 
     /// Bring back the children a daemon that is gone left mid-task - see
@@ -2505,7 +2668,8 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
             .expect("task slots")
             .retain(|(h, s)| h != handle || !s.has_exited());
         let notice = crate::subagent_record::child_notice(letibot_sessionlog::registry::now_ms());
-        self.spawn_child(handle.to_string(), prompt, spec, None, Some(notice))
+        let admit = self.forced_admit();
+        self.spawn_child(handle.to_string(), prompt, spec, None, Some(notice), admit)
     }
 
     /// Arrange the tree, then start the child: the worktree is created BEFORE the spawn, and a path that
@@ -2526,6 +2690,9 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         if let Some(why) = subagent_depth_refusal(self.base.depth, self.base.max_subagent_depth) {
             return Err(why);
         }
+        // The duplicate rule and a refusing cap, before a tree is cut for a child that would not start.
+        // The place taken here is dropped; `start` takes its own.
+        drop(self.admit_spawn(prompt)?);
         // The directory the git work runs in: the repository the caller named, or the
         // session root. A root that is in no repository (a session a level above its repos) is
         // refused by name with the repositories it can see, so the next call can name one.
@@ -2660,6 +2827,13 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 ),
             });
         };
+        if slot.is_queued() {
+            slot.kill();
+            return Ok(format!(
+                "`{handle}` was queued for a `[subagents]` place and had not started, so it is \
+                 taken out of the queue. Nothing of it ran."
+            ));
+        }
         // A child still opening has no hub yet: the mark is the stop, read by the spawn once it
         // registers. The registry is read again after the mark, so one side always sees the other.
         let hub = match self.registry.get(handle) {
@@ -2938,6 +3112,10 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
         self.unrecorded_child(handle)
             .as_ref()
             .map(crate::subagent_record::how_far)
+    }
+
+    fn queued(&self, handle: &str) -> bool {
+        self.slot(handle).is_some_and(|s| s.is_queued())
     }
 
     fn started(&self) -> Vec<String> {

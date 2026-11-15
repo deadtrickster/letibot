@@ -33,6 +33,9 @@ impl Tree {
 #[derive(Clone, Default)]
 pub(crate) struct Trees {
     inner: Arc<Mutex<HashMap<String, Tree>>>,
+    /// The daemon's running-children counts, here because this table is the one thing every
+    /// session of a daemon shares.
+    pub(crate) admission: Arc<super::admission::Admission>,
 }
 
 impl Trees {

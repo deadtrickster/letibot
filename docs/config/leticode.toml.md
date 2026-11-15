@@ -277,6 +277,16 @@ Read by the head.
 |---|---|---|---|---|
 | `auto_reseat` | bool | true | both, project wins | daemon-run sessions move to the current prompt, notes and skill pins included, before a turn; false asks |
 
+## `[subagents]`
+
+A spawn over a cap waits for a running child to answer, or is refused. A spawn with the objective of a running child is refused, naming it. Review-queue reviewers are outside these caps.
+
+| key | type | default | level | meaning |
+|---|---|---|---|---|
+| `max_running` | int >= 1 | 8 | both, project wins | children one root session's tree runs at once |
+| `daemon_max_running` | int >= 1 | 32 | user only | children the whole daemon runs at once |
+| `when_full` | "queue" \| "refuse" | "queue" | both, project wins | a spawn over a cap waits for a place, or fails naming the running children |
+
 ## `[warnings]`
 
 Read by the head. Codes: letibot_sessionlog::warning::TABLE.

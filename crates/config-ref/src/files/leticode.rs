@@ -331,6 +331,16 @@ pub const LETICODE: File = File {
             )],
         },
         Table {
+            path: "subagents",
+            note: "A spawn over a cap waits for a running child to answer, or is refused. A spawn with the objective of a running child is refused, naming it. Review-queue reviewers are outside these caps.",
+            needs: "",
+            keys: &[
+                k("max_running", "int >= 1", "8", PW, "children one root session's tree runs at once", "4"),
+                k("daemon_max_running", "int >= 1", "32", U, "children the whole daemon runs at once", "16"),
+                k("when_full", "\"queue\" | \"refuse\"", "\"queue\"", PW, "a spawn over a cap waits for a place, or fails naming the running children", "\"refuse\""),
+            ],
+        },
+        Table {
             path: "warnings",
             note: "Read by the head. Codes: letibot_sessionlog::warning::TABLE.",
             needs: "",

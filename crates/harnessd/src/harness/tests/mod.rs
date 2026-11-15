@@ -35,6 +35,7 @@ mod auto_reseat;
 mod card_fixtures;
 mod cheap_wake;
 mod child_mode;
+mod childcap;
 mod children;
 mod citations;
 mod clear;

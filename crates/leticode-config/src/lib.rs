@@ -590,6 +590,8 @@ pub struct LeticodeConfig {
     pub ui: UiKeys,
     /// The `[sessions]` table. See [`SessionKeys`].
     pub sessions: SessionKeys,
+    /// The `[subagents]` table: how many children run at once. See [`SubagentKeys`].
+    pub subagents: SubagentKeys,
     /// The `[warnings]` table: what the head files and never draws. Read by the head, in
     /// `tui/src/prefs.rs`, because the codes are that process's vocabulary.
     pub warnings: WarningKeys,
@@ -2271,6 +2273,103 @@ pub struct SessionKeys {
     pub auto_reseat: Option<bool>,
 }
 
+/// What a spawn over the running-children cap does: wait for a slot, or fail with a sentence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WhenFull {
+    Queue,
+    Refuse,
+}
+
+impl WhenFull {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            WhenFull::Queue => "queue",
+            WhenFull::Refuse => "refuse",
+        }
+    }
+}
+
+/// Children a root session's tree may run at once when no level says, as dsh pools them.
+pub const DEFAULT_MAX_RUNNING: usize = 8;
+/// Children the whole daemon may run at once when the user file does not say, as grok and omp cap them.
+pub const DEFAULT_DAEMON_MAX_RUNNING: usize = 32;
+
+/// `[subagents]` in a `leticode.toml`. `daemon_max_running` is read from the user file only: a
+/// project file is writable by the sessions it governs, and the daemon's cap is not theirs to lift.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SubagentKeys {
+    pub max_running: Option<usize>,
+    pub daemon_max_running: Option<usize>,
+    pub when_full: Option<WhenFull>,
+}
+
+/// The resolved running-children limits a spawn is admitted against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChildLimits {
+    pub per_tree: usize,
+    pub per_daemon: usize,
+    pub when_full: WhenFull,
+}
+
+fn subagent_keys(
+    value: &toml::Value,
+    path: &Path,
+    text: &str,
+    user: bool,
+) -> Result<SubagentKeys, String> {
+    let keys = "the keys are `max_running` (children one session's tree runs at once), \
+                `daemon_max_running` (the whole daemon, user file only) and `when_full` \
+                (\"queue\" or \"refuse\")";
+    let table = table_at(value, path, text, "subagents", keys)?;
+    let mut out = SubagentKeys::default();
+    for (key, v) in table {
+        let from = at(path, text, key, user);
+        let count = || {
+            v.as_integer()
+                .and_then(|n| usize::try_from(n).ok())
+                .filter(|n| *n > 0)
+                .ok_or_else(|| {
+                    format!(
+                        "{from}: [subagents] {key} is a whole number of children above 0, not {}; \
+                         the cap can be raised but not switched off",
+                        match v.as_integer() {
+                            Some(n) => n.to_string(),
+                            None => kind_of(v).to_string(),
+                        }
+                    )
+                })
+        };
+        match key.as_str() {
+            "max_running" => out.max_running = Some(count()?),
+            "daemon_max_running" if !user => {
+                return Err(format!(
+                    "{from}: [subagents] daemon_max_running is the daemon's cap and is read from \
+                     the user file only; a project sets `max_running`"
+                ));
+            }
+            "daemon_max_running" => out.daemon_max_running = Some(count()?),
+            "when_full" => {
+                out.when_full = Some(match v.as_str().map(str::trim) {
+                    Some("queue") => WhenFull::Queue,
+                    Some("refuse") => WhenFull::Refuse,
+                    _ => {
+                        return Err(format!(
+                            "{from}: [subagents] when_full is \"queue\" (wait for a running child \
+                             to finish) or \"refuse\" (fail the spawn), not {v}"
+                        ));
+                    }
+                });
+            }
+            other => {
+                return Err(format!(
+                    "{from}: [subagents] `{other}` is not a key; {keys}"
+                ));
+            }
+        }
+    }
+    Ok(out)
+}
+
 fn session_keys(
     value: &toml::Value,
     path: &Path,
@@ -2746,6 +2845,10 @@ impl LeticodeConfig {
                 Some(v) => session_keys(v, path, &text, level == Level::User)?,
                 None => SessionKeys::default(),
             },
+            subagents: match &file.subagents {
+                Some(v) => subagent_keys(v, path, &text, level == Level::User)?,
+                None => SubagentKeys::default(),
+            },
             warnings: match &file.warnings {
                 Some(v) => warning_keys(v, path, &text, level == Level::User)?,
                 None => WarningKeys::default(),
@@ -3030,6 +3133,14 @@ impl LeticodeConfig {
             sessions: SessionKeys {
                 auto_reseat: other.sessions.auto_reseat.or(self.sessions.auto_reseat),
             },
+            subagents: SubagentKeys {
+                max_running: other.subagents.max_running.or(self.subagents.max_running),
+                daemon_max_running: other
+                    .subagents
+                    .daemon_max_running
+                    .or(self.subagents.daemon_max_running),
+                when_full: other.subagents.when_full.or(self.subagents.when_full),
+            },
             warnings: self.warnings.overridden_by(&other.warnings),
             keys: self.keys.overridden_by(&other.keys),
             verbosity: self.verbosity.overridden_by(&other.verbosity),
@@ -3063,6 +3174,18 @@ impl LeticodeConfig {
     /// on by default.
     pub fn auto_reseat(&self) -> bool {
         self.sessions.auto_reseat.unwrap_or(true)
+    }
+
+    /// The running-children limits: `[subagents]` over the built-in 8 per tree, 32 per daemon, queue.
+    pub fn child_limits(&self) -> ChildLimits {
+        ChildLimits {
+            per_tree: self.subagents.max_running.unwrap_or(DEFAULT_MAX_RUNNING),
+            per_daemon: self
+                .subagents
+                .daemon_max_running
+                .unwrap_or(DEFAULT_DAEMON_MAX_RUNNING),
+            when_full: self.subagents.when_full.unwrap_or(WhenFull::Queue),
+        }
     }
 
     /// How long a session may hold room lines nothing rang for before they are said as one digest
@@ -3312,6 +3435,9 @@ struct LeticodeConfigFile {
     /// The `[sessions]` table, see [`SessionKeys`].
     #[serde(default)]
     sessions: Option<toml::Value>,
+    /// The `[subagents]` table, see [`SubagentKeys`].
+    #[serde(default)]
+    subagents: Option<toml::Value>,
     /// The `[warnings]` table, see [`WarningKeys`].
     #[serde(default)]
     warnings: Option<toml::Value>,

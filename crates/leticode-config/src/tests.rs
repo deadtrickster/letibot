@@ -1745,6 +1745,49 @@ fn the_ui_table_reads_rooms_sidebar() {
     assert!(err.contains("not a key"), "{err}");
 }
 
+/// `[subagents]`: the defaults, a project's `max_running` over the user's, the daemon cap
+/// refused in a project file, and a zero cap refused because it cannot be switched off.
+#[test]
+fn the_subagents_table_caps_running_children() {
+    use crate::{ChildLimits, WhenFull};
+    let dir = project_dir("subagents_table");
+    let none = write_file(&sub(&dir, "sa-none"), "");
+    assert_eq!(
+        LeticodeConfig::load(&none).unwrap().child_limits(),
+        ChildLimits {
+            per_tree: 8,
+            per_daemon: 32,
+            when_full: WhenFull::Queue
+        }
+    );
+    let user_file = write_file(
+        &sub(&dir, "sa-user"),
+        "[subagents]\nmax_running = 4\ndaemon_max_running = 12\nwhen_full = \"refuse\"\n",
+    );
+    let user = LeticodeConfig::load_as(&user_file, Level::User).unwrap();
+    let project_file = write_file(&sub(&dir, "sa-project"), "[subagents]\nmax_running = 2\n");
+    let project = LeticodeConfig::load(&project_file).unwrap();
+    assert_eq!(
+        user.overridden_by(&project).child_limits(),
+        ChildLimits {
+            per_tree: 2,
+            per_daemon: 12,
+            when_full: WhenFull::Refuse
+        }
+    );
+    let lift = write_file(
+        &sub(&dir, "sa-lift"),
+        "[subagents]\ndaemon_max_running = 500\n",
+    );
+    let err = LeticodeConfig::load(&lift).unwrap_err();
+    assert!(err.contains("user file only"), "{err}");
+    let zero = write_file(&sub(&dir, "sa-zero"), "[subagents]\nmax_running = 0\n");
+    let err = LeticodeConfig::load(&zero).unwrap_err();
+    assert!(err.contains("above 0"), "{err}");
+    let word = write_file(&sub(&dir, "sa-word"), "[subagents]\nwhen_full = \"wait\"\n");
+    assert!(LeticodeConfig::load(&word).is_err());
+}
+
 // ---- K9: config, not a plugin (the plan's §4.3, §6 K9) ----
 
 /// The six tables read, every key, and a file that says nothing is the daemon that shipped:
