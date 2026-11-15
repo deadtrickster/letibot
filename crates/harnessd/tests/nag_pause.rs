@@ -404,3 +404,68 @@ fn a_pause_survives_a_resume_and_one_that_ran_out_while_closed_is_said() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A `/nag`, `/prune` or `/clear` from a head, on a session served by its own thread, is run
+/// once by that thread. Handing it back to the thread that already owns it loops for ever.
+#[test]
+fn a_slash_on_its_own_thread_runs_once_and_is_not_handed_on() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let (dir, path, id) = seeded("own-thread");
+    let parts: &'static Parts = Box::leak(Box::new(load_parts(&path, &id)));
+    let (mut sessions, registry) = opened(parts, &path, &id);
+
+    type Seen = std::sync::Mutex<Vec<(String, bool)>>;
+    let seen: std::sync::Arc<Seen> = std::sync::Arc::default();
+    let sink = seen.clone();
+    sessions.serve_each_on_its_own_thread(std::sync::Arc::new(move |_, said| {
+        if let letibot_harnessd::sessions::OutcomeSaid::Command(cmd, outcome) = said
+            && let CommandKind::Slash { line } = &cmd.kind
+        {
+            let handed = matches!(outcome, Outcome::HandedOn);
+            sink.lock().unwrap().push((line.clone(), handed));
+        }
+    }));
+    let hub = registry.get(&id).expect("the session's hub");
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while hub.owner() != letibot_sessionlog::hub::Owner::OwnThread {
+        assert!(std::time::Instant::now() < deadline, "no own thread");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let head = hub.attach(
+        "tui",
+        "dead",
+        letibot_sessionlog::protocol::Caps::default(),
+        0,
+    );
+
+    for (n, line) in ["nag pause", "prune", "clear"].into_iter().enumerate() {
+        let seq = hub.retained().last().map(|e| e.seq).unwrap_or(0);
+        let _ = hub.submit(
+            &head.head_id,
+            format!("r-{n}"),
+            seq,
+            CommandKind::Slash { line: line.into() },
+        );
+        let of = |handed: bool| {
+            seen.lock()
+                .unwrap()
+                .iter()
+                .filter(|(l, h)| l == line && *h == handed)
+                .count()
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while of(false) == 0 && of(true) < 100 && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(
+            (of(false), of(true)),
+            (1, 0),
+            "`/{line}` is run once on its own thread and never handed on"
+        );
+    }
+    registry.close();
+    drop(sessions);
+    let _ = std::fs::remove_dir_all(dir);
+}

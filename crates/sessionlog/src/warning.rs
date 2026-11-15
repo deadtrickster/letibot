@@ -881,6 +881,8 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // An answer reached the queue with nothing waiting for it - one of the two branches
     // says outright that this is a defect.
     ("answer_unclaimed", Class::Failure, Action::Nothing),
+    // A command handed to its own reader a second time: a loop the hub broke, and a defect.
+    ("handed_on_twice", Class::Failure, Action::Nothing),
     // Refused, and the clearest case in the table: one channel's two verdicts belong in one
     // register, and a red `slash_refused` is the code that taught a reader to skim red.
     (

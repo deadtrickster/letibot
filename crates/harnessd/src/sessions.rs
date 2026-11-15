@@ -4664,15 +4664,13 @@ impl<'a> Sessions<'a> {
             }
             CommandKind::Slash { line } => {
                 // A `/clear` aimed at a session its own thread owns is that thread's - the interrupt arm's
-                // rule and door.
+                // rule and door. On that thread `open` holds the session, so it runs here.
                 if matches!(
                     crate::slash::Slash::parse(line),
                     crate::slash::Slash::Clear { .. }
                         | crate::slash::Slash::Prune
                         | crate::slash::Slash::Nag(_)
-                ) && let Some(hub) = &hub
-                    && hub.owner() == Owner::OwnThread
-                    && hub.give_back_to_its_own_reader(cmd.clone())
+                ) && self.hand_back_to_the_owner(session_id, &hub, cmd)
                 {
                     return Outcome::HandedOn;
                 }

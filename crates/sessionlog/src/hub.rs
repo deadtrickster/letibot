@@ -63,6 +63,9 @@ pub const DAEMON_SUBMITTER: &str = "\0daemon";
 /// bound.
 const MAX_SIDE: usize = 256;
 
+/// How many handed-on commands a hub remembers to refuse a second hand-on of the same one.
+const HANDED_ON_KEPT: usize = 64;
+
 /// A mutating command, after validation, waiting for the session's single command worker:
 /// commands are serialized on a per-session queue.
 #[derive(Debug, Clone, PartialEq)]
@@ -560,6 +563,9 @@ struct Inner {
     /// worker - see [`Hub::wake_its_own_reader`] for why the bell cannot be used for it.
     /// Taken once, by [`Hub::take_own_work`].
     own_wake: bool,
+    /// Commands already handed to the own reader once. A second hand-on of the same command is
+    /// a loop between a reader and itself, so it is refused.
+    handed_on: std::collections::VecDeque<QueuedCommand>,
     /// The last `HeldResults` this hub published, republished to a head that attaches or takes a
     /// resync: the event is a state, not a moment.
     held_now: Option<SessionEvent>,
@@ -709,6 +715,7 @@ impl Hub {
                 next_head: 0,
                 commands: CommandQueue::default(),
                 own_wake: false,
+                handed_on: std::collections::VecDeque::new(),
                 held_now: None,
                 activity_now: None,
                 filling_now: None,
@@ -2114,6 +2121,26 @@ impl Hub {
             CommandKind::Interrupt { .. } | CommandKind::Message { .. } | CommandKind::Slash { .. }
         ) {
             return false;
+        }
+        {
+            let mut g = self.lock();
+            if g.handed_on.contains(&cmd) {
+                drop(g);
+                self.warn(
+                    "handed_on_twice",
+                    format!(
+                        "a {} command ({}) was handed to this session's own reader a second \
+                         time. It is run where it was taken instead of being handed on again.",
+                        cmd.kind.verb(),
+                        cmd.client_request_id
+                    ),
+                );
+                return false;
+            }
+            if g.handed_on.len() >= HANDED_ON_KEPT {
+                g.handed_on.pop_front();
+            }
+            g.handed_on.push_back(cmd.clone());
         }
         self.hand_to_its_own_reader_with(Some(cmd))
     }

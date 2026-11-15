@@ -531,6 +531,42 @@ fn a_wake_handed_to_the_own_reader_is_taken_there_and_rings_nothing() {
 }
 
 #[test]
+fn a_command_is_handed_to_its_own_reader_once() {
+    let hub = Hub::new("s-own");
+    let cmd = QueuedCommand {
+        head_id: "h1".into(),
+        identity: "dead".into(),
+        client_request_id: "c-nag".into(),
+        at_seq: hub.head_seq(),
+        enqueued_ms: 0,
+        kind: CommandKind::Slash {
+            line: "nag pause".into(),
+        },
+    };
+    assert!(hub.give_back_to_its_own_reader(cmd.clone()));
+    assert!(matches!(hub.take_own_work(), OwnWork::Command(c) if c == cmd));
+    assert!(
+        !hub.give_back_to_its_own_reader(cmd.clone()),
+        "a second hand-on of the same command is a loop and is refused"
+    );
+    assert!(
+        hub.retained().iter().any(|e| matches!(
+            &e.event,
+            SessionEvent::Warning { code, .. } if code == "handed_on_twice"
+        )),
+        "and the refusal is said"
+    );
+    let other = QueuedCommand {
+        client_request_id: "c-other".into(),
+        ..cmd
+    };
+    assert!(
+        hub.give_back_to_its_own_reader(other),
+        "another command is still handed on"
+    );
+}
+
+#[test]
 fn a_head_that_was_already_attached_is_sent_the_body_it_was_promised() {
     // The fault this variant exists for. Attaching first is the whole point:
     // a head that attaches *later* was always fine, because the snapshot
