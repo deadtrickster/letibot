@@ -1644,6 +1644,34 @@ The stopgap: `[skills] pin = ["rust-builds"]` in the operator's leticode.toml, s
 
 **Done when:** a session whose first `cargo` call happens without the skill receives the policy text at that call, worded as rules, once per session. A non-policy skill is still offered as before.
 
+## R294 - A box-wide build placement service: given a folder and a build command, it places the build
+
+**Status:** design, 2026-11-15. Not started (operator: "it is a todo, not for now").
+
+Operator: "a central build server that places for all bots and projects ... it gets the input - the folder and the build command and tries to place it ... so no hand placement from you or anyone".
+
+**What happened today:**
+- About 30 agents built Rust at once, every target dir on `/build`.
+- nvme0n1 sat at 100% util with 345-450 ms write await, while `/data` (nvme2n1) was idle. IO pressure "some" was 98% and "full" 66%. Load reached 400 on 32 cores, mostly IO wait.
+- The fixes so far are by hand:
+  - a shared sccache;
+  - three cache servers, one per disk, chosen by target-dir prefix or `LETIBOT_BUILD_CACHE` (`~/.cargo/bin/sccache-rustc`);
+  - target dirs alternated between `/build` and `/data` in briefs;
+  - one full gate at a time through `/build/gate.lock`.
+
+**Shape:** a daemon service that every agent, gate, package and project uses instead of running cargo or make directly. The input is a folder and a build command, e.g. `cargo test -p x`.
+- **Disk placement.** It picks the target dir's disk from measured IO (`/proc/pressure/io`, per-disk util), and pairs the build with a cache server on another disk.
+- **Admission.** It caps how many builds run at once, and how many link steps run at once, from measured CPU, memory and IO. Extra builds queue, and the queue is visible.
+- **Run.** It runs the build in its own cgroup, with R269's io accounting, `io.max` and the disk floor.
+- **Reuse and cleanup.** It reuses or removes target dirs (R227). A gate is a build class with its own slot, which replaces `gate.lock`.
+- **Interface.** A bridge tool and a CLI (`letibot build <folder> -- <cmd>`) that wait and return the output like a job. Agents never choose a disk or a target dir.
+- **Cross-host.** Placement can choose another fleet host later (`gate_host`, R100).
+
+**Done when:**
+- three concurrent builds from different projects are placed on different disks, admitted within the caps, and queued past them;
+- no brief names a target dir;
+- the gate runs as a build class.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.
