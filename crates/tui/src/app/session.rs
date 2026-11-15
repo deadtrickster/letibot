@@ -291,7 +291,10 @@ impl App {
                     SystemKind::Reviewer
                 });
             }
-            if here && s.origin == SessionOrigin::Shadow {
+            // The seat as well as the origin, as `letibot_sessionlog::is_shadow` reads it.
+            if here
+                && (s.origin == SessionOrigin::Shadow || s.role == letibot_sessionlog::SHADOW_SEAT)
+            {
                 return Some(SystemKind::Shadow);
             }
             if s.origin == SessionOrigin::Queue {
@@ -1048,7 +1051,7 @@ pub(crate) struct Project {
     pub(crate) name: String,
 }
 
-/// One of the harness's own agents: the groups under a project's `system` branch. The three are the marks this tree
+/// One of the harness's own agents: the groups under a project's `system` branch. These are the marks this tree
 /// can read off a session row, and a row carrying none of them is drawn as the session it looks like.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SystemKind {

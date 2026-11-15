@@ -349,6 +349,39 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
     );
 }
 
+/// A shadow is drawn under `system/shadows`, and not as a child of the session it watches.
+#[test]
+fn a_shadow_is_drawn_under_the_projects_shadows_group() {
+    let mut shadow = child("s-habr-shadow", "shadow · turn_end on", "s-habr", LETIBOT);
+    shadow.origin = SessionOrigin::Shadow;
+    shadow.role = letibot_sessionlog::SHADOW_SEAT.into();
+    let mut a = app();
+    a.home = "/home/dead".into();
+    a.apply(hello(
+        "s-habr",
+        vec![in_tree("s-habr", "the habr article", LETIBOT), shadow],
+        Hub::new("s-habr").snapshot(),
+    ));
+    a.push_surface(Surface::Picker);
+    a.set_row_fold(&format!("{LETIBOT}/system"), true);
+    a.set_row_fold("s-habr", true);
+    let drawn = rows(&a);
+    assert_eq!(
+        drawn,
+        vec![
+            "[letibot (2)]",
+            "the habr article",
+            "[system (1)]",
+            "[shadows (1)]",
+        ],
+        "the system branch draws the group its count includes"
+    );
+    a.set_row_fold(&format!("{LETIBOT}/system/shadows"), true);
+    let at = row_of(&a, "s-habr-shadow");
+    assert_eq!(depth_of(&a, "s-habr-shadow"), 3, "{:?}", rows(&a));
+    assert_eq!(rows(&a)[at - 1], "[shadows (1)]");
+}
+
 /// The empty case: one project, one session, no children - and no `system` line, because a
 /// branch with no rows is a fold that teaches a reader to skip folds.
 #[test]

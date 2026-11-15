@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, HashMap};
 /// The groups under a project's `system` branch, in the order the list draws them - the words, and
 /// the sentence under each line. Which session is in which is not decided here: the rule needs the
 /// whole chain, so the head decides it and the feed carries it as `system`.
-const SYSTEM: [(&str, &str); 3] = [
+const SYSTEM: [(&str, &str); 4] = [
     (
         "gatekeepers",
         "the review queue's own session, one per project",
@@ -20,6 +20,10 @@ const SYSTEM: [(&str, &str); 3] = [
     (
         "keepers",
         "the notes keeper, which repairs memory and runs nothing",
+    ),
+    (
+        "shadows",
+        "a second model's verdicts on the session each one watches",
     ),
 ];
 
@@ -145,8 +149,8 @@ struct Session {
     /// `own`, `recent` or `older`: the top-level group the head put the project in.
     #[serde(default)]
     bucket: String,
-    /// Which group under `system` this row belongs to (`gatekeepers`, `reviewers`, `keepers`), or
-    /// `None` for a session of the project's own tree.
+    /// Which group under `system` this row belongs to (`gatekeepers`, `reviewers`, `keepers`,
+    /// `shadows`), or `None` for a session of the project's own tree.
     #[serde(default)]
     system: Option<String>,
 }
