@@ -564,6 +564,9 @@ pub(crate) struct Marker {
     /// Does this marker carry the work in flight - [`marker_carries_live`], decided by the
     /// caller because only the caller knows which row it is drawing.
     pub(crate) live: bool,
+    /// The cards' indent when the run sits between two tool cards: drawn as one more card, so the
+    /// group does not read as broken by a stray line. See [`run_between_cards`].
+    pub(crate) card: Option<usize>,
 }
 
 impl Marker {
@@ -591,14 +594,79 @@ impl Marker {
             counts: Counts::at_rung(calls, think_lines, events, chosen.0),
             seam: marker_seam_rung(newest, chosen.1),
             live,
+            card: None,
         }
     }
 
     /// Painted - the counts plain (the calls count PENDING when this marker carries the live
     /// work), the seam faint. See [`marker_painted`].
     pub(crate) fn painted(&self, cfg: &RenderConfig) -> String {
-        marker_painted(cfg, &self.counts, self.seam, self.live)
+        match self.card {
+            Some(ind) => card_marker_painted(cfg, &self.counts, self.seam, self.live, ind),
+            None => marker_painted(cfg, &self.counts, self.seam, self.live),
+        }
     }
+}
+
+/// Is this run a gap inside a group of tool cards: the nearest row with something on the screen on
+/// each side is a tool result. An assistant row with no prose draws nothing, so it is looked past.
+pub(crate) fn run_between_cards(items: &[SnapshotItem], start: usize, end: usize) -> bool {
+    let silent = |it: &&SnapshotItem| {
+        matches!(
+            it.item.as_ref(),
+            Some(TranscriptItem::Assistant { text, .. }) if text.trim().is_empty()
+        )
+    };
+    let card = |it: &SnapshotItem| it.kind == "tool_result";
+    let before = items[..start.min(items.len())]
+        .iter()
+        .rev()
+        .find(|it| !silent(it));
+    let after = items
+        .get(end..)
+        .unwrap_or(&[])
+        .iter()
+        .find(|it| !silent(it));
+    before.is_some_and(card) && after.is_some_and(card)
+}
+
+/// The marker as a card row, `  ▸ 28 thinking lines`: the cards' indent and their faint lead in place
+/// of the brackets. Same registers as [`marker_painted`] - the calls count pending while live.
+pub(crate) fn card_marker_painted(
+    cfg: &RenderConfig,
+    counts: &Counts,
+    seam: &str,
+    live: bool,
+    ind: usize,
+) -> String {
+    use rano::render::{Line, Span};
+    use rano::style::Role;
+    let mut l = Line::new(vec![Span::role("▸ ", Role::Faint)]);
+    let clauses: Vec<(&(String, String), bool)> =
+        if counts.calls.is_none() && counts.think.is_none() {
+            counts.events.iter().map(|e| (e, false)).collect()
+        } else {
+            counts
+                .calls
+                .iter()
+                .map(|c| (c, live))
+                .chain(counts.think.iter().map(|t| (t, false)))
+                .collect()
+        };
+    for (i, ((n, noun), pending)) in clauses.into_iter().enumerate() {
+        if i > 0 {
+            l.push(Span::raw(", "));
+        }
+        l.push(if pending {
+            Span::role(n.clone(), Role::Pending)
+        } else {
+            Span::raw(n.clone())
+        });
+        l.push(Span::raw(noun.clone()));
+    }
+    l.push(Span::role(seam.to_string(), Role::Faint));
+    let painted = crate::ui::render::row(&l, cfg.palette());
+    step_in(vec![painted], ind).remove(0)
 }
 
 /// The marker painted: the counts plain, the seam faint, and the calls count pending while the work is in flight.
@@ -671,12 +739,14 @@ pub(crate) fn hidden_run_marker(
         calls += live.calls;
         think_lines += live.think_lines;
     }
-    Marker::new(
+    let mut marker = Marker::new(
         calls,
         think_lines,
         events,
         newest,
         carries_live,
         marker_room(cfg.width),
-    )
+    );
+    marker.card = run_between_cards(items, start, end).then(|| activity_indent(cfg.width));
+    marker
 }

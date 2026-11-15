@@ -22,6 +22,24 @@ pub(crate) struct MarkerHit {
     pub(crate) show: Option<Show>,
 }
 
+/// The last `[…]` on the line, as the columns of its two brackets.
+fn bracketed(cells: &[char]) -> Option<(usize, usize)> {
+    let close = cells.iter().rposition(|c| *c == ']')?;
+    let open = cells[..close].iter().rposition(|c| *c == '[')?;
+    Some((open, close))
+}
+
+/// A marker drawn as a card, `  ▸ 2 thinking lines`: the counts run from after the lead to the end
+/// of the line. Returned in the bracket form's shape, the column before the counts and the one past them.
+fn card_marker(cells: &[char]) -> Option<(usize, usize)> {
+    let lead = cells.iter().position(|c| *c != ' ')?;
+    if cells.get(lead) != Some(&'▸') || cells.get(lead + 1) != Some(&' ') {
+        return None;
+    }
+    let end = cells.iter().rposition(|c| *c != ' ')? + 1;
+    (end > lead + 2).then_some((lead + 1, end))
+}
+
 /// The kind a clause names, by its noun at any rung of [`COUNT_RUNGS`].
 fn clause_kind(clause: &str) -> Option<Option<Show>> {
     let c = clause.trim();
@@ -48,11 +66,12 @@ fn clause_kind(clause: &str) -> Option<Option<Show>> {
 /// The clauses of the marker on one line of text, as `(from, to, kind)` in columns - the
 /// last `[…]` on the line whose every clause is a count.
 fn clauses(cells: &[char]) -> Vec<(usize, usize, Option<Show>)> {
-    let Some(close) = cells.iter().rposition(|c| *c == ']') else {
-        return Vec::new();
-    };
-    let Some(open) = cells[..close].iter().rposition(|c| *c == '[') else {
-        return Vec::new();
+    let (open, close) = match bracketed(cells) {
+        Some(b) => b,
+        None => match card_marker(cells) {
+            Some(b) => b,
+            None => return Vec::new(),
+        },
     };
     let inner: String = cells[open + 1..close].iter().collect();
     let mut out = Vec::new();
@@ -344,9 +363,18 @@ impl App {
             let Some(sp) = i.checked_sub(1).map(|i| self.spans[i]) else {
                 continue;
             };
-            let run = match (sp.row..self.items.len())
-                .find(|k| crate::ui::row_hidden(&self.items, self.visibility, *k))
-            {
+            // A run of folded thoughts is hidden by the fold and not the rung, so the stretch the
+            // marker's row opens is asked first.
+            let folded = crate::ui::transcript::markers::unseen_run_at(
+                &self.runs_index(),
+                self.live_work_now(),
+                sp.row,
+            )
+            .map(|(first, _)| first);
+            let run = match folded.or_else(|| {
+                (sp.row..self.items.len())
+                    .find(|k| crate::ui::row_hidden(&self.items, self.visibility, *k))
+            }) {
                 Some(first) => self.items[first].item_id.clone(),
                 // Nothing hidden here, so the only thing the counts can be about is the turn
                 // that is still running. A marker with neither is a join the next frame undoes.

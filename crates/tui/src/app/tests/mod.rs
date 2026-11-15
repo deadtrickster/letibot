@@ -1458,6 +1458,7 @@ mod statusrow;
 mod subagents;
 mod surfaces;
 mod taskcard;
+mod thinkindent;
 mod todo_layer;
 mod todos;
 mod tools;

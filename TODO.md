@@ -2046,6 +2046,16 @@ Live in rano, every tool row carried `[note] memory: ran UNCAPPED - 8 GiB was as
 
 **Test:** `builtins::bash::tests::an_uncapped_state_is_said_once_and_again_when_it_changes` - five calls under one reason give one note, a new reason gives one, caps returning give one, and losing them again gives one.
 
+## R303 - A thinking marker between tool cards is drawn as a card
+
+**Status:** built, 2026-11-15. Left: the live pane's own marker (`ui/transcript/live.rs`, `window.rs` live join) still draws in brackets, since the work in flight has no card after it yet.
+
+Operator screenshot (rano, `read-edits`): a `[N thinking lines]` marker between two tool cards of one group sat at column 0 in brackets and read like a stray line that broke the group.
+
+**Change:** `markers::run_between_cards` asks whether the nearest drawn row on each side of a hidden run is a tool result, looking past assistant rows with no prose. When it is, `hidden_run_marker` sets `Marker::card` to the cards' indent and the marker paints as `  ▸ 28 thinking lines` (`card_marker_painted`), with the calls count still pending while live. Between prose it keeps the bracket form and still joins the sentence. Both walks call `hidden_run_marker`, so they agree. `runclick::clauses` reads the card form too, and a click on a run that the thinking fold hides (not the rung) now finds its run through `unseen_run_at`, so the click opens it. `ctrl-r` opens it as before.
+
+**Tests:** `crates/tui/src/app/tests/thinkindent.rs` - the marker between two cards is at the card `▸` column with no blank on either side, a marker between prose keeps its brackets, `ctrl-r` opens and folds it, and a click on it opens the thought.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.
