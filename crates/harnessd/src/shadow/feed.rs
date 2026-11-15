@@ -93,6 +93,9 @@ pub fn rows_of(items: &[TranscriptItem], from: usize) -> Vec<Row> {
 pub struct Log {
     base: usize,
     rows: VecDeque<Row>,
+    /// Each kept row's hash chained over every row fed before it, dropped ones included.
+    chain: VecDeque<[u8; 32]>,
+    head: [u8; 32],
     bytes: usize,
     cap: usize,
 }
@@ -102,6 +105,8 @@ impl Log {
         Log {
             base: 0,
             rows: VecDeque::new(),
+            chain: VecDeque::new(),
+            head: [0; 32],
             bytes: 0,
             cap,
         }
@@ -109,10 +114,20 @@ impl Log {
 
     pub fn push(&mut self, rows: impl IntoIterator<Item = Row>) {
         for r in rows {
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(self.head);
+            h.update(r.row.to_le_bytes());
+            h.update(r.header.as_bytes());
+            h.update([0]);
+            h.update(r.text.as_bytes());
+            self.head = h.finalize().into();
+            self.chain.push_back(self.head);
             self.bytes += r.text.len() + r.header.len();
             self.rows.push_back(r);
         }
         while self.bytes > self.cap && self.rows.len() > 1 {
+            self.chain.pop_front();
             if let Some(r) = self.rows.pop_front() {
                 self.bytes -= r.text.len() + r.header.len();
                 self.base += 1;
@@ -128,6 +143,13 @@ impl Log {
     /// The oldest index still kept.
     pub fn start(&self) -> usize {
         self.base
+    }
+
+    /// What rows `0..=at` were, as one hash: a refeed after a restart that gives the same rows
+    /// gives the same value. `None` once row `at` is no longer kept.
+    pub fn chain_at(&self, at: usize) -> Option<String> {
+        let h = self.chain.get(at.checked_sub(self.base)?)?;
+        Some(h[..12].iter().map(|b| format!("{b:02x}")).collect())
     }
 
     /// The kept rows from index `from` on.

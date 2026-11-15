@@ -78,6 +78,8 @@ pub struct Persist {
     pub fresh_every: u32,
     /// History bytes before compaction.
     pub budget: usize,
+    /// The turns the record kept before a restart, resumed at the first question.
+    pub resume: Vec<super::resume::Kept>,
 }
 
 /// One call to make on the judge, off the worker thread.
@@ -262,6 +264,10 @@ impl JobRunner {
         let budget = persist
             .as_ref()
             .map_or(super::conversation::BUDGET, |p| p.budget);
+        let mut convo = Conversation::new(budget);
+        if let Some(p) = &persist {
+            convo.resume(p.resume.clone());
+        }
         let inner = Arc::new(Inner {
             job,
             judge,
@@ -286,7 +292,7 @@ impl JobRunner {
             inflight: Arc::new(AtomicBool::new(false)),
             on_outcome,
             persist,
-            convo: Mutex::new(Conversation::new(budget)),
+            convo: Mutex::new(convo),
             asked: AtomicU64::new(0),
         });
         let worker = inner.clone();
@@ -456,7 +462,7 @@ impl Inner {
             checks.join("\n"),
             self.said(&outcome),
         );
-        self.record(req.position, took, &outcome, body);
+        self.record(req.position, took, &outcome, body, None);
         outcome
     }
 
@@ -475,6 +481,10 @@ impl Inner {
                 .unwrap_or_else(|e| e.into_inner())
                 .ask(&log, q)
         };
+        if let Some(note) = &asked.resumed {
+            self.recorder
+                .row(&format!("resume · {} · {note}", self.job.as_str()), "");
+        }
         if let Some(note) = &asked.compacted {
             self.recorder
                 .row(&format!("compacted · {} · {note}", self.job.as_str()), "");
@@ -492,12 +502,12 @@ impl Inner {
             _ => None,
         };
         let (reply, checks, outcome) = self.settle(req.position, got, took, &shown);
-        if !matches!(outcome, Outcome::TimedOut | Outcome::Failed(_)) {
+        let kept = (!matches!(outcome, Outcome::TimedOut | Outcome::Failed(_))).then(|| {
             self.convo
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
-                .commit(&asked, &reply);
-        }
+                .commit(&asked, &reply)
+        });
         let tokens = match usage {
             Some(u) => format!(
                 "tokens: prompt {}, cached {}\n",
@@ -524,7 +534,7 @@ impl Inner {
             checks.join("\n"),
             self.said(&outcome),
         );
-        self.record(req.position, took, &outcome, body);
+        self.record(req.position, took, &outcome, body, kept.as_ref());
         outcome
     }
 
@@ -625,7 +635,15 @@ impl Inner {
     }
 
     /// The exchange's row. The title is what `record::last_turn_end` reads after a restart.
-    fn record(&self, position: u64, took: Duration, outcome: &Outcome, body: String) {
+    /// A kept turn's line goes last, after any watched text, so a resume can trust it.
+    fn record(
+        &self,
+        position: u64,
+        took: Duration,
+        outcome: &Outcome,
+        body: String,
+        kept: Option<&super::resume::Kept>,
+    ) {
         let title = format!(
             "{} · {} · {:.1}s · {} · at #{}",
             self.job.as_str(),
@@ -642,6 +660,9 @@ impl Inner {
         }) = outcome
         {
             body.push_str(&format!("--- promise\n{promise}\n"));
+        }
+        if let Some(k) = kept {
+            body.push_str(&k.line());
         }
         self.recorder.row(&title, &body);
     }
@@ -757,6 +778,10 @@ impl Shadow {
         let log = cfg
             .persistent()
             .then(|| Arc::new(Mutex::new(Log::new(2 * budget))));
+        let bodies = match &log {
+            Some(_) => recorder.bodies(),
+            None => Vec::new(),
+        };
         for job in cfg.enabled() {
             let model = cfg.model_for(job, watched_model).unwrap_or_default();
             let (system, source) = super::prompts::load(workspace, job);
@@ -776,6 +801,7 @@ impl Shadow {
                         log: log.clone(),
                         fresh_every: cfg.fresh_every(),
                         budget,
+                        resume: super::resume::kept_of(bodies.iter().map(String::as_str), job),
                     },
                 ),
                 None => JobRunner::start(

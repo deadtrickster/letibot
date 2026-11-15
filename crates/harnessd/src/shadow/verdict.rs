@@ -39,7 +39,7 @@ pub struct Shown {
 }
 
 /// One authored stretch of [`Shown::data`]: byte range, author, and transcript row.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Span {
     pub start: usize,
     pub end: usize,

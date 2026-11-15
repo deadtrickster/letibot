@@ -15,6 +15,10 @@ pub trait Recorder: Send + Sync {
     fn row(&self, title: &str, body: &str);
     /// One job's state, for the line the Sessions group shows.
     fn state(&self, _job: Job, _line: &str) {}
+    /// Every row body written so far, oldest first: what a persistent shadow resumes from.
+    fn bodies(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// What one append needs to continue the chain.
@@ -198,6 +202,25 @@ impl Recorder for StoreRecorder {
         }
     }
 
+    fn bodies(&self) -> Vec<String> {
+        let t = self.tail.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(loaded) = t.store.load_transcript(&self.transcript_id) else {
+            return Vec::new();
+        };
+        loaded
+            .items
+            .into_iter()
+            .filter_map(|(item, _, _)| match item {
+                TranscriptItem::Offer {
+                    kind: OfferKind::Shadow,
+                    body,
+                    ..
+                } => Some(body),
+                _ => None,
+            })
+            .collect()
+    }
+
     fn state(&self, job: Job, line: &str) {
         let title = {
             let mut s = self.states.lock().unwrap_or_else(|e| e.into_inner());
@@ -228,8 +251,14 @@ pub fn last_turn_end(store: &Store, watched: &str) -> Option<(u64, String, Optio
         let rest = title.strip_prefix("turn_end · ")?;
         let word = rest.split(" · ").next()?.to_string();
         let position = title.rsplit_once(" at #")?.1.trim().parse().ok()?;
+        // The last sections are ours: a watched row quoting a marker earlier forges nothing.
+        let body = body.trim_end_matches('\n');
+        let body = match body.rsplit_once('\n') {
+            Some((head, last)) if last.starts_with(super::resume::MARK) => head,
+            _ => body,
+        };
         let promise = body
-            .split_once("--- promise\n")
+            .rsplit_once("--- promise\n")
             .map(|(_, p)| p.trim_end_matches('\n').to_string());
         Some((position, word, promise))
     })

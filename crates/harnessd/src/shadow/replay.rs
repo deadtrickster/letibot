@@ -1,5 +1,6 @@
 //! `letibot shadow replay <session|project>`: run the turn_end job over logged sessions, read-only,
-//! and score it and the regex against what the operator did next.
+//! and score it and the regex against what the operator did next. turn_end is scored twice: as
+//! stateless calls and as one persistent conversation per session, with their agreement.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -157,6 +158,130 @@ pub struct Report {
     /// Replies that failed a check, an empty one included: the void rate the provider is judged by.
     pub voided: u32,
     pub lines: Vec<String>,
+    /// The persistent conversation's raw score, and how often it said what the stateless call said.
+    pub persistent: Score,
+    pub persistent_voided: u32,
+    pub agreed: u32,
+    pub compared: u32,
+    pub cache: Cache,
+}
+
+/// How much of the persistent requests a prefix cache could serve. `reused` is measured here: the
+/// bytes each request shares with the start of the one before. The tokens are the provider's own
+/// count, when the judge reports one.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Cache {
+    pub requests: u32,
+    pub sent_bytes: u64,
+    pub reused_bytes: u64,
+    pub reported: u32,
+    pub prompt_tokens: u64,
+    pub cached_tokens: u64,
+}
+
+impl Cache {
+    fn line(&self) -> String {
+        let pct = |a: u64, b: u64| match b {
+            0 => 0.0,
+            b => 100.0 * a as f64 / b as f64,
+        };
+        let provider = match self.reported {
+            0 => "provider cache: unmeasured (the judge reported no token usage)".to_string(),
+            n => format!(
+                "provider cache: {} of {} prompt tokens cached ({:.0}%), over {n} of {} requests",
+                self.cached_tokens,
+                self.prompt_tokens,
+                pct(self.cached_tokens, self.prompt_tokens),
+                self.requests
+            ),
+        };
+        format!(
+            "persistent prefix: {} of {} bytes sent repeat the previous request's start ({:.0}%)
+{provider}",
+            self.reused_bytes,
+            self.sent_bytes,
+            pct(self.reused_bytes, self.sent_bytes)
+        )
+    }
+}
+
+/// A request as one string, the order a prompt cache reads it in.
+fn flat(messages: &[super::conversation::Message]) -> String {
+    let mut s = String::new();
+    for m in messages {
+        s.push_str(match m.role {
+            super::conversation::Role::User => "\u{1}user\n",
+            super::conversation::Role::Assistant => "\u{1}assistant\n",
+        });
+        s.push_str(&m.text);
+    }
+    s
+}
+
+fn shared_prefix(a: &str, b: &str) -> usize {
+    a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count()
+}
+
+/// What a checked turn_end outcome says: owed, none, or nothing to act on.
+fn owed_of(outcome: &Outcome) -> Option<bool> {
+    match outcome {
+        Outcome::Verdict(Verdict::TurnEnd { reminder, .. }) => match reminder {
+            Reminder::Owed { .. } => Some(true),
+            Reminder::None => Some(false),
+            Reminder::Unsure => None,
+        },
+        _ => None,
+    }
+}
+
+/// One session's turn ends asked of one running conversation, fed the rows up to each.
+fn persistent_outcomes(
+    items: &[TranscriptItem],
+    cases: &[Case],
+    judge: &dyn Judge,
+    cache: &mut Cache,
+) -> Vec<Outcome> {
+    use super::conversation::{self, Conversation};
+    use super::feed::{self, Log};
+    let system = format!(
+        "{}{}",
+        super::prompts::TURN_END,
+        conversation::addendum(Job::TurnEnd)
+    );
+    let mut log = Log::new(2 * conversation::BUDGET);
+    let mut convo = Conversation::default();
+    let mut fed = 0;
+    let mut previous = String::new();
+    let mut out = Vec::new();
+    for c in cases {
+        let upto = &items[..=c.at];
+        log.push(feed::rows_of(upto, fed));
+        fed = upto.len();
+        let q = super::turn_end::question(super::turn_end::turn_start(upto), &[], &[]);
+        let asked = convo.ask(&log, &q);
+        let now = flat(&asked.messages);
+        cache.requests += 1;
+        cache.sent_bytes += now.len() as u64;
+        cache.reused_bytes += shared_prefix(&previous, &now) as u64;
+        let outcome = match judge.converse(&system, &asked.messages) {
+            Ok((reply, usage)) => {
+                if let Some(u) = usage {
+                    cache.reported += 1;
+                    cache.prompt_tokens += u.prompt_tokens;
+                    cache.cached_tokens += u.cached_tokens;
+                }
+                convo.commit(&asked, &reply);
+                previous = now;
+                match verdict::check(Job::TurnEnd, &reply, &asked.shown).verdict {
+                    Ok(v) => Outcome::Verdict(v),
+                    Err(why) => Outcome::Void(why),
+                }
+            }
+            Err(e) => Outcome::Failed(e),
+        };
+        out.push(outcome);
+    }
+    out
 }
 
 /// A session's id and its rows, as the replay reads them.
@@ -166,7 +291,9 @@ pub type Logged = (String, Vec<TranscriptItem>);
 pub fn score(sessions: &[Logged], judge: &dyn Judge) -> Report {
     let mut r = Report::default();
     for (id, items) in sessions {
-        for c in cases(items) {
+        let cases = cases(items);
+        let persistent = persistent_outcomes(items, &cases, judge, &mut r.cache);
+        for (c, p) in cases.into_iter().zip(persistent) {
             r.turns += 1;
             r.regex.add(c.regex_owed, c.label);
             let shown = super::turn_end::shown(&c.words, &c.reply, &[], &[]);
@@ -183,14 +310,18 @@ pub fn score(sessions: &[Logged], judge: &dyn Judge) -> Report {
             if matches!(outcome, Outcome::Void(_)) {
                 r.voided += 1;
             }
-            let said = match &outcome {
-                Outcome::Verdict(Verdict::TurnEnd { reminder, .. }) => match reminder {
-                    Reminder::Owed { .. } => Some(true),
-                    Reminder::None => Some(false),
-                    Reminder::Unsure => None,
-                },
-                _ => None,
-            };
+            let said = owed_of(&outcome);
+            if matches!(p, Outcome::Void(_)) {
+                r.persistent_voided += 1;
+            }
+            let kept = owed_of(&p);
+            if let Some(owed) = kept {
+                r.persistent.add(owed, c.label);
+            }
+            if let Some(same) = super::runner::agree(&outcome, &p) {
+                r.compared += 1;
+                r.agreed += u32::from(same);
+            }
             match said {
                 Some(owed) => {
                     r.shadow.add(owed, c.label);
@@ -201,16 +332,18 @@ pub fn score(sessions: &[Logged], judge: &dyn Judge) -> Report {
                     r.acting.add(c.regex_owed, c.label);
                 }
             }
+            let word = |s: Option<bool>| match s {
+                Some(true) => "owed",
+                Some(false) => "none",
+                None => "fell back",
+            };
             r.lines.push(format!(
-                "{id} #{}: label {:?}, regex {}, shadow {}",
+                "{id} #{}: label {:?}, regex {}, shadow {}, persistent {}",
                 c.at,
                 c.label,
                 if c.regex_owed { "owed" } else { "none" },
-                match said {
-                    Some(true) => "owed",
-                    Some(false) => "none",
-                    None => "fell back",
-                }
+                word(said),
+                word(kept),
             ));
         }
     }
@@ -231,10 +364,24 @@ impl Report {
             self.regex.line("regex"),
             self.shadow.line("shadow"),
             self.acting.line("acting"),
+            self.persistent.line("persist"),
             format!(
                 "shadow fell back to the regex on {} (unsure, void or no answer); void {} of {}",
                 self.fell_back, self.voided, self.turns
             ),
+            format!(
+                "persistent vs stateless: agree on {} of {} with a verdict from both ({:.0}%); \
+                 persistent void {} of {}",
+                self.agreed,
+                self.compared,
+                match self.compared {
+                    0 => 0.0,
+                    n => 100.0 * f64::from(self.agreed) / f64::from(n),
+                },
+                self.persistent_voided,
+                self.turns
+            ),
+            self.cache.line(),
         ];
         if verbose {
             out.extend(self.lines.iter().cloned());

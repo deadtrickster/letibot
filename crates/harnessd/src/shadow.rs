@@ -12,6 +12,7 @@ pub mod permission;
 pub mod prompts;
 pub mod record;
 pub mod replay;
+pub mod resume;
 pub mod runner;
 pub mod turn_end;
 pub mod verdict;

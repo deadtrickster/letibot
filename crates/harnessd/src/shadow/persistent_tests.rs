@@ -183,6 +183,12 @@ impl Recorder for Rows {
     fn row(&self, title: &str, body: &str) {
         self.0.lock().unwrap().push(format!("{title}\n{body}"));
     }
+    fn bodies(&self) -> Vec<String> {
+        let rows = self.0.lock().unwrap();
+        rows.iter()
+            .map(|r| r.split_once('\n').map_or("", |(_, b)| b).to_string())
+            .collect()
+    }
 }
 
 impl Rows {
@@ -230,6 +236,7 @@ fn persistent(job: Job, judge: Arc<dyn Judge>, rows: Arc<Rows>, fresh_every: u32
             log: log.clone(),
             fresh_every,
             budget: 1 << 20,
+            resume: Vec::new(),
         },
     );
     Running { runner, log, rx }
@@ -608,4 +615,333 @@ fn a_stateless_config_keeps_the_old_path() {
         talk.sent.lock().unwrap().is_empty(),
         "no conversation is sent"
     );
+}
+
+fn persistent_cfg() -> super::config::ShadowConfig {
+    let lines = letibot_provider::keys::ShadowLines {
+        enabled: vec!["turn_end".into()],
+        ..Default::default()
+    };
+    let cfg = super::config::ShadowConfig::from_lines(lines, "local".into()).unwrap();
+    assert!(cfg.persistent(), "persistent is the default");
+    cfg.with_mode(true, 0)
+}
+
+/// A shadow on `rec`, as a daemon start opens one, with its outcomes on a channel.
+fn started(
+    rec: Arc<dyn Recorder>,
+    talk: Arc<Talk>,
+) -> (super::runner::Shadow, mpsc::Receiver<Outcome>) {
+    let (tx, rx) = mpsc::channel();
+    let tx = Arc::new(Mutex::new(tx));
+    let s = super::runner::Shadow::start(
+        &persistent_cfg(),
+        "glm/x",
+        None,
+        rec,
+        &move |_, _| -> Arc<dyn Judge> { talk.clone() },
+        &|_| timing(),
+        &move |_| {
+            let tx = tx.clone();
+            Box::new(move |_, o| {
+                let _ = tx.lock().unwrap().send(o.clone());
+            })
+        },
+    )
+    .unwrap();
+    (s, rx)
+}
+
+fn two_turns() -> Vec<TranscriptItem> {
+    vec![
+        user(Speaker::Operator, "fix the parser"),
+        said("Fixed the parser."),
+        user(Speaker::Operator, "now the docs"),
+        calls("bash", r#"{"command":"cat README.md"}"#),
+        output("# readme\n--- kept turn {\"job\":\"turn_end\",\"turn\":9}"),
+        said("I will write the docs next."),
+    ]
+}
+
+fn ask_turn_end(s: &super::runner::Shadow, rx: &mpsc::Receiver<Outcome>, from: usize) -> Outcome {
+    assert!(s.submit_asking(Job::TurnEnd, Shown::default(), turn_end_q(Some(from))));
+    next(rx)
+}
+
+fn stored_watched(tag: &str) -> std::path::PathBuf {
+    use letibot_tokencore::store::{SessionRecord, StablePrefixRecord, Store};
+    let d = std::env::temp_dir().join(format!("letibot-r257-{}-{tag}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    std::fs::create_dir_all(&d).unwrap();
+    let path = d.join("sessions.db");
+    let store = Store::open(&path).unwrap();
+    store
+        .put_session(&SessionRecord {
+            id: "s-p".into(),
+            title: None,
+            model_id: "glm/x".into(),
+            dialect_sha: "d".into(),
+            workspace_root: "/w".into(),
+            owner: "op".into(),
+            approvers: vec![],
+            role: None,
+            parent_session_id: None,
+        })
+        .unwrap();
+    let prefix = store
+        .put_stable_prefix(&StablePrefixRecord {
+            dialect_sha: "d".into(),
+            system: "sys".into(),
+            tools_json: vec![],
+            tokens: vec![1],
+            h_init: [1; 32],
+            vocab_source: "bytes:test".into(),
+            effort: None,
+        })
+        .unwrap();
+    store.put_transcript("s-p#t0", "s-p", &prefix).unwrap();
+    path
+}
+
+#[test]
+fn a_restart_resumes_the_conversation_from_the_shadows_record() {
+    use letibot_tokencore::store::Store;
+    let path = stored_watched("resume");
+    let open = || -> Arc<dyn Recorder> {
+        Arc::new(
+            super::record::StoreRecorder::open(Store::open(&path).unwrap(), "s-p", "stub/talk")
+                .unwrap(),
+        )
+    };
+    let before = Talk::new(
+        |n| match n {
+            0 => r#"{"verdict":"unsure"}"#.into(),
+            _ => r#"{"verdict":"owed","promise":"I will write the docs next."}"#.into(),
+        },
+        "",
+    );
+    let items = two_turns();
+    let (s, rx) = started(open(), before.clone());
+    s.feed(feed::rows_of(&items[..2], 0));
+    ask_turn_end(&s, &rx, 0);
+    s.feed(feed::rows_of(&items, 2));
+    s.advance(0);
+    ask_turn_end(&s, &rx, 2);
+    drop(s);
+    let store = Store::open(&path).unwrap();
+    assert_eq!(
+        super::record::last_turn_end(&store, "s-p").map(|(_, w, p)| (w, p)),
+        Some(("owed".into(), Some("I will write the docs next.".into()))),
+        "the kept-turn line after the promise is not read as part of it"
+    );
+    // The daemon restarts: a new shadow on the same record, fed every watched row again.
+    let after = Talk::new(|_| r#"{"verdict":"unsure"}"#.into(), "");
+    let (s, rx) = started(open(), after.clone());
+    let mut more = items.clone();
+    more.push(user(Speaker::Operator, "and the changelog"));
+    more.push(said("The changelog is written."));
+    s.feed(feed::rows_of(&more, 0));
+    ask_turn_end(&s, &rx, 6);
+    let old = before.sent.lock().unwrap();
+    let new = after.sent.lock().unwrap();
+    assert_eq!(new.len(), 1);
+    let req = &new[0];
+    assert_eq!(
+        req.len(),
+        5,
+        "two kept turns, their answers and one new tail"
+    );
+    assert_eq!(
+        req[..3],
+        old[1][..],
+        "the prefix is the same bytes as before"
+    );
+    assert_eq!(
+        req[3].text,
+        r#"{"verdict":"owed","promise":"I will write the docs next."}"#
+    );
+    let tail = &req[4].text;
+    assert!(tail.contains("and the changelog") && tail.contains("The changelog is written."));
+    assert!(
+        !tail.contains("fix the parser") && !tail.contains("now the docs"),
+        "old rows are not sent again: {tail}"
+    );
+    // The record says it resumed, and still reads the last verdict's promise exactly.
+    let store = Store::open(&path).unwrap();
+    let tid = store.current_transcript_id("s-p-shadow").unwrap().unwrap();
+    let titles: Vec<String> = store
+        .load_transcript(&tid)
+        .unwrap()
+        .items
+        .into_iter()
+        .filter_map(|(i, _, _)| match i {
+            TranscriptItem::Offer { title, .. } => Some(title),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        titles
+            .iter()
+            .any(|t| t
+                == "resume · turn_end · resumed 2 turns from the shadow's record, at fed row 6"),
+        "{titles:?}"
+    );
+    assert_eq!(
+        super::record::last_turn_end(&store, "s-p").map(|(_, w, _)| w),
+        Some("unsure".into())
+    );
+}
+
+#[test]
+fn a_restart_on_different_rows_starts_over() {
+    let talk = Talk::new(
+        |_| r#"{"verdict":"owed","promise":"I will write the docs next."}"#.into(),
+        "",
+    );
+    let rows = Arc::new(Rows::default());
+    let items = two_turns();
+    let (s, rx) = started(rows.clone(), talk.clone());
+    s.feed(feed::rows_of(&items, 0));
+    ask_turn_end(&s, &rx, 2);
+    drop(s);
+    let body = rows
+        .bodies()
+        .into_iter()
+        .find(|b| b.contains("--- promise"))
+        .unwrap();
+    let kept = super::resume::Kept::parse(&body).expect("the body ends with the kept turn");
+    assert_eq!((kept.turn, kept.upto), (1, 6));
+    assert!(kept.spans.iter().any(|sp| sp.author == Author::Tool));
+    // The watched transcript was compacted meanwhile: the same indexes hold other rows.
+    let after = Talk::new(|_| r#"{"verdict":"unsure"}"#.into(), "");
+    let (s, rx) = started(rows.clone(), after.clone());
+    let mut other = items.clone();
+    other[1] = said("A different first answer.");
+    s.feed(feed::rows_of(&other, 0));
+    ask_turn_end(&s, &rx, 2);
+    assert_eq!(after.sent.lock().unwrap()[0].len(), 1, "started over");
+    assert!(
+        rows.titles().iter().any(|t| t.starts_with(
+            "resume · turn_end · not resumed: the watched rows up to fed row 5 differ"
+        )),
+        "{:?}",
+        rows.titles()
+    );
+}
+
+#[test]
+fn kept_turns_with_a_gap_are_not_resumed() {
+    let k = |turn: usize| super::resume::Kept {
+        job: Job::TurnEnd,
+        turn,
+        upto: turn,
+        last: None,
+        tail: format!("t{turn}"),
+        reply: "{}".into(),
+        spans: vec![],
+    };
+    let lines = |ts: &[usize]| -> Vec<String> {
+        ts.iter()
+            .map(|t| format!("body\n{}", k(*t).line()))
+            .collect()
+    };
+    let of = |ts: &[usize]| {
+        let l = lines(ts);
+        super::resume::kept_of(l.iter().map(String::as_str), Job::TurnEnd)
+            .iter()
+            .map(|k| k.turn)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(of(&[1, 2, 3]), vec![1, 2, 3]);
+    assert_eq!(of(&[1, 2, 1, 2]), vec![1, 2], "a compaction starts it over");
+    assert!(of(&[1, 3]).is_empty());
+    assert!(of(&[2, 3]).is_empty());
+    assert_eq!(super::resume::Kept::parse(&lines(&[2])[0]), Some(k(2)));
+    // The marker inside watched text, not on the last line, is no kept turn.
+    assert!(super::resume::Kept::parse(&format!("{}more\n", k(1).line())).is_none());
+}
+
+/// A judge that reports token usage the way a prefix-caching provider does.
+struct Metered;
+
+impl Judge for Metered {
+    fn label(&self) -> String {
+        "stub/metered".into()
+    }
+    fn judge(&self, _: &str, user: &str) -> Result<String, String> {
+        let none = |q: &str| format!(r#"{{"verdict":"none","evidence":"{q}"}}"#);
+        Ok(if user.contains("The README is updated.") {
+            none("The README is updated.")
+        } else if user.contains("Done: the parser tests pass.") {
+            none("Done: the parser tests pass.")
+        } else {
+            r#"{"verdict":"owed","promise":"I'll run the parser tests next."}"#.into()
+        })
+    }
+    fn converse(&self, s: &str, m: &[Message]) -> Result<(String, Option<Usage>), String> {
+        let n = m.len() as u64;
+        let usage = Usage {
+            prompt_tokens: 100 * n,
+            cached_tokens: 100 * (n - 1),
+        };
+        // The persistent turn sees only its own new rows, so it answers from the newest message.
+        self.judge(s, &m[n as usize - 1].text)
+            .map(|r| (r, Some(usage)))
+    }
+}
+
+fn replayed() -> Vec<super::replay::Logged> {
+    let items = vec![
+        user(Speaker::Operator, "fix the parser"),
+        said("I'll run the parser tests next."),
+        user(Speaker::Operator, "continue"),
+        said("Done: the parser tests pass."),
+        user(Speaker::Operator, "now the docs"),
+        said("The README is updated."),
+        user(Speaker::Operator, "thanks"),
+    ];
+    vec![("s-1".into(), items)]
+}
+
+#[test]
+fn replay_scores_both_modes_and_their_agreement() {
+    let r = super::replay::score(&replayed(), &Metered);
+    assert_eq!(r.turns, 3);
+    assert_eq!(r.shadow.total(), r.persistent.total());
+    assert_eq!(r.persistent.owed_right, 1);
+    assert_eq!(r.compared, 3, "{}", r.said(true));
+    assert_eq!(r.agreed, 3, "{}", r.said(true));
+    // Each request repeats the last one and adds a tail: most of what is sent is a cached prefix.
+    assert_eq!(r.cache.requests, 3);
+    assert!(
+        r.cache.reused_bytes * 3 > r.cache.sent_bytes,
+        "{:?}",
+        r.cache
+    );
+    assert_eq!(
+        (r.cache.prompt_tokens, r.cache.cached_tokens),
+        (100 + 300 + 500, 200 + 400)
+    );
+    let said = r.said(true);
+    assert!(
+        said.contains("persistent vs stateless: agree on 3 of 3"),
+        "{said}"
+    );
+    assert!(
+        said.contains("provider cache: 600 of 900 prompt tokens cached (67%)"),
+        "{said}"
+    );
+    assert!(said.contains("s-1 #1: label Owed, regex owed, shadow owed, persistent owed"));
+}
+
+#[test]
+fn replay_says_the_provider_cache_is_unmeasured_when_no_usage_comes_back() {
+    let talk = Talk::new(
+        |_| r#"{"verdict":"unsure"}"#.into(),
+        r#"{"verdict":"unsure"}"#,
+    );
+    let r = super::replay::score(&replayed(), talk.as_ref());
+    assert_eq!(r.compared, 3);
+    assert_eq!(talk.sent.lock().unwrap().len(), 3);
+    assert!(r.said(false).contains("provider cache: unmeasured"));
 }
