@@ -1816,6 +1816,17 @@ The decision is written as one line on the train: "train of 5: 3 crates, no prot
 - A protocol-change row lands alone.
 - Ten docs rows land as one train.
 - A train's size line shows the measurements it came from.
+## R295 - An expanded `[N tool calls]` leaves out the running call when the round has no prose
+
+**Status:** fixed on branch `running-row`, 2026-11-15.
+
+Operator, in rano's session: "suppose i click in [N tool calls] where N is yellow - that is indicated running tool. so it expands to the N-1 list, the running tool not shown till it finishes".
+
+**Cause.** The running call is not a transcript row. The live pane draws it, and only while `App::lifted` says the open run is the one the work in flight belongs to (`crates/tui/src/ui/transcript/live.rs`, the `show_calls` filter). `App::lifted` asks `run_carries_live_now`, which required the clicked run's id to be the stretch's first row (`s0 == start`). A marker names its run by the first HIDDEN row (`App::marker_rows_in`). When the round has no narration, the stretch starts at an empty-text assistant row, which is invisible but not hidden, so the two ids differ. `run_open_at` treats any row of the stretch as the run, so the settled rows opened, while the pane refused the lift and drew nothing for the running call. The count includes it through `hidden_run_marker`'s `live_here`, so the count and the list disagreed by one.
+
+**Fix.** `run_carries_live_now` (`crates/tui/src/app/runclick.rs`) takes the stretch that contains the head, whichever row of it the head is, and asks the walk's own question: is it the newest unseen run (`newest_unseen_run`), and does it carry the live work (`run_carries_live`).
+
+**Done when:** `cargo test -p letibot-tui runningrow`. Two finished calls and one running, with and without narration. Collapsed, the marker reads `[3 tool calls]` and no card is drawn. Expanded, three cards, the last `◐ Running`. When the call finishes, the last card is `Ran (c2)` with its result and there are still three.
 
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 

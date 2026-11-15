@@ -491,8 +491,12 @@ impl App {
             .as_ref()
             .map(|t| t.turn_rows.iter().cloned().collect())
             .unwrap_or_default();
+        // Any row of the stretch names it: a marker addresses its run by the first HIDDEN row, and a
+        // stretch can start at an empty assistant row that is merely invisible. The walk's own test
+        // is the newest stretch, so the count and the lifted pane agree.
+        let newest = crate::ui::transcript::markers::newest_unseen_run(&runs, live);
         crate::ui::transcript::markers::unseen_run_at(&runs, live, start).is_some_and(|(s0, e0)| {
-            s0 == start && crate::ui::run_carries_live(&self.items, &turn_rows, s0, e0)
+            newest == Some(s0) && crate::ui::run_carries_live(&self.items, &turn_rows, s0, e0)
         })
     }
 }
