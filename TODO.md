@@ -68,7 +68,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R229 | Gates ran tests with the operator's real HOME, and the launcher's store ignores XDG_DATA_HOME | Code work | bridge store resolution and read-only opens landed (abd03a3d); left: no in-tree gate script isolates HOME/XDG, and `scripts/letibot`'s `STORE` ignores `XDG_DATA_HOME` while the bridge follows it |
 | R230 | One slow store open blocks every open in the process, and unladdered writes sleep 30 s holding the connection | Code work | left: `Store::open_sharing` holds `shared_stores()` across pragmas and migrate, and `connection()`/`connection_of()` writes sleep up to `BUSY_TIMEOUT` (30 s) in the busy handler |
 | R231 | A room protocol bump refused every older client | Code work | fixed for 11 by `OLDEST_CLIENT = 11` (fc69dcb2); left: a rule that each bump states whether older clients are served, and a test per bump |
-| R232 | Kimi's usage endpoint is asked only on a refusal | Code work | built: a background poll of the preset's `usage_url` every 5 min (`crates/provider/src/usage_poll.rs`), one per endpoint, ending once no session is on the preset; the `models.usage` row, drawn in the status row and on the model card's provider row (`5h 44% · resets 07:07`); left: z.ai turns on when glm-limit lands, live check against a real Kimi key |
+| R232 | Kimi's usage endpoint is asked only on a refusal | Code work | built: a background poll of the preset's `usage_url` every 5 min (`crates/provider/src/usage_poll.rs`), one per endpoint, ending once no session is on the preset; the `models.usage` row, drawn in the status row and on the model card's provider row (`5h 44% · resets 07:07`); left: the threshold warnings (80%/70%/95%, `[provider.usage_warn]`), z.ai turns on when glm-limit lands, live check against a real Kimi key |
 | R233 | Rate-limit decisions as config values or a fuel-capped wasm call | Needs the operator | not started; left: the operator's shape for the hook record (which decisions, value or plugin, what the call is given and answers) |
 | R234 | VMs do not boot at load 100-240, and packages fall back to host subagents | Code work | left: a measurement of boot time against load, then a queue or an admission rule |
 | R235 | A Claude Code session starts a new `until [ -s ... ]` wait loop every few minutes and never stops the old ones | Needs the operator | an observation about Claude Code's waiters, not a letibot defect; left: the operator's call on whether letibot's own docs or skills warn about it |
@@ -909,7 +909,7 @@ Left: nothing makes the next bump ask the question. A rule in `docs/socket.md` (
 
 ## R232 - Kimi's usage endpoint is asked only on a refusal
 
-**Status:** built, 2026-11-15. left: z.ai once glm-limit is on main, and a look at a real Kimi session.
+**Status:** built, 2026-11-15. left: the threshold warnings below, z.ai once glm-limit is on main, and a look at a real Kimi session. `usage_poll::Watcher::tell` is the seam for the warnings: it sees every reading.
 
 The Kimi presets carry a `usage_url` (`crates/provider/src/registry.rs:203`), and `crates/provider/src/usage.rs` reads it, but the only caller is `harness/usage.rs:45`, which asks `exhausted_reset_ms` after a limit refusal to park the session until the reset. Before that the operator has no view of how much of the window is spent.
 
