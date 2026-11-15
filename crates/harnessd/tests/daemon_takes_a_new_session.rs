@@ -14,6 +14,8 @@ use letibot_sessionlog::client::{ClientError, HeadClient};
 use letibot_sessionlog::protocol::{Caps, NOTE_SESSION_CLOSED, ServerFrame};
 
 /// A fake provider on loopback answering every request with one short message, counting them.
+/// A thread per connection, and a bad connection is skipped: one that stalls or resets must not
+/// stop the requests after it from being served and counted.
 fn fake() -> (String, Arc<Mutex<usize>>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!(
@@ -24,42 +26,54 @@ fn fake() -> (String, Arc<Mutex<usize>>) {
     let seen = n.clone();
     std::thread::spawn(move || {
         for conn in listener.incoming() {
-            let Ok(mut conn) = conn else { continue };
-            let mut reader = BufReader::new(conn.try_clone().unwrap());
-            let mut line = String::new();
-            reader.read_line(&mut line).unwrap();
-            let mut len = 0usize;
-            loop {
-                let mut h = String::new();
-                reader.read_line(&mut h).unwrap();
-                let h = h.trim_end();
-                if h.is_empty() {
-                    break;
-                }
-                if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
-                    len = v.trim().parse().unwrap_or(0);
-                }
-            }
-            let mut body = vec![0u8; len];
-            reader.read_exact(&mut body).unwrap();
-            *seen.lock().unwrap() += 1;
-            let mut sse = String::new();
-            for e in [
-                r#"{"choices":[{"index":0,"delta":{"role":"assistant","content":"ok"}}]}"#,
-                r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
-                r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1}}"#,
-            ] {
-                sse.push_str(&format!("data: {e}\n\n"));
-            }
-            sse.push_str("data: [DONE]\n\n");
-            let _ = write!(
-                conn,
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
-                sse.len()
-            );
+            let Ok(conn) = conn else { continue };
+            let seen = seen.clone();
+            std::thread::spawn(move || {
+                let _ = answer(conn, &seen);
+            });
         }
     });
     (url, n)
+}
+
+/// One request read and answered, counted once its body is in.
+fn answer(mut conn: std::net::TcpStream, seen: &Mutex<usize>) -> std::io::Result<()> {
+    let mut reader = BufReader::new(conn.try_clone()?);
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        return Ok(());
+    }
+    let mut len = 0usize;
+    loop {
+        let mut h = String::new();
+        if reader.read_line(&mut h)? == 0 {
+            return Ok(());
+        }
+        let h = h.trim_end();
+        if h.is_empty() {
+            break;
+        }
+        if let Some(v) = h.to_ascii_lowercase().strip_prefix("content-length:") {
+            len = v.trim().parse().unwrap_or(0);
+        }
+    }
+    let mut body = vec![0u8; len];
+    reader.read_exact(&mut body)?;
+    *seen.lock().unwrap_or_else(|e| e.into_inner()) += 1;
+    let mut sse = String::new();
+    for e in [
+        r#"{"choices":[{"index":0,"delta":{"role":"assistant","content":"ok"}}]}"#,
+        r#"{"choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}"#,
+        r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":1}}"#,
+    ] {
+        sse.push_str(&format!("data: {e}\n\n"));
+    }
+    sse.push_str("data: [DONE]\n\n");
+    write!(
+        conn,
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{sse}",
+        sse.len()
+    )
 }
 
 struct Daemon(std::process::Child);
@@ -99,10 +113,12 @@ fn start(home: &Path) -> Daemon {
         .env("LETIBOT_NOTES_REPO", home.join("notes"))
         .env("LETIBOT_LOGS_ROOT", home.join("logs"))
         .env("XDG_CONFIG_HOME", home.join(".config"))
+        // The daemon's records and locks, never the box's `/run/user/<uid>/letibot`.
+        .env("XDG_RUNTIME_DIR", home.join("run"))
         .env_remove("DEEPSEEK_API_KEY")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::fs::File::create(home.join("daemon.log")).expect("the daemon's log"))
         .spawn()
         .expect("harnessd starts");
     let deadline = Instant::now() + Duration::from_secs(30);
@@ -126,6 +142,7 @@ fn scratch() -> PathBuf {
     let _ = std::fs::remove_dir_all(&d);
     std::fs::create_dir_all(d.join("ws")).unwrap();
     std::fs::create_dir_all(d.join(".config/letibot")).unwrap();
+    std::fs::create_dir_all(d.join("run")).unwrap();
     d
 }
 
@@ -243,7 +260,8 @@ fn a_daemon_whose_only_session_closed_takes_a_new_one_and_runs_it() {
     while *seen.lock().unwrap() == before {
         assert!(
             Instant::now() < deadline,
-            "the new session never ran a turn, so it never opened"
+            "the new session never ran a turn, so it never opened; the daemon said:\n{}",
+            std::fs::read_to_string(home.join("daemon.log")).unwrap_or_default()
         );
         std::thread::sleep(Duration::from_millis(50));
     }

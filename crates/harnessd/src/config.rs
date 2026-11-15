@@ -2041,10 +2041,15 @@ impl Config {
     /// Read `[embeddings]` and build the box's one embedder. Called once by the daemon start path after both `leticode.toml` levels merge, so fixtures stay lexical-only.
     /// The project's section wins; no section means no embedder and no fault; a failed one keeps the sentence the next session's open publishes.
     pub fn read_embeddings(&mut self) {
+        self.read_embeddings_in(crate::mergequeue::git::letibot_data_dir());
+    }
+
+    /// [`Config::read_embeddings`] with the data dir handed in, so a test never finds the box's
+    /// own model under `~/.local/share/letibot`.
+    pub(crate) fn read_embeddings_in(&mut self, data: Option<PathBuf>) {
         let mut levels: Vec<PathBuf> = Vec::new();
         levels.extend(self.leticode.path.clone());
         levels.extend(self.leticode_user.path.clone());
-        let data = crate::mergequeue::git::letibot_data_dir();
         for file in levels {
             match letibot_embeddings::Settings::load(&file) {
                 Ok(settings) if settings.mode.is_off() => continue,

@@ -5634,9 +5634,11 @@ mod floor_layer_tests {
         cfg.web_search = None;
         cfg.permission = Vec::new();
         cfg.mode = letibot_tools::mode::Mode::WRITES_ALLOWED;
+        // Per process: two test runs on one box would otherwise share the store and the claim.
         let scratch = letibot_sessionlog::testing::scratch_root();
-        cfg.store = Some(scratch.join(format!("{session}.db")));
-        cfg.socket = scratch.join(format!("{session}.sock"));
+        let pid = std::process::id();
+        cfg.store = Some(scratch.join(format!("{session}-{pid}.db")));
+        cfg.socket = scratch.join(format!("{session}-{pid}.sock"));
         cfg
     }
 

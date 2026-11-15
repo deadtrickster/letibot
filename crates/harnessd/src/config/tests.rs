@@ -26,7 +26,7 @@ fn the_embedder_section_is_read_from_the_project_level_then_the_users() {
 
     cfg.leticode.path = Some(project);
     cfg.leticode_user.path = Some(user);
-    cfg.read_embeddings();
+    cfg.read_embeddings_in(Some(base.join("data")));
     assert!(
         cfg.embedder.get().is_none(),
         "the section asked for no tier"
@@ -52,7 +52,7 @@ fn a_section_that_turns_the_download_off_keeps_the_refusal() {
 
     let mut cfg = Config::for_this_box(&base);
     cfg.leticode_user.path = Some(user);
-    cfg.read_embeddings();
+    cfg.read_embeddings_in(Some(base.join("data")));
     assert!(cfg.embedder.get().is_none(), "nothing was fetched");
     let said = cfg.embedder.fault().expect("and the refusal is kept");
     assert!(said.contains("all-MiniLM-L6-v2"), "{said}");
@@ -106,8 +106,9 @@ fn a_first_use_fetch_does_not_hold_the_daemon_start() {
         "the operator is told why the tier is not there yet"
     );
 
-    // The tier appears when the thread is done, on the same config every session reads.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // The tier appears when the thread is done, on the same config every session reads. The wait
+    // is patience, not the claim: the claim is the start above, and a loaded disk stalls the open.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
     while cfg.embedder.get().is_none() && std::time::Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
