@@ -94,6 +94,10 @@ pub struct AnthropicProvider {
     /// Where a fact the operator must read is said: the daemon's hub, through the same closure
     /// the OpenAI client uses.
     notes: Option<Notes>,
+    /// `--effort` after the door's clamp; `None` leaves the model's default.
+    effort: Option<crate::effort::Effort>,
+    effort_note: Option<String>,
+    effort_said: std::sync::atomic::AtomicBool,
 }
 
 impl AnthropicProvider {
@@ -114,7 +118,26 @@ impl AnthropicProvider {
             thinking: false,
             sampling: json!({}),
             notes: None,
+            effort: None,
+            effort_note: None,
+            effort_said: std::sync::atomic::AtomicBool::new(false),
         }
+    }
+
+    /// The operator's `--effort`, clamped to the levels this door takes
+    /// ([`crate::presets::Preset::effort_level`]).
+    pub fn with_effort(mut self, effort: Option<&str>) -> Self {
+        (self.effort, self.effort_note) = match effort.map(crate::effort::Effort::parse) {
+            None => (None, None),
+            Some(Ok(asked)) => self.preset.effort_level(asked),
+            Some(Err(why)) => (None, Some(format!("effort: {why}; nothing is sent"))),
+        };
+        self
+    }
+
+    /// The sentence the effort clamp owes the operator, if any.
+    pub fn effort_notice(&self) -> Option<&str> {
+        self.effort_note.as_deref()
     }
 
     /// The HTTP agent, with the two numbers that decide when a provider that has said nothing is a
@@ -189,7 +212,9 @@ impl AnthropicProvider {
 
     /// Which thinking mode this request asks for - see [`Thinking`].
     fn thinking_mode(&self, req: &TurnRequest<'_>) -> Thinking {
-        match req.thinking.unwrap_or(self.thinking) {
+        // An effort level is a request to think and `off` one not to; the turn's own word wins.
+        let by_effort = self.effort.map(|l| l != crate::effort::Effort::Off);
+        match req.thinking.or(by_effort).unwrap_or(self.thinking) {
             true => Thinking::Adaptive,
             false => Thinking::Off,
         }
@@ -232,6 +257,13 @@ impl AnthropicProvider {
                     body["thinking"] = json!({"type": "enabled", "budget_tokens": budget});
                 }
             }
+        }
+        // Manual mode is the older models', several of which refuse `output_config.effort`.
+        if thinking == Thinking::Adaptive
+            && let Some(l) = self.effort.filter(|l| *l != crate::effort::Effort::Off)
+            && let Some(field) = self.preset.effort.and_then(|e| e.field)
+        {
+            set_path(&mut body, field, json!(l.word()));
         }
         // The operator's sampling, narrowed to the fields this API has. Anything else - or a
         // `temperature` under a version that removed it - would refuse the whole request for a
@@ -325,9 +357,13 @@ impl AnthropicProvider {
                 .into_body()
                 .read_to_string()
                 .unwrap_or_else(|e| format!("(unreadable body: {e})"));
+            let mut body = refusal_text(&text, request_id.as_deref());
+            if let Some(note) = crate::kimi::explain_a_403(&self.preset.compat, status) {
+                body = format!("{body} - {note}");
+            }
             return Err(BackendError::Refused {
                 status,
-                body: refusal_text(&text, request_id.as_deref()),
+                body,
                 retry_after,
             });
         }
@@ -445,6 +481,22 @@ fn refusal_text(text: &str, request_id: Option<&str>) -> String {
     }
 }
 
+/// Set `value` at a dotted `path` (`output_config.effort`), making the objects on the way.
+fn set_path(body: &mut Value, path: &str, value: Value) {
+    let mut at = body;
+    let mut parts = path.split('.').peekable();
+    while let Some(key) = parts.next() {
+        if !at.get(key).is_some_and(Value::is_object) && parts.peek().is_some() {
+            at[key] = json!({});
+        }
+        if parts.peek().is_none() {
+            at[key] = value;
+            return;
+        }
+        at = &mut at[key];
+    }
+}
+
 /// The refusal the provider sends INSIDE its stream, which has no status of its own: the response's
 /// is `200` because the headers went out first. `overloaded_error` is a 529 in a non-streaming
 /// context, `rate_limit_error` a 429, and the rest are the status the errors page names for them
@@ -522,6 +574,13 @@ impl MessagesBackend for AnthropicProvider {
         req: &TurnRequest<'_>,
         on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
     ) -> Result<Completion, BackendError> {
+        if let Some(note) = &self.effort_note
+            && !self
+                .effort_said
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            self.note(note.clone());
+        }
         let eyes = self.eyes();
         let mut thinking = self.thinking_mode(req);
         let mut replay_thoughts = true;

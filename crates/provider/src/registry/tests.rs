@@ -264,3 +264,24 @@ fn compat_keys_change_a_door_and_bad_values_are_refused() {
         assert!(why.contains(&format!("[provider.{name}] {key}")), "{why}");
     }
 }
+
+/// Kimi's gate and its K3.1 guard are keys too: a built-in's own entry can clear them, and a bad
+/// flag is refused naming the key.
+#[test]
+fn the_client_gate_and_the_thinking_lock_are_keys() {
+    let f = file(
+        "gate",
+        "[provider.kimi-code]\nthinking_locked = []\nclient_gate = false\n\n\
+         [provider.badgate]\nprotocol = \"chat-completions\"\nurl = \"http://x\"\nmodel = \"m\"\nclient_gate = \"maybe\"\n",
+    );
+    let r = Registry::read_with(Some(&f), &no_env);
+    let kimi = r.find("kimi-code").unwrap();
+    assert!(!kimi.compat.client_gate);
+    assert!(kimi.compat.may_switch_thinking_off("k3.1-pro"));
+    assert_eq!(
+        kimi.compat.reasoning_echo,
+        crate::presets::KIMI_CODE.compat.reasoning_echo
+    );
+    let why = r.find("badgate").unwrap_err();
+    assert!(why.contains("[provider.badgate] client_gate"), "{why}");
+}

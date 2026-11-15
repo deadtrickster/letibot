@@ -650,6 +650,98 @@ fn max_tokens_is_required_and_thinking_is_the_adaptive_mode() {
     );
 }
 
+/// `--effort` is `output_config.effort` on Anthropic's own door: a level asks for adaptive thinking,
+/// `off` sends neither field, and a turn that asks not to think spends no effort.
+#[test]
+fn effort_reaches_anthropic_as_output_config_effort() {
+    let items = vec![user("hi")];
+    let high = provider().with_effort(Some("high"));
+    assert!(high.effort_notice().is_none());
+    let body = high.body(&request("", &items, &[])).expect("a body");
+    assert_eq!(body["output_config"]["effort"], "high", "{body}");
+    assert_eq!(body["thinking"]["type"], "adaptive", "{body}");
+
+    let quiet = high
+        .body(&TurnRequest {
+            thinking: Some(false),
+            ..request("", &items, &[])
+        })
+        .expect("a body");
+    assert!(quiet.get("output_config").is_none(), "{quiet}");
+
+    let mut off = provider().with_effort(Some("off"));
+    off.thinking = true;
+    let body = off.body(&request("", &items, &[])).expect("a body");
+    assert!(body.get("thinking").is_none(), "{body}");
+    assert!(body.get("output_config").is_none(), "{body}");
+}
+
+/// A compatible Messages door has no effort field unless its entry names one, and says so.
+#[test]
+fn a_messages_door_without_an_effort_field_sends_none_and_says_so() {
+    let items = vec![user("hi")];
+    let p = AnthropicProvider::new(&crate::presets::GLM_ANTHROPIC, Some("glm-5.3"), creds(None))
+        .with_catalogue(Arc::new(crate::catalogue::Catalogue::default()))
+        .with_effort(Some("high"));
+    assert!(
+        p.effort_notice()
+            .is_some_and(|n| n.contains("no effort switch")),
+        "{:?}",
+        p.effort_notice()
+    );
+    let body = p.body(&request("", &items, &[])).expect("a body");
+    assert!(body.get("output_config").is_none(), "{body}");
+}
+
+/// The manual-mode retry is for models that predate effort, so it goes without the field.
+#[test]
+fn the_manual_mode_retry_drops_the_effort_field() {
+    let answer = text_answer("claude-sonnet-4-5", "ok");
+    let answer: &'static str = Box::leak(answer.into_boxed_str());
+    const REFUSAL: &str = r#"{"type":"error","error":{"type":"invalid_request_error","message":"adaptive thinking is not supported on this model"}}"#;
+    let f = fake_answering(move |body| match body.contains("\"adaptive\"") {
+        true => (400, REFUSAL.to_string(), Vec::new()),
+        false => (200, answer.to_string(), Vec::new()),
+    });
+    let p = provider_at(&f.url).with_effort(Some("max"));
+    let items = vec![user("think")];
+    let (_, done) = run(&p, &request("", &items, &[]));
+    done.expect("the manual mode answers");
+    assert_eq!(f.body(0)["output_config"]["effort"], "max");
+    assert!(f.body(1).get("output_config").is_none(), "{}", f.body(1));
+}
+
+/// A door with `client_gate` explains a 403 as the gate, in the refusal the operator reads.
+#[test]
+fn a_client_gate_explains_a_403_on_the_messages_wire() {
+    const DENIED: &str =
+        r#"{"type":"error","error":{"type":"permission_error","message":"denied"}}"#;
+    let f = fake(403, DENIED);
+    let p = AnthropicProvider::new(
+        &crate::presets::KIMI_CODING,
+        Some("k3"),
+        creds(Some(&f.url)),
+    )
+    .with_catalogue(Arc::new(crate::catalogue::Catalogue::default()));
+    let items = vec![user("hi")];
+    let (_, done) = run(&p, &request("", &items, &[]));
+    let Err(BackendError::Refused { status, body, .. }) = done else {
+        panic!("a 403 is a refusal");
+    };
+    assert_eq!(status, 403);
+    assert!(body.contains("User-Agent"), "{body}");
+    assert_eq!(
+        f.header(0, "user-agent").as_deref(),
+        Some(crate::kimi::USER_AGENT)
+    );
+    let g = fake(403, DENIED);
+    let (_, done) = run(&provider_at(&g.url), &request("", &items, &[]));
+    let Err(BackendError::Refused { body, .. }) = done else {
+        panic!("a 403 is a refusal");
+    };
+    assert!(!body.contains("User-Agent"), "{body}");
+}
+
 // -- the stream --------------------------------------------------------------------------------
 
 /// Text, a signed thought and a tool call, with usage from both events: the arithmetic the API

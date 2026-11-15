@@ -226,15 +226,15 @@ impl OpenAiProvider {
         let off = crate::effort::Effort::Off;
         let asked = req.thinking.or(level.map(|l| l != off));
         let thinking = asked.unwrap_or(self.thinking);
-        // Kimi's K3.1 Pro answers `disabled` with a 400, so there the field is left out and the
-        // model's own default stands (see `crate::kimi::may_switch_thinking_off`).
+        // A `thinking_locked` model (Kimi's K3.1 Pro) answers `disabled` with a 400, so there the
+        // field is left out and the model's own default stands.
         if let Some(field) = self.preset.thinking_field
             && thinking
         {
             body[field] = json!({"type": "enabled"});
         } else if let Some(field) = self.preset.thinking_off_field()
             && asked == Some(false)
-            && crate::kimi::may_switch_thinking_off(self.preset.name, &self.model)
+            && self.preset.compat.may_switch_thinking_off(&self.model)
         {
             body[field] = json!({"type": "disabled"});
         }
@@ -552,7 +552,7 @@ impl OpenAiProvider {
                 .header("Accept", "text/event-stream");
             // An endpoint that admits clients by name must be told ours, and never another
             // agent's: Moonshot documents a rewritten User-Agent as a violation.
-            if crate::kimi::is_kimi(self.preset.name) {
+            if self.preset.compat.client_gate {
                 posted = posted.header("User-Agent", crate::kimi::USER_AGENT);
             }
             match posted.send(payload.as_bytes()) {
@@ -601,7 +601,7 @@ impl OpenAiProvider {
             };
             // What a 403 from the coding plan most often is, said where the operator reads the
             // refusal: the body may name nothing at all.
-            let message = match crate::kimi::explain_a_403(self.preset.name, status) {
+            let message = match crate::kimi::explain_a_403(&self.preset.compat, status) {
                 Some(note) => format!("{message} — {note}"),
                 None => message,
             };

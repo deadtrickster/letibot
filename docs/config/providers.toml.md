@@ -80,7 +80,7 @@ A new door, or a change to a built-in or env door (env-anthropic, env-openai). U
 | `aliases` | list | [] | other names for a new door |
 | `window` | int > 0 | catalogue's | context window when no catalogue has it |
 | `usage` | /path \| URL \| "" | none | the plan's usage endpoint |
-| `effort_field` | string \| "" | the preset's (none for a new door) | body field carrying the effort level |
+| `effort_field` | string \| "" | the preset's (none for a new door) | body field carrying the effort level; a dotted path (output_config.effort) on a Messages door |
 | `effort_levels` | list of off \| low \| medium \| high \| max | the preset's (all five) | levels the door takes; another level clamps to the nearest, said once |
 | `max_tokens_field` | string | "max_tokens" | body field the reply cap goes in |
 | `reasoning_echo` | tools \| always \| never | "tools" | when past reasoning_content goes back on assistant messages |
@@ -88,6 +88,8 @@ A new door, or a change to a built-in or env door (env-anthropic, env-openai). U
 | `tool_schema` | plain \| typed-enum | "plain" | typed-enum gives every untyped enum a type |
 | `json_object` | bool | the preset's (false) | the door takes response_format json_object |
 | `cache_key` | bool | the preset's (false) | send prompt_cache_key, one per session |
+| `client_gate` | bool | the preset's (false) | send User-Agent letibot/<version> and explain a 403 as the endpoint's client gate |
+| `thinking_locked` | list of model substrings | the preset's ([]) | models never sent thinking disabled; the field is left out |
 
 ## `[model.<name>]`
 

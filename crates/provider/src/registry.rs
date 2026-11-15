@@ -17,6 +17,8 @@
 //! tool_schema = "typed-enum"      # plain | typed-enum
 //! json_object = true
 //! cache_key = true
+//! client_gate = true              # send our User-Agent; a 403 is explained as the client gate
+//! thinking_locked = ["3.1"]       # models that refuse `thinking: disabled`, by substring
 //! ```
 //!
 //! A door is a `&'static Preset`, as the clients take it. One built from config is interned: the
@@ -52,6 +54,8 @@ const KEYS: &[&str] = &[
     "tool_schema",
     "json_object",
     "cache_key",
+    "client_gate",
+    "thinking_locked",
 ];
 
 /// Sampling keys `fixed` may name: the ones a cloud request carries.
@@ -222,6 +226,7 @@ struct Spec {
     usage_url: Option<String>,
     compat: Compat,
     max_tokens_field: String,
+    thinking_locked: Vec<String>,
 }
 
 impl Spec {
@@ -245,6 +250,12 @@ impl Spec {
             usage_url: p.usage_url.map(str::to_string),
             compat: p.compat,
             max_tokens_field: p.compat.max_tokens_field.into(),
+            thinking_locked: p
+                .compat
+                .thinking_locked
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
         }
     }
 }
@@ -285,6 +296,7 @@ fn build(
         usage_url: None,
         compat: Compat::PLAIN,
         max_tokens_field: Compat::PLAIN.max_tokens_field.into(),
+        thinking_locked: Vec::new(),
     });
     // An env door stays marked by its variable, whatever the file adds.
     if !matches!(s.origin, Origin::Env(_)) {
@@ -442,6 +454,12 @@ fn quirks(
     if let Some(b) = flag("cache_key")? {
         s.compat.cache_key = b;
     }
+    if let Some(b) = flag("client_gate")? {
+        s.compat.client_gate = b;
+    }
+    if let Some(l) = kv.get("thinking_locked") {
+        s.thinking_locked = crate::keys::word_list(l);
+    }
     Ok(())
 }
 
@@ -475,6 +493,7 @@ fn env_doors(env: &dyn Fn(&str) -> Option<String>) -> Vec<(String, Result<Spec, 
                 usage_url: None,
                 compat: Compat::PLAIN,
                 max_tokens_field: Compat::PLAIN.max_tokens_field.into(),
+                thinking_locked: Vec::new(),
             }),
         ));
     }
@@ -507,6 +526,7 @@ fn env_doors(env: &dyn Fn(&str) -> Option<String>) -> Vec<(String, Result<Spec, 
             usage_url: None,
             compat: Compat::PLAIN,
             max_tokens_field: Compat::PLAIN.max_tokens_field.into(),
+            thinking_locked: Vec::new(),
         });
         out.push(("env-openai".to_string(), spec));
     }
@@ -563,6 +583,7 @@ fn intern(spec: Spec) -> &'static Preset {
         usage_url: spec.usage_url.as_deref().map(leak),
         compat: Compat {
             max_tokens_field: leak(&spec.max_tokens_field),
+            thinking_locked: list(&spec.thinking_locked),
             ..spec.compat
         },
     }));

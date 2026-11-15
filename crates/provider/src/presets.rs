@@ -128,6 +128,10 @@ pub struct Compat {
     pub json_object: bool,
     /// Send `prompt_cache_key`, one per provider instance.
     pub cache_key: bool,
+    /// The endpoint admits clients by `User-Agent`: send ours, and explain a 403 as that gate.
+    pub client_gate: bool,
+    /// Models (by substring of the id) that refuse `thinking: disabled`: the field is left out.
+    pub thinking_locked: &'static [&'static str],
 }
 
 impl Compat {
@@ -138,7 +142,14 @@ impl Compat {
         tool_schema: ToolSchema::Plain,
         json_object: false,
         cache_key: false,
+        client_gate: false,
+        thinking_locked: &[],
     };
+
+    /// Whether `model` may be sent `thinking: disabled` on this door.
+    pub fn may_switch_thinking_off(&self, model: &str) -> bool {
+        !self.thinking_locked.iter().any(|m| model.contains(m))
+    }
 }
 
 const JSON_COMPAT: Compat = Compat {
@@ -151,6 +162,13 @@ const KIMI_COMPAT: Compat = Compat {
     reasoning_required: true,
     tool_schema: ToolSchema::TypedEnum,
     cache_key: true,
+    ..KIMI_GATE
+};
+
+/// Kimi's plan admits coding clients by `User-Agent`, and K3.1 Pro answers `disabled` with a 400.
+const KIMI_GATE: Compat = Compat {
+    client_gate: true,
+    thinking_locked: &["3.1"],
     ..Compat::PLAIN
 };
 
@@ -158,6 +176,13 @@ const KIMI_COMPAT: Compat = Compat {
 const DEEPSEEK_EFFORT: EffortField = EffortField {
     field: Some("reasoning_effort"),
     levels: &[Effort::Off, Effort::Low, Effort::High, Effort::Max],
+};
+
+/// Anthropic's `output_config.effort`; `off` sends no `thinking` and no level.
+/// <https://platform.claude.com/docs/en/build-with-claude/effort>
+const ANTHROPIC_EFFORT: EffortField = EffortField {
+    field: Some("output_config.effort"),
+    levels: &Effort::ALL,
 };
 
 /// GLM switches thinking on or off and has no level.
@@ -313,7 +338,7 @@ pub const ANTHROPIC: Preset = Preset {
     catalogue_id: "anthropic",
     vendor_pick: false,
     fixed_sampling: &[],
-    effort: None,
+    effort: Some(ANTHROPIC_EFFORT),
     origin: Origin::BuiltIn,
     window: None,
     usage_url: None,
@@ -393,7 +418,7 @@ pub const KIMI_CODING: Preset = Preset {
     origin: Origin::BuiltIn,
     window: None,
     usage_url: Some(KIMI_USAGES),
-    compat: Compat::PLAIN,
+    compat: KIMI_GATE,
 };
 
 /// OpenAI itself, on its own protocol. `gpt-6-astra` is the id the API reference's own

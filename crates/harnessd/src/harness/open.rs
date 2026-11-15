@@ -4377,17 +4377,10 @@ pub fn build_provider(
             Ok(Box::new(p))
         }
         letibot_provider::Protocol::AnthropicMessages => {
-            // This client has no effort field yet; said once per build so `--effort` is not
-            // silently a no-op.
-            if let Some(e) = effort {
-                notes(format!(
-                    "`{}` has no effort switch; effort `{e}` is not sent",
-                    preset.name
-                ));
-            }
             let mut p =
                 letibot_provider::AnthropicProvider::new(preset, pc.model.as_deref(), creds)
                     .with_notes(notes)
+                    .with_effort(effort)
                     .with_first_byte(deadlines.first_byte)
                     .with_response_timeout(deadlines.answer);
             p.thinking = pc.thinking;

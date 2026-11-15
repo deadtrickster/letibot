@@ -1,7 +1,7 @@
 //! The things Kimi's coding endpoint needs beyond a plain OpenAI request.
 //!
-//! Everything here is keyed on the preset's NAME, so a door added to [`crate::presets`] needs no
-//! new field on the preset and no other crate edited. The rules are Moonshot's, as published
+//! Each rule is switched on by a [`crate::presets::Compat`] key, never by the preset's name, so a
+//! door declared in providers.toml behaves as the built-in does. The rules are Moonshot's, as published
 //! (`https://www.kimi.com/code/docs/en/`) and as `MoonshotAI/kimi-code`'s own encoder writes them.
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -12,11 +12,6 @@ use serde_json::Value;
 /// documents rewriting the `User-Agent` as a violation, and the coding endpoint admits the
 /// clients it recognises by this header.
 pub const USER_AGENT: &str = concat!("letibot/", env!("CARGO_PKG_VERSION"));
-
-/// The presets that reach Kimi's coding plan, mainland and global.
-pub fn is_kimi(provider: &str) -> bool {
-    matches!(provider, "kimi-code" | "kimi-code-global")
-}
 
 /// Kimi refuses an assistant tool-call message that carries no `reasoning_content` at all
 /// ("thinking is enabled but reasoning_content is missing in assistant tool call message at
@@ -50,18 +45,11 @@ pub fn fill_absent_thoughts(body: &mut Value) {
     }
 }
 
-/// Whether a request may say `thinking: {"type": "disabled"}`. K3.1 Pro answers that with a
-/// 400, and its thinking is not the operator's to switch off — so the field is left out there
-/// and every other model gets it.
-pub fn may_switch_thinking_off(provider: &str, model: &str) -> bool {
-    !(is_kimi(provider) && model.contains("3.1"))
-}
-
-/// The sentence a 403 from this endpoint earns, or `None` for a provider or a status it is not
-/// about. A plan gate names the model or the context cap in its own words; the client gate, the
+/// The sentence a 403 earns on a door with a client gate (`Compat::client_gate`), or `None` for
+/// any other door or status. A plan gate names the model or the context cap in its own words; the client gate, the
 /// one failure this build can be blamed for, names nothing at all.
-pub fn explain_a_403(provider: &str, status: u16) -> Option<String> {
-    if !is_kimi(provider) || status != 403 {
+pub fn explain_a_403(compat: &crate::presets::Compat, status: u16) -> Option<String> {
+    if !compat.client_gate || status != 403 {
         return None;
     }
     Some(format!(
@@ -136,16 +124,22 @@ mod tests {
 
     #[test]
     fn only_k3_1_refuses_a_disabled_thinking_switch() {
-        assert!(may_switch_thinking_off("kimi-code", "k3"));
-        assert!(may_switch_thinking_off("kimi-code", "k3-256k"));
-        assert!(may_switch_thinking_off("kimi-code", "kimi-for-coding"));
-        assert!(!may_switch_thinking_off("kimi-code", "k3.1-pro"));
-        assert!(!may_switch_thinking_off(
-            "kimi-code-global",
-            "k3.1-pro-highspeed"
-        ));
-        // Another provider's model name is not Kimi's to gate.
-        assert!(may_switch_thinking_off("glm", "glm-3.1"));
+        let kimi = crate::presets::KIMI_CODE.compat;
+        assert!(kimi.may_switch_thinking_off("k3"));
+        assert!(kimi.may_switch_thinking_off("k3-256k"));
+        assert!(kimi.may_switch_thinking_off("kimi-for-coding"));
+        assert!(!kimi.may_switch_thinking_off("k3.1-pro"));
+        assert!(
+            !crate::presets::KIMI_CODE_GLOBAL
+                .compat
+                .may_switch_thinking_off("k3.1-pro-highspeed")
+        );
+        // Another door's model name is not Kimi's to gate.
+        assert!(
+            crate::presets::GLM
+                .compat
+                .may_switch_thinking_off("glm-3.1")
+        );
     }
 
     /// Two instances are two keys: a provider is one session, and two sessions sharing a cache
@@ -160,13 +154,14 @@ mod tests {
 
     #[test]
     fn a_403_is_explained_and_nothing_else_is() {
-        let said = explain_a_403("kimi-code", 403).expect("a 403 is explained");
+        let kimi = crate::presets::KIMI_CODE.compat;
+        let said = explain_a_403(&kimi, 403).expect("a 403 is explained");
         assert!(
             said.contains("User-Agent") && said.contains(USER_AGENT),
             "{said}"
         );
-        assert!(explain_a_403("kimi-code", 429).is_none());
-        assert!(explain_a_403("kimi-code", 401).is_none());
-        assert!(explain_a_403("deepseek", 403).is_none());
+        assert!(explain_a_403(&kimi, 429).is_none());
+        assert!(explain_a_403(&kimi, 401).is_none());
+        assert!(explain_a_403(&crate::presets::DEEPSEEK.compat, 403).is_none());
     }
 }

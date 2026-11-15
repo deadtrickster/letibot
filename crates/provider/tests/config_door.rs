@@ -225,3 +225,107 @@ fn an_ollama_door_from_config_alone_completes_a_tool_turn_with_a_plain_body() {
         assert!(level.get("type").is_none(), "plain schemas: {body}");
     }
 }
+
+/// A server that answers every request with a 403 and records each request's `User-Agent`.
+fn gate() -> (String, Arc<Mutex<Vec<String>>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!(
+        "http://{}/coding/v1/chat/completions",
+        listener.local_addr().unwrap()
+    );
+    let agents = Arc::new(Mutex::new(Vec::new()));
+    let recorded = agents.clone();
+    std::thread::spawn(move || {
+        for conn in listener.incoming() {
+            let Ok(mut conn) = conn else { continue };
+            let mut reader = BufReader::new(conn.try_clone().unwrap());
+            let mut length = 0usize;
+            let mut agent = String::new();
+            loop {
+                let mut h = String::new();
+                if reader.read_line(&mut h).unwrap_or(0) == 0 || h.trim().is_empty() {
+                    break;
+                }
+                let lower = h.to_ascii_lowercase();
+                if let Some(v) = lower.strip_prefix("content-length:") {
+                    length = v.trim().parse().unwrap_or(0);
+                }
+                if lower.starts_with("user-agent:") {
+                    agent = h["user-agent:".len()..].trim().to_string();
+                }
+            }
+            let mut body = vec![0u8; length];
+            let _ = reader.read_exact(&mut body);
+            recorded.lock().unwrap().push(agent);
+            let denied = r#"{"error":{"message":"denied"}}"#;
+            let _ = write!(
+                conn,
+                "HTTP/1.1 403 Forbidden\r\nContent-Type: application/json\r\n\
+                 Content-Length: {}\r\nConnection: close\r\n\r\n{denied}",
+                denied.len()
+            );
+        }
+    });
+    (url, agents)
+}
+
+#[test]
+fn a_kimi_door_from_config_alone_names_itself_explains_a_403_and_keeps_k3_1_thinking() {
+    let (url, agents) = gate();
+    let entry = |extra: &str| {
+        format!(
+            "[provider.mykimi]\nprotocol = \"chat-completions\"\nurl = \"{url}\"\n\
+             model = \"k3.1-pro\"\nkey = \"sk-test\"\nthinking = \"thinking\"\n{extra}"
+        )
+    };
+    let f = providers_toml(
+        "kimi-gate",
+        &entry("client_gate = true\nthinking_locked = [\"3.1\"]\n"),
+    );
+    let door = letibot_provider::registry::lookup("mykimi", Some(&f)).unwrap();
+    let creds = letibot_provider::keys::resolve(door, None, Some(&f)).unwrap();
+    let p = OpenAiProvider::new(door, None, creds.clone());
+    let items = vec![TranscriptItem::User {
+        speaker: Default::default(),
+        parts: vec![UserPart::Text { text: "hi".into() }],
+    }];
+    let off = TurnRequest {
+        thinking: Some(false),
+        ..req(&[], &items)
+    };
+    let body = p.body(&off).unwrap();
+    assert!(
+        body.get("thinking").is_none(),
+        "K3.1 is never sent disabled: {body}"
+    );
+    let k3 = OpenAiProvider::new(door, Some("k3"), creds);
+    assert_eq!(
+        k3.body(&off).unwrap()["thinking"],
+        serde_json::json!({"type": "disabled"})
+    );
+
+    let Err(letibot_backend::BackendError::Refused { status, body, .. }) =
+        p.complete(&req(&[], &items), &mut |_| StreamFlow::Continue)
+    else {
+        panic!("a 403 is a refusal");
+    };
+    assert_eq!(status, 403);
+    assert!(body.contains("User-Agent"), "{body}");
+    assert!(agents.lock().unwrap()[0].starts_with("letibot/"));
+
+    // Without the keys the same entry is a plain door: no gate sentence, `disabled` is sent.
+    let f = providers_toml("kimi-plain", &entry(""));
+    let door = letibot_provider::registry::lookup("mykimi", Some(&f)).unwrap();
+    let creds = letibot_provider::keys::resolve(door, None, Some(&f)).unwrap();
+    let p = OpenAiProvider::new(door, None, creds);
+    assert_eq!(
+        p.body(&off).unwrap()["thinking"],
+        serde_json::json!({"type": "disabled"})
+    );
+    let Err(letibot_backend::BackendError::Refused { body, .. }) =
+        p.complete(&req(&[], &items), &mut |_| StreamFlow::Continue)
+    else {
+        panic!("a 403 is a refusal");
+    };
+    assert!(!body.contains("User-Agent"), "{body}");
+}
