@@ -59,6 +59,7 @@ mod prune;
 mod questions;
 mod recall;
 mod restart_notice;
+mod reviewer_mode;
 mod roles;
 mod shadow_during;
 mod shadow_turn_end;

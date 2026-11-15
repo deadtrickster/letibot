@@ -1392,6 +1392,8 @@ pub struct AdjudicatedGate {
     /// unasked, because `bash`'s result is an arbitrary byte stream. leticode turns it on, so
     /// `allow-all` admits exec and every other point is unchanged.
     exec_follows_mode: bool,
+    /// A review-queue seat: exec follows the mode only inside [`a_reviewers_probe`].
+    reviewer_limits: bool,
     /// The rows, in memory: the durable journal is `letibot-sessionlog`'s, and wiring this into
     /// it is not done here.
     pub log: Vec<AdjudicationRow>,
@@ -1500,6 +1502,37 @@ pub fn a_command_that_crosses_nothing(
         && !baseline.regions.iter().any(|r| r.is_outside())
 }
 
+/// A reviewer's exec the mode may admit: a point that admits exec, a call off the always-ask list,
+/// intents that only look, write or run, and every place it names inside the clone, scratch or temp.
+/// Pushes, network, package and permission changes and unplaced paths still ask.
+pub fn a_reviewers_probe(
+    mode: crate::mode::Mode,
+    access: Access,
+    tier: &Tier,
+    baseline: &crate::intent::Baseline,
+) -> bool {
+    use crate::intent::{Intent, Region};
+    access == Access::Exec
+        && mode.exec == crate::mode::Disposition::Admit
+        && matches!(tier, Tier::Auto | Tier::MayApprove)
+        && baseline.intents.iter().all(|i| {
+            matches!(
+                i,
+                Intent::Inspect
+                    | Intent::ReadFile
+                    | Intent::WriteFile
+                    | Intent::ExecuteCode
+                    | Intent::Unknown
+            )
+        })
+        && baseline.regions.iter().all(|r| {
+            matches!(
+                r,
+                Region::Workspace | Region::Scratch | Region::Temp | Region::None
+            )
+        })
+}
+
 /// The whole rule: the call crosses nothing and the boundary it runs inside was measured and
 /// holds - see [`crate::exec::Boundary::encloses`].
 pub fn admits_inside_the_boundary(
@@ -1525,6 +1558,7 @@ impl AdjudicatedGate {
             permission: crate::permission::Ruleset::new(),
             permission_sink: None,
             exec_follows_mode: false,
+            reviewer_limits: false,
             boundary: None,
             boundary_refusal: None,
             log: Vec::new(),
@@ -1574,6 +1608,12 @@ impl AdjudicatedGate {
     /// [`AdjudicatedGate::exec_follows_mode`]. Off by default; leticode turns it on.
     pub fn with_exec_follows_mode(mut self, v: bool) -> Self {
         self.exec_follows_mode = v;
+        self
+    }
+
+    /// A review-queue seat's exec follows the mode, narrowed to [`a_reviewers_probe`].
+    pub fn with_reviewer_limits(mut self, v: bool) -> Self {
+        self.reviewer_limits = v;
         self
     }
 
@@ -3198,6 +3238,26 @@ impl Gate for AdjudicatedGate {
                     access.as_str()
                 ),
             );
+            self.record(req, d, "admit", direction.key());
+            return GateDecision::Admit;
+        }
+
+        // 2b. A review-queue seat at a point that admits exec, inside the reviewer's limits.
+        if self.reviewer_limits
+            && !self.exec_follows_mode
+            && unconfined_code.is_none()
+            && ran_unread.is_none()
+            && a_reviewers_probe(self.mode, access, &req.tier, &baseline)
+        {
+            let basis = format!(
+                "the `{}` mode admits exec, and this reviewer's call stays inside its limits: \
+                 it only looks, writes or runs, inside its clone, scratch or temp, and is not \
+                 on the always-ask list; nothing was consulted",
+                self.mode.name
+            );
+            let d = AdjudicationDecision::selected(&req, "allow_once", "gate:reviewer", &basis);
+            self.breaker.admitted(&direction);
+            self.advise_on_a_settled_call(&req, "a reviewer's probe inside its limits".into());
             self.record(req, d, "admit", direction.key());
             return GateDecision::Admit;
         }

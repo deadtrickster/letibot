@@ -2973,6 +2973,8 @@ impl Harness {
                     // exec follows the mode (so `allow-all` admits `bash`) rather than the rule
                     // that exec always asks; off for the confined seats, which keep the rule.
                     .with_exec_follows_mode(cfg.unconfined)
+                    // A review-queue seat's exec follows the operator's point, inside its clone.
+                    .with_reviewer_limits(is_review_seat(&cfg))
                     // opencode's `permission` config, so the allow/deny/ask rules govern before
                     // the mode; a subagent inherits them.
                     .with_permission(downgraded_ruleset(
@@ -5931,14 +5933,19 @@ mod floor_layer_tests {
 /// A reviewer's seat refuses whole-suite runs: the gate runs the suite. A project opts back in
 /// with `[queue] reviewers_run_suites = true`; a `[queue]` that does not parse keeps the refusal.
 pub(crate) fn refuses_whole_suites(cfg: &Config) -> bool {
-    let role = crate::profiles::for_session(cfg).name;
-    if !matches!(role.as_str(), "reviewer" | "gatekeeper") {
+    if !is_review_seat(cfg) {
         return false;
     }
     let opted_in = cfg.read_project_config
         && crate::mergequeue::settings::for_repository(&cfg.workspace)
             .is_ok_and(|s| s.reviewers_run_suites);
     !opted_in
+}
+
+/// The review queue's seats: the gatekeeper and its reviewers.
+pub(crate) fn is_review_seat(cfg: &Config) -> bool {
+    let role = crate::profiles::for_session(cfg).name;
+    matches!(role.as_str(), "reviewer" | "gatekeeper")
 }
 
 fn firecode_route(cfg: &Config) -> Option<letibot_tools::firecode_route::FirecodeRoute> {

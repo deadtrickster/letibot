@@ -1022,3 +1022,80 @@ fn a_bare_command_name_is_not_run_when_the_shell_was_not_declared_fixed() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A review-queue seat at `allow-all`: its probes inside the clone or temp run unasked, and a
+/// write outside the clone, a push or a narrower point still put the call to a person.
+#[test]
+fn a_reviewers_probe_runs_at_allow_all_and_anything_beyond_still_asks() {
+    use crate::mode::Mode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let gate = |mode: Mode, limits: bool, asked: std::sync::Arc<AtomicUsize>| {
+        AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human:test",
+            move |req: &AdjudicationRequest| {
+                asked.fetch_add(1, Ordering::Relaxed);
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "deny_and_tell",
+                    "human:test",
+                    "not now",
+                ))
+            },
+        )))
+        .with_mode(mode)
+        .with_reviewer_limits(limits)
+        .with_surroundings(pinned())
+    };
+    let runs = |mode: Mode, limits: bool, cmd: &str| {
+        let asked = std::sync::Arc::new(AtomicUsize::new(0));
+        let mut g = gate(mode, limits, asked.clone());
+        let args = json!({ "command": cmd });
+        let d = g.admit(&bash(&args));
+        (
+            d == GateDecision::Admit,
+            asked.load(Ordering::Relaxed),
+            g.log,
+        )
+    };
+
+    for cmd in [
+        "clippy-driver --version",
+        "python3 -c \"open('/tmp/mc.rs','w').write('fn main() {}')\"",
+        "python3 -c \"open('src/mc.rs','w').write('fn main() {}')\"",
+    ] {
+        let (admitted, asked, log) = runs(Mode::ALLOW_ALL_HERE, true, cmd);
+        assert!(
+            admitted && asked == 0,
+            "`{cmd}` was asked: {}",
+            log[0].request.baseline
+        );
+        // A write the shell only redirects is judged as a write, which the point admits itself.
+        assert!(log[0].decision.by.starts_with("gate:"), "`{cmd}`");
+    }
+    let (_, _, log) = runs(Mode::ALLOW_ALL_HERE, true, "clippy-driver --version");
+    assert_eq!(log[0].decision.by, "gate:reviewer");
+    for cmd in [
+        "python3 -c \"open('/home/dead/mc.rs','w').write('fn main() {}')\"",
+        "git push origin HEAD",
+        "curl -fsS https://example.com",
+    ] {
+        let (admitted, asked, log) = runs(Mode::ALLOW_ALL_HERE, true, cmd);
+        assert!(
+            !admitted && asked == 1,
+            "`{cmd}` ran unasked: {}",
+            log[0].request.baseline
+        );
+    }
+    // The point is the operator's: a narrower one asks, and a seat without the limits is unchanged.
+    let (admitted, asked, _) = runs(Mode::WRITES_ALLOWED, true, "clippy-driver --version");
+    assert!(
+        !admitted && asked == 1,
+        "writes-allowed does not admit exec"
+    );
+    let (admitted, asked, _) = runs(Mode::ALLOW_ALL_HERE, false, "clippy-driver --version");
+    assert!(
+        !admitted && asked == 1,
+        "a confined seat without limits asks"
+    );
+}
