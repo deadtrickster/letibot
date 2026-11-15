@@ -30,50 +30,11 @@ impl App {
                     self.items_below += 1;
                     return Disposition::Rendered;
                 }
-                // A tool result's facts - duration, edit pair, decision - ride across at the
-                // announcement, positionally (rows are appended in call order and the ids repeat).
-                // The row draws its own header from then on (see `App::pending_rows`).
-                let mut carried: Option<u64> = None;
-                let mut carried_edit: Option<Vec<letibot_sessionlog::event::ToolEdit>> = None;
-                let mut carried_decision: Option<letibot_sessionlog::view::SettledDecision> = None;
-                let mut carried_call: Option<(String, String)> = None;
-                if let Some(t) = self.turn.as_mut()
-                    && kind == "tool_result"
-                {
-                    let c = t.calls.get(t.settled_calls);
-                    carried = c
-                        .filter(|c| c.started_ms > 0 && c.ended_ms > c.started_ms)
-                        .map(|c| c.ended_ms - c.started_ms);
-                    // The pair rides across with the duration: same card, same
-                    // moment, same positional match.
-                    carried_edit = c.and_then(|c| match &c.state {
-                        CallState::Finished { edits, .. } if !edits.is_empty() => {
-                            Some(edits.clone())
-                        }
-                        _ => None,
-                    });
-                    // The approval rides across too: the decision is a fact
-                    // about this call, and the row that outlives the card is
-                    // where it has to keep being shown.
-                    carried_decision = c.and_then(|c| c.decision.clone());
-                    // And what the row says while its body is on its way: the call's
-                    // own words, which nothing else in this head holds by item id.
-                    carried_call = c.map(|c| (c.name.clone(), c.target.clone()));
-                }
-                if let Some(ms) = carried {
-                    self.call_ms.insert(item_id.clone(), ms);
-                }
-                if let Some(e) = carried_edit {
-                    self.call_edits.insert(item_id.clone(), e);
-                }
-                if let Some(d) = carried_decision {
-                    self.call_decisions.insert(item_id.clone(), d);
-                }
                 // A row announced without its body: what it is and how much is still coming, so the
                 // row draws one line instead of none while that body takes its second journey. The
                 // daemon is the one who decided the payload would not ride the announcement.
                 if body.is_none() && kind == "tool_result" {
-                    let (name, target) = carried_call.unwrap_or_default();
+                    let (name, target) = self.pending_call_words();
                     self.pending_rows.insert(
                         item_id.clone(),
                         PendingRow {
@@ -149,5 +110,59 @@ impl App {
             }
             _ => unreachable!("on_transcript_event was handed an event it does not handle"),
         }
+    }
+}
+
+impl App {
+    /// Bind a result row to the call it answers, by call id, and carry that call's facts onto the row:
+    /// duration, edit pair, decision. Only for a row of this round's ledger, since an older row paged
+    /// back in names a call id the round reuses.
+    pub(crate) fn carry_call_facts(&mut self, item_id: &str, call_id: &str) {
+        let Some(t) = self.turn.as_mut() else {
+            return;
+        };
+        if !t.appended.iter().any(|a| a == item_id) {
+            return;
+        }
+        let Some(c) = t.calls.iter().find(|c| c.call_id == call_id) else {
+            return;
+        };
+        let ms = (c.started_ms > 0 && c.ended_ms > c.started_ms).then(|| c.ended_ms - c.started_ms);
+        let edits = match &c.state {
+            CallState::Finished { edits, .. } if !edits.is_empty() => Some(edits.clone()),
+            _ => None,
+        };
+        let decision = c.decision.clone();
+        if !t.bound_calls.iter().any(|b| b == call_id) {
+            t.bound_calls.push(call_id.to_string());
+        }
+        if let Some(ms) = ms {
+            self.call_ms.insert(item_id.to_string(), ms);
+        }
+        if let Some(e) = edits {
+            self.call_edits.insert(item_id.to_string(), e);
+        }
+        if let Some(d) = decision {
+            self.call_decisions.insert(item_id.to_string(), d);
+        }
+    }
+
+    /// What a bodyless result row says until its body names its call: the words of the first call of
+    /// the round no row is bound to or waits on. A placeholder only; the facts wait for the call id.
+    fn pending_call_words(&self) -> (String, String) {
+        let Some(t) = self.turn.as_ref() else {
+            return Default::default();
+        };
+        let waiting = t
+            .appended
+            .iter()
+            .filter(|a| self.pending_rows.contains_key(a.as_str()))
+            .count();
+        t.calls
+            .iter()
+            .filter(|c| !t.bound_calls.contains(&c.call_id))
+            .nth(waiting)
+            .map(|c| (c.name.clone(), c.target.clone()))
+            .unwrap_or_default()
     }
 }

@@ -88,6 +88,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R275 | A GLM coding-plan limit parked rano for 5h on a window that lifted 3 minutes later | Code work | built: GLM 429s classified by business code (`crates/http/src/zai.rs`), `next_flush_time` read as UTC+8, `Resets at`/`将在` parsed, z.ai's quota endpoint on the GLM coding doors, every park re-tries on `[provider] limit_probe` (2m, 5m, 15m, 30m, 1h); left: the refusal body is not persisted anywhere, so this diagnosis is inferred from timings |
 | R267 | A streaming assistant line is drawn over an earlier row of the history | Code work | built: the live marker's join is taken back before the walk and only by its whole joined line; test `a_streaming_row_never_rewrites_an_earlier_row` |
 | R273 | A parked turn's end line reads `interrupted: paused until ... (nothing kept)` and the spinner stays up | Code work | built: `TurnState::Parked` and `TurnInterrupted::park` (protocol 75), the head draws its own park and interrupt lines, the park's ending is published under the refused round's id; left: the live check on a real limit |
+| R287 | A re-paged row loses its duration and approval, facts match by position, and the hover lights another unit than the click | Code work | built (audit J5, plan 1.12 + 1.13): a result row is bound to its call by call id within its round when its body lands; durations and decisions outlive the window, bounded at 1024 rows; a resync keeps decisions bound live; the hover lights the rows whose click does the same act (`App::conversation_act`); left: the facts are not stored on the row, so a head restart or a resync loses durations and older rounds' decisions |
 | R265 | A usage-limit park cannot be ended or moved: Esc does nothing and `/models` leaves the turn parked on the old model's reset | Code work | built: Esc ends the parked turn with a row naming the limit and the reset, a switch by any door retries the parked request on the new model, the status row names the reset and both ways out; left: the live check on a real Kimi limit |
 | R266 | Reaper remainder: a job across a stop that is not a handover, a start grace for a new owner, d.3 and the store-key rule written down | Code work | built (audit H1, R241's left): the reaper's daemon stop leaves the restart marker so host jobs are kept for the next daemon, the idle exit drains on a running job, a daemon's first 5 minutes judge no owner idle or orphaned, d.3 and the store-key rule written down; left: a plain `letibot --stop` still ends every job, by design |
 | R276 | Auto-archive at settle: reviewers, one-shots, collected subagents and settled packages stay in the list | Code work | built (audit H9, plan 1.6's remainder): six rules with reasons, the never-archive guards, the daemon's pass, the one-shot's exit, `letibot gc --archive-settled [--now]`; the rano review storm was re-gates of a red tip, fixed; left: the reviewer kill race (an orphan reviewer runs a whole review) |
@@ -4751,6 +4752,22 @@ hint bar read from the table.
   a slash command, so a filter key needs the composer's first `/` decided per pane first.
 - The conversation half of the bar (`ui/hint_bar.rs` `CONVERSATION`) is still literals; the surface
   half is generated from the tables.
+## R287 - Row facts by call id, hover by the click's table
+
+**Status:** built, 2026-11-15. Audit package J5, plan 1.12 and 1.13 (`/build/oss-harnesses/PLAN-fable-5.2.md`).
+
+1. `prune_to_the_rows` dropped `call_ms` and `call_decisions` with the row, so a row paged out and back drew without its duration and approval.
+2. A result's facts were carried from `calls[settled_calls]`, by position, so a result delivered out of order took another call's duration, edit pair and decision. The resync match let a snapshot decision overwrite one bound live.
+3. The conversation hover found an edit card by a row relative to the conversation top while `file_rows` holds terminal rows, so it lit nothing or a row low. A settled row and an open run lit one row or nothing while a click acted on the whole row or run.
+
+**Built.**
+1. `App::carry_call_facts` binds a result row to the call its body names, by call id among the round's calls, when the body lands (`record_item`), and only for a row of the round's ledger. A bodyless row's placeholder takes the words of the first call not bound or waiting.
+2. Durations and decisions outlive the window, bounded at 1024 rows, oldest ordinal dropped first. Edit excerpts still go with the row. A switch clears decisions explicitly. The resync match keeps a decision already bound.
+3. `App::conversation_act` is the click's table for conversation rows (edit stop, open run, row window). The click and the hover both read it, and the hover lights every row whose act is the same.
+
+Tests: `results_out_of_order_keep_their_own_call_facts`, `a_row_that_leaves_the_window_keeps_its_duration_and_decision`, `hovering_an_edit_card_lights_the_rows_a_click_opens`.
+
+**Left.** The plan's full form stores duration and decision on the stored result row and reads them back on page-in, so they survive a head restart and a resync. That needs fields on `TranscriptItem::ToolResult` written by the daemon. No test drives the hover over an open run.
 
 ## R267 - A streaming assistant line is drawn over an earlier row of the history
 

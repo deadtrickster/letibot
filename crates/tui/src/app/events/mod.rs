@@ -122,6 +122,7 @@ impl App {
             self.drop_lift();
             self.call_targets.clear();
             self.call_ms.clear();
+            self.call_decisions.clear();
             self.call_edits.clear();
             // The marks belong to the rows that went, and to the file buffers still open from
             // them: another conversation's citations are not a remark about this one's files.
@@ -417,7 +418,8 @@ impl App {
                 if let Some(TranscriptItem::ToolResult { call_id, .. }) = &it.item
                     && let Some(d) = by_call.remove(call_id)
                 {
-                    self.call_decisions.insert(it.item_id.clone(), d);
+                    // A decision this head bound live, by call id within its round, is exact; keep it.
+                    self.call_decisions.entry(it.item_id.clone()).or_insert(d);
                 }
             }
         }
@@ -610,15 +612,14 @@ impl App {
             .collect();
         self.bound_prompts
             .retain(|id, _| bodyless.contains(id.as_str()));
-        // A call's facts are the row's, not the session's. The window lets rows go and nothing
-        // else was pruned with them, so an excerpt per edit the conversation ever carried stayed for
-        // the life of the head: the bounded window grew anyway.
+        // An edit excerpt is large and the row carries its own, so it goes with the row. A duration and a
+        // decision exist only here, so they outlive the window to be there when the row is paged back in,
+        // bounded by count with the oldest rows' facts dropped first.
         let held: std::collections::HashSet<&str> =
             self.items.iter().map(|it| it.item_id.as_str()).collect();
-        self.call_ms.retain(|id, _| held.contains(id.as_str()));
         self.call_edits.retain(|id, _| held.contains(id.as_str()));
-        self.call_decisions
-            .retain(|id, _| held.contains(id.as_str()));
+        bound_facts(&mut self.call_ms, &held);
+        bound_facts(&mut self.call_decisions, &held);
         // And a placeholder goes with the row that drew it: a body arriving for a row the window let
         // go leaves its entry with nothing on the screen to say it for.
         self.pending_rows.retain(|id, _| held.contains(id.as_str()));
@@ -876,6 +877,10 @@ impl App {
             }));
             return;
         };
+        // A result that rode no announcement names its call only now.
+        if let TranscriptItem::ToolResult { call_id, .. } = &item {
+            self.carry_call_facts(item_id, call_id);
+        }
         self.items[idx].item = Some(item);
         // A landed tool-result body takes the placeholder with it, and it is the row that says so:
         // the header the row drew a moment ago is replaced by the whole one, not by a second.
@@ -912,6 +917,35 @@ impl App {
         }
         // What the row marks beside the text: a reply's cited lines and a call's changed ones.
         self.marks_of_row(idx);
+    }
+}
+
+/// How many rows' call facts a head keeps beyond its window: the view's bound on settled decisions.
+const ROW_FACTS: usize = 1_024;
+
+/// Drop the facts of rows outside the window, oldest ordinal first, until at most [`ROW_FACTS`] remain.
+fn bound_facts<V>(
+    facts: &mut std::collections::HashMap<String, V>,
+    held: &std::collections::HashSet<&str>,
+) {
+    let over = facts.len().saturating_sub(ROW_FACTS);
+    if over == 0 {
+        return;
+    }
+    let ordinal = |id: &str| {
+        id.rsplit('.')
+            .next()
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(0)
+    };
+    let mut gone: Vec<&String> = facts
+        .keys()
+        .filter(|id| !held.contains(id.as_str()))
+        .collect();
+    gone.sort_by_key(|id| ordinal(id));
+    let gone: Vec<String> = gone.into_iter().take(over).cloned().collect();
+    for id in gone {
+        facts.remove(&id);
     }
 }
 

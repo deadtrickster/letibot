@@ -348,6 +348,35 @@ fn a_click_on_an_edit_row_opens_the_change_in_a_popup_not_the_editor() {
     assert!(screen.contains("esc closes"), "{screen}");
 }
 
+/// The hover reads the click's table: hovering the card's first row lights every row of the card,
+/// and a click on each lit row opens the change.
+#[test]
+fn hovering_an_edit_card_lights_the_rows_a_click_opens() {
+    let ws = workspace("hover");
+    let mut a = edited(&ws);
+    a.screen(100, 40);
+    let (y, _) = a.file_rows[0].clone();
+    a.hover_at(10, y as u16);
+    let lit: Vec<usize> = a
+        .hovered
+        .as_ref()
+        .map(|h| h.rows.iter().map(|(r, _)| *r).collect())
+        .unwrap_or_default();
+    for (r, _) in a.file_rows.clone() {
+        assert!(lit.contains(&r), "row {r} of the card is not lit: {lit:?}");
+    }
+    for r in lit {
+        a.key(Key::Click { x: 10, y: r as u16 });
+        assert!(
+            a.diff_popup.is_some(),
+            "row {r} is lit and a click opens nothing"
+        );
+        a.key(Key::Esc);
+        assert!(a.diff_popup.is_none());
+        a.screen(100, 40);
+    }
+}
+
 /// The whole file is there, and it opens on the first change: on a screen too short for
 /// the file, the change is in view at once, and the file's first and last lines are a key away.
 #[test]
@@ -1805,24 +1834,18 @@ fn hovering_an_edit_card_brightens_all_of_its_rows() {
         rows.len() > 1,
         "the premise: the card is several rows: {rows:?}"
     );
-    let top = a
-        .hits
-        .iter()
-        .find(|h| h.target == crate::app::Target::Conversation)
-        .unwrap()
-        .rect
-        .y;
+    // `file_rows` holds terminal rows, the header already counted.
     a.key(Key::Hover {
         x: 10,
-        y: (top + rows[rows.len() - 1]) as u16,
+        y: rows[rows.len() - 1] as u16,
     });
     let screen = a.screen(100, 40);
     // Every row of the card with something on it - a blank spacer has nothing to brighten.
-    for r in rows.iter().filter(|r| !screen[top + **r].trim().is_empty()) {
+    for r in rows.iter().filter(|r| !screen[**r].trim().is_empty()) {
         assert!(
-            screen[top + r].contains("\x1b[22m"),
+            screen[*r].contains("\x1b[22m"),
             "row {r} of the card is not lit: {:?}",
-            screen[top + r]
+            screen[*r]
         );
     }
 }

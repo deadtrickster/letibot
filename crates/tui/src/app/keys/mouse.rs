@@ -111,16 +111,21 @@ impl App {
             self.open_marker(m);
             return ControlFlow::Break(None);
         }
-        // A click on the open run's rows unfolds them, as `/t` does while it is up.
-        if target == Target::Conversation && stop.is_none() && self.run_row_at(y) {
-            self.flip_run_tools();
-            return ControlFlow::Break(None);
-        }
-        // And a click on a settled row is the pointer's `ctrl-v` on THAT row: the rest of a tool
-        // result opens, and a second click closes it. The keyboard has no cursor, so it opens the
-        // newest row a seam offers; the pointer says which row it means.
-        if target == Target::Conversation && stop.is_none() && self.toggle_row_window(y) {
-            return ControlFlow::Break(None);
+        // The conversation's row acts, through the table the hover reads (`App::conversation_act`).
+        // A click on the open run's rows unfolds them, as `/t` does while it is up. A click on a
+        // settled row is the pointer's `ctrl-v` on THAT row: the keyboard has no cursor, so it opens
+        // the newest row a seam offers; the pointer says which row it means.
+        if target == Target::Conversation {
+            match self.conversation_act(&hit, y) {
+                Some(crate::app::pointer::ConvAct::Run) => {
+                    self.flip_run_tools();
+                    return ControlFlow::Break(None);
+                }
+                Some(crate::app::pointer::ConvAct::Row(_)) if self.toggle_row_window(y) => {
+                    return ControlFlow::Break(None);
+                }
+                _ => {}
+            }
         }
         self.click_on(target, stop)
     }

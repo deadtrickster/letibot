@@ -202,6 +202,18 @@ fn content_span(cs: &[char], gutter: usize) -> Option<(usize, usize)> {
     Some((start, end.max(start)))
 }
 
+/// What a click on a conversation row acts on, below a run marker's clause: the one table a click and
+/// the hover both read, so the lit unit is the unit a click acts on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ConvAct {
+    /// An edit or write card's stop: opens its change.
+    File(usize),
+    /// A row of the open run: unfolds the run.
+    Run,
+    /// A settled row with a payload window to open or close.
+    Row(String),
+}
+
 impl App {
     /// What a click at `(x, y)` would act on, as cells to mark - `None` where a click does
     /// nothing. The same answers the click itself uses: a key hint, then the last frame's hit map.
@@ -239,20 +251,18 @@ impl App {
                 Some(Hovered::one(row, Some((from, to))))
             }
             Target::Conversation => {
-                let top = hit.rect.y;
-                let r = row.checked_sub(top)?;
-                let Some((_, place)) = self.file_rows.iter().find(|(rr, _)| *rr == r) else {
-                    // The open run's rows unfold on a click, so they show the hand too.
-                    return self.run_row_at(y).then(|| Hovered::one(row, None));
-                };
-                Some(Hovered {
-                    rows: self
-                        .file_rows
-                        .iter()
-                        .filter(|(_, f)| f == place)
-                        .map(|(rr, _)| (top + rr, None))
-                        .collect(),
-                })
+                let act = self.conversation_act(hit, y)?;
+                let (top, h) = (hit.rect.y, hit.rect.h);
+                let rows = (top..top + h)
+                    .filter(|r| {
+                        u16::try_from(*r).is_ok_and(|r| {
+                            self.conversation_act(hit, r)
+                                .is_some_and(|a| self.same_act(&a, &act))
+                        })
+                    })
+                    .map(|r| (r, None))
+                    .collect();
+                Some(Hovered { rows })
             }
             // A finished child's line lights alone - one row, one child. Unlike a notice,
             // whose rows all open the same popup, each of these rows is a different session, so
@@ -297,6 +307,32 @@ impl App {
             _ => self.stop_block(hit, row).map(|(_, rows)| Hovered {
                 rows: rows.into_iter().map(|r| (r, None)).collect(),
             }),
+        }
+    }
+
+    /// What a click on terminal row `y` of the conversation acts on, in the click's own order.
+    pub(crate) fn conversation_act(&self, hit: &Hit, y: u16) -> Option<ConvAct> {
+        let row = usize::from(y);
+        if let Some(k) = hit
+            .stop_at(row)
+            .or_else(|| self.stop_block(hit, row).map(|(s, _)| s))
+        {
+            return Some(ConvAct::File(k));
+        }
+        if self.run_row_at(y) {
+            return Some(ConvAct::Run);
+        }
+        self.row_window_at(y).map(ConvAct::Row)
+    }
+
+    /// Whether two acts are one door: two stops of one file open the same change.
+    fn same_act(&self, a: &ConvAct, b: &ConvAct) -> bool {
+        match (a, b) {
+            (ConvAct::File(i), ConvAct::File(j)) => {
+                let place = |k: &usize| self.file_rows.get(*k).map(|(_, f)| f);
+                place(i).is_some() && place(i) == place(j)
+            }
+            _ => a == b,
         }
     }
 

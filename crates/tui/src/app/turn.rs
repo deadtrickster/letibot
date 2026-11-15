@@ -80,6 +80,9 @@ pub(crate) struct TurnPane {
     /// How many of `calls` the transcript has taken over: rows are appended in call order after every call was invoked, so the nth row is about `calls[n-1]` with no id matching, the ids repeating every round.
     /// The mark advances at the row's ANNOUNCEMENT: a row with no body still draws its own header, so the call is on the screen in its own row from that moment. The live cards, `live_work` and `settled_rows` all read it, and `App::settle_rows` is the one door that moves it.
     pub(crate) settled_calls: usize,
+    /// The call ids of this round a result row has been bound to (`App::carry_call_facts`). A call id is
+    /// unique within its round, so the id and not the row's position says which call a result answers.
+    pub(crate) bound_calls: Vec<String>,
     /// How far down [`TurnPane::appended`] this pane's thinking has been handed over - an index, not a
     /// byte offset into [`TurnPane::reasoning`]: `IncrementalMarkdown` freezes its settled half, so a
     /// slice after byte N is a different document. One buffer, so the count and the fold cannot disagree.

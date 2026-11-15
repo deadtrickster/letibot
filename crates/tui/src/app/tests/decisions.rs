@@ -886,6 +886,100 @@ fn a_settled_card_keeps_the_decision_that_gated_it() {
     assert!(screen.contains("no oracle was consulted"), "{screen}");
 }
 
+/// A result row takes the facts of the call its body names, not of the call at its position: two
+/// results delivered out of order each keep their own duration and decision.
+#[test]
+fn results_out_of_order_keep_their_own_call_facts() {
+    let mut a = app();
+    a.apply(ServerFrame::Event(env(0, testing::turn_started("t1"))));
+    a.apply(ServerFrame::Event(env(
+        1,
+        testing::proposed("t1", "c1", "bash"),
+    )));
+    a.apply(ServerFrame::Event(env(
+        2,
+        testing::proposed("t1", "c2", "bash"),
+    )));
+    a.apply(ServerFrame::Event(env(
+        3,
+        testing::requested("r1", "run c1"),
+    )));
+    a.apply(ServerFrame::Event(env(
+        4,
+        SessionEvent::DecisionAnswered {
+            req_id: "r1".into(),
+            outcome: letibot_sessionlog::event::DecisionOutcome::Selected {
+                option_id: "allow".into(),
+            },
+            by: letibot_sessionlog::event::Decider {
+                kind: "model".into(),
+                identity: "oracle".into(),
+            },
+            basis: "fine".into(),
+            late: false,
+        },
+    )));
+    let started = |call: &str| SessionEvent::ToolStarted {
+        turn_id: "t1".into(),
+        call_id: call.into(),
+        name: "bash".into(),
+        access: "exec".into(),
+    };
+    let finished = |call: &str| SessionEvent::ToolFinished {
+        turn_id: "t1".into(),
+        call_id: call.into(),
+        outcome: letibot_transcript::ToolOutcome::Ok,
+        payload_digest: "d".into(),
+        inline_bytes: 4,
+        full_bytes: 4,
+        spill: None,
+        repairs: 0,
+        edits: Vec::new(),
+    };
+    a.apply(ServerFrame::Event(env_at(5, 1_000, started("c1"))));
+    a.apply(ServerFrame::Event(env_at(6, 1_000, started("c2"))));
+    a.apply(ServerFrame::Event(env_at(7, 1_005, finished("c2"))));
+    a.apply(ServerFrame::Event(env_at(8, 1_100, finished("c1"))));
+    let result = |call: &str| TranscriptItem::ToolResult {
+        call_id: call.into(),
+        name: "bash".into(),
+        outcome: letibot_transcript::ToolOutcome::Ok,
+        payload: "done".into(),
+        edits: Vec::new(),
+        origin: None,
+        media: None,
+    };
+    // c2's row lands first, in the place c1's would take.
+    for (seq, id, call) in [(9, "i1", "c2"), (11, "i2", "c1")] {
+        a.apply(ServerFrame::Event(env(
+            seq,
+            testing::appended(id, "tool_result"),
+        )));
+        a.apply(ServerFrame::Event(env(
+            seq + 1,
+            SessionEvent::TranscriptContent {
+                item_id: id.into(),
+                item: Box::new(result(call)),
+            },
+        )));
+    }
+    assert_eq!(
+        a.call_ms.get("i1"),
+        Some(&5),
+        "c2's row took another duration"
+    );
+    assert_eq!(
+        a.call_ms.get("i2"),
+        Some(&100),
+        "c1's row took another duration"
+    );
+    assert!(!a.call_decisions.contains_key("i1"), "c2 was not gated");
+    assert!(
+        a.call_decisions.contains_key("i2"),
+        "c1's approval was lost"
+    );
+}
+
 /// The prompt is a control, not a spelling test: Up and Down walk the ladder and Enter takes the
 /// highlighted one, so the operator never types a word they can get wrong.
 #[test]

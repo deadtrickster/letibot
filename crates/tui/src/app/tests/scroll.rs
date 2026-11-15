@@ -5277,11 +5277,10 @@ fn settled(call: &str) -> SettledDecision {
     }
 }
 
-/// A row that leaves the window takes its call facts with it. The window bounds `items`, and the
-/// tables the renderer reads are keyed by a row's id and were pruned by nothing but a switch: an
-/// `edit` excerpt for every edit the conversation ever carried stayed for the life of the head.
+/// A row that leaves the window takes its edit excerpt with it, and keeps its duration and decision
+/// for when it is paged back in: the row carries its own edits, and nothing else holds the other two.
 #[test]
-fn a_row_that_leaves_the_window_takes_its_call_facts_with_it() {
+fn a_row_that_leaves_the_window_keeps_its_duration_and_decision() {
     let mut a = app();
     a.session_id = "s".into();
     a.walk_limit = 1;
@@ -5310,23 +5309,26 @@ fn a_row_that_leaves_the_window_takes_its_call_facts_with_it() {
     let held: std::collections::HashSet<&str> =
         a.items.iter().map(|r| r.item_id.as_str()).collect();
     assert!(
-        a.call_ms.keys().all(|k| held.contains(k.as_str())),
-        "a call's duration outlived its row: {} entries of {} rows",
-        a.call_ms.len(),
-        a.items.len()
-    );
-    assert!(
         a.call_edits.keys().all(|k| held.contains(k.as_str())),
         "an edit excerpt outlived its row: {} entries of {} rows",
         a.call_edits.len(),
         a.items.len()
     );
     assert!(
-        a.call_decisions.keys().all(|k| held.contains(k.as_str())),
-        "a decision outlived its row: {} entries of {} rows",
-        a.call_decisions.len(),
-        a.items.len()
+        a.call_ms.contains_key("s.0") && a.call_decisions.contains_key("s.0"),
+        "the first row was let go and took its duration and decision with it"
     );
+    // Bounded by count, oldest ordinal first.
+    for i in 60..1_200u64 {
+        a.call_ms.insert(format!("s.{i}"), 1_000);
+    }
+    a.prune_to_the_rows();
+    assert!(
+        a.call_ms.len() <= 1_024,
+        "{} durations kept",
+        a.call_ms.len()
+    );
+    assert!(a.call_ms.contains_key("s.1199") && !a.call_ms.contains_key("s.0"));
 }
 
 /// And a switch takes them too. `call_decisions` was left out of the arm that clears its two

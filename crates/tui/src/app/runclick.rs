@@ -149,29 +149,12 @@ impl App {
     /// the one already open on it. `false` when that row has nothing under a seam, so the click goes on
     /// to whatever else the row is. Read off the last frame (`App::item_at`), the rule a marker click keeps.
     pub(crate) fn toggle_row_window(&mut self, y: u16) -> bool {
-        let Some(id) = self.item_at(y).map(str::to_string) else {
+        let Some(id) = self.row_window_at(y) else {
             return false;
         };
         if self.payload_window_open() && self.payload_sel.as_deref() == Some(id.as_str()) {
-            // The window's own lines are the window's: a payload line pages the reader and a seam acts
-            // on nothing, so the row's HEADER is the only line here that is the toggle.
-            let header = self
-                .span_for(&id)
-                .zip(self.line_at(y))
-                .is_some_and(|(sp, line)| sp.at == line);
-            if header {
-                self.close_payload_window();
-            }
-            return header;
-        }
-        let budget = self.cfg.budget.body_lines;
-        let rest = self
-            .items
-            .iter()
-            .find(|it| it.item_id == id)
-            .is_some_and(|it| crate::ui::folded_rest(it, budget) > 0);
-        if !rest {
-            return false;
+            self.close_payload_window();
+            return true;
         }
         // The row is under the pointer, so nothing is scrolled: the reader is looking at it. The lift goes
         // first, because it is read against the address this is about to move.
@@ -179,6 +162,27 @@ impl App {
         self.open_payload_window(id);
         self.invalidate_history();
         true
+    }
+
+    /// The row whose payload window a click at terminal row `y` would open or close, or `None`. The query
+    /// half of [`App::toggle_row_window`], so the hover lights what that click acts on.
+    pub(crate) fn row_window_at(&self, y: u16) -> Option<String> {
+        let id = self.item_at(y)?.to_string();
+        if self.payload_window_open() && self.payload_sel.as_deref() == Some(id.as_str()) {
+            // The window's own lines are the window's: a payload line pages the reader and a seam acts
+            // on nothing, so the row's HEADER is the only line here that is the toggle.
+            let header = self
+                .span_for(&id)
+                .zip(self.line_at(y))
+                .is_some_and(|(sp, line)| sp.at == line);
+            return header.then_some(id);
+        }
+        let budget = self.cfg.budget.body_lines;
+        self.items
+            .iter()
+            .find(|it| it.item_id == id)
+            .is_some_and(|it| crate::ui::folded_rest(it, budget) > 0)
+            .then_some(id)
     }
 
     /// Is the screen row `y` inside the open run's rows, as the last frame drew them.
