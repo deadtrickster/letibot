@@ -88,38 +88,55 @@ fn an_interrupt_between_rounds_stands_the_turn_down() {
     assert!(!hub.end_the_prompt(), "nothing left to end");
 }
 
-/// A loop that returns after a round that said the prompt goes on gets its ending published
-/// once, and a prompt that already ended gets none.
+/// A loop that returns after a round that said the prompt goes on gets its end published once,
+/// and a prompt that already ended gets none. No second `TurnFinished`, so no head bills twice.
 #[test]
 fn a_prompt_left_between_rounds_is_ended_once() {
     let hub = Hub::new("s-flight-end");
     hub.publish(turn_started("t1"));
-    let mut round = turn_finished_round("t1");
-    if let SessionEvent::TurnFinished { usage, .. } = &mut round {
-        usage.prompt_tokens = 1234;
-        usage.cost_micros_usd = Some(5);
-    }
-    hub.publish(round);
+    hub.publish(turn_finished_round("t1"));
     assert!(hub.turn_in_flight());
     assert!(hub.end_the_prompt());
     assert!(!hub.turn_in_flight());
     assert!(!hub.end_the_prompt(), "exactly once");
-    let endings: Vec<_> = hub
+    let kinds: Vec<_> = hub
         .retained()
         .iter()
+        .map(|e| e.event.kind())
+        .filter(|k| k.starts_with("Turn"))
+        .collect();
+    assert_eq!(kinds, ["TurnStarted", "TurnFinished", "TurnEnded"]);
+}
+
+/// A multi-round prompt: one `TurnFinished` per round and one `TurnEnded`, after the last.
+#[test]
+fn a_multi_round_turn_ends_each_round_and_the_prompt_once() {
+    let hub = Hub::new("s-rounds");
+    for t in ["t1", "t2"] {
+        hub.publish(turn_started(t));
+        hub.publish(turn_finished_round(t));
+    }
+    hub.publish(turn_started("t3"));
+    hub.publish(turn_finished("t3"));
+    assert!(!hub.end_the_prompt(), "the last round already ended it");
+    let events = hub.retained();
+    let rounds = events
+        .iter()
+        .filter(|e| matches!(e.event, SessionEvent::TurnFinished { .. }))
+        .count();
+    let ended: Vec<_> = events
+        .iter()
         .filter_map(|e| match &e.event {
-            SessionEvent::TurnFinished {
-                ends_turn: true,
-                usage,
-                ..
-            } => Some(*usage),
+            SessionEvent::TurnEnded { turn_id } => Some(turn_id.as_str()),
             _ => None,
         })
         .collect();
-    assert_eq!(endings.len(), 1);
-    // The head's context meter keeps the last round's number, and the cost is not billed twice.
-    assert_eq!(endings[0].prompt_tokens, 1234);
-    assert_eq!(endings[0].cost_micros_usd, None);
+    assert_eq!(rounds, 3);
+    assert_eq!(ended, ["t3"]);
+    assert!(matches!(
+        events.last().map(|e| &e.event),
+        Some(SessionEvent::TurnEnded { .. })
+    ));
 }
 
 /// The footprint is the harness's to answer and the hub's to carry. Three shapes are told

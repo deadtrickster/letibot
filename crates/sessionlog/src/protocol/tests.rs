@@ -110,6 +110,7 @@ fn every_frame_is_accounted_for_at_this_version() {
             | crate::SessionEvent::ProviderTrouble { .. }
             | crate::SessionEvent::ModelRetry { .. }
             | crate::SessionEvent::TurnFinished { .. }
+            | crate::SessionEvent::TurnEnded { .. }
             | crate::SessionEvent::TurnInterrupted { .. }
             | crate::SessionEvent::TurnStarted { .. }
             | crate::SessionEvent::Warning { .. } => {}
@@ -157,8 +158,11 @@ fn every_frame_is_accounted_for_at_this_version() {
     let _ = event;
     let _ = server;
     assert_eq!(
-        PROTOCOL_VERSION, 75,
-        "the match above was last reconciled with the frame list at 75. 75 added \
+        PROTOCOL_VERSION, 76,
+        "the match above was last reconciled with the frame list at 76. 76 added \
+             `SessionEvent::TurnEnded`: a round's end and the prompt's end were one frame, \
+             `TurnFinished` with `ends_turn`. A head older than 76 is sent no `TurnEnded` and \
+             gets the prompt's end as the `TurnFinished` it reads (`compat::OlderHead`). 75 added \
              `view::TurnState::Parked` and `SessionEvent::TurnInterrupted`'s `park`: a turn parked \
              on a usage limit is drawn as a park, not as an interrupt. The field is defaulted, so a \
              version-74 head still ends the turn on its reason; the new state is what moves the \

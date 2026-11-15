@@ -640,6 +640,14 @@ impl SessionView {
                     };
                 }
             }
+            SessionEvent::TurnEnded { turn_id } => {
+                if let Some(t) = self.turn.as_mut()
+                    && &t.turn_id == turn_id
+                    && let TurnState::Finished { ends_turn, .. } = &mut t.state
+                {
+                    *ends_turn = true;
+                }
+            }
             SessionEvent::TurnInterrupted {
                 turn_id,
                 reason,

@@ -456,6 +456,30 @@ fn a_rounds_finish_does_not_end_the_turn_until_the_daemon_marks_it() {
     assert_eq!(state.turn, Turn::Idle, "the marked end is");
 }
 
+/// From a daemon that sends `TurnEnded`, the last round's `ends_turn` is a round's end and the
+/// turn ends on `TurnEnded`; a daemon too old to send it still ends the turn on `ends_turn`.
+#[test]
+fn the_turn_ends_on_turn_ended_and_an_older_daemon_on_ends_turn() {
+    let mut state = State {
+        daemon_protocol: Some(letibot_sessionlog::TURN_ENDED_SINCE),
+        ..State::default()
+    };
+    state.fold(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    state.fold(ServerFrame::Event(env(2, testing::turn_finished("t1"))));
+    assert_eq!(state.turn, Turn::Running, "a round's end");
+    state.fold(ServerFrame::Event(env(3, testing::turn_ended("t1"))));
+    assert_eq!(state.turn, Turn::Idle, "the prompt's end");
+    assert_eq!(state.rounds, 1);
+
+    let mut older = State {
+        daemon_protocol: Some(letibot_sessionlog::TURN_ENDED_SINCE - 1),
+        ..State::default()
+    };
+    older.fold(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    older.fold(ServerFrame::Event(env(2, testing::turn_finished("t1"))));
+    assert_eq!(older.turn, Turn::Idle);
+}
+
 /// A row that rode its own announcement is read from it: the daemon sends the body no second time
 /// to a head that declared `row_bodies`, so the bridge's last message must come from the append.
 #[test]

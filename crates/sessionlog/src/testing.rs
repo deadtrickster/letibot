@@ -219,6 +219,13 @@ pub fn turn_finished_round(turn_id: &str) -> SessionEvent {
     }
 }
 
+/// The prompt's end, after its last round's `TurnFinished`.
+pub fn turn_ended(turn_id: &str) -> SessionEvent {
+    SessionEvent::TurnEnded {
+        turn_id: turn_id.into(),
+    }
+}
+
 pub fn appended(item_id: &str, kind: &str) -> SessionEvent {
     SessionEvent::TranscriptAppended {
         item_id: item_id.into(),

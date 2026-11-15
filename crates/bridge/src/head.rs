@@ -579,6 +579,9 @@ pub struct State {
     /// The sentence for a daemon on another protocol number than this build, naming the older
     /// side and the restart command. `None` when they match.
     pub skew: Option<String>,
+    /// The daemon's protocol number, from its `Hello`. Below `TURN_ENDED_SINCE` a round's
+    /// `ends_turn` is the prompt's end, since that daemon sends no `TurnEnded`.
+    pub daemon_protocol: Option<u32>,
     /// Lines from the daemon this build could not read. Skipped, never silent.
     pub unreadable: u64,
     /// This bridge itself asked the daemon to close this session (`leticode_stop`). The goodbye
@@ -819,6 +822,11 @@ impl State {
         true
     }
 
+    fn end_turn(&mut self) {
+        self.turn = Turn::Idle;
+        self.events.push(Entry::of("turn", "ended"));
+    }
+
     /// Fold one server frame in. Returns the `seq` to acknowledge, when the frame was an
     /// event with one.
     fn fold(&mut self, frame: ServerFrame) {
@@ -836,6 +844,7 @@ impl State {
                 .map(|s| {
                     format!("{s} Run `letibot --stop` in the daemon's folder, then start again.")
                 });
+                self.daemon_protocol = Some(protocol_version);
                 self.session = session_id;
                 if let Some(snap) = snapshot {
                     self.seed(&snap);
@@ -989,6 +998,10 @@ impl State {
                 {
                     Turn::Running
                 }
+                // A round the prompt goes on after.
+                ViewTurnState::Finished {
+                    ends_turn: false, ..
+                } => Turn::Running,
                 ViewTurnState::Finished { .. } => Turn::Idle,
                 ViewTurnState::Failed { error, .. } => Turn::Failed(error.clone()),
             },
@@ -1134,12 +1147,14 @@ impl State {
                 dialect_template_sha,
                 ..
             } => {
-                // Whether this frame ended the PROMPT is the daemon's field: a round that
-                // proposed calls is not an ending, and a head that read it as one wrote a report
-                // over a turn still running. The metrics are per ROUND and stay so.
-                if ends_turn {
-                    self.turn = Turn::Idle;
-                    self.events.push(Entry::of("turn", "ended"));
+                // The metrics are per ROUND. The prompt's end is `TurnEnded`; only a daemon too
+                // old to send it ends the prompt on `ends_turn`.
+                if ends_turn
+                    && self
+                        .daemon_protocol
+                        .is_none_or(|p| p < letibot_sessionlog::TURN_ENDED_SINCE)
+                {
+                    self.end_turn();
                 }
                 self.turned = true;
                 // The ending's own record of what the engine measured. `leticode_status` answers
@@ -1166,6 +1181,7 @@ impl State {
                     *self.spent.cost_micros_usd.get_or_insert(0) += c;
                 }
             }
+            SessionEvent::TurnEnded { .. } => self.end_turn(),
             SessionEvent::TurnInterrupted { reason, .. } => {
                 // An interrupted turn is over, whatever its calls were left as.
                 self.turn = Turn::Idle;
@@ -1805,6 +1821,7 @@ impl Head {
             last_trouble: g.last_trouble.clone(),
             troubles: g.troubles,
             skew: g.skew.clone(),
+            daemon_protocol: g.daemon_protocol,
             unreadable: g.unreadable,
             idle_exit: g.idle_exit.clone(),
             settings_seen: g.settings_seen,

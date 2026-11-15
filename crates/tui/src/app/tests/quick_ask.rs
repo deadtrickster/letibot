@@ -189,6 +189,7 @@ fn the_asked_range_is_tinted_until_the_turn_ends() {
     );
 
     a.apply(ServerFrame::Event(env(3, testing::turn_finished("t1"))));
+    a.apply(ServerFrame::Event(env(4, testing::turn_ended("t1"))));
     assert!(
         tinted(&a).is_none(),
         "the end of the turn takes the tint down"

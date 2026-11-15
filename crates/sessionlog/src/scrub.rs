@@ -81,6 +81,7 @@ pub fn is_interactive(event: &SessionEvent) -> bool {
         | SessionEvent::ToolStarted { .. }
         | SessionEvent::ToolFinished { .. }
         | SessionEvent::TurnFinished { .. }
+        | SessionEvent::TurnEnded { .. }
         | SessionEvent::TurnInterrupted { .. }
         | SessionEvent::TurnFailed { .. }
         | SessionEvent::TranscriptAppended { .. }

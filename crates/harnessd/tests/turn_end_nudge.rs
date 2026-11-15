@@ -1,6 +1,6 @@
 //! The prompt's ending on the wire when the turn does not end the way a plain answer does: a round
 //! with no call that a nudge continues, and a loop that returns between rounds. In both, the hub
-//! says in flight until the one frame with `ends_turn`, and that frame is published exactly once.
+//! says in flight until the prompt's one `TurnEnded`.
 
 use letibot_harnessd::Parts;
 use letibot_harnessd::config::{Config, ProviderConfig, Seat};
@@ -12,12 +12,17 @@ use letibot_sessionlog::registry::{Registry, SessionWiring};
 
 const EXCUSE: &str = "My context is at the wall, so I'll stop here rather than start a piece I can't finish: what's left of the port is scroll regions.";
 
-fn endings(hub: &Hub, from: usize) -> Vec<bool> {
+/// Each round's end as its `ends_turn`, and the prompt's end as `ended`.
+fn endings(hub: &Hub, from: usize) -> Vec<&'static str> {
     hub.retained()
         .into_iter()
         .skip(from)
         .filter_map(|e| match e.event {
-            SessionEvent::TurnFinished { ends_turn, .. } => Some(ends_turn),
+            SessionEvent::TurnFinished {
+                ends_turn: false, ..
+            } => Some("round"),
+            SessionEvent::TurnFinished { .. } => Some("last round"),
+            SessionEvent::TurnEnded { .. } => Some("ended"),
             _ => None,
         })
         .collect()
@@ -92,7 +97,7 @@ fn a_nudged_round_and_a_loop_left_between_rounds_both_end_the_prompt_once() {
         reply.rounds, 2,
         "the premise: the excuse was nudged: {reply:?}"
     );
-    assert_eq!(endings(&hub, before), vec![false, true]);
+    assert_eq!(endings(&hub, before), ["round", "last round", "ended"]);
     assert!(!hub.turn_in_flight(), "the ending stood the turn down");
 
     // A loop that returns after a round that said the prompt goes on: the tail ends it, once.
@@ -112,7 +117,7 @@ fn a_nudged_round_and_a_loop_left_between_rounds_both_end_the_prompt_once() {
     })
     .expect("a spoken turn always runs")
     .expect("the turn runs");
-    assert_eq!(endings(&hub, before), vec![false, true]);
+    assert_eq!(endings(&hub, before), ["round", "ended"]);
     assert!(!hub.turn_in_flight());
 }
 

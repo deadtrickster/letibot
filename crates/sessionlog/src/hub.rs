@@ -1102,9 +1102,23 @@ impl Hub {
         // What the session is waiting on is re-derived after anything that could have moved it,
         // and it costs nothing when nothing did: the comparison is against the last published value.
         let touches = event.touches_activity();
+        // A round that ends the prompt is followed by the prompt's end, under the same lock, so
+        // every door that publishes a last round says it without knowing to.
+        let ended = match &event {
+            SessionEvent::TurnFinished {
+                turn_id,
+                ends_turn: true,
+                ..
+            } => Some(turn_id.clone()),
+            _ => None,
+        };
         let env = {
             let mut g = self.lock();
-            g.append_and_fan(event)
+            let env = g.append_and_fan(event);
+            if let Some(turn_id) = ended {
+                g.append_and_fan(SessionEvent::TurnEnded { turn_id });
+            }
+            env
         };
         self.cv.notify_all();
         if touches {
@@ -2012,41 +2026,24 @@ impl Hub {
         }
     }
 
-    /// Publish the prompt's ending when the last round said the prompt goes on and nothing came
-    /// after it (a loop that returned between rounds). Zero usage, so no head is billed twice.
-    /// Returns whether a frame was published.
+    /// Publish the prompt's end when its last round said the prompt goes on and nothing came after
+    /// it (a loop that returned between rounds). Returns whether a frame was published.
     pub fn end_the_prompt(&self) -> bool {
-        let event = {
+        let turn_id = {
             let g = self.lock();
             match g.view.turn() {
                 Some(t) => match &t.state {
                     crate::view::TurnState::Finished {
-                        finish_reason,
-                        usage,
-                        timings,
-                        ends_turn: false,
-                    } => Some(SessionEvent::TurnFinished {
-                        turn_id: t.turn_id.clone(),
-                        finish_reason: finish_reason.clone(),
-                        // The last round's numbers, so a head's context meter does not read zero;
-                        // no cost, because that round's ending already billed it.
-                        usage: crate::event::Usage {
-                            cost_micros_usd: None,
-                            ..*usage
-                        },
-                        timings: *timings,
-                        ends_turn: true,
-                        prefix_check: None,
-                        dialect_template_sha: String::new(),
-                    }),
+                        ends_turn: false, ..
+                    } => Some(t.turn_id.clone()),
                     _ => None,
                 },
                 None => None,
             }
         };
-        match event {
-            Some(e) => {
-                self.publish(e);
+        match turn_id {
+            Some(turn_id) => {
+                self.publish(SessionEvent::TurnEnded { turn_id });
                 true
             }
             None => false,

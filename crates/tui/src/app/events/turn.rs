@@ -262,10 +262,15 @@ impl App {
                 // attached is announced by no event at all - the `ToolFinished` that started it came
                 // before the attach, and a `JobSettled` may be an hour away.
                 self.queued.push(Action::ListJobs);
+                // A daemon that sends `TurnEnded` ends the prompt there; only an older one's
+                // `ends_turn` is its ending.
+                let ends_turn = ends_turn
+                    && self
+                        .daemon_protocol
+                        .is_none_or(|p| p < letibot_sessionlog::TURN_ENDED_SINCE);
                 if let Some(t) = self.turn.as_mut() {
                     t.progress = None;
-                    // The round's own ending, and the daemon's word on whether it ended the PROMPT:
-                    // the row reads it in `turn_busy`, so a round boundary does not stand the row down.
+                    // The row reads this in `turn_busy`, so a round boundary does not stand it down.
                     t.ends_turn = Some(ends_turn);
                     t.state = Some(TurnState::Finished {
                         finish_reason,
@@ -284,6 +289,19 @@ impl App {
                 // A terminal state hands the turn's calls back to the transcript, which does not draw
                 // them while the pane is up. The history is cached, so it is invalidated from the first
                 // row the pane owned - the only part that can render differently now.
+                self.invalidate_turn_rows();
+                Disposition::Rendered
+            }
+            SessionEvent::TurnEnded { turn_id } => {
+                if let Some(t) = self.turn.as_mut()
+                    && t.turn_id == turn_id
+                {
+                    t.ends_turn = Some(true);
+                    if let Some(TurnState::Finished { ends_turn, .. }) = t.state.as_mut() {
+                        *ends_turn = true;
+                    }
+                }
+                self.asks_answered();
                 self.invalidate_turn_rows();
                 Disposition::Rendered
             }

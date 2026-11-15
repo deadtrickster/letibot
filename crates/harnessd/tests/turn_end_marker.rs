@@ -1,5 +1,5 @@
 //! A round's end and a turn's end are told apart on the wire. A turn of two rounds publishes two
-//! `TurnFinished` frames, and exactly one of them says the PROMPT is over.
+//! `TurnFinished` frames and one `TurnEnded`, after the last.
 
 use std::sync::{Arc, Mutex};
 
@@ -120,6 +120,28 @@ fn a_two_round_turn_ends_once_and_says_which_frame_ended_it() {
             "a round's own figures travel with it: {f:#?}"
         );
     }
+    let tail: Vec<SessionEvent> = hub
+        .retained()
+        .into_iter()
+        .skip(before)
+        .map(|env| env.event)
+        .filter(|e| {
+            matches!(
+                e,
+                SessionEvent::TurnFinished { .. } | SessionEvent::TurnEnded { .. }
+            )
+        })
+        .collect();
+    let ended: Vec<&str> = tail
+        .iter()
+        .filter_map(|e| match e {
+            SessionEvent::TurnEnded { turn_id } => Some(turn_id.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(ended.len(), 1, "one prompt, one end: {tail:#?}");
+    assert_eq!(Some(ended[0]), finished[1]["turn_id"].as_str());
+    assert!(matches!(tail.last(), Some(SessionEvent::TurnEnded { .. })));
 }
 
 /// A directory that removes itself, because a test that leaks a store per run eventually fills the

@@ -509,6 +509,7 @@ impl App {
             | SessionEvent::TokensGenerated { .. }
             | SessionEvent::Delta { .. }
             | SessionEvent::TurnFinished { .. }
+            | SessionEvent::TurnEnded { .. }
             | SessionEvent::TurnFailed { .. }
             | SessionEvent::TurnInterrupted { .. }) => self.on_turn_event(e, ts),
             e @ (SessionEvent::OperatorCallAllowed { .. }

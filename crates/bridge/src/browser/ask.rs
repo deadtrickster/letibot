@@ -395,6 +395,8 @@ pub fn stream(
                 }
                 round_text = 0;
             }
+            // The prompt's end, from a daemon that sends it; an older one says `ends_turn`.
+            SessionEvent::TurnEnded { .. } => return End::Done("ended"),
             SessionEvent::TurnInterrupted { .. } => return End::Done("interrupted"),
             SessionEvent::TurnFailed { error, .. } => return End::Failed(error.clone()),
             _ => {}

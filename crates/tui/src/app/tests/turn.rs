@@ -147,6 +147,25 @@ fn the_status_row_survives_a_tool_call() {
     );
 }
 
+/// From a daemon that sends `TurnEnded`, a round's `ends_turn` does not stand the row down and
+/// `TurnEnded` does; an older daemon's `ends_turn` still ends the turn.
+#[test]
+fn the_row_stands_down_on_turn_ended_and_an_older_daemon_on_ends_turn() {
+    let mut a = app();
+    a.daemon_protocol = Some(letibot_sessionlog::TURN_ENDED_SINCE);
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    a.apply(ServerFrame::Event(env(2, testing::turn_finished("t1"))));
+    assert!(a.turn_busy(), "a round's end is not the prompt's");
+    a.apply(ServerFrame::Event(env(3, testing::turn_ended("t1"))));
+    assert!(!a.turn_busy(), "the prompt's end");
+
+    let mut older = app();
+    older.daemon_protocol = Some(letibot_sessionlog::TURN_ENDED_SINCE - 1);
+    older.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    older.apply(ServerFrame::Event(env(2, testing::turn_finished("t1"))));
+    assert!(!older.turn_busy());
+}
+
 #[test]
 fn the_composer_survives_a_narrow_terminal_and_a_short_one() {
     let mut a = app();

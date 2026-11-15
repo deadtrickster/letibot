@@ -10,7 +10,8 @@
 //! DecisionAnswered{req_id, outcome, by, basis, late: bool}
 //! ToolStarted / ToolProgress / ToolFinished{call_id, outcome, ...}
 //! TurnFinished{turn_id, finish_reason, usage, timings, ends_turn,
-//!              prefix_check, dialect_template_sha}
+//!              prefix_check, dialect_template_sha}   - one ROUND's end
+//! TurnEnded{turn_id}                                - the prompt's end, once
 //! TurnInterrupted{turn_id, reason, partial_kept: bool, park?}
 //! TurnFailed{turn_id, error, partial_kept: bool}   - not §4.5's; see the variant
 //! ProviderTrouble{kind, model, detail, reset_ms, count, switched_to}
@@ -1219,16 +1220,14 @@ pub enum SessionEvent {
         edits: Vec<ToolEdit>,
     },
     /// One ROUND's ending: the generation stopped, and the calls it proposed are the caller's to
-    /// run. Whether the prompt is over is [`SessionEvent::TurnFinished`]'s `ends_turn`, because only
-    /// the daemon knows what follows a round.
+    /// run. The prompt's end is [`SessionEvent::TurnEnded`], published once after the last round.
     TurnFinished {
         turn_id: String,
         finish_reason: FinishReason,
         usage: Usage,
         timings: Timings,
-        /// Whether this finish is the whole prompt's end or only one ROUND of it. Only the round
-        /// loop knows: a round that proposed no calls is still nudged or steered into another, so a
-        /// head reading the round's finish alone drew *Responded* and then *Responding* again.
+        /// Whether this round was the prompt's last. Kept for heads before `TurnEnded` (75 and
+        /// older); a newer head ends the turn on `TurnEnded`, which an older daemon never sends.
         #[serde(default = "an_ending")]
         ends_turn: bool,
         /// The verdict, without which a head cannot tell a slot that did not hold the
@@ -1242,6 +1241,9 @@ pub enum SessionEvent {
         #[serde(default, skip_serializing_if = "String::is_empty")]
         dialect_template_sha: String,
     },
+    /// The prompt's end, once, after its last round's `TurnFinished`. Interrupts and failures
+    /// keep their own terminal events and are not followed by this one.
+    TurnEnded { turn_id: String },
     TurnInterrupted {
         turn_id: String,
         reason: String,
@@ -1679,6 +1681,7 @@ impl SessionEvent {
             self,
             SessionEvent::TurnStarted { .. }
                 | SessionEvent::TurnFinished { .. }
+                | SessionEvent::TurnEnded { .. }
                 | SessionEvent::TurnInterrupted { .. }
                 | SessionEvent::TurnFailed { .. }
                 | SessionEvent::ToolCallProposed { .. }
@@ -1715,6 +1718,7 @@ impl SessionEvent {
             SessionEvent::ToolProgress { .. } => "ToolProgress",
             SessionEvent::ToolFinished { .. } => "ToolFinished",
             SessionEvent::TurnFinished { .. } => "TurnFinished",
+            SessionEvent::TurnEnded { .. } => "TurnEnded",
             SessionEvent::TurnInterrupted { .. } => "TurnInterrupted",
             SessionEvent::TurnFailed { .. } => "TurnFailed",
             SessionEvent::ProviderTrouble { .. } => "ProviderTrouble",

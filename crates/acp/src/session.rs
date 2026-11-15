@@ -648,6 +648,8 @@ impl<W: Write> Adapter<W> {
                     finish(out, session, why);
                 }
             }
+            // An older daemon's ending is the round's `ends_turn` above; `finish` answers once.
+            SessionEvent::TurnEnded { .. } => finish(out, session, StopReason::EndTurn),
             SessionEvent::TurnInterrupted { .. } => finish(out, session, StopReason::Cancelled),
             SessionEvent::TurnFailed { error, .. } => {
                 if let Some(id) = session.in_flight.take() {

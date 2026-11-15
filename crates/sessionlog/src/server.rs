@@ -773,7 +773,15 @@ pub fn serve_conn_rooted(
     registry.note_attach(&hub.session_id(), &kind, &identity);
 
     let mut seat = seat_in(
-        &registry, hub, peer, since_seq, &kind, &identity, &caps, &writer,
+        &registry,
+        hub,
+        peer,
+        since_seq,
+        protocol_version,
+        &kind,
+        &identity,
+        &caps,
+        &writer,
     )?;
 
     // The connection's chat answers, handed to a worker on the first `RoomChat` frame: `None`
@@ -1348,7 +1356,15 @@ pub fn serve_conn_rooted(
                         leave(&mut seat);
                         registry.set_default(&next.session_id());
                         seat = seat_in(
-                            &registry, next, peer, since_seq, &kind, &identity, &caps, &writer,
+                            &registry,
+                            next,
+                            peer,
+                            since_seq,
+                            protocol_version,
+                            &kind,
+                            &identity,
+                            &caps,
+                            &writer,
                         )?;
                     }
                 }
@@ -2134,6 +2150,7 @@ fn seat_in(
     hub: Arc<Hub>,
     peer: crate::peer::Peer,
     since_seq: u64,
+    head_protocol: u32,
     kind: &str,
     identity: &str,
     caps: &crate::protocol::Caps,
@@ -2151,6 +2168,7 @@ fn seat_in(
     registry.pending_asks().deliver(&hub);
     let a = hub.attach(kind, identity, held, since_seq);
     let head_id = a.head_id.clone();
+    let mut older = crate::compat::OlderHead::new(head_protocol, a.snapshot.as_ref());
     let session_id = hub.session_id();
     // What this session's harness found about its frozen prefix, said NOW: the comparison is
     // made when the harness opens, and this is the one moment to say it.
@@ -2192,8 +2210,8 @@ fn seat_in(
                     return Ok(());
                 }
                 let mut out = Ok(());
-                for env in &a.backlog {
-                    out = w.write(&ServerFrame::Event(env.clone()));
+                for env in a.backlog.iter().filter_map(|e| older.translate(e)) {
+                    out = w.write(&ServerFrame::Event(env.into_owned()));
                     if out.is_err() {
                         break;
                     }
@@ -2243,18 +2261,28 @@ fn seat_in(
                             }
                             r
                         }
-                        Delivery::Events(b) => w.write_all(b.events().iter().map(EventOut::Event)),
+                        Delivery::Events(b) => {
+                            let sent: Vec<_> = b
+                                .events()
+                                .iter()
+                                .filter_map(|e| older.translate(e))
+                                .collect();
+                            w.write_all(sent.iter().map(|e| EventOut::Event(e)))
+                        }
                         Delivery::Resync {
                             reason,
                             dropped,
                             snapshot,
                             scrubbed,
-                        } => w.write(&ServerFrame::Resync {
-                            reason,
-                            dropped,
-                            snapshot,
-                            scrubbed,
-                        }),
+                        } => {
+                            older.seed(Some(&snapshot));
+                            w.write(&ServerFrame::Resync {
+                                reason,
+                                dropped,
+                                snapshot,
+                                scrubbed,
+                            })
+                        }
                         Delivery::Closed => {
                             // Two very different things arrive here: the daemon is going away, or
                             // this head has left for another session. Only the first is a `Bye`.

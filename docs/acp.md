@@ -57,7 +57,7 @@ both of which a client never passes.
 | `session/update` `tool_call_update` | `ToolFinished` | the status, the locations, and a `diff` per changed region |
 | `session/request_permission` | `DecisionRequested{kind: permission}` | answered with `ClientFrame::Answer`; `OptionKind` is ACP's four kinds |
 | `session/cancel` | `ClientFrame::Interrupt` | the answer to the open prompt is `cancelled`, as ACP requires |
-| turn end | `TurnFinished{ends_turn}` | `end_turn`, or `max_tokens` on a length stop |
+| turn end | `TurnEnded`, or `TurnFinished{ends_turn}` from a daemon before 76 | `end_turn`, or `max_tokens` on a length stop |
 | turn interrupted | `TurnInterrupted` | `cancelled` |
 | `Citations` | `resource_link` chunk | `crates/acp/src/marks.rs`, with the lines in the fragment |
 

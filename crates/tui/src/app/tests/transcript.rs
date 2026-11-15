@@ -94,6 +94,7 @@ fn queued_prompts_behind_a_running_turn_are_one_message() {
     // Idle submits land each as their own row within a tick, so they stay
     // separate entries.
     a.apply(ServerFrame::Event(env(2, testing::turn_finished("t1"))));
+    a.apply(ServerFrame::Event(env(3, testing::turn_ended("t1"))));
     typed(&mut a, "fresh question");
     assert_eq!(
         a.key(Key::Enter),
