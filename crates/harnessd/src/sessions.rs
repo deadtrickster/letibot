@@ -1185,6 +1185,27 @@ impl<'a> Sessions<'a> {
                     },
                 }
             }
+            Slash::Fork(at) => {
+                let h = match self.harness(session_id) {
+                    Ok(h) => h,
+                    Err(e) => {
+                        return SlashReply {
+                            lines: vec![e.to_string()],
+                            ok: false,
+                        };
+                    }
+                };
+                match h.fork_at(at) {
+                    Ok(r) => SlashReply {
+                        lines: crate::harness::fork_reply(&r),
+                        ok: true,
+                    },
+                    Err(e) => SlashReply {
+                        lines: vec![e.to_string()],
+                        ok: false,
+                    },
+                }
+            }
             // The merge queue's person-verbs.
             parsed @ (Slash::Queue(_) | Slash::QueueIn { .. }) => {
                 use crate::slash::{QueueScope, QueueVerb};

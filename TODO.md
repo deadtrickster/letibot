@@ -156,6 +156,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R120 | One seat and a working automode, instead of roles | Parked | the automode half, until a model passes the etalon oracle corpus; the roles half is answered by R203 (a role is a profile that only narrows) |
 | R216 | Kimi's coding plan as a provider: two presets, and what its endpoint needs beyond OpenAI | Code work | nothing left - settle and delete on merge. Live-verified on both global doors with the operator's key: UA admitted, `max_tokens` and `content: null` accepted; `k3.1-pro` default, fixed sampling dropped, effort as `reasoning_effort` |
 | R84a | Worktrees and landing trees beside the checkout (`wt/`, `landing/`) | Parked | three behaviour changes the operator has not ruled on, then rebasing the parked branch |
+| R291 | No user-facing fork at a message | Code work | built (audit J15, plan 2.5): `/fork` lists the conversation's messages and `/fork N` makes a new session whose transcript is this one up to message N and its exchange, copied verbatim under the same prefix with `parent_transcript_id`/`forked_at_seq` naming the source; the source is untouched; left: no head picker or auto-switch (the reply names `/resume ID`), the pane does not nest a fork under its source, a fork after a compaction carries only the current transcript |
 
 ---
 
@@ -4496,3 +4497,20 @@ Kept verbatim and not repeated here: the five read-only reviews of 2026-10-12 (R
 4. The store-key rule is in d.3 of both: the key is the folder the daemon was spawned from (`Config::for_the_daemon` pins `store_key` before `--workspace` is read, `--project` overrides it), which is why `open_job_elsewhere` reads every project file.
 
 **Left.** A plain `letibot --stop` still ends every job; that is the operator's stop and stays so. The R241 done-when item "a SIGTERM with a running job leaves it running for the next daemon" is covered by the restart path's own tests (`harness/tests/kept_jobs.rs`) plus the marker test here; no end-to-end test runs a real daemon through a reaper stop.
+
+## R291 - No user-facing fork at a message
+
+**Status:** built, 2026-11-15. Audit package J15 (`/build/oss-harnesses/PLAN-fable-5.2.md` 2.5, `/build/oss-harnesses/STATUS-fable-5.2-2026-11-15.md` P2 table). left: a head picker, the pane nesting a fork under its source, and forks across a compaction.
+
+Forks were internal only (compaction, `/prune`, `/reseat`, `/clear`). opencode, pi, grok and dsh all let the operator fork a session at a message into a new session. Done when: forking at message 3 of 10 gives a session that replays 3 messages with the chain verified while the original still has 10.
+
+**Built.**
+1. `Store::fork_session(source, new_id, keep)` (`crates/tokencore/src/store.rs`): a new session row with the source's workspace, model, dialect, owner, approvers, role, prefix fingerprint, provider choice and window, origin `operator`, no parent session. Its `#t0` transcript is a fork of the source's current transcript (`parent_transcript_id` the source's, `forked_at_seq` the rows carried) and holds the first `keep` rows verbatim, so the ledger chain verifies under the same prefix. The source is only read. Test: `a_forked_session_holds_the_rows_up_to_the_point_and_the_source_is_untouched`.
+2. `/fork [N]`, a daemon verb (`crates/harnessd/src/slash.rs`, `harness/fork.rs`). Bare lists the messages (user rows from the operator or a peer, numbered from 1, first line each). `/fork N` persists, then forks keeping every row before message N+1, so message N's whole exchange is carried; agent-appended rows stay in the exchange they land in. The reply names the new id and `/resume ID`. Tests: `the_fork_point_ends_before_the_next_message`, `fork_takes_a_message_number`.
+3. A resume's ancestor tail stops at a transcript of another session (`harness/open.rs` `ancestor_tail`), so a fork does not draw the source's later rows above its own. Test: `a_fork_resumes_with_the_rows_up_to_the_point_and_the_original_still_resumes` (`harnessd/tests/resume.rs`): 10 messages, `/fork 3`, the fork resumes with 6 rows and draws 6, the original resumes with 20.
+
+**Left.**
+1. A head picker over the messages, and the head switching to the fork on the reply. Today the head forwards `/fork` as typed and the operator types `/resume ID`.
+2. The sessions pane nesting a fork under its source. The link is on the transcript row, not `parent_session_id`, which means subagent to the reaper and the queue.
+3. After a compaction the current transcript starts at the summary, so `/fork` numbers and carries only what came after it.
+

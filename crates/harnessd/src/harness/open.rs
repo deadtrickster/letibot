@@ -1074,7 +1074,7 @@ impl Harness {
         let backend = backend.with_promote_channel(hub.promote_channel());
         // A stop reaches the same loop by a peek at the hub's queue; the turn still takes it after
         // the call returns. Weak, so the backend does not keep the hub alive.
-        let stops = Arc::downgrade(&hub);
+        let stops = Arc::downgrade(hub);
         let backend = backend.with_interrupt_probe(move || {
             stops.upgrade().is_some_and(|h| h.has_queued_interrupt())
         });
@@ -4066,6 +4066,11 @@ impl Harness {
             let Ok(t) = store.load_transcript(&id) else {
                 break;
             };
+            // A `/fork`'s parent is another session's whole conversation, which the fork's own rows
+            // already copy up to the point.
+            if t.session_id != self.cfg.session_id {
+                break;
+            }
             let n = t.items.len();
             let take = n.min(room);
             chunks.push(

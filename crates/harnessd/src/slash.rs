@@ -30,6 +30,7 @@ pub const VERBS: &[&str] = &[
     "clear",
     "default-model",
     "flowy",
+    "fork",
     "gate",
     "job",
     "listen",
@@ -63,6 +64,9 @@ pub enum Slash {
         /// bare `/clear`.
         next: Option<String>,
     },
+    /// `/fork [N]` - a new session that is this conversation up to message N. Bare lists the
+    /// messages. See `harness/fork.rs`.
+    Fork(Option<usize>),
     /// `/listen [-REPO] [+REPO] [only REPO|this] [all]` - which repositories of a folder project
     /// this folder's sessions hear gate news of. No words lists them.
     Listen(Vec<String>),
@@ -274,6 +278,11 @@ impl Slash {
                     .map(str::to_string),
             },
             Some("prune") => Slash::Prune,
+            Some("fork") => match words.get(1).map(|w| w.parse::<usize>()) {
+                None => Slash::Fork(None),
+                Some(Ok(n)) if n > 0 => Slash::Fork(Some(n)),
+                Some(_) => Slash::Help("`/fork N` names a message by its number; `/fork` lists them".into()),
+            },
             Some("listen") => Slash::Listen(words[1..].iter().map(|w| w.to_string()).collect()),
             Some("tools") => Slash::Tools,
             Some("boundary") => Slash::Boundary,
@@ -1867,5 +1876,13 @@ mod the_verb_table_is_the_parser {
             Slash::Prune,
             "a longer word is not the verb"
         );
+    }
+
+    #[test]
+    fn fork_takes_a_message_number() {
+        assert_eq!(Slash::parse("fork"), Slash::Fork(None));
+        assert_eq!(Slash::parse("fork 3"), Slash::Fork(Some(3)));
+        assert!(matches!(Slash::parse("fork 0"), Slash::Help(_)));
+        assert!(matches!(Slash::parse("fork x"), Slash::Help(_)));
     }
 }

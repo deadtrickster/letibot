@@ -3735,3 +3735,65 @@ fn a_store_from_before_the_archive_columns_gains_them() {
         .expect("the columns are there now");
     assert_eq!(s.list_sessions_archived(Archived::Yes).unwrap().len(), 1);
 }
+
+/// `/fork`: the new session holds the source's rows up to the point and none after, its chain
+/// restores, and the source is unchanged.
+#[test]
+fn a_forked_session_holds_the_rows_up_to_the_point_and_the_source_is_untouched() {
+    let s = store();
+    let (tr, prefix_id) = seeded(&s);
+    let mut ledger = TokenLedger::new(&tr, &[1, 2, 3, 4]).unwrap();
+    for seq in 0..10u32 {
+        let item = TranscriptItem::Assistant {
+            text: format!("row {seq}"),
+            tool_calls: vec![],
+            truncated: false,
+        };
+        let toks = vec![10 + seq, 20 + seq];
+        let row = ledger.append(&format!("it-{seq}"), &toks).unwrap().clone();
+        s.append_item(&tr, seq, &item, &row, &toks).unwrap();
+    }
+    s.set_provider_choice("sess-1", Some("deepseek")).unwrap();
+
+    let fork = s.fork_session("sess-1", "sess-2", 3).unwrap();
+    let loaded = s.load_transcript(&fork).unwrap();
+    assert_eq!(loaded.session_id, "sess-2");
+    assert_eq!(loaded.parent_transcript_id.as_deref(), Some(tr.as_str()));
+    assert_eq!(loaded.forked_at_seq, Some(3));
+    assert_eq!(loaded.stable_prefix_id, prefix_id);
+    let texts: Vec<_> = loaded
+        .items
+        .iter()
+        .map(|(item, _, _)| match item {
+            TranscriptItem::Assistant { text, .. } => text.clone(),
+            other => panic!("{other:?}"),
+        })
+        .collect();
+    assert_eq!(texts, ["row 0", "row 1", "row 2"]);
+    TokenLedger::restore(
+        &fork,
+        &loaded.prefix_tokens,
+        loaded.h_init,
+        &loaded.ledger_input(),
+    )
+    .expect("the fork's chain verifies");
+
+    let forked = s.session("sess-2").unwrap().expect("the fork is a session");
+    assert_eq!(forked.workspace_root, "/w");
+    assert_eq!(forked.parent_session_id, None);
+    assert_eq!(forked.origin.as_deref(), Some("operator"));
+    assert_eq!(forked.provider_choice.as_deref(), Some("deepseek"));
+    assert_eq!(s.current_transcript_id("sess-2").unwrap(), Some(fork));
+
+    assert_eq!(s.item_count(&tr).unwrap(), 10, "the source keeps every row");
+    assert_eq!(s.current_transcript_id("sess-1").unwrap(), Some(tr));
+
+    assert!(
+        s.fork_session("sess-1", "sess-3", 11).is_err(),
+        "past the end"
+    );
+    assert!(
+        s.fork_session("sess-1", "sess-2", 1).is_err(),
+        "an existing id"
+    );
+}

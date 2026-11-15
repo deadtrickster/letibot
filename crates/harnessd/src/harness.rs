@@ -1678,7 +1678,9 @@ pub(crate) mod trees;
 // it handed to the session that outlives it. See the module's header for why the substrate's own
 // reaping is not the whole answer for a subagent.
 mod estate;
+mod fork;
 pub use estate::{Estate, estate_said, settle_estate};
+pub use fork::{ForkOutcome, fork_reply};
 mod deliveries;
 mod error;
 // A subagent's per-directory `AGENTS.md`, handed over the first time a tool touches it.
