@@ -1,11 +1,14 @@
 //! `queue` through the bridge: an agent enqueues a pushed branch and reads its row back from the
-//! store the queue serves, with no daemon and no session.
+//! store the queue serves, moves it with the operator's verbs and waits on it, with no daemon and
+//! no session.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::{Duration, Instant};
 
+use letibot_bridge::queue_desk;
 use letibot_bridge::tools::{self, Bridge};
-use letibot_tokencore::store::{ReviewState, Store};
+use letibot_tokencore::store::{MergeState, Move, ReviewState, Store};
 use serde_json::json;
 
 fn sh(dir: &Path, args: &[&str]) -> String {
@@ -30,10 +33,11 @@ impl Drop for Dir {
     }
 }
 
-#[test]
-fn a_pushed_branch_is_enqueued_and_its_row_reads_back() {
-    let dir =
-        Dir(std::env::temp_dir().join(format!("letibot-bridge-queue-{}", std::process::id())));
+/// A repository with a pushed `main`, an unpushed branch `ik/work`, and the daemon's store.
+fn fixture(tag: &str) -> (Dir, PathBuf, PathBuf, Bridge) {
+    let dir = Dir(
+        std::env::temp_dir().join(format!("letibot-bridge-queue-{tag}-{}", std::process::id()))
+    );
     let _ = std::fs::remove_dir_all(&dir.0);
     let repo = dir.0.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -64,6 +68,25 @@ fn a_pushed_branch_is_enqueued_and_its_row_reads_back() {
     drop(Store::open(&store_at).expect("the daemon's store"));
     let bridge = Bridge::new().with_names(&store_at, &repo);
 
+    (dir, repo, store_at, bridge)
+}
+
+fn enqueued(tag: &str) -> (Dir, PathBuf, Bridge, String) {
+    let (dir, repo, store_at, bridge) = fixture(tag);
+    sh(&repo, &["push", "-q", "origin", "ik/work"]);
+    let put = tools::call(
+        &bridge,
+        "queue",
+        &json!({"action": "enqueue", "branch": "ik/work", "why": "the work"}),
+    )
+    .expect("enqueued");
+    let id = put["id"].as_str().expect("an id").to_string();
+    (dir, store_at, bridge, id)
+}
+
+#[test]
+fn a_pushed_branch_is_enqueued_and_its_row_reads_back() {
+    let (_dir, repo, store_at, bridge) = fixture("enqueue");
     let unpushed = tools::call(
         &bridge,
         "queue",
@@ -107,4 +130,167 @@ fn a_pushed_branch_is_enqueued_and_its_row_reads_back() {
     let none = tools::call(&bridge, "queue", &json!({"action": "status", "id": "nope"}))
         .expect_err("an unknown id");
     assert!(none.contains("`nope`"), "{none}");
+}
+
+fn verb(bridge: &Bridge, args: serde_json::Value) -> Result<serde_json::Value, String> {
+    tools::call(bridge, "leticode_queue_verb", &args)
+}
+
+#[test]
+fn the_queue_verbs_move_a_row_as_the_bridge() {
+    let (_dir, store_at, bridge, id) = enqueued("verbs");
+    let e = verb(&bridge, json!({"verb": "approve"})).expect_err("no id");
+    assert!(e.contains("`approve` needs `id`"), "{e}");
+    let e = verb(&bridge, json!({"verb": "merge", "id": id})).expect_err("no such verb");
+    assert!(e.contains("`merge`"), "{e}");
+
+    let said = verb(&bridge, json!({"verb": "veto", "id": id, "why": "too big"})).expect("vetoed");
+    assert!(said["said"].as_str().unwrap().contains("vetoed"), "{said}");
+    let store = Store::open(&store_at).unwrap();
+    let row = store.review_row(&id).unwrap().unwrap();
+    assert_eq!(row.state, ReviewState::Rejected);
+    assert!(
+        row.evidence.contains("vetoed by the bridge: too big"),
+        "{row:?}"
+    );
+    assert!(
+        row.verdict_by
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("bridge:"),
+        "{row:?}"
+    );
+
+    verb(&bridge, json!({"verb": "restart", "id": id})).expect("restarted");
+    assert_eq!(
+        store.review_row(&id).unwrap().unwrap().state,
+        ReviewState::Waiting
+    );
+
+    let said = verb(&bridge, json!({"verb": "approve", "id": id})).expect("approved");
+    assert!(
+        said["said"].as_str().unwrap().contains("merge queue"),
+        "{said}"
+    );
+    let landing = store.merge_rows(None).unwrap();
+    assert_eq!(landing.len(), 1, "{landing:?}");
+    assert!(landing[0].approved_by.starts_with("bridge:"), "{landing:?}");
+
+    verb(&bridge, json!({"verb": "rm", "id": landing[0].id})).expect("withdrawn");
+    assert_eq!(
+        store.merge_rows(None).unwrap()[0].state,
+        MergeState::Withdrawn
+    );
+    let said = verb(&bridge, json!({"verb": "clean"})).expect("nothing parked");
+    assert!(
+        said["said"].as_str().unwrap().starts_with("0 parked"),
+        "{said}"
+    );
+}
+
+#[test]
+fn a_row_of_another_repository_is_refused() {
+    let (_a, store_at, _bridge, id) = enqueued("scope-a");
+    let (_b, other, _, _) = fixture("scope-b");
+    let elsewhere = Bridge::new().with_names(&store_at, &other);
+    let e = verb(&elsewhere, json!({"verb": "veto", "id": id})).expect_err("not this repository's");
+    assert!(e.contains("is a row of"), "{e}");
+}
+
+const FAST: Duration = Duration::from_millis(20);
+
+fn wait(bridge: &Bridge, id: &str, within: Duration) -> (i32, serde_json::Value) {
+    let (code, said) =
+        queue_desk::wait(bridge, &bridge.folder(), id, Instant::now() + within, FAST);
+    let state = serde_json::from_str(&said).unwrap_or(json!(said));
+    (code, state)
+}
+
+#[test]
+fn wait_queue_times_out_on_a_row_still_in_line() {
+    let (_dir, _, bridge, id) = enqueued("wait-timeout");
+    let started = Instant::now();
+    let (code, state) = wait(&bridge, &id, Duration::from_millis(150));
+    assert_eq!(code, queue_desk::exit::TIMEOUT, "{state}");
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert_eq!(state["review"]["state"], "waiting", "{state}");
+
+    let (code, said) = queue_desk::wait(&bridge, &bridge.folder(), "nope", Instant::now(), FAST);
+    assert_eq!(code, queue_desk::exit::UNKNOWN);
+    assert!(said.contains("`nope`"), "{said}");
+}
+
+#[test]
+fn wait_queue_exits_10_on_a_veto_with_the_words() {
+    let (_dir, store_at, bridge, id) = enqueued("wait-veto");
+    let waiter = {
+        let bridge = Bridge::new().with_names(&store_at, bridge.folder());
+        let id = id.clone();
+        std::thread::spawn(move || wait(&bridge, &id, Duration::from_secs(20)))
+    };
+    std::thread::sleep(Duration::from_millis(100));
+    verb(
+        &bridge,
+        json!({"verb": "veto", "id": id, "why": "split it"}),
+    )
+    .expect("vetoed");
+    let (code, state) = waiter.join().unwrap();
+    assert_eq!(code, queue_desk::exit::REJECTED, "{state}");
+    assert_eq!(state["review"]["state"], "rejected", "{state}");
+    assert!(
+        state["review"]["reasons"].to_string().contains("split it"),
+        "{state}"
+    );
+}
+
+#[test]
+fn wait_queue_follows_an_approval_to_its_landing() {
+    let (_dir, store_at, bridge, id) = enqueued("wait-land");
+    verb(&bridge, json!({"verb": "approve", "id": id})).expect("approved");
+    let store = Store::open(&store_at).unwrap();
+    let m = store.merge_rows(None).unwrap().remove(0);
+    let (code, state) = wait(&bridge, &m.id, Duration::from_millis(100));
+    assert_eq!(
+        code,
+        queue_desk::exit::TIMEOUT,
+        "queued is in line: {state}"
+    );
+    assert_eq!(state["landing"]["state"], "queued", "{state}");
+
+    assert!(
+        store
+            .move_merge(
+                &m.id,
+                MergeState::Queued,
+                MergeState::Landed,
+                &Move::new("test", "landed"),
+                2
+            )
+            .unwrap()
+    );
+    let (code, state) = wait(&bridge, &id, Duration::from_secs(5));
+    assert_eq!(code, queue_desk::exit::LANDED, "{state}");
+    assert_eq!(state["landing"]["state"], "landed", "{state}");
+}
+
+#[test]
+fn wait_queue_exits_20_on_a_red_gate() {
+    let (_dir, store_at, bridge, id) = enqueued("wait-red");
+    verb(&bridge, json!({"verb": "approve", "id": id})).expect("approved");
+    let store = Store::open(&store_at).unwrap();
+    let m = store.merge_rows(None).unwrap().remove(0);
+    assert!(
+        store
+            .move_merge(
+                &m.id,
+                MergeState::Queued,
+                MergeState::Failed,
+                &Move::new("test", "red"),
+                2
+            )
+            .unwrap()
+    );
+    let (code, state) = wait(&bridge, &id, Duration::from_secs(5));
+    assert_eq!(code, queue_desk::exit::FAILED, "{state}");
+    assert_eq!(state["landing"]["state"], "failed", "{state}");
 }

@@ -123,8 +123,9 @@ sh scripts/install-gate-build.sh
 - Build machines lab2x1, lubuntu1 and lubuntu2 may fetch build dependencies without asking. Any
   other network egress asks first. lubuntu3 is never used.
 - Agents test the crates they touch (`cargo test -p <crate>`), push a branch, enqueue it (the
-  bridge's or the seat's `queue` tool, `action: "enqueue"`) and report its tip. They never run a
-  full gate and never push `main`. The queue gates approved branches as one stack (`[queue]
+  bridge's or the seat's `queue` tool, `action: "enqueue"`), wait on the row (`letibot-mcp
+  wait-queue <repository> <id>` in the background: 0 landed, 10 rejected, 20 red) and report its
+  tip. They never run a full gate and never push `main`. The queue gates approved branches as one stack (`[queue]
   gate_train`, `docs/gate.md`). Where it does not, the lead stacks them and runs one full gate
   (`scripts/gate-at.sh`), because parallel full gates choke the box. A gate on a fleet host is `scripts/rrun NAME
   WORKTREE --host H [--target DIR] --gate` (default host lab2x1). The Mac runs only

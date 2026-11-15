@@ -248,8 +248,21 @@ recorded under `bridge:<handle>`. `{action: "status", id?}` reads that row's rev
 state, or the repository's queue without `id`. It writes to the daemon's store and refuses when
 there is none. Tested in `crates/bridge/tests/queue_enqueue.rs`.
 
-**Not built**: `leticode_queue_verb` and `wait-queue`. The `<channel>` queue notifications cover
-the wait.
+**Built: `leticode_queue_verb`.** `{verb, id?, why?, target?}` with the verbs of
+`mergequeue::verbs`: `approve`, `restart`, `veto`, `rm`, `reset`, `clean`, `regate`. Each is the
+`_by` form recorded as `bridge:<handle>`, so the history says the bridge moved the row and not the
+operator. A row of another repository is refused (`verbs::in_scope`), and `reset`/`clean` without
+`id` sweep this repository's parked rows only. A veto cannot reach the child that wrote the branch,
+so the words stay on the row.
+
+**Built: `letibot-mcp wait-queue <repository> <row> [--timeout 2h]`.** It polls the store of the
+folder's daemon every 5 s and follows the row through its review into its newest landing (a branch
+that moved after approval gets a new landing, so the waiter keeps going). It exits 0 on `landed` or
+`landed_local`; 10 on `rejected`, `cannot_decide`, a withdrawn review or a withdrawn landing; 20 on
+a `failed`, `timed_out`, `conflict` or `blocked` landing and a `blocked` review; 30 at the timeout;
+2 when there is no store or no such row. stdout is the row's state as `queue` `status` reads it,
+with the reviewers' `reasons`. Not built: `leticode_submit` (`{row}`), and `leticode_queue` beyond
+`queue`'s `status`.
 
 ## Watching a session the bridge did not start (B6)
 
@@ -387,6 +400,6 @@ v2 subtree.
 | B3 | the `/delegate` skill - landed as the plugin's `leticode` skill - and registering the server with Claude Code: `claude mcp add`, or one `/plugin install leticode --marketplace deadtrickster/letibot` now that the plugin exists (`claude-plugin/`) |
 | B4 | `escalate` |
 | Q1 | a bridge-started daemon runs `--no-queue` |
-| B5 | `leticode_queue`, `leticode_submit`, `leticode_queue_verb`, `wait-queue` (needs a stable queue) |
+| B5 | `queue`, `leticode_queue_verb`, `letibot-mcp wait-queue`; `leticode_submit` (not built) |
 | B6 | `leticode_attach` with `watch_only` (`can_decide: false`); the subagents a session spawns in `leticode_events` |
 | B8 | `leticode_transcript` and `leticode_mode`; protocol 54's four mode-confirmation frames |

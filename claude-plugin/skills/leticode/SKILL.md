@@ -56,11 +56,32 @@ provider is in trouble.
   branch comes home as `remote/<host>/<short id>`. `leticode_collect` fetches that branch when a
   stop never reached a close.
 
+## Land it
+
+The child's job ends at a commit. Landing is yours, through the queue, never by hand:
+
+1. `git push origin <branch>` - the branch only, never the target.
+2. `queue {action: "enqueue", branch, why}` answers the row `id`. The gatekeeper reviews the branch
+   against `why`, then the queue rebases it with the other approved branches, gates the stack once
+   and lands it. Never run the workspace gate yourself.
+3. Wait as a background command, whose exit is the notification:
+
+       letibot-mcp wait-queue <repository> <id> --timeout 2h
+
+   0 landed, 10 rejected, undecided, vetoed or withdrawn, 20 the gate was red or the queue could
+   not run it, 30 timeout. stdout is the row's state, the reviewers' `reasons` in it. On 10 send the
+   reasons to the child with `leticode_send`, then push its fix and enqueue again.
+
+`queue {action: "status", id}` reads the row at any time. `leticode_queue_verb` has the
+operator's `/queue` verbs (`approve`, `restart`, `veto`, `rm`, `reset`, `clean`, `regate`),
+recorded under this bridge's handle. They overrule the reviewer or the gate, so use them only when
+the operator asked.
+
 ## Do not
 
 - `leticode_attach` a session you did not start unless you mean to watch it (`watch_only`): a
   watching head cannot send, answer or stop, and that is the point of it.
-- Land the child's branch yourself. A package's job ends at a commit on its branch; the queue and
-  the operator take it from there.
+- Merge or push the target yourself. The queue lands the branch, and the operator rules on what
+  it parks.
 - Start a second child for the same worktree: one daemon, one folder, and the queue's own rules
   are about branches you would otherwise collide on.

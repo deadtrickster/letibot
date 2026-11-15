@@ -134,6 +134,11 @@ fn by(session: &str) -> String {
     format!("operator:{session}")
 }
 
+/// The mover's kind, `operator` for `operator:<session>` and `bridge` for `bridge:<handle>`.
+fn actor(who: &str) -> &str {
+    who.split(':').next().unwrap_or("operator")
+}
+
 /// Approve over the reviewer: a review row that is waiting, under review, rejected, undecided or
 /// blocked becomes `approved` at the head its branch has NOW, and a merge row is born for it; the
 /// merge gate still runs.
@@ -141,6 +146,16 @@ pub fn approve(
     store: &Store,
     id: &str,
     session: &str,
+    events: &dyn Fn(SessionEvent),
+) -> Result<String, String> {
+    approve_by(store, id, &by(session), events)
+}
+
+/// [`approve`], with the mover named whole (`bridge:<handle>` for the Claude Code bridge).
+pub fn approve_by(
+    store: &Store,
+    id: &str,
+    who: &str,
     events: &dyn Fn(SessionEvent),
 ) -> Result<String, String> {
     let Found::Review(r) = find(store, id)? else {
@@ -177,9 +192,9 @@ pub fn approve(
             r.branch, r.repository
         )
     })?;
-    let who = by(session);
+    let actor = actor(who);
     let why = format!(
-        "approved by the operator over the reviewer at {head} (was `{}`); the merge gate still runs",
+        "approved by the {actor} over the reviewer at {head} (was `{}`); the merge gate still runs",
         r.state.as_str()
     );
     let merge_id = format!("m-{}-{}", r.id, now_ms());
@@ -190,8 +205,8 @@ pub fn approve(
                 expect: r.state,
                 expect_owner: None,
                 reviewed_sha: head.clone(),
-                by: who,
-                reasons: vec!["approved by the operator (decision 5)".into()],
+                by: who.to_string(),
+                reasons: vec![format!("approved by the {actor} (decision 5)")],
                 files: vec![],
                 commands: vec![],
                 why: why.clone(),
@@ -231,7 +246,7 @@ pub fn restart_by(
     events: &dyn Fn(SessionEvent),
 ) -> Result<String, String> {
     let who = who.to_string();
-    let actor = who.split(':').next().unwrap_or("operator").to_string();
+    let actor = actor(&who).to_string();
     match find(store, id)? {
         Found::Review(r) => {
             if !matches!(
@@ -306,7 +321,19 @@ pub fn veto(
     deliver: &dyn Fn(&str, &str) -> Result<String, String>,
     events: &dyn Fn(SessionEvent),
 ) -> Result<String, String> {
-    let who = by(session);
+    veto_by(store, id, why, &by(session), deliver, events)
+}
+
+/// [`veto`], with the mover named whole.
+pub fn veto_by(
+    store: &Store,
+    id: &str,
+    why: &str,
+    who: &str,
+    deliver: &dyn Fn(&str, &str) -> Result<String, String>,
+    events: &dyn Fn(SessionEvent),
+) -> Result<String, String> {
+    let actor = actor(who);
     let words = if why.trim().is_empty() {
         "no reason given".to_string()
     } else {
@@ -317,16 +344,16 @@ pub fn veto(
             if !r.state.is_open() {
                 return Err(format!("`{}` is `{}`, not open", r.id, r.state.as_str()));
             }
-            let said = format!("vetoed by the operator: {words}");
+            let said = format!("vetoed by the {actor}: {words}");
             let ok = store
                 .move_review(
                     &r.id,
                     r.state,
                     ReviewState::Rejected,
-                    &Move::new(&who, said.clone())
+                    &Move::new(who, said.clone())
                         .set("owner", "")
                         .set("verdict", "reject")
-                        .set("verdict_by", who.clone())
+                        .set("verdict_by", who.to_string())
                         .set("reviewed_sha", r.head_sha.clone())
                         .set(
                             "reasons_json",
@@ -357,8 +384,8 @@ pub fn veto(
             withdraw_merge(
                 store,
                 &m,
-                &format!("vetoed by the operator: {words}"),
-                &who,
+                &format!("vetoed by the {actor}: {words}"),
+                who,
                 events,
             )
         }
@@ -416,13 +443,21 @@ pub fn remove(
     session: &str,
     events: &dyn Fn(SessionEvent),
 ) -> Result<String, String> {
-    withdraw_by(
-        store,
-        id,
-        &by(session),
-        "withdrawn by the operator; the branch and its worktree stay",
-        events,
-    )
+    remove_by(store, id, &by(session), events)
+}
+
+/// [`remove`], with the mover named whole.
+pub fn remove_by(
+    store: &Store,
+    id: &str,
+    who: &str,
+    events: &dyn Fn(SessionEvent),
+) -> Result<String, String> {
+    let why = format!(
+        "withdrawn by the {}; the branch and its worktree stay",
+        actor(who)
+    );
+    withdraw_by(store, id, who, &why, events)
 }
 
 /// Take a row out, in the mover's own words - [`remove`]'s body, and the `queue` tool's
@@ -508,13 +543,24 @@ pub fn reset(
     session: &str,
     events: &dyn Fn(SessionEvent),
 ) -> Result<String, String> {
+    reset_by(store, id, repository, &by(session), events)
+}
+
+/// [`reset`], with the mover named whole.
+pub fn reset_by(
+    store: &Store,
+    id: Option<&str>,
+    repository: Option<&str>,
+    who: &str,
+    events: &dyn Fn(SessionEvent),
+) -> Result<String, String> {
     if let Some(id) = id {
-        return restart(store, id, session, events);
+        return restart_by(store, id, who, events);
     }
     let ids = parked(store, repository)?;
     let n = ids
         .iter()
-        .filter(|id| restart(store, id, session, events).is_ok())
+        .filter(|id| restart_by(store, id, who, events).is_ok())
         .count();
     Ok(format!("{n} parked row(s) restarted"))
 }
@@ -528,13 +574,24 @@ pub fn clean(
     session: &str,
     events: &dyn Fn(SessionEvent),
 ) -> Result<String, String> {
+    clean_by(store, id, repository, &by(session), events)
+}
+
+/// [`clean`], with the mover named whole.
+pub fn clean_by(
+    store: &Store,
+    id: Option<&str>,
+    repository: Option<&str>,
+    who: &str,
+    events: &dyn Fn(SessionEvent),
+) -> Result<String, String> {
     if let Some(id) = id {
-        return remove(store, id, session, events);
+        return remove_by(store, id, who, events);
     }
     let ids = parked(store, repository)?;
     let n = ids
         .iter()
-        .filter(|id| remove(store, id, session, events).is_ok())
+        .filter(|id| remove_by(store, id, who, events).is_ok())
         .count();
     Ok(format!(
         "{n} parked row(s) withdrawn — kept in the history, gone from the queues"

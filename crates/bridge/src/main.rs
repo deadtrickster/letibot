@@ -4,9 +4,10 @@
 //!   letibot-mcp                              MCP over stdio (what Claude Code runs)
 //!   letibot-mcp wait <worktree> <session> --until attention [--timeout 2h] [--exit-on-stall]
 //!   letibot-mcp room-wait [--attention to_me|mentions|all] [--timeout 2h]
+//!   letibot-mcp wait-queue <repository> <row> [--timeout 2h]
 //! ```
 //!
-//! Three verbs and no flags beyond the waits' own. The first is the server Claude Code
+//! Four verbs and no flags beyond the waits' own. The first is the server Claude Code
 //! registers and keeps for the life of the conversation; the second is the background
 //! command whose exit is the notification (`docs/claude-code-bridge.md`), because
 //! Claude Code wakes its model when a background command finishes and has no other door.
@@ -56,6 +57,15 @@ letibot-mcp — the Claude Code bridge to leticode
         20  the coordinator could not be reached (why is on stderr)
         30  the timeout passed    (nothing on stdout)
 
+  letibot-mcp wait-queue <repository> <row> [--timeout 2h]
+      Follow a merge-queue row (the id `queue` enqueue answered) of the repository at that
+      folder and exit when it lands or parks. The row's state is on stdout, as JSON.
+        0   it landed
+        10  rejected, undecided, vetoed or withdrawn (the reviewers' words are in the state)
+        20  the gate was red, timed out or conflicted, or the queue could not run it
+        30  the timeout passed     (the state so far is on stdout)
+        2   no store serves that folder, or no such row (why is on stderr)
+
 The server is registered with `claude mcp add` and is never run by hand for that job.
 ";
 
@@ -100,6 +110,21 @@ fn main() {
                     0 => println!("{said}"),
                     20 => eprintln!("letibot-mcp: {said}"),
                     _ => eprintln!("letibot-mcp: no room message before the timeout"),
+                }
+                code
+            }
+            Err(e) => {
+                eprintln!("letibot-mcp: {e}\n\n{USAGE}");
+                2
+            }
+        },
+        Some("wait-queue") => match parse_wait_queue(&args[1..]) {
+            Ok((folder, row, deadline)) => {
+                let (code, said) = wait_queue(&folder, &row, deadline);
+                if code == letibot_bridge::queue_desk::exit::UNKNOWN {
+                    eprintln!("letibot-mcp: {said}");
+                } else {
+                    println!("{said}");
                 }
                 code
             }
@@ -207,6 +232,38 @@ fn parse_room_wait(args: &[String]) -> Result<(letibot_bridge::rooms::Attention,
     Ok((attention, Instant::now() + timeout))
 }
 
+/// `wait-queue <repository> <row> [--timeout DUR]`.
+fn parse_wait_queue(args: &[String]) -> Result<(String, String, Instant), String> {
+    let mut timeout = DEFAULT_TIMEOUT;
+    let mut positional = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--timeout" => {
+                let raw = it.next().ok_or("--timeout wants a duration (2h)")?;
+                timeout = duration(raw)?;
+            }
+            other if other.starts_with('-') => return Err(format!("unknown flag `{other}`")),
+            other => positional.push(other.to_string()),
+        }
+    }
+    match <[String; 2]>::try_from(positional) {
+        Ok([folder, row]) => Ok((folder, row, Instant::now() + timeout)),
+        Err(_) => Err("wait-queue wants a repository folder and a row id".into()),
+    }
+}
+
+/// The store is the one the folder's daemon serves, whatever directory the waiter runs in.
+fn wait_queue(folder: &str, row: &str, deadline: Instant) -> (i32, String) {
+    let folder = std::path::PathBuf::from(folder);
+    let store = match letibot_bridge::daemon::resolve(&folder) {
+        Ok(d) => d.store,
+        Err(e) => return (letibot_bridge::queue_desk::exit::UNKNOWN, e),
+    };
+    let bridge = Bridge::new().with_names(store, &folder);
+    letibot_bridge::queue_desk::wait(&bridge, &folder, row, deadline, Duration::from_secs(5))
+}
+
 /// A year. `Instant::now() + timeout` panics on a duration the clock cannot hold.
 const LONGEST_TIMEOUT_SECS: u64 = 365 * 24 * 3600;
 
@@ -297,6 +354,17 @@ mod tests {
         assert!(d < Instant::now() + Duration::from_secs(91));
         assert!(parse_room_wait(&args(&["--attention", "some"])).is_err());
         assert!(parse_room_wait(&args(&["x"])).is_err());
+    }
+
+    #[test]
+    fn wait_queue_wants_a_folder_and_a_row() {
+        let (folder, row, d) =
+            parse_wait_queue(&args(&["/tmp/repo", "r-1", "--timeout", "90s"])).expect("parses");
+        assert_eq!((folder.as_str(), row.as_str()), ("/tmp/repo", "r-1"));
+        assert!(d < Instant::now() + Duration::from_secs(91));
+        assert!(parse_wait_queue(&args(&["/tmp/repo"])).is_err());
+        assert!(parse_wait_queue(&args(&["/tmp/repo", "r-1", "x"])).is_err());
+        assert!(parse_wait_queue(&args(&["/tmp/repo", "r-1", "--until", "x"])).is_err());
     }
 
     /// A duration in the three units, and a refusal that says what the units are.
