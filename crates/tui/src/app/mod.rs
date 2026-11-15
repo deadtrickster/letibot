@@ -1791,6 +1791,7 @@ mod ghlinks;
 mod hits;
 pub(crate) mod keyhints;
 mod keys;
+pub(crate) mod limit_notice;
 pub(crate) mod links;
 pub(crate) mod marks;
 mod model_card;

@@ -168,6 +168,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R120 | One seat and a working automode, instead of roles | Parked | the automode half, until a model passes the etalon oracle corpus; the roles half is answered by R203 (a role is a profile that only narrows) |
 | R216 | Kimi's coding plan as a provider: two presets, and what its endpoint needs beyond OpenAI | Code work | nothing left - settle and delete on merge. Live-verified on both global doors with the operator's key: UA admitted, `max_tokens` and `content: null` accepted; `k3.1-pro` default, fixed sampling dropped, effort as `reasoning_effort` |
 | R84a | Worktrees and landing trees beside the checkout (`wt/`, `landing/`) | Parked | three behaviour changes the operator has not ruled on, then rebasing the parked branch |
+| R297 | A limit's model switch was a transient line that vanished | Code work | built (branch `limit-notice`): a fallback move, a park, a resume and the switch back each hold a resident line above the composer until `ctrl-n` or `/notes dismiss N`; the bridge reports a park once and a switch as `switched to Y`; left: R233's hook decision once it lands, and the 5h window is not named because the provider's refusal does not carry it |
 
 ---
 
@@ -4922,3 +4923,15 @@ Tests: `backend::tests::walk_ignoring_applies_nested_rules_and_bypasses_named_pa
 **Built.** While the session list is in front, the composer's line is its filter (`App::picker_filter`, synced after every key in `App::key`). A number names a row and a `/` or `!` line is a command, so neither filters (`pick::filter_of`). The head cuts the layer's feed to the hits (`App::filter_hits` in `sessions_pane.rs`) over title, slug, project, workspace and id, with the model card's `rank`: letters in order match only when no session contains the line. The feed says `filtered`, and the built-in `sessions` layer then draws every node open, so a hit inside a folded group or a folded project is on screen. A new filter puts the cursor on the top hit; Enter takes the row under the cursor (`App::pick`). The model card's search field is drawn over the list with the match count. `/switch NAME` with no list on screen still refuses an ambiguous name. Tests: `app::tests::session_search` (three characters narrow the list without Enter, a folded hit is drawn, Enter switches to the top hit and to the one the arrows moved to, numbers and commands do not filter, the subsequence fallback) and `a_filtered_feed_opens_every_group_it_holds` in `plugins/builtin/sessions`.
 
 **Left.** No `"phrase"` or `re:` tiers (pi has them). A layer other than the built-in one gets the cut feed but has to read `filtered` itself to unfold. The matched characters are not highlighted in the rows, since the layer draws them.
+## R297 - A limit's model switch was a transient line that vanished
+
+**Status:** built, 2026-11-15, branch `limit-notice`.
+
+Operator, watching rano's session move from glm-coding to deepseek when the 5h window ran out: "id prefer it to be a notice i manually dismiss, as other notices".
+
+**What changed:**
+- `model_fallback`, `limit_park`, `limit_resumed` and `limit_returned` raise a resident line above the composer (`app::limit_notice`): `glm-coding/glm-5.3 hit its limit (resets 07:15:00 UTC) - now on deepseek/deepseek-v4-flash · ctrl-n dismisses`. The newest undismissed one is drawn, with a count of the older ones.
+- The line reads the note `/notes` already holds, so `ctrl-n` and `/notes dismiss N` take it down and a dismissal persists like any other. No conversation row is drawn: the model is sent what it was sent before.
+- Bridge: a park was counted twice (its `limit_park` warning and its `ProviderTrouble`), and a switch read as the provider's raw words because `LimitNews::line` matched only `limited`. Now one report each, and a switch reads `M limited until X, switched to Y`.
+
+**Left:** R233's limit hook decision is not on main; add its code to `LIMIT_NOTICES` when it lands. The window length (`5h`) is not in the line because the refusal does not carry it.

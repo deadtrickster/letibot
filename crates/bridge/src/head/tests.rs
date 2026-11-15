@@ -13,6 +13,7 @@ fn a_limit_reads_as_limited_until_switched_to_or_resumed() {
     };
     assert_eq!(news.line(), "glm/glm-5.3 limited until 21:02:27 UTC");
     let moved = LimitNews {
+        kind: "switched",
         switched_to: Some("deepseek/deepseek-flash".into()),
         ..news.clone()
     };
@@ -1134,4 +1135,63 @@ fn a_bridge_prompt_names_the_agent_that_sent_it() {
     assert_eq!(from.as_deref(), Some(crate::rooms::handle().as_str()));
     assert!(cmd.peer().is_some_and(|p| p.starts_with("cc@")), "{cmd:?}");
     server.shutdown();
+}
+
+/// A limit is one report each: a park is its `ProviderTrouble`, not that plus its warning; a move
+/// reads `switched to`; the move back is its own report.
+#[test]
+fn a_limit_park_switch_and_return_are_each_reported_once() {
+    let trouble = |switched_to: Option<&str>| SessionEvent::ProviderTrouble {
+        kind: "rate_limit".into(),
+        model: "glm/glm-5.3".into(),
+        detail: "429 usage limit".into(),
+        reset_ms: Some(1_794_085_347_000),
+        count: 1,
+        switched_to: switched_to.map(String::from),
+    };
+    let warning = |code: &str, detail: &str| SessionEvent::Warning {
+        code: code.into(),
+        detail: detail.into(),
+        compaction: None,
+    };
+    let mut state = State::default();
+    state.fold(ServerFrame::Event(env(
+        1,
+        warning(
+            "limit_park",
+            "glm/glm-5.3 said `429`, so this session is paused",
+        ),
+    )));
+    state.fold(ServerFrame::Event(env(2, trouble(None))));
+    assert_eq!(state.limits, 1, "one park, one report");
+    let news = state.limit.clone().expect("the park");
+    assert_eq!(news.line(), "glm/glm-5.3 limited until 21:02:27 UTC");
+
+    state.fold(ServerFrame::Event(env(
+        3,
+        trouble(Some("deepseek/deepseek-flash")),
+    )));
+    state.fold(ServerFrame::Event(env(
+        4,
+        warning(
+            "model_fallback",
+            "[fallback] glm/glm-5.3 reset 21:02:27 UTC is past ...",
+        ),
+    )));
+    assert_eq!(state.limits, 2, "one switch, one report");
+    let news = state.limit.clone().expect("the switch");
+    assert_eq!(
+        news.line(),
+        "glm/glm-5.3 limited until 21:02:27 UTC, switched to deepseek/deepseek-flash"
+    );
+
+    state.fold(ServerFrame::Event(env(
+        5,
+        warning("limit_returned", "the limit on glm/glm-5.3 lifted: back"),
+    )));
+    assert_eq!(state.limits, 3, "the return is its own report");
+    assert_eq!(
+        state.limit.clone().expect("the return").line(),
+        "the limit on glm/glm-5.3 lifted: back"
+    );
 }

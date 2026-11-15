@@ -309,6 +309,9 @@ impl App {
         // [`App::nag_pause_line`]: a state of the session, never given up by the fit ladder while
         // it is true, so a silent board is never read as a broken one.
         let nag_pause = self.nag_pause_line(w);
+        // A model move, park or return a limit caused, held until the reader dismisses it - see
+        // [`App::limit_notice_line`].
+        let limit_notice = self.limit_notice_line(w);
         // A board waiting on the operator rides the same slot - see [`App::waiting_line`]: a
         // state, never given up by the fit ladder while a person is being waited on.
         let waiting = self.waiting_line(w);
@@ -364,6 +367,7 @@ impl App {
                 + lock.len()
                 + compact_off.len()
                 + nag_pause.len()
+                + limit_notice.len()
                 + waiting.len()
                 + reseat_strip.len(),
             stopping: stopping.len(),
@@ -379,6 +383,7 @@ impl App {
         chrome.extend(lock);
         chrome.extend(compact_off);
         chrome.extend(nag_pause);
+        chrome.extend(limit_notice);
         chrome.extend(waiting);
         chrome.extend(reseat_strip);
         // The `allow-all` confirmation sits at the front of the chrome, because while it is up every key belongs

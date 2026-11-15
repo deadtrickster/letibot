@@ -659,7 +659,7 @@ impl LimitNews {
     /// the daemon's own words for a resume.
     pub fn line(&self) -> String {
         match (self.kind, self.switched_to.as_deref()) {
-            ("limited", Some(to)) => {
+            ("limited" | "switched", Some(to)) => {
                 format!("{}{}, switched to {to}", self.words(), self.until())
             }
             ("limited", None) => format!("{}{}", self.words(), self.until()),
@@ -1315,12 +1315,12 @@ impl State {
                     self.slash = Some(SlashSaid::of(&detail, code == "slash"));
                     self.slashes += 1;
                 }
-                // A limit the provider put a time on, and the daemon's own answer to it, are news
-                // of their own: the channel push reports `limited until X` and `resumed`.
+                // The daemon's own answer to a limit is news of its own: the channel push reports
+                // `resumed`. A park is not counted here: its `ProviderTrouble` carries the instant
+                // and is the one report of it.
                 if matches!(
                     code.as_str(),
-                    "limit_park"
-                        | "limit_resumed"
+                    "limit_resumed"
                         | "limit_returned"
                         | "limit_park_interrupted"
                         | "limit_unparked"
@@ -1328,7 +1328,6 @@ impl State {
                 ) {
                     self.limit = Some(LimitNews {
                         kind: match code.as_str() {
-                            "limit_park" => "limited",
                             "limit_park_interrupted" => "ended",
                             _ => "resumed",
                         },
