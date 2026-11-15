@@ -115,7 +115,7 @@ A sentence for a RUNNING turn goes through the door at its PUSH (`queue_mid_turn
 | area | decision | where | reach | policy |
 |---|---|---|---|---|
 | nag | when | `TodoNagClock` `sessions.rs:252`, `nag_should_arm` :214, `deliver_due_nags` :3337 | none | `TODO_NAG_AFTER` 60 s :55, `OPERATOR_ADD_NAG_AFTER` 10 s :60, `NAG_REPEAT_CAP` 30 min :93, doubling |
-| nag | which rows | `the_check_may_ask_about` :102, `the_plan_as_checked` :200, `the_row_to_name` `todo.rs:1333` | `nag_todo` since K3: choose among `eligible` | one ready row (R127) |
+| nag | which rows | `the_check_may_ask_about` :102, `the_plan_as_checked` :200, `the_row_to_name` `todo.rs:1333` | `nag_todo` since K3: choose among `eligible` | every ready row, capped at 8 (R127) |
 | nag | text | `nag_notice_naming` `nags.rs:137`, :174 | `nag_todo` since K3: reword | |
 | board | writes | `todo_write` | partial: `on_tool_call` can refuse or shrink | |
 | compaction | when | `headroom_of` `config.rs:1210`, `should_compact` :1393, `pre_emptive_compact` :1400 | none | w/16, min 2048, max w/4 |

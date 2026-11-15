@@ -294,7 +294,6 @@ fn a_board_with_no_dependencies_is_read_exactly_as_before() {
     let plan = vec![
         item("write it up", TodoStatus::Completed),
         item("wire the check", TodoStatus::InProgress),
-        item("test it", TodoStatus::Pending),
     ];
     // The sentence changed deliberately - no count, no restating suffix, one line of
     // advice - and it is pinned byte for byte here as the old one was.
@@ -320,7 +319,7 @@ fn a_board_with_no_dependencies_is_read_exactly_as_before() {
         .lines()
         .next()
         .expect("a first line"),
-        "[todo check] Not done:"
+        "[todo check] Not done, and none of these waits on another:"
     );
     assert!(
         nag_for(&[
@@ -775,10 +774,14 @@ fn a_snapshot_of_jobs_changes_nothing_about_a_board_that_waits_on_rows() {
     // comparing: the claim here is about the plan's reading, which the offer leaves alone.
     let plan_of = |msg: Option<String>| {
         msg.map(|m| {
-            let start = [" It reads like", " If this row is only waiting"]
-                .iter()
-                .filter_map(|s| m.find(s))
-                .min();
+            let start = [
+                " It reads like",
+                " About the first row:",
+                " If this row is only waiting",
+            ]
+            .iter()
+            .filter_map(|s| m.find(s))
+            .min();
             match start {
                 Some(at) => {
                     let end = m[at..].find('\n').map_or(m.len(), |n| at + n);

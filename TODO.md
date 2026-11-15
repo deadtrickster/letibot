@@ -154,7 +154,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R126 | Reviewers fan out to the declared hosts, opt-in | Needs the operator | setting `[queue] reviewer_hosts` in the operator's `leticode.toml` and one live review on lab2x1 (the fan-out is landed and tested against fakes, never against a real host) |
 | R125 | Script plugin layers: where a JavaScript engine comes from, and the JS-side contract | Needs the operator | the two decisions, then `docs/plugins-plan.md` step 11: no JavaScript engine is available offline here, and a vendored one compiled in would run freely as a built-in |
 | R117 | The leticode MCP bridge pushes package and queue events into Claude Code as a channel | Code work | built: the plugin (`claude-plugin/`), its marketplace (`.claude-plugin/marketplace.json`), the two skills it carries, the room waiter as a plugin monitor, the one `/plugin install` line in `install.sh --help` and the READMEs, and the permission relay, declared only when `[bridge] permission_relay` is on. left: a self-published channel still needs `--dangerously-load-development-channels`, and no real `claude` has loaded it (the box has none) |
-| R127 | The idle nag names every free head of the plan, so independent rows run in parallel | Code work | all of it - `the_row_to_name` (`crates/tools/src/builtins/todo.rs:1333`) picks one ready row; postponed by the operator on 2026-11-07 |
+| R127 | The idle nag names every free head of the plan, so independent rows run in parallel | Code work | built: `unfinished_plan_naming` names every ready row (sticky one first, cap 8) and says they can run in parallel; left: the live check and the operator's word on the 11-07 one-row ruling |
 | R129 | One store file per project and a shared file, so one daemon's write cannot stall another's | Needs the operator | lab2x1's store split on 2026-11-11 (whole-store pass, 156 project files); the carve (`--project`, `--finish`) is built for a box that cannot stop every daemon at once; left: the operator deleting `sessions.db.pre-split` once satisfied |
 | R130 | The seat's `GH_TOKEN` is readable in `ps` from bwrap's command line | Needs the operator | the operator rotates `GH_TOKEN`; a command this box spawns and a remote placement keep every secret off every argv |
 | R134 | Scrolling stops at a line above the tail, only Esc frees it | Needs the operator | fixed - step into the live pane below the last row clamped back onto it; now resumes following |
@@ -3270,13 +3270,22 @@ Docs: https://code.claude.com/docs/en/channels-reference.md
 
 ## R127 - The idle nag names every free head of the plan
 
-**Status:** not started, postponed by the operator on 2026-11-07. left: all of it.
+**Status:** built 2026-11-15 on branch `r127-nag`. left: the live check, and the operator's word: this reverses the 11-07 ruling *"only one todo at a time, so a model will not be defocused"* (the comment that stood where `MAX_PLAN_LINES` was).
 
 The plan is a DAG and the check exists to keep it moving. Today `unfinished_plan_for` names one ready row (`the_row_to_name`, `crates/tools/src/builtins/todo.rs:1333`), so a plan with five independent heads is worked one at a time. The check should list every ready row, with its author's verb, and say that independent rows go to subagents or jobs in parallel.
 
 - The idle clock compares the check's text, so a list that changes when a row closes is a new check at the base window. That is wanted: closing a row is progress.
 - The head folds the check on its sentences (`crates/tui/src/ui/transcript/notice_card.rs:212`), and the fold changes with the text.
 - A row matching a running job's description is still left out, row by row rather than silencing the whole check.
+
+**Built.**
+- `unfinished_plan_naming` (`crates/tools/src/builtins/todo.rs`) returns the check and every free head it named. A free head is a ready row of `as_a_graph`: askable by `the_check_may_ask_about` and with no unmet need. `the_row_to_name` still picks the first (operator's rows, then the sticky choice), the rest follow in ready order, and `FREE_HEADS_NAMED` (8) caps the list with a count of the rest.
+- One free row keeps the old single-row text byte for byte. Several give `[todo check] Not done, and none of these waits on another:` (or `The operator added the first, ...`), one bullet per row, a line saying they can run in parallel as subagents or background jobs, the advice once per author, and the `wait_on` offer for the first row only.
+- R264 is unchanged: an `external` wait is out of the heads inside its window and on the waiting line after it; `operator` and peer `ask` waits stay tracked on the waiting line, and a plan only on them is still quiet. `restart::Owed::plan` filters by the same `the_check_may_ask_about`, which this does not touch.
+- harnessd: `nag_notice_naming` hands every named row to `Facts::Nag` and the layer's native names; `nag_choice` and the layer input's `name` stay the first row.
+- A free row added is now a new check at the base window (`idle_nag::a_plan_that_moved_is_armed_again`).
+
+Tests: `todo::tests::free_heads::*` (two free rows both named, a row blocked by another not named, one free row keeps the old text, an external wait silent only for its window, operator and seat waits kept out and tracked), the reworked `todo::tests::nag::*`, `needs::a_board_with_no_dependencies_is_read_exactly_as_before`, harnessd `child_nag::a_childs_check_names_the_operators_row_first`.
 
 ## R129 - One store file per project and a shared file
 

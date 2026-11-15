@@ -50,7 +50,7 @@ fn the_check_keeps_asking_about_the_row_it_named() {
         "the row already named is the row asked about"
     );
     assert!(
-        text.contains("first") && !text.contains("something else"),
+        first_bullet(&text) == Some("first — yours"),
         "the question did not wander: {text}"
     );
     // No count - it was in the text the idle clock compares, and a row moving elsewhere
@@ -228,20 +228,14 @@ fn an_open_plan_names_one_item_and_what_to_do_about_it() {
         item("test it", TodoStatus::Pending),
     ])
     .expect("one in progress and one pending is work left open");
-    // the item it was WORKING ON, not the first open row in the list
-    assert!(
-        msg.contains("wire the check"),
-        "the in-progress item is the one named: {msg}"
+    // the item it was WORKING ON first, not the first open row in the list
+    assert_eq!(
+        first_bullet(&msg),
+        Some("wire the check — yours (in progress)"),
+        "the in-progress item is named first, AND whose it is: {msg}"
     );
-    assert!(
-        msg.contains("yours (in progress)"),
-        "and the message says why this one, AND whose it is: {msg}"
-    );
-    // and NOT the other open row - that is the defocusing the operator asked me to stop
-    assert!(
-        !msg.contains("test it"),
-        "the second open item is not named, because one is a directive and five is homework: {msg}"
-    );
+    // and the other free row after it: nothing holds it, so it can run beside the first (R127)
+    assert!(msg.contains("\n  - test it — yours"), "{msg}");
     assert!(
         !msg.contains("write it up"),
         "a completed item is not part of what is open: {msg}"
@@ -254,8 +248,8 @@ fn an_open_plan_names_one_item_and_what_to_do_about_it() {
     assert!(msg.starts_with("[todo check]"), "the house prefix: {msg}");
 }
 
-/// With nothing started, it names the first open row - the model has told the board nothing,
-/// so the list's own order is the only thing to go on, and singling one out is still the rule.
+/// With nothing started, it names the first open row first - the model has told the board nothing,
+/// so the list's own order is the only thing to go on - and every other free row after it.
 #[test]
 fn with_nothing_in_progress_it_names_the_first_open_row() {
     let msg = nag_for(&[
@@ -264,27 +258,34 @@ fn with_nothing_in_progress_it_names_the_first_open_row() {
         item("the third", TodoStatus::Pending),
     ])
     .expect("three open items is a finding");
-    assert!(msg.contains("the first"), "{msg}");
-    assert!(!msg.contains("the second"), "one at a time: {msg}");
-    assert!(!msg.contains("the third"), "one at a time: {msg}");
+    assert_eq!(first_bullet(&msg), Some("the first — yours"), "{msg}");
+    assert!(msg.contains("\n  - the second — yours"), "{msg}");
+    assert!(msg.contains("\n  - the third — yours"), "{msg}");
     assert!(
         !msg.contains("in progress"),
         "and it does not claim to know why this one: {msg}"
     );
 }
 
-/// A long plan is the same message as a short one. Ten open items produce ONE named row and a
-/// count - the rule `intent`'s steering follows, and the reason `MAX_PLAN_LINES` is gone: there is
-/// no longer a length of list to cap.
+/// A long plan names `FREE_HEADS_NAMED` free rows and counts the rest, so a wide board stays a
+/// check rather than a listing.
 #[test]
-fn a_long_plan_is_one_item_and_a_count() {
+fn a_long_plan_names_the_cap_and_counts_the_rest() {
     let todos: Vec<TodoItem> = (0..10)
         .map(|i| item(&format!("item {i}"), TodoStatus::Pending))
         .collect();
     let msg = nag_for(&todos).expect("ten open items is a finding");
-    assert!(msg.contains("item 0"), "the first is named: {msg}");
-    assert!(!msg.contains("item 1"), "and no other: {msg}");
-    assert!(!msg.contains("more open"), "no count (R93.B1): {msg}");
+    assert_eq!(first_bullet(&msg), Some("item 0 — yours"), "{msg}");
+    assert!(
+        msg.contains("\n  - item 7 — yours"),
+        "the cap is named: {msg}"
+    );
+    assert!(!msg.contains("item 8"), "past the cap is counted: {msg}");
+    assert!(msg.contains("(2 more can start, not listed)"), "{msg}");
+    assert!(
+        !msg.contains("more open"),
+        "no count of open rows (R93.B1): {msg}"
+    );
 }
 
 /// A list written and finished inside the turn says nothing, which is what taking a
@@ -354,7 +355,9 @@ fn the_first_check_after_an_operator_add_says_the_operator_added_it() {
     )
     .expect("open work");
     assert!(
-        first.starts_with("[todo check] The operator added this, and it is not done:"),
+        first.starts_with(
+            "[todo check] The operator added the first, and none of these is done:\n  - make tier 1 green"
+        ),
         "{first}"
     );
     // The rest of the notice keeps its shape: the bullet the head's fold reads, and the advice.
@@ -374,7 +377,10 @@ fn the_first_check_after_an_operator_add_says_the_operator_added_it() {
     .expect("open work");
     assert_eq!(named, "make tier 1 green", "still first");
     assert!(!later.contains("the operator added"), "told once: {later}");
-    assert!(later.starts_with("[todo check] Not done:"), "{later}");
+    assert!(
+        later.starts_with("[todo check] Not done, and none of these waits on another:"),
+        "{later}"
+    );
 
     // Blocked: the model's row is named, and the operator's is the waiting line.
     let blocked = vec![
@@ -544,4 +550,9 @@ fn a_chain_that_bottoms_out_in_a_working_child_says_nothing_can_start_nothing() 
     let askable = the_plan_as_checked(&board, &stuck, &jobs);
     let said = unfinished_plan(&askable, &board, &stuck, &jobs).expect("a plan to fix, said");
     assert!(said.contains("s-pkg"), "{said}");
+}
+
+/// The first bullet of a check: the row it names first, with whose it is.
+fn first_bullet(text: &str) -> Option<&str> {
+    text.lines().find_map(|l| l.strip_prefix("  - "))
 }

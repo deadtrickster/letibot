@@ -1758,9 +1758,9 @@ pub fn unfinished_plan(
     unfinished_plan_for(rows, board, None, children, jobs).map(|(text, _)| text)
 }
 
-/// The check's sentence and the row it named, so the caller can remember the choice: the row is
-/// named again until it stops being askable, with the operator's ready rows ahead of it. `rows`
-/// is the narrowed set, `board` the whole board.
+/// The check's sentence and the row it named first, so the caller can remember the choice: the row
+/// is named first again until it stops being askable, with the operator's ready rows ahead of it.
+/// `rows` is the narrowed set, `board` the whole board.
 pub fn unfinished_plan_for(
     rows: &[TodoItem],
     board: &[TodoItem],
@@ -1768,6 +1768,23 @@ pub fn unfinished_plan_for(
     children: &ChildSessions,
     jobs: &RunningJobs,
 ) -> Option<(String, String)> {
+    unfinished_plan_naming(rows, board, chosen, children, jobs)
+        .map(|(text, named)| (text, named.into_iter().next().unwrap_or_default()))
+}
+
+/// How many free rows one check names. Past it the rest are counted, so a wide plan stays a
+/// check and not a listing of the board.
+pub const FREE_HEADS_NAMED: usize = 8;
+
+/// [`unfinished_plan_for`] with every free head it named, first the sticky one. Empty for the
+/// nothing-can-start sentence, which names no row to do.
+pub fn unfinished_plan_naming(
+    rows: &[TodoItem],
+    board: &[TodoItem],
+    chosen: Option<&str>,
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+) -> Option<(String, Vec<String>)> {
     let PlanAsGraph { ready, blocked, .. } = as_a_graph(rows, board, children, jobs);
     let Some(next) = the_row_to_name(&ready, chosen) else {
         // The degenerate case, said out loud: an unfinished plan whose ready set is empty is a
@@ -1776,36 +1793,62 @@ pub fn unfinished_plan_for(
         if all_on_the_operator(&blocked, board, children, jobs) {
             return None;
         }
-        return (!blocked.is_empty()).then(|| (nothing_can_start(&blocked), String::new()));
+        return (!blocked.is_empty()).then(|| (nothing_can_start(&blocked), Vec::new()));
     };
-    // The count of open rows is not in the text: the idle clock compares that text, so a row
-    // added or closed elsewhere would make the same question a new notice and reset the backoff.
-    let who = whose_row(&next.by);
-    // A row that only reads like a running job is not taken as waiting on it: a wait is stated on
-    // the row with `wait_on`, which the offer below names, and an unstated one is asked about.
+    // Every other ready row is a free head too: nothing on the board holds it, so it can run
+    // beside the first. Ready order after the first, so the text moves only when the plan does.
+    let others: Vec<&TodoItem> = ready
+        .iter()
+        .copied()
+        .filter(|row| !std::ptr::eq(*row, next))
+        .collect();
+    // AND WHAT CANNOT START IS SAID, not merely skipped. A blocked row is invisible to the ask
+    // - that is the whole point - so the model would otherwise learn nothing about the rows it
+    // cannot be asked for, and a plan whose edges have gone stale would look like a shorter plan.
+    let waiting = if blocked.is_empty() {
+        String::new()
+    } else {
+        format!("\n{}", blocked_said(&blocked))
+    };
     // The first check that names an operator's row after they add it says who put it there; a row
     // the model has already moved to in progress is one it knows about.
     let operator_added = next.by == TodoBy::Operator
         && next.status == TodoStatus::Pending
         && chosen != Some(next.content.as_str());
+    if others.is_empty() {
+        return Some((
+            one_free_head(next, operator_added, board, children, jobs, &waiting),
+            vec![next.content.clone()],
+        ));
+    }
+    Some(several_free_heads(
+        next,
+        &others,
+        operator_added,
+        board,
+        children,
+        jobs,
+        &waiting,
+    ))
+}
+
+/// A row's bullet: its words, whose it is, and whether it is in progress. The head's card reads
+/// the tail (`notice_card`), so the spelling is kept.
+fn free_head_bullet(row: &TodoItem) -> String {
     // The state is said, not argued. *"marked in progress and still open"* and *"you were
     // asked about this one already"* invited a restatement in reply (113× *"still in progress"*
     // in one session), which is not a tool call and moves nothing.
-    let state = match next.status {
-        TodoStatus::InProgress => format!(" — {who} (in progress)"),
-        _ => format!(" — {who}"),
-    };
-    // In progress with no wait at a turn's end is forgotten work: the line asks for the act, since
-    // a question about its state only ever got the state restated.
-    let forgotten = if next.status == TodoStatus::InProgress {
-        " It is in progress and waits on nothing: continue it now, or attach what it waits on with \
-         `todo_write`'s `wait_on`."
-    } else {
-        ""
-    };
-    // The verbs differ by author: the model may mark its own row done and may not do that to the
-    // operator's, and a parent's row no field of this tool disposes of.
-    let advice = match &next.by {
+    let who = whose_row(&row.by);
+    match row.status {
+        TodoStatus::InProgress => format!("  - {} — {who} (in progress)", row.content.trim()),
+        _ => format!("  - {} — {who}", row.content.trim()),
+    }
+}
+
+/// What may be done with a row, by its author: the model may mark its own row done and may not do
+/// that to the operator's, and a parent's row no field of this tool disposes of.
+fn free_head_advice(by: &TodoBy) -> &'static str {
+    match by {
         TodoBy::Operator => {
             "The operator asked for it: do it, or mark it done with `todo_write`'s `operator` \
              field (quote it exactly)."
@@ -1823,49 +1866,120 @@ pub fn unfinished_plan_for(
             "The merge queue's row; its reviewer has finished or gone quiet: read its reply, or \
              `task_message` it. The verdict takes the row off."
         }
+        // The phrase below is matched by the head's notice fold, so it is kept whole.
         TodoBy::Model => {
-            // Dropping a row by leaving it out went with the old contract: a row left out stays on
-            // the board, so the model retires one by marking it done. The phrase below is matched
-            // by the head's notice fold, so it is kept whole.
             "Do it, or mark it done with `todo_write`'s `update` field (quote it exactly)."
         }
-    };
-    // The door for a row that is only waiting, when there is something it could wait on: the
-    // model will not reach for a door nobody named. Appended to the advice's own line, because
-    // the head folds a notice only while every line after the bullet is the advice it knows.
-    let offer = match next.by {
+    }
+}
+
+/// The `wait_on` door for a row that may only be waiting, or empty. The model will not reach for
+/// a door nobody named.
+fn free_head_offer(
+    row: &TodoItem,
+    board: &[TodoItem],
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+) -> String {
+    match row.by {
         TodoBy::Model | TodoBy::Operator => the_wait_to_offer(
-            next,
-            &jobs.likeliest_wait(&next.content),
+            row,
+            &jobs.likeliest_wait(&row.content),
             board,
             children,
             jobs,
         ),
         _ => None,
     }
-    .unwrap_or_default();
-    // AND WHAT CANNOT START IS SAID, not merely skipped. A blocked row is invisible to the ask
-    // - that is the whole point - so the model would otherwise learn nothing about the rows it
-    // cannot be asked for, and a plan whose edges have gone stale would look like a shorter plan.
-    let waiting = if blocked.is_empty() {
-        String::new()
+    .unwrap_or_default()
+}
+
+/// In progress with no wait at a turn's end is forgotten work: the line asks for the act, since a
+/// question about its state only ever got the state restated.
+const FORGOTTEN: &str = " It is in progress and waits on nothing: continue it now, or attach what \
+                         it waits on with `todo_write`'s `wait_on`.";
+
+/// The check when exactly one row can start: the shape the head's card and fold were written for.
+fn one_free_head(
+    next: &TodoItem,
+    operator_added: bool,
+    board: &[TodoItem],
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+    waiting: &str,
+) -> String {
+    let forgotten = if next.status == TodoStatus::InProgress {
+        FORGOTTEN
     } else {
-        format!("\n{}", blocked_said(&blocked))
+        ""
     };
-    // The head line says the operator added it; the bullet, the advice and the waiting line keep
-    // their shape, because the head's notice fold reads them.
     let head = if operator_added {
-        "[todo check] The operator added this, and it is not done".to_string()
+        "[todo check] The operator added this, and it is not done"
     } else {
-        "[todo check] Not done".to_string()
+        "[todo check] Not done"
     };
-    Some((
+    format!(
+        "{head}:\n{}\n{}{forgotten}{}{waiting}",
+        free_head_bullet(next),
+        free_head_advice(&next.by),
+        free_head_offer(next, board, children, jobs),
+    )
+}
+
+/// The check when several rows can start: every one is named, because none waits on another and
+/// working them one at a time leaves the rest idle. The advice is said once per author.
+fn several_free_heads(
+    next: &TodoItem,
+    others: &[&TodoItem],
+    operator_added: bool,
+    board: &[TodoItem],
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+    waiting: &str,
+) -> (String, Vec<String>) {
+    let all: Vec<&TodoItem> = std::iter::once(next)
+        .chain(others.iter().copied())
+        .collect();
+    let named: Vec<&TodoItem> = all.iter().copied().take(FREE_HEADS_NAMED).collect();
+    let bullets: Vec<String> = named.iter().map(|row| free_head_bullet(row)).collect();
+    let more = match all.len() - named.len() {
+        0 => String::new(),
+        n => format!("\n  ({n} more can start, not listed)"),
+    };
+    let head = if operator_added {
+        "[todo check] The operator added the first, and none of these is done"
+    } else {
+        "[todo check] Not done, and none of these waits on another"
+    };
+    let mut advice: Vec<&str> = Vec::new();
+    for row in &named {
+        let said = free_head_advice(&row.by);
+        if !advice.contains(&said) {
+            advice.push(said);
+        }
+    }
+    let forgotten = if named.iter().any(|r| r.status == TodoStatus::InProgress) {
+        " A row in progress here waits on nothing: continue it now, or attach what it waits on \
+         with `todo_write`'s `wait_on`."
+    } else {
+        ""
+    };
+    // The door is offered for the first row only, by name: one `<the text above>` per check.
+    let offer = free_head_offer(next, board, children, jobs);
+    let offer = if offer.is_empty() {
+        offer
+    } else {
+        format!(" About the first row:{offer}")
+    };
+    (
         format!(
-            "{head}:\n  - {}{state}\n{advice}{forgotten}{offer}{waiting}",
-            next.content.trim(),
+            "{head}:\n{}{more}\nThey can run in parallel: start the independent ones together, as \
+             subagents or background jobs, instead of one after another. {}{forgotten}{offer}{waiting}",
+            bullets.join("\n"),
+            advice.join(" "),
         ),
-        next.content.clone(),
-    ))
+        named.iter().map(|row| row.content.clone()).collect(),
+    )
 }
 
 /// The `wait_on` the check offers a row that is only waiting, from what is running: the job or
@@ -2555,9 +2669,8 @@ fn nothing_can_start(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String
     )
 }
 
-// `MAX_PLAN_LINES` is gone with the list it capped: the message names ONE item now, so there is no
-// length of list to truncate. The operator's ruling - *"only one todo at a time, so a model will not
-// be defocused"* - removes the thing that constant existed for.
+// The check names every free head (R127), capped by `FREE_HEADS_NAMED`. A row that waits on
+// another is not named, so the list is only work that can start now.
 
 /// The daemon-side half of `todo_write`'s `target`: reaching a child session's board. Built per
 /// session with the caller already bound, so it decides everything the safety turns on - that the

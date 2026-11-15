@@ -36,7 +36,7 @@ use letibot_tools::authorise::{
     AuthorisationTrail, BreakerState, DenialNotice, DenialSink, Reach, Speaker, Utterance,
 };
 use letibot_tools::builtins::intent::{self as intent_tools, IntentLedger, IntentSink};
-use letibot_tools::builtins::todo::{TodoBoard, unfinished_plan, unfinished_plan_for};
+use letibot_tools::builtins::todo::{TodoBoard, unfinished_plan, unfinished_plan_naming};
 use letibot_tools::exec::monitor::Monitors;
 use letibot_tools::{
     AdjudicatedGate, Adjudicator, Gate, GateCall, HostBackend, NoBoundary, Registry, Role, Tool,

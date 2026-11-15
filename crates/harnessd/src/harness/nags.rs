@@ -303,7 +303,7 @@ impl Harness {
         let children = self.child_sessions();
         let jobs = self.running_jobs(&board);
         let askable = crate::sessions::the_plan_as_checked(&board, &children, &jobs);
-        let written = unfinished_plan_for(
+        let written = unfinished_plan_naming(
             &askable,
             &board,
             self.nag_choice.as_deref(),
@@ -323,22 +323,21 @@ impl Harness {
         Some(TheNag { text, names, next })
     }
 
-    /// The harness's own check, composed and remembered by nobody: the sentence and the row it
+    /// The harness's own check, composed and remembered by nobody: the sentence and the rows it
     /// named, asked of no layer. [`Self::nag_notice`] reads this, so the daemon's due clock never
     /// spends a layer's answer on a question it throws away.
-    fn the_plans_nag_written(&self) -> Option<(String, Option<String>)> {
+    fn the_plans_nag_written(&self) -> Option<(String, Vec<String>)> {
         let board = self.todos.snapshot();
         let children = self.child_sessions();
         let jobs = self.running_jobs(&board);
         let askable = crate::sessions::the_plan_as_checked(&board, &children, &jobs);
-        let written = unfinished_plan_for(
+        unfinished_plan_naming(
             &askable,
             &board,
             self.nag_choice.as_deref(),
             &children,
             &jobs,
-        )?;
-        Some((written.0, Some(written.1)))
+        )
     }
 
     /// The plan as a `nag_` layer decides it: the sentence, the rows it names, and the interval it
@@ -351,16 +350,11 @@ impl Harness {
         children: &letibot_tools::builtins::todo::ChildSessions,
         jobs: &letibot_tools::builtins::todo::RunningJobs,
         text: &str,
-        named: &str,
+        named: &[String],
     ) -> (Option<String>, Vec<String>, Option<Duration>) {
-        let (native, native_names) = (
-            Some(text.to_string()),
-            if named.is_empty() {
-                Vec::new()
-            } else {
-                vec![named.to_string()]
-            },
-        );
+        let (native, native_names) = (Some(text.to_string()), named.to_vec());
+        // The layer's input names one row, the first: the sticky choice it may keep or move.
+        let named = named.first().map(String::as_str).unwrap_or_default();
         let Some(host) = self.plugin_host() else {
             return (native, native_names, None);
         };

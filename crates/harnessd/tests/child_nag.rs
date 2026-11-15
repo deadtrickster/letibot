@@ -528,13 +528,16 @@ fn a_childs_check_names_the_operators_row_first() {
 
     let first = wait_for(&kid.hub, |hub| checks_on(hub).into_iter().next());
     assert!(
-        first.starts_with("[todo check] The operator added this, and it is not done:")
-            && first.contains(&format!("  - {THEIRS} — the operator's")),
-        "the child's first check names the operator's row, and says they added it: {first}"
+        first.starts_with(&format!(
+            "[todo check] The operator added the first, and none of these is done:\n  - {THEIRS} \
+             — the operator's"
+        )),
+        "the child's first check names the operator's row first, and says they added it: {first}"
     );
+    // The parent's row is free too, so it is named after the operator's (R127).
     assert!(
-        !first.contains(&format!("  - {PARENTS_ROW}")),
-        "the parent's row is not the line: {first}"
+        first.contains(&format!("\n  - {PARENTS_ROW} — Parent {parent}")),
+        "the parent's row is the second line: {first}"
     );
 
     kid.release();
