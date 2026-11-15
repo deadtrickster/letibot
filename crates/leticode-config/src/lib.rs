@@ -761,6 +761,14 @@ pub const DEFAULT_ANSWER_SECS: u64 = 600;
 ///
 /// [provider."glm-coding/glm-5.3"]                # one model: wins over its preset
 /// first_byte_seconds = 120
+///
+/// [provider.usage_warn]                          # percent of a window that is said once
+/// 5h = [80, 95]
+/// weekly = [70, 95]
+/// monthly = [70, 95]
+///
+/// [provider.kimi-code.usage_warn]                # one preset: wins per key
+/// 5h = [90]
 /// ```
 ///
 /// `on_limit` absent means `switch` when a fallback list exists and `wait` when nothing is set -
@@ -775,6 +783,9 @@ pub const DEFAULT_ANSWER_SECS: u64 = 600;
 /// then the keys here, then the built-in 15 / 60 / 600 - see [`LeticodeConfig::deadlines`]. A
 /// level's key wins over the same key at the other level. `0` and a `first_byte_seconds` above
 /// `answer_seconds` in one table are refused by file and line.
+///
+/// `usage_warn` resolves per key: the preset's table, then `[provider.usage_warn]`, then the
+/// built-in lists - see [`LeticodeConfig::usage_warn`].
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ProviderKeys {
     pub on_limit: Option<OnLimit>,
@@ -786,6 +797,74 @@ pub struct ProviderKeys {
     pub deadlines: DeadlineKeys,
     /// `[provider.NAME]` tables: NAME is a preset or `provider/model`.
     pub overrides: BTreeMap<String, DeadlineKeys>,
+    /// `[provider.usage_warn]`.
+    pub usage_warn: UsageWarnKeys,
+    /// `[provider.NAME.usage_warn]`, NAME a preset.
+    pub usage_warn_presets: BTreeMap<String, UsageWarnKeys>,
+}
+
+/// One `usage_warn` table, each list absent until a level writes it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct UsageWarnKeys {
+    pub five_h: Option<Vec<u8>>,
+    pub weekly: Option<Vec<u8>>,
+    pub monthly: Option<Vec<u8>>,
+}
+
+impl UsageWarnKeys {
+    /// Keys `other` sets win, the rest stay.
+    fn overridden_by(&self, other: &UsageWarnKeys) -> UsageWarnKeys {
+        UsageWarnKeys {
+            five_h: other.five_h.clone().or_else(|| self.five_h.clone()),
+            weekly: other.weekly.clone().or_else(|| self.weekly.clone()),
+            monthly: other.monthly.clone().or_else(|| self.monthly.clone()),
+        }
+    }
+}
+
+/// A `usage_warn` table: `5h`, `weekly`, `monthly`, each a list of percents 1 to 100.
+fn usage_warn_keys(
+    v: &toml::Value,
+    path: &Path,
+    text: &str,
+    scope: &str,
+    after: &str,
+) -> Result<UsageWarnKeys, String> {
+    let keys = "the keys are `5h`, `weekly` and `monthly`, each a list of percents like [80, 95]";
+    let line = |k: &str| format!("{}:{}", path.display(), line_after(text, after, k));
+    let Some(table) = v.as_table() else {
+        return Err(format!(
+            "{}: [{scope}] is a table, not {}; {keys}",
+            line(after),
+            kind_of(v)
+        ));
+    };
+    let mut out = UsageWarnKeys::default();
+    for (k, v) in table {
+        let list = v
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|n| n.as_integer().and_then(|n| u8::try_from(n).ok()))
+                    .collect::<Option<Vec<u8>>>()
+            })
+            .and_then(|l| l.filter(|l| l.iter().all(|n| (1..=100).contains(n))));
+        let Some(mut list) = list else {
+            return Err(format!(
+                "{}: [{scope}] {k} is a list of whole percents from 1 to 100, like [80, 95]",
+                line(k)
+            ));
+        };
+        list.sort_unstable();
+        list.dedup();
+        match k.as_str() {
+            "5h" => out.five_h = Some(list),
+            "weekly" => out.weekly = Some(list),
+            "monthly" => out.monthly = Some(list),
+            _ => return Err(format!("{}: [{scope}] `{k}` is not a key; {keys}", line(k))),
+        }
+    }
+    Ok(out)
 }
 
 /// The first line holding `key` after the first holding `after`; `after`'s own when none.
@@ -848,8 +927,9 @@ fn provider_keys(
 ) -> Result<ProviderKeys, String> {
     let keys = "the keys are `on_limit` (\"wait\" or \"switch\"), `wait_if_within` (\"45m\"), \
                 `limit_probe` ([\"2m\", \"5m\"]), `fallback`, \
-                `slow_notice_seconds`, `first_byte_seconds`, `answer_seconds`, and `[provider.NAME]` \
-                tables (a preset or `provider/model`) holding the last three";
+                `slow_notice_seconds`, `first_byte_seconds`, `answer_seconds`, `[provider.usage_warn]`, \
+                and `[provider.NAME]` tables (a preset or `provider/model`) holding the last three \
+                and a preset's `usage_warn`";
     let table = table_at(value, path, text, "provider", keys)?;
     let mut out = ProviderKeys::default();
     for (key, v) in table {
@@ -907,6 +987,10 @@ fn provider_keys(
                 out.fallback = fallback_list(v).map_err(|why| format!("{from}: {why}"))?;
             }
             "slow_notice_seconds" | "first_byte_seconds" | "answer_seconds" => {}
+            "usage_warn" => {
+                out.usage_warn =
+                    usage_warn_keys(v, path, text, "provider.usage_warn", "usage_warn")?;
+            }
             name => {
                 let Some(sub) = v.as_table() else {
                     return Err(format!("{from}: [provider] `{name}` is not a key; {keys}"));
@@ -926,6 +1010,13 @@ fn provider_keys(
                     }
                 }
                 let scope = format!("provider.{name}");
+                if let Some(w) = sub.get("usage_warn") {
+                    let warn_scope = format!("{scope}.usage_warn");
+                    out.usage_warn_presets.insert(
+                        name.to_string(),
+                        usage_warn_keys(w, path, text, &warn_scope, &warn_scope)?,
+                    );
+                }
                 out.overrides.insert(
                     name.to_string(),
                     deadline_keys(sub, path, text, user, &scope, name)?,
@@ -2881,6 +2972,18 @@ impl LeticodeConfig {
                     }
                     m
                 },
+                usage_warn: self
+                    .provider
+                    .usage_warn
+                    .overridden_by(&other.provider.usage_warn),
+                usage_warn_presets: {
+                    let mut m = self.provider.usage_warn_presets.clone();
+                    for (name, k) in &other.provider.usage_warn_presets {
+                        let base = m.get(name).cloned().unwrap_or_default();
+                        m.insert(name.clone(), base.overridden_by(k));
+                    }
+                    m
+                },
             },
             // The three numbers the runtime threads, and the head's three tables: the project's
             // answer for each key, and the two lists that are suppressions (`mute`, and a profile
@@ -3003,6 +3106,22 @@ impl LeticodeConfig {
             .limit_probe
             .clone()
             .unwrap_or_else(|| DEFAULT_LIMIT_PROBE.to_vec())
+    }
+
+    /// The usage thresholds for a session on preset `name`: per key, `[provider.name.usage_warn]`,
+    /// then `[provider.usage_warn]`, then the built-in 80/95 for 5h and 70/95 for weekly and monthly.
+    pub fn usage_warn(&self, name: &str) -> letibot_provider::usage_warn::Thresholds {
+        let p = &self.provider;
+        let keys = match p.usage_warn_presets.get(name) {
+            Some(k) => p.usage_warn.overridden_by(k),
+            None => p.usage_warn.clone(),
+        };
+        let d = letibot_provider::usage_warn::Thresholds::default();
+        letibot_provider::usage_warn::Thresholds {
+            five_h: keys.five_h.unwrap_or(d.five_h),
+            weekly: keys.weekly.unwrap_or(d.weekly),
+            monthly: keys.monthly.unwrap_or(d.monthly),
+        }
     }
 
     /// The deadlines for a session on `name` (a preset) and `model`: per key, the

@@ -1627,6 +1627,57 @@ fn provider_deadlines_resolve_by_model_then_preset_then_table_then_builtin() {
     );
 }
 
+/// `usage_warn` resolves per key: the preset's table, then `[provider.usage_warn]`, then the
+/// built-in lists; the project's key beats the user's, and a bad list is refused by name.
+#[test]
+fn usage_warn_resolves_by_preset_then_table_then_builtin() {
+    let dir = project_dir("usage_warn");
+    let d = LeticodeConfig::default().usage_warn("kimi-code");
+    assert_eq!(
+        (d.five_h, d.weekly, d.monthly),
+        (vec![80, 95], vec![70, 95], vec![70, 95])
+    );
+    let user = write_file(
+        &sub(&dir, "user"),
+        "[provider.usage_warn]\n5h = [95, 85]\nweekly = [60]\n\
+             [provider.kimi-code.usage_warn]\n5h = [90]\n",
+    );
+    let project = write_file(
+        &sub(&dir, "project"),
+        "[provider.kimi-code.usage_warn]\nmonthly = []\n",
+    );
+    let merged = LeticodeConfig::load_as(&user, Level::User)
+        .unwrap()
+        .overridden_by(&LeticodeConfig::load(&project).unwrap());
+    let kimi = merged.usage_warn("kimi-code");
+    assert_eq!(kimi.five_h, vec![90], "the preset's own list");
+    assert_eq!(kimi.weekly, vec![60], "the table's");
+    assert!(
+        kimi.monthly.is_empty(),
+        "the project's empty list warns never"
+    );
+    let glm = merged.usage_warn("glm-coding");
+    assert_eq!(glm.five_h, vec![85, 95], "the table's, sorted");
+    assert_eq!(glm.monthly, vec![70, 95], "built-in");
+    for (tag, body, want) in [
+        (
+            "over",
+            "[provider.usage_warn]\n5h = [120]\n",
+            "5h is a list",
+        ),
+        (
+            "word",
+            "[provider.usage_warn]\ndaily = [50]\n",
+            "`daily` is not a key",
+        ),
+        ("flat", "[provider]\nusage_warn = 80\n", "is a table"),
+    ] {
+        let f = write_file(&sub(&dir, tag), body);
+        let e = LeticodeConfig::load(&f).unwrap_err();
+        assert!(e.contains(want), "{tag}: {e}");
+    }
+}
+
 /// Nonsense deadlines are refused naming file, line and key.
 #[test]
 fn nonsense_deadlines_are_refused_with_file_line_and_key() {

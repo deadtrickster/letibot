@@ -65,6 +65,26 @@ pub const LETICODE: File = File {
             ],
         },
         Table {
+            path: "provider.usage_warn",
+            note: "Percent of a plan window's use said once to the session, and again after the window resets. The status row's figure turns warning past the first, failure past the second. An empty list warns never.",
+            needs: "",
+            keys: &[
+                k("5h", "list of int 1..100", "[80, 95]", PW, "thresholds for the hours-long window", "[80, 95]"),
+                k("weekly", "list of int 1..100", "[70, 95]", PW, "thresholds for a 7-day window", "[70, 95]"),
+                k("monthly", "list of int 1..100", "[70, 95]", PW, "thresholds for a month window", "[70, 95]"),
+            ],
+        },
+        Table {
+            path: "provider.<name>.usage_warn",
+            note: "NAME is a preset. Resolves per key: preset, [provider.usage_warn], built-in.",
+            needs: "",
+            keys: &[
+                k("5h", "list of int 1..100", "[provider.usage_warn]'s", PW, "as [provider.usage_warn], for this preset", "[90]"),
+                k("weekly", "list of int 1..100", "[provider.usage_warn]'s", PW, "as [provider.usage_warn], for this preset", "[60, 90]"),
+                k("monthly", "list of int 1..100", "[provider.usage_warn]'s", PW, "as [provider.usage_warn], for this preset", "[]"),
+            ],
+        },
+        Table {
             path: "roles",
             note: "",
             needs: "",

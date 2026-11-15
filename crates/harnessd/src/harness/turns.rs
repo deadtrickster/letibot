@@ -2497,6 +2497,7 @@ impl Harness {
         // And the calls this round's gate admitted without asking anybody, said after the results and never
         // between them: a notice between a call and its result closes the pairing window.
         self.flush_gate_admissions()?;
+        self.flush_usage_notices()?;
         // A round can have started or ended a job; refill the mailbox now so a
         // pane opened mid-turn answers with this round's table, not last
         // round's. Cheap: the list is filtered before it is built.

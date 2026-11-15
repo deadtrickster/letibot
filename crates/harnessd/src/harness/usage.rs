@@ -70,7 +70,24 @@ impl Harness {
         let (preset, creds) = self.usage_door()?;
         let url = letibot_provider::usage::url(preset, &creds)?;
         let w = letibot_provider::usage_poll::reading(&url)?;
-        usage_setting(preset.name, &w, now_ms())
+        let th = self.cfg.leticode.usage_warn(preset.name);
+        usage_setting(preset.name, &w, &th, now_ms())
+    }
+
+    /// Write the threshold notices the poll left for this session, one row each. Called at a
+    /// round boundary and on the idle pass, never between a call and its result.
+    pub(crate) fn flush_usage_notices(&mut self) -> Result<(), HarnessError> {
+        let lines = std::mem::take(
+            &mut self
+                .usage_said
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pending,
+        );
+        for line in lines {
+            self.record_notice(&line)?;
+        }
+        Ok(())
     }
 
     /// Keep the row fresh: each reading is put straight into the published rows. Called after the
@@ -84,24 +101,65 @@ impl Harness {
             return;
         };
         let door = preset.name;
+        let th = self.cfg.leticode.usage_warn(door);
+        let said = self.usage_said.clone();
         let reg = self.session_registry.clone();
         let still = {
             let (reg, sid) = (reg.clone(), sid.clone());
             move || on_door(&reg.settings(&sid), door)
         };
-        let tell = {
-            let sid = sid.clone();
+        let hear = {
+            let (said, th) = (said.clone(), th.clone());
             move |w: &[usage_poll::Window]| {
-                if let Some(row) = usage_setting(door, w, now_ms()) {
+                said.lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .hear(door, w, &th, now_ms());
+            }
+        };
+        let tell = {
+            let (sid, hear) = (sid.clone(), hear.clone());
+            move |w: &[usage_poll::Window]| {
+                if let Some(row) = usage_setting(door, w, &th, now_ms()) {
                     reg.put_setting(&sid, row);
                 }
+                hear(w);
             }
         };
         let watcher = usage_poll::Watcher {
             still: Box::new(still),
             tell: Box::new(tell),
         };
-        usage_poll::watch(preset, &creds, &sid, usage_poll::EVERY, watcher);
+        // A session joining a running poll hears its cached reading now, not five minutes on.
+        if let Some(w) = usage_poll::watch(preset, &creds, &sid, usage_poll::EVERY, watcher) {
+            hear(&w);
+        }
+    }
+}
+
+/// The thresholds one session has been told of, per door, and the notices not yet written.
+#[derive(Debug, Default)]
+pub(crate) struct UsageSaid {
+    said: std::collections::BTreeMap<String, letibot_provider::usage_warn::Said>,
+    pub(crate) pending: Vec<String>,
+}
+
+impl UsageSaid {
+    /// Queue one notice per threshold this reading crossed that was not yet said for its window.
+    pub(crate) fn hear(
+        &mut self,
+        door: &str,
+        windows: &[letibot_provider::usage_poll::Window],
+        th: &letibot_provider::usage_warn::Thresholds,
+        now_ms: u64,
+    ) {
+        let said = self.said.entry(door.to_string()).or_default();
+        for w in said.crossings(windows, th) {
+            let offset = local_offset_s(w.reset_ms.unwrap_or(now_ms));
+            self.pending.push(format!(
+                "[usage] {}",
+                letibot_provider::usage_warn::notice(door, w, now_ms, offset)
+            ));
+        }
     }
 }
 
@@ -113,20 +171,22 @@ fn on_door(rows: &[letibot_sessionlog::protocol::SettingRow], door: &str) -> boo
         .is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// The row for one reading: the busiest window, its reset in this box's zone.
+/// The row for one reading: the window past most thresholds, else the busiest, its reset in this
+/// box's zone. `choices[1]` is how many of its thresholds it has reached, which the head colours by.
 pub(crate) fn usage_setting(
     door: &str,
     windows: &[letibot_provider::usage_poll::Window],
+    th: &letibot_provider::usage_warn::Thresholds,
     now_ms: u64,
 ) -> Option<letibot_sessionlog::protocol::SettingRow> {
-    let w = letibot_provider::usage_poll::busiest(windows)?;
+    let (w, level) = letibot_provider::usage_warn::shown(windows, th)?;
     let offset = local_offset_s(w.reset_ms.unwrap_or(now_ms));
     Some(letibot_sessionlog::protocol::SettingRow {
         key: letibot_sessionlog::protocol::MODEL_USAGE_KEY.into(),
         value: letibot_provider::usage_poll::label(w, now_ms, offset),
         source: format!("{door} usage endpoint, polled every few minutes"),
         editable: String::new(),
-        choices: vec![door.to_string()],
+        choices: vec![door.to_string(), level.to_string()],
         tools: Vec::new(),
     })
 }
@@ -189,10 +249,63 @@ mod tests {
                 reset_ms: Some(2_000_000_000_000),
             },
         ];
-        let r = usage_setting("kimi-code", &w, 1_000_000_000_000 - 3_600_000).unwrap();
+        let th = letibot_provider::usage_warn::Thresholds::default();
+        let r = usage_setting("kimi-code", &w, &th, 1_000_000_000_000 - 3_600_000).unwrap();
         assert_eq!(r.key, letibot_sessionlog::protocol::MODEL_USAGE_KEY);
         assert!(r.value.starts_with("5h 44% · resets "), "{}", r.value);
-        assert_eq!(r.choices, vec!["kimi-code".to_string()]);
-        assert!(usage_setting("kimi-code", &[], 0).is_none());
+        assert_eq!(r.choices, ["kimi-code", "0"]);
+        assert!(usage_setting("kimi-code", &[], &th, 0).is_none());
+    }
+
+    fn five_h(used: f64, reset_ms: u64) -> Vec<letibot_provider::usage_poll::Window> {
+        vec![letibot_provider::usage_poll::Window {
+            name: "5h".into(),
+            used,
+            reset_ms: Some(reset_ms),
+        }]
+    }
+
+    /// 80% is said once, 95% once more, nothing until the window resets, then 80% again; the row's
+    /// level follows.
+    #[test]
+    fn each_threshold_is_said_once_per_window() {
+        let th = letibot_provider::usage_warn::Thresholds::default();
+        let mut s = UsageSaid::default();
+        let now = 1_000_000_000_000;
+        let (r1, r2) = (now + 3_600_000, now + 5 * 3_600_000);
+        let mut heard = |used, reset| {
+            s.hear("kimi-code", &five_h(used, reset), &th, now);
+            std::mem::take(&mut s.pending)
+        };
+        assert!(heard(0.5, r1).is_empty());
+        let first = heard(0.82, r1);
+        assert_eq!(first.len(), 1, "{first:?}");
+        assert!(
+            first[0].starts_with("[usage] kimi-code 5h at 82% · resets "),
+            "{first:?}"
+        );
+        assert!(heard(0.84, r1).is_empty(), "80% is said once");
+        assert_eq!(heard(0.96, r1).len(), 1, "95% once more");
+        assert!(heard(0.99, r1).is_empty());
+        assert!(heard(0.02, r2).is_empty(), "a reset alone says nothing");
+        assert_eq!(heard(0.81, r2).len(), 1, "the new window says 80% again");
+        let level = |used| usage_setting("kimi-code", &five_h(used, r1), &th, now).unwrap();
+        assert_eq!(level(0.5).choices[1], "0");
+        assert_eq!(level(0.82).choices[1], "1");
+        assert_eq!(level(0.96).choices[1], "2");
+    }
+
+    /// A per-preset list replaces the default for that preset only.
+    #[test]
+    fn a_presets_own_thresholds_apply() {
+        let th = letibot_provider::usage_warn::Thresholds {
+            five_h: vec![90],
+            ..Default::default()
+        };
+        let mut s = UsageSaid::default();
+        s.hear("kimi-code", &five_h(0.85, 1), &th, 0);
+        assert!(s.pending.is_empty(), "85% is under the preset's 90");
+        s.hear("kimi-code", &five_h(0.91, 1), &th, 0);
+        assert_eq!(s.pending.len(), 1);
     }
 }

@@ -284,7 +284,7 @@ fn provider_row(p: Option<&Provider>, cursor: bool, w: Widths, keys: bool) -> RL
     ]);
     if let Some(u) = &p.usage {
         row.spans.push(Span::raw("  "));
-        row.spans.push(Span::role(u.clone(), Role::Faint));
+        row.spans.push(Span::role(u.clone(), p.usage_role));
     }
     row
 }

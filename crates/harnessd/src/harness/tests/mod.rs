@@ -62,4 +62,5 @@ mod shadow_during;
 mod shadow_turn_end;
 mod steer_door;
 mod store_writes;
+mod usage_notice;
 mod workspace;

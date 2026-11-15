@@ -14,9 +14,6 @@ use crate::presets::Preset;
 /// Minutes, not seconds: the reading is a glance, and the endpoint is the plan's, not ours.
 pub const EVERY: Duration = Duration::from_secs(300);
 
-/// Z.ai's coding-plan quota path. Its monitor takes the bare key, so the request is shaped by it.
-const ZAI_QUOTA: &str = "/api/monitor/usage/quota/limit";
-
 /// One window of a plan as its endpoint reports it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Window {
@@ -106,8 +103,8 @@ fn kimi_limits(body: &Value) -> impl Iterator<Item = Window> + '_ {
         })
 }
 
-/// Z.ai's `data.limits[]`: `percentage` 0-100 and `nextResetTime` in millis. Only `unit` 3 is known
-/// (hours, `number` of them); any other window is named by its `type`.
+/// Z.ai's `data.limits[]`: `percentage` 0-100 and `nextResetTime` in millis. `unit` 3 is hours and
+/// 6 is read as days (`number` 7 beside a weekly reset); any other window is named by its `type`.
 fn zai_limits(body: &Value) -> impl Iterator<Item = Window> + '_ {
     body["data"]["limits"]
         .as_array()
@@ -116,6 +113,7 @@ fn zai_limits(body: &Value) -> impl Iterator<Item = Window> + '_ {
         .filter_map(|l| {
             let name = match (l["unit"].as_u64(), l["number"].as_u64()) {
                 (Some(3), Some(n)) => format!("{n}h"),
+                (Some(6), Some(n)) => format!("{n}d"),
                 _ => l["type"]
                     .as_str()
                     .unwrap_or("window")
@@ -142,16 +140,25 @@ pub fn busiest(windows: &[Window]) -> Option<&Window> {
 }
 
 /// `5h 44% · resets 07:07`, the reset in the zone `offset_s` east of UTC: a clock within a day,
-/// a date (`Dec 13`) beyond it.
+/// a weekday and clock (`Mon 08:00`) within a week, a date (`Dec 13`) beyond it.
 pub fn label(w: &Window, now_ms: u64, offset_s: i64) -> String {
     let pct = (w.used * 100.0).round() as i64;
     let Some(at) = w.reset_ms else {
         return format!("{} {pct}%", w.name);
     };
     let local = (at / 1000) as i64 + offset_s;
-    let when = if at.saturating_sub(now_ms) < 24 * 3_600_000 {
-        let s = local.rem_euclid(86_400);
-        format!("{:02}:{:02}", s / 3600, s % 3600 / 60)
+    let s = local.rem_euclid(86_400);
+    let clock = format!("{:02}:{:02}", s / 3600, s % 3600 / 60);
+    let ahead = at.saturating_sub(now_ms);
+    let when = if ahead < 24 * 3_600_000 {
+        clock
+    } else if ahead < 7 * 24 * 3_600_000 {
+        // 1970-01-01 was a Thursday.
+        const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+        format!(
+            "{} {clock}",
+            DAYS[local.div_euclid(86_400).rem_euclid(7) as usize]
+        )
     } else {
         let (_, m, d) = civil(local.div_euclid(86_400));
         const MONTHS: [&str; 12] = [
@@ -182,7 +189,8 @@ pub fn fetch(url: &str, creds: &Credentials) -> Option<Vec<Window>> {
             .timeout_global(Some(crate::usage::TIMEOUT))
             .build(),
     );
-    let (auth, ua) = if url.ends_with(ZAI_QUOTA) {
+    // Z.ai's monitor takes the bare key: `Bearer <key>` is a 401 there.
+    let (auth, ua) = if url.contains(crate::usage::ZAI_QUOTA) {
         (creds.key.clone(), "letibot")
     } else {
         (format!("Bearer {}", creds.key), crate::kimi::USER_AGENT)

@@ -3570,6 +3570,7 @@ impl Harness {
             footprint_gauges,
             asked,
             gate_admissions,
+            usage_said: Default::default(),
             todos: todo_board,
             todos_version: 0,
             asks_said: Vec::new(),

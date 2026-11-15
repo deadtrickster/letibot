@@ -20,7 +20,7 @@ impl App {
     }
 
     /// [`App::turn_status`] as a [`Line`], so [`App::status_row`] can add to it before painting.
-    fn turn_line(&self, w: usize) -> Line {
+    pub(crate) fn turn_line(&self, w: usize) -> Line {
         let t = match self.turn.as_ref() {
             Some(t) if self.turn_busy() => t,
             // No turn running, but the session is not idle either: it waits on a job, a
@@ -46,6 +46,7 @@ impl App {
         // What this turn is holding, and a switch waiting for it to end - the two facts
         // about NOW that are neither the phase nor the progress. Joined into ONE faint span so
         // a narrow row cuts the last word rather than losing a whole segment's separator.
+        let spans = line.spans.len();
         let mut extra: Vec<String> = Vec::new();
         if let Some(held) = self.held_label() {
             extra.push(held);
@@ -53,14 +54,19 @@ impl App {
         if let Some(pending) = self.model_pending.clone() {
             extra.push(pending);
         }
-        if let Some((_, used)) = self.plan_usage() {
-            extra.push(used.to_string());
-        }
         if !extra.is_empty() {
             line.spans.push(rano::render::Span::role(
                 format!(" · {}", extra.join(" · ")),
                 Role::Faint,
             ));
+        }
+        // Its own span: the figure takes its thresholds' colour.
+        if let Some((_, used)) = self.plan_usage() {
+            line.spans.push(Span::role(" · ", Role::Faint));
+            line.spans
+                .push(Span::role(used.to_string(), self.plan_usage_role()));
+        }
+        if line.spans.len() > spans {
             line = rano::render::text::truncate_owned(line, w);
         }
         line
@@ -94,19 +100,21 @@ impl App {
             }
         }
         // The plan's use last: a fact about the account, not about what this session waits on.
-        if let Some((_, used)) = self.plan_usage() {
-            text = match text.is_empty() {
-                true => used.to_string(),
-                false => format!("{text} · {used}"),
-            };
-        }
-        if text.is_empty() {
+        let used = self.plan_usage().map(|(_, u)| u.to_string());
+        if text.is_empty() && used.is_none() {
             return Line::default();
         }
         let mut line = Line::default();
-        line.spans
-            .push(rano::render::Span::role(trim_to(&text, w), Role::Faint));
-        line
+        let Some(used) = used else {
+            line.spans.push(Span::role(trim_to(&text, w), Role::Faint));
+            return line;
+        };
+        if !text.is_empty() {
+            line.spans
+                .push(Span::role(format!("{text} · "), Role::Faint));
+        }
+        line.spans.push(Span::role(used, self.plan_usage_role()));
+        rano::render::text::truncate_owned(line, w)
     }
 
     /// The daemon's list in a person's words: the whole of [`App::activity_line`]'s text and the

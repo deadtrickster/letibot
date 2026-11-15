@@ -88,12 +88,14 @@ fn kimi_windows_are_read_and_the_duplicate_month_is_one() {
 fn zai_windows_are_read_off_percentage() {
     let body = serde_json::json!({"data": {"limits": [
         {"type": "TOKENS_LIMIT", "unit": 3, "number": 5, "percentage": 12, "nextResetTime": 1_794_766_268_000u64},
+        {"type": "TOKENS_LIMIT", "unit": 6, "number": 7, "percentage": 41, "nextResetTime": 1_795_000_000_000u64},
         {"type": "TIME_LIMIT", "unit": 5, "number": 1, "percentage": 3, "nextResetTime": 0}]}});
     let w = windows(&body);
     assert_eq!(w[0].name, "5h");
     assert_eq!(w[0].used, 0.12);
-    assert_eq!(w[1].name, "time");
-    assert_eq!(w[1].reset_ms, None);
+    assert_eq!(w[1].name, "7d");
+    assert_eq!(w[2].name, "time");
+    assert_eq!(w[2].reset_ms, None);
 }
 
 #[test]
@@ -104,6 +106,15 @@ fn the_label_is_the_busiest_window_in_local_time() {
     assert_eq!(label(b, now, 0), "5h 44% · resets 07:07");
     assert_eq!(label(b, now, 3 * 3600), "5h 44% · resets 10:07");
     assert_eq!(label(&w[1], now, 0), "month 17% · resets Dec 13");
+    let week = Window {
+        name: "7d".into(),
+        used: 0.71,
+        reset_ms: Some(ms("2026-11-16T08:00:00Z")),
+    };
+    assert_eq!(
+        label(&week, ms("2026-11-14T03:00:00Z"), 0),
+        "7d 71% · resets Mon 08:00"
+    );
     let bare = Window {
         name: "5h".into(),
         used: 1.0,

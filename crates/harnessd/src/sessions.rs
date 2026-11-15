@@ -2209,7 +2209,7 @@ impl<'a> Sessions<'a> {
 
     /// The plugin tick, run from the daemon's idle pass and never blocking it: the hot-reload
     /// poll (which hands a changed layer to a thread), the panes whose `every_s` has come round
-    /// and the notices a layer owes this session's model.
+    /// and the notices a layer owes this session's model. Also the usage poll's threshold notices.
     pub fn plugin_tick(&mut self) {
         // A session on its own thread ticks its own layers, on the clock that thread keeps
         // the notices are transcript rows and the rows are the harness's to write. Asking here is
@@ -2218,6 +2218,12 @@ impl<'a> Sessions<'a> {
         for id in courted {
             if let Some(court) = self.courts.get(&id) {
                 court.post(|s: &mut Sessions<'static>| s.plugin_tick());
+            }
+        }
+        // The usage poll's threshold notices, written while the session is idle.
+        for (id, h) in self.open.iter_mut() {
+            if let Err(e) = h.flush_usage_notices() {
+                eprintln!("  {id} · a usage notice could not be written: {e}");
             }
         }
         if self.plugins.is_empty() {

@@ -51,6 +51,26 @@ NAME is a preset or `provider/model`. Resolves per key: model, preset, [provider
 | `first_byte_seconds` | int >= 1 | [provider]'s | both, project wins | as [provider], for this preset or model |
 | `answer_seconds` | int >= 1 | [provider]'s | both, project wins | as [provider], for this preset or model |
 
+## `[provider.usage_warn]`
+
+Percent of a plan window's use said once to the session, and again after the window resets. The status row's figure turns warning past the first, failure past the second. An empty list warns never.
+
+| key | type | default | level | meaning |
+|---|---|---|---|---|
+| `5h` | list of int 1..100 | [80, 95] | both, project wins | thresholds for the hours-long window |
+| `weekly` | list of int 1..100 | [70, 95] | both, project wins | thresholds for a 7-day window |
+| `monthly` | list of int 1..100 | [70, 95] | both, project wins | thresholds for a month window |
+
+## `[provider.<name>.usage_warn]`
+
+NAME is a preset. Resolves per key: preset, [provider.usage_warn], built-in.
+
+| key | type | default | level | meaning |
+|---|---|---|---|---|
+| `5h` | list of int 1..100 | [provider.usage_warn]'s | both, project wins | as [provider.usage_warn], for this preset |
+| `weekly` | list of int 1..100 | [provider.usage_warn]'s | both, project wins | as [provider.usage_warn], for this preset |
+| `monthly` | list of int 1..100 | [provider.usage_warn]'s | both, project wins | as [provider.usage_warn], for this preset |
+
 ## `[roles]`
 
 | key | type | default | level | meaning |

@@ -738,3 +738,39 @@ fn the_plans_usage_is_on_its_provider_row_and_the_status_row() {
 fn rows_of(a: &App) -> Vec<String> {
     rows(a, 140)
 }
+
+/// The usage figure takes the colour of the thresholds its window reached: faint under the first,
+/// a warning past it, a failure past the second, idle or in a turn.
+#[test]
+fn the_usage_figure_changes_colour_at_its_thresholds() {
+    use rano::render::Role;
+    let role_of = |level: &str, turn: bool| {
+        let mut a = card(&Wire::default());
+        let ServerFrame::Settings { mut rows } = Wire::default().frame() else {
+            unreachable!()
+        };
+        rows.push(letibot_sessionlog::protocol::SettingRow {
+            key: letibot_sessionlog::protocol::MODEL_USAGE_KEY.into(),
+            value: "5h 82% · resets 07:07".into(),
+            source: String::new(),
+            editable: String::new(),
+            choices: vec!["deepseek".into(), level.into()],
+            tools: Vec::new(),
+        });
+        a.apply(ServerFrame::Settings { rows });
+        if turn {
+            a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+        }
+        let line = a.turn_line(120);
+        line.spans
+            .iter()
+            .find(|s| s.content.contains("82%"))
+            .map(|s| s.style.top())
+            .expect("the figure")
+    };
+    for turn in [false, true] {
+        assert_eq!(role_of("0", turn), Role::Faint);
+        assert_eq!(role_of("1", turn), Role::Warning);
+        assert_eq!(role_of("2", turn), Role::Failure);
+    }
+}

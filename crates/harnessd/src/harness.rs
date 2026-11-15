@@ -309,6 +309,10 @@ pub struct Harness {
     /// inside the runtime, off this struct, so it hands the sentence over: `flush_gate_admissions`
     /// writes one row per notice at a round boundary, where no row lands between a call and its result.
     gate_admissions: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// What the usage poll has told this session and the notices it has not yet written. Kept
+    /// here, not on the watcher, because every publish re-watches and a new watcher must not
+    /// say a threshold again.
+    usage_said: std::sync::Arc<std::sync::Mutex<usage::UsageSaid>>,
     /// The session's todo list, shared with the tool that writes it. The harness is the persister:
     /// `flush_todos` compares the board's version with the last one it handled and writes.
     todos: Arc<TodoBoard>,

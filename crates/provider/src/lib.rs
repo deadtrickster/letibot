@@ -17,6 +17,7 @@ pub mod registry;
 pub mod responses;
 pub mod usage;
 pub mod usage_poll;
+pub mod usage_warn;
 
 pub use anthropic::AnthropicProvider;
 pub use keys::{Credentials, Gatekeeper, KeyError, MemorySection, gatekeeper, memory};

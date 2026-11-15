@@ -36,6 +36,8 @@ pub(crate) struct Provider {
     pub(crate) models: Vec<Model>,
     /// The plan's use the daemon last read, when one of these doors is this session's.
     pub(crate) usage: Option<String>,
+    /// How that figure is painted, by the thresholds its window reached.
+    pub(crate) usage_role: rano::render::Role,
 }
 
 /// What the card as a whole holds, gathered once per frame so the drawing and the cursor read one
@@ -133,6 +135,23 @@ impl App {
         (!r.value.is_empty()).then_some((door.as_str(), r.value.as_str()))
     }
 
+    /// How the usage figure is painted: faint under its window's first threshold, a warning past
+    /// it, a failure past the second. `choices[1]` is the daemon's count of thresholds reached.
+    pub(crate) fn plan_usage_role(&self) -> rano::render::Role {
+        let level = self
+            .settings
+            .iter()
+            .find(|r| r.key == letibot_sessionlog::protocol::MODEL_USAGE_KEY)
+            .and_then(|r| r.choices.get(1))
+            .and_then(|l| l.parse::<usize>().ok())
+            .unwrap_or(0);
+        match level {
+            0 => rano::render::Role::Faint,
+            1 => rano::render::Role::Warning,
+            _ => rano::render::Role::Failure,
+        }
+    }
+
     /// The models the store's sessions were last moved to, newest first - the card's recent group.
     pub(crate) fn recent_models_setting(&self) -> Vec<String> {
         self.settings
@@ -186,6 +205,7 @@ impl App {
                         keyless: false,
                         models: Vec::new(),
                         usage: None,
+                        usage_role: rano::render::Role::Faint,
                     });
                     providers.len() - 1
                 }
@@ -208,7 +228,9 @@ impl App {
         }
         let keyless = self.keyless_choices();
         let usage = self.plan_usage();
+        let usage_role = self.plan_usage_role();
         for p in &mut providers {
+            p.usage_role = usage_role;
             p.usage = usage
                 .filter(|(d, _)| p.doors.iter().any(|x| x == d))
                 .map(|(_, u)| u.to_string());
