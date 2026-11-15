@@ -2036,6 +2036,16 @@ rano's main session runs `allow-all`. Its reviewers (children of `s-gatekeeper-c
 
 **Left.** The shadow is shown the main session's workspace, not the reviewer's clone, so its denylist reads a write into the clone as outside and narrows an allow to ask. The bridge's `leticode_asks` does not carry the line. Relayed questions are not annotated. A line amended onto a card in the instant the ask settles is shown and taken off again.
 
+## R302 - An uncapped daemon's memory note is said once per session, not on every call
+
+**Status:** built, 2026-11-15. left: a background job's completion and the `jobs` listing keep their own notes (the listing already says a shared clause once).
+
+Live in rano, every tool row carried `[note] memory: ran UNCAPPED - 8 GiB was asked for and could not be set: this daemon shares its cgroup ... with 4 others`. The daemon started without a scope of its own while the user systemd manager was hung, so caps really were off, and `delegate_memory` settles that once for the daemon's life. Repeating it on every call was noise.
+
+**Change:** `Bash` keeps the last uncapped reason it said (`uncapped_said`, per session). `memory_note` says the uncapped note the first time, with "not noted again until this changes", and again only for a different reason. A capped call after an uncapped one says "caps hold again" once. Kill and near-cap clauses are still per call.
+
+**Test:** `builtins::bash::tests::an_uncapped_state_is_said_once_and_again_when_it_changes` - five calls under one reason give one note, a new reason gives one, caps returning give one, and losing them again gives one.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.

@@ -23,6 +23,9 @@ pub struct Bash {
     /// Whether this session's model has been told that some modified files are past the
     /// snapshot budget. Said once: it is a fact the model can do nothing about.
     snapshot_budget_said: std::sync::atomic::AtomicBool,
+    /// The reason the last uncapped note gave, `None` while caps hold. An uncapped daemon stays
+    /// uncapped, so the note is said once and again only when the reason or the state changes.
+    uncapped_said: std::sync::Mutex<Option<String>>,
     /// `[boundary] firecode_only`: where a call that runs a listed program goes instead.
     route: Option<crate::firecode_route::FirecodeRoute>,
     /// A reviewer's seat: whole-suite test runs are refused, since the gate runs the suite.
@@ -318,27 +321,44 @@ fn default_sentence(p: &MemoryPolicy) -> String {
 
 /// The note a model call's result carries about memory: nothing for a run that finished inside
 /// its cap, and one clause for a kill, a near-cap run or a cap that could not be set. A peak on
-/// every result was a number to size work by, which the model is not given.
-fn memory_note(job: &crate::exec::jobs::Job) -> Option<String> {
+/// every result was a number to size work by, which the model is not given. `said` is the
+/// session's last uncapped reason: the same reason again is not repeated.
+fn memory_note(job: &crate::exec::jobs::Job, said: &mut Option<String>) -> Option<String> {
     use crate::exec::MemoryCap;
     let used = job.memory_used();
-    match (job.memory_cap(), used) {
-        (MemoryCap::Uncapped { asked, why }, used) => Some(format!(
-            "memory: ran UNCAPPED — {} was asked for and could not be set: {why}{}",
-            crate::exec::human_bytes(*asked),
-            used.map(|u| format!("; it peaked at {}", crate::exec::human_bytes(u.peak)))
-                .unwrap_or_default()
+    let state = match job.memory_cap() {
+        MemoryCap::Uncapped { asked, why } if said.as_deref() != Some(why.as_str()) => {
+            *said = Some(why.clone());
+            Some(format!(
+                "memory: ran UNCAPPED — {} was asked for and could not be set: {why}{}. Later \
+                 calls run the same way and are not noted again until this changes",
+                crate::exec::human_bytes(*asked),
+                used.map(|u| format!("; it peaked at {}", crate::exec::human_bytes(u.peak)))
+                    .unwrap_or_default()
+            ))
+        }
+        MemoryCap::Uncapped { .. } => None,
+        MemoryCap::Capped(cap) if said.take().is_some() => Some(format!(
+            "memory: caps hold again — this call ran under its {} cap",
+            crate::exec::human_bytes(*cap)
         )),
-        (_, Some(u)) if u.killed_at_cap() => Some(format!(
+        _ => None,
+    };
+    let usage = match used {
+        Some(u) if u.killed_at_cap() => Some(format!(
             "the kernel killed {} process(es) inside it at the cap",
             u.oom_kills
         )),
-        (_, Some(u)) if u.near_its_cap() => Some(format!(
+        Some(u) if u.near_its_cap() => Some(format!(
             "memory: {} — this command used nearly all of its cap; pass a larger `memory` if \
              it needs more.",
             u.clause()
         )),
         _ => None,
+    };
+    match (state, usage) {
+        (Some(s), Some(u)) => Some(format!("{s}; {u}")),
+        (s, u) => s.or(u),
     }
 }
 
@@ -1200,7 +1220,13 @@ impl Tool for Bash {
             crate::exec::scope::note_memory(u);
         }
         if !ctx.tty
-            && let Some(note) = job.as_deref().and_then(memory_note)
+            && let Some(note) = job.as_deref().and_then(|j| {
+                let mut said = self
+                    .uncapped_said
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                memory_note(j, &mut said)
+            })
         {
             inv = inv.with_note(note);
         }

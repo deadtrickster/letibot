@@ -677,7 +677,7 @@ fn a_finished_call_says_nothing_about_its_peak() {
         }),
     );
     assert_eq!(
-        memory_note(&job),
+        memory_note(&job, &mut None),
         None,
         "an ordinary call reports no numbers at all"
     );
@@ -701,11 +701,55 @@ fn an_uncapped_call_names_the_ask_and_the_reason() {
             ..MemoryUse::default()
         }),
     );
-    let note = memory_note(&job).expect("a cap that could not be set is said");
+    let note = memory_note(&job, &mut None).expect("a cap that could not be set is said");
     assert!(note.contains("ran UNCAPPED"), "{note}");
     assert!(note.contains("512 MiB was asked for"), "{note}");
     assert!(note.contains("no memory controller"), "{note}");
     assert!(note.contains("it peaked at 200 MiB"), "{note}");
+}
+
+/// A daemon that cannot cap stays that way, so N calls under one uncapped reason give one
+/// note, and a new reason or caps coming back give one more each.
+#[test]
+fn an_uncapped_state_is_said_once_and_again_when_it_changes() {
+    use crate::exec::MemoryCap;
+    let uncapped = |why: &str| {
+        settled(
+            MemoryCap::Uncapped {
+                asked: 8 << 30,
+                why: why.into(),
+            },
+            None,
+        )
+    };
+    let mut said = None;
+    let notes: Vec<_> = (0..5)
+        .filter_map(|_| memory_note(&uncapped("this daemon shares its cgroup"), &mut said))
+        .collect();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert!(notes[0].contains("ran UNCAPPED"), "{notes:?}");
+    assert!(notes[0].contains("not noted again"), "{notes:?}");
+
+    let other =
+        memory_note(&uncapped("no memory controller"), &mut said).expect("a new reason is said");
+    assert!(other.contains("no memory controller"), "{other}");
+    assert_eq!(
+        memory_note(&uncapped("no memory controller"), &mut said),
+        None
+    );
+
+    let back = memory_note(&settled(MemoryCap::Capped(64 << 20), None), &mut said)
+        .expect("caps coming back is said");
+    assert!(back.contains("caps hold again"), "{back}");
+    assert_eq!(
+        memory_note(&settled(MemoryCap::Capped(64 << 20), None), &mut said),
+        None,
+        "a capped call after that is ordinary"
+    );
+    assert!(
+        memory_note(&uncapped("no memory controller"), &mut said).is_some(),
+        "losing caps again is a change"
+    );
 }
 
 #[test]
