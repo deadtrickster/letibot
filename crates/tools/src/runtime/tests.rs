@@ -1495,3 +1495,50 @@ fn a_reviewers_bash_refuses_the_whole_suite_and_runs_a_named_test() {
         "a coder seat was refused: {r}"
     );
 }
+
+/// A gate that keeps the preview it was handed, and admits.
+#[derive(Clone, Default)]
+struct PreviewGate(std::sync::Arc<std::sync::Mutex<Vec<Vec<letibot_transcript::ToolEditExcerpt>>>>);
+
+impl Gate for PreviewGate {
+    fn admit(&mut self, call: &GateCall<'_>) -> GateDecision {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(call.preview.to_vec());
+        GateDecision::Admit
+    }
+}
+
+/// The gate is handed the diff an edit and a write would apply, read from the file as it is
+/// before the call runs, so a card can show it.
+#[test]
+fn the_gate_is_handed_the_diff_an_edit_or_a_write_would_apply() {
+    let mut reg = Registry::new();
+    reg.register(Box::new(crate::builtins::edit::Edit)).unwrap();
+    reg.register(Box::new(crate::builtins::write::Write))
+        .unwrap();
+    let d = crate::backend::tempdir::TempDir::new();
+    std::fs::write(d.path().join("a.txt"), "one\ntwo\nthree\n").unwrap();
+    let gate = PreviewGate::default();
+    let rt = ToolRuntime::new(
+        reg,
+        Box::new(crate::backend::HostBackend::writable(d.path()).unwrap()),
+    )
+    .with_gate(Box::new(gate.clone()));
+    let mut sink = RecordingToolSink::default();
+    let args = serde_json::json!({"path": "a.txt", "old_string": "two", "new_string": "TWO"});
+    rt.invoke("t1", &call("edit", &args.to_string()), &mut sink);
+    let args = serde_json::json!({"path": "new.txt", "content": "fresh\n"});
+    rt.invoke("t1", &call("write", &args.to_string()), &mut sink);
+
+    let seen = gate.0.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert_eq!(seen[0][0].before, "one\ntwo\nthree");
+    assert_eq!(seen[0][0].after, "one\nTWO\nthree");
+    assert!(
+        seen[1][0].created && seen[1][0].after == "fresh",
+        "{:?}",
+        seen[1]
+    );
+}

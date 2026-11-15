@@ -58,6 +58,7 @@ impl App {
                 summary,
                 target,
                 write_targets,
+                edits,
                 detail,
                 options,
                 options_note,
@@ -95,6 +96,7 @@ impl App {
                         on_timeout,
                         subagent,
                         asked_ts: a.decision.asked_ts,
+                        edits,
                     };
                     return Disposition::Rendered;
                 }
@@ -123,6 +125,7 @@ impl App {
                     // from the view's own stamp, and this arm is the live one - the
                     // snapshot path at `apply` carries the real `asked_ts`.
                     asked_ts: 0,
+                    edits,
                 });
                 Disposition::Rendered
             }

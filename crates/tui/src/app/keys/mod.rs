@@ -209,6 +209,10 @@ impl App {
                 self.editor_zoom_key();
                 return None;
             }
+            Key::AltD => {
+                self.toggle_card_diff();
+                return None;
+            }
             k => k,
         };
         // A wheel notch goes to the surface under the pointer - see [`App::wheel_at`]. One
@@ -788,6 +792,8 @@ pub enum Key {
     AltI,
     /// alt-m: the editor zoomed over the conversation, or beside it (`app/editor.rs`).
     AltM,
+    /// alt-d: the permission card's diff whole, or folded again (`ui/cards/decision.rs`).
+    AltD,
     /// alt-< and alt->: the border on the screen narrower and wider - the editor's when it is a
     /// column, the rooms sidebar's otherwise.
     AltNarrow,
@@ -959,6 +965,7 @@ impl Key {
             | Key::AltJ
             | Key::AltI
             | Key::AltM
+            | Key::AltD
             | Key::AltNarrow
             | Key::AltWiden
             | Key::AltUp

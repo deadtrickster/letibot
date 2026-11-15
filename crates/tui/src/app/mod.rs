@@ -532,6 +532,8 @@ pub struct App {
     /// The `req_id` [`App::dec_scroll`] belongs to, so the reset above can tell a new card
     /// from the same card drawn again.
     pub(crate) dec_scroll_for: String,
+    /// The `req_id` whose diff alt-d opened whole; any other card draws its diff folded.
+    pub(crate) dec_diff_open: String,
     /// What the card's content window was on the last frame: how many lines the content has and
     /// how many rows the viewport got. Only the draw knows whether anything is out of view, since
     /// the content's length is a function of the width. Named after the panes' `pane_len`.
@@ -1434,6 +1436,7 @@ impl App {
             notes: Vec::new(),
             dec_scroll: 0,
             dec_scroll_for: String::new(),
+            dec_diff_open: String::new(),
             dec_content_len: 0,
             dec_content_room: 0,
             dismissed: Vec::new(),

@@ -454,6 +454,7 @@ impl InvokeCtx<'_> {
             workspace: &workspace,
             target_exists: None,
             scripts: &scripts,
+            preview: &[],
         };
         Some(
             gate.lock()
@@ -648,6 +649,9 @@ pub struct GateCall<'a> {
     /// `Intent::ExecuteCode` and nothing more, so the program text is a file the classifier
     /// never opens unless it is handed to it here. Read up front, never on request.
     pub scripts: &'a [ScriptSource],
+    /// The diff an `edit` or `write` would apply, worked out before it runs, so a card can show
+    /// what it asks about. Empty for every other call and for one that would not resolve.
+    pub preview: &'a [letibot_transcript::ToolEditExcerpt],
 }
 
 /// The command line the gate reads for an argv somebody declared: one word per element,
@@ -1934,6 +1938,16 @@ impl ToolRuntime {
     /// The scripts a `bash` call's command will run, read for the adjudicator. Empty for a
     /// command that names no script file. A file that cannot be read is reported as unreadable
     /// rather than skipped: silence reads exactly like a command that runs no script.
+    fn preview_of(&self, tool: &str, args: &Value) -> Vec<letibot_transcript::ToolEditExcerpt> {
+        crate::edit_preview::preview(tool, args, |path| match self.backend.read(path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(crate::backend::BackendError::NotFound(_)) => Ok(None),
+            Err(e) => Err(e.to_string()),
+        })
+        .into_iter()
+        .collect()
+    }
+
     fn scripts_of(&self, args: &Value) -> Vec<ScriptSource> {
         let Some(command) = args.get("command").and_then(|v| v.as_str()) else {
             return Vec::new();
@@ -2138,6 +2152,7 @@ impl ToolRuntime {
             // is, and through it, so a confined session reads its own copy rather than the
             // host's.
             let scripts = self.scripts_of(&args);
+            let preview = self.preview_of(&schema.name, &args);
             let gate_call = GateCall {
                 name: &schema.name,
                 access: schema.access,
@@ -2147,6 +2162,7 @@ impl ToolRuntime {
                 workspace: &workspace,
                 target_exists,
                 scripts: &scripts,
+                preview: &preview,
             };
             // The lock is the gate's and is held across the decision on purpose: a `/mode` typed
             // while a card is up must not move the gate out from under it. The ungated path

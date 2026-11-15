@@ -88,6 +88,18 @@ pub(crate) fn edit_diff(
     cfg: &RenderConfig,
     diff_split: bool,
 ) -> EditDiff {
+    edit_diff_rows(e, width, cfg, diff_split, 60)
+}
+
+/// [`edit_diff`] with the row budget given: the permission card folds the rows itself, so it asks
+/// for all of them and says how many it left out.
+pub(crate) fn edit_diff_rows(
+    e: &letibot_transcript::ToolEditExcerpt,
+    width: usize,
+    cfg: &RenderConfig,
+    diff_split: bool,
+    max_rows: usize,
+) -> EditDiff {
     use letibot_ui::text::without_control_lines;
     let dcfg = rano::diff::DiffConfig {
         width,
@@ -97,7 +109,7 @@ pub(crate) fn edit_diff(
         context: 3,
         line_numbers: true,
         intra_line: false,
-        max_rows: 60,
+        max_rows,
     };
     let path = without_control_lines(&e.path);
     let before = without_control_lines(&e.before);

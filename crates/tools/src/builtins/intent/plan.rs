@@ -292,6 +292,7 @@ mod tests {
         let args = serde_json::json!({"path": "a.rs"});
         let call = GateCall {
             scripts: &[],
+            preview: &[],
             name: "write",
             access: Access::Write,
             args: &args,
@@ -323,6 +324,7 @@ mod tests {
         let args = serde_json::json!({});
         let call = GateCall {
             scripts: &[],
+            preview: &[],
             name: "exit_plan_mode",
             access: Access::Write,
             args: &args,

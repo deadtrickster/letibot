@@ -47,6 +47,13 @@ pub(crate) const DEC_ARM_MS: u64 = 500;
 /// What a card that has just appeared says when it refuses the key that would answer it.
 pub(crate) const ARMING_SAID: &str = "the card just came up — press enter again to answer it";
 
+/// How many diff rows a permission card draws before it folds the rest: a small edit fits whole,
+/// and a big one cannot push the ladder off the screen.
+pub(crate) const CARD_DIFF_ROWS: usize = 12;
+
+/// The key that opens the card's diff whole, and folds it again.
+pub(crate) const CARD_DIFF_KEY: &str = "alt-d";
+
 /// What a typed line becomes for a rung of the marked kind, or the sentence that says it has
 /// nowhere to go here. One reading for Enter on the card and Enter in the composer, so the two
 /// cannot disagree about what a typed line means.
@@ -149,6 +156,59 @@ fn row_body(body: &str) -> String {
 }
 
 impl App {
+    /// The diff the call would apply, drawn by the tool row's renderer and folded at
+    /// [`CARD_DIFF_ROWS`] with a count, unless alt-d opened it on this card.
+    pub(crate) fn card_diff_rows(&self, d: &OpenDecision, w: usize) -> Vec<String> {
+        let p = self.cfg.palette();
+        let open = self.dec_diff_open == d.req_id;
+        let mut out = Vec::new();
+        for e in &d.edits {
+            let diff = edit_diff_rows(
+                e,
+                w.saturating_sub(2),
+                &self.cfg,
+                self.diff_split,
+                usize::MAX,
+            );
+            let rows = diff.rows_under(&d.target);
+            let keep = if open {
+                rows.len()
+            } else {
+                CARD_DIFF_ROWS.min(rows.len())
+            };
+            out.extend(
+                row_strings(&rows[..keep], p)
+                    .into_iter()
+                    .map(|l| format!("  {l}")),
+            );
+            let said = match rows.len() - keep {
+                0 if open && rows.len() > CARD_DIFF_ROWS => {
+                    format!("  {CARD_DIFF_KEY} folds the diff")
+                }
+                0 => continue,
+                hidden => format!("  … +{hidden} diff rows · {CARD_DIFF_KEY} shows the whole diff"),
+            };
+            out.push(row(
+                &rano::agent::pane::faint(rano::agent::text::trim_to(&said, w)),
+                p,
+            ));
+        }
+        out
+    }
+
+    /// alt-d: the front card's diff whole, or folded again.
+    pub(crate) fn toggle_card_diff(&mut self) {
+        let Some(d) = self.open.first().filter(|d| !d.edits.is_empty()) else {
+            self.say("alt-d opens a permission card's diff — no card with one is up");
+            return;
+        };
+        if self.dec_diff_open == d.req_id {
+            self.dec_diff_open.clear();
+        } else {
+            self.dec_diff_open = d.req_id.clone();
+        }
+    }
+
     /// The rungs, in this head's words: rano puts each option's id beside a label that already says
     /// the answer, and a head that printed both would promise a key nobody has. The ranges come out
     /// of the same walk as the rows, so a click and the drawing cannot disagree.
@@ -350,7 +410,10 @@ impl App {
             &format!("  {PUT_AWAY_HINT}"),
             w,
         )));
-        (row_strings(&content, p), row_strings(&choices, p))
+        // The diff last in the content half, so the facts above it stay on the first screenful.
+        let mut content = row_strings(&content, p);
+        content.extend(self.card_diff_rows(d, w));
+        (content, row_strings(&choices, p))
     }
 
     /// The card's facts, in rano's words: the ask and target, whose call it is, the files it would write, layer A's

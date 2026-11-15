@@ -1131,6 +1131,10 @@ pub enum SessionEvent {
         /// so a grant can name a file rather than a shape.
         #[serde(default)]
         write_targets: Vec<WriteTarget>,
+        /// The diff an `edit` or `write` would apply, bounded as a tool row's excerpt is, so the
+        /// card shows what it asks about. Empty for every other call.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        edits: Vec<letibot_transcript::ToolEditExcerpt>,
         /// Layer A's deterministic reading: verdict, intents, regions, tier. Evidence, not the
         /// question: it belongs under the card rather than on it.
         #[serde(default)]

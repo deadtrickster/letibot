@@ -327,6 +327,7 @@ pub fn replay_rows(
             // on this disk, and reading whatever is at the path today would show
             // the oracle a file the original call never saw.
             scripts: &[],
+            preview: &[],
             name: &row.tool,
             access: acc,
             args: &args,

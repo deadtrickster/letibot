@@ -650,6 +650,9 @@ pub struct AdjudicationRequest {
     /// `ExecuteCode` and nothing else to layer A, so `python3 deploy.py` arrives with its
     /// program unopened. Empty when no script is named, which the brief states.
     pub scripts: Vec<crate::runtime::ScriptSource>,
+    /// The diff the call would apply, for the card to draw. Not part of the brief: the
+    /// arguments already carry it, and the adjudicator reads those.
+    pub preview: Vec<letibot_transcript::ToolEditExcerpt>,
     pub kind: RequestKind,
     pub options: Vec<DecisionOption>,
     pub on_timeout: OnTimeout,
@@ -2174,6 +2177,7 @@ impl AdjudicatedGate {
             arguments_digest: digest,
             boundary_facts: facts,
             scripts: call.scripts.to_vec(),
+            preview: call.preview.to_vec(),
             kind: RequestKind::Permission,
             // Offer only what the gate will honour: the recording site requires a tier that is
             // not `AlwaysAsk` and a point that grants for the session, and every narrowing here
@@ -2539,6 +2543,7 @@ impl AdjudicatedGate {
             // A view grant is about showing the operator something, not about
             // running a program: there is no command and so no script.
             scripts: Vec::new(),
+            preview: Vec::new(),
             boundary_facts: vec![
                 first_fact,
                 "granting it binds the real host path into this session's mount namespace for the rest of the session, and a readable path is readable INTO THE TRANSCRIPT"
@@ -2692,6 +2697,7 @@ impl Gate for AdjudicatedGate {
             arguments: serde_json::json!({ "command": ask.command, "memory": amount }),
             arguments_digest: String::new(),
             scripts: Vec::new(),
+            preview: Vec::new(),
             boundary_facts: vec![
                 match ask.ceiling {
                     Some(ceiling) => format!(
@@ -2792,6 +2798,7 @@ impl Gate for AdjudicatedGate {
             }),
             arguments_digest: String::new(),
             scripts: Vec::new(),
+            preview: Vec::new(),
             boundary_facts: vec![
                 format!(
                     "the child starts from `{}`, the perimeter this session holds; what it asks \

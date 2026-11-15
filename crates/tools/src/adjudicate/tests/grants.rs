@@ -382,6 +382,7 @@ fn a_gate_moves_to_a_new_point_and_leaves_its_grants_behind() {
         workspace: "/home/dead/Projects/letibot",
         target_exists: None,
         scripts: &[],
+        preview: &[],
     };
     assert!(matches!(g.admit(&call), GateDecision::Admit));
     assert_eq!(
@@ -407,6 +408,7 @@ fn a_gate_moves_to_a_new_point_and_leaves_its_grants_behind() {
         workspace: "/home/dead/Projects/letibot",
         target_exists: Some(true),
         scripts: &[],
+        preview: &[],
     };
     let _ = g.admit(&write);
     assert_eq!(
@@ -495,6 +497,7 @@ fn at_automode_the_models_admit_is_the_decision_and_always_ask_still_asks() {
         workspace: "/home/dead/Projects/letibot",
         target_exists: Some(true),
         scripts: &[],
+        preview: &[],
     });
     assert!(
         matches!(d, GateDecision::Admit),
@@ -514,6 +517,7 @@ fn at_automode_the_models_admit_is_the_decision_and_always_ask_still_asks() {
         workspace: "/home/dead/Projects/letibot",
         target_exists: Some(true),
         scripts: &[],
+        preview: &[],
     });
     assert!(
         !matches!(d, GateDecision::Admit),

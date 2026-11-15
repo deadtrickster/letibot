@@ -74,6 +74,7 @@ fn decision_with(kinds: &[letibot_sessionlog::event::OptionKind]) -> OpenDecisio
         summary: "edit a file".into(),
         target: String::new(),
         write_targets: Vec::new(),
+        edits: Vec::new(),
         detail: String::new(),
         options: kinds
             .iter()
@@ -784,6 +785,7 @@ fn tall_card(tall: bool) -> App {
         1,
         SessionEvent::DecisionRequested {
             write_targets: Vec::new(),
+            edits: Vec::new(),
             req_id: d.req_id.clone(),
             kind: d.kind.clone(),
             call_id: None,
@@ -1385,6 +1387,7 @@ mod composer;
 mod decisions;
 mod detected;
 mod diagnostics;
+mod diffcard;
 mod editor;
 mod feedback;
 mod ghlinks;

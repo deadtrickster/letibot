@@ -781,6 +781,7 @@ fn the_gate_is_told_about_the_boundary_and_not_shown_a_fixed_sentence() {
         workspace: b.worktree_path(),
         target_exists: None,
         scripts: &[],
+        preview: &[],
     };
 
     // 1. A boundary: the card says the view, and says what it means.
@@ -854,6 +855,7 @@ fn an_inside_read_is_admitted_unasked_and_an_outside_one_still_asks() {
             workspace: &workspace,
             target_exists: None,
             scripts: &[],
+            preview: &[],
         };
         gate.admit(&call)
     };

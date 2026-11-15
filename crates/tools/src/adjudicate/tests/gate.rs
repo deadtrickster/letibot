@@ -654,6 +654,7 @@ fn the_never_write_list_is_about_paths_and_not_prose() {
             workspace: ws_s.as_str(),
             target_exists: Some(true),
             scripts: &[],
+            preview: &[],
         };
         match g.admit(&called) {
             GateDecision::Refuse {
@@ -684,6 +685,7 @@ fn the_never_write_list_is_about_paths_and_not_prose() {
         workspace: ws_s.as_str(),
         target_exists: None,
         scripts: &[],
+        preview: &[],
     };
     match g.admit(&called) {
         GateDecision::Refuse {

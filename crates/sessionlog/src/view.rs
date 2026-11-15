@@ -56,6 +56,9 @@ pub struct OpenDecision {
     /// The paths this action would write, verbatim from the event that carried them: held on the
     /// view rather than re-derived, so a card cannot name a different file than the gate did.
     pub write_targets: Vec<crate::event::WriteTarget>,
+    /// The diff the call would apply, verbatim from the event. Empty for every other call.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub edits: Vec<letibot_transcript::ToolEditExcerpt>,
     /// Layer A's reading, for the dim line under the question.
     #[serde(default)]
     pub detail: String,
@@ -494,6 +497,7 @@ impl SessionView {
             SessionEvent::DecisionRequested {
                 req_id,
                 write_targets,
+                edits,
                 kind,
                 call_id,
                 access,
@@ -513,6 +517,7 @@ impl SessionView {
                 self.open.retain(|d| &d.req_id != req_id);
                 self.open.push(OpenDecision {
                     write_targets: write_targets.clone(),
+                    edits: edits.clone(),
                     req_id: req_id.clone(),
                     kind: kind.clone(),
                     call_id: call_id.clone(),

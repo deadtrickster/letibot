@@ -110,6 +110,7 @@ pub fn card(ask: &Ask, gatekeeper: &str, root: &str) -> SessionEvent {
         summary: ask.question.clone(),
         target: String::new(),
         write_targets: Vec::new(),
+        edits: Vec::new(),
         detail: format!("its board row: {}", ask.row),
         options: Vec::new(),
         options_note: String::new(),

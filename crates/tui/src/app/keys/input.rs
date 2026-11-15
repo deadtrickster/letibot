@@ -54,6 +54,7 @@ fn key(k: KeyEvent) -> Option<Key> {
         // the pane zoomed over the conversation or beside it (`app/editor.rs`).
         KeyCode::Char('i') if m == Mods::ALT => Key::AltI,
         KeyCode::Char('m') if m == Mods::ALT => Key::AltM,
+        KeyCode::Char('d') if m == Mods::ALT => Key::AltD,
         KeyCode::Char('<') if m == Mods::ALT => Key::AltNarrow,
         KeyCode::Char('>') if m == Mods::ALT => Key::AltWiden,
         KeyCode::Char('f') if m == Mods::ALT => Key::WordRight,
@@ -387,6 +388,7 @@ mod tests {
             (b"\x1bj", Key::AltJ),
             (b"\x1bi", Key::AltI),
             (b"\x1bm", Key::AltM),
+            (b"\x1bd", Key::AltD),
             (b"\x1b<", Key::AltNarrow),
             (b"\x1b>", Key::AltWiden),
             (b"\x01", Key::Home),

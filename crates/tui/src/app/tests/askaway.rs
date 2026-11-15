@@ -42,6 +42,7 @@ fn model_question(a: &mut App, req_id: &str, deadline: Option<u64>) {
         1,
         SessionEvent::DecisionRequested {
             write_targets: Vec::new(),
+            edits: Vec::new(),
             req_id: req_id.into(),
             kind: "question".into(),
             call_id: None,

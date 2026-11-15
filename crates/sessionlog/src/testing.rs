@@ -80,6 +80,7 @@ pub fn proposed_on(turn_id: &str, call_id: &str, name: &str, target: &str) -> Se
 pub fn requested(req_id: &str, summary: &str) -> SessionEvent {
     SessionEvent::DecisionRequested {
         write_targets: Vec::new(),
+        edits: Vec::new(),
         req_id: req_id.into(),
         // The `kind`: which of the two vocabularies settles it. Not the access
         // class - `exec` was here and reads as one, and a permission over `exec` is
@@ -122,6 +123,7 @@ pub fn requested(req_id: &str, summary: &str) -> SessionEvent {
 pub fn asked(req_id: &str, text: &str, choices: &[&str], because: &str) -> SessionEvent {
     SessionEvent::DecisionRequested {
         write_targets: Vec::new(),
+        edits: Vec::new(),
         req_id: req_id.into(),
         kind: "question".into(),
         call_id: Some("c1".into()),

@@ -2057,6 +2057,7 @@ fn a_second_card_does_not_inherit_the_first_ones_scroll() {
         2,
         SessionEvent::DecisionRequested {
             write_targets: Vec::new(),
+            edits: Vec::new(),
             req_id: d.req_id.clone(),
             kind: d.kind.clone(),
             call_id: None,

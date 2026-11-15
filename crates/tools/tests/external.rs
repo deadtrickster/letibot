@@ -693,6 +693,7 @@ fn a_network_call_is_classed_external_and_irreversible() {
         workspace: "/tmp/ws",
         target_exists: None,
         scripts: &[],
+        preview: &[],
     });
     assert_eq!(req.class.scope, EffectScope::External);
     assert_eq!(req.class.reversibility, Reversibility::Irreversible);
@@ -722,6 +723,7 @@ fn a_dispatching_tool_puts_its_op_in_front_of_whoever_decides() {
         workspace: "/tmp/ws",
         target_exists: None,
         scripts: &[],
+        preview: &[],
     });
     assert!(req.brief().contains("merge_pr"), "{}", req.brief());
 }

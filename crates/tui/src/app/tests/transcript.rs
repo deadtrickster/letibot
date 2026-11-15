@@ -982,6 +982,7 @@ fn the_conversation_rung_hides_no_warning_no_card_and_no_liveness() {
         5,
         SessionEvent::DecisionRequested {
             write_targets: Vec::new(),
+            edits: Vec::new(),
             req_id: "r1".into(),
             kind: "permission".into(),
             call_id: Some("c1".into()),

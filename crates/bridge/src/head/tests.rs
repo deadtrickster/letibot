@@ -1048,6 +1048,7 @@ fn a_relayed_ask_names_the_session_it_is_for() {
             summary: "4 GiB or 8 GiB?".into(),
             target: String::new(),
             write_targets: Vec::new(),
+            edits: Vec::new(),
             detail: String::new(),
             options: Vec::new(),
             options_note: String::new(),

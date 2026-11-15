@@ -671,6 +671,7 @@ fn an_operator_answer_over_an_oracles_advice_keeps_the_two_reasons_apart() {
         2,
         SessionEvent::DecisionRequested {
             write_targets: Vec::new(),
+            edits: Vec::new(),
             req_id: "r1".into(),
             kind: "permission".into(),
             call_id: Some("c1".into()),

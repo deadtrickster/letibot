@@ -129,6 +129,7 @@ fn request(command: &str, trail: AuthorisationTrail) -> AdjudicationRequest {
     let b = Baseline::of_command(command, &env());
     AdjudicationRequest {
         scripts: Vec::new(),
+        preview: Vec::new(),
         id: "adj-t-0001".into(),
         session_id: "s".into(),
         turn_id: "t1".into(),
@@ -534,6 +535,7 @@ fn a_slow_adjudicator_times_out_and_fails_closed() {
         workspace: "/w",
         target_exists: Some(true),
         scripts: &[],
+        preview: &[],
     }) {
         crate::runtime::GateDecision::Refuse {
             outcome: ToolOutcome::NotRun { why },
@@ -812,6 +814,7 @@ fn exec_call<'a>(args: &'a serde_json::Value) -> crate::runtime::GateCall<'a> {
         workspace: "/w",
         target_exists: None,
         scripts: &[],
+        preview: &[],
     }
 }
 

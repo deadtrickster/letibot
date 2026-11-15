@@ -36,6 +36,7 @@ pub mod detect;
 /// labels the proxy puts on.
 pub mod docker;
 pub mod edit;
+pub mod edit_preview;
 pub mod events;
 pub mod exec;
 pub mod files;

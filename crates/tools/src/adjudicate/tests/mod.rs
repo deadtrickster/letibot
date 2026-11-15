@@ -17,6 +17,7 @@ fn call<'a>(name: &'a str, args: &'a Value) -> GateCall<'a> {
         workspace: "/w",
         target_exists: Some(true),
         scripts: &[],
+        preview: &[],
     }
 }
 
@@ -145,6 +146,7 @@ fn bash<'a>(args: &'a Value) -> GateCall<'a> {
         workspace: "/w",
         target_exists: None,
         scripts: &[],
+        preview: &[],
     }
 }
 

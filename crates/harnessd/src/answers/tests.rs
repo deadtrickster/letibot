@@ -7,6 +7,7 @@ pub(super) fn request() -> AdjudicationRequest {
     use letibot_tools::schema::Access;
     AdjudicationRequest {
         scripts: Vec::new(),
+        preview: Vec::new(),
         id: "adj-1".into(),
         session_id: "s".into(),
         turn_id: "t1".into(),
@@ -1205,4 +1206,26 @@ fn a_question_card_names_its_default() {
         vec!["postgres".to_string(), "sqlite (default)".into()]
     );
     assert!(because.contains("the default is taken"), "{because}");
+}
+
+/// The diff the gate worked out rides the card's event as it was handed over, so a head draws
+/// the change it is asked about and not a re-derivation of it.
+#[test]
+fn the_card_carries_the_diff_the_gate_was_handed() {
+    let mut req = request();
+    req.preview = vec![letibot_transcript::ToolEditExcerpt {
+        path: "src/main.rs".into(),
+        created: true,
+        before_start: 1,
+        after_start: 1,
+        before_lines: 0,
+        after_lines: 1,
+        truncated: false,
+        before: String::new(),
+        after: "fn main() {}".into(),
+    }];
+    let SessionEvent::DecisionRequested { edits, .. } = pose(&req, 0, None) else {
+        panic!("not a card");
+    };
+    assert_eq!(edits, req.preview);
 }

@@ -214,6 +214,7 @@ impl Driver {
                     workspace: &ws,
                     target_exists: None,
                     scripts: &[],
+                    preview: &[],
                 };
                 let decision = gate.admit(&call);
                 let row = gate.log.last().expect("a row per ask");
@@ -425,6 +426,7 @@ fn a_digit_a_typed_reason_and_an_always_allow_answer_a_real_ask() {
         workspace: &ws4,
         target_exists: None,
         scripts: &[],
+        preview: &[],
     };
     assert!(
         matches!(fresh.admit(&again), GateDecision::Admit),

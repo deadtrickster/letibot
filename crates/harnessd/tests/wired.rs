@@ -565,6 +565,7 @@ fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
         workspace: "/home/dead/Projects/letibot",
         target_exists: None,
         scripts: &[],
+        preview: &[],
     });
     assert!(
         matches!(decision, GateDecision::Refuse { .. }),
@@ -630,6 +631,7 @@ fn a_refusal_reaches_the_operators_log_at_the_moment_it_is_decided() {
         workspace: "/home/dead/Projects/letibot",
         target_exists: Some(false),
         scripts: &[],
+        preview: &[],
     });
     let adjudicable: Vec<(String, String)> = hub
         .retained()
@@ -690,6 +692,7 @@ fn a_refusal_says_a_person_was_told_only_when_a_head_is_attached() {
         workspace: "/home/dead/Projects/letibot",
         target_exists: Some(false),
         scripts: &[],
+        preview: &[],
     }));
     assert!(!first.contains("The operator has been told"), "{first}");
     assert!(first.contains("Nobody has been told"), "{first}");
@@ -714,6 +717,7 @@ fn a_refusal_says_a_person_was_told_only_when_a_head_is_attached() {
         workspace: "/home/dead/Projects/letibot",
         target_exists: Some(false),
         scripts: &[],
+        preview: &[],
     }));
     assert!(second.contains("The operator has been told"), "{second}");
     assert!(!second.contains("Nobody has been told"), "{second}");
@@ -742,6 +746,7 @@ fn a_refusal_says_a_person_was_told_only_when_a_head_is_attached() {
         workspace: "/home/dead/Projects/letibot",
         target_exists: Some(false),
         scripts: &[],
+        preview: &[],
     }));
     assert!(!watched.contains("The operator has been told"), "{watched}");
     assert!(watched.contains("Nobody has been told"), "{watched}");
@@ -765,6 +770,7 @@ fn a_refusal_says_a_person_was_told_only_when_a_head_is_attached() {
         workspace: "/home/dead/Projects/letibot",
         target_exists: Some(false),
         scripts: &[],
+        preview: &[],
     }));
     assert!(
         answered.contains("who decided: human:dead"),
@@ -797,6 +803,7 @@ fn a_refusal_says_a_person_was_told_only_when_a_head_is_attached() {
         workspace: "/home/dead/Projects/letibot",
         target_exists: Some(false),
         scripts: &[],
+        preview: &[],
     }));
     assert!(!held.contains("The operator has been told"), "{held}");
     assert!(held.contains("no operator screen is attached"), "{held}");

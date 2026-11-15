@@ -383,6 +383,7 @@ fn to_tool_answer(a: &letibot_sessionlog::question::QuestionAnswer) -> QuestionA
 fn pose_question(req_id: &str, q: &Question, deadline_ms: u64) -> SessionEvent {
     SessionEvent::DecisionRequested {
         write_targets: Vec::new(),
+        edits: Vec::new(),
         req_id: req_id.into(),
         kind: "question".into(),
         call_id: None,
@@ -849,6 +850,8 @@ fn pose(
                     .collect()
             })
             .unwrap_or_default(),
+        // The diff the call would apply, worked out by the gate from the file as it is now.
+        edits: req.preview.clone(),
         options: req.options.iter().map(wire_option).collect(),
         // What the ladder left off, and why, verbatim from the gate: the rung and the sentence
         // explaining its absence are one fact, and a head that composed the sentence would be

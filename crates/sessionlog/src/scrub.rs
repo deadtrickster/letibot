@@ -423,6 +423,7 @@ mod tests {
         let mut log = SessionLog::new("s", LogBounds::default());
         log.append(SessionEvent::DecisionRequested {
             write_targets: Vec::new(),
+            edits: Vec::new(),
             req_id: "r2".into(),
             kind: "exec".into(),
             call_id: None,

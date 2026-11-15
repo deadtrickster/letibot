@@ -138,6 +138,12 @@ pub(crate) fn help_lines_with(
              closes it",
         ),
         (
+            "alt-d",
+            "on a permission card for an edit or a write: the whole diff it would apply, or \
+             folded again — folded, the card draws its first rows and counts the rest; pgup/pgdn \
+             scrolls it",
+        ),
+        (
             "ctrl-o",
             "move the command that is running now to the background — it keeps running as a job",
         ),

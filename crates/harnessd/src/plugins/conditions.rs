@@ -217,6 +217,7 @@ impl StackOver {
             workspace: &workspace,
             target_exists: None,
             scripts: &scripts,
+            preview: &[],
         };
         let Some(decision) = gate.admit_unasked(&call) else {
             // The gate is busy with somebody else's call, so this is *not now* rather than *no*

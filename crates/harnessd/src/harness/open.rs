@@ -5720,6 +5720,7 @@ mod floor_layer_tests {
             workspace: &workspace,
             target_exists: Some(true),
             scripts: &[],
+            preview: &[],
         };
         let decision = h
             .runtime
@@ -5778,6 +5779,7 @@ mod floor_layer_tests {
             workspace: &workspace,
             target_exists: Some(true),
             scripts: &[],
+            preview: &[],
         };
         let decision = h
             .runtime

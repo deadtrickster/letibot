@@ -79,6 +79,7 @@ fn a_write<'a>(args: &'a Value) -> GateCall<'a> {
         workspace: "/w",
         target_exists: Some(true),
         scripts: &[],
+        preview: &[],
     }
 }
 

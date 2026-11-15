@@ -167,6 +167,7 @@ impl App {
                 summary: ask.question.clone(),
                 target: format!("the todo row `{}` waits on your answer", ask.content.trim()),
                 write_targets: Vec::new(),
+                edits: Vec::new(),
                 detail: String::new(),
                 options: Vec::new(),
                 // A todo row's question has no adjudication ladder, so no rung was left

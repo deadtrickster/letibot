@@ -481,6 +481,7 @@ mod shape_cache_tests {
             workspace,
             target_exists: None,
             scripts: &[],
+            preview: &[],
         }
     }
 }
