@@ -1558,6 +1558,17 @@ A single spill is already bounded: a command's capture is an 8 MiB tail ring (`D
 - `lifecycle::Plan::spills` (`spill_holdings`): `letibot holds` prints `spills <project> — <size> in N spill(s), K evicted` after the owners, `letibot gc` lists them under `spill stores` and never reaps them, `--json` carries `spills`.
 
 **Tests.** `spill::durable::tests`: a spill read back through a second store on the same directory; three spills over a 250-byte budget evict the least recently read, the tombstone gives its size and date through a reopened store; a hash never written or a path-shaped one is `NotFound`. `read_spill::tests::an_evicted_hash_says_when_and_how_big`. `lifecycle::tests::the_spill_stores_are_held_with_their_size_and_never_reaped`. `harnessd` `config::tests::a_spill_outlives_its_spiller_and_the_budget_is_read_from_the_project`: a second `build_spiller` on the same `Dir` reads the first one's spill, and the project file's `spill_budget` moves the budget. All on temp directories.
+## R272 - Host setup, working rules and failure modes are in memory and chat, not in the docs
+
+**Status:** built, 2026-11-15, branch `docs-pkg`.
+
+The operator, 2026-11-15: "i think stuff like this commands must be documented". The session sweep of that day found the steps only in chat and memory.
+
+- `docs/install.md` "On Linux": the drkonqi coredump socket mask and why, `firecode net-setup`, the kvm group, `/tmp` off a large tmpfs, `LETIBOT_STORE` as a directory, the launcher as a script with `letibot-multi` and `letibot-askpass`, and the release install loop from a checkout. Each step names its `letibot doctor` row (R271).
+- `AGENTS.md` standing rules: no typing into a head over tmux, rano changes as a branch plus a DM to `cc@rano`, agents test touched crates and the lead runs one gate over the stack (until R258), no binary under a launcher's name.
+- `docs/claude-code-bridge.md`: start with `plugin:leticode@leticode`, no user-scope `leticode` server beside the plugin (R259), the room waiter as the fallback wake.
+- `scripts/gate-at.sh`, moved from the operator's scratchpad, with `LETIBOT_GATE_LOCK` (default `/build/gate.lock`) and `LETIBOT_GATE_LOGS`. Documented in `docs/gate.md`.
+- `docs/troubleshooting.md`: two bridges under one name, the coredump loop (R191, R192), spinning bridges, no room waiter, usage-limit park, the stale prompt on shadows, reaper kills (R241), the launcher overwritten by an ELF.
 
 ## R269 - Per-job disk and IO accounting, an IO throttle and a disk floor
 
