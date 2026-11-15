@@ -25,6 +25,7 @@ pub mod seat;
 pub mod seatbelt;
 pub mod shell;
 pub mod store;
+pub mod suite;
 pub mod term;
 pub mod terminal;
 

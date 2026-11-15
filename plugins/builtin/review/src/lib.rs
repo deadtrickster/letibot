@@ -10,7 +10,7 @@ use letibot_plugin::review::{Brief, BriefIn, Entry};
 const BASE: &str = "@BASE@";
 const HEAD: &str = "@HEAD@";
 
-/// The policy body, verbatim: rules 1-6, the shapes a review needs, and the two things that are
+/// The policy body, verbatim: rules 1-7, the shapes a review needs, and the two things that are
 /// not exceptions. Kept as one literal so it reads the way a reviewer reads it.
 const POLICY: &str = "The rules:\n\
      1. Read the code. `git diff @BASE@...@HEAD@` is the change; the files it \
@@ -46,7 +46,7 @@ const POLICY: &str = "The rules:\n\
      git log --oneline -5 @BASE@..@HEAD@\n\
      git show SHA\n\
      rg PATTERN PATH\n\
-     cargo test -p CRATE\n\n\
+     cargo test -p CRATE TEST_NAME\n\n\
      Two things that are not exceptions. When you need another directory, pass it to \
      the tool — `bash` takes a `cwd`, and `read`, `grep` and `glob` take a path — \
      rather than `cd`-ing to it first. When you want a shorter output, ask for a \
@@ -61,7 +61,12 @@ const POLICY: &str = "The rules:\n\
      session seats them — `web_search` and `web_fetch` for upstream docs, RFCs, release \
      notes and the issue a change cites. You are encouraged to: a verdict that checked a \
      flag in its man page is worth more than one that trusted the diff. Name what you read \
-     in `files` (a URL counts) and what it told you in `reasons`.";
+     in `files` (a URL counts) and what it told you in `reasons`.\n\n\
+     7. **The gate runs the suite; run a single named test only to prove or disprove a \
+     specific claim.** Do not run the whole suite, a workspace build or a benchmark: this \
+     seat refuses them, and a full run here dies at the seat's memory and time limits and \
+     spends an attempt. Read the diff, the gate's recorded output when the ask carries it, \
+     and the failing test's source.";
 
 /// The body, with the placement's two revisions in it.
 fn policy(entry: &Entry) -> String {

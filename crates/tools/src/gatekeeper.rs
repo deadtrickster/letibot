@@ -370,7 +370,7 @@ pub fn native_policy(req: &ReviewRequest, door: Door) -> String {
          git log --oneline -5 {base}..{head}\n\
          git show SHA\n\
          rg PATTERN PATH\n\
-         cargo test -p CRATE\n\n\
+         cargo test -p CRATE TEST_NAME\n\n\
          {after}\n\n\
          6. **Read the references, and say which.** When the change leans on an API, a \
          command's flags, a protocol, a file format or a spec, check the claim against the \
@@ -379,7 +379,12 @@ pub fn native_policy(req: &ReviewRequest, door: Door) -> String {
          session seats them — `web_search` and `web_fetch` for upstream docs, RFCs, release \
          notes and the issue a change cites. You are encouraged to: a verdict that checked a \
          flag in its man page is worth more than one that trusted the diff. Name what you read \
-         in `files` (a URL counts) and what it told you in `reasons`.",
+         in `files` (a URL counts) and what it told you in `reasons`.\n\n\
+         7. **The gate runs the suite; run a single named test only to prove or disprove a \
+         specific claim.** Do not run the whole suite, a workspace build or a benchmark: this \
+         seat refuses them, and a full run here dies at the seat's memory and time limits and \
+         spends an attempt. Read the diff, the gate's recorded output when the ask carries it, \
+         and the failing test's source.",
         base = req.base_sha,
         head = head,
         shapes_head = ONE_COMMAND_SHAPES_HEAD,
@@ -621,6 +626,26 @@ mod tests {
                  permission card — which is the defect this prompt rule exists to close"
             );
         }
+    }
+
+    /// Both doors' briefs say the gate runs the suite, and the shapes name one test, not a crate.
+    #[test]
+    fn the_brief_says_the_gate_runs_the_suite() {
+        for door in [Door::Tool, Door::StructuredOutput] {
+            let p = review_prompt_with(&request(), door, None).to_lowercase();
+            assert!(
+                p.contains(
+                    "the gate runs the suite; run a single named test only to prove or \
+                            disprove a specific claim"
+                ),
+                "{p}"
+            );
+        }
+        let shapes = stated_command_shapes(&review_prompt(&request()));
+        assert!(
+            shapes.iter().any(|s| s == "cargo test -p CRATE TEST_NAME"),
+            "{shapes:?}"
+        );
     }
 
     /// The closed set is closed, and one word out is not a verdict. Reading an unknown word as

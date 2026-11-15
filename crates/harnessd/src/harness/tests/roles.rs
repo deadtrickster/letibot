@@ -143,3 +143,28 @@ fn a_rows_role_is_the_profile_it_was_seated_as() {
     root.seat = crate::config::Seat::Planner;
     assert_eq!(crate::profiles::role_name(&root), "planner");
 }
+
+/// A reviewer's `bash` refuses whole-suite runs, and its project's `[queue] reviewers_run_suites`
+/// opts back in. A coder is never held to it.
+#[test]
+fn a_reviewer_refuses_whole_suites_unless_its_project_opts_in() {
+    let dir = crate::mergequeue::serve::tests::TempDir::new("reviewer-suites");
+    let seated = |name: &str| {
+        let mut cfg = a_child(name, letibot_tools::roles::m2_coder().tools);
+        cfg.workspace = dir.0.clone();
+        cfg
+    };
+    let refuses = super::super::open::refuses_whole_suites;
+    assert!(refuses(&seated("reviewer")));
+    assert!(refuses(&seated("gatekeeper")));
+    assert!(!refuses(&seated("coder")));
+    std::fs::write(
+        dir.0.join("leticode.toml"),
+        "[queue]\nreviewers_run_suites = true\n",
+    )
+    .unwrap();
+    assert!(!refuses(&seated("reviewer")), "the project opted in");
+    let mut no_project = seated("reviewer");
+    no_project.read_project_config = false;
+    assert!(refuses(&no_project), "--no-project-config reads no opt-in");
+}

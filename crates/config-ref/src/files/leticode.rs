@@ -240,6 +240,7 @@ pub const LETICODE: File = File {
                 k("gate_train", "int >= 1", "1", P, "branches judged by one gate", "1"),
                 k("reviewers_at_once", "int >= 1", "placement's", P, "concurrent reviewers", "2"),
                 k("reviewer_hosts", "list; [\"*\"] = all", "[\"local\"]", P, "hosts a host reviewer may use", "[\"local\"]"),
+                k("reviewers_run_suites", "bool", "false", P, "reviewers may run whole test suites, not only named tests", "true"),
             ],
         },
         Table {

@@ -1454,3 +1454,43 @@ fn a_rewrite_the_tool_refuses_does_not_run() {
         );
     }
 }
+
+/// A reviewer's `bash` refuses a whole-suite run with the reason, and lets a named test through
+/// to the backend. The backend here starts no process, so "through" is any other answer.
+#[test]
+fn a_reviewers_bash_refuses_the_whole_suite_and_runs_a_named_test() {
+    let d = crate::backend::tempdir::TempDir::new();
+    let run = |bash: crate::builtins::bash::Bash, command: &str| {
+        let mut reg = Registry::new();
+        reg.register(Box::new(bash)).unwrap();
+        let backend = crate::backend::HostBackend::new(d.path()).unwrap();
+        let rt = ToolRuntime::new(reg, Box::new(backend)).with_gate(Box::new(AdmitGate));
+        let args = serde_json::json!({ "command": command }).to_string();
+        format!(
+            "{:?}",
+            rt.invoke(
+                "t1",
+                &call("bash", &args),
+                &mut RecordingToolSink::default()
+            )
+        )
+    };
+    let reviewer = || crate::builtins::bash::Bash::default().refusing_whole_suites(true);
+    for whole in ["cargo test", "cargo test --workspace"] {
+        let r = run(reviewer(), whole);
+        assert!(
+            r.contains("the gate runs the suite") && r.contains("cargo test -p CRATE TEST_NAME"),
+            "`{whole}` was not refused with the reason: {r}"
+        );
+    }
+    let r = run(reviewer(), "cargo test -p x some_test");
+    assert!(
+        !r.contains("the gate runs the suite"),
+        "a named test was refused: {r}"
+    );
+    let r = run(crate::builtins::bash::Bash::default(), "cargo test");
+    assert!(
+        !r.contains("the gate runs the suite"),
+        "a coder seat was refused: {r}"
+    );
+}

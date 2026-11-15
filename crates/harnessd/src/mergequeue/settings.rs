@@ -33,6 +33,8 @@
 //!                                 #   Default: "host" - the steps run on the gate machine
 //! reviewer_hosts = ["lab2x1"]     # opt in: the declared hosts a `host` reviewer may be placed
 //!                                 #   on (`["*"]` is all of them). Default: this machine only
+//! reviewers_run_suites = true     # opt in: a reviewer's `bash` may run whole test suites.
+//!                                 #   Default: refused, a reviewer runs single named tests
 //! [queue.claude]                  # the reviewers are headless `claude -p` runs instead of
 //!                                 #   letibot children (R116). The table ABSENT is the letibot
 //!                                 #   reviewer, which is what every project had before.
@@ -173,6 +175,9 @@ pub struct QueueSettings {
     /// `[queue] reviewer_hosts`, the opt-in to fan reviewers out. Absent is this machine alone
     /// (`["local"]`, D18). `None` is every declared host (`["*"]`). A list is exactly those names.
     pub reviewer_hosts: Option<Vec<String>>,
+    /// `[queue] reviewers_run_suites`: a reviewer's `bash` may run whole test suites. Off by
+    /// default, because the gate runs the suite and a reviewer that repeats it dies at its limits.
+    pub reviewers_run_suites: bool,
     /// `[queue.claude]`, when this project's reviewers are Claude Code runs (`claude -p`, R116)
     /// instead of letibot children. `None` - the table absent - is the letibot reviewer every
     /// project had before there was a choice, so a Claude reviewer exists only where somebody
@@ -196,6 +201,7 @@ impl Default for QueueSettings {
             reviewer_skills: Vec::new(),
             reviewers_at_once: None,
             reviewer_hosts: Some(vec!["local".to_string()]),
+            reviewers_run_suites: false,
             claude: None,
             path: None,
         }
@@ -231,6 +237,8 @@ struct QueueTable {
     reviewers_at_once: Option<i64>,
     #[serde(default)]
     reviewer_hosts: Option<Vec<String>>,
+    #[serde(default)]
+    reviewers_run_suites: Option<bool>,
     /// `[queue.claude]`: present is *this project's reviewers are Claude Code runs*.
     #[serde(default)]
     claude: Option<ClaudeTable>,
@@ -390,6 +398,7 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
             .filter(|h| !h.is_empty()),
         reviewers_at_once,
         reviewer_hosts,
+        reviewers_run_suites: q.reviewers_run_suites.unwrap_or(false),
         claude: match q.claude {
             None => None,
             Some(c) => Some(claude_settings(&c, path)?),

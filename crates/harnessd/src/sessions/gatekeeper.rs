@@ -161,6 +161,9 @@ does not.\n\
 * `task_message` that handle when it is stuck, or when it has missed what the ask was. A message \
 starts a turn in a child that is between turns, which is how a review is corrected rather than \
 abandoned.\n\
+* Never ask a reviewer to run the test suite, a workspace build or a benchmark. The gate runs the \
+suite; a reviewer runs a single named test only to prove or disprove a specific claim, and its seat \
+refuses a whole-suite run.\n\
 * Nothing else. A refusal goes back to the child that did the work — that is the queue's own act \
 and not yours.\n\
 \n\

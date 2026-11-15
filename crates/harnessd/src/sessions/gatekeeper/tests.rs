@@ -970,3 +970,14 @@ fn the_queue_prompt_takes_a_layers_added_words_and_keeps_the_hosts_own() {
     // And no layer at all is the native prompt, byte for byte.
     assert_eq!(prompt_with(&placement, "gatekeeper", None), native);
 }
+
+/// The queue's own session never asks a reviewer for the suite: the gate runs it.
+#[test]
+fn the_queue_session_is_told_not_to_ask_for_the_suite() {
+    let p = prompt(&reviewer_placement(false, Err("no firecode".into())));
+    assert!(
+        p.contains("Never ask a reviewer to run the test suite")
+            && p.contains("a single named test only to prove or disprove a specific claim"),
+        "{p}"
+    );
+}

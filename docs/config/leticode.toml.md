@@ -195,6 +195,7 @@ The merge queue reads the project file only, except the three census keys.
 | `gate_train` | int >= 1 | 1 | project only | branches judged by one gate |
 | `reviewers_at_once` | int >= 1 | placement's | project only | concurrent reviewers |
 | `reviewer_hosts` | list; ["*"] = all | ["local"] | project only | hosts a host reviewer may use |
+| `reviewers_run_suites` | bool | false | project only | reviewers may run whole test suites, not only named tests |
 
 ## `[queue.claude]`
 

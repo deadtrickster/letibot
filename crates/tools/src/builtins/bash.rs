@@ -25,6 +25,8 @@ pub struct Bash {
     snapshot_budget_said: std::sync::atomic::AtomicBool,
     /// `[boundary] firecode_only`: where a call that runs a listed program goes instead.
     route: Option<crate::firecode_route::FirecodeRoute>,
+    /// A reviewer's seat: whole-suite test runs are refused, since the gate runs the suite.
+    refuse_whole_suites: bool,
     /// The work tree each run directory is in, remembered: a session runs nearly all of its
     /// commands in the same place, and a `rev-parse` per call would be a third git call on every one.
     trees: std::sync::Mutex<std::collections::BTreeMap<std::path::PathBuf, std::path::PathBuf>>,
@@ -144,6 +146,12 @@ impl Bash {
     /// `bash` under the operator's `[exec]` foreground settings.
     pub fn with_foreground(mut self, foreground: ForegroundPolicy) -> Bash {
         self.foreground = foreground;
+        self
+    }
+
+    /// Refuse whole-suite test, bench and workspace build runs (see [`crate::exec::suite`]).
+    pub fn refusing_whole_suites(mut self, on: bool) -> Bash {
+        self.refuse_whole_suites = on;
         self
     }
 
@@ -607,6 +615,13 @@ impl Tool for Bash {
         // terminal is handed out, which is the operator's own run: a model's `bash` keeps its pipe.
         if ctx.tty
             && let Some(r) = terminal::wants_the_terminal(command)
+        {
+            return Invocation::not_run(r.why(), r.body());
+        }
+        // The operator's own run is theirs to spend; a model's is held to its seat.
+        if self.refuse_whole_suites
+            && !ctx.tty
+            && let Some(r) = crate::exec::suite::whole_suite(command)
         {
             return Invocation::not_run(r.why(), r.body());
         }

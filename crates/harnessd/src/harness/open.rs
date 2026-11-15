@@ -2395,7 +2395,8 @@ impl Harness {
                     &cfg.workspace,
                     cfg.read_project_config,
                 ))
-                .with_firecode_route(firecode_route(&cfg)),
+                .with_firecode_route(firecode_route(&cfg))
+                .refusing_whole_suites(refuses_whole_suites(&cfg)),
             ))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobList)))
             .and_then(|_| registry.register(Box::new(letibot_tools::builtins::jobs::JobOutput)))
@@ -5739,6 +5740,19 @@ mod floor_layer_tests {
 
 /// `[boundary] firecode_only` as a route, for a session whose commands run on this machine. A
 /// session already inside a VM has nothing to route to, and one with no such key has no route.
+/// A reviewer's seat refuses whole-suite runs: the gate runs the suite. A project opts back in
+/// with `[queue] reviewers_run_suites = true`; a `[queue]` that does not parse keeps the refusal.
+pub(crate) fn refuses_whole_suites(cfg: &Config) -> bool {
+    let role = crate::profiles::for_session(cfg).name;
+    if !matches!(role.as_str(), "reviewer" | "gatekeeper") {
+        return false;
+    }
+    let opted_in = cfg.read_project_config
+        && crate::mergequeue::settings::for_repository(&cfg.workspace)
+            .is_ok_and(|s| s.reviewers_run_suites);
+    !opted_in
+}
+
 fn firecode_route(cfg: &Config) -> Option<letibot_tools::firecode_route::FirecodeRoute> {
     if cfg.placement.is_vm() || cfg.vm_attach.is_some() {
         return None;
