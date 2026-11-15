@@ -1114,6 +1114,77 @@ impl<'a> Sessions<'a> {
         self.slash_parsed(session_id, crate::slash::Slash::parse(line))
     }
 
+    /// The project root and the user config dir command files are read from.
+    fn command_dirs(
+        &mut self,
+        session_id: &str,
+    ) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+        let h = self.harness(session_id).ok()?;
+        let c = h.config();
+        Some((c.workspace.clone(), c.box_dirs.config.clone()))
+    }
+
+    /// A `/verb` no daemon verb answers, from a head: a `command_<verb>` layer first, as the head
+    /// asks one, then a command file run as the operator's prompt. `None` leaves the line to the
+    /// unknown-verb sentence, which names where a file would have been.
+    fn command_file(
+        &mut self,
+        session_id: &str,
+        line: &str,
+        verb: &str,
+        rest: &str,
+    ) -> Option<Outcome> {
+        let host = self.plugins.get(session_id).cloned();
+        let hub = self.registry.get(session_id);
+        let said = |code: &str, text: String| {
+            if let Some(hub) = &hub {
+                hub.warn(code, format!("/{line}\n{text}"));
+            }
+        };
+        if let Some(reply) =
+            crate::slash::layer_answer(host.as_deref(), hub.as_ref(), session_id, verb, rest)
+        {
+            said(
+                if reply.ok { "slash" } else { "slash_refused" },
+                reply.lines.join("\n"),
+            );
+            return Some(if reply.ok {
+                Outcome::Ignored
+            } else {
+                Outcome::Failed(format!("/{line} was refused"))
+            });
+        }
+        let (ws, user) = self.command_dirs(session_id)?;
+        let cmd = match crate::commands::find(&ws, &user, verb) {
+            Ok(Some(c)) => c,
+            Ok(None) => {
+                said(
+                    "slash_refused",
+                    crate::commands::not_found(verb, &ws, &user),
+                );
+                return Some(Outcome::Failed(format!("/{line} was refused")));
+            }
+            Err(why) => {
+                said("slash_refused", why);
+                return Some(Outcome::Failed(format!("/{line} was refused")));
+            }
+        };
+        let mut note = format!("{} command {}", cmd.scope.word(), cmd.path.display());
+        let unapplied = cmd.unapplied();
+        if !unapplied.is_empty() {
+            note.push_str(&format!(
+                "; read but not applied by this build: {}",
+                unapplied.join(", ")
+            ));
+        }
+        said("command_file", note);
+        let text = cmd.expand(rest);
+        Some(match self.run_prompt(session_id, &text, &[], None, None) {
+            Ok(reply) => Outcome::Replied(Box::new(reply)),
+            Err(e) => Outcome::Failed(e.to_string()),
+        })
+    }
+
     fn slash_parsed(
         &mut self,
         session_id: &str,
@@ -1130,7 +1201,27 @@ impl<'a> Sessions<'a> {
             Slash::Unknown { verb, line } => {
                 let host = self.plugins.get(session_id).cloned();
                 let hub = self.registry.get(session_id);
-                crate::slash::unknown_verb(host.as_deref(), hub.as_ref(), session_id, &verb, &line)
+                if let Some(reply) = crate::slash::layer_answer(
+                    host.as_deref(),
+                    hub.as_ref(),
+                    session_id,
+                    &verb,
+                    &line,
+                ) {
+                    return reply;
+                }
+                let Some((ws, user)) = self.command_dirs(session_id) else {
+                    return crate::slash::unknown_verb(None, None, session_id, &verb, &line);
+                };
+                let lines = match crate::commands::find(&ws, &user, &verb) {
+                    Ok(Some(c)) => vec![format!(
+                        "/{verb} is the command file {}; it runs as a prompt when sent from a head",
+                        c.path.display()
+                    )],
+                    Ok(None) => vec![crate::commands::not_found(&verb, &ws, &user)],
+                    Err(why) => vec![why],
+                };
+                SlashReply { lines, ok: false }
             }
             Slash::Gate(verb) => {
                 let at = self.base.store_at();
@@ -4521,6 +4612,12 @@ impl<'a> Sessions<'a> {
                     return Outcome::HandedOn;
                 }
                 let line = line.clone();
+                if let crate::slash::Slash::Unknown { verb, line: rest } =
+                    crate::slash::Slash::parse(&line)
+                    && let Some(outcome) = self.command_file(session_id, &line, &verb, &rest)
+                {
+                    return outcome;
+                }
                 let reply = self.slash(session_id, &line);
                 if let Some(hub) = &hub {
                     hub.warn(

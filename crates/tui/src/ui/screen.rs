@@ -997,7 +997,8 @@ impl App {
                 self.pane_window(rows, room)
             }
             Drawn::Surface(Surface::Help) => {
-                let help = help_lines(&self.cfg, w, &self.key_overrides);
+                let commands = self.daemon_commands();
+                let help = help_lines_with(&self.cfg, w, &self.key_overrides, &commands);
                 self.pane_window(help, room)
             }
             Drawn::Surface(Surface::Stats) => {

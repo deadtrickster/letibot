@@ -16,3 +16,4 @@ file (`FILE.bak` first). `head.toml` gets it on every save.
 - [permission.json](permission.json.md)
 - [plugin-trust.json](plugin-trust.json.md)
 - [modes.tsv](modes.tsv.md)
+- [commands/*.md](commands.md) (Markdown slash commands)

@@ -265,6 +265,13 @@ impl App {
                 out.push((v, String::new()));
             }
         }
+        // The project's and the user's command files, with their descriptions. A name a verb
+        // above already holds is that verb's: the head answers it first.
+        for (v, about) in self.daemon_commands() {
+            if !out.iter().any(|(n, _)| *n == v) {
+                out.push((v, about));
+            }
+        }
         // And the door's, hyphenated. Offered from the daemon's own row, so this
         // head still holds no schema: it knows a name, a field and a kind, and the verb it
         // offers is a textual transform of the name rather than a second list.
@@ -308,6 +315,24 @@ impl App {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    /// The command files the daemon published, as `(name, description)`.
+    pub(crate) fn daemon_commands(&self) -> Vec<(String, String)> {
+        let Some(r) = self
+            .settings
+            .iter()
+            .find(|r| r.key == letibot_sessionlog::protocol::DAEMON_COMMANDS_KEY)
+        else {
+            return Vec::new();
+        };
+        r.value
+            .split(',')
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .enumerate()
+            .map(|(i, n)| (n.to_string(), r.choices.get(i).cloned().unwrap_or_default()))
+            .collect()
     }
 
     /// The repositories of this folder, as the daemon's `listen.NAME` rows name them.

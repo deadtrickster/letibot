@@ -1750,3 +1750,49 @@ fn a_prompt_typed_while_the_daemon_boots_says_it_runs_once_started() {
     );
     assert!(s.contains("queued · pull"), "{s}");
 }
+
+/// The daemon's command files are offered by Tab with their description, listed on `/help`, and
+/// a typed `/review foo` leaves as the daemon's slash line.
+#[test]
+fn command_files_complete_list_and_send() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Settings {
+        rows: vec![letibot_sessionlog::protocol::SettingRow {
+            key: letibot_sessionlog::protocol::DAEMON_COMMANDS_KEY.into(),
+            value: "review,standup".into(),
+            source: "command files".into(),
+            editable: String::new(),
+            choices: vec!["PATH - review a change".into(), "Write the standup.".into()],
+            tools: Vec::new(),
+        }],
+    });
+    let names = a.command_names();
+    assert!(
+        names
+            .iter()
+            .any(|(n, h)| n == "review" && h == "PATH - review a change"),
+        "{names:?}"
+    );
+    typed(&mut a, "/revi");
+    a.key(Key::Tab);
+    assert_eq!(a.input(), "/review");
+    let help = crate::ui::panes::help::help_lines_with(
+        &a.cfg,
+        200,
+        &a.key_overrides,
+        &a.daemon_commands(),
+    )
+    .join("\n");
+    assert!(help.contains("/standup"), "{help}");
+    assert!(help.contains("review a change (command file)"), "{help}");
+    typed(&mut a, " foo");
+    match a.key(Key::Enter) {
+        Some(Action::Slash { line }) => assert_eq!(line, "review foo"),
+        other => panic!("{other:?}"),
+    }
+}

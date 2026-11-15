@@ -2417,6 +2417,34 @@ impl Config {
             "default",
             "",
         ));
+        // The command files, read on every settings answer so a new file shows on the next
+        // refresh. A name a host verb answers is left out: the line would never reach the file.
+        {
+            let cmds: Vec<_> = crate::commands::list(&self.workspace, &self.box_dirs.config)
+                .into_iter()
+                .filter(|c| {
+                    !crate::slash::VERBS.contains(&c.name.as_str())
+                        && !letibot_plugin::command::is_host_verb(&c.name)
+                })
+                .collect();
+            let mut r = row(
+                letibot_sessionlog::protocol::DAEMON_COMMANDS_KEY,
+                cmds.iter()
+                    .map(|c| c.name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                "command files",
+                "",
+            );
+            r.choices = cmds
+                .iter()
+                .map(|c| match c.argument_hint.as_str() {
+                    "" => c.description.clone(),
+                    hint => format!("{hint} - {}", c.description),
+                })
+                .collect();
+            out.push(r);
+        }
         // The sections a compaction's record has -, and the same argument: a list a head
         // holds drifts, and this one is the daemon's own template. An absent row means a daemon older
         // than this, and the head then draws the warning's `detail` sentence as it did before.

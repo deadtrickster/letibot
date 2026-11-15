@@ -55,6 +55,10 @@ pub const OTHERS: &[(&str, &str)] = &[
         "roles/*.md",
         "role profiles, under the project's .letibot/roles",
     ),
+    (
+        "commands/*.md",
+        "slash commands, under the project's .letibot/commands; docs/config/commands.md",
+    ),
     ("skills/", "user skills"),
     ("plugins/", "user plugin layers"),
 ];

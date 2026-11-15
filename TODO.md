@@ -96,6 +96,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R272 | Host setup, working rules and failure modes are in memory and chat, not in the docs | Code work | built: `docs/install.md` host setup and the checkout install loop, `AGENTS.md` rules, the bridge's start flag in `docs/claude-code-bridge.md`, `scripts/gate-at.sh` in `docs/gate.md`, `docs/troubleshooting.md` |
 | R281 | Daemon logs, job captures and store journals grow without bound | Code work | built (branch `j18-logs`, plan 1.7): daemon/room log rotation by size, bounded job captures, `wal_checkpoint(TRUNCATE)` at the idle exit, all three in `letibot holds`, `gc` and the bridge's `holds`/`gc_plan`; left: session debug logs under `<data>/logs/<id>` have no age-out, `scripts/letibot`'s shared `harnessd.log` is not rotated, R227 and R228 stay open |
 | R279 | grep and glob ignore `.gitignore`; `@` in the composer completes handles only | Code work | built (audit J10, plan 1.4 + 2.9): `walk_ignoring` with `.gitignore` rules, a named path bypasses them, a miss counts the ignored files; `@path` completes files in the room composer; left: the attachment chip on choosing a file, `.git/info/exclude` and the global excludes file |
+| R283 | Markdown command files: `.letibot/commands/*.md` and the user's become `/name args` | Code work | built (J13, plan 2.12): project, `.claude/commands` and user scopes (nearest wins), opencode's `$ARGUMENTS` / `$1..$9`, frontmatter `description` / `argument-hint` / `allowed-tools` / `model`, sent as the operator's prompt, listed in `/help` and Tab via the `daemon.commands` row; left: `allowed-tools` and `model` are read but not applied, subdirectories are not namespaced, a new file shows after the next settings refresh |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -1566,6 +1567,22 @@ The operator, 2026-11-15: "i think stuff like this commands must be documented".
 - `docs/claude-code-bridge.md`: start with `plugin:leticode@leticode`, no user-scope `leticode` server beside the plugin (R259), the room waiter as the fallback wake.
 - `scripts/gate-at.sh`, moved from the operator's scratchpad, with `LETIBOT_GATE_LOCK` (default `/build/gate.lock`) and `LETIBOT_GATE_LOGS`. Documented in `docs/gate.md`.
 - `docs/troubleshooting.md`: two bridges under one name, the coredump loop (R191, R192), spinning bridges, no room waiter, usage-limit park, the stale prompt on shadows, reaper kills (R241), the launcher overwritten by an ELF.
+
+## R283 - Markdown command files: `.letibot/commands/*.md` and the user's become `/name args`
+
+**Status:** built, 2026-11-15, branch `j13-commands`. left: `allowed-tools` and `model` are parsed and named on the `command_file` row but not applied to the turn; only the top level of each directory is read (no `dir/name` namespaces); a head sees a new file on its next settings refresh.
+
+Plan 2.12. Custom commands existed only as plugin `command_<verb>` layers. opencode, Claude Code, pi and omp all read Markdown command files.
+
+**Built.**
+- `harnessd::commands`: `.letibot/commands/NAME.md`, then `.claude/commands/NAME.md`, then `<config dir>/commands/NAME.md` (`Config::box_dirs.config`, empty in fixtures). The nearest scope wins on a name clash. A file whose frontmatter does not close is refused with that reason, and a farther scope is not tried in its place.
+- Expansion copies opencode: `$ARGUMENTS` is the rest of the line, `$1..$9` one word each with quotes grouping, the highest placeholder takes the remaining words, a missing one is empty, and arguments to a body with no placeholder are appended after a blank line.
+- Frontmatter: `description` (default the body's first line), `argument-hint`, `allowed-tools` (Claude Code's comma list with parentheses, or a YAML list), `model`.
+- `Sessions::dispatch` on a `Slash` line no daemon verb parses: the `command_<verb>` layer first (`slash::layer_answer`), then the file, run through `run_prompt` as the operator's prompt, with a `command_file` warning row naming the file and any frontmatter not applied. No file anywhere is `slash_refused` naming every path looked at.
+- `daemon.commands` settings row (`DAEMON_COMMANDS_KEY`): names in `value`, `argument-hint - description` per name in `choices`. Names a host or daemon verb answers are left out. The TUI offers them on Tab with the description and lists them on `/help` before `/quit`.
+- Documented in `docs/config/commands.md`, and `commands/*.md` in `crates/config-ref`'s `OTHERS`.
+
+**Tests.** `commands::tests` (expansion with args, positionals, project over user, `.claude` below `.letibot`, missing and broken files refused). `harnessd/tests/command_files.rs`: `/review foo` through `dispatch` puts `Review foo and report.` on the transcript as the operator's prompt with the user's same-named file ignored, the settings row lists `review,standup`, `/nonesuch` is refused naming `nonesuch.md`. `tui` `composer::command_files_complete_list_and_send`: Tab completes `/revi` to `/review`, `/help` lists both, Enter sends `review foo`. All on temp dirs.
 
 ## R268 - Spills are durable: kept in the data dir, bounded by a budget, evicted visibly
 

@@ -519,14 +519,25 @@ pub fn unknown_verb(
     verb: &str,
     line: &str,
 ) -> SlashReply {
-    let not_a_verb = || SlashReply {
+    layer_answer(host, hub, session, verb, line).unwrap_or_else(|| SlashReply {
         lines: vec![format!(
             "/{verb} is not a daemon verb; /help lists the head's"
         )],
         ok: false,
-    };
+    })
+}
+
+/// The `command_<verb>` layer's reply, or `None` when no layer takes the line - so a caller can
+/// try a command file before the unknown-verb sentence.
+pub fn layer_answer(
+    host: Option<&crate::plugins::PluginHost>,
+    hub: Option<&std::sync::Arc<letibot_sessionlog::hub::Hub>>,
+    session: &str,
+    verb: &str,
+    line: &str,
+) -> Option<SlashReply> {
     let (Some(host), Some(hub)) = (host, hub) else {
-        return not_a_verb();
+        return None;
     };
     let input = letibot_plugin::command::Input {
         v: letibot_plugin::V,
@@ -535,42 +546,37 @@ pub fn unknown_verb(
         session: Some(session.to_string()),
         feeds: Default::default(),
     };
-    let Ok(input) = serde_json::to_value(&input) else {
-        return not_a_verb();
-    };
-    let Some(answered) = host
+    let input = serde_json::to_value(&input).ok()?;
+    let answered = host
         .ask(hub, &letibot_plugin::command::hook(verb), &input)
-        .and_then(|r| r.answer)
-    else {
-        return not_a_verb();
-    };
+        .and_then(|r| r.answer)?;
     // The daemon performs one act: a sentence. Anything else is a layer asking for a verb the daemon
     // does not have on this side either, and the person is told which rather than left with silence.
     if let Some(text) = acted(&answered, "say") {
         let text = text.get("text").and_then(|t| t.as_str()).unwrap_or("");
-        return SlashReply {
+        return Some(SlashReply {
             lines: text.lines().map(str::to_string).collect(),
             ok: !text.is_empty(),
-        };
+        });
     }
     if let Some(refusal) = answered.get("refusal").and_then(|r| r.as_str()) {
-        return SlashReply {
+        return Some(SlashReply {
             lines: vec![refusal.to_string()],
             ok: false,
-        };
+        });
     }
     let named = answered
         .get("act")
         .and_then(|a| a.get("name"))
         .and_then(|n| n.as_str())
         .unwrap_or("no act at all");
-    SlashReply {
+    Some(SlashReply {
         lines: vec![format!(
             "the `{verb}` layer answered `{named}`, and this daemon performs only `say` — \
              nothing was done"
         )],
         ok: false,
-    }
+    })
 }
 
 /// The arguments of an answer's act, when the act is the one named.

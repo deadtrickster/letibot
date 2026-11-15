@@ -26,6 +26,10 @@ pub const HEAD_RUN_TOOLS_KEY: &str = "head-run.tools";
 /// owners: the head offers its own, and asks the daemon for the rest.
 pub const DAEMON_VERBS_KEY: &str = "daemon.verbs";
 
+/// The project's and the user's Markdown command files, published so a head completes and lists
+/// them: `value` is the names comma-joined, and `choices[i]` is the description of the i-th name.
+pub const DAEMON_COMMANDS_KEY: &str = "daemon.commands";
+
 /// The `model` row's key, and the code the registry publishes when that row MOVES: the rows
 /// answer a request, so a head that did not make the switch would otherwise keep the old name.
 pub const MODEL_KEY: &str = "model";

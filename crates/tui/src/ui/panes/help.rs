@@ -5,10 +5,21 @@
 use crate::ui::render::{RenderConfig, row_strings};
 use rano::agent::help::HelpPane;
 
+#[cfg(test)]
 pub(crate) fn help_lines(
     cfg: &RenderConfig,
     w: usize,
     keys: &crate::app::KeyOverrides,
+) -> Vec<String> {
+    help_lines_with(cfg, w, keys, &[])
+}
+
+/// [`help_lines`] with the session's command files, `(name, description)`, listed before `/quit`.
+pub(crate) fn help_lines_with(
+    cfg: &RenderConfig,
+    w: usize,
+    keys: &crate::app::KeyOverrides,
+    commands: &[(String, String)],
 ) -> Vec<String> {
     // The panes' rows are generated from their key tables: how each is opened, what it is, and
     // every key it takes, read from `Surface::bindings`, the table its keys are dispatched from -
@@ -256,6 +267,21 @@ pub(crate) fn help_lines(
         .position(|(k, _)| k == "tab")
         .unwrap_or(rows.len());
     rows.splice(at..at, panes);
+    let at = rows
+        .iter()
+        .position(|(k, _)| k == "/quit")
+        .unwrap_or(rows.len());
+    rows.splice(
+        at..at,
+        commands.iter().map(|(name, about)| {
+            let about = if about.is_empty() {
+                "a command file".to_string()
+            } else {
+                format!("{about} (command file)")
+            };
+            (format!("/{name}"), about)
+        }),
+    );
     let pane = HelpPane {
         title: "keys and commands".into(),
         rows,
