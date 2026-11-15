@@ -527,8 +527,8 @@ need() { # need WHAT VERB
 # so it is handed over before the flag guard can refuse them.
 case "${1:-}" in
   --config-reference | --config-header)
-    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the config reference lives there)"
-    exec "$BIN/letibot" "$@"
+    [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the config reference lives there)"
+    exec "$BIN/letibot-multi" "$@"
     ;;
 esac
 

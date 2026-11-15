@@ -1453,6 +1453,12 @@ expect "fb marks the turn through the verb" "$out" "^letibot-multi fb --session 
 out="$(run "$DEFAULT_ONLY" boundary --mode read-only)"
 expect "boundary is the boundary verb's" "$out" "^letibot-multi boundary --mode read-only$"
 
+out="$(run "$DEFAULT_ONLY" --config-reference --markdown providers.toml)"
+expect "--config-reference is the multicall's" "$out" "^letibot-multi --config-reference --markdown providers.toml$"
+refuse "  ...and no daemon is started for it" "$out" "^harnessd "
+out="$(run "$DEFAULT_ONLY" --config-header leticode.toml --as leticode.toml)"
+expect "--config-header is the multicall's" "$out" "^letibot-multi --config-header leticode.toml --as leticode.toml$"
+
 out="$(run "$DEFAULT_ONLY" migrate --help)"
 expect "migrate reaches its own help, with this box's store" "$out" \
   "^letibot-multi migrate --help --store "
