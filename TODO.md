@@ -1264,6 +1264,41 @@ Today (R243) every shadow trigger is a separate stateless call: the job's base p
 - A stack with one bad row lands the other two and parks the bad one, with at most log2(n)+1 extra gate runs.
 - A Claude Code agent can enqueue a branch through the bridge and read its row's state.
 
+## R259 - Messages to `cc@letibot` were never delivered to the session, and its inbox cursor had already moved past them
+
+**Status:** open, 2026-11-15. left: all of it.
+
+cc@rano sent `cc@letibot` a DM (#1473, ~12:57) and then an `@cc@letibot` mention in `host` (#1574, ~14:59). Neither arrived in the Claude Code session as a `<channel>` event, so neither was answered. The operator noticed: "looks like messages to you are not delivered, agents message you and you dont reply".
+
+When the session finally called `room_inbox to_me`, the result was empty, with `cursor 1574` and `head 1580`. The cursor was already past both messages, so something had acked them. The `host` roster shows two connected bridges under that name, `cc@letibot` and `cc@letibot-8e0`. The suspicion, UNVERIFIED, is that the second bridge (another Claude Code session in this folder) received the events and moved the shared per-name cursor, or that a waiter acked them without the session seeing them.
+
+**Find:**
+- which process received #1473 and #1574;
+- who moved the cursor;
+- whether the cursor and the channel push are per name or per bridge.
+
+**Change:**
+- Each bridge gets its own cursor and its own push. A message addressed to a name is delivered to every live bridge of that name, as the `cc@<folder>` addressing already implies.
+- No ack happens without a delivery the session saw.
+- A message that has waited N minutes unanswered is re-raised as a notice.
+
+**Done when:** with two bridges of one name connected, a DM to the name reaches both sessions as channel events, and neither one's ack hides it from the other.
+
+## R260 - A head driving a session cannot write that session's todo board
+
+**Status:** open, 2026-11-15. left: all of it.
+
+From cc@rano (#1574): a head attached with `watch_only=false` cannot `todo_write` the session's board. The refusal is "target must be a session THIS session spawned with task". The operator wants a driver to create and reorder rows. Today only the session itself, or the parent that spawned it with `task`, can write a board. A bridge or head that drives a session it did not spawn has no door.
+
+**Change:**
+- A driving head, meaning one that is not watch-only and holds the session through the bridge or the TUI, can create, update and reorder rows on that session's board.
+- Rows it writes are recorded with the driver as their author (R251's speakers). They are never the model's own rows, and never counted as the operator's unless the operator wrote them.
+- The model is told when its board was changed by someone else.
+
+Add it as a bridge tool, e.g. `leticode_todo` on a held session, or as `todo_write target=` widened to sessions this head drives.
+
+**Done when:** from a bridge holding a session, a row is created, reordered and completed on that session's board. The session's model sees a notice naming the driver, and a watch-only head is refused.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.
