@@ -1793,6 +1793,30 @@ Operator: "a central build server that places for all bots and projects ... it g
 - no brief names a target dir;
 - the gate runs as a build class.
 
+## R296 - The merge queue chooses its train size for each landing
+
+**Status:** design, 2026-11-15. Not started. Related: R258 (batching, built), R294 (build placement).
+
+Operator, asked to pick `[queue] gate_train = N`: "r258 obviously depends on the size and severity of things being tested, ideally to be decided on the spot".
+
+A fixed N is the wrong shape. Measured by hand-stacking today: stacks of 8-15 branches landed with one gate each. Two kinds of red cost re-runs: load flakes, which the flake squad has since fixed, and cross-branch mismatches. Those were a new warning code with no table row, a new room type missing from the bridge's allow-list, and a test missing a field another branch added. Mismatches only show when branches are stacked, so stacking is still worth it.
+
+**Change:** at each landing, the queue picks how many approved rows go into one train, from measurements:
+- **Size and blast radius:** the crates the rows touch, and the diff size.
+- **Severity:**
+  - A row that changes the wire protocol, the store schema or migrations rides alone, or first in a small train.
+  - Docs, TODO-only and test-only rows batch freely.
+- **Flake history:** the recent red rate of the suites the rows touch. Flaky suites mean smaller trains.
+- **Box state:** load, IO pressure, and free disk.
+- **Queue depth.**
+
+The decision is written as one line on the train: "train of 5: 3 crates, no protocol rows, load 30". `gate_train` becomes a ceiling, not the size.
+
+**Done when:**
+- A protocol-change row lands alone.
+- Ten docs rows land as one train.
+- A train's size line shows the measurements it came from.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.
