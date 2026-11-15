@@ -21,7 +21,8 @@ impl Tool for Glob {
              segments, `?`, `[a-z]`, `{a,b}`. Give `pattern`; optionally `path` to \
              scope the walk. A pattern that matches nothing comes back with the \
              listing around it and with what a relaxed pattern would have matched, so \
-             a wrong guess is corrected in the same call.",
+             a wrong guess is corrected in the same call. Files ignored by `.gitignore` \
+             are skipped unless `path` or the pattern's literal directory names them.",
             serde_json::json!({
                 "type": "object",
                 "properties": {

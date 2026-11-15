@@ -51,7 +51,8 @@ impl Tool for Grep {
              what a match sits in rather than where it is. \
              A search that matches nothing under `path` reports where the pattern does \
              match, and an over-anchored pattern is retried as its bare identifier — \
-             both in the same call, so a miss does not need a second one.",
+             both in the same call, so a miss does not need a second one. Files \
+             ignored by `.gitignore` are skipped unless `path` names them.",
             serde_json::json!({
                 "type": "object",
                 "properties": {
