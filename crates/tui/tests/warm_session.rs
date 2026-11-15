@@ -97,6 +97,7 @@ fn brief(session_id: &str, title: &str, items: u32) -> StoredBrief {
         stored_end: None,
         nags_paused: None,
         waits_on_operator: 0,
+        pending: Vec::new(),
         slug: String::new(),
         role: String::new(),
         // The operator's own, which is what every fixture in this file is: a grouping

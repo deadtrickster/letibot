@@ -686,6 +686,7 @@ fn brief(id: &str, title: &str, running: bool) -> SessionBrief {
         stored_end: None,
         nags_paused: None,
         waits_on_operator: 0,
+        pending: Vec::new(),
         slug: String::new(),
         origin: letibot_sessionlog::SessionOrigin::Operator,
         moved_ms: 0,

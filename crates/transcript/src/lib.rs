@@ -21,6 +21,10 @@ pub mod citation;
 /// and a second copy of the arithmetic is a second place a character can be split.
 pub mod text;
 
+/// What a waiting session is owed, typed: the seat, the session list and the bridge all read one
+/// shape, and the room and the session log cannot see each other.
+pub mod pending;
+
 /// Who asked for a tool call. An enum rather than a `bool` because a second origin (a
 /// peer agent, a seat, a scheduled job) is a variant rather than another field on a
 /// struct that already has one.

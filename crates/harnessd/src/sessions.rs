@@ -5259,7 +5259,11 @@ impl StoreSessions {
             .unwrap_or_default()
             .into_iter()
             .map(|s| {
-                let waits = waiting.get(&s.id).copied().unwrap_or(0);
+                let waits = if waiting.contains_key(&s.id) {
+                    Self::waits_of(&g, &s.id)
+                } else {
+                    Vec::new()
+                };
                 let slug = slugs.get(&s.id).cloned().unwrap_or_default();
                 let role = roles.get(&s.id).cloned().unwrap_or_default();
                 self.brief_of(s, waits, slug, role)
@@ -5267,10 +5271,10 @@ impl StoreSessions {
             .collect()
     }
 
-    fn waits_of(g: &Store, id: &str) -> usize {
+    fn waits_of(g: &Store, id: &str) -> Vec<letibot_transcript::pending::Pending> {
         g.todos(id)
-            .map(|t| letibot_tokencore::store::operator_asks(&t).len())
-            .unwrap_or(0)
+            .map(|t| crate::queue_asks::board_pending(id, &t))
+            .unwrap_or_default()
     }
 
     /// A row with its two off-row facts read by key: the board of this session, and the run
@@ -5299,7 +5303,7 @@ impl StoreSessions {
     fn brief_of(
         &self,
         s: letibot_tokencore::store::StoredSession,
-        waits: usize,
+        waits: Vec<letibot_transcript::pending::Pending>,
         slug: String,
         role: String,
     ) -> StoredBrief {
@@ -5311,7 +5315,8 @@ impl StoreSessions {
             role
         };
         StoredBrief {
-            waits_on_operator: waits,
+            waits_on_operator: waits.len(),
+            pending: waits,
             slug,
             role,
             // Who it is for, off its own row - `None` is a row written before the

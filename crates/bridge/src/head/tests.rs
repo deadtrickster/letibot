@@ -1061,4 +1061,17 @@ fn a_relayed_ask_names_the_session_it_is_for() {
     let ask = state.asks.first().expect("the ask is listed");
     assert_eq!(ask.from.as_deref(), Some("s-gatekeeper-k"));
     assert_eq!(ask.to_json()["from"], "s-gatekeeper-k");
+    // Typed for `leticode_status`: a question, asked by the queue session, under the card's id.
+    let p = serde_json::to_value(ask.pending("s-main")).unwrap();
+    assert_eq!(
+        p,
+        serde_json::json!({"kind": "question", "session": "s-gatekeeper-k",
+                           "ask": "relay-ask:s-gatekeeper-k:1"})
+    );
+    let mut own = ask.clone();
+    own.kind = "permission".into();
+    own.from = None;
+    let p = own.pending("s-main");
+    assert_eq!(p.kind, letibot_transcript::pending::PendingKind::Approval);
+    assert_eq!(p.session, "s-main");
 }

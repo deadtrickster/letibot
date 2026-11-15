@@ -5,6 +5,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::item::duration;
+pub use letibot_transcript::pending::{Pending, PendingKind};
 
 /// Facts older than this, on a seat that is still connected, are unknown rather than idle: a
 /// daemon that stopped reporting is a sensor that went dark, not a seat with nothing to do.
@@ -117,9 +118,13 @@ pub struct SeatFacts {
     /// The daemon's words for that limit, `paused until 21:02:27 UTC`.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub limit: String,
-    /// Cards open on the session that only the operator can answer.
+    /// Cards open on the session that only the operator can answer: `pending.len()`, kept on
+    /// the wire for a coordinator older than `pending`.
     #[serde(default)]
     pub cards: u32,
+    /// The same cards, typed: an approval, a question or other, with who asked and the ask id.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<Pending>,
     #[serde(default)]
     pub working: WorkingOn,
     /// The recent edits with their instants, newest first: what renews a path claim.
@@ -155,9 +160,12 @@ pub enum SeatState {
         at_ms: u64,
         error: String,
     },
-    /// Blocked on somebody else: an operator card, an ask, a queue wait.
+    /// Blocked on somebody else: an operator card, an ask, a queue wait. `on` is the words,
+    /// `pending` the same entries typed, which is what a mark is read from.
     Waiting {
         on: Vec<String>,
+        #[serde(default)]
+        pending: Vec<Pending>,
         turn: bool,
     },
     InTurn {
@@ -169,6 +177,14 @@ pub enum SeatState {
 }
 
 impl SeatState {
+    /// What it waits on, typed; empty for every state but `Waiting`.
+    pub fn pending(&self) -> &[Pending] {
+        match self {
+            SeatState::Waiting { pending, .. } => pending,
+            _ => &[],
+        }
+    }
+
     /// Whether the agent behind this seat can act on a message now.
     pub fn can_act(&self) -> bool {
         !matches!(
@@ -197,7 +213,7 @@ impl SeatState {
             SeatState::ProviderError { at_ms, error } => {
                 format!("provider error {} ago: {error}", ago(*at_ms))
             }
-            SeatState::Waiting { on, turn } => {
+            SeatState::Waiting { on, turn, .. } => {
                 let head = if *turn {
                     "in turn, waiting on"
                 } else {
@@ -253,6 +269,8 @@ pub struct RoomSide {
     pub heard_ms: Option<u64>,
     /// Open asks it made and queue waits it declared, worded.
     pub waits: Vec<String>,
+    /// The same, typed: a room ask is a question, a declared queue wait is other.
+    pub pending: Vec<Pending>,
 }
 
 /// Derive a seat's view. `facts` is `None` for a seat whose daemon never reported.
@@ -294,19 +312,42 @@ fn state_of(facts: Option<&SeatFacts>, room: &RoomSide, now: u64) -> SeatState {
             words: f.limit.clone(),
         };
     }
-    let mut on = Vec::new();
-    if f.cards > 0 {
-        on.push(if f.cards == 1 {
-            "the operator's card".to_string()
-        } else {
-            format!("{} operator cards", f.cards)
-        });
+    let mut cards = f.pending.clone();
+    // A daemon older than `pending` sends only the count, and its cards are of no known kind.
+    if cards.is_empty() && f.cards > 0 {
+        cards = (0..f.cards)
+            .map(|_| Pending::new(PendingKind::Other, "", ""))
+            .collect();
     }
+    let mut on: Vec<String> = [
+        PendingKind::Approval,
+        PendingKind::Question,
+        PendingKind::Other,
+    ]
+    .into_iter()
+    .filter_map(|k| {
+        let n = cards.iter().filter(|p| p.kind == k).count();
+        let word = match k {
+            PendingKind::Approval => "approval",
+            PendingKind::Question => "question",
+            PendingKind::Other => "card",
+        };
+        match n {
+            0 => None,
+            1 => Some(format!("the operator's {word}")),
+            n => Some(format!("{n} operator {word}s")),
+        }
+    })
+    .collect();
     on.extend(room.waits.iter().cloned());
     if !on.is_empty() {
+        let held = !cards.is_empty();
+        let mut pending = cards;
+        pending.extend(room.pending.iter().cloned());
         return SeatState::Waiting {
             on,
-            turn: f.turn_since_ms.is_some() && f.cards == 0,
+            pending,
+            turn: f.turn_since_ms.is_some() && !held,
         };
     }
     if let Some(since) = f.turn_since_ms {
@@ -414,6 +455,50 @@ mod tests {
         let v = derive(Some(&f), &here(now), now);
         assert_eq!(v.says, "idle 30s, last call ok");
         assert!(v.state.can_act());
+    }
+
+    #[test]
+    fn a_permission_card_is_an_approval_naming_its_asker_and_ask() {
+        let now = 100_000;
+        let f = SeatFacts {
+            turn_since_ms: Some(90_000),
+            cards: 2,
+            pending: vec![
+                Pending::new(PendingKind::Question, "s-1", "q-1"),
+                Pending::new(PendingKind::Approval, "s-1-sub-7", "adj-3"),
+            ],
+            ..SeatFacts::default()
+        };
+        let room = RoomSide {
+            waits: vec!["ask #4 of cc".into()],
+            pending: vec![Pending::new(PendingKind::Question, "s-1", "4")],
+            ..here(now)
+        };
+        let v = derive(Some(&f), &room, now);
+        assert_eq!(
+            v.says,
+            "waiting on the operator's approval, the operator's question, ask #4 of cc"
+        );
+        let p = v.state.pending();
+        assert_eq!(p.len(), 3, "{p:?}");
+        assert_eq!(letibot_transcript::pending::mark(p), Some('!'));
+        assert!(p.contains(&Pending::new(PendingKind::Approval, "s-1-sub-7", "adj-3")));
+        let wire = serde_json::to_value(&v).unwrap();
+        assert_eq!(wire["state"], "waiting");
+        assert_eq!(wire["pending"][1]["kind"], "approval");
+        assert_eq!(wire["pending"][1]["session"], "s-1-sub-7");
+        assert_eq!(wire["pending"][1]["ask"], "adj-3");
+    }
+
+    #[test]
+    fn a_count_from_an_older_daemon_waits_on_cards_of_no_known_kind() {
+        let f = SeatFacts {
+            cards: 1,
+            ..SeatFacts::default()
+        };
+        let v = derive(Some(&f), &here(0), 0);
+        assert_eq!(v.says, "waiting on the operator's card");
+        assert_eq!(v.state.pending()[0].kind, PendingKind::Other);
     }
 
     #[test]

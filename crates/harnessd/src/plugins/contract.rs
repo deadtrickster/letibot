@@ -417,7 +417,8 @@ result.
   `feeds = ["sessions"]` in the manifest, `{{"sessions": {{…}}}}` here. A pane never runs a program
   for its data (§1 principle 1). Fed today: `sessions` — the daemon's sessions (`id`, `title`,
   `slug`, `parent`, `origin`, `live`, `running`, `heads`, `items`, `stored`, `model`, `workspace`,
-  `waits_on`, `nags_paused`) plus `here` and `home`. Named and not yet fed: `monitors`, `jobs`,
+  `waits_on`, `pending`, `nags_paused`; `pending` is `[{{"kind": "approval"|"question"|"other",
+  "session", "ask"}}]`) plus `here` and `home`. Named and not yet fed: `monitors`, `jobs`,
   `todos`, `git`.
 * `folded` — what the PERSON has opened or closed, by row id (see the row's `open`). The host keeps
   it, so a fold is instant and survives your next answer: read it, and honour it.

@@ -327,6 +327,7 @@ mod cached {
             stored_end: None,
             nags_paused: None,
             waits_on_operator: 0,
+            pending: Vec::new(),
             slug: String::new(),
             role: String::new(),
             origin: Default::default(),

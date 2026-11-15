@@ -1050,7 +1050,10 @@ impl App {
                     "role": s.role,
                     "model": s.wiring.model,
                     "workspace": s.wiring.workspace,
-                    "waits_on": s.waits_on_operator,
+                    // `waits_on` is the count a guest older than `pending` reads; `pending` is
+                    // the same asks typed, which the gutter's `!` and `?` are read from.
+                    "waits_on": s.pending.len().max(s.waits_on_operator),
+                    "pending": s.pending,
                     "nags_paused": s.nags_paused.is_some(),
                     // When it last moved, so a pane can say *is that one stuck?* - the one fact
                     // a row of a session list is read for. Off the daemon's own brief, which reads

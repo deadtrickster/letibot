@@ -829,3 +829,28 @@ fn pgdn_moves_one_page_of_the_session_list() {
     a.key(Key::WheelUp);
     assert_eq!(a.picker_sel, 27);
 }
+
+/// A session held on a permission card is `!` in the gutter, read off the brief's typed `pending`.
+#[test]
+fn a_session_held_on_a_permission_ask_is_marked_with_a_bang() {
+    use letibot_transcript::pending::{Pending, PendingKind};
+    let mut a = app();
+    a.home = HOME.to_string();
+    let mut held = brief("s-held", "held at the gate", true);
+    held.pending = vec![Pending::new(PendingKind::Approval, "s-held", "adj-1")];
+    let mut asked = brief("s-asked", "asks on its board", true);
+    asked.pending = vec![Pending::new(
+        PendingKind::Question,
+        "s-asked",
+        "relay-ask:x",
+    )];
+    a.apply(hello(
+        "s-held",
+        vec![held, asked],
+        Hub::new("s-held").snapshot(),
+    ));
+    a.push_surface(Surface::Picker);
+    let now = drawn(&a, 100);
+    assert!(now.contains("! held at the gate"), "{now}");
+    assert!(now.contains("? asks on its board"), "{now}");
+}

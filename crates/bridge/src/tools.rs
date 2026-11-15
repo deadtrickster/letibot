@@ -792,6 +792,8 @@ impl Bridge {
             "placement": placement_json(h.placement.as_ref()),
             "state": s.word(),
             "pending_asks": s.asks.iter().map(|a| a.req_id.clone()).collect::<Vec<_>>(),
+            // The same asks typed - `approval`, `question`, `other` - with who asked each.
+            "pending": s.asks.iter().map(|a| a.pending(&session)).collect::<Vec<_>>(),
             "last_message": first_line(s.last_message()),
         });
         self.hold(&h);
@@ -926,6 +928,8 @@ impl Bridge {
             // question a caller already asks, answered now from the daemon's own list.
             "waiting_on_jobs": s.waiting_on_jobs(),
             "pending_asks": s.asks.iter().map(|a| a.req_id.clone()).collect::<Vec<_>>(),
+            // The same asks typed - `approval`, `question`, `other` - with who asked each.
+            "pending": s.asks.iter().map(|a| a.pending(session)).collect::<Vec<_>>(),
             // What the daemon said to the last frame it refused. An answer that arrives after
             // its card closed is refused rather than applied, and an orchestrator that could not
             // see the refusal would keep believing it answered.
@@ -1247,6 +1251,9 @@ impl Bridge {
                     "watch_only": h.watch_only,
                     "state": s.word(),
                     "pending_asks": s.asks.len(),
+                    "pending": letibot_transcript::pending::kinds(
+                        &s.asks.iter().map(|a| a.pending(&h.session)).collect::<Vec<_>>(),
+                    ),
                     "last_message": first_line(s.last_message()),
                     "closed": s.closed,
                 })

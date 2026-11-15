@@ -107,3 +107,33 @@ fn the_rosters_of_other_rooms_are_asked_only_while_there_are_sessions_rows() {
         "{types:?}"
     );
 }
+
+#[test]
+fn a_seat_held_on_a_permission_card_is_marked_from_its_kind_not_its_words() {
+    let mut a = opened(1_000);
+    reply(&mut a, rooms_reply(&[("host", 2, 0, 0)]));
+    reply(
+        &mut a,
+        json!({"type": "roster", "room": "host", "rows": [
+            {"name": "alpha", "id": "s-x", "kind": "session", "connected": true, "project": "",
+             "label": "alpha", "seat": {"state": "waiting", "on": ["gate-hold-xq"], "turn": false,
+             "connected": true, "says": "gate-hold-xq", "doing": "",
+             "pending": [{"kind": "approval", "session": "s-x", "ask": "adj-1"}]}},
+            {"name": "beta", "id": "s-y", "kind": "session", "connected": true, "project": "",
+             "label": "beta", "seat": {"state": "waiting", "on": ["room-ask-zq"], "turn": false,
+             "connected": true, "says": "room-ask-zq", "doing": "",
+             "pending": [{"kind": "question", "session": "s-y", "ask": "4"}]}},
+        ]}),
+    );
+    let rows = screen(&mut a, 140);
+    assert!(
+        row_with(&rows, "gate-hold-xq").contains("! gate-hold-xq"),
+        "{}",
+        rows.join("\n")
+    );
+    assert!(
+        row_with(&rows, "room-ask-zq").contains("? room-ask-zq"),
+        "{}",
+        rows.join("\n")
+    );
+}

@@ -99,7 +99,7 @@ pub fn list(store: &Path, rundir: &Path, timeout: Duration) -> Result<Vec<Row>, 
             let Some(b) = briefs.iter().find(|b| b.session_id == s.id && b.live) else {
                 continue;
             };
-            let state = if b.waits_on_operator > 0 {
+            let state = if b.waits_on_operator > 0 || !b.pending.is_empty() {
                 "asking"
             } else if b.status.running {
                 "running"

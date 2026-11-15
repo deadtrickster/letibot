@@ -1874,7 +1874,10 @@ impl Server {
             Some((f, at)) => (Some(f.clone()), Some(*at)),
             None => (None, None),
         };
-        let mut waits: Vec<String> = self
+        use crate::seat::{Pending, PendingKind};
+        let mut waits = Vec::new();
+        let mut pending = Vec::new();
+        for a in self
             .inner
             .chat
             .lock()
@@ -1882,13 +1885,24 @@ impl Server {
             .asks_by(session)
             .into_iter()
             .filter(|a| a.open())
-            .map(|a| format!("ask #{} of {}", a.seq, a.target))
-            .collect();
+        {
+            waits.push(format!("ask #{} of {}", a.seq, a.target));
+            pending.push(Pending::new(
+                PendingKind::Question,
+                session,
+                a.seq.to_string(),
+            ));
+        }
         for project in self.projects() {
             let held = self.with_room(&project, |r| r.holding(session, now));
             for h in held {
                 if let Some(w) = h.waits_on {
                     waits.push(format!("item #{} ({}): {}", h.item, h.tag, w.text));
+                    pending.push(Pending::new(
+                        PendingKind::Other,
+                        session,
+                        format!("i{}", h.item),
+                    ));
                 }
             }
         }
@@ -1897,6 +1911,7 @@ impl Server {
             gone_since_ms: self.gone_since(session),
             heard_ms: heard,
             waits,
+            pending,
         };
         let mut view = crate::seat::derive(facts.as_ref(), &side, now);
         view.owns = self

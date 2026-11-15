@@ -131,6 +131,9 @@ pub(crate) struct SeatRow {
     /// Its live ownership claims, worded: `crates/room/** 52m left`.
     #[serde(default)]
     pub owns: Vec<String>,
+    /// What a `waiting` seat waits on, typed: the mark is read from this.
+    #[serde(default)]
+    pub pending: Vec<letibot_transcript::pending::Pending>,
 }
 
 impl SeatRow {
@@ -1119,7 +1122,7 @@ impl App {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_default(),
-                state: if b.waits_on_operator > 0 {
+                state: if b.waits_on_operator > 0 || !b.pending.is_empty() {
                     "asking"
                 } else if b.status.running {
                     "running"

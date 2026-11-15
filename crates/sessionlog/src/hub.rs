@@ -1151,6 +1151,24 @@ impl Hub {
             .collect()
     }
 
+    /// The open cards, typed. A subagent's card names the child that asked, not this root.
+    pub fn pending(&self) -> Vec<letibot_transcript::pending::Pending> {
+        use letibot_transcript::pending::{Pending, PendingKind};
+        let g = self.lock();
+        let own = g.log.session_id().to_string();
+        g.view
+            .open_decisions()
+            .iter()
+            .map(|d| {
+                let by = d
+                    .subagent
+                    .as_ref()
+                    .map_or(own.as_str(), |s| s.handle.as_str());
+                Pending::new(PendingKind::of_card(&d.kind), by, d.req_id.clone())
+            })
+            .collect()
+    }
+
     /// A frame that is not the record, fanned out to every head of this session. It cannot be
     /// [`Hub::publish`]: an event is a row and this is a moment.
     pub fn push_frame(&self, frame: ServerFrame) {

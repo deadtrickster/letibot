@@ -147,6 +147,13 @@ pub struct Ask {
 }
 
 impl Ask {
+    /// This ask typed, on session `own` unless another session asked it.
+    pub fn pending(&self, own: &str) -> letibot_transcript::pending::Pending {
+        use letibot_transcript::pending::{Pending, PendingKind};
+        let by = self.from.as_deref().unwrap_or(own);
+        Pending::new(PendingKind::of_card(&self.kind), by, self.req_id.clone())
+    }
+
     fn from_open(d: &OpenDecision) -> Ask {
         Ask {
             req_id: d.req_id.clone(),

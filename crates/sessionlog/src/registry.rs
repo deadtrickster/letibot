@@ -291,6 +291,10 @@ pub struct SessionBrief {
     /// `TodoNeed::Operator` edge. The picker marks it.
     #[serde(default)]
     pub waits_on_operator: usize,
+    /// Every ask this session is blocked on, typed: its open cards and its board's operator rows.
+    /// The mark and the state a reader draws come from this, never from words.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending: Vec<letibot_transcript::pending::Pending>,
     /// A subagent's name, its slug, or empty for a session nobody named: every root, and a child
     /// spawned before children had slugs.
     #[serde(default)]
@@ -327,6 +331,7 @@ fn unheld(d: StoredBrief) -> SessionBrief {
         stored_end: d.stored_end,
         nags_paused: d.nags_paused,
         waits_on_operator: d.waits_on_operator,
+        pending: d.pending,
         slug: d.slug,
         origin: d.origin,
         moved_ms: d.last_activity_ms,
@@ -458,6 +463,8 @@ pub struct StoredBrief {
     /// Open questions the session's board waits on the operator for - see
     /// [`SessionBrief::waits_on_operator`].
     pub waits_on_operator: usize,
+    /// The board's operator asks, typed - see [`SessionBrief::pending`].
+    pub pending: Vec<letibot_transcript::pending::Pending>,
     /// A subagent's name, from its record - see [`SessionBrief::slug`]. Empty for a session
     /// nobody named.
     pub slug: String,
@@ -2300,6 +2307,12 @@ impl Registry {
                         // moment the verb lands, so the store is never behind the session here.
                         nags_paused: on_disk.and_then(|d| d.nags_paused),
                         waits_on_operator: on_disk.map(|d| d.waits_on_operator).unwrap_or(0),
+                        // The live cards first, then the board's rows: a card holds a call now.
+                        pending: hub
+                            .pending()
+                            .into_iter()
+                            .chain(on_disk.map(|d| d.pending.clone()).unwrap_or_default())
+                            .collect(),
                         // The runner's own record for a child it is running, then the store's for
                         // one a restart brought back.
                         slug: self
@@ -2630,6 +2643,7 @@ mod stored_end_wire {
             }),
             nags_paused: None,
             waits_on_operator: 0,
+            pending: Vec::new(),
             slug: String::new(),
             origin: crate::SessionOrigin::Operator,
             moved_ms: 0,

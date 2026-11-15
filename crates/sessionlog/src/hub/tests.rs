@@ -955,3 +955,29 @@ fn a_taken_wake_is_not_left_published_as_delivery() {
         hub.activity()
     );
 }
+
+#[test]
+fn an_open_card_is_pending_typed_and_a_childs_names_the_child() {
+    use letibot_transcript::pending::{Pending, PendingKind};
+    let hub = Hub::new("s");
+    hub.publish(requested("r1", "rm -rf /"));
+    let mut child = requested("r2", "cargo test");
+    if let SessionEvent::DecisionRequested { subagent, kind, .. } = &mut child {
+        *kind = "question".into();
+        *subagent = Some(crate::event::SubagentAsk {
+            handle: "s-sub-1".into(),
+            task: "run it".into(),
+            root: "s".into(),
+        });
+    }
+    hub.publish(child);
+    assert_eq!(
+        hub.pending(),
+        vec![
+            Pending::new(PendingKind::Approval, "s", "r1"),
+            Pending::new(PendingKind::Question, "s-sub-1", "r2"),
+        ]
+    );
+    hub.publish(answered("r1", "deny"));
+    assert_eq!(hub.pending().len(), 1, "a settled card is not pending");
+}

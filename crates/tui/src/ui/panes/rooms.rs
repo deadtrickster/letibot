@@ -238,13 +238,14 @@ fn member_column(
         rows.push((text, role, Some(m.name.clone())));
         // The derived presence under its member, the same click: the coordinator's words.
         if let Some(seat) = m.seat.as_ref().filter(|x| !x.says.is_empty()) {
-            let role = if seat.cannot_act() {
+            let mark = letibot_transcript::pending::mark(&seat.pending);
+            let role = if seat.cannot_act() || mark.is_some() {
                 Role::Attention
             } else {
                 Role::Faint
             };
             rows.push((
-                format!("  {}", clean_line(&seat.says)),
+                format!("{} {}", mark.unwrap_or(' '), clean_line(&seat.says)),
                 role,
                 Some(m.name.clone()),
             ));

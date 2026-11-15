@@ -106,7 +106,9 @@ pub fn scan_in(
                 None => FleetState::DaemonDown,
                 Some(Err(why)) => FleetState::Unreachable(why.clone()),
                 Some(Ok(all)) => match all.iter().find(|b| b.session_id == s.id) {
-                    Some(b) if b.waits_on_operator > 0 => FleetState::Asking,
+                    Some(b) if b.waits_on_operator > 0 || !b.pending.is_empty() => {
+                        FleetState::Asking
+                    }
                     Some(b) if b.status.running => FleetState::Running,
                     _ => FleetState::Idle,
                 },

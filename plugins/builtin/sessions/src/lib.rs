@@ -129,6 +129,9 @@ struct Session {
     /// How many questions this session is waiting on the operator to answer.
     #[serde(default)]
     waits_on: usize,
+    /// The same asks typed by the head: `approval`, `question` or `other`.
+    #[serde(default)]
+    pending: Vec<Pending>,
     /// The operator has paused its idle plan-check.
     #[serde(default)]
     nags_paused: bool,
@@ -153,6 +156,13 @@ struct Session {
     /// `shadows`), or `None` for a session of the project's own tree.
     #[serde(default)]
     system: Option<String>,
+}
+
+/// One ask a session waits on, as the feed spells it. Only the kind is read here.
+#[derive(Debug, Deserialize, Default)]
+struct Pending {
+    #[serde(default)]
+    kind: String,
 }
 
 /// One row this layer is about to draw - and the row as the wire spells it, so a row is built once
@@ -354,7 +364,7 @@ impl<'a> Ctx<'a> {
             let Some(s) = self.sessions.get(i) else {
                 continue;
             };
-            waiting += usize::from(s.waits_on > 0);
+            waiting += usize::from(s.waits_on > 0 || !s.pending.is_empty());
             generating += usize::from(s.running);
         }
         (waiting, generating)
@@ -775,12 +785,14 @@ fn session_row(ctx: &Ctx<'_>, at: usize, depth: usize, number: usize, open: Opti
     }
 }
 
-/// The one column before a row's name: `?` for a session waiting on the operator - opencode's
-/// gutter, and the reason `WAITING ON YOU` is not spelled into the name any more - `~` for a turn
-/// that is running, its children's included. The column is reserved on every row, or a name's
-/// column would be a function of its state.
+/// The one column before a row's name: `!` for a permission ask, `?` for any other wait on the
+/// operator, `~` for a running turn, its children's included. The column is reserved on every row,
+/// or a name's column would be a function of its state.
 fn mark_of(ctx: &Ctx<'_>, s: &Session) -> Cell {
-    if s.waits_on > 0 {
+    if s.pending.iter().any(|p| p.kind == "approval") {
+        return Cell::role("!", Role::Attention);
+    }
+    if s.waits_on > 0 || !s.pending.is_empty() {
         return Cell::role("?", Role::Attention);
     }
     if ctx.generating(&s.id) {
@@ -1007,6 +1019,10 @@ fn answer(bytes: &[u8]) -> Option<String> {
             }],
         }],
         legend: BTreeMap::from([
+            (
+                "!",
+                "this session is held on a permission ask — attach to it to allow or deny",
+            ),
             (
                 "?",
                 "this session has a question for you — attach to it to answer",

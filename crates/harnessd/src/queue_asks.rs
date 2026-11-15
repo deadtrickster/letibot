@@ -71,6 +71,26 @@ pub fn open_asks(store: &Store, gatekeeper: &str) -> Vec<Ask> {
     out
 }
 
+/// A board's open operator asks, typed, under the id a relayed card of the same ask carries.
+pub fn board_pending(
+    asker: &str,
+    todos: &[letibot_tokencore::store::TodoItem],
+) -> Vec<letibot_transcript::pending::Pending> {
+    use letibot_transcript::pending::{Pending, PendingKind};
+    operator_asks(todos)
+        .into_iter()
+        .map(|(row, question, options)| {
+            let ask = Ask {
+                asker: asker.to_string(),
+                row: row.content.trim().to_string(),
+                question: question.to_string(),
+                options: options.to_vec(),
+            };
+            Pending::new(PendingKind::Question, asker, ask.req_id())
+        })
+        .collect()
+}
+
 /// The card a head draws: a question, its choices the row's options, naming who asks.
 pub fn card(ask: &Ask, gatekeeper: &str, root: &str) -> SessionEvent {
     let who = match ask.asker == gatekeeper {

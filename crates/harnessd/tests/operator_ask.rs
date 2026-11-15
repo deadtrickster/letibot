@@ -199,6 +199,16 @@ fn every_answer_shape_unblocks_its_row_and_tells_the_model() {
         .find(|b| b.session_id == id)
         .expect("listed");
     assert_eq!(brief.waits_on_operator, 4, "the picker's mark");
+    let questions = brief
+        .pending
+        .iter()
+        .filter(|p| {
+            p.kind == letibot_transcript::pending::PendingKind::Question
+                && p.session == id
+                && p.ask.starts_with("relay-ask:")
+        })
+        .count();
+    assert_eq!(questions, 4, "each board ask typed: {:?}", brief.pending);
 
     answer(
         &mut sessions,
@@ -294,6 +304,7 @@ fn every_answer_shape_unblocks_its_row_and_tells_the_model() {
         .find(|b| b.session_id == id)
         .expect("listed");
     assert_eq!(brief.waits_on_operator, 0, "the picker's mark clears");
+    assert!(brief.pending.is_empty(), "{:?}", brief.pending);
 }
 
 /// A question asked from here on is announced; a refused answer is said; a restart keeps

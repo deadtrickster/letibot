@@ -165,11 +165,7 @@ impl SeatCell {
     /// files, the operator's cards from the hub.
     pub fn facts(&self, now: u64) -> SeatFacts {
         let (repo, branch, worktree) = git_place(&self.workspace);
-        let cards = self
-            .hub
-            .as_ref()
-            .map(|h| h.open_ask_ids().len() as u32)
-            .unwrap_or(0);
+        let pending = self.hub.as_ref().map(|h| h.pending()).unwrap_or_default();
         self.with(|f| {
             if f.working.status.as_ref().is_some_and(|s| s.until_ms <= now) {
                 f.working.status = None;
@@ -177,7 +173,8 @@ impl SeatCell {
             f.working.repo = repo;
             f.working.branch = branch;
             f.working.worktree = worktree;
-            f.cards = cards;
+            f.cards = pending.len() as u32;
+            f.pending = pending;
             f.clone()
         })
     }
@@ -307,6 +304,23 @@ mod tests {
             "status": status,
         }))
         .expect("a todo row")
+    }
+
+    #[test]
+    fn a_permission_card_on_the_hub_is_sent_as_an_approval() {
+        let hub = Hub::new("s-1");
+        hub.publish(letibot_sessionlog::testing::requested("adj-1", "rm -rf /"));
+        let c = SeatCell::new("/nowhere", Some(hub));
+        let f = c.facts(0);
+        assert_eq!(f.cards, 1);
+        assert_eq!(
+            f.pending,
+            vec![letibot_room::seat::Pending::new(
+                letibot_room::seat::PendingKind::Approval,
+                "s-1",
+                "adj-1"
+            )]
+        );
     }
 
     #[test]

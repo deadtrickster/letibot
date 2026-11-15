@@ -25,6 +25,7 @@ fn session(id: &str, title: &str) -> Session {
         model: "qwen".into(),
         workspace: String::new(),
         waits_on: 0,
+        pending: Vec::new(),
         nags_paused: false,
         moved_ms: 0,
         age: None,
@@ -259,6 +260,26 @@ fn the_gutter_says_a_turn_is_running_even_under_a_folded_parent() {
         "the child's turn lights the parent's row"
     );
     assert_eq!(parent_row.cells[0].role, Some(Role::Pending));
+}
+
+/// A permission ask is `!` and outranks a question and a running turn; a question alone is `?`.
+#[test]
+fn the_gutter_marks_an_approval_apart_from_a_question() {
+    let ask = |kind: &str| Pending { kind: kind.into() };
+    let mut held = session("s-a", "held");
+    held.running = true;
+    held.waits_on = 2;
+    held.pending = vec![ask("question"), ask("approval")];
+    let mut asked = session("s-b", "asked");
+    asked.waits_on = 1;
+    asked.pending = vec![ask("question")];
+    let rows = draw(&feed(vec![held, asked], "s-a"), &[]);
+    let mark = |id: &str| {
+        let r = rows.iter().find(|r| r.id == id).unwrap();
+        (r.cells[0].text.clone(), r.cells[0].role)
+    };
+    assert_eq!(mark("s-a"), ("!".to_string(), Some(Role::Attention)));
+    assert_eq!(mark("s-b"), ("?".to_string(), Some(Role::Attention)));
 }
 
 /// A session that says nothing draws a blank gutter rather than one column less: a name's column

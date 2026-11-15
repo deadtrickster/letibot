@@ -252,3 +252,27 @@ fn a_card_whose_ask_was_settled_elsewhere_is_withdrawn() {
     assert_eq!(cards.len(), 1, "{cards:?}");
     assert_eq!(cards[0].subagent.as_ref().unwrap().handle, GATEKEEPER);
 }
+
+/// A board ask is a typed question under the id its relayed card carries, so a reader of the
+/// session list and the main session's card name one ask.
+#[test]
+fn a_board_ask_is_pending_under_the_relayed_cards_id() {
+    let mut done = asking("settled", "moot?");
+    done.status = TodoStatus::Completed;
+    let todos = vec![asking("raise the cap", "4 or 8?"), done];
+    let pending = board_pending(REVIEWER, &todos);
+    let card = Ask {
+        asker: REVIEWER.into(),
+        row: "raise the cap".into(),
+        question: "4 or 8?".into(),
+        options: vec!["yes".into(), "no".into()],
+    };
+    assert_eq!(
+        pending,
+        vec![letibot_transcript::pending::Pending::new(
+            letibot_transcript::pending::PendingKind::Question,
+            REVIEWER,
+            card.req_id(),
+        )]
+    );
+}
