@@ -1375,7 +1375,7 @@ Add it as a bridge tool, e.g. `leticode_todo` on a held session, or as `todo_wri
 **Tests.** `crates/tools/tests/background.rs`: `an_interrupt_ends_a_foreground_command_and_keeps_its_output` (`sleep 300` gone within 2 s, partial output and "interrupted" in the result) and `an_interrupt_leaves_background_and_kept_jobs_running`. End to end, `harnessd/tests/oneshot_sigint.rs`: a one-shot's Ctrl-C now ends the in-flight `sleep 120` from the wait loop, and the row reads "was interrupted".
 
 **Left.** `job_wait` still ends only on the promote channel. Backends other than `HostBackend` (docker, firecode, remote) answer `false` to `interrupt_requested`, as they do for promote.
-## R261 - The generic output cap is off by default and its head/tail seam is unmarked
+## R263 - The generic output cap is off by default and its head/tail seam is unmarked
 
 **Status:** built, 2026-11-15. J2 of the status audit, plan item 1.3 (`/build/oss-harnesses/PLAN-fable-5.2.md`). left: the default store is still memory, so a spill does not survive a daemon restart unless `--spill-dir` is passed (disclosed at startup); there is no `--spill-lines` flag, the line cap is set only in `[output]`.
 
