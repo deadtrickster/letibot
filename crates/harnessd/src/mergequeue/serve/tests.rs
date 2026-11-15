@@ -1069,7 +1069,7 @@ fn a_landing_that_finds_its_branch_on_the_target_moves_once() {
             .map(|t| t.why)
             .collect()
     };
-    q.land(&s.merge_row(&m).unwrap().unwrap()).unwrap();
+    q.land(&s.merge_row(&m).unwrap().unwrap(), None).unwrap();
     let row = s.merge_row(&m).unwrap().unwrap();
     assert_eq!(row.state, MergeState::Landed, "{row:?}");
     assert_eq!(row.landed_sha.as_deref(), Some(tip.as_str()));
@@ -1078,7 +1078,7 @@ fn a_landing_that_finds_its_branch_on_the_target_moves_once() {
     assert!(said[0].contains("already on `main`"), "{}", said[0]);
     assert!(said[0].contains("nothing to rebase"), "{}", said[0]);
     // The same call on the landed row is not a second landing.
-    q.land(&s.merge_row(&m).unwrap().unwrap()).unwrap();
+    q.land(&s.merge_row(&m).unwrap().unwrap(), None).unwrap();
     assert_eq!(
         landings(&s).len(),
         1,
@@ -5505,164 +5505,128 @@ fn a_train_of_three_green_branches_lands_three_commits_with_one_gate() {
     assert!(w.repo.join("one.txt").exists() && w.repo.join("three.txt").exists());
 }
 
-/// A red train dissolves - nothing lands, the target never moves, one review row names every
-/// branch in its order, and every row goes back in line to be gated ON ITS OWN, which is what
-/// finds the branch that is bad.
-#[test]
-fn a_red_train_lands_nothing_names_all_its_branches_and_leaves_the_target_where_it_was() {
-    let w = World::new("train-red");
-    let before = w.tip();
-    let gate = Arc::new(Counting::new());
-    let q = w.worker_with(gate.clone(), "a", train_of(3));
+/// Three approved branches with `agent/bad` at `bad_at`, enqueued in that order.
+fn three_with_a_bad_one(w: &World, bad_at: usize) -> Vec<String> {
     let mut ms = Vec::new();
-    for (name, file) in [("one", "one.txt"), ("two", "two.txt"), ("bad", "broken")] {
-        let (wt, base, head) = branch(&w.repo, name, file);
-        w.enqueue(name, &wt, &base, &head);
-        claim(&w, name);
-        ms.push(w.accept(name, "test/a"));
+    for i in 0..3 {
+        let (name, file) = if i == bad_at {
+            ("bad".to_string(), "broken".to_string())
+        } else {
+            (format!("ok{i}"), format!("ok{i}.txt"))
+        };
+        let (wt, base, head) = branch(&w.repo, &name, &file);
+        w.enqueue(&name, &wt, &base, &head);
+        claim(w, &name);
+        ms.push(w.accept(&name, "test/a"));
     }
-    // One pass at a time, and stop at the pass that judged the train. That pass goes on to
-    // take the first branch on its own (a row out of a red train is gated alone), so what each row
-    // was put in is read off its history rather than off the moment after the pass.
+    ms
+}
+
+/// Passes until `done` holds, waiting out each gate. Panics if it never does.
+fn until(q: &RepoQueue, done: impl Fn() -> bool) {
     let stop = AtomicBool::new(false);
-    let mut judged = false;
-    for _ in 0..200 {
-        q.pass(&stop).unwrap();
-        if w.store()
-            .review_rows(Some(&w.key()))
-            .unwrap()
-            .iter()
-            .any(|r| r.id.starts_with("train-"))
-        {
-            judged = true;
-            break;
+    for _ in 0..400 {
+        if done() {
+            return;
         }
-        // A pass does not wait for its gate; the next one is a no-op until it has finished.
+        q.pass(&stop).unwrap();
         if q.gate_in_flight() {
             std::thread::sleep(Duration::from_millis(20));
         }
     }
-    assert!(judged, "the train's gate was judged and its row filed");
+    assert!(done(), "the queue never got there");
+}
+
+/// A red train lands nothing and leaves the target where it was. Its rows go back in line as
+/// two halves of a bisection, first half first, with the red gate's steps on every row.
+#[test]
+fn a_red_train_lands_nothing_and_goes_back_in_line_as_two_halves() {
+    let w = World::new("train-red");
+    let before = w.tip();
+    let gate = Arc::new(Counting::new());
+    let q = w.worker_with(gate.clone(), "a", train_of(3));
+    let ms = three_with_a_bad_one(&w, 2);
+    let back = |m: &String| {
+        w.store()
+            .transitions("merge", m)
+            .unwrap()
+            .into_iter()
+            .find(|t| t.to_state == "queued" && t.why.starts_with(TRAIN_SPLIT))
+    };
+    until(&q, || ms.iter().all(|m| back(m).is_some()));
     assert_eq!(
         w.tip(),
         before,
         "a red train is caught before the target moves"
     );
+    assert!(!w.repo.join("ok0.txt").exists());
+    let halves: Vec<String> = ms
+        .iter()
+        .map(|m| half_of(&back(m).unwrap().why).expect("a half tag"))
+        .collect();
     assert!(
-        !w.repo.join("one.txt").exists(),
-        "and no car's work is in the target's tree"
+        halves[0].ends_with(":a") && halves[1] == halves[0],
+        "{halves:?}"
     );
-    // Each merge row is back in line, with the sentence that keeps it out of the next train
-    // and the gate's own steps as its evidence. Nothing of the train is terminal: no car landed
-    // none failed - the train judged a tree, not a branch.
-    for m in &ms {
-        let history = w.store().transitions("merge", m).unwrap();
-        assert!(
-            history
-                .iter()
-                .any(|t| t.to_state == "queued" && t.why.starts_with(TRAIN_SPLIT)),
-            "{m} went back in line with the train's sentence: {history:?}"
-        );
-        let row = w.store().merge_row(m).unwrap().unwrap();
-        assert!(
-            row.state.is_open(),
-            "nothing of the train is terminal: {row:?}"
-        );
-        if row.state == MergeState::Queued {
-            assert_eq!(row.owner, "", "a row back in line is nobody's");
-            assert!(row.evidence.starts_with(TRAIN_SPLIT), "{}", row.evidence);
-        } else {
-            // The pass that judged the train went on to take the first branch on its own: the row
-            // is `gating` already, and its history above is what says it came back in line first.
-            assert_eq!(row.state, MergeState::Gating, "{row:?}");
-        }
-        assert!(
-            !row.gate_steps.is_empty(),
-            "the failing gate's steps ride with the row"
-        );
-    }
-    // The review rows are untouched - still `approved`, bound to the head each judged.
-    for id in ["one", "two", "bad"] {
+    assert!(halves[2].ends_with(":b"), "{halves:?}");
+    assert!(back(&ms[2]).unwrap().why.contains("agent/bad"));
+    // The review rows are untouched, and no review row is filed for the train itself.
+    for id in ["ok0", "ok1", "bad"] {
         let r = w.store().review_row(id).unwrap().unwrap();
         assert_eq!(r.state, ReviewState::Approved, "{r:?}");
     }
-    // One review row for the train, naming every branch in the order it was rebased.
-    let trains: Vec<ReviewRow> = w
-        .store()
-        .review_rows(Some(&w.key()))
-        .unwrap()
-        .into_iter()
-        .filter(|r| r.id.starts_with("train-"))
-        .collect();
-    assert_eq!(trains.len(), 1, "{trains:?}");
-    let t = &trains[0];
-    let order: Vec<usize> = ["agent/one", "agent/two", "agent/bad"]
-        .iter()
-        .map(|b| {
-            t.brief
-                .find(b)
-                .unwrap_or_else(|| panic!("`{b}` is named in the brief: {}", t.brief))
-        })
-        .collect();
     assert!(
-        order[0] < order[1] && order[1] < order[2],
-        "the order is named, in order: {}",
-        t.brief
-    );
-    assert!(
-        t.brief.contains("test ! -f broken"),
-        "the failing step is named: {}",
-        t.brief
-    );
-    // The row's own birth is where its naming lives - a claim overwrites `evidence`, as it does
-    // for every row the review queue picks up.
-    let born = w.store().transitions("review", &t.id).unwrap();
-    let first = born
-        .first()
-        .unwrap_or_else(|| panic!("the row was born: {born:?}"));
-    assert!(
-        first.why.contains("train of 3") && first.why.contains("agent/bad"),
-        "{}",
-        first.why
-    );
-    assert!(t.state.is_open(), "the gatekeeper has it to decide: {t:?}");
-    assert!(
-        t.branch.starts_with("agent/train-"),
-        "the row is about the train's own tree: {}",
-        t.branch
-    );
-    assert!(
-        git::branch_head(&w.repo, &t.branch).is_some(),
-        "the tree the gate judged is a branch a reviewer can be given: {}",
-        t.branch
+        !w.store()
+            .review_rows(Some(&w.key()))
+            .unwrap()
+            .iter()
+            .any(|r| r.id.starts_with("train-")),
+        "the bisection finds the branch; nobody is asked to"
     );
     let said = w.door.warnings("merge_failed");
-    assert_eq!(said.len(), 1, "{said:?}");
-    for b in ["agent/one", "agent/two", "agent/bad"] {
-        assert!(said[0].contains(b), "`{b}` in {}", said[0]);
-    }
-
-    // The next passes gate each branch ALONE - the train cannot re-form, and the branch that is
-    // bad is the one that ends `failed`, while the other two land.
-    run(&q, 4);
-    assert_eq!(
-        w.store().merge_row(&ms[2]).unwrap().unwrap().state,
-        MergeState::Failed,
-        "the branch the gate refused, on its own"
+    assert!(
+        said[0].contains("bisected") && said[0].contains("agent/bad"),
+        "{said:?}"
     );
-    for m in [&ms[0], &ms[1]] {
-        assert_eq!(
-            w.store().merge_row(m).unwrap().unwrap().state,
-            MergeState::Landed,
-            "a branch that is fine on its own lands"
+}
+
+/// Wherever the bad branch is in a train of three, it is parked `failed` within
+/// log2(3)+1 gate runs after the red train, and the other two land.
+#[test]
+fn a_bad_branch_in_a_train_is_found_by_bisection_and_the_rest_land() {
+    for bad_at in 0..3 {
+        let w = World::new(&format!("train-bisect-{bad_at}"));
+        let gate = Arc::new(Counting::new());
+        let q = w.worker_with(gate.clone(), "a", train_of(3));
+        let ms = three_with_a_bad_one(&w, bad_at);
+        let state = |m: &String| w.store().merge_row(m).unwrap().unwrap().state;
+        until(&q, || state(&ms[bad_at]) == MergeState::Failed);
+        // The tip's gate and the red train's come first.
+        let extra = gate.runs().len() - 2;
+        assert!(
+            extra as f64 <= 3f64.log2() + 1.0,
+            "bad at {bad_at}: {extra} gates after the red train: {:?}",
+            gate.runs()
+        );
+        until(&q, || {
+            ms.iter()
+                .enumerate()
+                .all(|(i, m)| i == bad_at || state(m) == MergeState::Landed)
+        });
+        assert_eq!(state(&ms[bad_at]), MergeState::Failed);
+        assert!(!w.repo.join("broken").exists(), "bad at {bad_at}");
+        for i in (0..3).filter(|i| *i != bad_at) {
+            assert!(
+                w.repo.join(format!("ok{i}.txt")).exists(),
+                "bad at {bad_at}"
+            );
+        }
+        let failed = w.store().merge_row(&ms[bad_at]).unwrap().unwrap();
+        assert!(
+            !failed.gate_steps.is_empty(),
+            "the red steps ride with it: {failed:?}"
         );
     }
-    let runs = gate.runs();
-    assert_eq!(
-        runs.len(),
-        5,
-        "one gate of the tip, one of the red train, then one per branch: {runs:?}"
-    );
 }
 
 /// A stacked pair is ordered parent-first, whatever the clock says: the child's recorded base

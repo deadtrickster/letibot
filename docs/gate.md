@@ -100,11 +100,36 @@ The `queue` tool's `restart` puts a parked row back in line, and its `regate` ga
 again once the cause of a red is gone. Neither is a way past a red - a branch that cannot pass the
 gate is not landed, which is the whole point of having one.
 
+## Batched landings: `[queue] gate_train`
+
+The review stays per branch. What batches is the gate. With `gate_train = N` in the project's
+`leticode.toml`, the queue takes up to N approved rows, rebases them one onto the last onto the
+target's tip in queue order (a branch cut from another one in the stack goes after it), and gates
+the final tree once. The default, 1, is one branch and one gate.
+
+- **Green** lands every row in order, one commit each, so each row's `landed_sha` is its own
+  commit and a bisect walks the tree the gate judged. The push and the install run once.
+- **Red** lands nothing and the target does not move. The stack is split into two halves, first
+  half first, and each row's evidence names its half (`TRAIN_SPLIT [half 0f2d9550:ab]`). The first
+  half is gated as its own stack. Green lands it, and the red is in the second half, so that half is
+  split again with no gate, or parked `failed` when it is one row. Red splits the first half again
+  and the second half goes back in line as plain rows. This is the bors / merge-train bisection.
+  For one bad row, it is parked within log2(n)+1 gate runs after the red stack.
+- A parked row is `failed` like a lone branch. Its author fixes it and the new head goes back to
+  review.
+- A fix for a red target always lands alone. A stack only forms while the target is green at its
+  current tip.
+
+**Agents enqueue, they do not gate.** A seat calls the `queue` tool. A Claude Code agent calls the
+bridge's `queue` tool: `{action: "enqueue", branch, why}` for a pushed branch, then `{action:
+"status", id}` to read its review and landing rows. Then it stops. No agent runs the workspace
+suite or knows about a lock.
+
 ## The local landing gate: `scripts/gate-at.sh`
 
-Until the queue batches branches (R258), the lead lands by hand. Agents test the crates they
-touched and push a branch. The lead stacks the branches on `origin/main` in one worktree and runs
-one full gate over the stack:
+This is the lead's stopgap while a repository's queue does not batch (`gate_train` unset, or no
+queue serving it). Agents test the crates they touched and push a branch. The lead stacks the
+branches on `origin/main` in one worktree and runs one full gate over the stack:
 
 ```sh
 env -i HOME=$HOME PATH=$PATH sh scripts/gate-at.sh <worktree> /build/target-<name> origin/main

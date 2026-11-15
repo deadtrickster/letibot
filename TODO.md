@@ -1462,7 +1462,7 @@ Today (R243) every shadow trigger is a separate stateless call: the job's base p
 
 ## R258 - The merge queue gates one row at a time; landings are not batched, and agents bypass the queue
 
-**Status:** open, 2026-11-15. left: all of it. Check first whether batching exists somewhere this row missed; the operator recalled having it.
+**Status:** built, 2026-11-15. left: letibot sets no `[queue] gate_train` (no project `leticode.toml`), so its queue still gates one branch at a time until one is written; agent briefs outside AGENTS.md still say to report a tip rather than enqueue; `leticode_queue_verb` and `wait-queue` (B5) are not built; the bridge's `letibot-mcp` now links `letibot-harnessd` (no default features) for `queue`.
 
 **Now:**
 - letibot's merge queue (`docs/gate.md`, `crates/harnessd/src/mergequeue/`) takes an enqueued branch through the gatekeeper's review, a rebase onto the target's tip, the project's `## Merge gate` steps in a landing worktree, and the push.
@@ -1485,6 +1485,14 @@ Today (R243) every shadow trigger is a separate stateless call: the job's base p
 - Three approved rows land through one gate run when green.
 - A stack with one bad row lands the other two and parks the bad one, with at most log2(n)+1 extra gate runs.
 - A Claude Code agent can enqueue a branch through the bridge and read its row's state.
+
+**Found.** Batching existed: `[queue] gate_train` (61805da47, 2026-10-30) stacks up to N approved rows, gates once and lands each as its own commit. The row missed it because `gate_train` defaults to 1 and letibot never set it. A red train filed a `train-<target>-<sha>` review row and gated every row alone, n extra gates.
+
+**Built.**
+- `crates/harnessd/src/mergequeue/serve.rs`: a red train is bisected. `red_train` puts the first half and the second half back in line tagged `TRAIN_SPLIT [half <gid>:a|b]` (`half_of`). `land_next` gates a first half (`…a`) before any plain row, as a train or alone. A green half is recorded (`told` key `half-green:<repo>:<tag>`, written in `landed`). `settle_halves` then splits the waiting second half without a gate, or parks it `failed` when it is one row. A red first half splits again and its second half goes back in line as plain rows. No review row is filed for a red train any more. The `gid` is the red tree's short sha plus the clock.
+- `crates/bridge/src/queue_desk.rs`: the bridge's `queue` tool, `enqueue` (through `enqueue::enqueue_branch`, recorded as `bridge:<handle>`) and `status` (one row by `id`, or the repository's queue).
+- Docs: `docs/gate.md` *Batched landings*, with `scripts/gate-at.sh` as the lead's stopgap; `docs/claude-code-bridge.md` B5; `config-ref` and `docs/config/leticode.toml.md` for `gate_train`; AGENTS.md says push and enqueue.
+- Tests: `a_train_of_three_green_branches_lands_three_commits_with_one_gate` (existing, one gate for three); `a_bad_branch_in_a_train_is_found_by_bisection_and_the_rest_land` (bad row at each of three positions, parked within log2(3)+1 gates after the red train, the other two land); `a_red_train_lands_nothing_and_goes_back_in_line_as_two_halves`; `crates/bridge/tests/queue_enqueue.rs` (unpushed refused, pushed enqueued, row read back by id and in the queue).
 
 ## R259 - Messages to `cc@letibot` were never delivered to the session, and its inbox cursor had already moved past them
 

@@ -1811,6 +1811,7 @@ pub fn list() -> Value {
             }),
         ),
     ];
+    tools.push(crate::queue_desk::definition());
     tools.extend(crate::rooms::tool_list());
     tools.extend(todo_list());
     json!({ "tools": tools })
@@ -1903,6 +1904,7 @@ fn tool(name: &str, description: &str, schema: Value) -> Value {
 pub fn names() -> Vec<&'static str> {
     let mut all = leticode_names();
     all.extend(LIFECYCLE_TOOLS);
+    all.push(crate::queue_desk::TOOL);
     all.extend(crate::rooms::TOOLS);
     all.extend(TODO_TOOLS);
     all
@@ -2100,6 +2102,7 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
         "leticode_list" => Ok(bridge.list()),
         "holds" => crate::holds::holds(bridge, arg_opt_str(args, "owner")?.as_deref()),
         "gc_plan" => crate::holds::gc_plan(bridge, arg_opt_str(args, "owner")?.as_deref()),
+        "queue" => crate::queue_desk::call(bridge, args),
         "todo_write" => bridge.seat()?.write(args),
         "todos" => Ok(bridge.seat()?.board_json()),
         "todo_answer" => bridge.seat()?.answer(args),
@@ -2330,15 +2333,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
     }
 
-    /// Thirty-four tools (the leticode verbs, the room verbs, the todo and seat jobs), each with a
+    /// Thirty-seven tools (the leticode verbs, `queue`, the room verbs, the todo and seat jobs), each with a
     /// schema and a required list - the count and the names the design's table fixes. A tool added
     /// to `tools/list` and forgotten in `call` (or the other way round) is the defect this pairs
     /// against.
     #[test]
-    fn the_thirty_six_tools_are_listed_with_schemas() {
+    fn the_thirty_seven_tools_are_listed_with_schemas() {
         let listed = list();
         let tools = listed["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 36, "{listed}");
+        assert_eq!(tools.len(), 37, "{listed}");
         let mut named: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         named.sort_unstable();
         let mut want = names();

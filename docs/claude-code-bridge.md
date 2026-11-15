@@ -241,8 +241,14 @@ is not installed here, so no real client has loaded the capability.
   <repository> <row>` exiting on land (0), rejection or veto (10, the reviewers' words), gate
   failure (20), or timeout (30).
 
-**Not built, and not before the queue is stable**: B5 makes the queue the landing path for every
-package, so it waits on a stability pass over the queue itself.
+**Built: `queue`** (R258). `{action: "enqueue", branch, why, target?}` puts a pushed branch up for
+review through `mergequeue::enqueue::enqueue_branch`, the same checks a seat's `queue` tool makes,
+recorded under `bridge:<handle>`. `{action: "status", id?}` reads that row's review and landing
+state, or the repository's queue without `id`. It writes to the daemon's store and refuses when
+there is none. Tested in `crates/bridge/tests/queue_enqueue.rs`.
+
+**Not built**: `leticode_queue_verb` and `wait-queue`. The `<channel>` queue notifications cover
+the wait.
 
 ## Watching a session the bridge did not start (B6)
 

@@ -122,10 +122,11 @@ sh scripts/install-gate-build.sh
 - Never `git -c` inline config. Never bypass hooks.
 - Build machines lab2x1, lubuntu1 and lubuntu2 may fetch build dependencies without asking. Any
   other network egress asks first. lubuntu3 is never used.
-- Agents test the crates they touch (`cargo test -p <crate>`), push a branch and report its tip.
-  They never run a full gate and never push `main`. The lead stacks the branches and runs one full
-  gate over the stack (`scripts/gate-at.sh`, `docs/gate.md`), because parallel full gates choke the
-  box. R258 moves the stacking into the merge queue. A gate on a fleet host is `scripts/rrun NAME
+- Agents test the crates they touch (`cargo test -p <crate>`), push a branch, enqueue it (the
+  bridge's or the seat's `queue` tool, `action: "enqueue"`) and report its tip. They never run a
+  full gate and never push `main`. The queue gates approved branches as one stack (`[queue]
+  gate_train`, `docs/gate.md`). Where it does not, the lead stacks them and runs one full gate
+  (`scripts/gate-at.sh`), because parallel full gates choke the box. A gate on a fleet host is `scripts/rrun NAME
   WORKTREE --host H [--target DIR] --gate` (default host lab2x1). The Mac runs only
   platform-touching tests.
 - Agents never type into a session's head over tmux (`tmux send-keys`). A head cannot tell typed

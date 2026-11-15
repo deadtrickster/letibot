@@ -246,7 +246,7 @@ The merge queue reads the project file only, except the three census keys.
 | `gate_host` | hosts.toml name | this machine | project only | machine the gate runs on |
 | `gate_in` | "host" \| "firecode" | host | project only | gate steps run in a firecode VM |
 | `reviewer_skills` | list of skills | [] | project only | skills preloaded into reviewers |
-| `gate_train` | int >= 1 | 1 | project only | branches judged by one gate |
+| `gate_train` | int >= 1 | 1 | project only | approved branches gated as one stack; a red stack is bisected |
 | `reviewers_at_once` | int >= 1 | placement's | project only | concurrent reviewers |
 | `reviewer_hosts` | list; ["*"] = all | ["local"] | project only | hosts a host reviewer may use |
 | `reviewers_run_suites` | bool | false | project only | reviewers may run whole test suites, not only named tests |

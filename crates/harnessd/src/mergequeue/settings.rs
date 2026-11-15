@@ -22,8 +22,9 @@
 //!                                 #   `hosts.toml` (default: empty - this machine)
 //! gate_train = 3                  # how many approved branches one gate may judge together:
 //!                                 #   they are rebased one onto the last, gated ONCE, and
-//!                                 #   landed one commit at a time (default: 1 - one branch,
-//!                                 #   one gate, exactly as before)
+//!                                 #   landed one commit at a time. A red stack is bisected
+//!                                 #   until the failing branch is parked (default: 1 - one
+//!                                 #   branch, one gate)
 //! reviewers_at_once = 4           # how many reviewers this queue runs AT ONCE. Default:
 //!                                 #   `vm` is the box's VM slots; `host` is what the pool
 //!                                 #   of machines can take, from their cores

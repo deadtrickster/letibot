@@ -57,10 +57,31 @@ pub fn halts_reviews(h: &TargetHealth) -> bool {
         || (h.state == HealthState::Gating && h.evidence.contains(STILL_HALTED))
 }
 
-/// The clause a merge row leads with when the TRAIN it rode in was red - its own gate has
-/// not run, and it is next in line to be gated alone. It is what keeps a red train from
-/// becoming a loop
+/// The clause a merge row leads with when the TRAIN it rode in was red. The `[half TAG]` after
+/// it names the half of the bisection the row is in, so a red train cannot re-form whole.
 pub const TRAIN_SPLIT: &str = "this branch was in a train whose gate was red";
+
+/// The bisection half a queued row is in - `TRAIN_SPLIT [half 0f2d9550:ab]: ...` is `0f2d9550:ab`.
+/// The path is `a`/`b` per split, first half first.
+pub fn half_of(evidence: &str) -> Option<String> {
+    let rest = evidence
+        .strip_prefix(TRAIN_SPLIT)?
+        .strip_prefix(" [half ")?;
+    let tag = &rest[..rest.find(']')?];
+    let (gid, path) = tag.split_once(':')?;
+    (!gid.is_empty() && !path.is_empty() && path.chars().all(|c| c == 'a' || c == 'b'))
+        .then(|| tag.to_string())
+}
+
+/// The half that is gated before this one: `…b` waits for `…a`. `None` for a first half.
+fn first_half_of(tag: &str) -> Option<String> {
+    tag.strip_suffix('b').map(|t| format!("{t}a"))
+}
+
+/// The sentence a row of half `tag` waits in line with.
+fn half_sentence(tag: &str, rest: &str) -> String {
+    format!("{TRAIN_SPLIT} [half {tag}]: {rest}")
+}
 
 /// Where the queues reach sessions - the review queue's session, a project's main session
 /// and every hub. A trait so the tests record and the daemon rings.
@@ -348,6 +369,8 @@ struct Landing {
     wt: PathBuf,
     carried: Vec<String>,
     install: Vec<String>,
+    /// The bisection half this row was gated as ([`half_of`]); its green is recorded.
+    half: Option<String>,
 }
 
 /// How a failed push opens in the row; [`Self::landed`] reads it to pick `landed_local`.
@@ -363,6 +386,8 @@ struct Train {
     wt: PathBuf,
     carried: Vec<String>,
     install: Vec<String>,
+    /// The bisection half every car is in, `None` for a train of plain rows.
+    half: Option<String>,
 }
 
 /// One branch in a train - the row, the head it was approved at, and the commit it became.
@@ -390,6 +415,7 @@ impl Train {
             wt: self.wt.clone(),
             carried: self.carried.clone(),
             install: self.install.clone(),
+            half: self.half.clone(),
         }
     }
 
@@ -397,17 +423,11 @@ impl Train {
     fn branches(&self) -> Vec<String> {
         self.cars.iter().map(|c| c.row.branch.clone()).collect()
     }
+}
 
-    /// The order, written out - `1. `agent/a` (m-a) at 0f2d9550` - what a red train hands the
-    /// reviewer and every one of its rows.
-    fn order(&self) -> String {
-        self.cars
-            .iter()
-            .enumerate()
-            .map(|(i, c)| format!("{}. `{}` ({}) at {}", i + 1, c.row.branch, c.row.id, c.head))
-            .collect::<Vec<_>>()
-            .join("\n")
-    }
+/// The `told` key that says half `tag` of a bisection in `repo` landed green.
+fn half_green_key(repo: &str, tag: &str) -> String {
+    format!("half-green:{repo}:{tag}")
 }
 
 /// What a row that landed in a train says about the train - `, in a train of 3 (car 2)`. `''`
@@ -2175,21 +2195,50 @@ impl RepoQueue {
             )
         });
         let eligible: Vec<MergeRow> = queued.into_iter().filter(|m| allowed(m)).collect();
-        // The train - and only when every branch at the front of the line is a plain one: a fix
-        // lands alone (it is the one thing that may move a red target), and a row just out of a red
-        // train is gated on its own first ([`TRAIN_SPLIT`]). So the train is the front of the line.
-        if settings.gate_train > 1
+        if self.settle_halves(&eligible)? {
+            return Ok(true);
+        }
+        // A fix lands alone. Then a first half of a red train's bisection, before any plain row:
+        // its verdict is what the rest of that train waits for.
+        let mut half: Option<String> = None;
+        let mut group: Vec<MergeRow> = Vec::new();
+        match eligible.first() {
+            Some(m) if m.fixes.is_some() => group.push(m.clone()),
+            _ => {
+                let first_half = eligible
+                    .iter()
+                    .filter_map(|m| half_of(&m.evidence))
+                    .find(|t| first_half_of(t).is_none());
+                if let Some(t) = first_half {
+                    group = eligible
+                        .iter()
+                        .filter(|m| half_of(&m.evidence).as_deref() == Some(t.as_str()))
+                        .cloned()
+                        .collect();
+                    half = Some(t);
+                } else {
+                    group = eligible
+                        .iter()
+                        .filter(|m| m.fixes.is_none() && half_of(&m.evidence).is_none())
+                        .cloned()
+                        .collect();
+                }
+            }
+        }
+        let most = match &half {
+            Some(_) => group.len(),
+            None => settings.gate_train,
+        };
+        if most > 1
             && h.state == HealthState::Green
             && current
-            && eligible.len() > 1
-            && eligible
-                .iter()
-                .all(|m| m.fixes.is_none() && !m.evidence.starts_with(TRAIN_SPLIT))
-            && self.land_train(target, settings.gate_train, &eligible)?
+            && group.len() > 1
+            && group.iter().all(|m| m.fixes.is_none())
+            && self.land_train(target, most, &group, half.clone())?
         {
             return Ok(true);
         }
-        let Some(row) = eligible.into_iter().next() else {
+        let Some(row) = group.into_iter().next() else {
             return Ok(false);
         };
         let me = self.me().to_string();
@@ -2202,8 +2251,80 @@ impl RepoQueue {
             return Ok(false);
         }
         let row = self.store.merge_row(&row.id)?.unwrap_or(row);
-        self.land(&row)?;
+        self.land(&row, half)?;
         Ok(true)
+    }
+
+    /// The second halves of a bisection, once their first half has a verdict. First half green:
+    /// the second holds the red, so it is split again without a gate, or parked when it is one
+    /// row. First half red or gone: the second half is plain rows again.
+    fn settle_halves(&self, eligible: &[MergeRow]) -> Result<bool, StoreError> {
+        let me = self.me().to_string();
+        let mut halves: std::collections::BTreeMap<String, Vec<MergeRow>> = Default::default();
+        for m in eligible {
+            if let Some(t) = half_of(&m.evidence) {
+                halves.entry(t).or_default().push(m.clone());
+            }
+        }
+        let mut moved = false;
+        for (tag, rows) in &halves {
+            let Some(first) = first_half_of(tag) else {
+                continue;
+            };
+            if halves.contains_key(&first) {
+                continue;
+            }
+            let green = self
+                .store
+                .told(&half_green_key(&self.key, &first))?
+                .is_some();
+            if !green {
+                let why = format!(
+                    "the half `{first}` gated before this one was red or left the line, so this \
+                     branch is back in line as a plain one"
+                );
+                for m in rows {
+                    moved |= self.merge_to(
+                        m,
+                        MergeState::Queued,
+                        MergeState::Queued,
+                        Move::new(&me, &why),
+                    )?;
+                }
+            } else if let [m] = rows.as_slice() {
+                let why = format!(
+                    "the train it rode in was red and the half `{first}` before it landed green \
+                     without it, so this branch is the one that failed the gate (half `{tag}`)"
+                );
+                self.raise("merge_failed", super::notices::merge_failed(m, &why));
+                moved |= self.merge_to(
+                    m,
+                    MergeState::Queued,
+                    MergeState::Failed,
+                    Move::new(&me, why).set("owner", ""),
+                )?;
+            } else {
+                let rows = self.train_order(rows);
+                let k = rows.len().div_ceil(2);
+                for (i, m) in rows.iter().enumerate() {
+                    let sub = format!("{tag}{}", if i < k { 'a' } else { 'b' });
+                    let why = half_sentence(
+                        &sub,
+                        &format!(
+                            "half `{first}` landed green, so the red is in `{tag}` and it is split \
+                             without a gate"
+                        ),
+                    );
+                    moved |= self.merge_to(
+                        m,
+                        MergeState::Queued,
+                        MergeState::Queued,
+                        Move::new(&me, why),
+                    )?;
+                }
+            }
+        }
+        Ok(moved)
     }
 
     fn gating_to(&self, row: &MergeRow, to: MergeState, mv: Move) -> Result<bool, StoreError> {
@@ -2217,7 +2338,7 @@ impl RepoQueue {
     }
 
     /// The landing, in the dedicated worktree, with a compare-and-swap on the target.
-    fn land(&self, row: &MergeRow) -> Result<(), StoreError> {
+    fn land(&self, row: &MergeRow, half: Option<String>) -> Result<(), StoreError> {
         let me = self.me().to_string();
         let repo = self.repo.clone();
         let target = row.target.clone();
@@ -2397,6 +2518,7 @@ impl RepoQueue {
                 wt: wt.clone(),
                 carried,
                 install,
+                half,
             })),
             wt,
             steps,
@@ -2415,6 +2537,7 @@ impl RepoQueue {
         target: &str,
         most: usize,
         candidates: &[MergeRow],
+        half: Option<String>,
     ) -> Result<bool, StoreError> {
         let me = self.me().to_string();
         let Some(tip) = git::branch_head(&self.repo, target) else {
@@ -2601,6 +2724,7 @@ impl RepoQueue {
                 wt: wt.clone(),
                 carried,
                 install,
+                half,
             })),
             wt,
             steps,
@@ -3176,9 +3300,9 @@ impl RepoQueue {
         Ok(())
     }
 
-    /// A train's gate was red - the train dissolves, and the gatekeeper is asked which branch
-    /// to fix or drop. Nothing was landed and the target never moved: a train is judged BEFORE
-    /// its first compare-and-swap. Left behind, row by row
+    /// A train's gate was red - nothing landed and the target never moved. The train is split
+    /// in two halves, first half gated first, so the failing row is found in about log2(n) gates
+    /// (the bors/merge-train bisection). The failing row is parked `failed` like a lone branch.
     fn red_train(
         &self,
         train: &Train,
@@ -3188,82 +3312,42 @@ impl RepoQueue {
         let target = train.cars[0].row.target.clone();
         let n = train.cars.len();
         let at = train.cars[n - 1].rebased.clone();
-        let short: String = at.chars().take(8).collect();
         let branches = train.branches();
-        let order = train.order();
-        // The train's own tree, as a branch - the tree the gate judged, at a ref a reviewer can
-        // be given. It is the queue's, it is disposable, and it is named for the commit it is at.
-        let branch = format!("agent/train-{}-{short}", target.replace('/', "-"));
-        if let Err(e) = git::git(&self.repo, &["branch", "-f", &branch, &at]) {
-            // Not fatal: the review row is still the record, and its brief says the tree may be
-            // gone.
-            eprintln!("  merge queue: the train's tree could not be kept as `{branch}`: {e}");
-        }
-        let id = format!("train-{}-{short}", target.replace('/', "-"));
-        let failing = steps
-            .iter()
-            .find(|s| s.outcome == letibot_tokencore::store::MergeGateOutcome::Failed)
-            .map(|s| s.command.clone())
-            .unwrap_or_default();
-        let brief = format!(
-            "A train of {n} branches was rebased onto `{target}` at {tip} and gated ONCE, together, \
-             and that gate is RED. The branches, in the order they were rebased:\n\n{order}\n\nThe \
-             tree the gate judged is the branch `{branch}` at {at}, which is this row's tree: \
-             reproduce there, and `git log`/`git show` reach each branch's own commits from it.\n\n\
-             Decide which branch to fix or drop{step}. The failing output's end:\n\n{out}",
-            tip = train.tip,
-            step = if failing.is_empty() {
-                String::new()
-            } else {
-                format!(" at `{failing}`")
-            },
-            out = super::gate::for_the_model(&words),
-        );
-        let fresh = self.store.enqueue_review(
-            &NewReview {
-                id: id.clone(),
-                repository: self.key.clone(),
-                target: target.clone(),
-                kind: ReviewKind::Branch,
-                session_id: String::new(),
-                branch: branch.clone(),
-                worktree: None,
-                base_sha: train.tip.clone(),
-                head_sha: at.clone(),
-                brief,
-                priority: letibot_tokencore::store::MergePriority::Urgent,
-                fixes: None,
-                evidence: format!(
-                    "the gate of a train of {n} ({}) was red at {at}",
-                    branches.join(", ")
+        let tag = match &train.half {
+            Some(t) => t.clone(),
+            // A later train can rebuild the same tree; the clock keeps the verdicts apart.
+            None => format!(
+                "{}.{}:",
+                at.chars().take(8).collect::<String>(),
+                gate::now_ms()
+            ),
+        };
+        let k = n.div_ceil(2);
+        let (first, second) = train.cars.split_at(k);
+        for (cars, side) in [(first, 'a'), (second, 'b')] {
+            let half = format!("{tag}{side}");
+            let why = half_sentence(
+                &half,
+                &format!(
+                    "the train of {n} (`{}`) onto `{target}` at {tip} failed its gate at {at}, so \
+                     it is bisected and this half is gated {when}",
+                    branches.join("`, `"),
+                    tip = train.tip,
+                    when = if side == 'a' {
+                        "next"
+                    } else {
+                        "after the first"
+                    },
                 ),
-            },
-            self.me(),
-            gate::now_ms(),
-        )?;
-        if fresh {
-            self.announce_move(
-                "review",
-                &id,
-                "waiting",
-                "the train's red gate goes to review: which branch to fix or drop",
             );
+            self.train_back(cars, &why, steps)?;
         }
-        // The rows go back in line, one at a time - and the sentence is what keeps them out of
-        // the next train, so the queue cannot re-form this one and fail it again.
-        let why = format!(
-            "{TRAIN_SPLIT}: the train of {n} ({}) onto `{target}` at {tip} failed its gate, so this \
-             branch is gated on its own next. The train's evidence is the review row `{id}`",
-            branches.join("`, `"),
-            tip = train.tip,
-        );
-        self.train_back(&train.cars, &why, steps)?;
         self.raise(
             "merge_failed",
             format!(
-                "the gate of a train of {n} onto `{target}` at {tip} is RED — nothing landed and \
-                 the branches ({}) are back in line, each to be gated on its own. Which of them to \
-                 fix or drop is the review row `{id}`'s question.\n\nThe failing output's end:\n\n{}",
+                "the gate of a train of {n} onto `{target}` at {tip} is RED. Nothing landed, and the \
+                 branches (`{}`) are bisected to find the one that failed.\n\nThe failing output's \
+                 end:\n\n{}",
                 branches.join("`, `"),
                 super::gate::for_the_model(&words),
                 tip = train.tip,
@@ -3340,6 +3424,11 @@ impl RepoQueue {
                 .set("pushed", pushed_text)
                 .set("gate_steps_json", rows_json(&all_steps)),
         )?;
+        // The second half of this bisection reads it: green here puts the red in the other half.
+        if let Some(t) = &landing.half {
+            self.store
+                .tell_once(&half_green_key(&self.key, t), gate::now_ms())?;
+        }
         // And the OWNER of that branch: a landed branch means its work is on the target, which is
         // the proof the lifecycle's landed grace rests on (`docs/lifecycle.md` d.2's `landed_sha`,
         // G3's settle trigger). Only a recorded owner is written; a queue entry that names nobody
