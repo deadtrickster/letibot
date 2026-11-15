@@ -38,6 +38,14 @@ pub fn pass(store: &Store, registry: Option<&Registry>, by: &str) -> Vec<String>
     pass_with(store, registry, &lifecycle::Ops::here(by))
 }
 
+/// The daemon's own hands: [`lifecycle::Ops::here`] with when it came up, for the start grace.
+fn daemon_ops(registry: &Registry) -> lifecycle::Ops {
+    lifecycle::Ops {
+        daemon_up_ms: Some(registry.started_ms() as i64),
+        ..lifecycle::Ops::here(format!("daemon {}", registry.instance()))
+    }
+}
+
 /// [`pass`] with hands the caller keeps, so the ssh connections a remote host's pass opens are
 /// reused from one sweep to the next.
 pub fn pass_with(store: &Store, registry: Option<&Registry>, ops: &lifecycle::Ops) -> Vec<String> {
@@ -119,7 +127,7 @@ pub fn spawn(store_at: Option<impl Into<StoreAt>>, registry: Arc<Registry>) {
             let Ok(store) = at.open() else {
                 return;
             };
-            let ops = lifecycle::Ops::here(format!("daemon {}", registry.instance()));
+            let ops = daemon_ops(&registry);
             loop {
                 for line in pass_with(&store, Some(&registry), &ops) {
                     eprintln!("  reaper: {line}");

@@ -739,6 +739,15 @@ pub struct DaemonRec {
     pub socket: String,
 }
 
+/// The file beside a daemon's socket that makes its next stop keep the host jobs for the next
+/// daemon (`docs/lifecycle.md`, "Jobs across a restart"). The launcher's `--restart` and the
+/// reaper both leave it; the daemon removes it when it takes it.
+pub fn restart_marker(socket: &Path) -> PathBuf {
+    let mut name = socket.as_os_str().to_os_string();
+    name.push(".restart");
+    PathBuf::from(name)
+}
+
 /// Every runtime record that names a workspace, in the runtime directory. A room or a forward is
 /// a record of its own kind and names a directory nobody works in, so it is not here.
 pub fn daemon_records(places: &Places) -> Vec<(PathBuf, String, Option<u32>, String)> {

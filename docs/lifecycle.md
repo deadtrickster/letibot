@@ -588,11 +588,30 @@ Close triggers. Any one is enough, and none is an agent's action:
 
 What renews a lease: a turn starting or ending, a tool call returning, a message from the
 operator or the caller (`leticode_send`), an explicit `letibot hold`, and, on every sweep of the
-owner's own daemon, an open job or a head attached to a package that has not landed. A landed
-package's head does not count, so it closes 30 minutes after it last did anything, its VM comes
-down with its copy-out, and its daemon exits. Only the owner's own daemon judges idleness while
-it is up: a reaper in another process reads none of its heads, turns or jobs. Nothing is lost by
-a close: `leticode_attach` or `leticode_send` on the id starts the folder's daemon and reopens it.
+owner's own daemon, an attached head, a turn in flight or an open job. A turn renews it on a clock
+while it runs, so one tool call longer than the idle TTL is not idle. The head of a landed package
+does not count, so a finished package closes 30 minutes after it last did anything, its VM comes
+down with its copy-out, and its daemon exits. Only the owner's own daemon judges idleness while it
+is up: a reaper in another process reads none of its heads, turns or jobs.
+
+Start grace: a daemon that came up less than 5 minutes ago judges no owner idle or orphaned. Its
+first pass runs before its session is opened, on the lease the previous daemon left. Hard TTL and
+a closed parent still apply.
+
+The reaper's stop of a daemon keeps the host jobs, as `letibot --restart` does (d.5, "Jobs across a
+restart"): it leaves the restart marker beside the daemon's socket before its SIGTERM, and the next
+daemon to open the session adopts them. An owner closed with a job of its own open gets a plain
+stop, and that job ends: an idle close drains, so only a hard TTL or a closed parent gets there.
+The daemon's idle exit drains instead: a running job holds it, as a head or a turn does. A plain
+`letibot --stop` ends every job. Nothing is lost by a close: `leticode_attach` or `leticode_send`
+on the id starts the folder's daemon and reopens it.
+
+Where an owner's rows are: `owner`, `holding` and the journal in `shared.db`; `process` and `job`
+in the project file of the daemon that ran them, `projects/<key>.db`. The key is the hash of the
+folder the daemon was spawned from: `Config::for_the_daemon(cwd)` pins `store_key` before
+`--workspace` is read, and only `--project` overrides it. A worktree daemon spawned from another
+folder writes under that folder's key, not the worktree's, so a reaper looks for an owner's open
+job in every project file (`open_job_elsewhere`).
 
 Settle triggers:
 
@@ -727,7 +746,8 @@ Two rules worth stating once:
 background jobs. The launcher leaves `<socket>.restart` and sends SIGTERM; the daemon takes the
 marker and its stop keeps every running background job that writes its own output file and is
 owned by a `session` or `explicit` scope. Everything else ends as a plain `--stop` ends it. A
-daemon that predates this never takes the marker, and the launcher says its jobs ended.
+daemon that predates this never takes the marker, and the launcher says its jobs ended. The
+reaper's stop of a daemon leaves the same marker and removes one the daemon did not take (d.3).
 
 - **Wrapper.** A background job runs as
   `sh -c JOIN letibot-scope <procs> <token> sh -c WRAPPER letibot-job <status> <boundary…> <shell> <command>`.

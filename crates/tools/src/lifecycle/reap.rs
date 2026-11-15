@@ -37,6 +37,10 @@ pub use disks::{BoxHands, COPY_OUT_DEADLINE_MS, Hands};
 /// nothing depends on it: the close happens whether or not anybody read it.
 pub const NOTICE_LEAD_MS: i64 = 5 * 60 * 1000;
 
+/// How long a daemon that just came up judges no owner idle or orphaned. Its reaper's first pass
+/// runs before its session is opened, while that owner's lease is still the one its last daemon left.
+pub const START_GRACE_MS: i64 = 5 * 60 * 1000;
+
 /// A scope's processes get this long between SIGTERM and `cgroup.kill` (d.5). A closed owner is
 /// resumable, which is what makes ten seconds enough.
 pub const SIGTERM_GRACE: Duration = Duration::from_secs(10);
@@ -66,6 +70,8 @@ pub struct Ops {
     /// This box's `[docker]` and `[gc.docker]` settings. They are on `Ops` rather than read inside
     /// the pass so the one thing that removes something docker owns can be a test's value.
     pub docker: crate::docker::Settings,
+    /// When the daemon running this pass came up; `None` for a pass outside a daemon.
+    pub daemon_up_ms: Option<i64>,
 }
 
 impl std::fmt::Debug for Ops {
@@ -92,6 +98,7 @@ impl Ops {
             daemon_grace: DAEMON_GRACE,
             hands: Arc::new(hands),
             docker: crate::docker::Settings::load_or_default(),
+            daemon_up_ms: None,
         }
     }
 }
@@ -113,6 +120,9 @@ pub struct Activity {
     /// The pid of a live daemon serving this owner that is not the one running this pass. Only
     /// that daemon sees the owner's heads, turns and jobs, so only it judges the owner idle.
     pub served_by: Option<u32>,
+    /// The daemon running this pass is inside its [`START_GRACE_MS`]: the owner it is opening may
+    /// not have renewed its lease yet.
+    pub starting: bool,
 }
 
 impl Activity {
@@ -153,6 +163,9 @@ pub fn close_due(o: &OwnerRow, a: &Activity, now_ms: i64) -> Option<String> {
             human_millis(ttl as u64)
         ));
     }
+    if a.starting {
+        return None;
+    }
     if o.kind != OwnerKind::Session
         && let Some(false) = a.daemon
         && !a.kept
@@ -188,6 +201,7 @@ pub fn notice_at(o: &OwnerRow, a: &Activity, now_ms: i64) -> Option<i64> {
         || o.held(now_ms)
         || a.busy
         || a.served_by.is_some()
+        || a.starting
         || o.kind == OwnerKind::Session
     {
         return None;
@@ -362,6 +376,7 @@ pub fn activity(store: &Store, o: &OwnerRow, places: &Places) -> Activity {
                 .any(|h| h.kind == super::plan::DETACHED_JOB && h.state != HoldingState::Gone)
         }),
         served_by: served_elsewhere(o, places),
+        starting: false,
     }
 }
 
@@ -570,6 +585,9 @@ fn compute(
     match owner.state {
         OwnerState::Live => {
             let mut a = activity(store, owner, places);
+            a.starting = ops
+                .daemon_up_ms
+                .is_some_and(|up| at_ms - up < START_GRACE_MS);
             if !a.busy
                 && (notice_at(owner, &a, at_ms).is_some() || close_due(owner, &a, at_ms).is_some())
             {
@@ -674,7 +692,7 @@ fn reap_compute(
             VM => end_vm(places, ops, &f.handle),
             DAEMON => match drain_refusal(store, places, owner) {
                 Some(why) => Ended::Kept(why),
-                None => end_daemon(places, ops, owner, &f.handle),
+                None => end_daemon(places, ops, owner, &f.handle, !owns_open_job(store, owner)),
             },
             // A container or a network the label proves: gone by `docker rm -f` / `network rm`
             // through the engine, which is G6's half of compute.
@@ -1068,20 +1086,16 @@ fn patience(ops: &Ops) -> Patience {
     }
 }
 
-/// Why a live daemon of another process is not stopped yet, if it is not. A SIGTERM ends every
-/// session and job the daemon holds, so an idle close waits for its own job, and no close stops a
-/// daemon that still serves another live owner.
+/// Why a live daemon of another process is not stopped yet, if it is not. A stop closes every
+/// session the daemon holds, so an idle close waits for its own job, and no close stops a daemon
+/// that still serves another live owner.
 fn drain_refusal(store: &Store, places: &Places, owner: &OwnerRow) -> Option<String> {
     let pid = served_elsewhere(owner, places)?;
     let idle = owner
         .closed_why
         .as_deref()
         .is_some_and(|w| w.starts_with("idle"));
-    let job = store
-        .processes_of(&owner.id)
-        .is_ok_and(|v| v.iter().any(|p| p.state.is_open()))
-        || open_job_elsewhere(store, owner);
-    if idle && job {
+    if idle && owns_open_job(store, owner) {
         return Some(format!(
             "draining: `{}` has a job running, so its daemon at pid {pid} is stopped once it ends",
             owner.id
@@ -1101,9 +1115,24 @@ fn drain_refusal(store: &Store, places: &Places, owner: &OwnerRow) -> Option<Str
     ))
 }
 
-/// Stop one daemon by its runtime record: SIGTERM, a grace, then SIGKILL by `(pid, start)`. Never
-/// this process, and never a daemon whose record names another workspace (d.4 rule 6).
-fn end_daemon(places: &Places, ops: &Ops, owner: &OwnerRow, handle: &str) -> Ended {
+/// The owner has a job open, in the reaper's project file or any other.
+fn owns_open_job(store: &Store, owner: &OwnerRow) -> bool {
+    store
+        .processes_of(&owner.id)
+        .is_ok_and(|v| v.iter().any(|p| p.state.is_open()))
+        || open_job_elsewhere(store, owner)
+}
+
+/// Stop one daemon by its runtime record: the restart marker, SIGTERM, a grace, then SIGKILL by
+/// `(pid, start)`. Never this process, and never a daemon whose record names another workspace
+/// (d.4 rule 6).
+fn end_daemon(
+    places: &Places,
+    ops: &Ops,
+    owner: &OwnerRow,
+    handle: &str,
+    keep_jobs: bool,
+) -> Ended {
     let recs = daemons_of(owner, places);
     let rec = recs
         .iter()
@@ -1135,6 +1164,14 @@ fn end_daemon(places: &Places, ops: &Ops, owner: &OwnerRow, handle: &str) -> End
     if !procs::alive(pid, info.start) {
         return Ended::Gone(format!("no process is at {pid}: its daemon is gone"));
     }
+    // The stop keeps the host jobs, as `letibot --restart` does, and the next daemon adopts them.
+    // Not when the closing owner has a job of its own: only a hard close gets here then, and it
+    // ends that job.
+    let marker = (keep_jobs && !rec.socket.is_empty())
+        .then(|| super::restart_marker(Path::new(&rec.socket)));
+    if let Some(m) = &marker {
+        let _ = std::fs::write(m, b"");
+    }
     let _ = procs::kill_exact(pid, info.start, Signal::Term);
     let deadline = Instant::now() + ops.daemon_grace;
     while procs::alive(pid, info.start) && Instant::now() < deadline {
@@ -1146,6 +1183,10 @@ fn end_daemon(places: &Places, ops: &Ops, owner: &OwnerRow, handle: &str) -> End
         while procs::alive(pid, info.start) && Instant::now() < deadline {
             std::thread::sleep(Duration::from_millis(50));
         }
+    }
+    // A daemon that predates the marker never takes it, and a later plain stop must not keep jobs.
+    if let Some(m) = &marker {
+        let _ = std::fs::remove_file(m);
     }
     if procs::alive(pid, info.start) {
         let _ = std::fs::remove_file(&rec.path);

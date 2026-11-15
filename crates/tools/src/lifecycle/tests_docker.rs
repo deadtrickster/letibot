@@ -119,6 +119,7 @@ fn ops(engine: Option<&Path>, docker: crate::docker::Settings) -> Ops {
             engine: engine.map(Path::to_path_buf),
         }),
         docker,
+        daemon_up_ms: None,
     }
 }
 

@@ -102,6 +102,7 @@ fn quick(by: &str) -> Ops {
         daemon_grace: Duration::from_millis(200),
         hands: std::sync::Arc::new(NoHands),
         docker: crate::docker::Settings::default(),
+        daemon_up_ms: None,
     }
 }
 
@@ -119,6 +120,7 @@ fn activity(busy: bool) -> Activity {
         daemon: None,
         kept: false,
         served_by: None,
+        starting: false,
     }
 }
 
@@ -336,6 +338,7 @@ fn a_daemon_is_stopped_and_its_record_goes_with_it() {
         &quick("test"),
         &owner,
         &format!("pid:{}", child.id()),
+        true,
     );
     let _ = child.wait();
     assert!(matches!(ended, Ended::Gone(_)), "{ended:?}");
@@ -350,6 +353,7 @@ fn a_daemon_is_stopped_and_its_record_goes_with_it() {
         &quick("test"),
         &owner,
         &format!("pid:{}", std::process::id()),
+        true,
     );
     match kept {
         Ended::Kept(why) => assert!(why.contains("never reaps itself"), "{why}"),
@@ -642,4 +646,103 @@ fn a_daemon_serving_another_live_owner_is_not_stopped() {
         "the keep says why: {out:?}"
     );
     assert_eq!(s.owner("s-1").unwrap().unwrap().state, OwnerState::Closing);
+}
+
+/// A daemon inside its start grace judges no owner idle or orphaned: its first pass runs before
+/// its session is opened, on the lease the last daemon left. Past the grace the same owner closes.
+#[test]
+fn a_daemon_that_just_came_up_judges_no_owner_idle() {
+    let b = Box_::new("start-grace");
+    let places = b.places();
+    let s = b.store();
+    let now = 10_000_000;
+    s.put_owner(&package("s-1", now - 600_000, 60_000))
+        .expect("an owner with a stale lease");
+    let starting = Ops {
+        daemon_up_ms: Some(now - 1_000),
+        ..quick("test")
+    };
+    let out = pass(&s, &places, &starting, None, now).expect("a pass");
+    assert_eq!(
+        s.owner("s-1").unwrap().unwrap().state,
+        OwnerState::Live,
+        "{out:?}"
+    );
+    assert!(out.acts.is_empty(), "no notice either: {out:?}");
+
+    let a = Activity {
+        daemon: Some(false),
+        starting: true,
+        ..activity(false)
+    };
+    assert!(
+        close_due(&package("s-1", 0, 60_000), &a, now).is_none(),
+        "a record its new daemon has not replaced yet is not a daemon gone"
+    );
+
+    let settled = Ops {
+        daemon_up_ms: Some(now - START_GRACE_MS),
+        ..quick("test")
+    };
+    let out = pass(&s, &places, &settled, None, now).expect("a pass");
+    assert_eq!(
+        s.owner("s-1").unwrap().unwrap().state,
+        OwnerState::Closed,
+        "past the grace the idle close happens: {out:?}"
+    );
+}
+
+/// The reaper's stop leaves the restart marker beside the daemon's socket before the signal, so
+/// the daemon keeps its host jobs, and removes one a daemon did not take. A hard close of an owner
+/// with its own job open stops the daemon plainly, and that job ends.
+#[test]
+fn the_reapers_stop_asks_the_daemon_to_keep_its_jobs() {
+    assert!(
+        stop_saw_the_marker("keep-jobs", true),
+        "the daemon was signalled with no marker"
+    );
+    assert!(
+        !stop_saw_the_marker("end-jobs", false),
+        "a hard close kept the owner's own job"
+    );
+}
+
+/// Stop a fake daemon through `end_daemon` and answer whether it saw the marker on its SIGTERM.
+fn stop_saw_the_marker(name: &str, keep_jobs: bool) -> bool {
+    let b = Box_::new(name);
+    let places = b.places();
+    let marker = super::super::restart_marker(&b.at("run/k1.sock"));
+    let seen = b.at("seen");
+    let script = b.at("daemon.sh");
+    crate::testing::write_stub(
+        &script,
+        &format!(
+            "#!/bin/sh\n[ -n \"${p}\" ] && exit 0\ntrap 'if [ -e \"{m}\" ]; then : >\"{s}\"; fi; exit 0' TERM\nwhile :; do sleep 0.05; done\n",
+            p = crate::testing::STUB_PROBE,
+            m = marker.display(),
+            s = seen.display()
+        ),
+    );
+    let mut child = std::process::Command::new(&script)
+        .spawn()
+        .expect("a fake daemon");
+    std::thread::sleep(Duration::from_millis(100));
+    b.daemon_record("k1", Path::new("/w"), child.id());
+    let mut owner = package("s-1", 0, 60_000);
+    owner.state = OwnerState::Closing;
+    let ended = end_daemon(
+        &places,
+        &quick("test"),
+        &owner,
+        &format!("pid:{}", child.id()),
+        keep_jobs,
+    );
+    let _ = child.kill();
+    let _ = child.wait();
+    assert!(matches!(ended, Ended::Gone(_)), "{ended:?}");
+    assert!(
+        !marker.exists(),
+        "a marker the daemon left would keep a later plain stop's jobs"
+    );
+    seen.exists()
 }

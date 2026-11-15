@@ -120,13 +120,14 @@ fn stop_on_signal(
         libc::SIGTERM => "SIGTERM",
         _ => "a signal",
     };
-    // `letibot --restart` leaves the marker before its signal; taking it makes this stop keep the
-    // host jobs. An older daemon never looks, so the launcher can tell it ended them.
+    // `letibot --restart` and the reaper leave the marker before their signal; taking it makes
+    // this stop keep the host jobs. An older daemon never looks, so the launcher can tell it ended
+    // them.
     let restart = marker.is_some_and(|m| std::fs::remove_file(m).is_ok());
     if restart {
         eprintln!(
-            "harnessd: {what} for a restart - interrupting the turn and stopping, keeping the host \
-             jobs for the next daemon; a second one exits now"
+            "harnessd: {what} with the restart marker - interrupting the turn and stopping, keeping \
+             the host jobs for the next daemon; a second one exits now"
         );
     } else {
         eprintln!("harnessd: {what} — interrupting the turn and stopping; a second one exits now");
@@ -207,12 +208,10 @@ fn stop_on_signal(
     }
 }
 
-/// The file `letibot --restart` leaves beside the socket before it signals: the stop it asks for
-/// keeps the host jobs ([`Registry::close_for_restart`]).
+/// The file `letibot --restart` and the reaper leave beside the socket before they signal: the
+/// stop it asks for keeps the host jobs ([`Registry::close_for_restart`]).
 pub fn restart_marker(socket: &std::path::Path) -> std::path::PathBuf {
-    let mut name = socket.as_os_str().to_os_string();
-    name.push(".restart");
-    std::path::PathBuf::from(name)
+    letibot_tools::lifecycle::restart_marker(socket)
 }
 
 /// A running daemon.
