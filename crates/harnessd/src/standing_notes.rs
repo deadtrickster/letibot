@@ -224,7 +224,8 @@ pub fn section_with_skills(
 ) -> Option<String> {
     let files = gather(reader, global, box_dirs);
     let index = skills.and_then(|r| r.index(vocab));
-    if files.is_empty() && index.is_none() && preloaded.is_none() {
+    let rules = skills.and_then(crate::policy_skills::pinned_block);
+    if files.is_empty() && index.is_none() && rules.is_none() && preloaded.is_none() {
         return None;
     }
     let mut body = if files.is_empty() {
@@ -234,6 +235,9 @@ pub fn section_with_skills(
     };
     if let Some(index) = index {
         push(&mut body, &index);
+    }
+    if let Some(rules) = rules {
+        push(&mut body, &rules);
     }
     if let Some(preloaded) = preloaded {
         push(&mut body, preloaded);

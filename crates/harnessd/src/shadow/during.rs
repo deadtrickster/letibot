@@ -189,6 +189,19 @@ pub fn cut(s: &str, n: usize) -> String {
     }
 }
 
+/// The head a policy skill's shortlist line starts with; the prompt reads it as required.
+pub const POLICY_HEAD: &str = "POLICY (box rules, required when it applies)";
+
+/// A skill's line on the shortlist. A policy skill says so first, or the check weighs standing
+/// rules as one more optional item.
+pub fn about_skill(s: &letibot_tools::builtins::skill::Skill) -> String {
+    let about = s.when_to_use.clone().unwrap_or(s.description.clone());
+    match s.policy {
+        true => format!("{POLICY_HEAD}: {about}"),
+        false => about,
+    }
+}
+
 /// A shortlist entry: a skill or a note, by the name an offer would use, with one line about it.
 #[derive(Debug, Clone)]
 pub struct Entry {

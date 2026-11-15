@@ -1775,7 +1775,7 @@ Left:
 
 ## R293 - A skill that is box policy is offered like optional help, so a model ignores it
 
-**Status:** open, 2026-11-15. left: all of it.
+**Status:** built, 2026-11-15. left: the live check on a session, and `[skills.when.rust-builds] command = "cargo"` in the operator's leticode.toml (the pin stopgap can then go). A policy skill's `requires`/`unless` are not checked by the call hook, and the rules hold one call of the session even for a child whose brief already named the rules.
 
 Rano's session (glm-5.3) was offered `rust-builds` mid-turn and did not load it. Asked why afterwards, it gave four reasons:
 1. "The offer looked optional, not like policy... Nothing in the offer distinguished 'background help' from 'standing rules you are currently violating'."
@@ -1790,6 +1790,15 @@ The stopgap: `[skills] pin = ["rust-builds"]` in the operator's leticode.toml, s
 - The shadow's during job treats a matching policy skill as required, not as an offer to weigh.
 
 **Done when:** a session whose first `cargo` call happens without the skill receives the policy text at that call, worded as rules, once per session. A non-policy skill is still offered as before.
+
+**Built.**
+1. `kind: policy` in a skill's frontmatter sets `Skill::policy`. `[skills.when.<name>] command` (a word or a list) is the trigger; `SkillRegistry::triggers` reads it for a policy skill only, and `skill::command_runs` matches a whole program word (`nice cargo test`, `~/.cargo/bin/cargo`, not `cargo-deny`).
+2. Pinned: `policy_skills::pinned_block` puts the body in the standing notes under `### standing rules for this box`, worded as rules.
+3. At the trigger: `policy_skills::PolicyHook` sits in front of the plugin call hook. The first `bash` call running a trigger word is held (`answer` verdict, not run) and its result is the rules plus "Issue it again". `Delivered` is shared with the harness: pinned and declared skills are held at open, a `skill load` marks it, and each turn re-reads earlier deliveries off the transcript (`MARK`), so a restart does not repeat them. Children get it too: policy is not an offer.
+4. Offers: `Offers::compose` skips a policy skill (`POLICY`, logged as a skip); `Offers::adopt` moves a shadow pick of one to `take_required`, and `Harness::deliver_required_policies` records it as a notice with the rules, once.
+5. Shadow `during`: a policy skill's shortlist line starts with `POLICY (box rules, required when it applies)` and `during.md` tells the check to pick it when the last calls do what it governs.
+
+Tests: `policy_skills::tests::*` (first cargo call held once, non-policy command is no trigger, a load or an earlier delivery holds it, pinned block), `skills_offer::tests::a_policy_skill_is_never_offered_and_a_plain_one_still_is`, `skill::tests::a_policy_skill_is_read_from_its_kind_and_its_trigger_from_the_table`, `a_trigger_word_matches_the_program_and_not_a_longer_name`, `leticode-config the_when_table_reads_a_command_trigger_as_a_word_or_a_list`, and end to end `tests/skills_offer.rs::the_first_cargo_call_without_the_policy_skill_gets_its_rules_once`.
 
 ## R294 - A box-wide build placement service: given a folder and a build command, it places the build
 

@@ -190,6 +190,7 @@ Overrides the skill's frontmatter. The user's table replaces the project's whole
 |---|---|---|---|---|
 | `requires` | list of capabilities | frontmatter | both, user wins | all must be on the seat |
 | `unless` | list of capabilities | frontmatter | both, user wins | any one present hides the skill |
+| `command` | word or list of words | [] | both, user wins | a policy skill (frontmatter kind: policy) is delivered as rules at the first bash call running one of these programs |
 
 ## `[nag]`
 

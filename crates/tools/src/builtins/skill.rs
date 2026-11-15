@@ -106,6 +106,9 @@ pub struct Skill {
     /// The frontmatter's `disable-model-invocation: true`: kept for the operator's `/skills`, and
     /// out of every door the model has (listing, find, load, offers, the index).
     pub model_hidden: bool,
+    /// The frontmatter's `kind: policy`: standing rules for the box, never offered as optional
+    /// help. It is delivered whole when pinned, or at the first call its `command` trigger matches.
+    pub policy: bool,
 }
 
 impl Skill {
@@ -128,6 +131,7 @@ impl Skill {
             unless: Vec::new(),
             path: None,
             model_hidden: false,
+            policy: false,
         }
     }
 
@@ -261,13 +265,47 @@ pub struct SkillWhen {
     /// Any one of these on the seat hides the skill.
     #[serde(default)]
     pub unless: Vec<String>,
+    /// Program names whose `bash` call delivers a policy skill, as a whole word of the command
+    /// (`cargo` matches `nice cargo test`). Read only for a skill whose frontmatter says `kind: policy`.
+    #[serde(default, deserialize_with = "one_or_many")]
+    pub command: Vec<String>,
+}
+
+/// `command = "cargo"` or `command = ["cargo", "rustc"]`: one word is the common case.
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Words {
+        One(String),
+        Many(Vec<String>),
+    }
+    Ok(match <Words as serde::Deserialize>::deserialize(d)? {
+        Words::One(w) => vec![w],
+        Words::Many(ws) => ws,
+    })
+}
+
+/// Whether `command` runs `word`: the word stands alone, bounded by anything that cannot be part
+/// of a program name, so `cargo` matches `CARGO_TARGET_DIR=x cargo build` and not `cargo-deny`.
+pub fn command_runs(command: &str, word: &str) -> bool {
+    let word = word.trim();
+    if word.is_empty() {
+        return false;
+    }
+    let part = |c: char| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.');
+    command.match_indices(word).any(|(at, _)| {
+        let before = command[..at].chars().next_back();
+        let after = command[at + word.len()..].chars().next();
+        // A path's last component counts (`~/.cargo/bin/cargo`), a directory named it does not.
+        before.is_none_or(|c| !part(c)) && after.is_none_or(|c| !part(c) && c != '/')
+    })
 }
 
 impl SkillWhen {
     /// Whether the table says anything. An empty one unhides what the frontmatter hid, which is
     /// the operator's call and not a mistake this crate refuses.
     pub fn is_empty(&self) -> bool {
-        self.requires.is_empty() && self.unless.is_empty()
+        self.requires.is_empty() && self.unless.is_empty() && self.command.is_empty()
     }
 }
 
@@ -479,6 +517,33 @@ impl SkillRegistry {
     /// the listing hides is a name `find` does not offer and `load` refuses - with this sentence.
     pub fn unmet(&self, skill: &Skill, seat: &BTreeSet<String>) -> Option<String> {
         skill.unmet_with(seat, &self.when)
+    }
+
+    /// The `[skills.when.<name>] command` words that deliver this policy skill; empty for any
+    /// other skill, since only a policy skill is delivered unasked.
+    pub fn triggers(&self, skill: &Skill) -> &[String] {
+        match (skill.policy, self.when.get(&skill.name)) {
+            (true, Some(w)) => &w.command,
+            _ => &[],
+        }
+    }
+
+    /// The pinned policy skills the model may see: their bodies ride the prompt as standing rules,
+    /// because a pinned policy is one the operator wants in force before the first call.
+    pub fn pinned_policies(&self) -> Vec<Skill> {
+        let (rows, _) = self.index_rows();
+        let mut out: Vec<Skill> = self
+            .skills
+            .iter()
+            .filter(|s| s.policy && self.hidden(s).is_none())
+            .filter(|s| {
+                rows.iter()
+                    .any(|r| r.name == s.name && self.pins.iter().any(|p| r.answers_to(p)))
+            })
+            .cloned()
+            .collect();
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
     }
 
     /// The registry with the operator's pins, set once before it is shared: the prompt is composed
@@ -1126,6 +1191,7 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
     let mut requires = Vec::new();
     let mut unless = Vec::new();
     let mut model_hidden = false;
+    let mut policy = false;
     // A block list is written under its key, one name a line, so the key that ended the last
     // value is remembered: `requires:` with nothing after it opens one.
     let mut open = Names::None;
@@ -1170,6 +1236,11 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
                 .trim()
                 .trim_matches(['"', '\''])
                 .eq_ignore_ascii_case("true");
+        } else if let Some(v) = line.strip_prefix("kind:") {
+            policy = v
+                .trim()
+                .trim_matches(['"', '\''])
+                .eq_ignore_ascii_case("policy");
         }
     }
     let name = name.filter(|n| !n.is_empty())?;
@@ -1186,6 +1257,7 @@ fn from_text(text: &str, source: SkillSource) -> Option<Skill> {
         unless,
         path: None,
         model_hidden,
+        policy,
     })
 }
 
@@ -2138,6 +2210,7 @@ mod tests {
             SkillWhen {
                 requires: vec!["flowy".into()],
                 unless: Vec::new(),
+                command: Vec::new(),
             },
         )]);
         let r = SkillRegistry::load_for(&dirs)
@@ -2352,6 +2425,7 @@ mod tests {
             SkillWhen {
                 requires: Vec::new(),
                 unless: vec!["bash".into()],
+                command: Vec::new(),
             },
         );
         when.insert(
@@ -2359,6 +2433,7 @@ mod tests {
             SkillWhen {
                 requires: vec!["read".into()],
                 unless: Vec::new(),
+                command: Vec::new(),
             },
         );
         let r = SkillRegistry::new(vec![open.clone(), gated.clone()]).with_when(when);
@@ -2469,5 +2544,62 @@ mod tests {
             ["tarball-check"]
         );
         assert_eq!(r.hidden(&r.skills[1]), Some("`[skills] hide`"));
+    }
+
+    /// `kind: policy` marks standing rules; its `command` trigger is read for a policy skill only,
+    /// and a pinned policy is listed for the prompt's rules block.
+    #[test]
+    fn a_policy_skill_is_read_from_its_kind_and_its_trigger_from_the_table() {
+        let rules = from_text(
+            "---\nname: rust-builds\ndescription: box rules\nkind: policy\n---\nrules\n",
+            SkillSource::Installed(None),
+        )
+        .expect("a skill");
+        assert!(rules.policy);
+        let help = from_text(
+            "---\nname: fix-report\ndescription: a report\n---\nsteps\n",
+            SkillSource::Installed(None),
+        )
+        .expect("a skill");
+        assert!(!help.policy);
+        let when = |w: &str| SkillWhen {
+            command: vec![w.into()],
+            ..SkillWhen::default()
+        };
+        let r = SkillRegistry::new(vec![rules.clone(), help.clone()])
+            .with_when(BTreeMap::from([
+                ("rust-builds".to_string(), when("cargo")),
+                ("fix-report".to_string(), when("git")),
+            ]))
+            .with_pins(["rust-builds"]);
+        assert_eq!(r.triggers(&rules), ["cargo"]);
+        assert!(
+            r.triggers(&help).is_empty(),
+            "a non-policy skill has no trigger"
+        );
+        let pinned: Vec<String> = r.pinned_policies().into_iter().map(|s| s.name).collect();
+        assert_eq!(pinned, ["rust-builds"]);
+    }
+
+    #[test]
+    fn a_trigger_word_matches_the_program_and_not_a_longer_name() {
+        for ran in [
+            "cargo test -p x",
+            "CARGO_TARGET_DIR=/build/t nice -n 10 cargo build",
+            "cd wt && cargo fmt",
+            "~/.cargo/bin/cargo clippy",
+            "(cargo check)",
+        ] {
+            assert!(command_runs(ran, "cargo"), "{ran}");
+        }
+        for not in [
+            "cargo-deny check",
+            "ls ~/.cargo/registry",
+            "cat /etc/cargo/x",
+            "echo cargos",
+        ] {
+            assert!(!command_runs(not, "cargo"), "{not}");
+        }
+        assert!(!command_runs("cargo build", ""));
     }
 }

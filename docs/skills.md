@@ -33,6 +33,7 @@ Everything below the second `---` is the body. It is what the model reads when i
 | `allowed-tools` | optional. Tool names only. It can narrow what a session may call, never grant anything |
 | `origin` | optional. Where an installed skill came from, shown as its label |
 | `disable-model-invocation` | optional. `true` hides the skill from the model (listing, `find`, `load`, offers, the index) and keeps it for the operator's `/skills NAME` |
+| `kind` | optional. `policy` makes the skill standing rules for the box: never offered, delivered whole (see below) |
 
 A file with no `name`, or with no frontmatter at all, is skipped rather than loaded half way. Keys
 this build does not know are ignored. `Bash(git:*)` is read as `bash`: the qualifier is Claude
@@ -160,6 +161,29 @@ opinion rather than a permission.
 `skill load`, the offers and the pinned index. The operator's `/skills NAME` still hands it over.
 `hide` unions across the two levels, so a project cannot unhide what the operator hid. This is
 crush's `disable-model-invocation` and `disable-skill`.
+
+## Policy skills
+
+A skill whose frontmatter says `kind: policy` is rules for the box, not help to weigh. It is never
+offered as an optional line. It reaches the model in one of two ways, worded as rules in force:
+
+- **pinned** (`[skills] pin`): its whole body rides the standing notes under
+  `### standing rules for this box`, from the session's first prompt.
+- **at its trigger**: `[skills.when.<name>] command = "cargo"` (a word or a list). The first `bash`
+  call that runs one of those programs is held. Its result is the rules and a line saying the call did
+  not run, and the model issues it again. Once per session: a load, a pin, a declared skill or an
+  earlier delivery in the transcript counts.
+
+With the shadow's `during` job on, a policy skill is marked `POLICY` on its shortlist, and a pick of
+it is delivered as rules in a notice that stays in the transcript, not as an offer.
+
+```toml
+[skills.when.rust-builds]
+command = "cargo"
+```
+
+The `when` table replaces the frontmatter's `requires` and `unless` whole, so a table that only adds
+`command` also clears them.
 
 ## The offer
 

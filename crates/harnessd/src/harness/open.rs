@@ -3171,6 +3171,15 @@ impl Harness {
         let wanting = job_watch.clone();
         // And where a spawned job's change snapshot goes, read by the same set at the settlement.
         let sweeping = job_watch.clone();
+        // Policy skills the prompt already carries whole (pinned or declared) are held from the
+        // start; any other is delivered once, at the first call its trigger matches.
+        let policy_held = crate::policy_skills::Delivered::default();
+        for s in parts.skills.pinned_policies() {
+            policy_held.mark(&s.name);
+        }
+        for name in &cfg.skills {
+            policy_held.mark(name);
+        }
         let runtime = ToolRuntime::new(registry, backend)
             .with_spiller(spiller)
             .with_recall(recall.clone())
@@ -3183,9 +3192,13 @@ impl Harness {
             // And the plugin layer that sees a call before the gate, and the one a `monitor` call can arm a condition
             // from: both backed by the slot the `plugin` tool asks through, so a session nobody fills the slot for runs
             // its calls exactly as it always did.
-            .with_call_hook(std::sync::Arc::new(crate::plugins::CallHooks::new(
-                plugin_slot.clone(),
-                hub.clone(),
+            .with_call_hook(std::sync::Arc::new(crate::policy_skills::PolicyHook::new(
+                parts.skills.clone(),
+                policy_held.clone(),
+                Some(std::sync::Arc::new(crate::plugins::CallHooks::new(
+                    plugin_slot.clone(),
+                    hub.clone(),
+                ))),
             )))
             // And the layer that sees an output before the spill budgets it: the digest is what the
             // model's context pays for, so it rides the same slot as the call hook.
@@ -3527,6 +3540,7 @@ impl Harness {
             engine,
             note_vocab: parts.vocab.clone(),
             skills: parts.skills.clone(),
+            policy_held,
             session,
             runtime,
             hub,

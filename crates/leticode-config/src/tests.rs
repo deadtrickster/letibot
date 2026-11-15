@@ -906,6 +906,21 @@ fn the_when_table_is_read_per_skill_and_its_keys_are_named() {
     );
 }
 
+/// `command` is one word or a list: the programs whose `bash` call delivers a policy skill.
+#[test]
+fn the_when_table_reads_a_command_trigger_as_a_word_or_a_list() {
+    let dir = project_dir("skills-when-command");
+    let path = write_file(
+        &dir,
+        "[skills.when.rust-builds]\ncommand = \"cargo\"\n\
+         [skills.when.both]\ncommand = [\"cargo\", \"rustc\"]\n",
+    );
+    let cfg = LeticodeConfig::load(&path).expect("the tables parse");
+    assert_eq!(cfg.skills.when["rust-builds"].command, ["cargo"]);
+    assert!(cfg.skills.when["rust-builds"].requires.is_empty());
+    assert_eq!(cfg.skills.when["both"].command, ["cargo", "rustc"]);
+}
+
 /// Both levels may say what one skill needs, and the operator's answer is the one in force, whole:
 /// a project file can make a skill fit less, and cannot unhide what the operator hid.
 #[test]

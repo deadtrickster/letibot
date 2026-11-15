@@ -88,6 +88,7 @@ pub mod operator_ask;
 pub mod oracle;
 pub mod perimeter;
 pub mod plugins;
+pub mod policy_skills;
 pub mod pr_watch;
 pub mod profiles;
 pub mod progress;

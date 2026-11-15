@@ -569,6 +569,96 @@ fn a_skill_load_turn(vocab: &Vocab, name: &str, n_prompt: u64) -> Vec<Frame> {
     frames
 }
 
+/// A turn that calls `bash` with `command` and ends.
+fn a_bash_turn(vocab: &Vocab, command: &str, n_prompt: u64) -> Vec<Frame> {
+    let mut frames = vec![Frame::Progress {
+        total: n_prompt,
+        processed: n_prompt,
+    }];
+    frames.push(Frame::Token {
+        id: THINK_CLOSE,
+        text: "",
+    });
+    frames.push(Frame::Token {
+        id: TOOL_CALL_OPEN,
+        text: "<tool_call>",
+    });
+    let call =
+        format!("\n<function=bash>\n<parameter=command>\n{command}\n</parameter>\n</function>\n");
+    let call_ids = support::qwen::ids(vocab, &call);
+    frames.extend(spoken(vocab, &call_ids));
+    frames.push(Frame::Token {
+        id: TOOL_CALL_CLOSE,
+        text: "</tool_call>",
+    });
+    frames.push(Frame::Final {
+        stop_type: "eos",
+        n_decoded: (call_ids.len() + 3) as u64,
+        n_prompt,
+        cache_n: 0,
+    });
+    frames
+}
+
+/// A policy skill is never offered. The first `bash` call that runs its trigger program is held and
+/// answered with the rules, once: the second call runs, and the rules are in the history once.
+#[test]
+fn the_first_cargo_call_without_the_policy_skill_gets_its_rules_once() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    const MARK: &str = letibot_harnessd::policy_skills::MARK;
+    let ws = TempDir::new("ws-policy");
+    let store = TempDir::new("store-policy");
+    let dir = ws.path().join(".letibot/skills/rust-builds");
+    std::fs::create_dir_all(&dir).expect("a skill dir");
+    std::fs::write(
+        dir.join("SKILL.md"),
+        "---\nname: rust-builds\ndescription: how to build rust on this box\nkind: policy\n---\n\n\
+         Every build sets CARGO_TARGET_DIR under /build.\n",
+    )
+    .expect("the policy skill");
+    let stub = Stub::answering();
+    let mut cfg = config(
+        &store.path().join("sessions.db"),
+        ws.path(),
+        "s-policy",
+        stub.endpoint.clone(),
+    );
+    cfg.seat = Seat::Leticode;
+    cfg.allow_bash = true;
+    cfg.leticode.skills.when.insert(
+        "rust-builds".into(),
+        letibot_tools::builtins::skill::SkillWhen {
+            command: vec!["cargo".into()],
+            ..Default::default()
+        },
+    );
+    let parts = parts_for(&cfg);
+    stub.script(vec![
+        a_bash_turn(&parts.vocab, "echo cargo one", 30),
+        a_bash_turn(&parts.vocab, "echo cargo two", 60),
+        an_answer_turn(&parts.vocab, "done", "built", 90),
+    ]);
+    let (_sessions, _hub) = drive(&parts, &cfg, "s-policy", "build the rust workspace");
+    assert_eq!(stub.turns(), 3, "two calls and an answer");
+    let first = stub.prompt_of(0, &parts.vocab);
+    assert!(!first.contains(MARK), "{first}");
+    assert!(
+        !first.contains("[skill offer"),
+        "a policy is never offered: {first}"
+    );
+    let second = stub.prompt_of(1, &parts.vocab);
+    assert_eq!(second.matches(MARK).count(), 1, "{second}");
+    assert!(second.contains("CARGO_TARGET_DIR under /build") && second.contains("did not run"));
+    let third = stub.prompt_of(2, &parts.vocab);
+    assert_eq!(
+        third.matches(MARK).count(),
+        1,
+        "the rules are given once: {third}"
+    );
+}
+
 /// A turn that wedges must fail its own test rather than the suite, so every wait here is bounded
 /// by the harness's patience, named where it can be seen.
 #[allow(dead_code)]

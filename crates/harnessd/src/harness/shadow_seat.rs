@@ -122,7 +122,7 @@ impl Harness {
             let v = crate::skills_offer::version_of(&s);
             out.push((
                 crate::shadow::during::Entry {
-                    about: s.when_to_use.clone().unwrap_or(s.description.clone()),
+                    about: crate::shadow::during::about_skill(&s),
                     name: s.name,
                 },
                 v,

@@ -1887,7 +1887,7 @@ fn skill_keys(value: &toml::Value) -> Result<SkillKeys, String> {
     let t: SkillTable = value.clone().try_into().map_err(|e| {
         format!(
             "[skills]: {e}; the keys are `pin`, `never_offer` and `hide` (lists of skill names), \
-             `offer_children` (a bool) and `when.<name>` (a table of `requires` and `unless`)"
+             `offer_children` (a bool) and `when.<name>` (a table of `requires`, `unless` and `command`)"
         )
     })?;
     Ok(SkillKeys {

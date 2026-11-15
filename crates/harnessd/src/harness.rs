@@ -219,6 +219,9 @@ pub struct Harness {
     /// rows are read off - the same `Arc` the `skill` tool and the dashboard hold, so a pane and a
     /// prompt cannot list two different corpora.
     skills: Arc<letibot_tools::builtins::skill::SkillRegistry>,
+    /// The policy skills this session holds, shared with the runtime's call hook so the rules are
+    /// delivered once whichever door delivers them.
+    policy_held: crate::policy_skills::Delivered,
     session: Session,
     /// Shared, because the operator's run does not run on this harness's thread: a `!` line is handed to
     /// a thread of its own and invokes through THIS runtime, since one exec host per session is a fact.

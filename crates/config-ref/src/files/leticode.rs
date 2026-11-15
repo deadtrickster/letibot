@@ -233,6 +233,7 @@ pub const LETICODE: File = File {
             keys: &[
                 k("requires", "list of capabilities", "frontmatter", UW, "all must be on the seat", "[\"bash\"]"),
                 k("unless", "list of capabilities", "frontmatter", UW, "any one present hides the skill", "[\"bash\"]"),
+                k("command", "word or list of words", "[]", UW, "a policy skill (frontmatter kind: policy) is delivered as rules at the first bash call running one of these programs", "\"cargo\""),
             ],
         },
         Table {

@@ -1245,3 +1245,45 @@ fn an_empty_pick_offers_nothing_where_similarity_would() {
     assert!(!offers.adopt(&registry, &[], "s1-shadow"));
     assert!(offers.tail().is_empty());
 }
+
+/// A policy skill is never an optional offer, by score or by the shadow's pick; a non-policy skill
+/// on the same subject is still offered as before. The shadow's pick of a policy is required.
+#[test]
+fn a_policy_skill_is_never_offered_and_a_plain_one_still_is() {
+    let mut all = registry().skills;
+    for s in all.iter_mut().filter(|s| s.name == "latex-presentation") {
+        s.policy = true;
+    }
+    all.push(Skill {
+        keywords: vec!["latex".into(), "beamer".into(), "slides".into()],
+        ..Skill::new(
+            "slide-notes",
+            "speaker notes for beamer slides",
+            "one line a frame",
+            SkillSource::Project,
+        )
+    });
+    let registry = SkillRegistry::new(all);
+    let text = subject(&prompt("make latex beamer slides for the talk"), &[]);
+    let mut offers = Offers::new();
+    assert!(offers.compose(&registry, &text, Some("make latex beamer slides")));
+    let names: Vec<&str> = offers.open.iter().map(|o| o.name.as_str()).collect();
+    assert!(names.contains(&"slide-notes"), "{names:?}");
+    assert!(!names.contains(&"latex-presentation"), "{names:?}");
+    assert!(
+        offers
+            .skipped
+            .iter()
+            .any(|(n, why)| n == "latex-presentation" && why == POLICY),
+        "{:?}",
+        offers.skipped
+    );
+
+    let mut shadow = Offers::new();
+    assert!(!shadow.adopt(&registry, &[pick("latex-presentation")], "s1-shadow"));
+    assert!(shadow.tail().is_empty());
+    let required = shadow.take_required();
+    assert_eq!(required.len(), 1);
+    assert_eq!(required[0].0, "latex-presentation");
+    assert!(shadow.take_required().is_empty());
+}

@@ -2064,6 +2064,9 @@ impl Harness {
         // The bodies this session was STARTED with are not news to it. The ones its own rounds load
         // are read per round, below, because they are in the transcript only once that round ran.
         skill_offers.skip_names(self.cfg.skills.iter());
+        // A policy skill this session was already given is read back off the transcript, so a
+        // restored session is not handed the rules a second time.
+        self.policy_held.seed(&self.session.items);
 
         let backstop = round_backstop(self.cfg.max_tool_rounds);
         for round in 0..backstop {
@@ -2115,6 +2118,8 @@ impl Harness {
                         // The shadow's during job decides while it is on and not paused.
                         Some((picks, shadow)) => {
                             skill_offers.adopt(&self.skills, &picks, &shadow);
+                            let required = skill_offers.take_required();
+                            self.deliver_required_policies(&required)?;
                         }
                         // The operator's newest row scores beside the subject: at the tail of a
                         // session a follow-up names the thing in one word the plan has buried.
@@ -3781,6 +3786,31 @@ impl Harness {
     }
 
     /// The row itself, whoever decided the sentence.
+    /// The policy skills the shadow saw applying, delivered as rules in a notice that stays in the
+    /// transcript: a required rule must outlive the round, which an offer's tail line does not.
+    fn deliver_required_policies(
+        &mut self,
+        required: &[(String, String)],
+    ) -> Result<(), HarnessError> {
+        if required.is_empty() {
+            return Ok(());
+        }
+        let live = self.skills.model_skills();
+        for (name, quote) in required {
+            let Some(skill) = live.iter().find(|s| s.name == *name && s.policy) else {
+                continue;
+            };
+            if !self.policy_held.mark(name) {
+                continue;
+            }
+            let at = format!(
+                "what this session is doing now (the shadow reviewer saw it apply: {quote:?})"
+            );
+            self.record_notice(&crate::policy_skills::rules(skill, &at))?;
+        }
+        Ok(())
+    }
+
     pub(super) fn record_notice(&mut self, text: &str) -> Result<(), HarnessError> {
         // The harness talking to itself, recorded as such, so a salvage notice or an intent nudge can never be read
         // back as the operator authorising the action it is about: the whole reason `Speaker` has three values.

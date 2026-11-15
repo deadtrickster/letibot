@@ -28,6 +28,9 @@ pub const OFFERS_MAX: usize = 2;
 /// budget: the subject is *what is happening now*, and the 200 KB a tool last printed is not.
 pub const SUBJECT_CHARS: usize = 8_000;
 
+/// Why a policy skill is skipped by the offers: it is never optional, and arrives as rules.
+pub const POLICY: &str = "policy: delivered as rules at its trigger, never offered";
+
 /// The file the take-up log is appended to, in the session's logs directory beside the notes'.
 pub const LOG: &str = "skills-offers.jsonl";
 
@@ -157,6 +160,8 @@ pub struct Offers {
     declines: Declines,
     /// The session's own words. An offer by meaning needs the skill's name among them.
     seen: Seen,
+    /// Policy skills the shadow picked this round, with its quote: delivered as rules, not offered.
+    required: Vec<(String, String)>,
 }
 
 impl Offers {
@@ -376,8 +381,12 @@ impl Offers {
                 continue;
             }
             self.open_hits.insert(name.clone(), (hits, version));
+            let policy = live.iter().any(|s| s.name == name && s.policy);
             let why = if self.never.contains(&name) {
                 Some("never_offer".to_string())
+            } else if policy {
+                // Rules are not optional help: the call hook delivers them at their trigger.
+                Some(POLICY.to_string())
             } else {
                 match (&self.seat, live.iter().find(|s| s.name == name)) {
                     (Some(seat), Some(skill)) => registry.unmet(skill, seat),
@@ -420,6 +429,7 @@ impl Offers {
     pub fn adopt(&mut self, registry: &SkillRegistry, picks: &[Pick], shadow: &str) -> bool {
         self.open.clear();
         self.open_hits.clear();
+        self.required.clear();
         let live = registry.model_skills();
         for p in picks {
             if self.open.len() >= OFFERS_MAX {
@@ -433,6 +443,13 @@ impl Offers {
                 || self.wrote_it(&live, &p.name)
                 || self.open.iter().any(|o| o.name == p.name)
             {
+                continue;
+            }
+            // A policy the shadow sees applying is required, so it leaves the offers entirely.
+            if skill.policy && !self.never.contains(&p.name) {
+                if !self.required.iter().any(|(n, _)| *n == p.name) {
+                    self.required.push((p.name.clone(), p.quote.clone()));
+                }
                 continue;
             }
             let why = match self.never.contains(&p.name) {
@@ -460,6 +477,12 @@ impl Offers {
             });
         }
         !self.open.is_empty()
+    }
+
+    /// The policy skills the shadow's picks made required this round, each with its quote. The
+    /// caller delivers them as rules, once per session.
+    pub fn take_required(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.required)
     }
 
     /// The trailing items this round's request carries - empty when the round decided to say
