@@ -388,7 +388,14 @@ fn a_sessions_conversation_comes_back_as_rows_from_a_cursor_with_the_long_text_w
         "the brief is before its answer: {list:#?}"
     );
     assert_eq!(brief_row["kind"], json!("user"), "{brief_row}");
-    assert_eq!(brief_row["speaker"], json!("operator"), "{brief_row}");
+    // The bridge's brief is this seat's line, never the operator's.
+    assert_eq!(brief_row["speaker"], json!("peer"), "{brief_row}");
+    assert!(
+        brief_row["from"]
+            .as_str()
+            .is_some_and(|f| f.starts_with("cc@")),
+        "{brief_row}"
+    );
     assert!(
         brief_row["text"]
             .as_str()
