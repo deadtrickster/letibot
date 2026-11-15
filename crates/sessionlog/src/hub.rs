@@ -2973,8 +2973,8 @@ mod mode_steering_tests {
     }
 }
 
-/// A slash line with its key arguments masked: the value after `--key` or `--api-key`, or in
-/// `--key=VALUE`, becomes `•••`. For anything that persists or echoes a command line.
+/// A slash line with its secret arguments masked: the value after `--key`, `--api-key` or
+/// `--token`, or in `--key=VALUE`, becomes `•••`. For anything that persists or echoes a command line.
 pub fn redact_key_args(line: &str) -> String {
     let mut out: Vec<String> = Vec::new();
     let mut mask_next = false;
@@ -2985,9 +2985,11 @@ pub fn redact_key_args(line: &str) -> String {
             continue;
         }
         match word.split_once('=') {
-            Some((flag @ ("--key" | "--api-key"), _)) => out.push(format!("{flag}=•••")),
+            Some((flag @ ("--key" | "--api-key" | "--token"), _)) => {
+                out.push(format!("{flag}=•••"))
+            }
             _ => {
-                if word == "--key" || word == "--api-key" {
+                if matches!(word, "--key" | "--api-key" | "--token") {
                     mask_next = true;
                 }
                 out.push(word.to_string());
@@ -3017,5 +3019,9 @@ mod redact_tests {
         );
         assert_eq!(redact_key_args("models deepseek"), "models deepseek");
         assert!(!redact_key_args("models x --key sk-SECRET y").contains("SECRET"));
+        assert_eq!(
+            redact_key_args("flowy login seat --token tok-SECRET"),
+            "flowy login seat --token •••"
+        );
     }
 }

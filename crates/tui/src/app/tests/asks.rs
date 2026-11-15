@@ -501,3 +501,49 @@ fn the_password_cards_countdown_is_seconds_and_not_a_second_epoch() {
         "a second epoch in seconds: {card}"
     );
 }
+
+/// A key typed on the line never travels: `/models X --key K` sends nothing, opens the masked card
+/// for X and leaves the composer history, so neither Up nor any row shows the key.
+#[test]
+fn a_key_typed_on_the_line_goes_through_the_masked_card_and_nowhere_else() {
+    let mut a = app();
+    a.session_id = "s".into();
+    typed(&mut a, "/models deepseek/deepseek-flash --key sk-SECRET-1");
+    assert_eq!(a.key(Key::Enter), None, "nothing is sent");
+    let ask = a.key_ask.clone().expect("the masked card opens");
+    assert_eq!(ask.choice, "deepseek/deepseek-flash");
+    assert_eq!(ask.provider, "deepseek");
+    let leaked = |a: &mut App| {
+        a.editor.history().iter().any(|l| l.contains("SECRET"))
+            || a.notice.as_deref().is_some_and(|n| n.contains("SECRET"))
+            || a.screen(110, 30).join("\n").contains("SECRET")
+    };
+    assert!(
+        !leaked(&mut a),
+        "the typed key is gone from history and screen"
+    );
+
+    for c in "sk-SECRET-2".chars() {
+        a.key(Key::Char(c));
+    }
+    assert!(!leaked(&mut a), "the card masks what is typed into it");
+    match a.key(Key::Enter) {
+        Some(Action::Slash { line }) => {
+            assert_eq!(line, "models deepseek/deepseek-flash --key sk-SECRET-2")
+        }
+        other => panic!("the card's enter sends the switch, not {other:?}"),
+    }
+    a.refresh_prompt_history();
+    assert!(!leaked(&mut a), "no recall carries the key");
+
+    // Bare `--key` opens the card too, and a flowy token is refused with the file form.
+    typed(&mut a, "/models glm --key");
+    a.key(Key::Enter);
+    assert_eq!(a.key_ask.as_ref().map(|k| k.provider.as_str()), Some("glm"));
+    a.key(Key::Esc);
+    typed(&mut a, "/flowy login --token tok-SECRET-3");
+    assert_eq!(a.key(Key::Enter), None);
+    assert!(a.key_ask.is_none());
+    assert!(a.notice.as_deref().unwrap_or("").contains("--token-file"));
+    assert!(!leaked(&mut a));
+}

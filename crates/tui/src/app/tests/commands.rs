@@ -453,22 +453,24 @@ fn a_path_is_shortened_at_a_separator_and_a_pattern_is_not() {
     assert!(rano::width::text::width(&ellipsise_left("averylongsinglesegment", 10)) <= 10);
 }
 
-/// With a name after it the line goes over as typed - `--once` and `--key`
-/// have to survive, and they are the reason bare-vs-argument is the split.
+/// With a name after it the line goes over as typed - `--once` has to survive, and it is the
+/// reason bare-vs-argument is the split. `--key` is the masked card's, never the line's.
 #[test]
 fn models_with_an_argument_still_goes_straight_to_the_daemon() {
     let mut a = app();
     a.session_id = "s1".into();
-    for line in [
-        "models deepseek/deepseek-flash",
-        "models grok --key xai-test",
-    ] {
+    for line in ["models deepseek/deepseek-flash", "models grok --once"] {
         match a.command(line) {
             Some(Action::Slash { line: sent }) => assert_eq!(sent, line),
             other => panic!("{line}: {other:?}"),
         }
         assert!(a.pick.is_none(), "{line} is not a menu");
     }
+    assert_eq!(a.command("models grok --key xai-test"), None);
+    assert!(
+        a.key_ask.is_some(),
+        "an inline key opens the masked card instead"
+    );
 }
 
 /// **The shell path leaves plain and `/` lines alone, and the slash path
@@ -505,47 +507,45 @@ fn the_shell_path_leaves_plain_and_slash_lines_alone_and_vice_versa() {
     assert_eq!(a.input(), "! ls -la", "a ! line goes to the shell path");
 }
 
-/// A job's output opens a screen; it does not land in the conversation. `/job ID` can hand back
-/// 16 KiB of whatever a command wrote and arrives as `Warning { code: "slash" }` like every other
-/// slash reply - so rendering warnings as notes puts a subprocess's stdout into the scrollback.
+/// A slash reply is drawn as the kind the daemon typed it: `slash_listing` opens the pane however
+/// short it is, and `slash` stays a note however long. `/job ID` can hand back 16 KiB of a
+/// command's output, which must not land in the scrollback.
 #[test]
-fn a_long_slash_reply_opens_a_pane_and_a_short_one_stays_a_note() {
+fn a_slash_reply_renders_as_its_typed_row() {
     let mut a = App::new(plain_cfg(80));
     let notes_before = a.notes.len();
     a.apply(ServerFrame::Event(env(
         1,
         SessionEvent::Warning {
-            code: "slash".into(),
-            detail: "/job j89\nline one\nline two\nline three\nline four".into(),
+            code: "slash_listing".into(),
+            detail: "/tools\nread\nwrite".into(),
 
             compaction: None,
         },
     )));
-    assert!(
-        a.slash_out.is_some(),
-        "a listing must not go to the scrollback"
-    );
+    assert!(a.slash_out.is_some(), "a two-line listing is a listing");
     assert_eq!(a.notes.len(), notes_before, "and must not also be a note");
     let screen = a.screen(80, 24).join("\n");
-    assert!(screen.contains("/job j89"), "{screen}");
-    assert!(screen.contains("line four"), "{screen}");
+    assert!(screen.contains("/tools"), "{screen}");
+    assert!(screen.contains("write"), "{screen}");
 
     // Esc closes it and the conversation is back.
     a.key(Key::Esc);
     assert!(a.slash_out.is_none());
 
-    // A one-line confirmation is still a note: a screen for it would be a
-    // keystroke to dismiss nothing.
+    // A note stays a note at any length: a screen for it would be a keystroke to dismiss nothing.
     a.apply(ServerFrame::Event(env(
         2,
         SessionEvent::Warning {
             code: "slash".into(),
-            detail: "/mode automode\nthis session is at `automode`".into(),
+            detail:
+                "/mode automode\nthis session is at `automode`\nwrites allowed\nbash on\nrooms on"
+                    .into(),
 
             compaction: None,
         },
     )));
-    assert!(a.slash_out.is_none(), "a sentence is not a listing");
+    assert!(a.slash_out.is_none(), "a note is not a listing");
     assert!(a.notes.len() > notes_before);
 }
 
@@ -558,7 +558,7 @@ fn a_slash_listing_strips_control_characters() {
     a.apply(ServerFrame::Event(env(
         1,
         SessionEvent::Warning {
-            code: "slash".into(),
+            code: "slash_listing".into(),
             detail: "/job j1\n\u{1b}[2m dim \u{1b}[0m\nb\nc\nd".into(),
 
             compaction: None,

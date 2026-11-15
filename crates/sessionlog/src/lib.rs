@@ -129,7 +129,7 @@ pub use view::{
     // store-backed reader answers the same question and must not answer it differently.
     body_of,
 };
-pub use warning::{Class, class, is_failure, is_routine};
+pub use warning::{Class, class, is_failure, is_routine, slash_verdict};
 
 #[cfg(feature = "turn")]
 pub use lift::{LogSink, from_turn_event};

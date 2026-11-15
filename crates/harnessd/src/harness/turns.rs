@@ -3280,7 +3280,8 @@ impl Harness {
                 // vanishes without a word is the failure this tree keeps deleting.
                 _ => crate::slash::SlashReply {
                     lines: vec![format!(
-                        "/{line}: not a model switch this turn can apply, so nothing moved"
+                        "/{}: not a model switch this turn can apply, so nothing moved",
+                        crate::slash::echo(&line)
                     )],
                     ok: false,
                 },
@@ -3288,10 +3289,8 @@ impl Harness {
             // The reply the worker would have published - the same two codes and
             // the same body, so "what did my switch do" does not depend on which thread
             // happened to apply it. `apply_queued_mode`'s rule, one verb along.
-            self.hub.warn(
-                if reply.ok { "slash" } else { "slash_refused" },
-                format!("/{line}\n{}", reply.lines.join("\n")),
-            );
+            let (code, detail) = reply.warning(&line);
+            self.hub.warn(code, detail);
         }
     }
 

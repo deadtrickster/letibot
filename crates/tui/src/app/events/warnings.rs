@@ -213,17 +213,14 @@ impl App {
                     self.model_set(&detail, self.seq);
                     return Disposition::Filtered;
                 }
-                // A slash LISTING opens the pane and a slash sentence stays a note. Both
-                // arrive under one code with `detail` = the echoed command then the reply,
-                // so length is the only thing that tells them apart.
-                if code == "slash" || code == "slash_refused" {
+                // A slash LISTING opens the pane whatever its length; `slash` and `slash_refused`
+                // stay a note and an error row. The daemon types the reply by its verb.
+                if code == "slash_listing" {
                     let (echo, body) = detail.split_once('\n').unwrap_or((&detail, ""));
                     let lines: Vec<String> = body.lines().map(without_control).collect();
-                    if lines.len() > 3 {
-                        self.slash_out = Some((echo.to_string(), lines));
-                        self.push_surface(Surface::Listing);
-                        return Disposition::Rendered;
-                    }
+                    self.slash_out = Some((echo.to_string(), lines));
+                    self.push_surface(Surface::Listing);
+                    return Disposition::Rendered;
                 }
                 // A refusal of a read the head made for a notice's second line is the
                 // notice's answer, not the operator's business: the notice shows the

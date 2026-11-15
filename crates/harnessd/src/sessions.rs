@@ -4711,15 +4711,13 @@ impl<'a> Sessions<'a> {
                 }
                 let reply = self.slash(session_id, &line);
                 if let Some(hub) = &hub {
-                    hub.warn(
-                        if reply.ok { "slash" } else { "slash_refused" },
-                        format!("/{line}\n{}", reply.lines.join("\n")),
-                    );
+                    let (code, detail) = reply.warning(&line);
+                    hub.warn(code, detail);
                 }
                 if reply.ok {
                     Outcome::Ignored
                 } else {
-                    Outcome::Failed(format!("/{line} was refused"))
+                    Outcome::Failed(format!("/{} was refused", crate::slash::echo(&line)))
                 }
             }
             // A read of a job's output, for the pane that asked. The same read `/job ID` does

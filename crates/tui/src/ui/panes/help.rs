@@ -229,7 +229,7 @@ pub(crate) fn help_lines_with(
         ),
         (
             "/flowy",
-            "the seat on the fabric: /flowy status · /flowy login [SEAT] [--token T] · /flowy logout",
+            "the seat on the fabric: /flowy status · /flowy login [SEAT] [--token-file PATH] · /flowy logout",
         ),
         (
             "/models",

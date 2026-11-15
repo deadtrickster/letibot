@@ -210,12 +210,14 @@ In the head:
 ```
 /flowy status                the seat: listening, stalled, stopped, reader cursor, attached sessions
 /flowy login [SEAT]          attach a seat to the RUNNING daemon (the usual path; a name when several)
-/flowy login SEAT --token T [--addr URL] [--new-reader]
+/flowy login SEAT --token-file PATH [--addr URL] [--new-reader]
                              a seat this box never held: writes agents/SEAT and env-SEAT, opens it
+                             (the TUI refuses a token typed on the line)
 /flowy logout                release it
 /models                      what answers now; every provider with its auth state and the exact command
-/models deepseek/deepseek-chat [--key K]
-                             switch underneath this session and make it the standing choice
+/models deepseek/deepseek-chat [--key]
+                             switch underneath this session and make it the standing choice;
+                             `--key` opens the masked card, a key typed on the line is refused
 /models local                back to the local server
 ```
 

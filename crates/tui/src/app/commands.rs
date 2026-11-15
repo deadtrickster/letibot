@@ -370,6 +370,9 @@ impl App {
     }
 
     pub(crate) fn command(&mut self, cmd: &str) -> Option<Action> {
+        if let Some(taken) = self.secret_on_line(cmd) {
+            return taken;
+        }
         // The person's own tool call first: a door verb is a tool, and it must be matched against the
         // published list before anything refuses it as an unknown word. Both spellings are accepted and
         // one is offered, so a hyphen is looked up and the tool's own name goes on the wire.
@@ -828,6 +831,64 @@ impl App {
                 Some(Action::Slash { line })
             }
         }
+    }
+
+    /// A secret typed on a slash line is never sent: the line leaves the composer history and
+    /// `/models X --key` opens the masked card for X. `None` when the line carries no secret flag.
+    fn secret_on_line(&mut self, cmd: &str) -> Option<Option<Action>> {
+        let words: Vec<&str> = cmd.split_whitespace().collect();
+        let flags: &[&str] = match (words.first().copied(), words.get(1).copied()) {
+            (Some("models" | "model"), _) => &["--key", "--api-key"],
+            (Some("flowy"), Some("login")) => &["--token"],
+            _ => return None,
+        };
+        let at = words.iter().position(|w| {
+            flags
+                .iter()
+                .any(|f| *w == *f || w.strip_prefix(f).is_some_and(|r| r.starts_with('=')))
+        })?;
+        let inline = words[at].contains('=') || words.get(at + 1).is_some();
+        let history: Vec<String> = self
+            .editor
+            .history()
+            .iter()
+            .filter(|l| l.trim().trim_start_matches('/').trim() != cmd.trim())
+            .cloned()
+            .collect();
+        self.editor.set_history(history);
+        let dropped = if inline {
+            "the line was not sent and is not in history. "
+        } else {
+            ""
+        };
+        if words[0] == "flowy" {
+            self.say(&format!(
+                "{dropped}a token is never typed on the line: `/flowy login --token-file PATH` \
+                 reads it from a file"
+            ));
+            return Some(None);
+        }
+        let Some(choice) = words.get(1).filter(|w| !w.starts_with("--")) else {
+            self.say(&format!(
+                "{dropped}/models PROVIDER --key opens the masked card for that provider's key"
+            ));
+            return Some(None);
+        };
+        if self.session_id.is_empty() {
+            self.say("not attached to a session yet");
+            return Some(None);
+        }
+        let provider = choice.split('/').next().unwrap_or(choice).to_string();
+        self.say(&format!(
+            "{dropped}paste the {provider} key below: enter stores it (mode 600) and switches, \
+             esc cancels"
+        ));
+        self.key_ask = Some(KeyAsk {
+            choice: choice.to_string(),
+            provider,
+        });
+        self.key_buf.clear();
+        Some(None)
     }
 
     /// `/listen only this`: `this` is the repository the header names, which only the head knows.
@@ -1459,7 +1520,7 @@ pub(crate) const SLASH_COMMANDS: &[(&str, &str)] = &[
     (
         "models",
         "which model answers: /models is a menu, /models PROVIDER/MODEL switches \
-         (/models glm-coding --key PASTE stores the key)",
+         (/models glm-coding --key opens the masked card that stores the key)",
     ),
     (
         "resync",

@@ -1316,10 +1316,8 @@ pub(crate) fn serve_child_with(
                     crate::slash::Slash::Nag(verb) => sub.nag_verb(verb),
                     _ => unreachable!("`child_command` matched this line as `/nag`"),
                 };
-                hub.warn(
-                    if reply.ok { "slash" } else { "slash_refused" },
-                    format!("/{line}\n{}", reply.lines.join("\n")),
-                );
+                let (code, detail) = reply.warning(&line);
+                hub.warn(code, detail);
                 turns.rearm(sub, true);
             }
             ChildCommand::Leave(why) => {

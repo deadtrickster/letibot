@@ -207,6 +207,7 @@ fn no_warning_is_a_row_of_the_conversation() {
                 | "daemon_starting"
                 | "daemon_started"
                 | "model_set"
+                | "slash_listing"
         ) {
             continue;
         }

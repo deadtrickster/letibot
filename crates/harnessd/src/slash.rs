@@ -19,6 +19,23 @@ impl SlashReply {
     fn ok(lines: Vec<String>) -> Self {
         SlashReply { lines, ok: true }
     }
+
+    /// The warning this reply is published as: its kind as the code (`slash_listing`, `slash`,
+    /// `slash_refused`) and the echoed line first with any secret masked, so a key never lands
+    /// in the log.
+    pub fn warning(&self, line: &str) -> (&'static str, String) {
+        let code = match (self.ok, Slash::parse(line).lists()) {
+            (false, _) => "slash_refused",
+            (true, true) => "slash_listing",
+            (true, false) => "slash",
+        };
+        (code, format!("/{}\n{}", echo(line), self.lines.join("\n")))
+    }
+}
+
+/// A slash line as it may be echoed or logged: secret arguments masked.
+pub fn echo(line: &str) -> String {
+    letibot_sessionlog::hub::redact_key_args(line)
 }
 
 /// The verbs this daemon answers - the first word of every arm of [`Slash::parse`]. A head
@@ -221,6 +238,18 @@ pub fn split_model_name(spec: &str) -> (String, Option<String>) {
 }
 
 impl Slash {
+    /// Whether this verb's answer is a listing a head opens in its pane, rather than a note.
+    pub fn lists(&self) -> bool {
+        matches!(
+            self,
+            Slash::Tools
+                | Slash::Boundary
+                | Slash::Models
+                | Slash::Job { .. }
+                | Slash::Gate(GateVerb::Recent { .. } | GateVerb::Counts)
+        )
+    }
+
     pub fn parse(line: &str) -> Slash {
         let words: Vec<&str> = line.split_whitespace().collect();
         match words.first().copied() {
@@ -1029,6 +1058,32 @@ pub fn default_model(want: Option<&str>, file: Option<&std::path::Path>) -> Slas
 
 #[cfg(test)]
 mod tests {
+    /// A reply is published under its kind, and the echo never carries a secret.
+    #[test]
+    fn a_reply_is_typed_by_its_verb_and_its_echo_masks_the_key() {
+        let ok = SlashReply::ok(vec!["switched".into()]);
+        let (code, detail) = ok.warning("models deepseek/deepseek-flash --key sk-SECRET");
+        assert_eq!(code, "slash");
+        assert_eq!(
+            detail,
+            "/models deepseek/deepseek-flash --key •••\nswitched"
+        );
+        let (code, detail) = ok.warning("flowy login seat --token tok-SECRET");
+        assert!(!detail.contains("SECRET"), "{detail}");
+        assert_eq!(code, "slash");
+        assert_eq!(
+            SlashReply::ok(vec!["a".into(), "b".into()])
+                .warning("tools")
+                .0,
+            "slash_listing"
+        );
+        assert_eq!(SlashReply::ok(vec![]).warning("job j1").0, "slash_listing");
+        let refused = SlashReply {
+            lines: vec!["no".into()],
+            ok: false,
+        };
+        assert_eq!(refused.warning("tools").0, "slash_refused");
+    }
 
     /// A fleet model is selectable by name, and it is not a provider: no key is looked for and
     /// none is needed.

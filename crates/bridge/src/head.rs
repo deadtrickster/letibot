@@ -1311,8 +1311,8 @@ impl State {
                 // A `/` verb's reply, kept whole. The ring below keeps one clamped line of it,
                 // and for a reply that line is the echo, so a caller that asked a question
                 // (`set_model`) would have the request and not the answer.
-                if code == "slash" || code == "slash_refused" {
-                    self.slash = Some(SlashSaid::of(&detail, code == "slash"));
+                if let Some(ok) = letibot_sessionlog::slash_verdict(&code) {
+                    self.slash = Some(SlashSaid::of(&detail, ok));
                     self.slashes += 1;
                 }
                 // The daemon's own answer to a limit is news of its own: the channel push reports

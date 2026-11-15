@@ -657,6 +657,9 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // A slash command's answer. `slash_refused` is the same channel with the other
     // verdict, and it is a failure.
     ("slash", Class::Routine, Action::Nothing),
+    // The same answer when the verb lists (`/tools`, `/models`, `/job`): a head opens it as a
+    // listing whatever its length.
+    ("slash_listing", Class::Routine, Action::Nothing),
     // The operator paused this session's plan-check, and the pause ended: their own act, or
     // its own deadline. The row is the event; the head's resident line while the `nags` row
     // says `paused` is the state.
@@ -1239,6 +1242,7 @@ pub const STATUS: &[&str] = &[
     // The reader's own line coming back: seven `Refused` codes, which answer something the person
     // just typed and are over as soon as the next one is.
     "slash",
+    "slash_listing",
     "slash_refused",
     "mode_unknown",
     "mode_set_refused",
@@ -1320,6 +1324,16 @@ pub fn is_routine(code: &str) -> bool {
 /// [`class`], as the question a renderer asks about the red end. `Refused` is neither.
 pub fn is_failure(code: &str) -> bool {
     class(code).is_failure()
+}
+
+/// A slash verb's answer and its verdict: `Some(true)` for `slash` and `slash_listing`,
+/// `Some(false)` for `slash_refused`, `None` for any other code.
+pub fn slash_verdict(code: &str) -> Option<bool> {
+    match code {
+        "slash" | "slash_listing" => Some(true),
+        "slash_refused" => Some(false),
+        _ => None,
+    }
 }
 
 /// The codes that belong on the edge (warning triangle and `/status`), never a row. The edge

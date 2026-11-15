@@ -641,18 +641,20 @@ pub fn switch_model(
                 let SessionEvent::Warning { code, detail, .. } = env.event else {
                     continue;
                 };
-                if code != "slash" && code != "slash_refused" {
+                let Some(ok) = letibot_sessionlog::slash_verdict(&code) else {
                     continue;
-                }
+                };
                 // Another head's verb lands on this stream too, and the echo is the only thing
                 // that says the answer is the one this command asked for.
                 let (echo, said) = detail.split_once('\n').unwrap_or((&detail, ""));
-                if echo.trim().trim_start_matches('/') != line {
+                if echo.trim().trim_start_matches('/')
+                    != letibot_sessionlog::hub::redact_key_args(&line)
+                {
                     continue;
                 }
                 break Switched {
                     said: said.trim().to_string(),
-                    ok: code == "slash",
+                    ok,
                 };
             }
             // A frame this head cannot read is not a reason to lose the round trip: the

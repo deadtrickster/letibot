@@ -115,6 +115,10 @@ fn slash_verbs_answer_on_the_log_and_name_the_next_command() {
     let switched = send("models deepseek/deepseek-chat --key sk-test", &mut sessions);
     assert!(switched.contains("stored the deepseek key"), "{switched}");
     assert!(
+        !switched.contains("sk-test"),
+        "the echo masks the key: {switched}"
+    );
+    assert!(
         switched.contains("turns go to deepseek/deepseek-chat"),
         "{switched}"
     );
