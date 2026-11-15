@@ -1926,6 +1926,11 @@ fn one_free_head(
     )
 }
 
+/// The recommendation for several free rows. The operator's ruling (2026-11-15): free rows are
+/// independent in the DAG, so the check recommends subagents for them.
+const SUBAGENTS: &str = "These do not depend on each other: start each as a subagent with `task` \
+                         (or a background job for a long command) and collect them.";
+
 /// The check when several rows can start: every one is named, because none waits on another and
 /// working them one at a time leaves the rest idle. The advice is said once per author.
 fn several_free_heads(
@@ -1973,8 +1978,7 @@ fn several_free_heads(
     };
     (
         format!(
-            "{head}:\n{}{more}\nThey can run in parallel: start the independent ones together, as \
-             subagents or background jobs, instead of one after another. {}{forgotten}{offer}{waiting}",
+            "{head}:\n{}{more}\n{SUBAGENTS} {}{forgotten}{offer}{waiting}",
             bullets.join("\n"),
             advice.join(" "),
         ),
@@ -2669,8 +2673,9 @@ fn nothing_can_start(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String
     )
 }
 
-// The check names every free head (R127), capped by `FREE_HEADS_NAMED`. A row that waits on
-// another is not named, so the list is only work that can start now.
+// The check names every free head (R127), capped by `FREE_HEADS_NAMED`, and recommends subagents
+// for them. Operator's ruling 2026-11-15, reversing the 11-07 one-todo ruling: free heads are
+// independent in the DAG, so models are encouraged to run them as subagents.
 
 /// The daemon-side half of `todo_write`'s `target`: reaching a child session's board. Built per
 /// session with the caller already bound, so it decides everything the safety turns on - that the

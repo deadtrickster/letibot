@@ -28,8 +28,13 @@ fn two_independent_free_rows_are_both_named() {
     assert_eq!(named, ["port the parser", "write the docs"]);
     assert!(text.contains("\n  - port the parser — yours\n"), "{text}");
     assert!(text.contains("\n  - write the docs — yours\n"), "{text}");
-    assert!(text.contains("in parallel"), "{text}");
-    assert!(text.contains("subagents"), "{text}");
+    assert!(
+        text.contains(
+            "\nThese do not depend on each other: start each as a subagent with `task` (or a \
+             background job for a long command) and collect them."
+        ),
+        "the recommendation, naming `task`: {text}"
+    );
     // One advice line per author, not one per row.
     assert_eq!(text.matches("`update` field").count(), 1, "{text}");
 }
@@ -55,8 +60,14 @@ fn one_free_row_keeps_the_single_row_check() {
     ];
     let (text, named) = naming(&plan, &no_jobs()).expect("open work");
     assert_eq!(named, ["port the parser"]);
-    assert!(text.starts_with("[todo check] Not done:\n"), "{text}");
-    assert!(!text.contains("in parallel"), "{text}");
+    // Byte for byte the single-row check from before R127.
+    assert_eq!(
+        text,
+        "[todo check] Not done:\n  - port the parser — yours\nDo it, or mark it done with \
+         `todo_write`'s `update` field (quote it exactly).\n\
+         1 row cannot start yet: `release` waits on `port the parser` (still open).",
+    );
+    assert!(!text.contains("subagent"), "{text}");
 }
 
 #[test]
