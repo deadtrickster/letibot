@@ -950,7 +950,7 @@ pub(crate) fn waits_words(t: &letibot_sessionlog::event::TodoEntry) -> Option<St
         TodoNeed::Pid { pid, .. } => Some(format!("pid {pid}")),
         // Something outside this machine, in the row's own words: the pane draws `waits on <what>`
         // and holds no table behind it, because nothing here can see that wait end.
-        TodoNeed::External { what } => Some(what.clone()),
+        TodoNeed::External { what, .. } => Some(what.clone()),
         _ => None,
     })
 }

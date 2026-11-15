@@ -3286,7 +3286,10 @@ impl<'a> Sessions<'a> {
             }
             // Nothing to say after all - the plan moved between the arming and the clock - is no
             // turn, and a door that runs no turn owes no sweep.
+            // The clock is re-armed, so a deadline that came a moment early (a wall-clock window
+            // read against an `Instant`) is not the last one.
             let Some(notice) = notice else {
+                self.rearm_todo_nag(&session_id);
                 continue;
             };
             // The shared tail arms the sweep and the wake, records the notice as said and
@@ -4088,11 +4091,13 @@ impl<'a> Sessions<'a> {
                                 }
                                 // The words cross verbatim: they are all the edge has, and a head
                                 // that dropped them would hand back a row that waits on nothing.
-                                letibot_sessionlog::event::TodoNeed::External { what } => {
-                                    letibot_tokencore::store::TodoNeed::External {
-                                        what: what.clone(),
-                                    }
-                                }
+                                letibot_sessionlog::event::TodoNeed::External {
+                                    what,
+                                    since_ms,
+                                } => letibot_tokencore::store::TodoNeed::External {
+                                    what: what.clone(),
+                                    since_ms: *since_ms,
+                                },
                                 letibot_sessionlog::event::TodoNeed::Unknown => {
                                     letibot_tokencore::store::TodoNeed::Unknown
                                 }

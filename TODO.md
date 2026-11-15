@@ -87,7 +87,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R267 | A streaming assistant line is drawn over an earlier row of the history | Code work | built: the live marker's join is taken back before the walk and only by its whole joined line; test `a_streaming_row_never_rewrites_an_earlier_row` |
 | R265 | A usage-limit park cannot be ended or moved: Esc does nothing and `/models` leaves the turn parked on the old model's reset | Code work | built: Esc ends the parked turn with a row naming the limit and the reset, a switch by any door retries the parked request on the new model, the status row names the reset and both ways out; left: the live check on a real Kimi limit |
 | R266 | Reaper remainder: a job across a stop that is not a handover, a start grace for a new owner, d.3 and the store-key rule written down | Code work | built (audit H1, R241's left): the reaper's daemon stop leaves the restart marker so host jobs are kept for the next daemon, the idle exit drains on a running job, a daemon's first 5 minutes judge no owner idle or orphaned, d.3 and the store-key rule written down; left: a plain `letibot --stop` still ends every job, by design |
-| R264 | An `external` wait silences the plan-check forever, so a session idle on two open rows got no nag for 10h | Needs the operator | diagnosed, behaves as R156 documents; left: the operator's call on bounding the silence and steering `external` that names a seat to `ask` |
+| R264 | An `external` wait silences the plan-check forever, so a session idle on two open rows got no nag for 10h | Code work | built: an `external` edge is quiet for 2h from its `since_ms` stamp, then asked about on the ladder; `wait_on` steers a roster seat to `ask` and the operator to `operator`; the restart door reads the nag's predicate |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -1240,7 +1240,7 @@ Audit package H6 (`STATUS-fable-5.2-2026-11-15.md`), plan item 1.14, and R242's 
 **Done when:** a line over 32 KiB is read in pieces with `column_offset` and `columns`, and an edit whose match lies inside a shown piece lands; a 400-column line is fully readable in the window at 80 columns; the header's count plus the stated hidden marker lines equals the payload's lines.
 ## R264 - An `external` wait silences the plan-check forever
 
-**Status:** open, 2026-11-15. Diagnosed, no defect against the documented design. left: the operator's call on the two changes below.
+**Status:** built, 2026-11-15. The operator approved both proposed defaults.
 
 Operator report: db-fuzz (`s-1792687430252160872`, project `defc553f46c3`) had 2 open todos and the nag appeared only on restart.
 
@@ -1263,11 +1263,19 @@ Ruled out: no `nag_pause_self` call in the session and `nags_paused_until` is NU
 
 **Two misuses made it bite.** Both `external` texts name `cc@etcd-752`, a room seat letibot can see, and "the operator's word", which has its own `operator` wait. Neither is outside the machine. A peer `ask` would at least have settled through the room pass when the peer answered.
 
-**Proposed defaults (need the operator, since they reverse R156's "silent until the row moves").**
+**Proposed defaults (approved by the operator, 2026-11-15; they bound R156's "silent until the row moves").**
 1. An `external` wait silences the check for a bounded time, the ladder's top rung or a fixed 2h, then the row is asked about again with a sentence offering `detach`, completion or a refreshed wait. Re-attaching restarts the window.
 2. `todo_write` refuses or steers an `external` whose text names a seat on the roster (`x@y`) or the operator, to `ask`/`operator`.
 
 **Done when:** a row whose only wait is `external` is checked again after the bound with no row movement (harnessd test on the due clock), and `wait_on external` naming a roster seat answers the steer.
+
+**Built.**
+1. `TodoNeed::External` carries `since_ms` (wall-clock, serde default, also on the sessionlog event so a head round trip keeps it). `wait_on` and a `needs` entry stamp it; restating the same words in `todos` keeps the first stamp (`keep_answers`); `wait_on` again replaces the row's external edge and restarts the window. `waits_on_something_external` is true only inside `EXTERNAL_QUIET` (2h, fixed rather than the ladder's top rung, which is 30 min and configurable). An edge with no stamp is past its window. Past it the edge's fate is `NeedFate::ExternalLapsed`, not a root, so the check names the row with the three acts: complete it, attach the wait again, or detach. `when_an_external_wait_lapses` arms the clock for the window's end (plus 1s) in both of `rearm`'s quiet branches, and `deliver_due_nags` re-arms when a deadline finds nothing to say, so an early wake is not the last one. `RunningJobs::at` is the fake clock.
+2. `wait_on`'s `external` is steered by `TodoWriteTool::steer_external`. Whole-word match, first by position: a handle from `AskLink::roster` (every Session and External seat in the rooms the session sees, `SessionRoom::roster_handles`) becomes an `ask` of it, made through the room; a fixed phrase (`the operator`, `operator's`) becomes an `operator` wait with options `go ahead` and `hold`. The result says what it became. No room, or a refused ask, keeps it external with the reason. `needs` in `todos` is not steered: it cannot ask, and a restatement must not re-ask.
+3. `restart::Owed::plan` is filtered by `the_check_may_ask_about` with the harness's own children and jobs, so a restart wakes for the rows the nag would ask about.
+
+Tests: `todo::tests::external::*` (window and ladder on a fake clock, unstamped edge, restatement keeps the stamp, `cc@etcd-752` becomes an ask, "the operator's word or go" becomes an operator wait, first named wins, truly external stays), `harness::tests::restart_notice::an_external_waits_window_survives_a_restore_and_the_restart_agrees_with_the_nag`, bridge `seat_todo` external reply.
+
 
 ## R261 - Skill offers under control: the shadow picks them, children get none, a skill can be hidden from the model
 

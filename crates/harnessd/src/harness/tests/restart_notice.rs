@@ -983,3 +983,50 @@ fn an_empty_restart_past_the_restore_window_names_it() {
     let text = h.restore_after_restart().expect("said");
     assert!(text.contains("older than the 30s restore window"), "{text}");
 }
+
+/// An `external` wait's window is stamped on the row, so a restart neither resets it nor wakes the
+/// session for a row the idle check would not ask about. The restart and the nag read one predicate.
+#[test]
+fn an_external_waits_window_survives_a_restore_and_the_restart_agrees_with_the_nag() {
+    use letibot_tokencore::store::TodoNeed;
+    let dir = Scratch::new("restart-external-window");
+    let id = "s-restart-external-window";
+    let now = letibot_sessionlog::event::now_ms();
+    let external = |content: &str, since_ms: u64| TodoItem {
+        needs: vec![TodoNeed::External {
+            what: "upstream CI".into(),
+            since_ms: Some(since_ms),
+        }],
+        ..a_row(content, TodoStatus::InProgress)
+    };
+    let inside = external("push once CI is green", now - 3_600_000);
+    let lapsed = external("tag once the release lands", now - 3 * 3_600_000);
+    let Some(mut h) = opened_by_a_later_daemon_with(&dir, id, |store| {
+        store
+            .put_todos(id, &[inside.clone(), lapsed.clone()])
+            .expect("the earlier daemon's board");
+    }) else {
+        return;
+    };
+    let board = h.todos.snapshot();
+    assert_eq!(
+        board,
+        vec![inside.clone(), lapsed.clone()],
+        "stamps restored"
+    );
+    let children = h.child_sessions();
+    let jobs = h.running_jobs(&board);
+    assert!(!crate::sessions::the_check_may_ask_about(
+        &board[0], &children, &jobs
+    ));
+    assert!(crate::sessions::the_check_may_ask_about(
+        &board[1], &children, &jobs
+    ));
+
+    let text = h.restore_after_restart().expect("a restart is said");
+    assert!(
+        text.contains("todo row still owed: tag once the release lands"),
+        "only the row the nag would ask about is owed: {text}"
+    );
+    assert!(!text.contains("push once CI is green"), "{text}");
+}

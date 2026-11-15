@@ -1124,11 +1124,14 @@ pub enum TodoNeed {
         options: Vec<String>,
     },
     /// Something OUTSIDE this machine's bookkeeping - a review on a forge, a deploy, a person's
-    /// other tool - which no snapshot here can watch. `what` is the row's own words for it, and the
-    /// check stays quiet on the row until it moves: nothing local could ever say this wait ended.
+    /// other tool - which no snapshot here can watch. `what` is the row's own words for it. The
+    /// check is quiet on the row for a bounded time from `since_ms` (wall-clock ms, so a restart
+    /// keeps the window); a wait without one is past its window.
     External {
         #[serde(default)]
         what: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since_ms: Option<u64>,
     },
     /// An [`TodoNeed::Operator`] edge the operator has ANSWERED: met, always, and kept on the row
     /// as the reply, so a submitted row becomes unblocked with its answer attached. `ask` is the

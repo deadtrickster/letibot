@@ -1364,6 +1364,8 @@ impl Harness {
     ) -> crate::restart::Owed {
         use crate::restart::Rows;
         let board = self.todos.snapshot();
+        let children = self.child_sessions();
+        let jobs = self.running_jobs(&board);
         crate::restart::Owed {
             // The store's row is what the daemon wrote last. A display-only row says nothing about
             // the turn, so the transcript is read back past it.
@@ -1379,10 +1381,14 @@ impl Harness {
                     .iter()
                     .map(|(what, _, _)| what.as_str()),
             ),
+            // The nag's own predicate, so a restart wakes for exactly the rows the idle check
+            // would ask about: an external wait inside its window, a running job or a working room
+            // item is not owed here either.
             plan: Rows::of(
                 board
                     .iter()
                     .filter(|r| matches!(r.status, TodoStatus::Pending | TodoStatus::InProgress))
+                    .filter(|r| crate::sessions::the_check_may_ask_about(r, &children, &jobs))
                     .map(|r| r.content.as_str()),
             ),
             promise: false,
@@ -4014,8 +4020,8 @@ impl Harness {
                     }
                     // Something outside the machine, in the row's own words: the head draws it as
                     // `waits on <what>` and holds no table behind it.
-                    letibot_tokencore::store::TodoNeed::External { what } => {
-                        letibot_sessionlog::event::TodoNeed::External { what }
+                    letibot_tokencore::store::TodoNeed::External { what, since_ms } => {
+                        letibot_sessionlog::event::TodoNeed::External { what, since_ms }
                     }
                     letibot_tokencore::store::TodoNeed::Unknown => {
                         letibot_sessionlog::event::TodoNeed::Unknown

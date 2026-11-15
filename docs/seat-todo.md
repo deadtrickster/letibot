@@ -52,8 +52,18 @@ v41 gains the table at its next open, empty.
   busy is offered is that package's TURN, which is a `child` wait (R156).
 - **`external`** - something outside letibot, in the seat's own words: a review on a forge, a
   deploy, a person's other tool. `wait_on`'s `"external": "…"` or a `needs` entry of that kind.
-  Nothing here can see it end, so the check is silent on that row until the row moves - the seat
-  clears it with `"detach": true` - and the board draws `waits on <what>` (R156).
+  Nothing here can see it end, so the check is silent on that row for `EXTERNAL_QUIET` (2h) from
+  when the wait was attached, then asks about it again on the ladder, with the three acts that end
+  the question: complete the row, attach the wait again (which restarts the window), or `"detach":
+  true`. The stamp is `since_ms` on the edge, wall-clock, so a restart keeps the window; restating
+  the same words in `needs` keeps the first stamp, and an edge with no stamp is past its window
+  (R264, bounding R156's "silent until the row moves"). The board draws `waits on <what>`.
+  `wait_on` steers an `external` whose words name something letibot tracks, and says what it
+  became: a roster seat handle (whole word, from the room's rosters) becomes an `ask` of that seat;
+  "the operator", "operator's" becomes an `operator` wait with the options `go ahead` and `hold`.
+  The first thing named wins. A seat with no room keeps the seat case external, with a note.
+  A daemon restart wakes a session for the same rows: `restart::Owed::plan` is filtered by
+  `the_check_may_ask_about`, so an edge inside its window is not owed work at a restart either.
 - **`operator`** - a question the seat asks a person. There is no card: a card is a head's frame and
   a seat has no head. The row's question is what the nag names, the seat asks in the conversation,
   and the answer arrives by `todo_answer` as the operator's own words, kept on the row as

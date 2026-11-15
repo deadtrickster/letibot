@@ -452,39 +452,6 @@ fn a_seat_is_asked_again_for_its_plan_moving_and_not_for_the_jobs_running_beside
     );
 }
 
-/// A wait on something outside this machine: nothing here can see it end, so the check is silent
-/// on the row until the row moves - and then it is work again, like any other row.
-#[test]
-fn an_external_wait_keeps_its_row_quiet_until_it_moves() {
-    let waiting = TodoItem {
-        needs: vec![TodoNeed::External {
-            what: "R156's review at arangodb".into(),
-        }],
-        ..item("push once the review lands", TodoStatus::InProgress)
-    };
-    assert!(
-        !the_check_may_ask_about(&waiting, &ChildSessions::none(), &no_jobs()),
-        "a wait no snapshot can see is not the check's to ask about"
-    );
-    assert_eq!(
-        nag_for(std::slice::from_ref(&waiting)),
-        None,
-        "so the check is silent"
-    );
-
-    // The row MOVES - the wait taken off, which is the one act that ends it - and it is asked about.
-    let moved = item("push once the review lands", TodoStatus::InProgress);
-    let said = nag_for(&[moved]).expect("the row is work again");
-    assert!(said.contains("push once the review lands"), "{said}");
-
-    // A clock keyed by the plan sees that move too: the same row, one wait fewer, is a new key.
-    assert_ne!(
-        the_plan_as_a_key(&[waiting]),
-        the_plan_as_a_key(&[item("push once the review lands", TodoStatus::InProgress)]),
-        "a wait coming off the row is the plan moving"
-    );
-}
-
 /// A child's wait belongs to the row that names it. The seat's R162 row waited on its own package
 /// and the check offered it the R161 package's turn - a different row's child - in the same breath
 /// as saying it waited on nothing.

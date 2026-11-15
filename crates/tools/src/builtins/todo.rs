@@ -269,6 +269,14 @@ impl TodoBoard {
                         true
                     }
                 }
+                // An external wait replaces the row's last one and restarts its quiet window: a
+                // re-attach is the model saying the outside thing is still in the way.
+                Wait::On(need @ TodoNeed::External { .. }) => {
+                    row.needs
+                        .retain(|n| !matches!(n, TodoNeed::External { .. }));
+                    row.needs.push(need.clone());
+                    true
+                }
                 Wait::On(need) => {
                     if row.needs.contains(need) {
                         false
@@ -775,7 +783,27 @@ fn keep_answers(had: &[TodoNeed], sent: &[TodoNeed]) -> Vec<TodoNeed> {
             TodoNeed::Ask { .. } => false,
             _ => true,
         })
-        .cloned()
+        .map(|n| match n {
+            // Restating the same external wait is not attaching it again: its window keeps the
+            // stamp it had, or a model restating the list every turn would never be asked.
+            TodoNeed::External { what, .. } => {
+                let had_since = had.iter().find_map(|h| match h {
+                    TodoNeed::External {
+                        what: w,
+                        since_ms: Some(since),
+                    } if w.trim() == what.trim() => Some(*since),
+                    _ => None,
+                });
+                match had_since {
+                    Some(since) => TodoNeed::External {
+                        what: what.clone(),
+                        since_ms: Some(since),
+                    },
+                    None => n.clone(),
+                }
+            }
+            other => other.clone(),
+        })
         .collect();
     out.extend(kept.into_iter().cloned());
     out
@@ -1059,6 +1087,9 @@ pub struct RunningJobs {
     /// frames cannot say - the skipped frames include the job list - and an absence of a handle
     /// is not an ending there.
     uncertain: bool,
+    /// The wall clock this reading is taken at, in ms; `None` reads the system clock. An
+    /// `external` wait's quiet window is measured against it, and a test pins it.
+    now_ms: Option<u64>,
 }
 
 impl RunningJobs {
@@ -1093,6 +1124,19 @@ impl RunningJobs {
     /// Whether a job this snapshot does not list may still be running - see [`Self::uncertain`].
     pub fn is_uncertain(&self) -> bool {
         self.uncertain
+    }
+
+    /// The same snapshot read at wall-clock `now_ms` rather than the system clock - the tests'
+    /// fake clock for an `external` wait's window.
+    pub fn at(mut self, now_ms: u64) -> Self {
+        self.now_ms = Some(now_ms);
+        self
+    }
+
+    /// The wall clock this snapshot reads, in ms.
+    pub fn now_ms(&self) -> u64 {
+        self.now_ms
+            .unwrap_or_else(|| u64::try_from(crate::lifecycle::now_ms()).unwrap_or(0))
     }
 
     /// A job this board does not run but can only reach THROUGH its owner, by the owner's session
@@ -1299,13 +1343,95 @@ pub fn waits_on_the_room(row: &TodoItem) -> bool {
         .any(|n| matches!(n, TodoNeed::Room { working: true, .. }))
 }
 
-/// Whether a row waits on something outside this machine's bookkeeping - a forge's review, a
-/// deploy, a person's other tool. Nothing here ends that, so the check is silent on the row until
-/// the row itself moves: a wait no snapshot can see is not a wait the nag may doubt.
-pub fn waits_on_something_external(row: &TodoItem) -> bool {
+/// How long an `external` wait keeps the check quiet on its row, from when it was attached.
+/// Nothing here can see such a wait end, so after this the row is asked about again on the ladder.
+pub const EXTERNAL_QUIET: Duration = Duration::from_secs(2 * 60 * 60);
+
+/// How much of an `external` wait's quiet window is left at `now_ms`, or `None` when it is over.
+/// A wait with no `since_ms` was written before the window existed and is past it.
+fn external_quiet_left(need: &TodoNeed, now_ms: u64) -> Option<Duration> {
+    let TodoNeed::External {
+        since_ms: Some(since),
+        ..
+    } = need
+    else {
+        return None;
+    };
+    let end = since.saturating_add(EXTERNAL_QUIET.as_millis() as u64);
+    (end > now_ms).then(|| Duration::from_millis(end - now_ms))
+}
+
+/// Whether a row waits on something outside this machine's bookkeeping and is still inside the
+/// wait's quiet window. Past it the row is asked about, because nothing local would ever end it.
+pub fn waits_on_something_external(row: &TodoItem, jobs: &RunningJobs) -> bool {
+    let now = jobs.now_ms();
     row.needs
         .iter()
-        .any(|n| matches!(n, TodoNeed::External { .. }))
+        .any(|n| external_quiet_left(n, now).is_some())
+}
+
+/// The options an `external` wait steered to the operator is given.
+const STEERED_OPTIONS: [&str; 2] = ["go ahead", "hold"];
+
+/// The fixed phrases that make an `external` wait the operator's. Matched lowercase and at a word
+/// start, so `etcd-operator's release` is not one.
+const OPERATOR_PHRASES: [&str; 3] = ["the operator", "operator's", "operator\u{2019}s"];
+
+/// What an `external` wait's words name that letibot can track itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Named {
+    Seat(String),
+    Operator,
+}
+
+/// The first thing in `what` that is a roster handle or an operator phrase, by position, or
+/// `None` for a wait that is truly outside. Deterministic: whole-word matches only.
+fn external_names(what: &str, roster: &[String]) -> Option<Named> {
+    let mut first: Option<(usize, Named)> = None;
+    let mut keep = |at: usize, named: Named| {
+        if first.as_ref().is_none_or(|(was, _)| at < *was) {
+            first = Some((at, named));
+        }
+    };
+    for handle in roster {
+        // A two-letter name would match ordinary words.
+        if handle.chars().count() < 3 {
+            continue;
+        }
+        if let Some(at) = word_at(what, handle) {
+            keep(at, Named::Seat(handle.clone()));
+        }
+    }
+    let lower = what.to_lowercase();
+    for phrase in OPERATOR_PHRASES {
+        if let Some(at) = word_at(&lower, phrase) {
+            keep(at, Named::Operator);
+        }
+    }
+    first.map(|(_, named)| named)
+}
+
+/// Where `word` first occurs in `text` with no handle character on either side.
+fn word_at(text: &str, word: &str) -> Option<usize> {
+    let joins = |c: char| c.is_alphanumeric() || matches!(c, '@' | '-' | '_');
+    text.match_indices(word).map(|(at, _)| at).find(|&at| {
+        let before = text[..at].chars().next_back();
+        let after = text[at + word.len()..].chars().next();
+        !before.is_some_and(joins) && !after.is_some_and(joins)
+    })
+}
+
+/// When the first `external` quiet window among these rows ends, or `None`. The clock half of
+/// [`waits_on_something_external`]: without it the row would stay quiet until something moved.
+pub fn when_an_external_wait_lapses(rows: &[TodoItem], jobs: &RunningJobs) -> Option<Duration> {
+    let now = jobs.now_ms();
+    rows.iter()
+        .filter(|row| matches!(row.status, TodoStatus::Pending | TodoStatus::InProgress))
+        .flat_map(|row| row.needs.iter())
+        .filter_map(|n| external_quiet_left(n, now))
+        .min()
+        // A second past the end, so a wake on a drifting clock does not land inside the window.
+        .map(|left| left + Duration::from_secs(1))
 }
 
 /// The room items a row is the pass's own record of - every item number its room edges name,
@@ -1729,9 +1855,10 @@ fn all_on_the_operator(
                 // A room item the room is working on is a root too: not the plan's to move, and a
                 // plan blocked only on it is not a plan to fix.
                 NeedFate::RoomWorking => true,
-                // And something outside the machine: only the row moving ends it, so no pass of
-                // this check can.
+                // And something outside the machine inside its quiet window. Past the window it is
+                // the plan's to resolve: complete the row, refresh the wait or detach it.
                 NeedFate::External => true,
+                NeedFate::ExternalLapsed => false,
                 NeedFate::ChildRunning(child) => has_room_to_breathe(child),
                 NeedFate::NotDone => on.contains(name.trim()),
                 _ => false,
@@ -1810,9 +1937,11 @@ pub enum NeedFate {
     /// plan's hands too, so the row is a root of the check's silence and the settlement is the
     /// room's to deliver.
     PeerAsked,
-    /// Something outside this machine's bookkeeping, in the row's own words. Not met, and not this
-    /// plan's to move: nothing here can tell when it ended.
+    /// Something outside this machine's bookkeeping, in the row's own words, inside its quiet
+    /// window. Not met, and not this plan's to move: nothing here can tell when it ended.
     External,
+    /// The same wait past its quiet window: still not met, but now the plan's to resolve.
+    ExternalLapsed,
 }
 
 /// The rows the check may speak about, read as a graph - split by whether they can start.
@@ -1943,7 +2072,13 @@ fn unmet_needs(
             TodoNeed::Answered { .. } => {}
             // Nothing here can watch it, so it is not met - and the words are the name, because they
             // are all the edge has.
-            TodoNeed::External { what } => out.push((what.clone(), NeedFate::External)),
+            TodoNeed::External { what, .. } => {
+                let fate = match external_quiet_left(need, jobs.now_ms()) {
+                    Some(_) => NeedFate::External,
+                    None => NeedFate::ExternalLapsed,
+                };
+                out.push((what.clone(), fate));
+            }
             TodoNeed::Unknown => out.push((String::new(), NeedFate::UnknownKind)),
         }
     }
@@ -2009,8 +2144,20 @@ fn blocked_line(row: &TodoItem, unmet: &[(String, NeedFate)]) -> String {
             // Said as the reader's own fact: nothing outside is going to report its ending here, so
             // the one act that ends the silence is moving the row.
             NeedFate::External => format!(
-                "{name} (outside leticobot — nothing here can tell when it ends, so the check stays \
-                 quiet on this row until it moves)"
+                "{name} (outside letibot — nothing here can tell when it ends, so the check stays \
+                 quiet on this row for {} from when the wait was attached)",
+                human_gap(EXTERNAL_QUIET)
+            ),
+            // Past the window the sentence names the three acts that end the question.
+            NeedFate::ExternalLapsed => format!(
+                "{name} (outside letibot, waited on for over {}). If it has ended, act on the row \
+                 and complete it; if it has not, attach the wait again — `todo_write` \
+                 {{\"wait_on\": [{{\"content\": \"{}\", \"external\": \"<what it waits on>\"}}]}} \
+                 — for another {}; if nothing outside is in the way after all, take it off with \
+                 `\"detach\": true`",
+                human_gap(EXTERNAL_QUIET),
+                row.content.trim(),
+                human_gap(EXTERNAL_QUIET)
             ),
             // The operator's sentence carries the instruction, because it is the one blocker the
             // model may resolve without the blocker moving: keep going, and take the wait off with
@@ -2301,6 +2448,12 @@ pub trait AskLink: Send + Sync {
     /// Ask `of` `question`, in `room` or in the room `say` would default to. `Err` is the refusal,
     /// written to be shown to the model as it stands.
     fn ask(&self, of: &str, room: Option<&str>, question: &str) -> Result<AskMade, String>;
+
+    /// The seat handles this session could ask, as the room's rosters name them - what an
+    /// `external` wait is matched against to steer it to an ask. Empty when unknown.
+    fn roster(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// No room behind this tool - a runtime built without a daemon, and the sentence it says.
@@ -2794,6 +2947,83 @@ impl TodoWriteTool {
 }
 
 impl TodoWriteTool {
+    /// An `external` wait as it is written: one that names a seat on the roster becomes an ask of
+    /// it, one that names the operator becomes an operator question, and the rest stay external
+    /// with their quiet window starting now. The note says which, for the result.
+    fn steer_external(&self, what: &str, roster: &[String]) -> (Wait, String) {
+        let external = || {
+            Wait::On(TodoNeed::External {
+                what: what.to_string(),
+                since_ms: Some(RunningJobs::none().now_ms()),
+            })
+        };
+        match external_names(what, roster) {
+            Some(Named::Seat(handle)) => {
+                let Some(link) = &self.asks else {
+                    return (
+                        external(),
+                        format!(
+                            "the `external` names `{handle}`, a room seat, but this session has no \
+                             room to ask it in, so it stays external"
+                        ),
+                    );
+                };
+                match link.ask(&handle, None, what) {
+                    Ok(made) => {
+                        let mut note = format!(
+                            "the `external` names `{handle}`, a room seat letibot can track, so it \
+                             became an `ask` of `{handle}` (ask #{} in `{}`), settled when they \
+                             answer",
+                            made.id, made.room
+                        );
+                        if let Some(said) = made.note {
+                            note.push_str(&format!(". {said}"));
+                        }
+                        (
+                            Wait::On(TodoNeed::Ask {
+                                ask: made.id,
+                                of: handle,
+                                room: made.room,
+                                question: what.to_string(),
+                            }),
+                            note,
+                        )
+                    }
+                    Err(why) => (
+                        external(),
+                        format!(
+                            "the `external` names `{handle}`, but the room would not take an ask \
+                             of it ({why}), so it stays external"
+                        ),
+                    ),
+                }
+            }
+            Some(Named::Operator) => (
+                Wait::On(TodoNeed::Operator {
+                    question: what.to_string(),
+                    options: STEERED_OPTIONS.iter().map(|o| o.to_string()).collect(),
+                }),
+                format!(
+                    "the `external` names the operator, so it became an `operator` wait: their \
+                     heads show it as a question with the options {}, and the answer reaches you \
+                     when they give it",
+                    STEERED_OPTIONS
+                        .iter()
+                        .map(|o| format!("`{o}`"))
+                        .collect::<Vec<_>>()
+                        .join(" and ")
+                ),
+            ),
+            None => (
+                external(),
+                format!(
+                    "the wait stays `external`, quiet for {}",
+                    human_gap(EXTERNAL_QUIET)
+                ),
+            ),
+        }
+    }
+
     /// `wait_on`: mark rows already on the board as waiting on a job or a subagent, or take that
     /// off. The handle is checked here against what this session actually has - a wait nothing will
     /// ever end would not even keep the row quiet - and anything else is refused by name.
@@ -2822,6 +3052,9 @@ impl TodoWriteTool {
         // What the room said about the asks it took - *"not connected now"* - said to the model in
         // this call, because the grace it starts is a thing the model has to know about.
         let mut room_said: Vec<String> = Vec::new();
+        // What each `external` became, said back so the model knows which wait its row carries.
+        let mut steered: Vec<String> = Vec::new();
+        let mut roster: Option<Vec<String>> = None;
         for (i, entry) in list.iter().enumerate() {
             let n = i + 1;
             let Some(obj) = entry.as_object() else {
@@ -2881,16 +3114,22 @@ impl TodoWriteTool {
                 // Something outside the machine, in the caller's own words: no handle to resolve and
                 // no snapshot to resolve it against - the row is quiet until it moves.
                 "external" => match obj.get("external").and_then(|w| w.as_str()) {
-                    Some(what) if !what.trim().is_empty() => Wait::On(TodoNeed::External {
-                        what: what.trim().to_string(),
-                    }),
+                    Some(what) if !what.trim().is_empty() => {
+                        let what = what.trim();
+                        let roster = roster.get_or_insert_with(|| {
+                            self.asks.as_ref().map(|l| l.roster()).unwrap_or_default()
+                        });
+                        let (wait, note) = self.steer_external(what, roster);
+                        steered.push(format!("`{}`: {note}", content.trim()));
+                        wait
+                    }
                     _ => {
                         return refused(
                             format!("wait_on entry {n}'s `external` names nothing"),
                             "an `external` wait says WHAT outside this machine the row waits on, \
                              in your own words — a review on a forge, a deploy, a person's other \
                              tool. Nothing here can watch it, so the check stays quiet on the row \
-                             until the row moves."
+                             for a bounded window and then asks about it again."
                                 .into(),
                         );
                     }
@@ -3085,11 +3324,16 @@ impl TodoWriteTool {
              until it ends; then it is asked about again. A row waiting on the operator is not \
              asked about until they answer — their heads show the question loudly, the answer \
              reaches you the moment they give it, and the rest of the plan keeps going meanwhile. A \
-             row waiting on something OUTSIDE this machine is not asked about until the row moves: \
-             nothing here can see that wait end. Its words and status are unchanged. \
+             row waiting on something OUTSIDE this machine is not asked about for {} from when the \
+             wait was attached; then it is asked about again, since nothing here can see that wait \
+             end. Its words and status are unchanged. \
              Restating one of YOUR rows in `todos` restates its `needs` too, so a `todos` entry \
-             without the wait takes it off.\n"
+             without the wait takes it off.\n",
+            human_gap(EXTERNAL_QUIET)
         ));
+        for note in &steered {
+            out.push_str(&format!("{note}\n"));
+        }
         // The ask needs its own paragraph: it is the one wait whose edge is also a question in a
         // room, so the model has to know the id and that a restatement keeps it.
         if !room_said.is_empty()
@@ -3456,8 +3700,10 @@ fn parse_need(v: &Value, entry: usize, at: usize) -> Result<TodoNeed, Invocation
                  words; an empty `what` waits for nothing while saying it waits.",
             ));
         }
+        // Stamped now; a restatement of the same words keeps its first stamp (`keep_answers`).
         Ok(TodoNeed::External {
             what: what.trim().to_string(),
+            since_ms: Some(RunningJobs::none().now_ms()),
         })
     };
     match v {
@@ -3825,7 +4071,7 @@ fn render_rows(todos: &[TodoItem], keep: impl Fn(&TodoItem) -> bool) -> String {
                         TodoNeed::Answered { .. } => unreachable!("filtered above"),
                         // In the reader's own words: they are all the edge has, and they say what
                         // the row is waiting for better than any word this build could add.
-                        TodoNeed::External { what } => what.trim().to_string(),
+                        TodoNeed::External { what, .. } => what.trim().to_string(),
                         TodoNeed::Unknown => "a kind this build cannot evaluate".to_string(),
                     })
                     .collect();

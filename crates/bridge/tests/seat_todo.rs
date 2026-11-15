@@ -289,15 +289,14 @@ fn a_row_waiting_on_something_outside_is_quiet_until_the_seat_takes_the_wait_off
         said["said"]
             .as_str()
             .unwrap_or_default()
-            .contains("the row moves"),
-        "the reply says what ends it: {said}"
+            .contains("asked about again"),
+        "the reply says the quiet is bounded: {said}"
     );
-    assert_eq!(
-        rows(&bridge).remove(0).needs,
-        vec![TodoNeed::External {
-            what: "R156's review at arangodb".into()
-        }],
-        "the wait is on the row, in the seat's own words"
+    let needs = rows(&bridge).remove(0).needs;
+    assert!(
+        matches!(needs.as_slice(), [TodoNeed::External { what, since_ms: Some(_) }]
+            if what == "R156's review at arangodb"),
+        "the wait is on the row, in the seat's own words, stamped: {needs:?}"
     );
     assert!(
         nags(&rx, WINDOW * 3).is_empty(),

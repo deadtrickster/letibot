@@ -192,6 +192,7 @@ impl super::AskLink for FakeRoom {
                 4212,
                 Some("`arango` is not connected now — the question waits for it".to_string()),
             ),
+            "cc@etcd-752" => (4213, None),
             "this session" => return Err("you cannot wait on your own answer".to_string()),
             other => return Err(format!("`{other}` is not a top-level session on this host")),
         };
@@ -202,6 +203,12 @@ impl super::AskLink for FakeRoom {
             room: room.unwrap_or("proj").to_string(),
             note,
         })
+    }
+
+    fn roster(&self) -> Vec<String> {
+        ["serenedb", "arango", "cc@etcd-752", "gatekeeper@letibot"]
+            .map(str::to_string)
+            .to_vec()
     }
 }
 
@@ -220,6 +227,7 @@ mod ask;
 mod board;
 mod cap;
 mod children;
+mod external;
 mod nag;
 mod needs;
 mod operator;

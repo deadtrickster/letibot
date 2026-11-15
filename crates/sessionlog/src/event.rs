@@ -241,6 +241,9 @@ pub enum TodoNeed {
     External {
         #[serde(default)]
         what: String,
+        /// When the wait was attached, wall-clock ms: the check's quiet window runs from it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        since_ms: Option<u64>,
     },
     /// An operator edge the operator has answered - met, and kept as the reply so the row still
     /// records what it waited for. `ask` is the room's id when the reply came from a peer session.
