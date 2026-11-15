@@ -80,6 +80,14 @@ A new door, or a change to a built-in or env door (env-anthropic, env-openai). U
 | `aliases` | list | [] | other names for a new door |
 | `window` | int > 0 | catalogue's | context window when no catalogue has it |
 | `usage` | /path \| URL \| "" | none | the plan's usage endpoint |
+| `effort_field` | string \| "" | the preset's (none for a new door) | body field carrying the effort level |
+| `effort_levels` | list of off \| low \| medium \| high \| max | the preset's (all five) | levels the door takes; another level clamps to the nearest, said once |
+| `max_tokens_field` | string | "max_tokens" | body field the reply cap goes in |
+| `reasoning_echo` | tools \| always \| never | "tools" | when past reasoning_content goes back on assistant messages |
+| `reasoning_required` | bool | false | tool-call messages carry reasoning_content, empty if none was recorded |
+| `tool_schema` | plain \| typed-enum | "plain" | typed-enum gives every untyped enum a type |
+| `json_object` | bool | the preset's (false) | the door takes response_format json_object |
+| `cache_key` | bool | the preset's (false) | send prompt_cache_key, one per session |
 
 ## `[model.<name>]`
 
@@ -97,7 +105,7 @@ Sampling for a model id, `preset/model`, local alias or dialect family (glm, qwe
 | `seed` | int | none | sampler |
 | `max_tokens` | int | none | reply cap |
 | `thinking_budget_tokens` | int | none | thinking cap; local only |
-| `effort` | string | built-in | dialect reasoning effort; local and fleet only |
+| `effort` | off \| low \| medium \| high \| max | built-in | reasoning effort, the same scale as --effort; a family block (glm, qwen) sets the dialect's |
 | `url` | URL | none | makes this a fleet model at that address |
 | `endpoint` | URL | none | same as url |
 | `model` | string | the table name | model name sent to the fleet server |

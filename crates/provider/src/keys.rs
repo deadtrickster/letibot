@@ -891,7 +891,8 @@ fn parse_file(path: &Path) -> Result<ProvidersFile, String> {
 /// so it belongs to the ALIAS. One file, two keys, and the file says which is which.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelProfile {
-    /// The dialect's reasoning effort, from the family block. `None` leaves the built-in alone.
+    /// The reasoning effort on the one scale (off, low, medium, high, max), canonical. `None`
+    /// leaves the built-in alone.
     pub effort: Option<String>,
     /// The sampling to send, already merged. Empty means the file said nothing, which is not
     /// the same as the file saying `temperature = 0.0`: one defers to the built-in and the
@@ -959,7 +960,10 @@ pub fn model_profile(family: &str, alias: &str, file: Option<&Path>) -> ModelPro
         for (k, v) in kv {
             match k.as_str() {
                 "effort" => {
-                    out.effort = Some(v.clone());
+                    match crate::effort::Effort::parse(v) {
+                        Ok(e) => out.effort = Some(e.word().to_string()),
+                        Err(why) => out.unknown.push(format!("effort = {v} ({why})")),
+                    }
                     continue;
                 }
                 // `endpoint` is the daemon's word for the same thing and `[gatekeeper]`

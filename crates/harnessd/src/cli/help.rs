@@ -121,7 +121,7 @@ pub(super) const FLAGS: &[Flag] = &[
     flag(
         &["--effort"],
         Some("LEVEL"),
-        "how hard it thinks: low | medium | high | xhigh",
+        "how hard it thinks: off | low | medium | high | max",
         Some("`effort` in that model's `[model.\"NAME\"]` block, providers.toml"),
     ),
     flag(

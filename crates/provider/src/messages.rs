@@ -733,6 +733,35 @@ pub fn tools(tools_json: &[String]) -> Result<Vec<Value>, String> {
         .collect()
 }
 
+/// Give every untyped `enum` node in a tool schema the `type` its values share. A node whose
+/// values mix types is left alone: no single `type` would be true of it.
+pub fn type_enums(v: &mut Value) {
+    match v {
+        Value::Object(o) => {
+            if !o.contains_key("type")
+                && let Some(Value::Array(vals)) = o.get("enum")
+            {
+                let kind = |x: &Value| match x {
+                    Value::String(_) => Some("string"),
+                    Value::Bool(_) => Some("boolean"),
+                    Value::Number(n) if n.is_i64() || n.is_u64() => Some("integer"),
+                    Value::Number(_) => Some("number"),
+                    _ => None,
+                };
+                let mut kinds = vals.iter().map(kind);
+                if let Some(Some(first)) = kinds.next()
+                    && kinds.all(|k| k == Some(first))
+                {
+                    o.insert("type".into(), json!(first));
+                }
+            }
+            o.values_mut().for_each(type_enums);
+        }
+        Value::Array(a) => a.iter_mut().for_each(type_enums),
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests;
 

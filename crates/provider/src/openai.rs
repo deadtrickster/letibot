@@ -44,8 +44,11 @@ pub struct OpenAiProvider {
     /// `prompt_cache_key`, for Kimi's implicit cache: one provider instance is one session, and no
     /// session id reaches this crate, so the instance's own name is the key. `None` elsewhere.
     cache_key: Option<String>,
-    /// `--effort`, sent only where the preset names a field for it.
-    effort: Option<String>,
+    /// `--effort` as this door's level, after the clamp; `None` leaves the model's default.
+    effort: Option<crate::effort::Effort>,
+    /// What the clamp changed, said through `notes` on the first request and never again.
+    effort_note: Option<String>,
+    effort_said: std::sync::atomic::AtomicBool,
 }
 
 /// Where a provider says something a person has to read. `Arc<dyn Fn>` because the
@@ -73,8 +76,10 @@ impl OpenAiProvider {
             thinking: false,
             sampling: json!({}),
             notes: None,
-            cache_key: crate::kimi::is_kimi(preset.name).then(crate::kimi::cache_key),
+            cache_key: preset.compat.cache_key.then(crate::kimi::cache_key),
             effort: None,
+            effort_note: None,
+            effort_said: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -129,11 +134,20 @@ impl OpenAiProvider {
         self
     }
 
-    /// The operator's `--effort`, which reaches the wire only on a door that names a field for it
-    /// ([`crate::presets::Preset::effort`]).
+    /// The operator's `--effort`, clamped to the levels this door takes
+    /// ([`crate::presets::Preset::effort_level`]).
     pub fn with_effort(mut self, effort: Option<&str>) -> Self {
-        self.effort = effort.map(str::to_string);
+        (self.effort, self.effort_note) = match effort.map(crate::effort::Effort::parse) {
+            None => (None, None),
+            Some(Ok(asked)) => self.preset.effort_level(asked),
+            Some(Err(why)) => (None, Some(format!("effort: {why}; nothing is sent"))),
+        };
         self
+    }
+
+    /// The sentence the effort clamp owes the operator, if any.
+    pub fn effort_notice(&self) -> Option<&str> {
+        self.effort_note.as_deref()
     }
 
     /// Install the way this provider tells a person something - see [`Notes`].
@@ -176,15 +190,23 @@ impl OpenAiProvider {
         // `tools` is built first because it is part of the request, NOT because it decides whether
         // the reasoning echo is required: `carries_tools` is our switch for how much to send, not a
         // rule being obeyed. A no-tools request is refused the echo for another reason entirely.
-        let tools = crate::messages::tools(req.tools_json).map_err(BackendError::Malformed)?;
+        let mut tools = crate::messages::tools(req.tools_json).map_err(BackendError::Malformed)?;
+        if self.preset.compat.tool_schema == crate::presets::ToolSchema::TypedEnum {
+            tools.iter_mut().for_each(crate::messages::type_enums);
+        }
         let carries_tools = !tools.is_empty();
+        let echo = match self.preset.compat.reasoning_echo {
+            crate::presets::ReasoningEcho::Tools => carries_tools,
+            crate::presets::ReasoningEcho::Always => true,
+            crate::presets::ReasoningEcho::Never => false,
+        };
         let mut body = json!({
             "model": self.model,
             "messages": crate::messages::convert_with_tail(
                 req.system,
                 req.items,
                 req.tail,
-                carries_tools,
+                echo,
                 eyes,
                 withheld,
             ),
@@ -198,7 +220,12 @@ impl OpenAiProvider {
         if let Some(key) = &self.cache_key {
             body["prompt_cache_key"] = json!(key);
         }
-        let thinking = req.thinking.unwrap_or(self.thinking);
+        // An effort level is a request to think, and `off` one not to; the request's own word
+        // wins over both.
+        let level = self.effort;
+        let off = crate::effort::Effort::Off;
+        let asked = req.thinking.or(level.map(|l| l != off));
+        let thinking = asked.unwrap_or(self.thinking);
         // Kimi's K3.1 Pro answers `disabled` with a 400, so there the field is left out and the
         // model's own default stands (see `crate::kimi::may_switch_thinking_off`).
         if let Some(field) = self.preset.thinking_field
@@ -206,7 +233,7 @@ impl OpenAiProvider {
         {
             body[field] = json!({"type": "enabled"});
         } else if let Some(field) = self.preset.thinking_off_field()
-            && req.thinking == Some(false)
+            && asked == Some(false)
             && crate::kimi::may_switch_thinking_off(self.preset.name, &self.model)
         {
             body[field] = json!({"type": "disabled"});
@@ -215,10 +242,11 @@ impl OpenAiProvider {
             body["response_format"] = json!({"type": "json_object"});
         }
         // A turn that switched thinking off has no effort to spend.
-        if req.thinking != Some(false)
-            && let Some((field, word)) = self.preset.effort_for(self.effort.as_deref())
+        if thinking
+            && let Some(l) = level.filter(|l| *l != off)
+            && let Some(field) = self.preset.effort.and_then(|e| e.field)
         {
-            body[field] = json!(word);
+            body[field] = json!(l.word());
         }
         if let Some(obj) = self.sampling.as_object() {
             for (k, v) in obj {
@@ -231,9 +259,15 @@ impl OpenAiProvider {
             let set = body["max_tokens"].as_u64().unwrap_or(u64::MAX);
             body["max_tokens"] = json!(set.min(u64::from(n)));
         }
+        let cap_field = self.preset.compat.max_tokens_field;
+        if cap_field != "max_tokens"
+            && let Some(cap) = body.as_object_mut().and_then(|o| o.remove("max_tokens"))
+        {
+            body[cap_field] = cap;
+        }
         // Last, because it repairs the messages the conversion above produced: Kimi refuses an
         // assistant tool-call message with no `reasoning_content` field at all.
-        if crate::kimi::is_kimi(self.preset.name) {
+        if self.preset.compat.reasoning_required {
             crate::kimi::fill_absent_thoughts(&mut body);
         }
         Ok(body)
@@ -366,6 +400,16 @@ impl MessagesBackend for OpenAiProvider {
         req: &TurnRequest<'_>,
         on_delta: &mut dyn FnMut(&Delta) -> StreamFlow,
     ) -> Result<Completion, BackendError> {
+        if let Some(note) = &self.effort_note
+            && !self
+                .effort_said
+                .swap(true, std::sync::atomic::Ordering::Relaxed)
+        {
+            eprintln!("  {note}");
+            if let Some(notes) = &self.notes {
+                notes(note.clone());
+            }
+        }
         let eyes = self.eyes();
         let first = self.round(req, on_delta, eyes, crate::messages::Withheld::nothing());
         // A refusal is read off the wire, never assumed: the status is 400 and the request ACTUALLY
@@ -1481,5 +1525,73 @@ mod tests {
             assert_eq!(body, "Rate limit reached for requests (1302)");
             assert_eq!(status, 200, "a business code is not an HTTP status");
         }
+    }
+
+    /// The one scale on each preset's wire: DeepSeek thinking plus `reasoning_effort`, GLM
+    /// thinking on or off and no level, Kimi `reasoning_effort`, Grok nothing.
+    #[test]
+    fn each_preset_spends_the_effort_scale_in_its_own_fields() {
+        let creds = Credentials {
+            key: "k".into(),
+            from: "test".into(),
+            prices: Default::default(),
+            url: None,
+        };
+        let req = TurnRequest {
+            system: "",
+            tools_json: &[],
+            items: &[],
+            tail: &[],
+            max_output_tokens: None,
+            thinking: None,
+            json: false,
+        };
+        let body = |preset: &'static crate::presets::Preset, model: &str, effort: &str| {
+            let p =
+                OpenAiProvider::new(preset, Some(model), creds.clone()).with_effort(Some(effort));
+            (
+                p.body(&req).expect("a body"),
+                p.effort_notice().map(str::to_string),
+            )
+        };
+        let on = json!({"type": "enabled"});
+        let off = json!({"type": "disabled"});
+
+        let (b, note) = body(&crate::presets::DEEPSEEK, "deepseek-flash", "high");
+        assert_eq!(
+            (&b["thinking"], &b["reasoning_effort"]),
+            (&on, &json!("high"))
+        );
+        assert_eq!(note, None);
+        let (b, note) = body(&crate::presets::DEEPSEEK, "deepseek-flash", "medium");
+        assert_eq!(b["reasoning_effort"], "high");
+        assert!(note.unwrap().contains("`medium` is sent as `high`"));
+        let (b, _) = body(&crate::presets::DEEPSEEK, "deepseek-flash", "off");
+        assert_eq!(b["thinking"], off);
+        assert!(b.get("reasoning_effort").is_none(), "{b}");
+
+        let (b, note) = body(&crate::presets::GLM, "glm-5.3", "off");
+        assert_eq!(b["thinking"], off);
+        assert_eq!(note, None);
+        let (b, note) = body(&crate::presets::GLM, "glm-5.3", "high");
+        assert_eq!(b["thinking"], on);
+        assert!(b.get("reasoning_effort").is_none(), "{b}");
+        assert!(note.unwrap().contains("`high` is sent as `max`"));
+
+        let (b, _) = body(&crate::presets::KIMI_CODE, "k3", "max");
+        assert_eq!(
+            (&b["thinking"], &b["reasoning_effort"]),
+            (&on, &json!("max"))
+        );
+        let (b, _) = body(&crate::presets::KIMI_CODE, "k3", "off");
+        assert_eq!(b["thinking"], off);
+        assert!(b.get("reasoning_effort").is_none(), "{b}");
+
+        let (b, note) = body(&crate::presets::GROK, "grok-4.3", "high");
+        assert!(b.get("thinking").is_none() && b.get("reasoning_effort").is_none());
+        assert!(note.unwrap().contains("no effort switch"));
+
+        let (_, note) = body(&crate::presets::DEEPSEEK, "deepseek-flash", "heroic");
+        assert!(note.unwrap().contains("off, low, medium, high, max"));
     }
 }

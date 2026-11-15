@@ -1578,6 +1578,13 @@ impl<'a> Sessions<'a> {
             // operator asked for it as its own verb after `/models` doing both at
             // once cost them two questions.
             Slash::DefaultModel(want) => crate::slash::default_model(want.as_deref(), None),
+            Slash::Effort(want) => match self.open.get_mut(session_id) {
+                Some(h) => h.set_effort(want.as_deref()),
+                None => SlashReply {
+                    lines: vec![format!("session {session_id} is not open")],
+                    ok: false,
+                },
+            },
             Slash::Tools => match self.open.get(session_id) {
                 Some(h) => SlashReply {
                     lines: h.tools_lines(),

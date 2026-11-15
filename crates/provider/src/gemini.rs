@@ -140,7 +140,7 @@ pub struct GeminiProvider {
     answer: Duration,
     /// Ask the model to say what it is thinking (`thinkingConfig.includeThoughts`).
     pub thinking: bool,
-    /// `--effort`: the daemon's `low`/`medium`/`high`/`xhigh`, which is Gemini's thinking level.
+    /// `--effort` on the daemon's scale (off, low, medium, high, max), as Gemini's thinking level.
     pub effort: Option<String>,
     /// `temperature` and friends, passed through where the GenAI body has the same name.
     pub sampling: Value,
@@ -673,7 +673,8 @@ fn gemini_type(t: &str) -> Option<&'static str> {
 /// unknown word says nothing rather than guessing a level for the operator.
 fn thinking_level(effort: &str) -> Option<&'static str> {
     match effort.trim().to_ascii_lowercase().as_str() {
-        "minimal" => Some("MINIMAL"),
+        // Gemini cannot turn thinking off; its lowest level is the nearest.
+        "off" | "minimal" => Some("MINIMAL"),
         "low" => Some("LOW"),
         "medium" => Some("MEDIUM"),
         "high" => Some("HIGH"),

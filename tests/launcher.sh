@@ -285,6 +285,15 @@ refusal() { # refusal NAME RC OUTPUT FIRST SECOND -- a mistake, in two lines and
   fi
 }
 
+# --- `--effort` takes the one scale harnessd takes, and nothing else ---------------------
+for level in off low medium high max; do
+  out="$(run "$DEFAULT_ONLY" --effort "$level" "one question")"
+  expect "--effort $level reaches the daemon" "$out" "^harnessd .*--effort $level( |\$)"
+done
+out="$(run "$DEFAULT_ONLY" --effort xhigh "one question")"
+expect "--effort xhigh is refused naming the five words" "$out" "off, low, medium, high, max"
+refuse "  ...and no daemon is started for it" "$out" "^harnessd "
+
 # --- a verb left without its argument: what is missing, and where that verb is explained ---
 for spec in "a session with no id|--session|ID" "a handover with no session|--handover|SESSION DIR" \
   "a revert with no backup|--revert|TRANSCRIPT BACKUP" "a note with no text|--note|TRANSCRIPT TEXT" \

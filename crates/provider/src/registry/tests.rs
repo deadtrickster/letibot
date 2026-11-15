@@ -224,3 +224,43 @@ fn the_provider_table_is_listed() {
         lookup("probe", Some(&f)).err()
     );
 }
+
+/// Quirks are keys: an entry over a built-in changes only what it names, and a bad value is
+/// refused with the file and the key.
+#[test]
+fn compat_keys_change_a_door_and_bad_values_are_refused() {
+    let f = file(
+        "compat",
+        "[provider.glm]\neffort_field = \"reasoning_effort\"\neffort_levels = [\"off\", \"low\", \"high\", \"max\"]\n\n\
+         [provider.plain]\nprotocol = \"chat-completions\"\nurl = \"http://127.0.0.1:9/v1/chat/completions\"\n\
+         model = \"m\"\njson_object = true\nmax_tokens_field = \"max_completion_tokens\"\n\n\
+         [provider.badecho]\nprotocol = \"chat-completions\"\nurl = \"http://x\"\nmodel = \"m\"\nreasoning_echo = \"sometimes\"\n\n\
+         [provider.badlevel]\nprotocol = \"chat-completions\"\nurl = \"http://x\"\nmodel = \"m\"\neffort_levels = [\"xxl\"]\n\n\
+         [provider.badflag]\nprotocol = \"chat-completions\"\nurl = \"http://x\"\nmodel = \"m\"\ncache_key = \"yes\"\n",
+    );
+    let r = Registry::read_with(Some(&f), &no_env);
+    let glm = r.find("glm").unwrap();
+    let e = glm.effort.unwrap();
+    assert_eq!(e.field, Some("reasoning_effort"));
+    assert_eq!(
+        e.levels,
+        [Effort::Off, Effort::Low, Effort::High, Effort::Max]
+    );
+    assert_eq!(
+        glm.compat,
+        crate::presets::GLM.compat,
+        "untouched quirks stay"
+    );
+    let plain = r.find("plain").unwrap();
+    assert!(plain.json_object());
+    assert_eq!(plain.compat.max_tokens_field, "max_completion_tokens");
+    assert_eq!(plain.effort, None);
+    for (name, key) in [
+        ("badecho", "reasoning_echo"),
+        ("badlevel", "effort_levels"),
+        ("badflag", "cache_key"),
+    ] {
+        let why = r.find(name).unwrap_err();
+        assert!(why.contains(&format!("[provider.{name}] {key}")), "{why}");
+    }
+}

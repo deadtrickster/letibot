@@ -6,6 +6,7 @@
 
 pub mod anthropic;
 pub mod catalogue;
+pub mod effort;
 pub mod gemini;
 pub mod keys;
 pub mod kimi;

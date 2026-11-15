@@ -29,6 +29,7 @@ pub const VERBS: &[&str] = &[
     "boundary",
     "clear",
     "default-model",
+    "effort",
     "flowy",
     "fork",
     "gate",
@@ -109,6 +110,9 @@ pub enum Slash {
     },
     /// What a new session starts on, in `providers.toml`. `None` reports it.
     DefaultModel(Option<String>),
+    /// `/effort [off|low|medium|high|max]` - this session's effort on the one scale. `None`
+    /// reports it.
+    Effort(Option<String>),
     /// The supervised-labelling verb. See [`gate`].
     Gate(GateVerb),
     /// The merge queue's own verb, for the one act on an entry that is a person's. `/queue`
@@ -303,6 +307,7 @@ impl Slash {
             Some("default-model") | Some("default_model") | Some("default") => {
                 Slash::DefaultModel(words.get(1).map(|w| w.to_string()))
             }
+            Some("effort") => Slash::Effort(words.get(1).map(|w| w.to_string())),
             Some("job") | Some("jobs") if words.get(1) == Some(&"kill") => match words.get(2) {
                 Some(id) => Slash::JobKill((*id).to_string()),
                 None => Slash::Help("`/job kill ID` names the job to kill".into()),
@@ -1889,6 +1894,15 @@ mod the_verb_table_is_the_parser {
                  `is not a daemon verb` about a verb the head just completed"
             );
         }
+    }
+
+    #[test]
+    fn effort_is_a_verb_that_reports_or_sets() {
+        assert_eq!(Slash::parse("effort"), Slash::Effort(None));
+        assert_eq!(
+            Slash::parse("effort medium"),
+            Slash::Effort(Some("medium".into()))
+        );
     }
 
     /// `/prune` is one word, no arguments, and it lands on the session in front of you - the

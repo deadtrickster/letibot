@@ -121,6 +121,7 @@ pub const HOST_VERBS: &[&str] = &[
     "default",
     "default-model",
     "default_model",
+    "effort",
     "flowy",
     "fork",
     "gate",

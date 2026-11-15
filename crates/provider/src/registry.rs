@@ -10,6 +10,13 @@
 //! window = 131072                 # optional, when no catalogue carries it
 //! fixed = ["temperature"]         # sampling keys the endpoint refuses
 //! aliases = ["proxy"]
+//! effort_field = "reasoning_effort"   # with effort_levels = ["off", "low", "high", "max"]
+//! max_tokens_field = "max_completion_tokens"
+//! reasoning_echo = "always"       # tools | always | never
+//! reasoning_required = true       # tool-call messages carry reasoning_content, empty if none
+//! tool_schema = "typed-enum"      # plain | typed-enum
+//! json_object = true
+//! cache_key = true
 //! ```
 //!
 //! A door is a `&'static Preset`, as the clients take it. One built from config is interned: the
@@ -19,7 +26,10 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Mutex;
 
-use crate::presets::{ALL, EffortField, Origin, Preset, Protocol};
+use crate::effort::Effort;
+use crate::presets::{
+    ALL, Compat, EffortField, Origin, Preset, Protocol, ReasoningEcho, ToolSchema,
+};
 
 /// Every key a `[provider.<name>]` entry may set.
 const KEYS: &[&str] = &[
@@ -34,6 +44,14 @@ const KEYS: &[&str] = &[
     "aliases",
     "window",
     "usage",
+    "effort_field",
+    "effort_levels",
+    "max_tokens_field",
+    "reasoning_echo",
+    "reasoning_required",
+    "tool_schema",
+    "json_object",
+    "cache_key",
 ];
 
 /// Sampling keys `fixed` may name: the ones a cloud request carries.
@@ -197,10 +215,13 @@ struct Spec {
     catalogue_id: String,
     vendor_pick: bool,
     fixed_sampling: Vec<String>,
-    effort: Option<EffortField>,
+    /// The effort field and levels, owned: a config door's are leaked when interned.
+    effort: Option<(Option<String>, Vec<Effort>)>,
     origin: Origin,
     window: Option<u64>,
     usage_url: Option<String>,
+    compat: Compat,
+    max_tokens_field: String,
 }
 
 impl Spec {
@@ -216,10 +237,14 @@ impl Spec {
             catalogue_id: p.catalogue_id.into(),
             vendor_pick: p.vendor_pick,
             fixed_sampling: p.fixed_sampling.iter().map(|s| s.to_string()).collect(),
-            effort: p.effort,
+            effort: p
+                .effort
+                .map(|e| (e.field.map(str::to_string), e.levels.to_vec())),
             origin: p.origin,
             window: p.window,
             usage_url: p.usage_url.map(str::to_string),
+            compat: p.compat,
+            max_tokens_field: p.compat.max_tokens_field.into(),
         }
     }
 }
@@ -258,6 +283,8 @@ fn build(
         origin,
         window: None,
         usage_url: None,
+        compat: Compat::PLAIN,
+        max_tokens_field: Compat::PLAIN.max_tokens_field.into(),
     });
     // An env door stays marked by its variable, whatever the file adds.
     if !matches!(s.origin, Origin::Env(_)) {
@@ -337,7 +364,85 @@ fn build(
         }
         None => {}
     }
+    quirks(&mut s, kv, &at)?;
     Ok(intern(s))
+}
+
+/// The effort and compat keys of one entry, over what `s` already holds.
+fn quirks(
+    s: &mut Spec,
+    kv: &BTreeMap<String, String>,
+    at: &dyn Fn(&str, String) -> String,
+) -> Result<(), String> {
+    let flag = |key: &str| -> Result<Option<bool>, String> {
+        match kv.get(key).map(|v| v.trim()) {
+            None => Ok(None),
+            Some("true") => Ok(Some(true)),
+            Some("false") => Ok(Some(false)),
+            Some(v) => Err(at(key, format!("`{v}` is not true or false"))),
+        }
+    };
+    let field = kv
+        .get("effort_field")
+        .map(|f| f.trim().to_string())
+        .map(|f| (!f.is_empty()).then_some(f));
+    let levels = match kv.get("effort_levels") {
+        Some(l) => Some(
+            crate::keys::word_list(l)
+                .iter()
+                .map(|w| Effort::parse(w).map_err(|why| at("effort_levels", why)))
+                .collect::<Result<Vec<_>, _>>()?,
+        ),
+        None => None,
+    };
+    if field.is_some() || levels.is_some() {
+        let (old_field, old_levels) = s.effort.take().unwrap_or((None, Effort::ALL.to_vec()));
+        let mut levels = levels.unwrap_or(old_levels);
+        levels.sort();
+        levels.dedup();
+        s.effort = Some((field.unwrap_or(old_field), levels));
+    }
+    if let Some(f) = kv.get("max_tokens_field") {
+        match f.trim() {
+            "" => return Err(at("max_tokens_field", "empty".into())),
+            f => s.max_tokens_field = f.to_string(),
+        }
+    }
+    if let Some(e) = kv.get("reasoning_echo") {
+        s.compat.reasoning_echo = match e.trim() {
+            "tools" => ReasoningEcho::Tools,
+            "always" => ReasoningEcho::Always,
+            "never" => ReasoningEcho::Never,
+            v => {
+                return Err(at(
+                    "reasoning_echo",
+                    format!("`{v}` is not tools, always or never"),
+                ));
+            }
+        };
+    }
+    if let Some(t) = kv.get("tool_schema") {
+        s.compat.tool_schema = match t.trim() {
+            "plain" => ToolSchema::Plain,
+            "typed-enum" => ToolSchema::TypedEnum,
+            v => {
+                return Err(at(
+                    "tool_schema",
+                    format!("`{v}` is not plain or typed-enum"),
+                ));
+            }
+        };
+    }
+    if let Some(b) = flag("reasoning_required")? {
+        s.compat.reasoning_required = b;
+    }
+    if let Some(b) = flag("json_object")? {
+        s.compat.json_object = b;
+    }
+    if let Some(b) = flag("cache_key")? {
+        s.compat.cache_key = b;
+    }
+    Ok(())
 }
 
 /// The base-URL doors, Claude Code style. Without a base URL these variables keep meaning the
@@ -368,6 +473,8 @@ fn env_doors(env: &dyn Fn(&str) -> Option<String>) -> Vec<(String, Result<Spec, 
                 origin: Origin::Env("ANTHROPIC_BASE_URL"),
                 window: None,
                 usage_url: None,
+                compat: Compat::PLAIN,
+                max_tokens_field: Compat::PLAIN.max_tokens_field.into(),
             }),
         ));
     }
@@ -398,6 +505,8 @@ fn env_doors(env: &dyn Fn(&str) -> Option<String>) -> Vec<(String, Result<Spec, 
             origin: Origin::Env("OPENAI_BASE_URL"),
             window: None,
             usage_url: None,
+            compat: Compat::PLAIN,
+            max_tokens_field: Compat::PLAIN.max_tokens_field.into(),
         });
         out.push(("env-openai".to_string(), spec));
     }
@@ -445,10 +554,17 @@ fn intern(spec: Spec) -> &'static Preset {
         catalogue_id: leak(&spec.catalogue_id),
         vendor_pick: spec.vendor_pick,
         fixed_sampling: list(&spec.fixed_sampling),
-        effort: spec.effort,
+        effort: spec.effort.as_ref().map(|(field, levels)| EffortField {
+            field: field.as_deref().map(leak),
+            levels: Box::leak(levels.clone().into_boxed_slice()),
+        }),
         origin: spec.origin,
         window: spec.window,
         usage_url: spec.usage_url.as_deref().map(leak),
+        compat: Compat {
+            max_tokens_field: leak(&spec.max_tokens_field),
+            ..spec.compat
+        },
     }));
     made.push((spec, p));
     p

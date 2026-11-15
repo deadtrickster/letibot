@@ -487,8 +487,8 @@ pub struct Config {
     /// answer that lives in a file the operator has to go and read is not an answer. See
     /// [`ModelSource`].
     pub model_source: ModelSource,
-    /// `low` / `medium` / `high` / `xhigh`, interpreted per dialect. It is prefix
-    /// bytes, so changing it mid-session re-prefills everything.
+    /// The canonical scale word (off, low, medium, high, max). A local dialect renders it into
+    /// the prefix; a cloud door sends it as its own fields.
     pub effort: Option<String>,
     /// The local server's sampling. A cloud provider reads its own model's profile instead.
     pub sampling: Value,

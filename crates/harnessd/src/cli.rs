@@ -6,7 +6,7 @@
 //! harnessd [--workspace DIR] [--socket PATH] [--store DIR] [--project KEY]
 //!          [--dialect glm|qwen] [--model ALIAS] [--endpoint HOST:PORT]
 //!          [--vocab GGUF] [--system TEXT] [--system-file FILE]
-//!          [--effort low|medium|high|xhigh]
+//!          [--effort off|low|medium|high|max]
 //!          [--spill-inline BYTES] [--spill-dir DIR]
 //!          [--max-tool-rounds N|off] [--stall-rounds N] [--session ID] [--title NAME]
 //!          [--prompt TEXT ...]        run these, print the answers, exit
@@ -384,6 +384,13 @@ fn session_fallback(cfg: &mut Config) {
 
 /// One flag, against the table: refused by name when this release removed it, unknown when the
 /// parser never read it, and otherwise a config-backed one says the key it moved to.
+/// `--effort`'s word, canonical on the one scale the launcher and `[model.*] effort` share.
+pub(crate) fn effort_flag(word: &str) -> Result<String, String> {
+    letibot_provider::effort::Effort::parse(word)
+        .map(|e| e.word().to_string())
+        .map_err(|why| format!("--effort: {why}"))
+}
+
 fn check_known(arg: &str) -> Result<(), String> {
     if let Some(why) = removed(arg) {
         return Err(format!("{arg} is not a flag any more: {why}"));
@@ -701,7 +708,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 cli_binding = Some(m);
             }
             "--vocab" => cfg.vocab_gguf = Some(PathBuf::from(next()?)),
-            "--effort" => cfg.effort = Some(next()?),
+            "--effort" => cfg.effort = Some(effort_flag(&next()?)?),
             // The four flags that make anything reachable, and all four are
             // opt-in. Nothing here changes what an invocation without them gets.
             // A role profile by name (`explore`, `coder`), a seat's name, or a seat's alias (`m1`).

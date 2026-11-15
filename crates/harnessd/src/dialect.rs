@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use letibot_dialect::{DialectSpec, Parser, RenderSpan, RenderState, StablePrefix};
+use letibot_provider::effort::Effort;
 use letibot_transcript::TranscriptItem;
 use letibot_turn::PromptRenderer;
 use serde_json::Value;
@@ -50,14 +51,12 @@ impl Dialect {
     pub fn wiring(self, effort: Option<&str>) -> Wiring {
         match self {
             Dialect::Glm => {
-                let effort = effort
-                    .and_then(|e| match e {
-                        "low" => Some(letibot_dialect_glm::ReasoningEffort::Low),
-                        "high" => Some(letibot_dialect_glm::ReasoningEffort::High),
-                        "max" | "xhigh" => Some(letibot_dialect_glm::ReasoningEffort::Max),
-                        _ => None,
-                    })
-                    .unwrap_or(letibot_dialect_glm::ReasoningEffort::Max);
+                use letibot_dialect_glm::ReasoningEffort as G;
+                let effort = match local_effort(effort, &[Effort::Low, Effort::High, Effort::Max]) {
+                    Some(Effort::Low) => G::Low,
+                    Some(Effort::High) => G::High,
+                    _ => G::Max,
+                };
                 Wiring {
                     dialect: self,
                     renderer: Arc::new(GlmAdapter {
@@ -68,9 +67,14 @@ impl Dialect {
                 }
             }
             Dialect::Qwen => {
-                let effort = effort
-                    .and_then(letibot_dialect_qwen::ReasoningEffort::parse)
-                    .unwrap_or_default();
+                use letibot_dialect_qwen::ReasoningEffort as Q;
+                let effort = match local_effort(effort, &[Effort::Low, Effort::Medium, Effort::Max])
+                {
+                    Some(Effort::Low) => Q::Low,
+                    Some(Effort::Medium) => Q::Medium,
+                    Some(_) => Q::Xhigh,
+                    None => Q::default(),
+                };
                 Wiring {
                     dialect: self,
                     renderer: Arc::new(QwenAdapter {
@@ -82,6 +86,12 @@ impl Dialect {
             }
         }
     }
+}
+
+/// `--effort` on the scale, clamped to the rungs a template renders. A template has no `off`,
+/// so `off` is its lowest rung; an unknown word leaves the template's default.
+fn local_effort(effort: Option<&str>, have: &[Effort]) -> Option<Effort> {
+    Effort::parse(effort?).ok()?.clamp_to(have)
 }
 
 /// A renderer and a parser, owned.
@@ -224,6 +234,18 @@ impl PromptRenderer for QwenAdapter {
 mod tests {
     use super::*;
     use letibot_dialect::spans_to_string;
+
+    /// The five words land on the rungs each template renders; `off` is the lowest rung.
+    #[test]
+    fn the_scale_clamps_onto_the_template_rungs() {
+        let glm = [Effort::Low, Effort::High, Effort::Max];
+        let qwen = [Effort::Low, Effort::Medium, Effort::Max];
+        assert_eq!(local_effort(Some("off"), &glm), Some(Effort::Low));
+        assert_eq!(local_effort(Some("medium"), &glm), Some(Effort::High));
+        assert_eq!(local_effort(Some("xhigh"), &glm), Some(Effort::Max));
+        assert_eq!(local_effort(Some("high"), &qwen), Some(Effort::Max));
+        assert_eq!(local_effort(Some("bogus"), &qwen), None);
+    }
 
     #[test]
     fn both_dialects_wire_and_agree_with_themselves() {

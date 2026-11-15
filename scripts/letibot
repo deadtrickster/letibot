@@ -967,7 +967,7 @@ flags_table() {
 --session -s           |more  |ID/NAME |reopen a particular session; `--session host` is the box's own agent
 --provider             |config|NAME   |`[default] provider` in ~/.config/letibot/providers.toml
 --model                |config|NAME   |`[default] model` in ~/.config/letibot/providers.toml
---effort               |config|LEVEL  |`effort = "high"` in that model's `[model._]` block, providers.toml
+--effort               |config|LEVEL  |off, low, medium, high, max: `effort = "high"` in that model's `[model._]` block, providers.toml
 --brave-key            |config|KEY    |`[brave] key` in ~/.config/letibot/providers.toml
 --oracle               |config|HOST:PORT |`[gatekeeper] endpoint` in ~/.config/letibot/providers.toml
 --oracle-budget-ms     |config|MS     |`[gatekeeper] budget_ms` in ~/.config/letibot/providers.toml
@@ -1581,14 +1581,14 @@ while [ $# -gt 0 ]; do
       WEB_FETCH=""
       shift
       ;;
-    # GLM's own reasoning dial: low | high | max. ABSENT RENDERS MAX -- the
-    # template's `effective_reasoning_effort` is only honoured for low and high
-    # -- so every session ever run here has been at maximum effort. It renders
-    # at position 3 of the prompt, before the tools block, so it is a property
-    # of a session's prefix: changing it needs a new session, and the resume
-    # path says so rather than rewriting message 0.
+    # The one effort scale harnessd and `[model.*] effort` share. A local
+    # dialect renders it into the prompt prefix; a cloud door sends its own fields.
     --effort)
-      [ $# -ge 2 ] || die "--effort LEVEL   (low, high, max)"
+      [ $# -ge 2 ] || die "--effort LEVEL   (off, low, medium, high, max)"
+      case "$2" in
+        off | low | medium | high | max) ;;
+        *) die "--effort: \`$2\` is not an effort; they are off, low, medium, high, max" ;;
+      esac
       EXTRA_ARGS+=(--effort "$2")
       shift 2
       ;;

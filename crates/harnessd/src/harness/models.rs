@@ -682,6 +682,63 @@ impl Harness {
         }
     }
 
+    /// `/effort`: this session's level on the one scale. A cloud door is rebuilt with it, the
+    /// measured scale kept, since the model is the same. A local dialect renders effort into the
+    /// prefix, so there it is refused rather than forking the conversation.
+    pub fn set_effort(&mut self, want: Option<&str>) -> crate::slash::SlashReply {
+        let now = self.cfg.effort.clone().unwrap_or_else(|| "default".into());
+        let Some(want) = want else {
+            return crate::slash::SlashReply {
+                lines: vec![format!(
+                    "effort {now}; the scale is {}",
+                    letibot_provider::effort::WORDS
+                )],
+                ok: true,
+            };
+        };
+        let refuse = |line: String| crate::slash::SlashReply {
+            lines: vec![line],
+            ok: false,
+        };
+        let word = match crate::cli::effort_flag(want) {
+            Ok(w) => w,
+            Err(why) => return refuse(format!("/{why}")),
+        };
+        let Some(pc) = self.cfg.provider.clone() else {
+            return refuse(format!(
+                "effort is rendered into the local model's prompt, so it is set when a session \
+                 starts: --effort {word}"
+            ));
+        };
+        if self.prompt_in_flight.load(Ordering::SeqCst) {
+            return refuse("a turn is running; /effort again when it ends".into());
+        }
+        let p = match build_provider(
+            &pc,
+            self.cfg.providers_file.as_deref(),
+            provider_notes(&self.hub),
+            self.cfg.deadlines_for(Some(&pc)),
+            Some(&word),
+        ) {
+            Ok(p) => p,
+            Err(why) => return refuse(why),
+        };
+        self.provider = Some(scoped_provider(
+            p,
+            self.picture_marks.clone(),
+            Some(persist_marks(
+                self.cfg.store_at(),
+                self.cfg.session_id.clone(),
+            )),
+        ));
+        self.cfg.effort = Some(word.clone());
+        self.publish_settings();
+        crate::slash::SlashReply {
+            lines: vec![format!("effort {now} -> {word} from the next turn")],
+            ok: true,
+        }
+    }
+
     /// Back to the daemon's own server: the `None` arm of `set_provider`. `reseat_foreign` is the wrinkle, since
     /// `/models local` means the daemon's server as it was started, while a switch between two fleet models calls this
     /// only to get off a metered provider first and passes `false` to skip a re-seat it would throw away.

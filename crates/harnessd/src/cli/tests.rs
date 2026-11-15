@@ -1262,3 +1262,14 @@ fn show_session_prints_one_fact_per_line_and_the_archive_reason() {
     s.archived_reason = Some("landed".into());
     assert!(show_session(&s, now).ends_with("archived  2m ago: landed\n"));
 }
+
+/// The daemon takes the launcher's five words and refuses anything else by naming them.
+#[test]
+fn effort_takes_the_five_words_of_the_one_scale() {
+    for w in ["off", "low", "medium", "high", "max"] {
+        assert_eq!(super::effort_flag(w).as_deref(), Ok(w));
+    }
+    assert_eq!(super::effort_flag("xhigh").as_deref(), Ok("max"));
+    let why = super::effort_flag("heroic").unwrap_err();
+    assert!(why.contains("off, low, medium, high, max"), "{why}");
+}

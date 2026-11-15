@@ -336,11 +336,11 @@ impl ResponsesProvider {
 }
 
 /// `--effort` in the words `ReasoningEffort` documents, or `None` for a word this build
-/// cannot map. The daemon's own flag offers four of the seven, so the rest are here for a
-/// config file that spells one.
+/// cannot map. The scale's five map directly (`off` is `none`); the rest are for a config file
+/// that spells one.
 fn effort_word(s: &str) -> Option<&'static str> {
     Some(match s.trim().to_ascii_lowercase().as_str() {
-        "none" => "none",
+        "off" | "none" => "none",
         "minimal" => "minimal",
         "low" => "low",
         "medium" => "medium",

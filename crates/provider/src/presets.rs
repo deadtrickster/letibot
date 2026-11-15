@@ -1,5 +1,7 @@
 //! The providers, as facts about their doors.
 
+use crate::effort::Effort;
+
 /// Which protocol a door speaks: the shape of the request body and of the stream. A preset says
 /// which, and that decides which client builds the session's backend - one match arm in
 /// `harness::open::build_provider`, so another can arrive without touching any client.
@@ -59,6 +61,8 @@ pub struct Preset {
     /// Where the plan reports its windows' resets ([`crate::usage`]): a path on the door's own
     /// origin, or a whole URL. Asked only for a limit whose refusal named no instant.
     pub usage_url: Option<&'static str>,
+    /// How this door's request body differs from plain chat completions.
+    pub compat: Compat,
 }
 
 /// Where a door came from: compiled in, changed or added by providers.toml, or an env base URL.
@@ -85,12 +89,82 @@ impl Origin {
     }
 }
 
-/// An effort switch as one body field: `words` maps the operator's word to the door's.
+/// How a door spends `--effort`: the levels it takes and the body field that carries one.
+/// `field: None` is a door whose only switch is thinking on or off.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EffortField {
-    pub field: &'static str,
-    pub words: &'static [(&'static str, &'static str)],
+    pub field: Option<&'static str>,
+    /// The scale's words this door takes; `max` alone stands for "thinking on".
+    pub levels: &'static [Effort],
 }
+
+/// Whether past `reasoning_content` goes back on assistant messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningEcho {
+    /// When the request carries tools: DeepSeek's thinking-with-tools contract.
+    Tools,
+    Always,
+    Never,
+}
+
+/// How tool schemas are sent.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToolSchema {
+    Plain,
+    /// Every `enum` node gets a `type`, inferred from its values: Kimi refuses an untyped one.
+    TypedEnum,
+}
+
+/// A door's request quirks, as data, so a `[provider.NAME]` entry can declare them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Compat {
+    /// The body field the reply cap goes in.
+    pub max_tokens_field: &'static str,
+    pub reasoning_echo: ReasoningEcho,
+    /// An assistant tool-call message must carry `reasoning_content`, empty if none was recorded.
+    pub reasoning_required: bool,
+    pub tool_schema: ToolSchema,
+    /// The door takes `response_format: {"type": "json_object"}`.
+    pub json_object: bool,
+    /// Send `prompt_cache_key`, one per provider instance.
+    pub cache_key: bool,
+}
+
+impl Compat {
+    pub const PLAIN: Compat = Compat {
+        max_tokens_field: "max_tokens",
+        reasoning_echo: ReasoningEcho::Tools,
+        reasoning_required: false,
+        tool_schema: ToolSchema::Plain,
+        json_object: false,
+        cache_key: false,
+    };
+}
+
+const JSON_COMPAT: Compat = Compat {
+    json_object: true,
+    ..Compat::PLAIN
+};
+
+const KIMI_COMPAT: Compat = Compat {
+    reasoning_echo: ReasoningEcho::Always,
+    reasoning_required: true,
+    tool_schema: ToolSchema::TypedEnum,
+    cache_key: true,
+    ..Compat::PLAIN
+};
+
+/// DeepSeek's chat door: `thinking` on or off, and `reasoning_effort` low/high/max while on.
+const DEEPSEEK_EFFORT: EffortField = EffortField {
+    field: Some("reasoning_effort"),
+    levels: &[Effort::Off, Effort::Low, Effort::High, Effort::Max],
+};
+
+/// GLM switches thinking on or off and has no level.
+const GLM_EFFORT: EffortField = EffortField {
+    field: None,
+    levels: &[Effort::Off, Effort::Max],
+};
 
 /// Kimi's plan answers its 5-hour and monthly windows here, on the door's own host and key.
 const KIMI_USAGES: &str = "/coding/v1/usages";
@@ -104,17 +178,10 @@ const KIMI_FIXED_SAMPLING: &[&str] = &[
     "frequency_penalty",
 ];
 
-/// The plan's `reasoning_effort` takes low/high/max, and its docs map the rest onto those.
+/// The plan's `reasoning_effort` takes low/high/max.
 const KIMI_EFFORT: EffortField = EffortField {
-    field: "reasoning_effort",
-    words: &[
-        ("minimal", "low"),
-        ("low", "low"),
-        ("medium", "high"),
-        ("high", "high"),
-        ("xhigh", "max"),
-        ("max", "max"),
-    ],
+    field: Some("reasoning_effort"),
+    levels: &[Effort::Off, Effort::Low, Effort::High, Effort::Max],
 };
 
 pub const DEEPSEEK: Preset = Preset {
@@ -124,14 +191,15 @@ pub const DEEPSEEK: Preset = Preset {
     protocol: Protocol::ChatCompletions,
     alt_envs: &[],
     fallback_model: "deepseek-flash",
-    thinking_field: None,
+    thinking_field: Some("thinking"),
     catalogue_id: "deepseek",
     vendor_pick: false,
     fixed_sampling: &[],
-    effort: None,
+    effort: Some(DEEPSEEK_EFFORT),
     origin: Origin::BuiltIn,
     window: None,
     usage_url: None,
+    compat: JSON_COMPAT,
 };
 
 pub const GLM: Preset = Preset {
@@ -147,10 +215,11 @@ pub const GLM: Preset = Preset {
     catalogue_id: "zhipuai",
     vendor_pick: false,
     fixed_sampling: &[],
-    effort: None,
+    effort: Some(GLM_EFFORT),
     origin: Origin::BuiltIn,
     window: None,
     usage_url: None,
+    compat: JSON_COMPAT,
 };
 
 /// The coding plan: same vendor, a different path (`/api/coding/paas/v4`), its own
@@ -180,10 +249,11 @@ pub const GLM_CODING: Preset = Preset {
     catalogue_id: "zai-coding-plan",
     vendor_pick: false,
     fixed_sampling: &[],
-    effort: None,
+    effort: Some(GLM_EFFORT),
     origin: Origin::BuiltIn,
     window: None,
     usage_url: Some(crate::usage::ZAI_QUOTA),
+    compat: JSON_COMPAT,
 };
 
 /// Zhipu's coding plan: the mainland host of the same product as [`GLM_CODING`].
@@ -198,10 +268,11 @@ pub const GLM_CODING_CN: Preset = Preset {
     catalogue_id: "zhipuai-coding-plan",
     vendor_pick: false,
     fixed_sampling: &[],
-    effort: None,
+    effort: Some(GLM_EFFORT),
     origin: Origin::BuiltIn,
     window: None,
     usage_url: Some(crate::usage::ZAI_QUOTA),
+    compat: JSON_COMPAT,
 };
 
 pub const GROK: Preset = Preset {
@@ -219,6 +290,7 @@ pub const GROK: Preset = Preset {
     origin: Origin::BuiltIn,
     window: None,
     usage_url: None,
+    compat: JSON_COMPAT,
 };
 
 /// Anthropic's own API, speaking Messages. The key is the console's `x-api-key`, which is the one
@@ -245,6 +317,7 @@ pub const ANTHROPIC: Preset = Preset {
     origin: Origin::BuiltIn,
     window: None,
     usage_url: None,
+    compat: Compat::PLAIN,
 };
 
 /// DeepSeek's Anthropic-compatible door: the same models as [`DEEPSEEK`], the Messages wire, and a
@@ -270,6 +343,7 @@ pub const DEEPSEEK_ANTHROPIC: Preset = Preset {
     origin: Origin::BuiltIn,
     window: None,
     usage_url: None,
+    compat: Compat::PLAIN,
 };
 
 /// Z.ai's Anthropic-compatible door, which is the one their Claude Code instructions point at:
@@ -291,6 +365,7 @@ pub const GLM_ANTHROPIC: Preset = Preset {
     origin: Origin::BuiltIn,
     window: None,
     usage_url: None,
+    compat: Compat::PLAIN,
 };
 
 /// Moonshot's Kimi Code plan, whose Claude Code instructions give the base URL
@@ -318,6 +393,7 @@ pub const KIMI_CODING: Preset = Preset {
     origin: Origin::BuiltIn,
     window: None,
     usage_url: Some(KIMI_USAGES),
+    compat: Compat::PLAIN,
 };
 
 /// OpenAI itself, on its own protocol. `gpt-6-astra` is the id the API reference's own
@@ -346,6 +422,7 @@ pub const OPENAI: Preset = Preset {
     origin: Origin::BuiltIn,
     window: None,
     usage_url: None,
+    compat: Compat::PLAIN,
 };
 
 /// Google's Gemini, whose wire is nothing like the others: `contents` of `user`/`model` parts,
@@ -371,6 +448,7 @@ pub const GEMINI: Preset = Preset {
     origin: Origin::BuiltIn,
     window: None,
     usage_url: None,
+    compat: Compat::PLAIN,
 };
 
 /// Kimi's coding plan (Moonshot): OpenAI chat completions on the plan's own host. Not the
@@ -400,6 +478,7 @@ pub const KIMI_CODE: Preset = Preset {
     origin: Origin::BuiltIn,
     window: None,
     usage_url: Some(KIMI_USAGES),
+    compat: KIMI_COMPAT,
 };
 
 /// The same plan on the global host. One key works on one region's host only, so this is a
@@ -419,6 +498,7 @@ pub const KIMI_CODE_GLOBAL: Preset = Preset {
     origin: Origin::BuiltIn,
     window: None,
     usage_url: Some(KIMI_USAGES),
+    compat: KIMI_COMPAT,
 };
 
 pub const ALL: &[&Preset] = &[
@@ -499,31 +579,65 @@ impl Preset {
             .collect()
     }
 
-    /// `--effort` as this door's body field and word, or `None` where it has no switch or no
-    /// word for it: the model's own default then stands.
-    /// The field that turns thinking off for one request, on a door that has no field to turn it
-    /// on: DeepSeek's chat door thinks by default and takes `thinking: {"type": "disabled"}`.
+    /// The field that switches thinking on and off for one request.
     pub fn thinking_off_field(&self) -> Option<&'static str> {
         self.thinking_field
-            .or_else(|| (self.name == "deepseek").then_some("thinking"))
     }
 
     /// Whether this door takes `response_format: {"type": "json_object"}`.
     pub fn json_object(&self) -> bool {
-        self.protocol == Protocol::ChatCompletions
-            && matches!(
-                self.name,
-                "deepseek" | "glm" | "glm-coding" | "glm-coding-cn" | "grok"
-            )
+        self.protocol == Protocol::ChatCompletions && self.compat.json_object
     }
 
+    /// The level this door sends for `asked`, and the sentence to say when that is not `asked`.
+    /// `None` sends nothing: the door has no switch, or no rung on that side of `off`.
+    pub fn effort_level(&self, asked: Effort) -> (Option<Effort>, Option<String>) {
+        let Some(e) = self.effort else {
+            return (
+                None,
+                Some(format!(
+                    "`{}` has no effort switch; effort `{asked}` is not sent",
+                    self.name
+                )),
+            );
+        };
+        let have = || {
+            e.levels
+                .iter()
+                .map(|l| l.word())
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        match asked.clamp_to(e.levels) {
+            Some(l) if l == asked => (Some(l), None),
+            Some(l) => (
+                Some(l),
+                Some(format!(
+                    "`{}` takes effort {}; `{asked}` is sent as `{l}`",
+                    self.name,
+                    have()
+                )),
+            ),
+            None => (
+                None,
+                Some(format!(
+                    "`{}` takes effort {}; `{asked}` is not sent",
+                    self.name,
+                    have()
+                )),
+            ),
+        }
+    }
+
+    /// `--effort` as this door's body field and word, or `None` where it has no field, no rung,
+    /// or the level is `off`: the model's own default then stands.
     pub fn effort_for(&self, effort: Option<&str>) -> Option<(&'static str, &'static str)> {
-        let e = self.effort?;
-        let asked = effort?.trim().to_ascii_lowercase();
-        e.words
-            .iter()
-            .find(|(w, _)| *w == asked)
-            .map(|(_, door)| (e.field, *door))
+        let asked = Effort::parse(effort?).ok()?;
+        let field = self.effort?.field?;
+        match self.effort_level(asked).0? {
+            Effort::Off => None,
+            l => Some((field, l.word())),
+        }
     }
 
     /// Names this build knows, with the aliases each answers to; anything else is an error naming
@@ -633,7 +747,7 @@ mod tests {
             assert_eq!(p.alt_envs, &["KIMI_CODE_API_KEY"], "{}", p.name);
             assert_eq!(p.fallback_model, "k3.1-pro", "{}", p.name);
             assert_eq!(p.thinking_field, Some("thinking"), "{}", p.name);
-            assert_eq!(p.effort.map(|e| e.field), Some("reasoning_effort"));
+            assert_eq!(p.effort.and_then(|e| e.field), Some("reasoning_effort"));
             // The metered Open Platform's key is a different product's.
             assert!(!p.key_env.contains("MOONSHOT"), "{}", p.name);
         }
@@ -763,7 +877,28 @@ mod tests {
         assert_eq!(e("High"), Some("high"));
         assert_eq!(e("xhigh"), Some("max"));
         assert_eq!(e("bogus"), None);
+        assert_eq!(e("off"), None);
         assert_eq!(KIMI_CODE.effort_for(None), None);
-        assert_eq!(DEEPSEEK.effort_for(Some("high")), None);
+        assert_eq!(GLM.effort_for(Some("high")), None, "GLM has no level field");
+        assert_eq!(GROK.effort_for(Some("high")), None);
+    }
+
+    /// A rung the door lacks is clamped and named; a door with no switch says nothing is sent.
+    #[test]
+    fn an_unsupported_effort_clamps_and_says_so() {
+        assert_eq!(
+            DEEPSEEK.effort_level(Effort::High),
+            (Some(Effort::High), None)
+        );
+        let (l, why) = DEEPSEEK.effort_level(Effort::Medium);
+        assert_eq!(l, Some(Effort::High));
+        assert!(why.unwrap().contains("`medium` is sent as `high`"));
+        let (l, why) = GLM.effort_level(Effort::Low);
+        assert_eq!(l, Some(Effort::Max), "thinking on, never off");
+        assert!(why.unwrap().contains("takes effort off, max"));
+        assert_eq!(GLM.effort_level(Effort::Off), (Some(Effort::Off), None));
+        let (l, why) = GROK.effort_level(Effort::High);
+        assert_eq!(l, None);
+        assert!(why.unwrap().contains("no effort switch"));
     }
 }
