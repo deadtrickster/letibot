@@ -45,8 +45,8 @@ pub fn install() -> Result<Plumbing, String> {
             .filter(|p| p.is_file())
             .ok_or_else(|| {
                 format!(
-                    "letibot-askpass is not beside {} — it is a symlink to `letibot`, so make \
-                     one: ln -s letibot {}/letibot-askpass",
+                    "letibot-askpass is not beside {} — it is a symlink to `letibot-multi`, so make \
+                     one: ln -s letibot-multi {}/letibot-askpass",
                     exe.display(),
                     exe.parent()
                         .map(|d| d.display().to_string())

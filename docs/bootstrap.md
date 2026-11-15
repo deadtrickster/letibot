@@ -31,11 +31,11 @@ need:
   part of the OS. What a Mac can lack is the Command Line Tools, and only the launcher feels
   it: it writes its daemon record with `python3`.
 
-What it installs: five programs - `harnessd`, `letibot-tui`, `letibot-askpass`, `letibot`,
-`leticode` - and the four llama libraries. `letibot` and `leticode` must be **scripts**: an ELF
-at that name is the multicall, which does not implement the launcher, and installing it
-silently replaces the command a person types with one that does not answer. A release old
-enough to predate the launcher installs everything else and says so.
+What it installs: the programs `harnessd`, `letibot-tui`, `letibot-multi`, `letibot`, `leticode`,
+`letibot-mcp`, `letibot-acp`, the link `letibot-askpass` to `letibot-multi`, and the four llama
+libraries. `letibot` and `leticode` must be **scripts**, and every write into the install
+directory refuses anything else under those names. A release old enough to predate the launcher
+installs everything else and says so.
 
 Then it proves the install runs, which is also the first real proof that the libraries landed:
 `harnessd --version`, `letibot-tui --version`, and `letibot --help` (the launcher has no
@@ -162,8 +162,8 @@ named in one table in the README.
 `~/.config/letibot/` (what will be created there and when), `~/.local/share/letibot/` and the
 log's path, so a user who hits a failure knows where to look without asking.
 
-**B6 - an installed `letibot` should be able to report its own version.** The multicall's
-`--version` is a different thing under the same name. *Done when* the launcher answers
+**B6 - an installed `letibot` should be able to report its own version.** `letibot-multi --version`
+answers for the binary, not for the launcher. *Done when* the launcher answers
 `--version` with the tag it was installed from, and `install.sh`'s check uses it instead of
 `--help`'s substring match.
 

@@ -167,6 +167,16 @@ for name in $bins; do
   installed="$installed $name"
 done
 
+# The role names of `letibot-multi` (install.sh's ROLE_LINKS) are made here, as an install makes
+# them: `harnessd` looks for `letibot-askpass` beside itself.
+roles=$(sed -n 's/^ROLE_LINKS="\(.*\)"$/\1/p' "$tree/install.sh" | head -1)
+for name in $roles; do
+  [ -x "$dest/letibot-multi" ] || break
+  ln -f "$dest/letibot-multi" "$dest/$name.new.$$" 2>/dev/null || cp -p "$dest/letibot-multi" "$dest/$name.new.$$"
+  mv -f "$dest/$name.new.$$" "$dest/$name"
+  installed="$installed $name"
+done
+
 echo "install-gate-build: proved    $built"
 if [ -n "$skipped" ]; then
   echo "install-gate-build: launchers $skipped are scripts in the tree, not build products"

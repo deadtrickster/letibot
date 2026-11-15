@@ -112,11 +112,11 @@ fn where_prints_the_bridges_socket_and_ensure_starts_that_daemon() {
     // `ensure` runs `letibot --room` first. Unstubbed, that is a real coordinator nothing here
     // stops, so the fixture answers it and does nothing.
     letibot_tools::testing::write_stub(&bin.join("room"), "#!/bin/sh\nexit 0\n");
-    // The launcher runs `$BIN/letibot where`, so the binary under test is placed where the
+    // The launcher runs `$BIN/letibot-multi where`, so the binary under test is placed where the
     // launcher looks for it. COPIED, not linked: `current_exe()` resolves the link, and the
     // daemon binary is looked for beside it — which would be another `harnessd` than the stub.
-    let me = bin.join("letibot");
-    std::fs::copy(env!("CARGO_BIN_EXE_letibot"), &me).expect("the binary is copied");
+    let me = bin.join("letibot-multi");
+    std::fs::copy(env!("CARGO_BIN_EXE_letibot-multi"), &me).expect("the binary is copied");
     use std::os::unix::fs::PermissionsExt as _;
     let mode = std::fs::Permissions::from_mode(0o755);
     std::fs::set_permissions(&me, mode).expect("the copy is executable");

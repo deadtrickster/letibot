@@ -39,7 +39,7 @@ impl Fixture {
     /// The verb, run the way a person's shell runs it: nothing in the environment names the
     /// operator's own store, cache, runtime directory or engine.
     fn run(&self, args: &[&str], settings: Option<&Path>) -> (bool, String, String) {
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_letibot"));
+        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_letibot-multi"));
         cmd.args(args)
             .current_dir(&self.root)
             .env_clear()

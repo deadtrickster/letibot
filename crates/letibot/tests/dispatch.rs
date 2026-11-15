@@ -37,7 +37,7 @@ fn home() -> std::path::PathBuf {
 /// The binary, in the temp home, with no session and no socket: a role that would attach must not
 /// find one.
 fn cmd(args: &[&str]) -> std::process::Command {
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_letibot"));
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_letibot-multi"));
     cmd.args(args)
         .env("HOME", home())
         .env("XDG_CONFIG_HOME", home().join(".config"))
@@ -296,7 +296,7 @@ fn a_store_query_writes_nothing_into_the_config_dir() {
         std::fs::create_dir_all(d).expect("a temp dir");
     }
     let store = store_dir.join("sessions.db").to_string_lossy().into_owned();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_letibot"))
+    let out = std::process::Command::new(env!("CARGO_BIN_EXE_letibot-multi"))
         .args(["daemon", "--store", &store, "--delete", "s-nope"])
         .env("HOME", &home)
         .env("XDG_CONFIG_HOME", &config)
@@ -384,7 +384,7 @@ fn a_typo_is_refused_in_two_lines_and_never_echoes_the_binary_path() {
         "the second names the next step: {stderr:?}"
     );
     assert!(
-        !stderr.contains(env!("CARGO_BIN_EXE_letibot")),
+        !stderr.contains(env!("CARGO_BIN_EXE_letibot-multi")),
         "the binary's own path is not something to run: {stderr:?}"
     );
 }
@@ -397,7 +397,7 @@ fn each_role_is_reachable_through_a_symlink_of_its_own_name() {
     let dir = std::env::temp_dir().join(format!("letibot-dispatch-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("a temp dir");
-    let exe = env!("CARGO_BIN_EXE_letibot");
+    let exe = env!("CARGO_BIN_EXE_letibot-multi");
     for (name, args) in [
         ("harnessd", vec!["--bogus"]),
         ("letibot-tui", vec!["--version"]),
@@ -431,4 +431,53 @@ fn each_role_is_reachable_through_a_symlink_of_its_own_name() {
         );
     }
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The multicall ships as `letibot-multi`, and no bin target anywhere in the workspace is named
+/// after a launcher: `cargo build --release` would put an ELF in `target/release` under the
+/// command a person types, and an install loop copies it over the script.
+#[test]
+fn no_bin_target_is_named_after_a_launcher() {
+    assert!(option_env!("CARGO_BIN_EXE_letibot").is_none());
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let install = std::fs::read_to_string(root.join("install.sh")).expect("install.sh");
+    let launchers: Vec<&str> = install
+        .lines()
+        .find_map(|l| l.strip_prefix("LAUNCHERS=\""))
+        .and_then(|l| l.strip_suffix('"'))
+        .expect("install.sh declares LAUNCHERS")
+        .split_whitespace()
+        .collect();
+    assert!(launchers.contains(&"letibot"), "{launchers:?}");
+    let workspace: toml::Value =
+        toml::from_str(&std::fs::read_to_string(root.join("Cargo.toml")).unwrap()).unwrap();
+    let members = workspace["workspace"]["members"].as_array().unwrap();
+    assert!(!members.is_empty());
+    for member in members {
+        let dir = root.join(member.as_str().unwrap());
+        let manifest: toml::Value =
+            toml::from_str(&std::fs::read_to_string(dir.join("Cargo.toml")).unwrap()).unwrap();
+        let bins = manifest.get("bin").and_then(|b| b.as_array());
+        let mut names: Vec<String> = bins
+            .into_iter()
+            .flatten()
+            .filter_map(|b| b.get("name")?.as_str().map(str::to_string))
+            .collect();
+        // Cargo's own inference: `src/main.rs` with no target declared for it is a bin named
+        // after the package.
+        let main_declared = bins
+            .into_iter()
+            .flatten()
+            .any(|b| b.get("path").and_then(|p| p.as_str()) == Some("src/main.rs"));
+        if dir.join("src/main.rs").is_file() && !main_declared {
+            names.push(manifest["package"]["name"].as_str().unwrap().to_string());
+        }
+        for name in names {
+            assert!(
+                !launchers.contains(&name.as_str()),
+                "{} builds a bin named `{name}`, which is a launcher's name",
+                dir.display()
+            );
+        }
+    }
 }

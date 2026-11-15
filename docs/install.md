@@ -10,13 +10,15 @@ until one is reachable.
 curl -fsSL https://raw.githubusercontent.com/deadtrickster/letibot/main/install.sh | sh
 ```
 
-That puts eleven files in `~/.local/bin`; `LETIBOT_INSTALL_DIR` changes it. They are the launchers
-`letibot` and `leticode`, the daemon `harnessd`, the head `letibot-tui`, `letibot-askpass`, the
+That puts twelve files in `~/.local/bin`; `LETIBOT_INSTALL_DIR` changes it. They are the launchers
+`letibot` and `leticode`, the daemon `harnessd`, the head `letibot-tui`, the multicall
+`letibot-multi` (every other role, and the verbs the launcher hands on) with `letibot-askpass` a
+link to it, the
 Claude Code bridge `letibot-mcp` (the MCP server the `leticode` plugin runs,
 [claude-plugin/](../claude-plugin/README.md)), and the llama.cpp libraries `libllama.so.0`,
 `libggml.so.0`, `libggml-cpu.so.0` and `libggml-base.so.0`.
 
-The adapter is the eleventh: `letibot-acp` is an Agent Client Protocol agent on stdio, which is
+The adapter is the twelfth: `letibot-acp` is an Agent Client Protocol agent on stdio, which is
 what Zed and Neovim launch ([acp.md](acp.md)). An archive published before it exists installs the
 rest and says so, the way an archive without the bridge does.
 

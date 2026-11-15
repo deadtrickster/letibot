@@ -2317,7 +2317,7 @@ room_activated() {
     ROOM_ACTIVATED=no
     if [ -f "$HOME/Library/LaunchAgents/io.letibot.rooms.plist" ] ||
       [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/letibot-rooms.socket" ]; then
-      if [ -x "$BIN/letibot" ] && "$BIN/letibot" rooms is-on >/dev/null 2>&1; then
+      if [ -x "$BIN/letibot-multi" ] && "$BIN/letibot-multi" rooms is-on >/dev/null 2>&1; then
         ROOM_ACTIVATED=yes
       fi
     fi
@@ -2675,29 +2675,29 @@ case "${1:-}" in
   --where)
     # **Which socket this folder's daemon listens on, and whether it is up** — for a program
     # that drives letibot and must not re-derive the path. The answer is the BRIDGE's
-    # (`bridge::daemon::resolve`), not a second copy of the hash here: `$BIN/letibot where`
+    # (`bridge::daemon::resolve`), not a second copy of the hash here: `$BIN/letibot-multi where`
     # is that resolver, and it is also what `--ensure` starts a daemon with. This folder is
     # passed as a word so `LETIBOT_WORKSPACE` keeps its meaning.
-    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the where verb lives there)"
+    [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the where verb lives there)"
     shift
-    exec "$BIN/letibot" where "$WORKSPACE" "$@"
+    exec "$BIN/letibot-multi" where "$WORKSPACE" "$@"
     ;;
   --migrate)
     # **The whole daemon, on a host and back** (`docs/remote-hosts.md` RH4). A verb and not a
     # role: it is one act, it needs the store and the rundir this script already knows, and
     # nothing invokes it by a program name.
-    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the migration verb lives there)"
+    [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the migration verb lives there)"
     shift
-    exec "$BIN/letibot" migrate "$@" --store "$STORE_FILE"
+    exec "$BIN/letibot-multi" migrate "$@" --store "$STORE_FILE"
     ;;
   --reattach)
     # What this script runs when a moved session's forward has dropped, here so an operator can ask
     # for it by hand. **The argument comes first**: a missing ID is a mistake about this line, where
     # a missing binary is a fact about the install, and only one of the two is theirs to fix.
     [ $# -ge 2 ] || need "ID" --reattach
-    [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
+    [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN"
     shift
-    exec "$BIN/letibot" migrate --reattach "$1" --store "$STORE_FILE"
+    exec "$BIN/letibot-multi" migrate --reattach "$1" --store "$STORE_FILE"
     ;;
   --ls | --list-all)
     # **The byobu view: every folder's daemon, and what is live inside it.**
@@ -2777,10 +2777,10 @@ SESSIONS_EOF
     # comes through here too.
     if room_activated; then
       if [ "$ROOM_STOP" = 1 ]; then
-        exec "$BIN/letibot" rooms stop
+        exec "$BIN/letibot-multi" rooms stop
       fi
-      "$BIN/letibot" rooms start || exit $?
-      exec "$BIN/letibot" rooms status
+      "$BIN/letibot-multi" rooms start || exit $?
+      exec "$BIN/letibot-multi" rooms status
     fi
     if [ "$ROOM_STOP" = 1 ]; then
       if ! p="$(room_pid)"; then
@@ -3056,8 +3056,8 @@ SESSIONS_EOF
     # **What this folder's owners hold on disk** (docs/lifecycle.md d.9): one `holds:` line per
     # owner, read from the store and the kernel rather than from the daemon, so it answers while
     # the daemon is wedged or gone. Read-only; a box with no store yet prints nothing.
-    if [ -x "$BIN/letibot" ]; then
-      "$BIN/letibot" holds --folder "$WORKSPACE" --line 2>/dev/null || true
+    if [ -x "$BIN/letibot-multi" ]; then
+      "$BIN/letibot-multi" holds --folder "$WORKSPACE" --line 2>/dev/null || true
     fi
     # The local model server is a separate fact from what answers the turns, so it is
     # reported separately — and labelled for what it is. It said `model`, beside a
@@ -3088,28 +3088,28 @@ SESSIONS_EOF
     exit 0
     ;;
   # **The binary's own verbs, which take words after them.** `stats`, `fb`, `boundary` and
-  # `migrate` are commands of `$BIN/letibot`, and with no arm here the first word fell through to
+  # `migrate` are commands of `$BIN/letibot-multi`, and with no arm here the first word fell through to
   # the one-shot below: `letibot stats --since 1d` started a session and handed the model the
   # sentence "stats --since 1d", which is a billed turn and not a lookup. Each hands its whole
   # line on unchanged, and the verb's own parser refuses what it does not know by name.
   stats | boundary | fb | holds | gc)
-    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the metrics, boundary and lifecycle verbs live there)"
-    exec "$BIN/letibot" "$@"
+    [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the metrics, boundary and lifecycle verbs live there)"
+    exec "$BIN/letibot-multi" "$@"
     ;;
   migrate)
     # `--store` is appended as the `--migrate` arm does, because the move needs the store this
     # launcher already resolved and `--help` returns before the flag is read.
-    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the migration verb lives there)"
-    exec "$BIN/letibot" "$@" --store "$STORE_FILE"
+    [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the migration verb lives there)"
+    exec "$BIN/letibot-multi" "$@" --store "$STORE_FILE"
     ;;
   browser)
     # The Chrome extension's bridge (docs/browser.md). Bare, with its flags or one of its verbs
     # only, so a prompt that starts with the word stays a prompt.
     case "${2:-}" in
       "" | --port | --help | -h | install | uninstall | start | stop | restart | off | on | status | logs)
-        [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
+        [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN"
         shift
-        exec "$BIN/letibot" browser "$@"
+        exec "$BIN/letibot-multi" browser "$@"
         ;;
     esac
     ;;
@@ -3118,9 +3118,9 @@ SESSIONS_EOF
     # verbs only, so a prompt that starts with the word stays a prompt.
     case "${2:-}" in
       "" | --help | -h | install | uninstall | start | stop | restart | off | on | status | logs)
-        [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
+        [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN"
         shift
-        exec "$BIN/letibot" rooms "$@"
+        exec "$BIN/letibot-multi" rooms "$@"
         ;;
     esac
     ;;
@@ -3128,9 +3128,9 @@ SESSIONS_EOF
     # Only with one of its verbs after it, so a prompt that starts with the word stays a prompt.
     case "${2:-}" in
       path | push | --help | -h)
-        [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
+        [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN"
         shift
-        exec "$BIN/letibot" notes "$@"
+        exec "$BIN/letibot-multi" notes "$@"
         ;;
     esac
     ;;
@@ -3138,9 +3138,9 @@ SESSIONS_EOF
     # Only with its verb after it, so a prompt that starts with the word stays a prompt.
     case "${2:-}" in
       replay | --help | -h)
-        [ -x "$BIN/letibot" ] || die "no letibot at $BIN"
+        [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN"
         shift
-        exec "$BIN/letibot" shadow "$@"
+        exec "$BIN/letibot-multi" shadow "$@"
         ;;
     esac
     ;;
@@ -3159,9 +3159,9 @@ SESSIONS_EOF
          $ATTACH_USAGE"
     [ "$#" -ge 3 ] || die "attach needs a scope: <org|owner/repo>
          $ATTACH_USAGE"
-    [ -x "$BIN/letibot" ] || die "no letibot at $BIN (the reviewer seat lives there)"
+    [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the reviewer seat lives there)"
     shift
-    exec "$BIN/letibot" attach "$@"
+    exec "$BIN/letibot-multi" attach "$@"
     ;;
   --attach)
     # Connect only. A second argument names another folder's daemon — as a
@@ -3292,7 +3292,7 @@ if [ -n "$SESSION" ] && [ "$WANT_NEW" != 1 ]; then
     if ! { [ -S "$MIGRATED_SOCKET" ] &&
       "$BIN/letibot-tui" --socket "$MIGRATED_SOCKET" --probe </dev/null >/dev/null 2>&1; }; then
       echo "letibot: $SESSION lives on $MIGRATED_HOST — re-establishing the forward" >&2
-      "$BIN/letibot" migrate --reattach "$SESSION" --store "$STORE" >&2 ||
+      "$BIN/letibot-multi" migrate --reattach "$SESSION" --store "$STORE" >&2 ||
         die "$SESSION lives on $MIGRATED_HOST and its daemon could not be reached.
          Nothing was opened. \`$ME --migrate $SESSION --to local\` brings it back here."
     fi

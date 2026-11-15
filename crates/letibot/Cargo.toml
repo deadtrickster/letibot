@@ -11,8 +11,12 @@ repository.workspace = true
 # something *else* invokes — `sudo` runs the askpass helper, the fidelity gate runs the
 # renderers — are reached by argv[0] through a symlink of the role's own name, because
 # neither of those callers knows about subcommands. See `src/main.rs`.
+#
+# Named `letibot-multi`, never `letibot`: that name is the launcher script's, and a build product
+# under it gets copied over the launcher. busybox and uutils' `coreutils` name the multicall apart
+# from its applets the same way.
 [[bin]]
-name = "letibot"
+name = "letibot-multi"
 path = "src/main.rs"
 
 [features]

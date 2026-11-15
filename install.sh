@@ -7,7 +7,8 @@
 #
 #   $PREFIX/harnessd           the daemon — the session, the gate, the model connection
 #   $PREFIX/letibot-tui        the head — the terminal interface you look at
-#   $PREFIX/letibot-askpass    a SYMLINK to letibot: what `sudo` runs to ask for a password
+#   $PREFIX/letibot-multi      every role of the Rust binary, picked by argv[0] or the first word
+#   $PREFIX/letibot-askpass    a hardlink to letibot-multi: what `sudo` runs to ask for a password
 #   $PREFIX/letibot            the command you type: starts the daemon if needed, attaches a head
 #   $PREFIX/leticode           the same, seated as leticode (shell and web_fetch on, automode-edits)
 #   $PREFIX/letibot-mcp        the Claude Code bridge: the MCP server the `leticode` plugin runs
@@ -94,13 +95,12 @@ VERSION="${LETIBOT_VERSION:-}"
 # be. It joins `letibot` in the OPTIONAL set below: an archive published before the bridge existed
 # installs everything else and says the plugin cannot run yet, rather than dying on a file that
 # release never carried.
-BINARIES="harnessd letibot-tui letibot-askpass letibot leticode letibot-mcp letibot-acp"
+BINARIES="harnessd letibot-tui letibot-multi letibot leticode letibot-mcp letibot-acp"
 # The names in BINARIES that are repository scripts, not build products.
 LAUNCHERS="letibot leticode"
-# **The one binary installed under two names.** `sudo` runs its helper by PATH, and
-# `argv[0]` is how the multicall knows which role it is playing — so `letibot-askpass` is
-# `letibot`'s binary under the role's name (`role_copies`), one build and one implementation.
-# It used to be a second binary in `crates/harnessd`: the same question, written twice.
+# Names of `letibot-multi` made at install time, not shipped: `sudo` runs its helper by PATH and
+# the multicall picks the role from `argv[0]` (`role_copies`).
+ROLE_LINKS="letibot-askpass"
 is_launcher() {
   case " $LAUNCHERS " in *" $1 "*) return 0 ;; esac
   return 1
@@ -407,16 +407,34 @@ launchers_from_the_tag() {
   done
 }
 
-# **`letibot-askpass` is `letibot`'s multicall under the role's name.** `sudo` runs a PATH,
-# and `argv[0]` is how that binary knows which role it is playing; a hardlink (or a copy) is
-# the whole of it. It used to be a second binary in `crates/harnessd`, built from a second
-# copy of the same conversation with the daemon.
+is_script() {
+  head -c 2 "$1" 2>/dev/null | grep -q '^#!'
+}
+
+# Every write into the install directory goes through here. A launcher name takes only a
+# script: an ELF under `letibot` replaces the command a person types with one that answers
+# "no such role".
+put_file() { # put_file SRC NAME
+  if is_launcher "$2" && ! is_script "$1"; then
+    die "$1 is not a script, and \`$2\` must be one.
+  A compiled binary under the launcher's name replaces the command you type. The
+  multicall is \`letibot-multi\`; the launcher is scripts/$2."
+  fi
+  cp "$1" "$INSTALL_DIR/$2.new.$$" || die "cannot write $INSTALL_DIR/$2"
+  chmod 755 "$INSTALL_DIR/$2.new.$$"
+  mv -f "$INSTALL_DIR/$2.new.$$" "$INSTALL_DIR/$2" || die "cannot write $INSTALL_DIR/$2"
+}
+
+# `letibot-askpass` and the other ROLE_LINKS are `letibot-multi` under the role's name, a
+# hardlink where the filesystem allows one.
 role_copies() {
-  out="$1"
-  [ -f "$out/letibot" ] || return 0
-  ln -f "$out/letibot" "$out/letibot-askpass" 2>/dev/null ||
-    cp "$out/letibot" "$out/letibot-askpass" ||
-    die "cannot write $out/letibot-askpass"
+  multi="$INSTALL_DIR/letibot-multi"
+  [ -f "$multi" ] || return 0
+  for role in $ROLE_LINKS; do
+    is_launcher "$role" && die "$role is both a launcher and a role of letibot-multi"
+    rm -f "$INSTALL_DIR/$role"
+    ln "$multi" "$INSTALL_DIR/$role" 2>/dev/null || put_file "$multi" "$role"
+  done
 }
 
 # Build a checkout and print the directory holding what was built, or fail naming
@@ -452,11 +470,11 @@ build_from_source() {
     # `letibot-mcp` comes with `letibot-tui`'s call: the bridge links no llama either, so it
     # is the same build and the same cloud-only rule.
     cargo build --release --manifest-path "$src/Cargo.toml" \
-      -p letibot-tui --bin letibot-tui -p letibot --bin letibot -p letibot-bridge --bin letibot-mcp >&2
+      -p letibot-tui --bin letibot-tui -p letibot --bin letibot-multi -p letibot-bridge --bin letibot-mcp \
+      -p letibot-acp --bin letibot-acp >&2
     out="$src/target/release"
-    role_copies "$out"
     for want in $BINARIES; do
-      [ "$want" = leticode ] && continue
+      is_launcher "$want" && continue
       [ -x "$out/$want" ] || die "the build produced no $out/$want"
     done
     # Nothing to carry: no binary of this build links a llama library. (`main` empties
@@ -472,11 +490,10 @@ build_from_source() {
 
   warn "Building letibot from $src — this takes a few minutes..."
   cargo build --release --manifest-path "$src/Cargo.toml" \
-    --bin harnessd --bin letibot-tui --bin letibot --bin letibot-mcp >&2
+    --bin harnessd --bin letibot-tui --bin letibot-multi --bin letibot-mcp --bin letibot-acp >&2
   out="$src/target/release"
-  role_copies "$out"
   for want in $BINARIES; do
-    [ "$want" = leticode ] && continue
+    is_launcher "$want" && continue
     [ -x "$out/$want" ] || die "the build produced no $out/$want"
   done
   printf '%s' "$out"
@@ -505,8 +522,9 @@ letibot: the daemon, the head and the Claude Code bridge, into LETIBOT_INSTALL_D
   sh install.sh           install
   sh install.sh --help    this
 
-What it installs: harnessd letibot-tui letibot leticode letibot-mcp letibot-acp, letibot-askpass (the
-same binary under the name `sudo` calls), and the four llama libraries harnessd links. It
+What it installs: harnessd letibot-tui letibot-multi letibot leticode letibot-mcp letibot-acp,
+letibot-askpass (letibot-multi under the name `sudo` calls), and the four llama libraries harnessd
+links. It
 installs no model: the head asks for one on the first message.
 
 Environment:
@@ -554,19 +572,8 @@ main() {
   # from an asset — a build leaves them in the llama.cpp tree, not beside the
   # binaries.
   libs_from=""
-  # **Where `letibot` comes from, and it is NOT `$from` in a source install.**
-  #
-  # `cargo build --release` also produces `target/release/letibot` — the multicall
-  # binary — so `$from/letibot` in a source install is the Rust binary rather than
-  # the shell launcher. MEASURED on a real source install: the binary landed under
-  # the launcher's name and `letibot --sessions` answered *"no such role:
-  # --sessions"*, because the multicall cannot be the launcher yet.
-  #
-  # So the checkout's `scripts/` is searched first, and what is found there must be
-  # a SCRIPT. That check is the point: an ELF at this name is the multicall, and
-  # installing it silently replaces the command a person types with one that does
-  # not answer. A file that exists and is the wrong THING is worse than a file that
-  # is missing, because only the second one is noticed.
+  # A launcher is a repository script, so a source install takes it from the checkout's
+  # `scripts/`; `put_file` refuses anything else under a launcher's name.
   launcher_from=""
 
   if src=$(local_checkout); then
@@ -628,9 +635,7 @@ main() {
   for want in $BINARIES; do
     src_file="$from/$want"
     if is_launcher "$want"; then
-      # The checkout's copy wins in a source install; the archive is the only
-      # source otherwise. Then the resolved file must be a SCRIPT — see
-      # `launcher_from` above for why an ELF here is the failure to avoid.
+      # The checkout's copy wins in a source install; the archive is the only source otherwise.
       if [ -n "$launcher_from" ] && [ -f "$launcher_from/$want" ]; then
         src_file="$launcher_from/$want"
       fi
@@ -641,14 +646,6 @@ main() {
           say "  (this release carries no $want; letibot is the same program, seated otherwise)"
         fi
         continue
-      fi
-      if head -c 2 "$src_file" 2>/dev/null | grep -q '^#!'; then
-        :
-      else
-        die "$src_file is not a script, and \`$want\` must be one.
-  That file is a compiled binary — most likely the multicall at
-  target/release/letibot, which does not implement the launcher yet. Install the
-  release asset, or run this from a checkout whose scripts/letibot is present."
       fi
     else
       if [ "$want" = letibot-mcp ] && [ ! -f "$src_file" ]; then
@@ -661,18 +658,25 @@ main() {
         say "  (this release carries no $want, so Zed and Neovim cannot start it yet)"
         continue
       fi
+      # An archive from before the rename carries no multicall: its own `letibot-askpass` is
+      # installed instead, and the verbs the launcher hands on are missing until an upgrade.
+      if [ "$want" = letibot-multi ] && [ ! -f "$src_file" ]; then
+        say "  (this release carries no $want, so the launcher's verbs - stats, rooms, migrate - cannot run)"
+        if [ -f "$from/letibot-askpass" ] && ! is_script "$from/letibot-askpass"; then
+          put_file "$from/letibot-askpass" letibot-askpass
+        fi
+        continue
+      fi
       [ -f "$src_file" ] || die "$src_file is missing"
     fi
-    # cp+chmod rather than install(1): `install` is in GNU and BSD but not in
-    # POSIX, and the difference is not worth a portability question here.
-    cp "$src_file" "$INSTALL_DIR/$want" || die "cannot write $INSTALL_DIR/$want"
-    chmod 755 "$INSTALL_DIR/$want"
+    put_file "$src_file" "$want"
     # Not `[ ... ] && have_bridge=1`: under `set -e` a false test ends the AND-list and the
     # script with it.
     if [ "$want" = letibot-mcp ]; then
       have_bridge=1
     fi
   done
+  role_copies
   for so in $LIBRARIES; do
     src_so="$from/$so"
     [ -f "$src_so" ] || src_so="${libs_from:-$from}/$so"
@@ -716,38 +720,16 @@ main() {
   from the host and are listed at the top of this script."
   tui=$("$INSTALL_DIR/letibot-tui" --version 2>&1) || die "installed letibot-tui, but it does not run.
   $tui"
-  # **And the LAUNCHER, which now links llama too.**
-  #
-  # It did not, while `letibot` was only a dispatcher over `sessionlog` and the two
-  # renderer crates. Wiring the `m1` role put `letibot-harnessd` in its dependency
-  # graph, and `harnessd` links `libllama` — so the binary an install puts on PATH
-  # needs the four libraries beside it like everything else. MEASURED, on the first
-  # run of the wired role:
-  #
-  #   ./letibot-m1: error while loading shared libraries: libllama.so.0: cannot
-  #   open shared object file
-  #
-  # Which is why its build script bakes `$ORIGIN` and why this check exists. It is
-  # also the check that would have caught it: `--version` needs the loads to
-  # resolve, and it needs no daemon, no model and no store.
-  #
+  # The multicall links llama through harnessd, so `--version` proves `$ORIGIN` resolved.
+  if [ -f "$INSTALL_DIR/letibot-multi" ]; then
+    mc=$("$INSTALL_DIR/letibot-multi" --version 2>&1) || die "installed letibot-multi, but it does not run.
+  $mc"
+  fi
   # Skipped when the launcher is absent, because an older release does not carry it.
   if [ "$have_launcher" = 1 ]; then
-    # **`--help`, NOT `--version`.** MEASURED against a real package: the
-    # launcher is a shell script and has no `--version` — the multicall binary
-    # does, and the two are different things under one name. The first version of
-    # this check used `--version` and would have failed EVERY install with
-    # `letibot: unknown flag: --version`, which is the same class of mistake as
-    # the launcher being absent: a check asserting a flag nothing implements.
-    #
-    # `--help` is true of the launcher, needs no daemon and no model, exits 0, and
-    # proves what matters — that it ran, and that `$ORIGIN` resolved the llama
-    # libraries it now links.
+    # `--help`: the launcher is a script with no `--version`, and `--help` needs no daemon.
     lch=$("$INSTALL_DIR/letibot" --help 2>&1) || die "installed $INSTALL_DIR/letibot, but it does not run.
-  $lch
-
-  It links the same libraries as harnessd, so this is the same answer: one of the
-  four in $LIBRARIES is not beside it, or a host library is missing."
+  $lch"
     case "$lch" in
       *letibot*) ;;
       *) die "installed $INSTALL_DIR/letibot, and it ran, but said something unexpected:

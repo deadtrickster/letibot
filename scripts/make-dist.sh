@@ -13,15 +13,16 @@
 #
 #   harnessd          the daemon — the session, the gate, the model connection
 #   letibot-tui       the head — what a person actually looks at
-#   letibot           the launcher SCRIPT, and every role of the multicall binary under its
-#                     own name — `letibot-askpass` is a SYMLINK made by `install.sh`
+#   letibot-multi     every role of the Rust binary, picked by argv[0] or the first word;
+#                     `letibot-askpass` is a link to it that `install.sh` makes
+#   letibot           the launcher SCRIPT
 #   letibot-mcp       the Claude Code bridge — the MCP server the `leticode` plugin runs
 #
 # **`letibot-askpass` must sit BESIDE `harnessd`** — `crate::sudo::install()`
 # looks for it next to the running binary and installs a `sudo` shim that calls
 # it. A package that left it out would give a session with no way to answer a
 # password prompt, and `sudo` would fail with no explanation. It is not a second
-# binary: `argv[0]` is how `letibot` knows which role it is playing.
+# binary: `argv[0]` is how `letibot-multi` knows which role it is playing.
 #
 # **The three left out are not runtime**: `letibot-m1` is M1's exit measurement,
 # and `letibot-render` / `letibot-render-qwen` are the seams between the Rust
@@ -104,7 +105,7 @@ set -eu
 #
 # It is a REPOSITORY file, not a build artifact, so it is staged from `scripts/`
 # rather than from `target/release` — see the copy loop below.
-ARCHIVE_BINARIES="harnessd letibot-tui letibot leticode letibot-mcp letibot-acp"
+ARCHIVE_BINARIES="harnessd letibot-tui letibot-multi letibot leticode letibot-mcp letibot-acp"
 ARCHIVE_LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
 # The same four for an `*-apple-darwin` triple, which install.sh's LIBRARIES_DARWIN
 # must match (`check-dist-names.sh` holds the two to each other).
@@ -144,10 +145,7 @@ if [ -z "$bin" ]; then
 fi
 
 for want in $ARCHIVE_BINARIES; do
-  # `letibot-askpass` is the multicall binary under the role's name, so the file it comes
-  # from is `letibot` - the role exists only in `argv[0]`.
   src="$bin/$want"
-  [ "$want" = letibot-askpass ] && src="$bin/letibot"
   if [ -x "$src" ] || [ -x "$repo/scripts/$want" ]; then
     continue
   fi
@@ -182,28 +180,17 @@ for want in $ARCHIVE_BINARIES; do
   # list, two sources, because two lists is how the two drift.
   if [ -f "$repo/scripts/$want" ]; then
     cp "$repo/scripts/$want" "$stage/$want"
-  elif [ "$want" = letibot-askpass ]; then
-    # The multicall under the role's name: `argv[0]` is the whole of the difference, and
-    # a package that carried a second implementation of that role is what this replaced.
-    cp "$bin/letibot" "$stage/letibot-askpass"
   else
     cp "$bin/$want" "$stage/$want"
   fi
-  # **`letibot` must be a SCRIPT, and this is the check because the name collides.**
-  # `cargo build --release` also produces `target/release/letibot` — the multicall —
-  # so the fallback above can quietly stage a compiled binary under the launcher's
-  # name. MEASURED on a real source install, where that is exactly what happened and
-  # `letibot --sessions` answered "no such role: --sessions". A file that exists and
-  # is the wrong THING is worse than one that is missing: only the missing one gets
-  # noticed.
+  # A launcher name takes only a script: a stale `target/release/letibot` from before the
+  # multicall was renamed would otherwise be staged under the command a person types.
   if [ "$want" = "letibot" ] || [ "$want" = "leticode" ]; then
     if head -c 2 "$stage/$want" 2>/dev/null | grep -q '^#!'; then
       :
     else
-      echo "make-dist: $stage/$want is not a script — it is the multicall binary." >&2
-      echo "  That name belongs to the launcher; the multicall will take it when" >&2
-      echo "  the launcher is a role of it, and until then the two cannot both" >&2
-      echo "  be called \`letibot\`." >&2
+      echo "make-dist: $stage/$want is not a script." >&2
+      echo "  That name belongs to the launcher; the multicall is letibot-multi." >&2
       exit 1
     fi
   fi
@@ -398,7 +385,7 @@ else
   fi
 
   if [ -n "$system_libs" ]; then
-    for f in "$stage"/harnessd "$stage"/letibot-tui "$stage"/letibot-askpass "$stage"/lib*.so.0; do
+    for f in "$stage"/harnessd "$stage"/letibot-tui "$stage"/letibot-multi "$stage"/lib*.so.0; do
       [ -f "$f" ] || continue
       # `-f` means a symlink to a real file passes; the staged libraries are real
       # files because the copy above used `cp -L`.
@@ -439,7 +426,7 @@ else
     # definition. A new dependency that nobody classified fails the release.
     always='libc.so.6 libm.so.6 libgcc_s.so.1'
     candidates=''
-    for f in "$stage"/harnessd "$stage"/letibot-tui "$stage"/letibot-askpass "$stage"/lib*.so.0; do
+    for f in "$stage"/harnessd "$stage"/letibot-tui "$stage"/letibot-multi "$stage"/lib*.so.0; do
       [ -f "$f" ] || continue
       for need in $(readelf -d "$f" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p'); do
         [ -f "$stage/$need" ] && continue

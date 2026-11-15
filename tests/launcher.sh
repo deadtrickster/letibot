@@ -1175,11 +1175,11 @@ fi
 # The launcher never migrated anything itself — that is `letibot migrate` — but it is the thing
 # that decides WHERE a head attaches, and the record in the rundir is the whole of what it
 # reads. Both halves are pinned here.
-cat > "$T/bin/letibot" << 'STUB'
+cat > "$T/bin/letibot-multi" << 'STUB'
 #!/usr/bin/env bash
-printf 'letibot'; printf ' %q' "$@"; printf '\n'
+printf 'letibot-multi'; printf ' %q' "$@"; printf '\n'
 STUB
-chmod +x "$T/bin/letibot"
+chmod +x "$T/bin/letibot-multi"
 
 # **Which socket this folder's daemon listens on** — what a program that drives letibot (rano's
 # editor panel) asks instead of re-deriving `<rundir>/<sha12>.sock`. The launcher does not answer
@@ -1187,10 +1187,10 @@ chmod +x "$T/bin/letibot"
 # `bridge::daemon::resolve` (`crates/letibot/tests/where.rs` holds that equality).
 out="$(run "$DEFAULT_ONLY" --where --ensure --json)"
 expect "--where is the resolver verb's, with this folder and both modifiers" "$out" \
-  "^letibot where .*/ws --ensure --json$"
+  "^letibot-multi where .*/ws --ensure --json$"
 refuse "  ...and the launcher starts nothing of its own for it" "$out" "^harnessd "
 out="$(run "$DEFAULT_ONLY" --where)"
-expect "--where with no modifier asks the same question" "$out" "^letibot where .*/ws$"
+expect "--where with no modifier asks the same question" "$out" "^letibot-multi where .*/ws$"
 for modifier in --ensure --json; do
   out="$(run "$DEFAULT_ONLY" "$modifier")"
                                                   rc=$?
@@ -1200,18 +1200,18 @@ done
 
 out="$(run "$DEFAULT_ONLY" --migrate s-4242 --to lab2x1)"
 expect "--migrate is handed to the migration verb with this box's store" "$out" \
-  "^letibot migrate s-4242 --to lab2x1 --store "
+  "^letibot-multi migrate s-4242 --to lab2x1 --store "
 refuse "  ...and the launcher never starts a daemon for it" "$out" "^harnessd "
 
 out="$(run "$DEFAULT_ONLY" --reattach s-4242)"
 expect "--reattach is the same verb's other spelling" "$out" \
-  "^letibot migrate --reattach s-4242 --store "
+  "^letibot-multi migrate --reattach s-4242 --store "
 
 # `attach github S` is a verb too, and the reason is the same: a word the launcher does not
 # know is sent to the model as a prompt, which is a billed turn for a typo.
 out="$(run "$DEFAULT_ONLY" attach github stroppy-io)"
 expect "attach github is handed to the reviewer seat" "$out" \
-  "^letibot attach github stroppy-io$"
+  "^letibot-multi attach github stroppy-io$"
 refuse "  ...and the launcher starts nothing for it" "$out" "^harnessd "
 
 out="$(run "$DEFAULT_ONLY" attach gitlab stroppy-io)"
@@ -1439,23 +1439,23 @@ else
 fi
 
 # **A VERB OF THE BINARY IS A VERB, NOT A PROMPT.** `stats`, `fb`, `boundary` and `migrate` are
-# commands of `$BIN/letibot`; with no arm for them the first word fell through to the one-shot,
+# commands of `$BIN/letibot-multi`; with no arm for them the first word fell through to the one-shot,
 # so `letibot stats --since 1d` started a session and handed the model the sentence it was
 # meant to answer — a billed turn for a lookup.
 out="$(run "$DEFAULT_ONLY" stats --since 1d)"
-expect "stats is handed to the metrics verb" "$out" "^letibot stats --since 1d$"
+expect "stats is handed to the metrics verb" "$out" "^letibot-multi stats --since 1d$"
 refuse "  ...and no daemon is started for it" "$out" "^harnessd "
 refuse "  ...and nothing is sent as a prompt" "$out" "--prompt"
 
 out="$(run "$DEFAULT_ONLY" fb --session s-1 + good)"
-expect "fb marks the turn through the verb" "$out" "^letibot fb --session s-1 \+ good$"
+expect "fb marks the turn through the verb" "$out" "^letibot-multi fb --session s-1 \+ good$"
 
 out="$(run "$DEFAULT_ONLY" boundary --mode read-only)"
-expect "boundary is the boundary verb's" "$out" "^letibot boundary --mode read-only$"
+expect "boundary is the boundary verb's" "$out" "^letibot-multi boundary --mode read-only$"
 
 out="$(run "$DEFAULT_ONLY" migrate --help)"
 expect "migrate reaches its own help, with this box's store" "$out" \
-  "^letibot migrate --help --store "
+  "^letibot-multi migrate --help --store "
 
 # **`--tsv` IS THE LISTING'S OTHER FORM, NOT A FLAG TO DROP.** The arm took no arguments, so
 # `--sessions --tsv` answered the grouped view and said nothing about the flag.

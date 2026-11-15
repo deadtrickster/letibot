@@ -75,10 +75,14 @@ sh scripts/clippy-gate.sh --workspace --all-targets -- -D warnings
 LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture
 # ^ also runs tests/launcher.sh and tests/rrun.sh, from crates/tools/tests/shell_suites.rs
 cargo build --release --bins
+sh scripts/check-dist-names.sh --built
 sh scripts/install-gate-build.sh
 ```
 
 - `check-fmt.sh` format-checks only the Rust files the change touches. The tree is not rustfmt-clean.
+- `check-dist-names.sh --built` holds `install.sh`, `make-dist.sh` and the release workflow to one
+  list of names, and fails when the build left a compiled binary under a launcher's name
+  (`letibot`, `leticode`). The multicall is `letibot-multi`.
 - `check-test-attrs.sh` rejects a `#[test]` not on a function of its own. Two attributes separated
   only by comments attach to one function and one test stops running.
 - `clippy-gate.sh` touches every workspace member's root first. A warm target dir otherwise answers

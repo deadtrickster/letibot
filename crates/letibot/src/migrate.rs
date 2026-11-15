@@ -937,7 +937,7 @@ impl Move {
         // JSON document into a command line, and no size limit a shell argument would have.
         let script = format!(
             "{} --import-session - --store {} --workspace {}",
-            sh_quote(&format!("{}/letibot", self.to.bin_dir()))?,
+            sh_quote(&format!("{}/letibot-multi", self.to.bin_dir()))?,
             sh_quote(&self.to.store)?,
             sh_quote(&landed.workspace)?,
         );
@@ -983,11 +983,11 @@ impl Move {
         self.far(endpoint, &args).map(|_| ())
     }
 
-    /// Run an endpoint's own `letibot` sub-verb against its own store.
+    /// Run an endpoint's own `letibot-multi` sub-verb against its own store.
     fn far(&self, endpoint: &Endpoint, args: &str) -> Result<String, String> {
         endpoint.run_ok(&format!(
             "{} {} --store {}",
-            sh_quote(&format!("{}/letibot", endpoint.bin_dir()))?,
+            sh_quote(&format!("{}/letibot-multi", endpoint.bin_dir()))?,
             args,
             sh_quote(&endpoint.store)?
         ))
@@ -1115,8 +1115,8 @@ impl Move {
                 '+HEAD:refs/rh4/head'\n\
              git -C {src} checkout -q -f refs/rh4/head\n\
              cd {src} && cargo build --release --offline -p letibot\n\
-             cp target/release/letibot {bin}/letibot\n\
-             ln -sf letibot {bin}/harnessd\n\
+             cp target/release/letibot-multi {bin}/letibot-multi\n\
+             ln -sf letibot-multi {bin}/harnessd\n\
              printf '%s' {want} > {stamp}\n",
             bin = sh_quote(&endpoint.bin_dir())?,
             src = sh_quote(&format!("{}/.letibot/src", endpoint.root))?,
@@ -1140,7 +1140,7 @@ impl Move {
             ));
         }
         say(&format!(
-            "built {} on `{}` — {}/letibot, {}/harnessd",
+            "built {} on `{}` — {}/letibot-multi, {}/harnessd",
             short_commit(&want),
             endpoint.name,
             endpoint.bin_dir(),
@@ -1703,7 +1703,7 @@ fn now_ns() -> u128 {
 // The verb
 // -------------------------------------------------------------------------------------------
 
-/// The sub-verbs the FAR SIDE of a move runs - a host's own `letibot`, against its own store,
+/// The sub-verbs the FAR SIDE of a move runs - a host's own `letibot-multi`, against its own store,
 /// so the half of a move that touches another machine's store is done by THAT machine's binary at
 /// THAT machine's commit, rather than by a second SQL implementation spoken over ssh.
 pub const FAR_VERBS: [&str; 5] = [
@@ -1747,7 +1747,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
     let mut src: Option<PathBuf> = None;
     let mut patience = QUIESCE_PATIENCE;
     let mut build_bound = BUILD_BOUND;
-    // The far side's sub-verbs - internal, and flags so a host's `letibot` reads its command line
+    // The far side's sub-verbs - internal, and flags so a host's `letibot-multi` reads its command line
     // like any other program.
     let mut export: Option<String> = None;
     let mut import: Option<String> = None;

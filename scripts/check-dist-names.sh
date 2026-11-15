@@ -1,4 +1,5 @@
 #!/bin/sh
+# shellcheck disable=SC2086 # the name lists are space-separated words, split on purpose
 # Every triple the release workflow builds must be one install.sh asks for.
 #
 # The failure this prevents is silent and expensive-ish: publishing
@@ -14,12 +15,24 @@
 # `rano`'s script is the template and this is a port of it. What is different here
 # is the CONTENTS check: `rano` ships one binary and this ships three plus three
 # libraries, so the names it asks for are read out of `make-dist.sh` rather than
-# restated — a package missing `letibot-askpass` is a session that cannot answer a
+# restated — a package missing `letibot-multi` is a session that cannot answer a
 # password prompt, and nothing else would notice.
 
 set -eu
 
+# shellcheck disable=SC1007 # an empty CDPATH for this cd only, so it cannot print a path
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+
+# `--built [DIR]`: also check a build's output (default `$CARGO_TARGET_DIR/release`).
+built_dir=""
+case "${1:-}" in
+  --built) built_dir="${2:-${CARGO_TARGET_DIR:-$repo/target}/release}" ;;
+  "") ;;
+  *)
+    echo "usage: check-dist-names.sh [--built [DIR]]" >&2
+    exit 2
+    ;;
+esac
 
 # What install.sh derives from `uname`. Read from its `triple=<name>` assignments
 # rather than by pattern-matching what a triple looks like: the first version of
@@ -156,6 +169,42 @@ if [ "$(printf '%s\n' $inst_darwin | sort)" != "$(printf '%s\n' $pack_darwin | s
   echo "  install.sh  LIBRARIES_DARWIN:         $inst_darwin" >&2
   echo "  make-dist   ARCHIVE_LIBRARIES_DARWIN: $pack_darwin" >&2
   exit 1
+fi
+
+# **A role link is made at install time, never shipped, and never a launcher's name.**
+launchers=$(sed -n 's/^LAUNCHERS="\(.*\)"$/\1/p' "$repo/install.sh" | head -1)
+roles=$(sed -n 's/^ROLE_LINKS="\(.*\)"$/\1/p' "$repo/install.sh" | head -1)
+for r in $roles; do
+  case " $launchers $packaged " in
+    *" $r "*)
+      echo "check-dist-names: $r is in ROLE_LINKS and is also a launcher or a packaged file." >&2
+      echo "  install.sh makes it from letibot-multi, so nothing may ship under that name." >&2
+      exit 1
+      ;;
+  esac
+done
+
+# **No compiled binary under a launcher's name in a build's output.** An install loop that copies
+# `target/release/*` would put it over the command a person types. A file older than
+# `letibot-multi` is a leftover from before the rename and is named, not failed.
+if [ -n "$built_dir" ]; then
+  [ -x "$built_dir/letibot-multi" ] || {
+    echo "check-dist-names: no letibot-multi in $built_dir: run cargo build --release first." >&2
+    exit 1
+  }
+  for l in $launchers; do
+    f="$built_dir/$l"
+    [ -f "$f" ] || continue
+    head -c 2 "$f" | grep -q '^#!' && continue
+    if [ "$built_dir/letibot-multi" -nt "$f" ]; then
+      echo "check-dist-names: $f is a stale build product, older than letibot-multi; delete it." >&2
+      continue
+    fi
+    echo "check-dist-names: $f is a compiled binary under the launcher's name." >&2
+    echo "  A bin target named \`$l\` is back; the multicall ships as letibot-multi." >&2
+    exit 1
+  done
+  echo "check-dist-names: $built_dir holds no compiled binary under a launcher's name"
 fi
 
 echo "check-dist-names: $(printf '%s ' $built | wc -w) triple(s) built, all asked for by install.sh; install.sh and the archive agree on $(printf '%s ' $packaged | wc -w) file(s)"

@@ -1,4 +1,4 @@
-//! `letibot` - one executable, several roles.
+//! `letibot-multi` - one executable, several roles.
 //!
 //! A person types `letibot`. `sudo` runs a program path with no arguments. The
 //! daemon execs the render helpers by path. Those three callers cannot agree on an
@@ -13,7 +13,7 @@
 //!   letibot-m1                         the rig            …/letibot-m1
 //!   letibot-render / -render-qwen      the fidelity gate  …/letibot-render <path>
 //!
-//!   letibot <word> [args…]             a person           letibot daemon --workspace .
+//!   letibot-multi <word> [args…]       the launcher       letibot-multi stats --since 1d
 //! ```
 //!
 //! # Why argv[0] and not only subcommands
@@ -454,11 +454,11 @@ mod tests {
         }
     }
 
-    /// `letibot` is the dispatcher and never a role. Resolving it by substring is
-    /// how a second daemon gets started, so this is asserted rather than assumed.
+    /// The dispatcher's own name and the launcher's are never roles. Resolving either by
+    /// substring is how a second daemon gets started, so this is asserted rather than assumed.
     #[test]
     fn the_dispatchers_own_name_is_not_a_role_in_either_table() {
-        for name in ["letibot", "Letibot", "letibot ", ""] {
+        for name in ["letibot-multi", "letibot", "Letibot", "letibot ", ""] {
             assert_eq!(Role::from_argv0(OsStr::new(name)), None, "argv0 {name:?}");
             assert_eq!(Role::from_subcommand(name), None, "word {name:?}");
         }

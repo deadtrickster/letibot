@@ -228,7 +228,7 @@ fn the_password_ask_is_served_while_the_operators_run_is_blocked() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    let helper = PathBuf::from(env!("CARGO_BIN_EXE_letibot"));
+    let helper = PathBuf::from(env!("CARGO_BIN_EXE_letibot-multi"));
     assert!(helper.is_file(), "{} is not built", helper.display());
 
     let socket = socket_path("served");

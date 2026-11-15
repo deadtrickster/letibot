@@ -17,6 +17,7 @@ const SUITES: &[&str] = &[
     "tests/launcher.sh",
     "tests/rrun.sh",
     "tests/claude-plugin.sh",
+    "tests/install.sh",
 ];
 
 /// What a suite is written in. Without both it cannot run at all, so an absence is said out loud

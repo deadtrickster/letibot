@@ -231,7 +231,7 @@ impl Fixture {
     }
 
     /// The two hosts: a home each, and the `cargo` a move would find there. The fake cargo
-    /// writes a `letibot` that IS this build - so the far side's export/import/mark are real code -
+    /// writes a `letibot-multi` that IS this build - so the far side's export/import/mark are real code -
     /// and a `harnessd` that records its argv and exits, because no test starts a daemon.
     fn make_remotes(&self) {
         for name in ["lab2x1", "lubuntu1"] {
@@ -247,7 +247,7 @@ impl Fixture {
             .unwrap();
             let cargo = home.join("bin/cargo");
             // `[ $# -eq 0 ] && exit 0`: the probe runs this with no arguments, and a probe that
-            // logged a cargo line and rewrote the fake `letibot` would leave its own marks in a
+            // logged a cargo line and rewrote the fake `letibot-multi` would leave its own marks in a
             // fixture that asserts on what the move did.
             letibot_tools::testing::write_stub(
                 &cargo,
@@ -258,9 +258,9 @@ impl Fixture {
                      mkdir -p target/release\n\
                      printf '#!/bin/sh\\ncase \"$(basename \"$0\")\" in\\n  harnessd) printf \
                      \"harnessd %s\\\\n\" \"$*\" >> \"$LETIBOT_FAKE_SSH_LOG\"; exit 0 ;;\\nesac\\n\
-                     exec \"{}\" \"$@\"\\n' \"$LETIBOT_REAL_LETIBOT\" > target/release/letibot\n\
-                     chmod +x target/release/letibot\n",
-                    env!("CARGO_BIN_EXE_letibot")
+                     exec \"{}\" \"$@\"\\n' \"$LETIBOT_REAL_LETIBOT\" > target/release/letibot-multi\n\
+                     chmod +x target/release/letibot-multi\n",
+                    env!("CARGO_BIN_EXE_letibot-multi")
                 ),
             );
         }
@@ -268,7 +268,7 @@ impl Fixture {
 
     /// The environment a migration subprocess runs in: this world and nothing of the operator's.
     fn env(&self) -> Vec<(String, String)> {
-        let real = env!("CARGO_BIN_EXE_letibot");
+        let real = env!("CARGO_BIN_EXE_letibot-multi");
         vec![
             ("HOME".into(), self.home.display().to_string()),
             // Keys and known hosts are read from here before `$HOME/.config`, so an outer one would win.
@@ -302,7 +302,7 @@ impl Fixture {
     }
 
     fn migrate(&self, args: &[&str]) -> Output {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_letibot"));
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_letibot-multi"));
         cmd.arg("--migrate").args(args);
         for (k, v) in self.env() {
             cmd.env(k, v);

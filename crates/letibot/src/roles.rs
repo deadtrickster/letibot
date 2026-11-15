@@ -61,17 +61,17 @@ fn exit_code(code: i32) -> ExitCode {
 
 // The launcher's TABLE is not in this crate: `scripts/letibot` is what ships as `letibot`, so a
 // second copy of its flag list is a copy with no caller - and it had drifted.
-/// `letibot` with nothing after it.
+/// `letibot-multi` with nothing after it.
 pub fn launcher() -> ExitCode {
     eprintln!(
-        "letibot: the launcher is not a role of this binary yet.\n\
+        "letibot-multi: the launcher is not a role of this binary yet.\n\
          \n\
-         It is still `scripts/letibot` — which decides which daemon this folder\n\
-         belongs to, starts one if none is up, and attaches a head to it. Run that\n\
-         for now, or name a role directly:\n\
+         It is `letibot` (`scripts/letibot`), which decides which daemon this folder\n\
+         belongs to, starts one if none is up, and attaches a head to it. Run that,\n\
+         or name a role directly:\n\
          \n\
-           letibot tui        attach a head to this folder's daemon\n\
-           letibot --help     what this binary can be\n"
+           letibot-multi tui        attach a head to this folder's daemon\n\
+           letibot-multi --help     what this binary can be\n"
     );
     ExitCode::from(2)
 }
