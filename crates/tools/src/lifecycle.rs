@@ -37,8 +37,8 @@ mod worktree;
 pub use archive::{Kept, fetch_bundle, keep, namespace};
 pub use config::{Settings, SharedTarget, bytes as size_bytes, config_file};
 pub use plan::{
-    DETACHED_JOB, HoldingView, LANDED_GRACE_MS, OwnerView, Plan, Stranger, UNLANDED_GRACE_MS,
-    Verdict, judge, plan, stamp_of,
+    DETACHED_JOB, HoldingView, LANDED_GRACE_MS, OwnerView, Plan, SpillHolding, Stranger,
+    UNLANDED_GRACE_MS, Verdict, judge, plan, spill_holdings, stamp_of,
 };
 pub use reap::{
     Act, Activity, BoxHands, COPY_OUT_DEADLINE_MS, Ended, Hands, NOTICE_LEAD_MS, Ops, Pass,

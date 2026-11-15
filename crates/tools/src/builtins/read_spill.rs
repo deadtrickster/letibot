@@ -33,9 +33,11 @@ impl Tool for ReadSpill {
     }
 
     fn invoke(&self, ctx: &mut InvokeCtx<'_>, args: &Value) -> Invocation {
-        let held = ctx.spiller.store.list();
         let Some(hash) = args.get("hash").and_then(|v| v.as_str()) else {
-            return Invocation::failed("read_spill needs a hash", available(&held));
+            return Invocation::failed(
+                "read_spill needs a hash",
+                available(&ctx.spiller.store.list()),
+            );
         };
         let offset = args
             .get("offset")
@@ -58,7 +60,7 @@ impl Tool for ReadSpill {
                 bytes.truncate(window(ctx, args, &bytes));
                 let (text, lossy) = text_of(&bytes);
                 let mut inv = Invocation::ok(text);
-                let full = held.iter().find(|e| e.hash == hash).map(|e| e.bytes);
+                let full = ctx.spiller.store.size(hash);
                 if let Some(full) = full
                     && offset + bytes.len() < full
                 {
@@ -74,13 +76,17 @@ impl Tool for ReadSpill {
                 }
                 inv
             }
+            // Never a silent miss: a hash the store once held says when it went and how big it was.
+            Err(crate::spill::SpillError::Evicted(t)) => {
+                Invocation::failed(format!("`{hash}` was evicted"), t.said())
+            }
             Err(_) => Invocation::failed(
                 format!("no spilled output is held under `{hash}`"),
-                available(&held),
+                available(&ctx.spiller.store.list()),
             )
             .with_note(
-                "a spill locator is only valid within the session that produced it, and \
-                 the hash is the one printed in the omission notice."
+                "the hash is the one printed in the omission notice; a store kept in memory \
+                 loses every spill when its daemon restarts."
                     .to_string(),
             ),
         }
@@ -125,8 +131,9 @@ fn available(held: &[crate::spill::SpillEntry]) -> String {
     if held.is_empty() {
         return "this session has spilled nothing yet, so there is nothing to fetch.".to_string();
     }
-    let mut out = format!("this session holds {} spilled output(s):\n", held.len());
-    for e in held {
+    let mut out = format!("this store holds {} spilled output(s):\n", held.len());
+    // A project store can hold thousands; the most recently read come first.
+    for e in held.iter().take(LISTED) {
         out.push_str(&format!(
             "  {} — {}{}\n",
             e.hash,
@@ -138,12 +145,17 @@ fn available(held: &[crate::spill::SpillEntry]) -> String {
             }
         ));
     }
+    if held.len() > LISTED {
+        out.push_str(&format!("  and {} more\n", held.len() - LISTED));
+    }
     out
 }
 
+const LISTED: usize = 20;
+
 #[cfg(test)]
 mod tests {
-    use crate::spill::{FixedBudget, MemoryStore, Spiller};
+    use crate::spill::{DirStore, FixedBudget, MemoryStore, Spiller};
     use crate::testing::harness_with_spiller;
 
     #[test]
@@ -188,5 +200,32 @@ mod tests {
         let r = h.call("read_spill", r#"{"hash":"deadbeef"}"#);
         assert!(!r.is_grounded());
         assert!(r.payload.contains("holds 1 spilled"), "{}", r.payload);
+    }
+
+    #[test]
+    fn an_evicted_hash_says_when_and_how_big() {
+        let root = crate::backend::tempdir::TempDir::new();
+        let mut h = harness_with_spiller(Spiller::new(
+            Box::new(FixedBudget(600)),
+            Box::new(DirStore::for_project(root.path(), "p", Some(1))),
+        ));
+        let first = h
+            .call("read", r#"{"path":"big.txt"}"#)
+            .spill
+            .expect("spills");
+        let second = h
+            .call("read", r#"{"path":"big.txt","offset":2}"#)
+            .spill
+            .expect("spills");
+        assert_ne!(first.hash, second.hash);
+        let r = h.call("read_spill", &format!(r#"{{"hash":"{}"}}"#, first.hash));
+        assert!(!r.is_grounded());
+        assert!(r.payload.contains("was evicted"), "{}", r.payload);
+        assert!(r.payload.contains("evicted on "), "{}", r.payload);
+        assert!(
+            r.payload.contains(&format!("{} bytes", first.full_bytes)),
+            "{}",
+            r.payload
+        );
     }
 }

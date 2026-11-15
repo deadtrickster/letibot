@@ -252,12 +252,58 @@ impl Stranger {
     }
 }
 
+/// One project's spill store under `<data dir>/spills/`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpillHolding {
+    pub project: String,
+    pub path: std::path::PathBuf,
+    pub usage: crate::spill::Usage,
+}
+
+impl SpillHolding {
+    pub fn line(&self) -> String {
+        format!(
+            "spills {} — {} in {} spill(s), {} evicted, kept: only the store's budget evicts",
+            self.project,
+            human_bytes(self.usage.bytes),
+            self.usage.spills,
+            self.usage.evicted
+        )
+    }
+}
+
+/// Every project store under `root`, biggest first.
+pub fn spill_holdings(root: &std::path::Path) -> Vec<SpillHolding> {
+    let Ok(rd) = std::fs::read_dir(root) else {
+        return Vec::new();
+    };
+    let mut out: Vec<SpillHolding> = rd
+        .flatten()
+        .filter(|e| e.path().is_dir())
+        .map(|e| SpillHolding {
+            project: e.file_name().to_string_lossy().into_owned(),
+            usage: crate::spill::DirStore::usage(&e.path()),
+            path: e.path(),
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        b.usage
+            .bytes
+            .cmp(&a.usage.bytes)
+            .then_with(|| a.project.cmp(&b.project))
+    });
+    out
+}
+
 /// The whole plan: every owner on this box, then what the places hold that no owner claims.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Plan {
     pub owners: Vec<OwnerView>,
     /// Directories and copies that look like letibot's and name no owner the store knows.
     pub looks_like_ours: Vec<Stranger>,
+    /// Each project's spill store. Not an owner's: a spill follows the conversation, so no reap
+    /// removes one and only the store's own budget evicts.
+    pub spills: Vec<SpillHolding>,
     /// The instant the plan was built.
     pub now_ms: i64,
     /// What the user manager holds, when `letibot gc` asked it: the unit table is G5's, and
@@ -348,6 +394,12 @@ impl Plan {
                 out.push_str(&format!("  {}\n", h.line()));
             }
         }
+        if !self.spills.is_empty() {
+            out.push_str("\nspill stores — part of the conversation, never reaped:\n");
+            for sp in &self.spills {
+                out.push_str(&format!("  {}\n", sp.line()));
+            }
+        }
         if !self.looks_like_ours.is_empty() {
             out.push_str(
                 "\nunrecorded — looks like ours, and nothing here proves whose. Not reaped by \
@@ -431,6 +483,13 @@ impl Plan {
                 "bytes": s.bytes,
                 "why": s.why,
             })).collect::<Vec<_>>(),
+            "spills": self.spills.iter().map(|sp| serde_json::json!({
+                "project": sp.project,
+                "path": sp.path,
+                "spills": sp.usage.spills,
+                "bytes": sp.usage.bytes,
+                "evicted": sp.usage.evicted,
+            })).collect::<Vec<_>>(),
             "would_reap": { "holdings": reaping, "bytes": bytes },
             "totals": self.totals().into_iter()
                 .map(|(c, b)| (c.to_string(), b))
@@ -459,6 +518,7 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
     let mut out = Plan {
         owners: Vec::new(),
         looks_like_ours: Vec::new(),
+        spills: spill_holdings(&places.data_dir.join(crate::spill::SPILLS_DIR)),
         now_ms,
         systemd: None,
         systemd_why: None,
@@ -792,6 +852,7 @@ mod tests {
                 ),
             ],
             looks_like_ours: Vec::new(),
+            spills: Vec::new(),
             now_ms: 0,
             systemd: None,
             systemd_why: None,

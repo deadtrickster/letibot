@@ -998,11 +998,14 @@ pub fn job_dead_after(
 /// [output]
 /// inline_bytes = 51200
 /// inline_lines = 2000
+/// spill_budget = "2G"
 /// ```
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct OutputKeys {
     pub inline_bytes: Option<u64>,
     pub inline_lines: Option<u64>,
+    /// Bytes one project's spill store may hold; `0` keeps everything.
+    pub spill_budget: Option<u64>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -1012,19 +1015,52 @@ struct OutputTable {
     inline_bytes: Option<u64>,
     #[serde(default)]
     inline_lines: Option<u64>,
+    #[serde(default)]
+    spill_budget: Option<toml::Value>,
 }
 
 fn output_keys(value: &toml::Value) -> Result<OutputKeys, String> {
     let t: OutputTable = value.clone().try_into().map_err(|e| {
         format!(
             "[output]: {e}; the keys are `inline_bytes` and `inline_lines` (integers, 0 turns \
-             that cap off)"
+             that cap off) and `spill_budget` (a size like \"2G\")"
         )
     })?;
+    let spill_budget = match t.spill_budget {
+        None => None,
+        Some(toml::Value::Integer(n)) if n >= 0 => Some(n as u64),
+        Some(toml::Value::String(s)) => Some(
+            letibot_tools::lifecycle::size_bytes(&s)
+                .map_err(|e| format!("[output] spill_budget: {e}"))?,
+        ),
+        Some(other) => {
+            return Err(format!(
+                "[output] spill_budget: {other} is not a size; write it like \"2G\""
+            ));
+        }
+    };
     Ok(OutputKeys {
         inline_bytes: t.inline_bytes,
         inline_lines: t.inline_lines,
+        spill_budget,
     })
+}
+
+/// The budget each project's spill store is held to: 2 GiB, then the user file, then the
+/// nearest project file. `None` is a `0`, which keeps every spill.
+pub fn spill_budget(user: &LeticodeConfig, workspace: &Path, read_project: bool) -> Option<u64> {
+    let mut budget = user
+        .output
+        .spill_budget
+        .unwrap_or(letibot_tools::spill::DEFAULT_SPILL_BUDGET);
+    if read_project
+        && let Some(path) = LeticodeConfig::discover(workspace)
+        && let Ok(project) = LeticodeConfig::load(&path)
+        && let Some(b) = project.output.spill_budget
+    {
+        budget = b;
+    }
+    (budget > 0).then_some(budget)
 }
 
 /// The generic output cap a session runs under: 50 KiB / 2000 lines, then the user file, then
@@ -2489,6 +2525,7 @@ impl LeticodeConfig {
             output: OutputKeys {
                 inline_bytes: other.output.inline_bytes.or(self.output.inline_bytes),
                 inline_lines: other.output.inline_lines.or(self.output.inline_lines),
+                spill_budget: other.output.spill_budget.or(self.output.spill_budget),
             },
             exec: ExecKeys {
                 auto_background: other.exec.auto_background.or(self.exec.auto_background),

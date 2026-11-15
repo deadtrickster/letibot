@@ -101,11 +101,12 @@ pub const LETICODE: File = File {
         },
         Table {
             path: "output",
-            note: "Over either cap a tool result keeps its head and tail inline and one seam line naming the read_spill locator for the middle. A tool's own tighter cap still applies; --spill-inline wins over inline_bytes.",
+            note: "Over either cap a tool result keeps its head and tail inline and one seam line naming the read_spill locator for the middle. The middle is kept on disk per project and survives a restart. A tool's own tighter cap still applies; --spill-inline wins over inline_bytes, --spill-dir moves the store.",
             needs: "",
             keys: &[
                 k("inline_bytes", "int", "51200", PW, "most bytes a result keeps inline; 0 = no byte cap", "51200"),
                 k("inline_lines", "int", "2000", PW, "most lines a result keeps inline; 0 = no line cap", "2000"),
+                k("spill_budget", "size", "2G", PW, "most bytes one project's spill store keeps under <data dir>/spills/<project>; over it the least recently read spill is evicted and read_spill says when; 0 = keep all", "\"2G\""),
             ],
         },
         Table {

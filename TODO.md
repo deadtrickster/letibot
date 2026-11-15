@@ -1495,7 +1495,7 @@ Left. Nothing writes a proposed note yet, so the provenance the row carries ("qu
 
 ## R268 - Spills are durable: kept in the data dir, bounded by a budget, evicted visibly
 
-**Status:** open, 2026-11-15. Queued after R264. left: all of it.
+**Status:** built, 2026-11-15. left: a store written by an older daemon under `--spill-dir` (one directory per session hash, `<hash>.out`) is not read; `letibot holds` reads the default root only, not a `--spill-dir`; the tombstone file is never compacted; `read_spill` lists a project store's spills, not only this session's.
 
 R263 made the generic output cap the default. A spill's middle lives in memory unless the daemon runs with `--spill-dir`, so a daemon restart loses every stored middle. The transcript row still says `read_spill hash=H`, so the conversation refers to bytes that no longer exist.
 
@@ -1514,6 +1514,15 @@ A single spill is already bounded: a command's capture is an 8 MiB tail ring (`D
 - a spill survives a daemon restart and `read_spill` returns its middle;
 - going over the budget evicts the least recently read spill, and `read_spill` on it says so;
 - `letibot holds` lists the spill store's size.
+
+**Built.**
+- `tools::spill::DirStore` (`spill/durable.rs`): `<root>/<project key>/<hash>`, `0600` files in a `0700` directory made on the first write, written through a temp file and a rename. Recency is the file's mtime, set on every write and every read. A write takes an `flock` on `.lock`, then evicts oldest-read first until the project fits its budget, never the spill just written, and appends one JSON line per eviction to `evicted.jsonl`.
+- `SpillError::Evicted(Tombstone)`. `read_spill` and `recall` on an evicted hash answer `spill H was evicted on <date>, N bytes: ...`; a hash never written is still `NotFound`. `SpillStore::size` gives `read_spill` its paging total without listing the store.
+- The daemon (`Config::for_the_daemon`) stores spills under `<data dir>/spills`, keyed by `notes_repo::project_key` (origin URL, else main checkout). Fixtures stay in memory, so no test writes the data dir. `--spill-dir DIR` moves the root and keeps the per-project layout. The store is per project, not per session, so archiving a session leaves its spills.
+- `[output] spill_budget` in `leticode.toml` (a size or bytes, default `2G`, `0` keeps all, project over user) via `leticode_config::spill_budget`, in `crates/config-ref` and `docs/config/leticode.toml.md`. `--explain`'s `spill.storage` row names the directory and the budget.
+- `lifecycle::Plan::spills` (`spill_holdings`): `letibot holds` prints `spills <project> — <size> in N spill(s), K evicted` after the owners, `letibot gc` lists them under `spill stores` and never reaps them, `--json` carries `spills`.
+
+**Tests.** `spill::durable::tests`: a spill read back through a second store on the same directory; three spills over a 250-byte budget evict the least recently read, the tombstone gives its size and date through a reopened store; a hash never written or a path-shaped one is `NotFound`. `read_spill::tests::an_evicted_hash_says_when_and_how_big`. `lifecycle::tests::the_spill_stores_are_held_with_their_size_and_never_reaped`. `harnessd` `config::tests::a_spill_outlives_its_spiller_and_the_budget_is_read_from_the_project`: a second `build_spiller` on the same `Dir` reads the first one's spill, and the project file's `spill_budget` moves the budget. All on temp directories.
 
 ## R269 - Per-job disk and IO accounting, an IO throttle and a disk floor
 

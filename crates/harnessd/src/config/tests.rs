@@ -1859,6 +1859,40 @@ fn the_project_output_table_moves_the_cap_and_the_flag_moves_it_again() {
     assert_eq!(c.output_cap().bytes, Some(4000));
 }
 
+#[test]
+fn a_spill_outlives_its_spiller_and_the_budget_is_read_from_the_project() {
+    let dir = crate::mergequeue::serve::tests::TempDir::new("spill-store");
+    let root = dir.0.join("spills");
+    let mut c = Config::for_this_box(&dir.0);
+    c.read_project_config = true;
+    assert_eq!(
+        c.spill_budget(),
+        Some(letibot_tools::spill::DEFAULT_SPILL_BUDGET)
+    );
+    c.spill_storage = SpillStorage::Dir(root.clone());
+    let at = c.spill_dir().unwrap();
+    assert_eq!(at.parent(), Some(root.as_path()));
+
+    let body = "x".repeat(4000);
+    let hash = crate::harness::open::build_spiller(&c)
+        .unwrap()
+        .store
+        .put("bash", body.as_bytes())
+        .unwrap();
+    // A second spiller is what the next daemon builds.
+    let next = crate::harness::open::build_spiller(&c).unwrap();
+    assert_eq!(next.store.get(&hash, None).unwrap(), body.as_bytes());
+
+    std::fs::write(
+        dir.0.join("leticode.toml"),
+        "[output]\nspill_budget = \"1K\"\n",
+    )
+    .unwrap();
+    assert_eq!(c.spill_budget(), Some(1024));
+    std::fs::write(dir.0.join("leticode.toml"), "[output]\nspill_budget = 0\n").unwrap();
+    assert_eq!(c.spill_budget(), None);
+}
+
 /// The defect this replaced: the adjudication line asserted "M1 is read-only tools, which never
 /// prompt", printed regardless of what the session had seated. What is checked here is that the wording
 /// MOVES when the wiring does - a banner that says the same thing about both is not a disclosure.

@@ -80,6 +80,9 @@ impl Tool for RecallTool {
                 }
                 inv
             }
+            Err(crate::spill::SpillError::Evicted(t)) => {
+                Invocation::failed(format!("`{id}` was evicted from the spill store"), t.said())
+            }
             // Two absences, two sentences: an id the map never named is a typo, and an id it
             // named whose body is gone is a store that did not outlive the daemon.
             Err(_) if held.named(id).is_some() => Invocation::failed(

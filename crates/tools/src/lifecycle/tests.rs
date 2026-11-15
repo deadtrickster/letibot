@@ -344,6 +344,37 @@ fn a_directory_with_no_stamp_is_reported_and_never_reaped() {
     );
 }
 
+/// Each project's spill store is listed with its size, and nothing in the plan reaps it.
+#[test]
+fn the_spill_stores_are_held_with_their_size_and_never_reaped() {
+    use crate::spill::{DirStore, SPILLS_DIR, SpillStore};
+    let stub = Stub::new("spills");
+    let store = stub.store();
+    register(&store, &stub.places, &stub.owner()).expect("registered");
+    let root = stub.places.data_dir.join(SPILLS_DIR);
+    let spills = DirStore::for_project(&root, "letibot-0123456789ab", Some(1500));
+    spills.put("bash", &[b'a'; 1000]).unwrap();
+    spills.put("bash", &[b'b'; 1000]).unwrap();
+
+    let plan = plan(&store, &stub.places, None, now_ms()).expect("a plan");
+    let held = plan.spills.first().expect("the store is listed");
+    assert_eq!(held.project, "letibot-0123456789ab");
+    assert_eq!(
+        (held.usage.spills, held.usage.bytes, held.usage.evicted),
+        (1, 1000, 1)
+    );
+    assert!(
+        held.line().contains(&crate::lifecycle::human_bytes(1000)),
+        "{}",
+        held.line()
+    );
+    assert_eq!(plan.would_reap(), (0, 0));
+    let rendered = plan.render();
+    assert!(rendered.contains("spill stores"), "{rendered}");
+    assert!(rendered.contains("letibot-0123456789ab"), "{rendered}");
+    assert_eq!(plan.to_json()["spills"][0]["bytes"], 1000);
+}
+
 /// A root that carries a stamp for an owner the store does not know is reported too, by the name
 /// the stamp gives: the file is the proof, and it disagrees with the index.
 #[test]

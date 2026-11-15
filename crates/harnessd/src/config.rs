@@ -33,9 +33,10 @@ pub enum SpillPolicy {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SpillStorage {
     /// In this process. Dies with the daemon, so `read_spill` fails across a restart; the
-    /// daemon discloses that at startup.
+    /// daemon discloses that at startup. A fixture's default, so no test writes the data dir.
     Memory,
-    /// Under a directory, one subdirectory per session.
+    /// Under a directory, one subdirectory per project: `<data dir>/spills` for the daemon,
+    /// `--spill-dir` to move it.
     Dir(PathBuf),
 }
 
@@ -1869,6 +1870,10 @@ impl Config {
         // `$LETIBOT_LOGS_ROOT` first: what a test that spawns a daemon sets, as it sets
         // `$LETIBOT_LANDING_ROOT`, so it never writes into the box's real data directory.
         cfg.read_notes_home();
+        // Spills follow the conversation, so they live beside the store, not in this process.
+        if let Some(data) = crate::mergequeue::git::letibot_data_dir() {
+            cfg.spill_storage = SpillStorage::Dir(data.join(letibot_tools::spill::SPILLS_DIR));
+        }
         cfg.logs_root = std::env::var_os("LETIBOT_LOGS_ROOT")
             .filter(|v| !v.is_empty())
             .map(PathBuf::from)
@@ -2644,7 +2649,12 @@ impl Config {
             "spill.storage",
             match &self.spill_storage {
                 SpillStorage::Memory => "memory".into(),
-                SpillStorage::Dir(d) => d.display().to_string(),
+                SpillStorage::Dir(_) => format!(
+                    "{}, budget {}",
+                    self.spill_dir().unwrap_or_default().display(),
+                    self.spill_budget()
+                        .map_or("none".into(), letibot_tools::lifecycle::human_bytes)
+                ),
             },
             "",
             "",
@@ -2755,6 +2765,23 @@ impl Config {
         cap
     }
 
+    /// The budget this session's project spill store is held to, `None` for no budget.
+    pub fn spill_budget(&self) -> Option<u64> {
+        crate::leticode_config::spill_budget(
+            &self.leticode_user,
+            &self.workspace,
+            self.read_project_config,
+        )
+    }
+
+    /// The project directory spills go to: `<root>/<project key>`, or `None` in memory.
+    pub fn spill_dir(&self) -> Option<PathBuf> {
+        match &self.spill_storage {
+            SpillStorage::Memory => None,
+            SpillStorage::Dir(root) => Some(root.join(project_key_cached(&self.workspace))),
+        }
+    }
+
     fn output_cap_said(&self) -> String {
         let cap = self.output_cap();
         match (cap.bytes, cap.lines) {
@@ -2827,8 +2854,8 @@ impl Config {
                 out.push(Disclosure::off(
                     "spill store",
                     "MEMORY",
-                    "a spilled payload does not survive a restart, so `read_spill` \
-                     fails after one. Pass --spill-dir.",
+                    "no data directory, so a spilled payload does not survive a restart \
+                     and `read_spill` fails after one. Pass --spill-dir.",
                 ));
             }
         }

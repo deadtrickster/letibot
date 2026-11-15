@@ -79,12 +79,13 @@ NAME is a seat a spawn uses, or `subagent`, the floor under every spawn. Window 
 
 ## `[output]`
 
-Over either cap a tool result keeps its head and tail inline and one seam line naming the read_spill locator for the middle. A tool's own tighter cap still applies; --spill-inline wins over inline_bytes.
+Over either cap a tool result keeps its head and tail inline and one seam line naming the read_spill locator for the middle. The middle is kept on disk per project and survives a restart. A tool's own tighter cap still applies; --spill-inline wins over inline_bytes, --spill-dir moves the store.
 
 | key | type | default | level | meaning |
 |---|---|---|---|---|
 | `inline_bytes` | int | 51200 | both, project wins | most bytes a result keeps inline; 0 = no byte cap |
 | `inline_lines` | int | 2000 | both, project wins | most lines a result keeps inline; 0 = no line cap |
+| `spill_budget` | size | 2G | both, project wins | most bytes one project's spill store keeps under <data dir>/spills/<project>; over it the least recently read spill is evicted and read_spill says when; 0 = keep all |
 
 ## `[memory]`
 

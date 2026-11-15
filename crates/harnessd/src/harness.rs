@@ -51,7 +51,7 @@ use letibot_turn::{
 };
 use sha2::{Digest, Sha256};
 
-use crate::config::{AdjudicatorChoice, Config, GateWiring, Seat, SpillStorage};
+use crate::config::{AdjudicatorChoice, Config, GateWiring, Seat};
 use crate::dialect::Wiring;
 use crate::jobwatch::{BackgroundKind, JobCompletion, JobWatchSink, JobWatchers};
 // `is_writable` is a trait method; the backend's own answer is only reachable

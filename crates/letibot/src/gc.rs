@@ -20,8 +20,8 @@ const USAGE_HOLDS: &str = "\
 letibot holds [OWNER] [--folder DIR] [--json] [--line] [--top]
   What the owners of this box hold on disk, one line each and one line per holding: the cgroup a
   session's jobs run in (with its process count and memory, which no `ps` can give a seat in a
-  sandbox), a VM, its copies, its daemon, its worktree and target. `OWNER` narrows it to one
-  session id.
+  sandbox), a VM, its copies, its daemon, its worktree and target. Then each project's spill
+  store under the data directory, with its size. `OWNER` narrows it to one session id.
 
   --folder DIR   only the owners working against DIR
   --json         the same facts as one object, for a program
@@ -286,6 +286,7 @@ fn holds(args: &[String]) -> Result<(), String> {
         let filtered = Plan {
             owners: owners.iter().map(|o| (*o).clone()).collect(),
             looks_like_ours: plan.looks_like_ours.clone(),
+            spills: plan.spills.clone(),
             now_ms: plan.now_ms,
             systemd: plan.systemd.clone(),
             systemd_why: plan.systemd_why.clone(),
@@ -301,6 +302,7 @@ fn holds(args: &[String]) -> Result<(), String> {
                 None => String::new(),
             }
         );
+        print_spills(&plan.spills);
         return Ok(());
     }
     if parsed.top {
@@ -311,6 +313,7 @@ fn holds(args: &[String]) -> Result<(), String> {
             Plan {
                 owners: owners.iter().map(|o| (*o).clone()).collect(),
                 looks_like_ours: Vec::new(),
+                spills: Vec::new(),
                 now_ms: plan.now_ms,
                 systemd: None,
                 systemd_why: None,
@@ -335,7 +338,15 @@ fn holds(args: &[String]) -> Result<(), String> {
             println!("    {}", h.line());
         }
     }
+    print_spills(&plan.spills);
     Ok(())
+}
+
+/// The spill stores, after the owners: per project, not per owner.
+fn print_spills(spills: &[lifecycle::SpillHolding]) {
+    for sp in spills {
+        println!("{}", sp.line());
+    }
 }
 
 fn gc(args: &[String]) -> Result<(), String> {
@@ -423,6 +434,7 @@ fn gc(args: &[String]) -> Result<(), String> {
                 .cloned()
                 .collect(),
             looks_like_ours: plan.looks_like_ours.clone(),
+            spills: plan.spills.clone(),
             now_ms: plan.now_ms,
             systemd: plan.systemd.clone(),
             systemd_why: plan.systemd_why.clone(),

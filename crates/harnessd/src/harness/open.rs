@@ -4860,12 +4860,11 @@ pub fn surroundings_for(cfg: &Config) -> letibot_tools::Surroundings {
 pub(crate) fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, HarnessError> {
     use letibot_tools::{MemoryStore, Spiller};
     let budget: Box<dyn letibot_tools::InlineBudget> = Box::new(cfg.output_cap());
-    let store: Box<dyn letibot_tools::SpillStore> = match &cfg.spill_storage {
-        SpillStorage::Memory => Box::new(MemoryStore::new()),
-        SpillStorage::Dir(d) => Box::new(
-            letibot_tools::spill::FileStore::new(d, &cfg.session_id)
-                .map_err(|e| HarnessError::Setup(format!("spill directory {d:?}: {e}")))?,
-        ),
+    // One store per project, not per session: a spill outlives the session's daemon and its
+    // archive, and only the project's budget evicts it.
+    let store: Box<dyn letibot_tools::SpillStore> = match cfg.spill_dir() {
+        None => Box::new(MemoryStore::new()),
+        Some(dir) => Box::new(letibot_tools::spill::DirStore::new(dir, cfg.spill_budget())),
     };
     Ok(Spiller::new(budget, store))
 }

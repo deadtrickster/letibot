@@ -8,6 +8,9 @@ use std::sync::Mutex;
 use letibot_transcript::seam::Seam;
 use sha2::{Digest, Sha256};
 
+mod durable;
+pub use durable::{DEFAULT_SPILL_BUDGET, DirStore, SPILLS_DIR, TOMBSTONES, Tombstone, Usage};
+
 /// What is being spilled, for a policy that wants to know before it decides.
 #[derive(Debug, Clone, Copy)]
 pub struct SpillContext<'a> {
@@ -168,6 +171,8 @@ pub struct SpillRef {
 #[derive(Debug)]
 pub enum SpillError {
     NotFound(String),
+    /// The store held it once and evicted it over its budget.
+    Evicted(Tombstone),
     Io(std::io::Error),
 }
 
@@ -175,6 +180,7 @@ impl std::fmt::Display for SpillError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             SpillError::NotFound(h) => write!(f, "no spilled output with hash {h}"),
+            SpillError::Evicted(t) => f.write_str(&t.said()),
             SpillError::Io(e) => write!(f, "spill store: {e}"),
         }
     }
@@ -198,6 +204,13 @@ pub trait SpillStore: Send + Sync {
     fn get(&self, hash: &str, range: Option<std::ops::Range<usize>>)
     -> Result<Vec<u8>, SpillError>;
     fn list(&self) -> Vec<SpillEntry>;
+    /// The full size of one stored output.
+    fn size(&self, hash: &str) -> Option<usize> {
+        self.list()
+            .into_iter()
+            .find(|e| e.hash == hash)
+            .map(|e| e.bytes)
+    }
 }
 
 /// SHA-256 truncated for legibility: the hash the ledger uses too, and long enough
