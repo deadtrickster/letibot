@@ -87,6 +87,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R267 | A streaming assistant line is drawn over an earlier row of the history | Code work | built: the live marker's join is taken back before the walk and only by its whole joined line; test `a_streaming_row_never_rewrites_an_earlier_row` |
 | R265 | A usage-limit park cannot be ended or moved: Esc does nothing and `/models` leaves the turn parked on the old model's reset | Code work | built: Esc ends the parked turn with a row naming the limit and the reset, a switch by any door retries the parked request on the new model, the status row names the reset and both ways out; left: the live check on a real Kimi limit |
 | R266 | Reaper remainder: a job across a stop that is not a handover, a start grace for a new owner, d.3 and the store-key rule written down | Code work | built (audit H1, R241's left): the reaper's daemon stop leaves the restart marker so host jobs are kept for the next daemon, the idle exit drains on a running job, a daemon's first 5 minutes judge no owner idle or orphaned, d.3 and the store-key rule written down; left: a plain `letibot --stop` still ends every job, by design |
+| R264 | An `external` wait silences the plan-check forever, so a session idle on two open rows got no nag for 10h | Needs the operator | diagnosed, behaves as R156 documents; left: the operator's call on bounding the silence and steering `external` that names a seat to `ask` |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -1237,6 +1238,37 @@ Audit package H6 (`STATUS-fable-5.2-2026-11-15.md`), plan item 1.14, and R242's 
 - Tests: `a_line_over_the_budget_is_read_in_pieces_and_edited_inside_one`, `an_edit_inside_the_shown_prefix_of_a_clipped_line_lands`, `a_column_read_past_the_line_or_with_ranges_is_refused_by_name`, `a_part_shown_covers_a_change_inside_it_and_moves_with_an_edit_above`; rano `a_line_wider_than_the_screen_is_read_whole_in_the_window`, `hidden_marker_lines_are_counted_on_the_header`.
 
 **Done when:** a line over 32 KiB is read in pieces with `column_offset` and `columns`, and an edit whose match lies inside a shown piece lands; a 400-column line is fully readable in the window at 80 columns; the header's count plus the stated hidden marker lines equals the payload's lines.
+## R264 - An `external` wait silences the plan-check forever
+
+**Status:** open, 2026-11-15. Diagnosed, no defect against the documented design. left: the operator's call on the two changes below.
+
+Operator report: db-fuzz (`s-1792687430252160872`, project `defc553f46c3`) had 2 open todos and the nag appeared only on restart.
+
+**Timeline (local time, from the `#t14` transcript rows).**
+- 11-14 09:01 - "Repack all four archives with HTML coverage and clean logs, push to GitHub" gets `wait_on external: "cc@etcd-752's go-ahead in the room; ..."`. Its jobs `j86722`, `j86837` end later and are delivered. The row is never completed, and the model works under a re-worded twin ("Repack all archives ...") from then on.
+- 11-14 20:05 - "Push the three final archives ..." waits on job `j87062`.
+- 11-15 05:28 - `j87062` ends (566m). 05:29:46 the last `[todo check]` fires on the push row. 05:29:49 the model attaches `external: "cc@etcd-752 reading the server archive, then the operator's word ..."` and says "the row will not nag while nothing here can move it".
+- 05:29 to 15:35 - no check. Operator turns at 08:05 ("so, we are done?") and 15:29 moved no row. cc@etcd-752 never answered the 05:28 dm until pinged after the restart.
+- 15:35:38 restart. The restart door counts both rows as owed, so the model is woken. It completes the stale repack row and asks the operator. 15:36:47 the operator answers "hold". 15:36:51 the model adds another `external`. 15:37:39 cc@etcd-752 reports it pushed everything.
+
+**Cause.** Both open rows carried a `TodoNeed::External`. `the_check_may_ask_about` (`crates/tools/src/builtins/todo/nag.rs:60`) drops them:
+
+```rust
+        && !waits_on_something_external(row)
+```
+
+`waits_on_something_external` (`crates/tools/src/builtins/todo.rs:1305`) is true for any `External` need, so `the_plan_as_checked` is empty, `Harness::nag_notice` answers `None` and the due clock never arms. Nothing ends the silence except the row moving. `docs/seat-todo.md` states it: "Nothing here can see it end, so the check is silent on that row until the row moves" (R156, `36fbad870`, 2026-11-07). The restart door is the one reader that disagrees: `restart::Owed::plan` (`crates/harnessd/src/restart.rs:625`) is every `Pending`/`InProgress` row, waits ignored. That is why the nag "appeared on restart".
+
+Ruled out: no `nag_pause_self` call in the session and `nags_paused_until` is NULL in `shared.db`. No budget or ladder involved, since no check was armed at all. The rule predates the Nov 11 binary, and `origin/main` (`68b8d5ed5`) reads the same, so the rebuilt daemon behaves the same.
+
+**Two misuses made it bite.** Both `external` texts name `cc@etcd-752`, a room seat letibot can see, and "the operator's word", which has its own `operator` wait. Neither is outside the machine. A peer `ask` would at least have settled through the room pass when the peer answered.
+
+**Proposed defaults (need the operator, since they reverse R156's "silent until the row moves").**
+1. An `external` wait silences the check for a bounded time, the ladder's top rung or a fixed 2h, then the row is asked about again with a sentence offering `detach`, completion or a refreshed wait. Re-attaching restarts the window.
+2. `todo_write` refuses or steers an `external` whose text names a seat on the roster (`x@y`) or the operator, to `ask`/`operator`.
+
+**Done when:** a row whose only wait is `external` is checked again after the bound with no row movement (harnessd test on the due clock), and `wait_on external` naming a roster seat answers the steer.
+
 ## R261 - Skill offers under control: the shadow picks them, children get none, a skill can be hidden from the model
 
 **Status:** items 1-4 built 2026-11-15. left: R244's remainder, note offers for children, and a replay score for the acting pick (below).
