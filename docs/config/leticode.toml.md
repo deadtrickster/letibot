@@ -330,6 +330,15 @@ The project's table if its mode is not off, else the user's, whole.
 | `builtin_revision` | 40 hex | shipped | both, project wins | its commit; needs builtin_sha256 |
 | `builtin_sha256` | table: file = 64 hex | shipped | both, project wins | hash per model file; needs builtin_revision |
 
+## `[wordfreq]`
+
+The common-English list skill offers check description words against (CC BY-SA 4.0, fetched into <data dir>/wordfreq). Read with [embeddings]; the project's table, else the user's.
+
+| key | type | default | level | meaning |
+|---|---|---|---|---|
+| `mode` | internal \| off | internal | both, project wins | off: offers take names and keywords as evidence |
+| `download` | bool | true | both, project wins | may fetch the list |
+
 ## `[bridge]`
 
 Read by the Claude Code bridge.

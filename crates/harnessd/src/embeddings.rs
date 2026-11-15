@@ -53,6 +53,69 @@ pub fn fault_note(embedder: Option<&Arc<Embedder>>) -> Option<String> {
     ))
 }
 
+/// The box's common-English list for skill offers' description words, filled once by the daemon
+/// start path on a thread. Empty is the fallback: names and keywords.
+#[derive(Debug, Clone, Default)]
+pub struct Wordfreq {
+    inner: Arc<WordfreqInner>,
+}
+
+#[derive(Debug, Default)]
+struct WordfreqInner {
+    words: std::sync::OnceLock<Arc<letibot_embeddings::wordfreq::Words>>,
+    fetching: std::sync::atomic::AtomicBool,
+    why: std::sync::Mutex<Option<String>>,
+    said: std::sync::atomic::AtomicBool,
+}
+
+impl Wordfreq {
+    pub fn get(&self) -> Option<&Arc<letibot_embeddings::wordfreq::Words>> {
+        self.inner.words.get()
+    }
+
+    pub fn set(&self, words: letibot_embeddings::wordfreq::Words) {
+        let _ = self.inner.words.set(Arc::new(words));
+        self.inner
+            .fetching
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn set_fetching(&self) {
+        self.inner
+            .fetching
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn set_absent(&self, why: impl Into<String>) {
+        *self.inner.why.lock().unwrap_or_else(|e| e.into_inner()) = Some(why.into());
+        self.inner
+            .fetching
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The fallback said once per box, and not while a fetch may still land.
+    pub fn fallback_note(&self) -> Option<String> {
+        use std::sync::atomic::Ordering;
+        if self.get().is_some() || self.inner.fetching.load(Ordering::Relaxed) {
+            return None;
+        }
+        // A slot nobody read (a fixture) has nothing to say.
+        let why = self
+            .inner
+            .why
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()?;
+        if self.inner.said.swap(true, Ordering::Relaxed) {
+            return None;
+        }
+        Some(format!(
+            "no common-English list, so skill offers take names and keywords as evidence and not \
+             description words: {why}"
+        ))
+    }
+}
+
 #[cfg(test)]
 pub mod fixture {
     use std::path::{Path, PathBuf};

@@ -239,6 +239,43 @@ A caller that cannot answer with meaning falls back to its own words, and the ti
 than left holding the last corpus's vectors: a stale vector would score a text that has since been
 edited.
 
+## Common English: the word list
+
+With the tier on, a skill offered by meaning also needs evidence: its name, a keyword, or a word of
+its description in the operator's words or the touched files. A small registry ranks plain English
+(`work`, `caller`, `protocol`) as rare, so a description word counts only when it is not among the
+20,000 most frequent English words.
+
+The list is not compiled in. It is derived from [wordfreq](https://github.com/rspeer/wordfreq)'s
+`large_en` data, which is CC BY-SA 4.0, and kept with its licence note in the data dir:
+
+```text
+~/.local/share/letibot/wordfreq/english-20k.txt   # one word per line, most frequent first
+~/.local/share/letibot/wordfreq/NOTICE            # licence, source URL, both hashes
+```
+
+A daemon whose `[embeddings]` tier is on loads it at start, on a thread of its own, and fetches it
+first when it is absent. The fetch is one file,
+`https://raw.githubusercontent.com/rspeer/wordfreq/42233e6c36ce792031bcccfa17cdd0cec9af5fa7/wordfreq/data/large_en.msgpack.gz`
+(1.4 MiB, commit `42233e6c` tagged `v3.2`, the same bytes as the 3.1.1 wheel on PyPI), refused unless
+its sha-256 is `dffae8066b78dce0a6667cf5f58e567054f902674667090a7ac8a8a44628b05c`. Nothing is
+hosted by letibot. The list is derived on the box: wordfreq's buckets in order, words of three or
+more lowercase ASCII letters, the first 20,000. The derived list is pinned too
+(`90ece52b900d4dad43025f22ab68164e3b1105cef3df39483135236c0f471fd1`), and the source file is removed
+once the list is written. It goes through the same fetch as the built-in model: curl over https, the
+retry ladder, a `.part` name renamed into place only after the hash matches.
+
+```toml
+[wordfreq]
+mode = "internal"   # the default: load the list, fetch it once if absent
+mode = "off"        # no list
+download = false    # use a list on disk, never fetch
+```
+
+Off, absent, or a fetch that failed: offers take names and keywords as evidence and not description
+words, which is the behaviour before the list. That is said once per box, as the warning
+`wordfreq_unavailable`. A box without the tier fetches nothing, since nothing reads the list.
+
 ## Cost
 
 One model per box, loaded once and shared, and one vector per text the cache has not seen. A corpus

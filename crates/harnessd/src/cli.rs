@@ -1406,6 +1406,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // And the box's one embedder, here and not in `Config::for_the_daemon`: `[embeddings]` is read
     // off these two files, so it waits for them. One model, loaded once, shared by every caller.
     cfg.read_embeddings();
+    cfg.read_wordfreq();
 
     // The GitHub reviewer seat (R118), installed on the registry so `letibot attach github <scope>`
     // reaches it, `/pane github/github` is drawn from it, and the idle pass polls it. `post` off is

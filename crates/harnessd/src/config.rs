@@ -652,6 +652,9 @@ pub struct Config {
     /// The box's one embedder, built by [`Config::read_embeddings`] from `[embeddings]` and shared by every scorer (notes offer, near-copy gate, context-claim check, skill offer, plan, commit log, compaction's old half).
     /// No embedder in it is the lexical score, the default and every fixture.
     pub embedder: EmbedderSlot,
+    /// The common-English list skill offers check description words against, from `[wordfreq]`.
+    /// Empty in every fixture, which is names and keywords as evidence.
+    pub wordfreq: crate::embeddings::Wordfreq,
     /// Which role this session seats. [`Seat::Orchestrator`] by default, which
     /// is what every invocation gets today. See [`Seat`].
     pub seat: Seat,
@@ -1784,6 +1787,7 @@ impl Config {
             // No tier until `read_embeddings` reads `[embeddings]`: a fixture scores the words
             // alone, and a daemon that never wrote the section scores exactly what it did before.
             embedder: EmbedderSlot::default(),
+            wordfreq: crate::embeddings::Wordfreq::default(),
             mode: letibot_tools::mode::UNSEEN_PROJECT,
             permission: parse_permission(),
             flowy: None,
@@ -2099,6 +2103,73 @@ impl Config {
         );
         let slot = self.embedder.clone();
         std::thread::spawn(move || slot.install(open(&settings, data.as_deref())));
+    }
+
+    /// Read `[wordfreq]` and load or fetch the list, off the start path. Only a box with an
+    /// `[embeddings]` tier uses it, so a box without one fetches nothing.
+    pub fn read_wordfreq(&mut self) {
+        use letibot_embeddings::wordfreq;
+        let mut levels: Vec<PathBuf> = Vec::new();
+        levels.extend(self.leticode.path.clone());
+        levels.extend(self.leticode_user.path.clone());
+        let tier = levels
+            .iter()
+            .any(|f| letibot_embeddings::Settings::load(f).is_ok_and(|s| !s.mode.is_off()));
+        if !tier {
+            return;
+        }
+        let mut settings = wordfreq::Settings::default();
+        for file in &levels {
+            match wordfreq::Settings::load(file) {
+                Ok(Some(found)) => {
+                    settings = found;
+                    break;
+                }
+                Ok(None) => continue,
+                Err(why) => {
+                    self.wordfreq.set_absent(why);
+                    return;
+                }
+            }
+        }
+        let data = crate::mergequeue::git::letibot_data_dir();
+        self.open_the_wordfreq(settings, data, |settings, data| {
+            wordfreq::open(
+                settings,
+                data,
+                &wordfreq::Pin::shipped(),
+                letibot_http::retry::Policy::standard(),
+                &mut |said| eprintln!("  wordfreq: {said}"),
+            )
+        });
+    }
+
+    /// `open` is a parameter so a test loads a fixture list with no network.
+    pub(crate) fn open_the_wordfreq(
+        &mut self,
+        settings: letibot_embeddings::wordfreq::Settings,
+        data: Option<PathBuf>,
+        open: impl FnOnce(
+            &letibot_embeddings::wordfreq::Settings,
+            &Path,
+        ) -> Result<letibot_embeddings::wordfreq::Words, String>
+        + Send
+        + 'static,
+    ) {
+        if !settings.on {
+            self.wordfreq.set_absent("[wordfreq] mode = \"off\"");
+            return;
+        }
+        let Some(data) = data else {
+            self.wordfreq.set_absent("the box has no data directory");
+            return;
+        };
+        let slot = self.wordfreq.clone();
+        slot.set_fetching();
+        std::thread::spawn(move || match open(&settings, &data) {
+            Ok(words) => slot.set(words),
+            Err(why) => slot.set_absent(why),
+        });
     }
 
     /// One caller's tier over the box's embedder, or `None` when the box has none. A fresh tier

@@ -275,7 +275,7 @@ fn weigh(bytes: u64) -> String {
 
 /// One file, over the ladder: a transport failure or a *not now* is tried again after the
 /// wait the tree's rule names, and a refusal, a hash mismatch or a disk error ends it at once.
-fn fetch(
+pub(crate) fn fetch(
     source: &Source,
     url: &str,
     dir: &Path,

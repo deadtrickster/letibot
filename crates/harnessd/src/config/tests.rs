@@ -2482,3 +2482,50 @@ fn a_child_session_is_offered_no_skills_by_default() {
     }
     let _ = std::fs::remove_dir_all(&base);
 }
+
+/// `[wordfreq]` loads the data dir's list off the start path; off is a fallback said once.
+#[test]
+fn the_wordfreq_list_is_loaded_from_the_data_dir_and_off_falls_back() {
+    use letibot_embeddings::wordfreq;
+    let data = crate::embeddings::fixture::Dir::new("wordfreq-config");
+    let dir = wordfreq::dir(data.path());
+    std::fs::create_dir_all(&dir).expect("dir");
+    std::fs::write(dir.join(wordfreq::LIST), "the\nwork\n").expect("list");
+
+    let mut cfg = Config::for_this_box(data.path());
+    cfg.open_the_wordfreq(
+        wordfreq::Settings::default(),
+        Some(data.path().to_path_buf()),
+        |settings, data| {
+            wordfreq::open(
+                settings,
+                data,
+                &wordfreq::Pin::new("http://127.0.0.1:9/never", "ab".repeat(32)),
+                letibot_http::retry::Policy::none(),
+                &mut |_| panic!("a list on disk is not fetched"),
+            )
+        },
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while cfg.wordfreq.get().is_none() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(cfg.wordfreq.get().expect("loaded").contains("work"));
+    assert_eq!(cfg.wordfreq.fallback_note(), None);
+
+    let mut off = Config::for_this_box(data.path());
+    off.open_the_wordfreq(
+        wordfreq::Settings {
+            on: false,
+            download: true,
+        },
+        Some(data.path().to_path_buf()),
+        |_, _| panic!("off opens nothing"),
+    );
+    assert!(off.wordfreq.get().is_none());
+    assert!(
+        off.wordfreq
+            .fallback_note()
+            .is_some_and(|s| s.contains("mode = \"off\""))
+    );
+}

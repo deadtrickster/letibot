@@ -406,6 +406,15 @@ pub const LETICODE: File = File {
             ],
         },
         Table {
+            path: "wordfreq",
+            note: "The common-English list skill offers check description words against (CC BY-SA 4.0, fetched into <data dir>/wordfreq). Read with [embeddings]; the project's table, else the user's.",
+            needs: "",
+            keys: &[
+                k("mode", "internal | off", "internal", PW, "off: offers take names and keywords as evidence", "\"off\""),
+                k("download", "bool", "true", PW, "may fetch the list", "true"),
+            ],
+        },
+        Table {
             path: "bridge",
             note: "Read by the Claude Code bridge.",
             needs: "",

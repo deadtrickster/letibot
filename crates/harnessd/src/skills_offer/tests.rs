@@ -1029,13 +1029,29 @@ fn fleet() -> SkillRegistry {
     ])
 }
 
+/// The fleet's plain description words, as a data-dir list holds them.
+fn common_fixture(data: &std::path::Path) -> letibot_tools::similarity::Words {
+    let dir = letibot_embeddings::wordfreq::dir(data);
+    std::fs::create_dir_all(&dir).unwrap();
+    let list = dir.join(letibot_embeddings::wordfreq::LIST);
+    std::fs::write(
+        &list,
+        "the\ncaller\nwork\nover\nprotocol\ndone\nproperly\nwith\nevery\ntest\npassing\n\
+         well\nstill\nscroll\nstrips\n",
+    )
+    .unwrap();
+    letibot_tools::similarity::Words::load(&list).unwrap()
+}
+
 /// Description words as evidence: the plain English the fleet's descriptions share (`work`,
 /// `caller`, `protocol`, `properly`) names no skill, and a word only one of them uses does.
 #[test]
 fn only_an_uncommon_description_word_is_evidence_for_a_skill() {
+    let data = crate::embeddings::fixture::Dir::new("wordfreq-present");
+    let common = common_fixture(data.path());
     let registry = fleet();
     let names: Vec<String> = Vec::new();
-    let ev = evidence_of(&registry, names.iter());
+    let ev = evidence_of(&registry, names.iter(), Some(&common));
     let plain = Seen::of_texts([
         "the caller's work over the protocol, done properly, with every test passing",
         "well my touchpad still doesnt scroll",
@@ -1054,6 +1070,36 @@ fn only_an_uncommon_description_word_is_evidence_for_a_skill() {
         ),
         Some(vec!["normalizer".to_string()])
     );
+}
+
+/// No list: a description word is not evidence, and the fallback is said once per box.
+#[test]
+fn without_the_list_offers_fall_back_to_names_and_say_so_once() {
+    let registry = fleet();
+    let names: Vec<String> = Vec::new();
+    let ev = evidence_of(&registry, names.iter(), None);
+    assert_eq!(
+        ev.found(
+            "conformity-check-writing",
+            &Seen::of_texts(["the normalizer strips the timestamps"])
+        ),
+        None
+    );
+    assert!(
+        ev.found(
+            "conformity-check-writing",
+            &Seen::of_texts(["writing a conformity check"])
+        )
+        .is_some()
+    );
+    let slot = crate::embeddings::Wordfreq::default();
+    assert_eq!(slot.fallback_note(), None, "a fixture slot says nothing");
+    slot.set_fetching();
+    assert_eq!(slot.fallback_note(), None, "not while a fetch may land");
+    slot.set_absent("the fetch failed");
+    let said = slot.fallback_note().expect("said");
+    assert!(said.contains("names and keywords") && said.contains("the fetch failed"));
+    assert_eq!(slot.fallback_note(), None, "once");
 }
 
 /// The rano case on the real model: a TUI session fixing touchpad scroll, with clippy output in

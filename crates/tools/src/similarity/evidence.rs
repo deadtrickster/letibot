@@ -2,31 +2,21 @@
 //! session is doing, so an offer also needs the document's identity - its name and keywords - to
 //! appear in what the operator wrote or the files the session touched.
 
-use std::collections::{BTreeMap, BTreeSet, HashSet};
-use std::sync::OnceLock;
+use std::collections::{BTreeMap, BTreeSet};
+
+pub use letibot_embeddings::wordfreq::Words;
 
 use super::terms;
 
-/// The 20,000 most frequent English words (wordfreq 3.1.1, CC BY-SA 4.0; see the file's header).
-/// A small registry ranks plain English as rare, so a description word on this list is no evidence.
-const ENGLISH: &str = include_str!("english-20k.txt");
-
 /// A description word that can name a document: not a number and not common English.
-fn is_distinctive(word: &str) -> bool {
-    word.chars().any(char::is_alphabetic) && !is_common(word)
+fn is_distinctive(common: &Words, word: &str) -> bool {
+    word.chars().any(char::is_alphabetic) && !is_common(common, word)
 }
 
-/// Whether `word`, or its stem, is a common English word.
-pub fn is_common(word: &str) -> bool {
-    static SET: OnceLock<HashSet<&'static str>> = OnceLock::new();
-    let set = SET.get_or_init(|| {
-        ENGLISH
-            .lines()
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .collect()
-    });
+/// Whether `word`, or its stem, is on the common-English list.
+pub fn is_common(common: &Words, word: &str) -> bool {
     let word = word.to_lowercase();
-    set.contains(word.as_str()) || set.contains(stem(&word).as_str())
+    common.contains(&word) || common.contains(&stem(&word))
 }
 
 /// The words a session has used, as [`terms`] cuts them.
@@ -75,13 +65,15 @@ impl Evidence {
     /// `docs` is `(key, identity, full text)`. Rarity is counted over the full texts, so a name word
     /// every description uses weighs little. `ln(1 + N/df)` keeps a one-document corpus nonzero.
     pub fn new<'a>(docs: impl IntoIterator<Item = (&'a str, &'a str, &'a str)>) -> Evidence {
-        Evidence::described(docs.into_iter().map(|(k, i, f)| (k, i, "", f)))
+        Evidence::described(docs.into_iter().map(|(k, i, f)| (k, i, "", f)), None)
     }
 
     /// As [`Evidence::new`], with `(key, identity, description, full text)`: the description's
-    /// words that are not common English also name the document.
+    /// words that are not on `common` also name the document. With no list a small corpus ranks
+    /// plain English as rare, so descriptions are then not evidence at all.
     pub fn described<'a>(
         docs: impl IntoIterator<Item = (&'a str, &'a str, &'a str, &'a str)>,
+        common: Option<&Words>,
     ) -> Evidence {
         let docs: Vec<(&str, &str, &str, &str)> = docs.into_iter().collect();
         let n = docs.len().max(1) as f64;
@@ -97,7 +89,13 @@ impl Evidence {
             .iter()
             .map(|(key, identity, description, _)| {
                 let mut mine: BTreeSet<String> = terms(identity).into_iter().collect();
-                mine.extend(terms(description).into_iter().filter(|t| is_distinctive(t)));
+                if let Some(common) = common {
+                    mine.extend(
+                        terms(description)
+                            .into_iter()
+                            .filter(|t| is_distinctive(common, t)),
+                    );
+                }
                 let weighted = mine.into_iter().map(|t| (t.clone(), weight(&t))).collect();
                 (key.to_string(), weighted)
             })
@@ -197,10 +195,24 @@ mod tests {
         );
     }
 
-    /// The measured failure: a 26-skill registry made `work`, `caller` and `protocol` rare, so
-    /// every unrelated skill whose description used one was found. A distinctive word still is.
-    #[test]
-    fn a_description_word_is_evidence_only_when_it_is_not_common_english() {
+    /// A common-English list as the data dir holds it: one word per line, in a temp file.
+    fn fixture_list() -> Words {
+        let path = std::env::temp_dir().join(format!(
+            "evidence-wordfreq-{}-{:?}.txt",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        std::fs::write(
+            &path,
+            "the\nwork\ncall\ncaller\nprotocol\ndoes\nover\nshared\n",
+        )
+        .unwrap();
+        let words = Words::load(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        words
+    }
+
+    fn described(common: Option<&Words>) -> Evidence {
         let mut docs = vec![
             (
                 "conformity-method".to_string(),
@@ -220,10 +232,19 @@ mod tests {
                 format!("filler {i}"),
             ));
         }
-        let ev = Evidence::described(
+        Evidence::described(
             docs.iter()
                 .map(|(k, i, d)| (k.as_str(), i.as_str(), d.as_str(), d.as_str())),
-        );
+            common,
+        )
+    }
+
+    /// The measured failure: a 26-skill registry made `work`, `caller` and `protocol` rare, so
+    /// every unrelated skill whose description used one was found. A distinctive word still is.
+    #[test]
+    fn a_description_word_is_evidence_only_when_it_is_not_common_english() {
+        let common = fixture_list();
+        let ev = described(Some(&common));
         let plain = Seen::of_texts(["the caller does the work over the protocol"]);
         assert_eq!(ev.found("conformity-method", &plain), None);
         assert_eq!(ev.found("rust-builds", &plain), None);
@@ -232,10 +253,24 @@ mod tests {
             Some(vec!["sccache".to_string()])
         );
         for word in ["work", "caller", "protocol", "callers", "works"] {
-            assert!(is_common(word), "{word}");
+            assert!(is_common(&common, word), "{word}");
         }
-        assert!(!is_common("sccache"));
-        assert!(!is_distinctive("2026"));
+        assert!(!is_common(&common, "sccache"));
+        assert!(!is_distinctive(&common, "2026"));
+    }
+
+    /// No list: descriptions are not evidence, names and keywords still are.
+    #[test]
+    fn without_the_list_only_names_are_evidence() {
+        let ev = described(None);
+        assert_eq!(
+            ev.found("rust-builds", &Seen::of_texts(["is sccache warm"])),
+            None
+        );
+        assert_eq!(
+            ev.found("rust-builds", &Seen::of_texts(["the rust builds"])),
+            Some(vec!["builds".to_string(), "rust".to_string()])
+        );
     }
 
     #[test]

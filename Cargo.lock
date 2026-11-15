@@ -1576,6 +1576,7 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "candle-transformers",
+ "flate2",
  "letibot-config-ref",
  "letibot-http",
  "letibot-metrics",

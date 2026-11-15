@@ -29,6 +29,7 @@ pub mod cosine;
 pub mod model;
 pub mod remote;
 pub mod tier;
+pub mod wordfreq;
 
 /// A tiny BERT a test builds: the internal path without a download, for this crate's
 /// tests and for a crate that scores with it.

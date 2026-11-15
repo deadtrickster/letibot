@@ -162,6 +162,9 @@ pub struct Offers {
     seen: Seen,
     /// Policy skills the shadow picked this round, with its quote: delivered as rules, not offered.
     required: Vec<(String, String)>,
+    /// The common-English list description words are checked against; empty falls back.
+    wordfreq: crate::embeddings::Wordfreq,
+    fell_back: bool,
 }
 
 impl Offers {
@@ -174,6 +177,18 @@ impl Offers {
     pub fn with_tier(mut self, tier: Option<Tier>) -> Offers {
         self.tier = tier;
         self
+    }
+
+    pub fn with_wordfreq(mut self, wordfreq: crate::embeddings::Wordfreq) -> Offers {
+        self.wordfreq = wordfreq;
+        self
+    }
+
+    /// The fallback notice, once per box, after a round that scored without the list.
+    pub fn fallback_note(&self) -> Option<String> {
+        self.fell_back
+            .then(|| self.wordfreq.fallback_note())
+            .flatten()
     }
 
     /// Offer only what this seat can use: `tools` are its tool names, `never` the operator's veto.
@@ -343,7 +358,11 @@ impl Offers {
             None => offer_evidence::version(name),
         };
         let evidence = match (&self.tier, scored.is_empty()) {
-            (Some(_), false) => Some(evidence_of(registry, scored.keys())),
+            (Some(_), false) => {
+                let common = self.wordfreq.get().cloned();
+                self.fell_back |= common.is_none();
+                Some(evidence_of(registry, scored.keys(), common.as_deref()))
+            }
             _ => None,
         };
         let mut kept: Vec<(String, f64, By)> = Vec::new();
@@ -688,7 +707,11 @@ fn hits_of(row: &serde_json::Value) -> Vec<String> {
 
 /// Each scored skill's identity - its name, keywords and the description's uncommon words -
 /// weighted by rarity across the registry.
-fn evidence_of<'a>(registry: &SkillRegistry, names: impl Iterator<Item = &'a String>) -> Evidence {
+fn evidence_of<'a>(
+    registry: &SkillRegistry,
+    names: impl Iterator<Item = &'a String>,
+    common: Option<&letibot_tools::similarity::Words>,
+) -> Evidence {
     let mut docs: Vec<(String, String, String, String)> = registry
         .live_skills()
         .iter()
@@ -711,6 +734,7 @@ fn evidence_of<'a>(registry: &SkillRegistry, names: impl Iterator<Item = &'a Str
     Evidence::described(
         docs.iter()
             .map(|(k, i, d, f)| (k.as_str(), i.as_str(), d.as_str(), f.as_str())),
+        common,
     )
 }
 

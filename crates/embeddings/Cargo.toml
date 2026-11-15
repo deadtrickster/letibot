@@ -20,6 +20,8 @@ serde_json.workspace = true
 toml.workspace = true
 # The cache's key is a content hash, and it is the same SHA-256 the ledger uses.
 sha2 = "0.10"
+# wordfreq ships its list as gzip; the same pure-Rust backend `tools` builds.
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 # `embeddings.db` is its own file, so it is opened by its own `Connection` and never
 # through `tokencore`'s shared `Store`: a cache must not carry a store schema.
 rusqlite = "0.40"

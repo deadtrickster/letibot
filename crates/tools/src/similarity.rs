@@ -25,7 +25,7 @@ pub use letibot_embeddings::Tier;
 use crate::builtins::notes::abstract_of;
 
 pub mod evidence;
-pub use evidence::{Evidence, Seen};
+pub use evidence::{Evidence, Seen, Words};
 
 /// The shortest term this scores on. Two-letter terms here are overwhelmingly English
 /// function words and keeping them would raise the baseline under every score; the cost

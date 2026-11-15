@@ -2039,6 +2039,7 @@ impl Harness {
         let seat_tools = super::open::skill_seat(&self.cfg, &self.prefix.tools_json);
         let mut skill_offers = crate::skills_offer::Offers::new()
             .with_tier(self.cfg.tier())
+            .with_wordfreq(self.cfg.wordfreq.clone())
             .with_seat(seat_tools.iter(), self.cfg.skills_never_offer().iter())
             .with_project(&project_logs);
         skill_offers.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
@@ -2159,6 +2160,9 @@ impl Harness {
                 // here - and each caller has already fallen back to its own words by then.
                 if let Some(said) = crate::embeddings::fault_note(self.cfg.embedder.get()) {
                     self.warn("embeddings_unavailable", said);
+                }
+                if let Some(said) = skill_offers.fallback_note() {
+                    self.warn("wordfreq_unavailable", said);
                 }
                 // The brief in hand is the person's prompt and the model's own latest words, which
                 // is where a `task` call's prompt is written - the case this caller exists for.
