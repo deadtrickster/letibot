@@ -203,6 +203,18 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // a fork whose rows are not all stored.
     ("steering_carried", Class::Failure, Action::Nothing),
     ("context_not_stored", Class::Failure, Action::Nothing),
+    // The limit hook failed, so the fixed rules decide the episode; or its state or notice row
+    // was not written, so a restart loses what it decided.
+    (
+        "limit_hook_fallback",
+        Class::Failure,
+        Action::Do("fix the limit hook, or `plugin disable`"),
+    ),
+    (
+        "limit_hook_unsaved",
+        Class::Failure,
+        Action::Do("check the session's logs directory"),
+    ),
     (
         "fork_unstored",
         Class::Failure,
@@ -294,6 +306,11 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // A rate limit that named no instant: the long beat before the round is taken again. Past the
     // few the config allows, the turn fails under its own name.
     ("limit_retry", Class::Routine, Action::Nothing),
+    // A `limit_decide` layer's answer to a refusal, the end of its episode, and the new session
+    // it asked for: the hook deciding is the handling, as the fixed rules' park is.
+    ("limit_hook", Class::Routine, Action::Nothing),
+    ("limit_hook_done", Class::Routine, Action::Nothing),
+    ("limit_new_session", Class::Routine, Action::Nothing),
     // Three of the provider's four troubles, as a type (`SessionEvent::ProviderTrouble`): the wait
     // IS the handling and nothing is at risk. While one is being handled it is one LIVE line and no
     // row at all, so these rows are only what a head reads when one arrives outside a ladder. The
@@ -1656,15 +1673,15 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_92_routine_15_refused_and_104_failures() {
+    fn the_table_is_95_routine_15_refused_and_106_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k, _)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 211, "the table's size");
-        assert_eq!(count(Class::Routine), 92, "the seven limits are routine");
+        assert_eq!(TABLE.len(), 216, "the table's size");
+        assert_eq!(count(Class::Routine), 95, "the seven limits are routine");
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 104);
+        assert_eq!(count(Class::Failure), 106);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);

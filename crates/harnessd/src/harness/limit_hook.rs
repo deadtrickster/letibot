@@ -72,7 +72,7 @@ impl Harness {
         };
         if let Err(e) = out {
             self.hub.warn(
-                "limit_hook",
+                "limit_hook_unsaved",
                 format!(
                     "the limit hook's state was not written to {}: {e}. It holds until this \
                      daemon stops",
@@ -202,7 +202,7 @@ impl Harness {
                 );
                 if let Err(err) = self.record_notice(&said) {
                     self.hub.warn(
-                        "limit_hook",
+                        "limit_hook_unsaved",
                         format!("{said} The row was not written: {err}"),
                     );
                 }
@@ -383,7 +383,7 @@ impl Harness {
         );
         if let Err(e) = self.record_notice(&said) {
             self.hub
-                .warn("limit_hook", format!("{said} The row was not written: {e}"));
+                .warn("limit_hook_unsaved", format!("{said} The row was not written: {e}"));
         }
         self.hub.warn("limit_new_session", said.clone());
         Ok(said)
