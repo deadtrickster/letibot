@@ -684,7 +684,7 @@ fn a_hidden_file_inside_the_view_is_replaced_by_dev_null_and_one_outside_is_left
     std::fs::create_dir_all(&dir).unwrap();
     let sock = dir.join("room-x.sock");
     std::fs::write(&sock, "").unwrap();
-    let outside = std::env::temp_dir().join("elsewhere-room.sock");
+    let outside = std::env::temp_dir().join(format!("elsewhere-room-{}.sock", std::process::id()));
     let _ = std::fs::write(&outside, "");
     let view = ViewSpec::project_only(&dir)
         .hiding(&sock)

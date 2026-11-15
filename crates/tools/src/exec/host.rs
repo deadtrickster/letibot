@@ -2127,7 +2127,7 @@ impl ProcessHost for HostProcesses {
         // The join token, which is the evidence and belongs to the daemon. A path this
         // process owns, passed to the wrapper as `$2` and created only on the branch that joined
         // the cgroup: a file the command's output cannot reach, so `joined` is OBSERVED, not read.
-        let token = std::env::temp_dir().join(format!("letibot-joined-{}", id.0));
+        let token = join_token(&id);
         let _ = std::fs::remove_file(&token);
         // The waiter owns the token below; this side keeps the path for the refusal that kills a
         // process which never joined its scope.
@@ -3571,6 +3571,12 @@ pub fn peek(tree: &dyn ScopeTree, scope: &ScopeId) -> Vec<Reaped> {
         .into_iter()
         .map(Reaped::observe)
         .collect()
+}
+
+/// Where job `id`'s join token goes. Every process mints `j1` upward, so the pid keeps two
+/// daemons (or two test binaries) from creating or deleting each other's evidence.
+pub(crate) fn join_token(id: &JobId) -> PathBuf {
+    std::env::temp_dir().join(format!("letibot-joined-{}-{}", std::process::id(), id.0))
 }
 
 #[cfg(test)]

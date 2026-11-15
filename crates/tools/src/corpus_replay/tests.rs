@@ -181,10 +181,13 @@ fn a_missing_corpus_is_an_error_and_not_an_empty_report() {
 /// that reported on a truncated corpus would be a number nobody could act on.
 #[test]
 fn a_file_that_is_not_a_decision_array_is_refused() {
-    let path = std::env::temp_dir().join("gate-corpus-not-an-array.json");
+    let path = std::env::temp_dir().join(format!(
+        "gate-corpus-not-an-array-{}.json",
+        std::process::id()
+    ));
     std::fs::write(&path, "{\"rows\": []}").unwrap();
     let e = sweep(&path, &env()).expect_err("an object is not a corpus");
-    assert!(e.contains("gate-corpus-not-an-array.json"), "{e}");
+    assert!(e.contains("gate-corpus-not-an-array-"), "{e}");
     let _ = std::fs::remove_file(&path);
 }
 

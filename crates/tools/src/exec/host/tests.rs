@@ -1070,7 +1070,7 @@ fn a_promotion_does_not_truncate_the_file_a_background_job_already_has() {
     std::fs::remove_dir_all(&scratch).ok();
 }
 
-/// The wrapper writes `$TMPDIR/letibot-joined-<id>` on joining, and that file is the evidence
+/// The wrapper writes `$TMPDIR/letibot-joined-<pid>-<id>` on joining, and that file is the evidence
 /// `joined` is read from. A job killed before it ends never reached the arm that consumes it, so
 /// the file stayed for the life of the machine: one per killed job.
 #[test]
@@ -1094,7 +1094,7 @@ fn a_job_killed_before_it_ends_leaves_no_join_token_behind() {
             env_trailer: false,
         })
         .expect("a run starts");
-    let token = std::env::temp_dir().join(format!("letibot-joined-{}", id.0));
+    let token = super::join_token(&id);
     let until = Instant::now() + Duration::from_secs(5);
     while Instant::now() < until && !token.exists() {
         std::thread::sleep(Duration::from_millis(10));
