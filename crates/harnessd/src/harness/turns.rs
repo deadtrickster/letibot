@@ -1747,6 +1747,7 @@ impl Harness {
         // on the log when it asks for its turn. A no-op when `submit_items_then` started it, which is every other
         // door; a door that finds nothing to say must not start it at all.
         self.begin_turn_clock(letibot_sessionlog::event::now_ms());
+        self.narrow_to_parent();
         let out = self.rounds();
         let (unread, left) = {
             let mut held = self.handed_back.lock().unwrap_or_else(|e| e.into_inner());
@@ -2560,6 +2561,8 @@ impl Harness {
         let mut asked: Vec<TranscriptItem> = Vec::new();
         for batch in self.runtime.batches(calls) {
             let batch = &calls[batch];
+            // A parent that narrowed since the last batch governs this one.
+            self.narrow_to_parent();
             // The slot is emptied immediately before the batch runs, so nothing an earlier call left can be read
             // as this one's answer. A pooled batch holds only reads, and none of them fills it.
             self.asked.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -3184,6 +3187,14 @@ impl Harness {
         // worker's path would write them; it never saw this command, which this turn had already
         // taken off the queue.
         let consented = *consented;
+        // A child's point only narrows, and a refused one writes no row either.
+        if let Err(why) = self.mode_past_parent(mode, consented) {
+            self.hub.warn(
+                "mode_set_refused",
+                format!("this session stays at `{}`: {why}", self.cfg.mode.name),
+            );
+            return;
+        }
         let moved = self.set_mode_consented(mode, consented);
         // And written down, as the worker's door writes it - applying the
         // point without writing would lose a `/mode` typed while the session worked at the

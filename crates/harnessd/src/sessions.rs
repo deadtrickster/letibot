@@ -4792,6 +4792,19 @@ impl<'a> Sessions<'a> {
                     let Some(harness) = self.harness_of(session_id) else {
                         return Outcome::Failed(format!("session {session_id} is not open"));
                     };
+                    // A child's point only narrows, and a refused one writes no row either.
+                    if let Err(why) = harness.mode_past_parent(mode, *consented) {
+                        if let Some(hub) = &hub {
+                            hub.warn(
+                                "mode_set_refused",
+                                format!(
+                                    "this session stays at `{}`: {why}",
+                                    harness.config().mode.name
+                                ),
+                            );
+                        }
+                        return Outcome::Failed(why);
+                    }
                     harness.workspace().to_path_buf()
                 };
                 // A consented `allow-all` IS written - with the answer that opens it. It is

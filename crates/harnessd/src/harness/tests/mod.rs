@@ -34,6 +34,7 @@ fn user(text: &str) -> TranscriptItem {
 mod auto_reseat;
 mod card_fixtures;
 mod cheap_wake;
+mod child_mode;
 mod children;
 mod citations;
 mod clear;

@@ -1,0 +1,146 @@
+//! A child's point only narrows: every door that moves it is held under the parent's live point,
+//! and a parent that narrows narrows its children.
+
+use super::*;
+use letibot_tools::mode::Mode;
+
+/// A scratch directory that removes itself.
+struct Scratch(std::path::PathBuf);
+
+impl Scratch {
+    fn new(tag: &str) -> Self {
+        let p = letibot_sessionlog::testing::scratch_root().join(format!(
+            "{tag}-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&p).unwrap();
+        Scratch(p)
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A child session at `at`, held under a parent cell at the same point.
+fn child_at(
+    dir: &Scratch,
+    id: &str,
+    at: Mode,
+) -> Option<(Harness, Arc<std::sync::Mutex<Mode>>, std::path::PathBuf)> {
+    let gguf = crate::vocab_gguf()?;
+    let path = dir.0.join("sessions.db");
+    let mut cfg = Config::for_this_box(&dir.0);
+    cfg.dialect = crate::Dialect::Qwen;
+    cfg.store = Some(path.clone());
+    cfg.session_id = id.into();
+    cfg.vocab_gguf = Some(gguf);
+    cfg.parent_session_id = Some("s-parent".into());
+    cfg.mode = at;
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    let mut h = Harness::open(&parts, cfg, Hub::new(id)).expect("the session opens");
+    let parent = Arc::new(std::sync::Mutex::new(at));
+    h.follow_parent(parent.clone());
+    Some((h, parent, path))
+}
+
+fn warnings(hub: &Arc<Hub>, code: &str) -> Vec<String> {
+    hub.retained()
+        .iter()
+        .filter_map(|e| match &e.event {
+            SessionEvent::Warning {
+                code: c, detail, ..
+            } if c == code => Some(detail.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_child_cannot_widen_past_its_parent_by_mode_or_by_the_bridge() {
+    let dir = Scratch::new("child-mode-widen");
+    let Some((mut h, _parent, path)) = child_at(&dir, "s-parent-sub-1", Mode::WRITES_ALLOWED)
+    else {
+        return;
+    };
+    assert_eq!(h.parent_mode(), Some(Mode::WRITES_ALLOWED));
+
+    // `/mode`, taken by the session's own turn.
+    let head = h.hub.attach("tui", "dead", Default::default(), 0);
+    h.hub.submit(
+        &head.head_id,
+        "m1",
+        0,
+        letibot_sessionlog::hub::CommandKind::Mode {
+            name: "allow-all".into(),
+            consented: true,
+        },
+    );
+    h.apply_queued_mode();
+    assert_eq!(
+        h.config().mode,
+        Mode::WRITES_ALLOWED,
+        "the child stayed put"
+    );
+    let refused = warnings(&h.hub, "mode_set_refused");
+    assert!(
+        refused
+            .iter()
+            .any(|w| w.contains("wider than this session's parent")
+                && w.contains(&format!("`{}`", Mode::WRITES_ALLOWED.name))),
+        "the refusal names the parent's point: {refused:?}"
+    );
+    let rows = crate::modes::ModeStore::load(&path);
+    assert!(
+        rows.session("s-parent-sub-1").is_none(),
+        "a refused point writes no session row"
+    );
+    assert_ne!(
+        rows.for_project(h.workspace()).name,
+        Mode::ALLOW_ALL.name,
+        "and no project row"
+    );
+
+    // `leticode_mode`, which the bridge sends as a confirmation request.
+    let e = h
+        .ask_mode_confirm("allow-all", "head-bridge", "bridge", "r1")
+        .expect_err("the bridge's door is refused too");
+    assert!(e.contains("wider than this session's parent"), "{e}");
+    assert_eq!(h.config().mode, Mode::WRITES_ALLOWED);
+
+    // The direct door, and narrowing, which is always allowed.
+    assert!(h.set_mode(Mode::ALLOW_ALL).is_err());
+    h.set_mode(Mode::READ_ONLY).expect("a child may narrow");
+    h.set_mode(Mode::WRITES_ALLOWED)
+        .expect("and come back up to its parent's point");
+}
+
+#[test]
+fn a_parent_that_narrows_narrows_its_child() {
+    let dir = Scratch::new("child-mode-narrow");
+    let Some((mut h, parent, _path)) = child_at(&dir, "s-parent-sub-2", Mode::WRITES_ALLOWED)
+    else {
+        return;
+    };
+    *parent.lock().unwrap() = Mode::READ_ONLY;
+    h.narrow_to_parent();
+    assert!(
+        h.config().mode.no_wider_than(Mode::READ_ONLY),
+        "the child follows its parent down, at {}",
+        h.config().mode.name
+    );
+    let said = warnings(&h.hub, "mode_set");
+    assert!(
+        said.iter()
+            .any(|w| w.contains(&format!("the parent moved to `{}`", Mode::READ_ONLY.name))),
+        "the child says why it moved: {said:?}"
+    );
+    // And it cannot go back up past the parent.
+    assert!(h.set_mode(Mode::WRITES_ALLOWED).is_err());
+}

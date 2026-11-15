@@ -2189,6 +2189,12 @@ impl Harness {
         // is AT rather than the one it opened at. Built here, after the mode is final.
         let point_cell: Arc<std::sync::Mutex<letibot_tools::mode::Mode>> =
             Arc::new(std::sync::Mutex::new(cfg.mode));
+        // A child's ceiling until its spawn hands over the parent's live cell: the point it opened
+        // at, which the open already clamped to the parent's.
+        let parent_ceiling = cfg
+            .parent_session_id
+            .as_ref()
+            .map(|_| Arc::new(std::sync::Mutex::new(cfg.mode)));
         // The slot a child of this session hands its survivors to - this session's process host,
         // filled once the backend has one, `tree_watch_slot`'s reason: a child's estate is settled
         // against the session that outlives it, and a leftover with nowhere to go is an orphan.
@@ -3671,6 +3677,7 @@ impl Harness {
             local_window: None,
             local_window_cell: local_window_cell.clone(),
             point_cell: point_cell.clone(),
+            parent_point: parent_ceiling,
             // Captured from the pre-move `cfg` and `parts` above: everything `/models local` returns to, held before
             // the first switch can overwrite it. A return needs a record and cannot re-derive.
             own_server,

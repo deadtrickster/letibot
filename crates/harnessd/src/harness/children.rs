@@ -3951,6 +3951,9 @@ impl HarnessTaskRunner {
             self.registry.clone(),
         )
         .map_err(|e| fail(e.to_string()))?;
+        // Held under this session's live point, so a `/mode` on the child cannot widen past it and
+        // a later narrowing here narrows the child too.
+        sub.follow_parent(self.point.clone());
         // Open. Now it is a session a head can switch into, and now it is running. Adopted into the REGISTRY and
         // not into `Sessions::open`, which is the constraint: a head can peek and attach while the daemon holds
         // no harness for it, and the daemon serves it by handing the wake to the thread that owns it.

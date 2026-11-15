@@ -462,6 +462,9 @@ pub struct Harness {
     /// runner holds a clone of this config taken at open, and `/mode` moves the point without touching
     /// that clone, so a child spawned after a move would come up at the old point.
     point_cell: Arc<std::sync::Mutex<letibot_tools::mode::Mode>>,
+    /// The ceiling a child's point is held under: its parent's `point_cell` once the spawn hands it
+    /// over, else the point it opened at. `None` for a root session.
+    parent_point: Option<Arc<std::sync::Mutex<letibot_tools::mode::Mode>>>,
     /// The model this session switched away from, kept until a round proves the new one works, so a
     /// switch that fails says how to go back. Without it the operator had to remember what the session
     /// had been on and type it back by hand.
@@ -749,6 +752,7 @@ impl Harness {
                         unconfined `allow-all` cannot be confirmed against it"
                 .into());
         }
+        self.within_parent(mode)?;
         let dropped = self.gate().set_mode(mode)?;
         let mut said = format!("this session is at `{}` from the next call", mode.name);
         if vouched {
@@ -787,6 +791,102 @@ impl Harness {
         Ok(said)
     }
 
+    /// The parent's point as it stands now, for a child; `None` for a root session.
+    pub fn parent_mode(&self) -> Option<letibot_tools::mode::Mode> {
+        self.parent_point
+            .as_ref()
+            .map(|c| *c.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    /// Refuse a point wider than the parent's: a child's point only narrows, and it is refused by
+    /// name rather than clamped, so the asker learns what holds it.
+    fn within_parent(&self, mode: letibot_tools::mode::Mode) -> Result<(), String> {
+        match self.parent_mode() {
+            Some(parent) if !mode.no_wider_than(parent) => Err(format!(
+                "`{}` is wider than this session's parent, which is at `{}`: a child's point only \
+                 narrows. Nothing was changed; move the parent first, or pick a point no wider \
+                 than `{}`",
+                mode.name, parent.name, parent.name
+            )),
+            _ => Ok(()),
+        }
+    }
+
+    /// The same refusal for the point a `/mode` names, before anything is written for it.
+    pub fn mode_past_parent(
+        &self,
+        mode: letibot_tools::mode::Mode,
+        consented: bool,
+    ) -> Result<(), String> {
+        let unconfined = self
+            .supplies
+            .as_ref()
+            .is_some_and(|(have, _)| !have.contains(&letibot_tools::mode::Prereq::Confinement));
+        let effective =
+            if consented && unconfined && mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name {
+                letibot_tools::mode::Mode::ALLOW_ALL_HERE
+            } else {
+                mode
+            };
+        self.within_parent(effective)
+    }
+
+    /// Hold this child under its parent's live point from now on, and narrow it at once if the
+    /// parent already moved.
+    pub(crate) fn follow_parent(&mut self, cell: Arc<std::sync::Mutex<letibot_tools::mode::Mode>>) {
+        self.parent_point = Some(cell);
+        self.narrow_to_parent();
+    }
+
+    /// A parent that narrowed narrows its live children: each moves, at its next call, to the
+    /// nearest point its seat can carry that is no wider than the parent's, and says so.
+    pub(crate) fn narrow_to_parent(&mut self) {
+        let Some(parent) = self.parent_mode() else {
+            return;
+        };
+        if self.cfg.mode.no_wider_than(parent) {
+            return;
+        }
+        let from = self.cfg.mode.name;
+        let target = match &self.supplies {
+            Some((have, seats)) => parent
+                .inherited_by(have, *seats, self.cfg.seat.as_str())
+                .mode(),
+            None => parent,
+        };
+        match self.set_mode_consented(target, false) {
+            Ok(said) => {
+                self.mode_source = "narrowed with its parent".into();
+                self.publish_settings();
+                if let Err(e) = self
+                    .mode_store
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .set_session(&self.cfg.session_id, target, None)
+                {
+                    self.warn(
+                        "mode_unpersisted",
+                        format!("could not record `{}` for this session: {e}", target.name),
+                    );
+                }
+                self.warn_mode(
+                    "mode_set",
+                    format!(
+                        "the parent moved to `{}`, so this session moved from `{from}`: {said}",
+                        parent.name
+                    ),
+                );
+            }
+            Err(why) => self.warn_mode(
+                "mode_set_refused",
+                format!(
+                    "the parent moved to `{}` and this session could not follow from `{from}`: {why}",
+                    parent.name
+                ),
+            ),
+        }
+    }
+
     /// Does the point asked for need a PERSON's answer here: the two facts `set_mode_consented` reads
     /// from `supplies`, asked on their own. A session that recorded no supplies is answered `true`, the
     /// fail-closed direction, because consent cannot be honoured against a list nobody computed.
@@ -811,6 +911,7 @@ impl Harness {
         client_request_id: &str,
     ) -> Result<(), String> {
         let mode = letibot_tools::mode::Mode::parse(name)?;
+        self.mode_past_parent(mode, true)?;
         let session = self.cfg.session_id.clone();
         // The id is the asker's own request name with the head in front of it: unique across
         // heads, and one the asking connection can correlate by without being told.
