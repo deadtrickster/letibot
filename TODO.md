@@ -901,11 +901,15 @@ Idea: a background poll of the usage endpoint, cached the way `listed_models` (`
 
 **Still open?** `grep -rn 'usage::' crates --include=*.rs` shows only the refusal path.
 
-**Approaching a limit is said before the refusal** (operator, 2026-11-15: "would be nice if im shown im approaching limits"):
-- When a polled window crosses 80%, and again at 95%, the session gets one notice: `kimi 5h at 82% · resets 07:07`. The operator sees it in the head and the model sees it as a fact.
+**Approaching a limit is said before the refusal** (operator, 2026-11-15: "would be nice if im shown im approaching limits ... like say im 80% of my 5h limit or 70% of my weekly/monthly limit"):
+- **Thresholds are per window kind, with these defaults:**
+  - the 5h window warns at 80%;
+  - weekly and monthly windows warn at 70%.
+- Each window kind also gets a second, later warning at 95%.
+- A crossing gives the session one notice, e.g. `kimi 5h at 82% · resets 07:07` or `glm weekly at 71% · resets Mon 08:00`. The operator sees it in the head, and the model sees it as a fact.
 - The status row's usage figure changes colour at the same thresholds.
-- Each threshold is said once per window, and is said again after the reset.
-- Both thresholds are `[provider]` keys.
+- **Each threshold is said once per window,** and said again after that window resets.
+- **Config:** `[provider.usage_warn]` with keys `5h`, `weekly`, `monthly`, each a list such as `[80, 95]`, plus a per-preset override.
 
 **Done when:** with a Kimi preset active, the status row and the model card show the window's use and reset from a cached poll, a test against a fake endpoint checks the rendering and the cache, and no poll runs for a preset with no `usage_url`.
 
