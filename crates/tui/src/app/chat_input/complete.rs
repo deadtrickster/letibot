@@ -51,7 +51,12 @@ pub(crate) struct RoomComplete {
     pub verbs: Vec<(String, String)>,
     /// The bridge's aliases as `(insert, note)`: `@cc` hears every folder.
     pub aliases: Vec<(String, String)>,
+    /// Where `@path` completion walks; empty is this process's directory.
+    pub workspace: String,
 }
+
+/// The most entries one `@path` walk visits: a Tab must answer at once in a large tree.
+const FILE_WALK_LIMIT: usize = 20_000;
 
 /// The completion a Tab opened: the answer, which candidate is in the line, and the line that
 /// candidate wrote. A character typed on makes the line differ, and the next Tab asks fresh.
@@ -76,10 +81,16 @@ impl Complete for RoomComplete {
             };
         }
         if let Some((from, frag)) = at_fragment(text, cursor) {
+            // A path-like fragment is a file and anything else a handle. Files only for paths,
+            // so the chat layer's roster answer stays the native one and a `@cc` stays a handle.
+            let candidates = match pathish(frag) {
+                true => self.files_for(frag),
+                false => self.people_for(frag),
+            };
             return Completion {
                 from,
                 to: cursor,
-                candidates: self.people_for(frag),
+                candidates,
             };
         }
         Completion::default()
@@ -169,6 +180,87 @@ impl RoomComplete {
             .map(|(_, _, _, candidate)| candidate)
             .collect()
     }
+}
+
+impl RoomComplete {
+    /// The `@path` candidates: files under the workspace, `.gitignore` honoured as `grep` honours
+    /// it, ranked by name prefix, path prefix, substring, then in-order letters. A fragment with
+    /// a directory part walks that directory, so a named ignored tree is still offered.
+    fn files_for(&self, frag: &str) -> Vec<Candidate> {
+        let ws = match self.workspace.is_empty() {
+            true => std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+            false => std::path::PathBuf::from(&self.workspace),
+        };
+        let (dir_part, needle) = match frag.rfind('/') {
+            Some(i) => (&frag[..=i], &frag[i + 1..]),
+            None => ("", frag),
+        };
+        let dir = match dir_part.strip_prefix("~/") {
+            Some(rest) => {
+                std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(rest)
+            }
+            None => ws.join(dir_part),
+        };
+        // A directory part that is not a directory is a fuzzy needle over the whole tree.
+        let (dir, prefix, needle) = if dir.is_dir() {
+            (dir, dir_part, needle.to_lowercase())
+        } else {
+            (ws, "", frag.to_lowercase())
+        };
+        let walk = ignore::WalkBuilder::new(&dir)
+            .hidden(false)
+            .require_git(false)
+            // `.gitignore` files only, the set the `grep` and `glob` tools read.
+            .git_global(false)
+            .ignore(false)
+            .filter_entry(|e| e.file_name() != ".git")
+            .build();
+        let mut found: Vec<(u8, String)> = Vec::new();
+        for e in walk.flatten().take(FILE_WALK_LIMIT) {
+            if !e.file_type().is_some_and(|t| t.is_file()) {
+                continue;
+            }
+            let Ok(rel) = e.path().strip_prefix(&dir) else {
+                continue;
+            };
+            let rel = rel.to_string_lossy().to_string();
+            if let Some(rank) = file_rank(&needle, &rel) {
+                found.push((rank, rel));
+            }
+        }
+        found.sort_by(|(ra, a), (rb, b)| (ra, a.len(), a).cmp(&(rb, b.len(), b)));
+        found
+            .into_iter()
+            .take(TOP)
+            .map(|(_, rel)| Candidate {
+                insert: format!("@{prefix}{rel}"),
+                ..Candidate::default()
+            })
+            .collect()
+    }
+}
+
+/// A fragment that names a path rather than a handle, by the shell completion's own test.
+fn pathish(frag: &str) -> bool {
+    frag.starts_with(['.', '~']) || frag.contains('/')
+}
+
+/// How well a needle matches a relative path: `0` the file name starts with it, `1` the path
+/// does, `2` it occurs, `3` its letters occur in order, `None` not at all.
+fn file_rank(needle: &str, rel: &str) -> Option<u8> {
+    let hay = rel.to_lowercase();
+    let name = hay.rsplit('/').next().unwrap_or(&hay);
+    if name.starts_with(needle) {
+        return Some(0);
+    }
+    if hay.starts_with(needle) {
+        return Some(1);
+    }
+    if hay.contains(needle) {
+        return Some(2);
+    }
+    let mut it = hay.chars();
+    needle.chars().all(|c| it.any(|h| h == c)).then_some(3)
 }
 
 /// How well a needle matches: `0` at the front, `1` anywhere, `None` not at all. Case-blind,

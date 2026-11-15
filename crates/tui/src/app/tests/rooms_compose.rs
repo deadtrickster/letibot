@@ -407,6 +407,58 @@ fn a_pasted_picture_becomes_a_chip_and_a_blob_reference() {
     assert_eq!(blobs, vec![BLOB.to_string()], "the say carries the id");
 }
 
+/// A path-like `@` fragment completes files under the workspace, `.gitignore` honoured unless
+/// the fragment names the ignored directory, and a handle still completes as a handle.
+#[test]
+fn at_a_path_completes_files_and_a_handle_stays_a_handle() {
+    let d = std::env::temp_dir().join(format!(
+        "letibot-at-file-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0)
+    ));
+    for (p, body) in [
+        (".gitignore", "gen/\n"),
+        ("src/main.rs", ""),
+        ("src/lib.rs", ""),
+        ("gen/out.rs", ""),
+    ] {
+        let f = d.join(p);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(f, body).unwrap();
+    }
+    let mut a = opened(1_000);
+    host_roster(&mut a);
+    a.wiring.workspace = d.to_string_lossy().to_string();
+    let inserts = |a: &App| -> Vec<String> {
+        a.rooms_completion()
+            .map(|c| c.candidates.iter().map(|c| c.insert.clone()).collect())
+            .unwrap_or_default()
+    };
+
+    a.set_composer("see @src/ma");
+    assert!(a.rooms_complete(), "tab completes the path");
+    assert_eq!(a.input(), "see @src/main.rs");
+
+    a.set_composer("@./out");
+    a.rooms_complete();
+    assert!(
+        !inserts(&a).iter().any(|i| i.contains("gen/out.rs")),
+        "an ignored file is not offered: {:?}",
+        inserts(&a)
+    );
+    a.set_composer("@gen/");
+    assert!(a.rooms_complete(), "a named ignored directory is walked");
+    assert_eq!(a.input(), "@gen/out.rs");
+
+    a.set_composer("@cc");
+    assert!(a.rooms_complete());
+    assert_eq!(inserts(&a).first().map(String::as_str), Some("@cc"));
+    let _ = std::fs::remove_dir_all(&d);
+}
+
 // ─────────────────────────── the completion row ───────────────────────────
 
 /// An implementation of `Complete` that is not the room's: the row draws what it answers, so any

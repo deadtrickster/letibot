@@ -25,6 +25,8 @@ letibot-http.workspace = true
 letibot-metrics.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+# `@path` completion in the room composer walks the workspace with grep's `.gitignore` rules.
+ignore = "0.4"
 # The daemon's pid off the socket (`getsockopt`, in the driver) and the local clock
 # (`localtime_r`). Raw mode and the window size are rano's now (`rano::term`). `libc` is
 # already in the tree via the token core.

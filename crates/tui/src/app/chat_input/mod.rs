@@ -294,6 +294,7 @@ impl App {
             people,
             verbs,
             aliases,
+            workspace: self.wiring.workspace.clone(),
         }
     }
 
