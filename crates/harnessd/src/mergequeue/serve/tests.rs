@@ -1510,6 +1510,80 @@ fn a_red_target_in_one_repository_does_not_stop_another() {
     );
 }
 
+/// A re-gate of a red tip is not a verdict: until it says green, a branch is not claimed for a
+/// review whose approval the same red would spend at once. On 2026-11-15 one rano row got three
+/// reviewers in 16 minutes this way, each claimed in the window of an operator's re-gate.
+#[test]
+fn a_red_tip_being_gated_again_still_holds_its_branch_reviews() {
+    for (halted, tag) in [(true, "regate-red"), (false, "regate-plain")] {
+        let w = World::new(tag);
+        let (wt, base, head) = branch(&w.repo, "two", "two.txt");
+        w.enqueue("two", &wt, &base, &head);
+        // An unjudged retry row, so the pass reads it and starts no gate of its own.
+        let mut evidence = format!("{UNJUDGED_RETRY}: the host did not answer");
+        if halted {
+            evidence = format!("{evidence}; {STILL_HALTED}");
+        }
+        w.store()
+            .set_target_health(
+                &TargetHealth {
+                    repository: w.key(),
+                    target: "main".into(),
+                    sha: w.tip(),
+                    state: HealthState::Gating,
+                    checked_ms: gate::now_ms(),
+                    evidence,
+                    gate_steps: vec![],
+                },
+                "test",
+            )
+            .unwrap();
+        let q = w.worker(Arc::new(LocalGate), "a");
+        run(&q, 1);
+        let two = w.store().review_row("two").unwrap().unwrap();
+        let want = match halted {
+            true => ReviewState::Waiting,
+            false => ReviewState::Reviewing,
+        };
+        assert_eq!(two.state, want, "{tag}: {two:?}");
+    }
+}
+
+/// Both re-gate doors mark a red tip as still halting, and neither marks a tip that was not red.
+#[test]
+fn both_regate_doors_keep_a_red_tip_halting() {
+    let w = World::new("regate-doors");
+    let red = |sha: String| TargetHealth {
+        repository: w.key(),
+        target: "main".into(),
+        sha,
+        state: HealthState::Red,
+        checked_ms: gate::now_ms(),
+        evidence: "red".into(),
+        gate_steps: vec![],
+    };
+    let health = || w.store().target_health(&w.key(), "main").unwrap().unwrap();
+    w.store().set_target_health(&red(w.tip()), "test").unwrap();
+    crate::mergequeue::verbs::regate_at_start(&w.store(), &w.key(), "test/a").unwrap();
+    assert!(halts_reviews(&health()), "{:?}", health());
+    w.store().set_target_health(&red(w.tip()), "test").unwrap();
+    crate::mergequeue::verbs::regate(&w.store(), &w.key(), "main", "operator:s-1", &|_| {})
+        .unwrap();
+    assert!(halts_reviews(&health()), "{:?}", health());
+    w.store()
+        .set_target_health(
+            &TargetHealth {
+                state: HealthState::Green,
+                ..red(w.tip())
+            },
+            "test",
+        )
+        .unwrap();
+    crate::mergequeue::verbs::regate(&w.store(), &w.key(), "main", "operator:s-1", &|_| {})
+        .unwrap();
+    assert!(!halts_reviews(&health()), "{:?}", health());
+}
+
 // ===== : a gate that cannot judge, a rewritten target, a re-gate =====
 
 /// A gate whose build and tests passed and which then found no binary is UNJUDGED, not red

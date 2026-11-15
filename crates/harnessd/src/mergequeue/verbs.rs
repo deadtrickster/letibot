@@ -565,7 +565,16 @@ pub fn regate(
         ),
         None => "it was never gated".to_string(),
     };
-    let why = format!("re-gate asked by {who}: {was}");
+    let was_red = before
+        .as_ref()
+        .is_some_and(|h| h.sha == tip && super::serve::halts_reviews(h));
+    let why = match was_red {
+        true => format!(
+            "re-gate asked by {who}: {was}; {}",
+            super::serve::STILL_HALTED
+        ),
+        false => format!("re-gate asked by {who}: {was}"),
+    };
     store
         .set_target_health(
             &TargetHealth {
@@ -632,11 +641,14 @@ pub fn regate_at_start(store: &Store, repository: &str, who: &str) -> Result<Vec
         {
             continue;
         }
-        let why = format!(
+        let mut why = format!(
             "re-gated as this daemon took the queue: the last verdict was `{}` at {}",
             h.state.as_str(),
             h.sha
         );
+        if h.state == HealthState::Red {
+            why = format!("{why}; {}", super::serve::STILL_HALTED);
+        }
         store
             .set_target_health(
                 &TargetHealth {

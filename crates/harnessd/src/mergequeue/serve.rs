@@ -46,6 +46,17 @@ pub const UNJUDGED_RETRY: &str = "the gate could not run on this pass";
 /// dialled on every pass (the loop goes again at once when it worked).
 pub const UNJUDGED_RETRY_MS: u64 = 60 * 1000;
 
+/// Carried by a `gating` row that re-gates a red tip. A re-gate is not a verdict, so the
+/// branches behind it stay held: a review claimed in that window had its approval spent the
+/// moment the same red came back.
+pub const STILL_HALTED: &str = "its review queue stays halted until this gate says green";
+
+/// A target that halts its review queue: red, or gating a tip that was red.
+pub fn halts_reviews(h: &TargetHealth) -> bool {
+    h.state == HealthState::Red
+        || (h.state == HealthState::Gating && h.evidence.contains(STILL_HALTED))
+}
+
 /// The clause a merge row leads with when the TRAIN it rode in was red - its own gate has
 /// not run, and it is next in line to be gated alone. It is what keeps a red train from
 /// becoming a loop
@@ -729,7 +740,7 @@ impl RepoQueue {
             .store
             .target_healths()?
             .into_iter()
-            .filter(|h| h.repository == self.key && h.state == HealthState::Red)
+            .filter(|h| h.repository == self.key && halts_reviews(h))
             .map(|h| h.target)
             .collect())
     }
@@ -1681,13 +1692,20 @@ impl RepoQueue {
         {
             return Ok(Health::Known(h, false));
         }
+        let was_red = self
+            .store
+            .target_health(&self.key, target)?
+            .is_some_and(|old| old.sha == tip && halts_reviews(&old));
         let mut h = TargetHealth {
             repository: self.key.clone(),
             target: target.into(),
             sha: tip.clone(),
             state: HealthState::Gating,
             checked_ms: now,
-            evidence: format!("gating `{target}`'s tip"),
+            evidence: match was_red {
+                true => format!("gating `{target}`'s tip; {STILL_HALTED}"),
+                false => format!("gating `{target}`'s tip"),
+            },
             gate_steps: vec![],
         };
         self.store.set_target_health(&h, &me)?;
@@ -1789,11 +1807,15 @@ impl RepoQueue {
         steps: Vec<letibot_tokencore::store::MergeGateStep>,
     ) -> Result<(), StoreError> {
         let me = self.me().to_string();
+        let was_red = halts_reviews(&h);
         h.state = HealthState::Gating;
+        let halt = match was_red {
+            true => format!("the tip was red before this gate, so {STILL_HALTED}"),
+            false => "the queue is not halted by it".to_string(),
+        };
         h.evidence = format!(
             "{UNJUDGED_RETRY}: {why}\n\nNothing was judged about the code — the tip is UNJUDGED, \
-             not red, and the queue is not halted by it. It is gated again on the next pass once \
-             {} s have passed.",
+             not red, and {halt}. It is gated again on the next pass once {} s have passed.",
             UNJUDGED_RETRY_MS / 1000
         );
         h.gate_steps = steps;
