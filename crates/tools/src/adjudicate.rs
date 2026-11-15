@@ -3096,6 +3096,9 @@ impl Gate for AdjudicatedGate {
                     self.record(req, d, "refuse", direction.key());
                     return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
                 }
+                // An always-ask call is asked whatever a rule says: only the operator taking an
+                // entry off the always-ask list changes that, never an allow written beside it.
+                crate::permission::Action::Allow if matches!(req.tier, Tier::AlwaysAsk { .. }) => {}
                 crate::permission::Action::Allow if unconfined_code.is_none() => {
                     let d = AdjudicationDecision::selected(
                         &req,
@@ -3617,11 +3620,12 @@ fn derived_pattern(
     baseline: &crate::intent::Baseline,
     rules: &crate::permission::Ruleset,
 ) -> Option<String> {
+    // A path is as narrow as the call already; one holding a wildcard character is not.
     let Some(cmd) = call.args.get("command").and_then(|v| v.as_str()) else {
-        return Some(permission_pattern(call.name, call.args));
+        return exact_path_rule(permission_pattern(call.name, call.args));
     };
     if call.access != Access::Exec {
-        return Some(permission_pattern(call.name, call.args));
+        return exact_path_rule(permission_pattern(call.name, call.args));
     }
     if !crate::permission::a_durable_rule_can_apply(cmd) {
         return None;
@@ -3637,21 +3641,18 @@ fn derived_pattern(
     {
         return None;
     }
-    if !rules.is_empty() {
-        return crate::permission::the_rule_that_admits(cmd, &[rules]);
+    // A command layer A could not read gets no offer.
+    baseline.command.as_ref()?;
+    crate::permission::the_rule_that_admits(cmd, &[rules])
+}
+
+/// The rule for a tool's own pattern: `*` for a tool with no path, the path itself otherwise,
+/// and nothing for a path a wildcard would widen.
+fn exact_path_rule(pattern: String) -> Option<String> {
+    if pattern != "*" && pattern.contains(['*', '?']) {
+        return None;
     }
-    // The parse when there is one, and nothing when there is not: a command layer A could
-    // not read gets no offer rather than the raw string's first token.
-    baseline
-        .command
-        .as_ref()
-        .and_then(|n| n.stages.last())
-        .and_then(|stage| {
-            stage.program_name().map(|program| {
-                let first = stage.argv.first().and_then(|w| w.literal());
-                crate::permission::always_pattern_for_stage(program, first)
-            })
-        })
+    Some(pattern)
 }
 
 /// A baseline's command as a shape, when it has one. One place, so the key a decision is

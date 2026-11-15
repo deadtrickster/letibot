@@ -371,8 +371,11 @@ asked to stop being prompted about git, the model writes the list split by what 
 
 - it is shown in class terms before it is accepted - *"this matches 47 commands, including 3 that can
   execute arbitrary code"* - which is informed foot-shooting rather than blind;
-- it can reach `MayApprove` and `AlwaysAsk`; it can never reach `Blocked`. You can shoot your foot;
-  you cannot shoot your head;
+- it can reach `MayApprove`; it never reaches `AlwaysAsk` or `Blocked`. The always-ask list wins
+  over any allow, and only the operator taking an entry off that list changes it;
+- its wildcard never stands for a flag that turns a reader into a write or an exec (`sed -i`,
+  `sort -o`, `git grep -O`): the operator's literal text can name one, a `*` cannot;
+- the derived *Always allow* rule is the answered call exactly, never `program*`;
 - it never covers an unresolvable normalisation: if layer A could not read the command, no pattern
   agrees with it, and the refusal reads the resolution flag rather than the verdict.
 

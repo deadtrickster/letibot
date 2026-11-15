@@ -549,7 +549,7 @@ fn a_compound_commands_durable_rule_names_the_last_stage_not_the_cd() {
         .find(|o| o.id == "allow_always")
         .expect("a segmentable command still offers the durable rule");
     assert!(
-        always.label.contains("cargo test*"),
+        always.label.contains("`cargo test -p letibot-tools`"),
         "names the stage that carries the authority: {}",
         always.label
     );
@@ -626,8 +626,8 @@ fn the_always_allow_label_shows_the_rule_it_writes() {
         .find(|o| o.id == "allow_always")
         .expect("exec offers the durable rule");
     assert!(
-        always.label.contains("cargo test*"),
-        "the label names the derived pattern, program and verb: {}",
+        always.label.contains("`cargo test -p letibot-tools`"),
+        "the label names the derived rule, the call exactly: {}",
         always.label
     );
     assert!(
@@ -661,10 +661,10 @@ fn the_always_allow_label_shows_the_rule_it_writes() {
     );
 }
 
-/// The answer writes a rule over the program and its verb, the rule admits the next call before
-/// the mode is consulted, and a compound hiding a second command behind the prefix still asks.
+/// The answer writes a rule for exactly the call that was answered, the rule admits that call
+/// again before the mode is consulted, and a different call of the same program still asks.
 #[test]
-fn always_allow_on_an_exec_call_becomes_a_prefix_rule_that_is_written_down() {
+fn always_allow_on_an_exec_call_becomes_an_exact_rule_that_is_written_down() {
     let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let a = asked.clone();
     let written: std::sync::Arc<std::sync::Mutex<Vec<crate::permission::Rule>>> =
@@ -691,28 +691,73 @@ fn always_allow_on_an_exec_call_becomes_a_prefix_rule_that_is_written_down() {
     .with_surroundings(pinned())
     .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
     // `sed -i` and not `cargo run`: a command that runs the project's own code is not settled by a
-    // durable rule on a host with no boundary. `sed -n*` is on the shipped list and `sed -i` is
-    // not, so the first call asks and the rule answers the second.
+    // durable rule on a host with no boundary. `sed -i` is not on the shipped list, so it asks.
     let args = json!({"command": "sed -i s/x/y/ crates/tools/src/lib.rs"});
     assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
     assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
     let rules = written.lock().unwrap();
     assert_eq!(rules.len(), 1);
     assert_eq!(rules[0].permission, "bash");
-    assert_eq!(rules[0].pattern, "sed*");
+    assert_eq!(rules[0].pattern, "sed -i s/x/y/ crates/tools/src/lib.rs");
     drop(rules);
-    // The second, different `sed -i` is admitted by the rule, nobody asked.
-    let again = json!({"command": "sed -i s/a/b/ crates/tools/src/mode.rs"});
-    assert_eq!(g.admit(&bash(&again)), GateDecision::Admit);
+    // The same call is admitted by the rule, nobody asked.
+    assert_eq!(g.admit(&bash(&args)), GateDecision::Admit);
     assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
-    // A compound that hides a second command behind the prefix asks.
-    let hidden = json!({"command": "sed -i s/x/y/ f; rm -rf /w/elsewhere"});
+    // A different `sed -i` is a call the rule does not cover.
+    let rules = written.lock().unwrap().clone();
+    assert_eq!(
+        crate::permission::evaluate_bash("sed -i s/a/b/ crates/tools/src/mode.rs", &[&rules]),
+        crate::permission::Action::Ask
+    );
+    // A compound that hides a second command behind the rule asks.
+    let hidden = json!({"command": "sed -i s/x/y/ crates/tools/src/lib.rs; rm -rf /w/elsewhere"});
     assert_eq!(g.admit(&bash(&hidden)), GateDecision::Admit);
     assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 2);
     // And the shipped list admits a read-only git without asking at all.
     let ro = json!({"command": "git status --short"});
     assert_eq!(g.admit(&bash(&ro)), GateDecision::Admit);
     assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 2);
+}
+
+/// An allow rule never settles an always-ask call: `rm*` admits `rm a.txt` inside the project,
+/// and `rm -rf ~/x` is still put to a person.
+#[test]
+fn an_allow_rule_does_not_beat_always_ask() {
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let a = asked.clone();
+    let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+        "human",
+        move |req: &AdjudicationRequest| {
+            a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(AdjudicationDecision::selected(
+                req,
+                "deny_and_tell",
+                "human:test",
+                "no",
+            ))
+        },
+    )))
+    .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+    .with_permission(vec![crate::permission::Rule::new(
+        "bash",
+        "rm*",
+        crate::permission::Action::Allow,
+    )])
+    .with_surroundings(pinned())
+    .with_trail_source(|_| crate::authorise::AuthorisationTrail::from_messages(vec![], 1));
+    let inside = json!({"command": "rm /w/a.txt"});
+    assert_eq!(g.admit(&bash(&inside)), GateDecision::Admit);
+    assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 0);
+    let outside = json!({"command": "rm -rf /home/dead/x"});
+    assert_ne!(g.admit(&bash(&outside)), GateDecision::Admit);
+    assert_eq!(asked.load(std::sync::atomic::Ordering::Relaxed), 1);
+    let row = g.log.last().expect("a row");
+    assert!(
+        matches!(row.request.tier, Tier::AlwaysAsk { .. }),
+        "the premise: this call is always-ask, got {:?}",
+        row.request.tier
+    );
+    assert_ne!(row.decision.by, "gate:permission");
 }
 
 /// The operator's `$?` widens nothing: `echo` takes a string, not a place, so the command reads as

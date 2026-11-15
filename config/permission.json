@@ -120,7 +120,7 @@
     "sha256sum*": "allow",
     "md5sum*": "allow",
     "diff*": "allow",
-    "sort*": "allow",
+    "sort *": "allow",
     "uniq*": "allow",
     "tr *": "allow",
     "cut*": "allow",

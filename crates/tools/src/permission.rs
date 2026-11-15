@@ -321,7 +321,7 @@ pub fn evaluate_bash(command: &str, rulesets: &[&Ruleset]) -> Action {
     };
     let mut all_allowed = true;
     for seg in &segments {
-        match evaluate("bash", seg, rulesets).action {
+        match evaluate_segment(seg, rulesets) {
             Action::Deny => return Action::Deny,
             Action::Allow => {}
             Action::Ask if moves_only(seg) => {}
@@ -370,7 +370,7 @@ pub fn the_rule_that_admits(command: &str, rulesets: &[&Ruleset]) -> Option<Stri
     let segments = bash_segments(command)?;
     let mut missing: Vec<String> = Vec::new();
     for seg in &segments {
-        match evaluate("bash", seg, rulesets).action {
+        match evaluate_segment(seg, rulesets) {
             Action::Allow => {}
             Action::Deny => return None,
             Action::Ask if moves_only(seg) => {}
@@ -383,7 +383,7 @@ pub fn the_rule_that_admits(command: &str, rulesets: &[&Ruleset]) -> Option<Stri
                 return None;
             }
             Action::Ask => {
-                let p = always_pattern_for_command(seg);
+                let p = exact_rule_for(seg)?;
                 if !missing.contains(&p) {
                     missing.push(p);
                 }
@@ -404,58 +404,267 @@ pub fn a_durable_rule_can_apply(command: &str) -> bool {
     bash_segments(command).is_some()
 }
 
-/// The pattern an "always allow" answer over a `bash` command writes down: the program, its verb when it
-/// has verbs, and `*`, so `git status --short` gives `git status*`. It takes the first whitespace token,
-/// which is the program only for a single stage.
-pub fn always_pattern_for_command(command: &str) -> String {
-    let mut words = command.split_whitespace();
-    let Some(program) = words.next() else {
-        return "*".to_string();
-    };
-    always_pattern_for_stage(program, words.next())
+/// The rule an "always allow" answer over one simple command writes down: that command, exactly.
+/// A rule wider than the answered call would admit flags and paths nobody was shown, so `rm a.txt`
+/// never becomes `rm*`. `None` when the text holds a wildcard character, since a rule spelled
+/// with it would match more than this call.
+pub fn exact_rule_for(segment: &str) -> Option<String> {
+    let seg = segment.trim();
+    if seg.is_empty() || seg.contains(['*', '?']) {
+        return None;
+    }
+    Some(seg.to_string())
 }
 
-/// The same pattern from a stage the shell grammar already resolved. Two derivations of "which program is
-/// this" would disagree, and the durable rule is the one written to a file, so the caller passes the
-/// stage `grant_program` reads.
-pub fn always_pattern_for_stage(program: &str, first_arg: Option<&str>) -> String {
-    const VERBED: &[&str] = &[
-        "git",
-        "gh",
-        "cargo",
-        "go",
-        "npm",
-        "npx",
-        "pnpm",
-        "yarn",
-        "make",
-        "docker",
-        "kubectl",
-        "systemctl",
-        "rustup",
-        "pip",
-        "pip3",
-        "uv",
-        "poetry",
-        "flowy",
-        "firecode",
-        "letibot",
-        "leticode",
-        "apt",
-        "apt-get",
-        "brew",
-        "just",
-        "mise",
+/// A segment's action, with the one narrowing a prefix rule needs: its wildcard never stands for
+/// a flag that turns a reading program into a write or an exec (see [`write_or_exec_flag`]). The
+/// operator's literal text still wins, so `sort -o*` admits `sort -o out`, and a bare `*` is a
+/// blanket rule the operator wrote on purpose.
+fn evaluate_segment(seg: &str, rulesets: &[&Ruleset]) -> Action {
+    let rule = evaluate("bash", seg, rulesets);
+    if rule.action == Action::Allow && wildcard_admits_a_write(seg, &rule.pattern) {
+        return Action::Ask;
+    }
+    rule.action
+}
+
+/// Whether `pattern`'s wildcard part matched any of a write or exec flag in `seg`: a flag wholly
+/// inside the rule's literal text is one the operator spelled out.
+fn wildcard_admits_a_write(seg: &str, pattern: &str) -> bool {
+    if pattern == "*" {
+        return false;
+    }
+    let Some(literal) = pattern.find(['*', '?']) else {
+        return false;
+    };
+    write_or_exec_flag(seg).is_some_and(|w| w.end > literal)
+}
+
+/// One shell word: its span in the segment, and its text with the quotes taken off.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellWord {
+    pub at: usize,
+    pub end: usize,
+    pub text: String,
+}
+
+fn words_at(seg: &str) -> Vec<ShellWord> {
+    let mut out = Vec::new();
+    let mut cur: Option<ShellWord> = None;
+    let mut quote: Option<char> = None;
+    let mut chars = seg.char_indices();
+    while let Some((i, c)) = chars.next() {
+        let mut end = i + c.len_utf8();
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some('"') if c == '\\' => {
+                if let Some((j, n)) = chars.next() {
+                    end = j + n.len_utf8();
+                    if let Some(w) = cur.as_mut() {
+                        w.text.push(n);
+                    }
+                }
+            }
+            Some(_) => {
+                if let Some(w) = cur.as_mut() {
+                    w.text.push(c);
+                }
+            }
+            None if c.is_whitespace() => {
+                out.extend(cur.take());
+                continue;
+            }
+            None => {
+                let w = cur.get_or_insert_with(|| ShellWord {
+                    at: i,
+                    end: i,
+                    text: String::new(),
+                });
+                match c {
+                    '\'' | '"' => quote = Some(c),
+                    '\\' => {
+                        if let Some((j, n)) = chars.next() {
+                            end = j + n.len_utf8();
+                            w.text.push(n);
+                        }
+                    }
+                    _ => w.text.push(c),
+                }
+            }
+        }
+        if let Some(w) = cur.as_mut() {
+            w.end = end;
+        }
+    }
+    out.extend(cur);
+    out
+}
+
+/// The first flag or script in `seg` that writes a file or runs a command, for the readers the
+/// seed admits by prefix. `sed` is judged by an allow-list, since its script is a language with
+/// `w` and `e`: only the printing options and a print-only script are reads.
+pub fn write_or_exec_flag(seg: &str) -> Option<ShellWord> {
+    let words = words_at(seg);
+    let (program, args) = words.split_first()?;
+    let found = match program.text.as_str() {
+        "sed" => sed_write(args),
+        "sort" => short_or_long(args, "o", "ktST", &[("output", 1), ("compress-program", 2)]),
+        "git" => {
+            let (verb, rest) = args.split_first()?;
+            match verb.text.as_str() {
+                "grep" => short_or_long(rest, "O", "efABCm", &[("open-files-in-pager", 2)]),
+                "diff" | "log" | "show" => short_or_long(rest, "", "", &[("output", 3)]),
+                _ => None,
+            }
+        }
+        "tree" => args
+            .iter()
+            .take_while(|w| w.text != "--")
+            .find(|w| w.text.starts_with("-o") || w.text.starts_with("--o")),
+        "xxd" => args
+            .iter()
+            .find(|w| w.text.starts_with('-') && w.text.trim_start_matches('-').starts_with('r')),
+        _ => None,
+    };
+    found.cloned()
+}
+
+/// The first word that is a short option in `bad`, or a long option abbreviating one of `long`
+/// (each with the shortest prefix getopt takes). The value of a `takes_arg` short option is
+/// skipped rather than read as more options.
+fn short_or_long<'a>(
+    args: &'a [ShellWord],
+    bad: &str,
+    takes_arg: &str,
+    long: &[(&str, usize)],
+) -> Option<&'a ShellWord> {
+    let mut skip_next = false;
+    for w in args {
+        if std::mem::take(&mut skip_next) {
+            continue;
+        }
+        if w.text == "--" {
+            return None;
+        }
+        if let Some(name) = w.text.strip_prefix("--") {
+            let name = name.split('=').next().unwrap_or("");
+            if long
+                .iter()
+                .any(|(full, min)| name.len() >= *min && full.starts_with(name))
+            {
+                return Some(w);
+            }
+            continue;
+        }
+        let Some(group) = w.text.strip_prefix('-') else {
+            continue;
+        };
+        for (i, c) in group.char_indices() {
+            if bad.contains(c) {
+                return Some(w);
+            }
+            if takes_arg.contains(c) {
+                skip_next = i + c.len_utf8() == group.len();
+                break;
+            }
+        }
+    }
+    None
+}
+
+/// `sed`'s words, read against what only prints: `-n`, `-E`, `-r`, `-s`, `-u`, `-z` and their
+/// long names, and scripts of `p`, `q` and `=` over line and regex addresses.
+fn sed_write(args: &[ShellWord]) -> Option<&ShellWord> {
+    const READ_LONG: &[&str] = &[
+        "quiet",
+        "silent",
+        "regexp-extended",
+        "separate",
+        "unbuffered",
+        "null-data",
+        "zero-terminated",
+        "posix",
+        "sandbox",
+        "debug",
     ];
-    if program.is_empty() {
-        return "*".to_string();
+    let mut script_seen = false;
+    let mut options_done = false;
+    let mut it = args.iter();
+    while let Some(w) = it.next() {
+        let t = w.text.as_str();
+        if options_done || !t.starts_with('-') || t == "-" {
+            if !script_seen {
+                script_seen = true;
+                if !sed_prints_only(t) {
+                    return Some(w);
+                }
+            }
+            continue;
+        }
+        if t == "--" {
+            options_done = true;
+            continue;
+        }
+        if let Some(long) = t.strip_prefix("--") {
+            let (name, value) = match long.split_once('=') {
+                Some((n, v)) => (n, Some(v.to_string())),
+                None => (long, None),
+            };
+            if name == "expression" {
+                let script = value.or_else(|| it.next().map(|s| s.text.clone()));
+                script_seen = true;
+                if !sed_prints_only(&script.unwrap_or_default()) {
+                    return Some(w);
+                }
+            } else if name == "line-length" {
+                if value.is_none() {
+                    it.next();
+                }
+            } else if !READ_LONG.contains(&name) {
+                return Some(w);
+            }
+            continue;
+        }
+        let group = &t[1..];
+        for (i, c) in group.char_indices() {
+            match c {
+                'n' | 'E' | 'r' | 's' | 'u' | 'z' => {}
+                'e' | 'l' => {
+                    let rest = &group[i + 1..];
+                    let value = if rest.is_empty() {
+                        it.next().map(|s| s.text.clone()).unwrap_or_default()
+                    } else {
+                        rest.to_string()
+                    };
+                    if c == 'e' {
+                        script_seen = true;
+                        if !sed_prints_only(&value) {
+                            return Some(w);
+                        }
+                    }
+                    break;
+                }
+                _ => return Some(w),
+            }
+        }
     }
-    if VERBED.contains(&program)
-        && let Some(verb) = first_arg.filter(|v| !v.starts_with('-'))
-    {
-        return format!("{program} {verb}*");
-    }
-    format!("{program}*")
+    None
+}
+
+/// A `sed` script made only of printing commands: `p`, `q` and `=`, each behind at most a line
+/// range of numbers, `$` and `/regex/` addresses.
+fn sed_prints_only(script: &str) -> bool {
+    use std::sync::LazyLock;
+    static PRINT: LazyLock<regex::Regex> = LazyLock::new(|| {
+        let addr = r"(?:[0-9]+(?:~[0-9]+)?|\$|/[^/\\\n]*/)";
+        regex::Regex::new(&format!(r"^(?:{addr}\s*(?:,\s*{addr})?)?\s*!?\s*[pq=]$"))
+            .expect("the print-only pattern compiles")
+    });
+    script
+        .split([';', '\n'])
+        .map(str::trim)
+        .filter(|c| !c.is_empty())
+        .all(|c| PRINT.is_match(c))
 }
 
 /// `~/.config/letibot/permission.json`: the file an "always allow" answer appends to
@@ -650,21 +859,22 @@ mod tests {
         // `make` is the only stage not covered: that is the rule, not `head*`.
         assert_eq!(
             the_rule_that_admits("cd x && make -j8 2>&1 | head -20", &[&rs]).as_deref(),
-            Some("make*")
+            Some("make -j8 2>&1")
         );
         // Written, it admits: the next call does not ask.
-        let written = vec![Rule::new("bash", "make*", Action::Allow)];
+        let written = vec![Rule::new("bash", "make -j8 2>&1", Action::Allow)];
         assert_eq!(
             evaluate_bash("cd x && make -j8 2>&1 | head -20", &[&rs, &written]),
             Action::Allow
         );
         // Two unknown programs: no single rule covers them, so nothing is offered.
         assert_eq!(the_rule_that_admits("foo | bar", &[&rs]), None);
-        // The same unknown program twice is one rule.
+        // The same call twice is one rule, and two calls of one program are two.
         assert_eq!(
-            the_rule_that_admits("jq . a | jq .b", &[&rs]).as_deref(),
-            Some("jq*")
+            the_rule_that_admits("jq . a | jq . a", &[&rs]).as_deref(),
+            Some("jq . a")
         );
+        assert_eq!(the_rule_that_admits("jq . a | jq .b", &[&rs]), None);
         // A denied segment: an allow for the rest would change nothing.
         assert_eq!(the_rule_that_admits("make && rm x", &[&rs]), None);
         // A heredoc is never split, so no rule can answer it.
@@ -758,19 +968,83 @@ mod tests {
         assert_eq!(evaluate_bash("git status && git log", rs), Action::Deny);
     }
 
+    /// An always answer is about the call that was shown: one `rm a.txt` never admits another
+    /// `rm`, and a call spelled with a wildcard character gets no rule at all.
     #[test]
-    fn an_always_answer_writes_the_program_and_its_verb() {
+    fn an_always_answer_writes_the_exact_call() {
+        let none: Ruleset = Vec::new();
+        let rule = the_rule_that_admits("rm a.txt", &[&none]).unwrap();
+        assert_eq!(rule, "rm a.txt");
+        let written = vec![Rule::new("bash", rule, Action::Allow)];
+        assert_eq!(evaluate_bash("rm a.txt", &[&written]), Action::Allow);
+        for wider in ["rm -rf ~/x", "rm a.txt b.txt", "rm -rf a.txt"] {
+            assert_eq!(evaluate_bash(wider, &[&written]), Action::Ask, "{wider}");
+        }
         assert_eq!(
-            always_pattern_for_command("git status --short"),
-            "git status*"
+            the_rule_that_admits("git status --short", &[&none]).as_deref(),
+            Some("git status --short")
         );
-        assert_eq!(
-            always_pattern_for_command("cargo test -p x -- --nocapture"),
-            "cargo test*"
-        );
-        assert_eq!(always_pattern_for_command("ls -la"), "ls*");
-        assert_eq!(always_pattern_for_command("git -C x status"), "git*");
-        assert_eq!(always_pattern_for_command("python3 -m pytest"), "python3*");
+        assert_eq!(the_rule_that_admits("rm *.txt", &[&none]), None);
+        assert_eq!(the_rule_that_admits("ls a?b", &[&none]), None);
+    }
+
+    /// The seed's prefix rules admit their programs' reads and never the flag or script that
+    /// writes a file or runs a command.
+    #[test]
+    fn the_seed_admits_no_write_or_exec_flag() {
+        let d = seed();
+        let rs: &[&Ruleset] = &[&d];
+        for ok in [
+            "sed -n '1,40p' src/main.rs",
+            "sed -n 10p x",
+            "sed -nE '/^fn /p' x.rs",
+            "sed -n -e '$p' x",
+            "sed -n '/where/,/end/p;20q' x",
+            "sort -u x",
+            "sort -k2 -t , notes.csv",
+            "sort -rn counts",
+            "sort",
+            "git grep -n TODO",
+            "git grep -e Ordering -- crates",
+            "git diff --stat",
+            "git log --oneline -5",
+        ] {
+            assert_eq!(evaluate_bash(ok, rs), Action::Allow, "{ok}");
+        }
+        for ask in [
+            "sed -n -i s/a/b/ x",
+            "sed -ni s/a/b/ x",
+            "sed -n --in-place s/a/b/ x",
+            "sed -n -e 'w /tmp/out' x",
+            "sed -n '1w /tmp/out' x",
+            "sed -n 's/a/b/w /tmp/out' x",
+            "sed -n '1e rm -rf x' x",
+            "sed -n 's/a/b/e' x",
+            "sed -n -f script.sed x",
+            "sort -o out x",
+            "sort -uo out x",
+            "sort -oout x",
+            "sort --output=out x",
+            "sort --out=out x",
+            "sort --compress-program=sh x",
+            "sort --comp=sh x",
+            "git grep -O foo",
+            "git grep -Oless foo",
+            "git grep -iO foo",
+            "git grep --open-files-in-pager=vim foo",
+            "git grep --open foo",
+            "git diff --output=/tmp/x",
+            "git log --output /tmp/x",
+            "git show --output=/tmp/x HEAD",
+            "tree -o out",
+            "xxd -r in out",
+            "sortx -o out",
+        ] {
+            assert_eq!(evaluate_bash(ask, rs), Action::Ask, "{ask}");
+        }
+        // The operator's own literal text is honoured: the flag is spelled out in the rule.
+        let mine = vec![Rule::new("bash", "sort -o*", Action::Allow)];
+        assert_eq!(evaluate_bash("sort -o out x", &[&d, &mine]), Action::Allow);
     }
 
     #[test]
@@ -817,12 +1091,7 @@ mod tests {
     /// trusts, which is why [`SHELL_STATE`] is refused a durable rule.
     #[test]
     fn a_rule_over_export_would_admit_every_variable() {
-        assert_eq!(
-            always_pattern_for_command("export CARGO_TARGET_DIR=/w/target"),
-            "export*",
-            "the premise: this is what the derivation spelled"
-        );
-        // What that pattern matches: any variable at all, including the ones a later
+        // What `export*` matches: any variable at all, including the ones a later
         // program obeys.
         assert!(wildcard_match("export LD_PRELOAD=/tmp/evil.so", "export*"));
         assert!(wildcard_match("export BASH_ENV=/tmp/evil.sh", "export*"));
@@ -853,7 +1122,7 @@ mod tests {
         // nothing a later segment reads.
         assert_eq!(
             the_rule_that_admits("cd /w && frobnicate build", &[&seed()]),
-            Some("frobnicate*".to_string())
+            Some("frobnicate build".to_string())
         );
     }
 }
