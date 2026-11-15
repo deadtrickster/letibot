@@ -228,10 +228,13 @@ fn grown_schemas(was: &[String], is: &[String]) -> Vec<String> {
 }
 
 /// The row an automatic reseat leaves: what changed, in the stale card's terms.
-pub(crate) fn auto_reseated_line(instructions: bool, r: &ReseatReport) -> String {
+pub(crate) fn auto_reseated_line(instructions: bool, notes: bool, r: &ReseatReport) -> String {
     let mut moved: Vec<String> = Vec::new();
     if instructions {
         moved.push("the system instructions changed".into());
+    }
+    if notes {
+        moved.push("the standing notes or skill pins changed".into());
     }
     for (word, names) in [("added", &r.gained), ("gone", &r.lost), ("grew", &r.grew)] {
         if !names.is_empty() {
@@ -752,7 +755,8 @@ impl Harness {
         // The same sources the open read: instruction files through the session's backend, the
         // project's notes from the notes checkout.
         let files = crate::standing_notes::Reader::new(&*self.runtime.backend, &self.cfg.workspace)
-            .with_notes(self.cfg.project_notes());
+            .with_notes(self.cfg.project_notes())
+            .with_guidance(open::role_guidance(&self.cfg));
         let notes = crate::standing_notes::section_with_skills(
             &files,
             &self.cfg.global_notes(),
@@ -972,18 +976,28 @@ impl Harness {
             return None;
         }
         let next = self.reseat_candidate()?;
-        let want = prefix_fingerprint(self.cfg.seat, &next);
-        if want == prefix_fingerprint(self.cfg.seat, &self.prefix)
-            || self.auto_reseat_refused.as_deref() == Some(want.as_str())
-        {
+        // Two fingerprints, because a skill pin or a note is frozen in message 0 too and the
+        // card's own one strips them.
+        let want = format!(
+            "{}:{}",
+            prefix_fingerprint(self.cfg.seat, &next),
+            notes_fingerprint(&next)
+        );
+        let have = format!(
+            "{}:{}",
+            prefix_fingerprint(self.cfg.seat, &self.prefix),
+            notes_fingerprint(&self.prefix)
+        );
+        if want == have || self.auto_reseat_refused.as_deref() == Some(want.as_str()) {
             return None;
         }
         let was = self.prefix.clone();
         match self.reingest() {
             Ok(r) => {
                 let instructions = instructions_of(&was.system) != instructions_of(&next.system);
+                let notes = notes_fingerprint(&was) != notes_fingerprint(&next);
                 self.hub
-                    .warn("reseated", auto_reseated_line(instructions, &r));
+                    .warn("reseated", auto_reseated_line(instructions, notes, &r));
                 let text = reseated_for_the_model(false, &r);
                 self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
                 Some(TranscriptItem::User {

@@ -222,8 +222,8 @@ pub fn instructions_of(system: &str) -> String {
 }
 
 /// The fingerprint of a session's FROZEN prefix: the instructions, the tool schemas and the seat,
-/// and nothing else. The standing notes are stripped first, because they are re-read on every base
-/// rebuild and would report every session stale. A hash, because the same text must compare equal.
+/// and nothing else. The standing notes are stripped here and hashed apart by [`notes_fingerprint`],
+/// so the stored column stays comparable across builds. A hash, because equal text must compare equal.
 pub fn prefix_fingerprint(seat: Seat, prefix: &StablePrefix) -> String {
     let mut h = Sha256::new();
     h.update(seat.as_str().as_bytes());
@@ -235,6 +235,50 @@ pub fn prefix_fingerprint(seat: Seat, prefix: &StablePrefix) -> String {
         h.update([0]);
     }
     hex32(&h.finalize().into())
+}
+
+/// The standing-notes section's own fingerprint: skill pins and notes, which `prefix_fingerprint`
+/// strips. An automatic session reseats on it; a person is not carded for every note written.
+pub fn notes_fingerprint(prefix: &StablePrefix) -> String {
+    let mut h = Sha256::new();
+    h.update(
+        crate::standing_notes::carried(&prefix.system)
+            .unwrap_or("")
+            .as_bytes(),
+    );
+    hex32(&h.finalize().into())
+}
+
+/// The operator's skill pins as the prompt carries them: the pinned rows and the pins nothing
+/// answers to. Not the counts, so installing an unpinned skill moves nothing.
+pub fn pins_fingerprint(prefix: &StablePrefix) -> String {
+    let mut h = Sha256::new();
+    let section = crate::standing_notes::carried(&prefix.system).unwrap_or("");
+    if let Some(at) = section.find("\n### skills — ") {
+        let block = &section[at + 1..];
+        let block = block[1..]
+            .find("\n### ")
+            .map_or(block, |end| &block[..end + 1]);
+        for line in block.lines().skip(1) {
+            if line.starts_with("- ") || line.starts_with("pinned `") {
+                h.update(line.as_bytes());
+                h.update(b"\n");
+            }
+        }
+    }
+    hex32(&h.finalize().into())
+}
+
+/// The directories a session's role names in `guidance:`, normalised. The open and every rebuild
+/// read the notes with them, or a rebuild would drop them from the prompt.
+pub(crate) fn role_guidance(cfg: &Config) -> Vec<String> {
+    crate::harness::guidance::named(
+        &cfg.seat_overlay
+            .as_ref()
+            .and_then(|o| o.profile.as_ref())
+            .map(|p| p.guidance.clone())
+            .unwrap_or_default(),
+    )
 }
 
 /// The sentence a head is told when a resumed session speaks a prompt this daemon would not compose
@@ -1713,7 +1757,12 @@ impl Harness {
                     };
                     // A shadow's record is display-only, with no model loop and no tools, so a
                     // prompt that moved under it is no finding and there is nothing to reseat.
-                    if cfg.seat != Seat::Shadow && seated != prefix_fingerprint(cfg.seat, prefix) {
+                    // The pins are compared on their own: they are frozen in message 0 too and
+                    // the column above hashes them out. A note alone waits for a base rebuild.
+                    let pins_moved = pins_fingerprint(&own_prefix) != pins_fingerprint(prefix);
+                    if cfg.seat != Seat::Shadow
+                        && (seated != prefix_fingerprint(cfg.seat, prefix) || pins_moved)
+                    {
                         let (was, is) = (
                             tool_schemas(&own_prefix.tools_json),
                             tool_schemas(&prefix.tools_json),
@@ -1744,6 +1793,9 @@ impl Harness {
                         }
                         if !added.is_empty() || !gone.is_empty() || !grew.is_empty() {
                             moved.push("the tool schemas");
+                        }
+                        if pins_moved {
+                            moved.push("the skill pins");
                         }
                         let say = stale_prefix_sentence(
                             &cfg.session_id,
@@ -3334,13 +3386,7 @@ impl Harness {
         // The directories this session's ROLE names in `guidance:`, normalised once: they are read
         // into the prompt here AND closed over below, so a later tool call in one of them says
         // nothing twice.
-        let named_guidance = crate::harness::guidance::named(
-            &cfg.seat_overlay
-                .as_ref()
-                .and_then(|o| o.profile.as_ref())
-                .map(|p| p.guidance.clone())
-                .unwrap_or_default(),
-        );
+        let named_guidance = role_guidance(&cfg);
         // Read before the session is built, because `cfg` moves into it: a child reads the tree's
         // instruction files as it touches them, and a root session does not.
         let reads_guidance = cfg.parent_session_id.is_some();
@@ -4937,7 +4983,9 @@ pub(crate) fn build_spiller(cfg: &Config) -> Result<letibot_tools::Spiller, Harn
 
 #[cfg(test)]
 mod prefix_fingerprint_tests {
-    use super::{Seat, StablePrefix, prefix_fingerprint, seated_at};
+    use super::{
+        Seat, StablePrefix, notes_fingerprint, pins_fingerprint, prefix_fingerprint, seated_at,
+    };
 
     fn prefix(system: &str, tools: &[&str]) -> StablePrefix {
         StablePrefix {
@@ -5018,6 +5066,56 @@ mod prefix_fingerprint_tests {
                 &prefix("instructions", &["{\"name\":\"read\"}"])
             ),
             "and stripping them leaves exactly the composed prompt"
+        );
+    }
+
+    /// The pins are the pinned rows and the unanswered pins, not the notes or the counts.
+    #[test]
+    fn the_pin_fingerprint_reads_the_pinned_rows_only() {
+        let notes = |body: &str| {
+            prefix(
+                &format!("instructions\n\n[standing-notes-begin]\n{body}\n[standing-notes-end]"),
+                &["{\"name\":\"read\"}"],
+            )
+        };
+        let skills = |count: &str, rows: &str| {
+            format!("### skills — {count}; `skill` loads a body\n{rows}… and 3 more\n")
+        };
+        let a = notes(&format!(
+            "note one\n\n{}",
+            skills("1 pinned of 4", "- x  [box]  d\n")
+        ));
+        let b = notes(&format!(
+            "note two\n\n{}",
+            skills("1 pinned of 5", "- x  [box]  d\n")
+        ));
+        let c = notes(&format!(
+            "note one\n\n{}",
+            skills("1 pinned of 4", "- y  [box]  d\n")
+        ));
+        let d = notes(&format!(
+            "note one\n\n{}",
+            skills("0 pinned of 4", "pinned `x` names no skill on this box\n")
+        ));
+        assert_eq!(
+            pins_fingerprint(&a),
+            pins_fingerprint(&b),
+            "a note or a count is no pin"
+        );
+        assert_ne!(
+            pins_fingerprint(&a),
+            pins_fingerprint(&c),
+            "another pinned row is"
+        );
+        assert_ne!(
+            pins_fingerprint(&a),
+            pins_fingerprint(&d),
+            "and so is a pin nothing answers"
+        );
+        assert_ne!(
+            notes_fingerprint(&a),
+            notes_fingerprint(&b),
+            "the notes hash sees the note"
         );
     }
 

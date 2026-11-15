@@ -74,6 +74,11 @@ const QUEUE: &str = "s-gatekeeper-0123456789ab";
 
 /// A session on `dir`'s store, opened with `system` as the base prompt when given.
 fn open(dir: &Scratch, id: &str, system: Option<&str>) -> Harness {
+    open_pinned(dir, id, system, &[])
+}
+
+/// [`open`] with the operator's `[skills] pin` set to `pins`.
+fn open_pinned(dir: &Scratch, id: &str, system: Option<&str>, pins: &[&str]) -> Harness {
     let mut cfg = Config::for_this_box(&dir.0);
     cfg.dialect = crate::Dialect::Qwen;
     cfg.store = Some(dir.0.join("sessions.db"));
@@ -82,6 +87,7 @@ fn open(dir: &Scratch, id: &str, system: Option<&str>) -> Harness {
     if let Some(system) = system {
         cfg.system = system.into();
     }
+    cfg.leticode.skills.pin = pins.iter().map(|p| (*p).to_string()).collect();
     let parts = Parts::load(&cfg).expect("the byte vocabulary loads");
     *parts.mode_store.write().unwrap() = crate::modes::ModeStore::default();
     // A registry that knows the session, so the card it is handed can be read back.
@@ -258,4 +264,92 @@ fn a_refused_reseat_runs_on_the_old_prompt_and_is_said_once() {
     assert!(reseat_rows(&h).is_empty());
     assert_eq!(h.prefix, old);
     assert_eq!(warned(&h, "auto_reseat_failed").len(), 1);
+}
+
+/// One turn with no pin, then reopened with `[skills] pin` naming one: only the standing-notes
+/// section of the composed prompt moved.
+fn repinned(dir: &Scratch, id: &str) -> Harness {
+    let mut h = open(dir, id, None);
+    h.submit("first").expect("the first turn runs");
+    drop(h);
+    let h = open_pinned(dir, id, None, &["ghost-skill"]);
+    assert!(
+        h.config().system.contains("`ghost-skill`"),
+        "the pin is composed"
+    );
+    assert!(
+        !h.prefix.system.contains("`ghost-skill`"),
+        "and not spoken yet"
+    );
+    h
+}
+
+#[test]
+fn a_changed_skill_pin_reseats_an_automatic_session_at_its_next_turn() {
+    let dir = Scratch::new("auto-reseat-pin");
+    let mut h = repinned(&dir, QUEUE);
+    h.submit("review this").expect("the turn runs");
+    assert_eq!(reseat_rows(&h).len(), 1, "{:#?}", h.items());
+    let said = warned(&h, "reseated");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].starts_with("reseated: the standing notes or skill pins changed."),
+        "only the notes moved: {said:?}"
+    );
+    assert!(h.prefix.system.contains("`ghost-skill`"));
+    h.submit("again").expect("the next turn runs");
+    assert_eq!(
+        reseat_rows(&h).len(),
+        1,
+        "a current prompt is not reseated again"
+    );
+}
+
+#[test]
+fn a_changed_skill_pin_gives_an_operator_session_the_card() {
+    let dir = Scratch::new("auto-reseat-pin-operator");
+    let id = "s-operator-pin";
+    let mut h = repinned(&dir, id);
+    let card = h.session_registry.stale_prefix(id).expect("the card");
+    assert!(card.contains("the skill pins"), "{card}");
+    let old = h.prefix.clone();
+    h.submit("carry on").expect("the turn runs");
+    assert!(reseat_rows(&h).is_empty(), "{:#?}", h.items());
+    assert_eq!(h.prefix, old, "the operator's prompt is theirs to move");
+}
+
+#[test]
+fn an_unchanged_reopen_has_no_card() {
+    let dir = Scratch::new("auto-reseat-same");
+    let id = "s-operator-same";
+    let mut h = open(&dir, id, None);
+    h.submit("first").expect("the first turn runs");
+    drop(h);
+    let h = open(&dir, id, None);
+    assert_eq!(h.session_registry.stale_prefix(id), None);
+}
+
+#[test]
+fn a_changed_note_reseats_an_automatic_session_and_gives_an_operator_no_card() {
+    for (id, reseats) in [(QUEUE, true), ("s-operator-note", false)] {
+        let dir = Scratch::new("auto-reseat-note");
+        std::fs::write(dir.0.join("AGENTS.md"), "note-one: the first generation\n").unwrap();
+        let mut h = open(&dir, id, None);
+        h.submit("first").expect("the first turn runs");
+        drop(h);
+        std::fs::write(dir.0.join("AGENTS.md"), "note-two: a later generation\n").unwrap();
+        let mut h = open(&dir, id, None);
+        assert!(
+            h.config().system.contains("note-two"),
+            "the note is composed"
+        );
+        assert_eq!(
+            h.session_registry.stale_prefix(id),
+            None,
+            "a note is no card"
+        );
+        h.submit("next").expect("the turn runs");
+        assert_eq!(reseat_rows(&h).len(), usize::from(reseats), "{id}");
+        assert_eq!(h.prefix.system.contains("note-two"), reseats, "{id}");
+    }
 }

@@ -326,7 +326,7 @@ pub const LETICODE: File = File {
                 "bool",
                 "true",
                 PW,
-                "daemon-run sessions move to the current prompt before a turn; false asks",
+                "daemon-run sessions move to the current prompt, notes and skill pins included, before a turn; false asks",
                 "false",
             )],
         },

@@ -275,7 +275,7 @@ Read by the head.
 
 | key | type | default | level | meaning |
 |---|---|---|---|---|
-| `auto_reseat` | bool | true | both, project wins | daemon-run sessions move to the current prompt before a turn; false asks |
+| `auto_reseat` | bool | true | both, project wins | daemon-run sessions move to the current prompt, notes and skill pins included, before a turn; false asks |
 
 ## `[warnings]`
 
