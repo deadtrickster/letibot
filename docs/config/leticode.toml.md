@@ -314,6 +314,7 @@ Read from the user file, or $LETIBOT_GC_SETTINGS.
 | key | type | default | level | meaning |
 |---|---|---|---|---|
 | `root` | path | the data dir | user only | base for owner roots |
+| `disk_every` | span (10m, 1h) | 10m | user only | period of the disk sweep, one daemon per box |
 
 ## `[gc.shared[]]`
 

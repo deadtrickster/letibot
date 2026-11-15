@@ -6,11 +6,16 @@
 //! are not there. It reads the store and the kernel and asks no daemon anything, so an owner whose
 //! daemon was SIGKILLed is closed by the one that replaced it.
 //!
+//! Every daemon runs the idle half each [`SWEEP`]. The disk half, which walks caches, shared
+//! targets and remote hosts over ssh, is one daemon's per box at `[gc] disk_every` ([`DiskTurn`]).
+//!
 //! A close here is the SAME close a `leticode_stop` is: the registry entry goes, a head left
 //! attached is detached, the worker serves `Work::Close` from its own queue, and the settler brings
 //! down a VM the worker cannot reach (`close_settle`). What this file adds is the decision and the
 //! journal, never a second way to close a session.
 
+use std::io::{Read, Seek, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -24,6 +29,10 @@ use crate::config::StoreAt;
 /// How often the daemon looks, when nothing asks it to look sooner. The idle TTLs are half an hour
 /// and the notice five minutes, so a minute is fine grain enough for both.
 pub const SWEEP: Duration = Duration::from_secs(60);
+
+/// How often the disk half runs when `[gc] disk_every` names no period. It walks every owner's
+/// disks and every remote host over ssh, so one daemon per box runs it, and not every minute.
+pub const DISK_EVERY: Duration = Duration::from_secs(600);
 
 static LOOK_NOW: AtomicBool = AtomicBool::new(false);
 
@@ -49,12 +58,22 @@ fn daemon_ops(registry: &Registry) -> lifecycle::Ops {
 /// [`pass`] with hands the caller keeps, so the ssh connections a remote host's pass opens are
 /// reused from one sweep to the next.
 pub fn pass_with(store: &Store, registry: Option<&Registry>, ops: &lifecycle::Ops) -> Vec<String> {
+    sweep(store, registry, ops, true)
+}
+
+/// One sweep: the idle half always, the disk half only when `disk` says this daemon's turn.
+fn sweep(
+    store: &Store,
+    registry: Option<&Registry>,
+    ops: &lifecycle::Ops,
+    disk: bool,
+) -> Vec<String> {
     let places = Places::here();
     let now = letibot_metrics::now_ms() as i64;
     if let Some(registry) = registry {
         renew_held(store, registry, now);
     }
-    let made = match lifecycle::pass(store, &places, ops, None, now) {
+    let made = match lifecycle::pass_halves(store, &places, ops, None, now, disk) {
         Ok(made) => made,
         Err(e) => return vec![format!("the pass stopped on the store: {e}")],
     };
@@ -167,9 +186,18 @@ pub fn spawn(store_at: Option<impl Into<StoreAt>>, registry: Arc<Registry>) {
                 return;
             };
             let ops = daemon_ops(&registry);
+            let every = lifecycle::Settings::load_or_default()
+                .disk_every_ms
+                .map_or(DISK_EVERY, |ms| Duration::from_millis(ms as u64));
+            let mut turn = DiskTurn::for_store(&at, every);
             loop {
-                for line in pass_with(&store, Some(&registry), &ops) {
+                let now = letibot_metrics::now_ms() as i64;
+                let disk = turn.due(now);
+                for line in sweep(&store, Some(&registry), &ops, disk) {
                     eprintln!("  reaper: {line}");
+                }
+                if disk {
+                    turn.ran(now);
                 }
                 let began = std::time::Instant::now();
                 while began.elapsed() < SWEEP && !LOOK_NOW.swap(false, Ordering::Relaxed) {
@@ -183,6 +211,81 @@ pub fn spawn(store_at: Option<impl Into<StoreAt>>, registry: Arc<Registry>) {
                 }
             }
         });
+}
+
+/// Which daemon on a box runs the disk half: the one holding `reaper.lock` beside the store. The
+/// lock is `flock`, so a daemon that stops or is killed hands it over with no lease to expire.
+/// The file holds when the box's last disk pass began, so a new holder keeps the period.
+pub struct DiskTurn {
+    path: PathBuf,
+    every_ms: i64,
+    held: Option<std::fs::File>,
+}
+
+impl DiskTurn {
+    pub fn new(path: impl Into<PathBuf>, every: Duration) -> DiskTurn {
+        DiskTurn {
+            path: path.into(),
+            every_ms: every.as_millis() as i64,
+            held: None,
+        }
+    }
+
+    /// The lock beside a store: one per data directory, which is one per box.
+    pub fn for_store(at: &StoreAt, every: Duration) -> DiskTurn {
+        DiskTurn::new(lock_path(at), every)
+    }
+
+    /// Whether this daemon runs the disk half at `now_ms`: it holds the lock, and the box's last
+    /// disk pass is a period old. A clock that went back counts as due rather than stalling.
+    pub fn due(&mut self, now_ms: i64) -> bool {
+        if self.held.is_none() {
+            self.held = take_lock(&self.path);
+        }
+        let Some(file) = self.held.as_mut() else {
+            return false;
+        };
+        let mut text = String::new();
+        let last = file
+            .rewind()
+            .and_then(|_| file.read_to_string(&mut text))
+            .ok()
+            .and_then(|_| text.trim().parse::<i64>().ok());
+        last.is_none_or(|last| now_ms < last || now_ms - last >= self.every_ms)
+    }
+
+    /// Record that a disk pass began at `now_ms`.
+    pub fn ran(&mut self, now_ms: i64) {
+        if let Some(file) = self.held.as_mut() {
+            let _ = file
+                .set_len(0)
+                .and_then(|_| file.rewind())
+                .and_then(|_| writeln!(file, "{now_ms}"));
+        }
+    }
+
+    pub fn holds(&self) -> bool {
+        self.held.is_some()
+    }
+}
+
+fn lock_path(at: &StoreAt) -> PathBuf {
+    match at {
+        StoreAt::Set { dir, .. } => dir.join("reaper.lock"),
+        StoreAt::File(path) => path.with_extension("reaper.lock"),
+    }
+}
+
+fn take_lock(path: &Path) -> Option<std::fs::File> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(path)
+        .ok()?;
+    file.try_lock().ok()?;
+    Some(file)
 }
 
 /// The owner's lease renewed on a clock while a turn runs. A round renews it once, and one tool
@@ -247,5 +350,65 @@ impl Drop for LeaseBeat {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lock_in(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("reap-turn-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("reaper.lock")
+    }
+
+    /// Three daemons sweep every minute for an hour: the disk half runs once per period, by one
+    /// of them, and when that one stops another takes over without running early.
+    #[test]
+    fn one_daemon_per_box_runs_the_disk_half() {
+        let path = lock_in("three");
+        let every = Duration::from_secs(600);
+        let mut daemons: Vec<Option<DiskTurn>> =
+            (0..3).map(|_| Some(DiskTurn::new(&path, every))).collect();
+        let minute = 60_000i64;
+        let mut runs: Vec<(i64, usize)> = Vec::new();
+        for m in 0..60 {
+            let now = 1_000_000 + m * minute;
+            if m == 25 {
+                let holder = daemons
+                    .iter()
+                    .position(|d| d.as_ref().is_some_and(DiskTurn::holds))
+                    .expect("someone holds the turn");
+                daemons[holder] = None;
+            }
+            for (i, d) in daemons.iter_mut().enumerate() {
+                let Some(d) = d else { continue };
+                if d.due(now) {
+                    d.ran(now);
+                    runs.push((now, i));
+                }
+            }
+        }
+        let at: Vec<i64> = runs.iter().map(|(t, _)| (t - 1_000_000) / minute).collect();
+        assert_eq!(at, vec![0, 10, 20, 30, 40, 50], "{runs:?}");
+        let first = runs[0].1;
+        assert!(runs[..3].iter().all(|(_, i)| *i == first), "{runs:?}");
+        let next = runs[3].1;
+        assert_ne!(next, first, "{runs:?}");
+        assert!(runs[3..].iter().all(|(_, i)| *i == next), "{runs:?}");
+    }
+
+    /// A fresh box runs the disk half at once, and a lock file it cannot read is no stall.
+    #[test]
+    fn the_first_holder_runs_at_once() {
+        let path = lock_in("first");
+        std::fs::write(&path, "not a time\n").unwrap();
+        let mut d = DiskTurn::new(&path, Duration::from_secs(600));
+        assert!(d.due(5));
+        d.ran(5);
+        assert!(!d.due(6));
+        assert!(d.due(3), "a clock that went back is due");
     }
 }

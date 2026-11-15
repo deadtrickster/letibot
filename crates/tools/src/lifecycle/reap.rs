@@ -473,6 +473,19 @@ pub fn pass(
     only: Option<&str>,
     now: i64,
 ) -> StoreResult<Pass> {
+    pass_halves(store, places, ops, only, now, true)
+}
+
+/// [`pass`] with the disk half optional. Every daemon closes idle owners each minute, but the
+/// disk half (work, caches, shared targets, remote hosts) is one daemon's per box (R223).
+pub fn pass_halves(
+    store: &Store,
+    places: &Places,
+    ops: &Ops,
+    only: Option<&str>,
+    now: i64,
+    disk: bool,
+) -> StoreResult<Pass> {
     let owners: Vec<OwnerRow> = match only {
         Some(id) => store.owner(id)?.into_iter().collect(),
         None => store.owners()?,
@@ -497,6 +510,9 @@ pub fn pass(
             ));
             continue;
         }
+        if !disk {
+            continue;
+        }
         // The work half: a closed owner past its grace has its worktrees and branches kept in
         // `refs/letibot/archive/<owner>/` and then removed (G3). It runs between compute and the
         // caches, because a process may still be writing in the tree until the compute half ends.
@@ -519,6 +535,9 @@ pub fn pass(
                 ));
             }
         }
+    }
+    if !disk {
+        return Ok(out);
     }
     disks::shared_targets(places, ops, now, &mut out);
     if let Err(e) = disks::remote_hosts(store, places, ops, now, only, &mut out) {

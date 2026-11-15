@@ -823,6 +823,12 @@ One pass:
 5. **Act** (`--now`, and always for the timer and the daemons, limited to rules 1 and 2 of
    d.4). In the order of d.5, journal each act.
 
+A daemon's own pass splits in two. The idle half (close what is idle, past its TTL or
+orphaned) runs in every daemon each minute. The disk half (work settle, caches, shared
+targets, remote hosts) runs in one daemon per box: whoever holds `flock` on `reaper.lock` beside
+the store, every `[gc] disk_every` (default 10 min). The lock file keeps when the last disk pass
+began, so a daemon that takes the lock over after the holder stops keeps the period (R223).
+
 Grace periods, in one place:
 
 | What | Grace |

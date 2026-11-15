@@ -199,6 +199,9 @@ struct GcFile {
     #[serde(default)]
     #[allow(dead_code)]
     shared: Option<toml::Value>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    disk_every: Option<toml::Value>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]

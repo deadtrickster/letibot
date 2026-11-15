@@ -391,14 +391,10 @@ pub const LETICODE: File = File {
             path: "gc",
             note: "Read from the user file, or $LETIBOT_GC_SETTINGS.",
             needs: "",
-            keys: &[k(
-                "root",
-                "path",
-                "the data dir",
-                U,
-                "base for owner roots",
-                "\"/build/owners\"",
-            )],
+            keys: &[
+                k("root", "path", "the data dir", U, "base for owner roots", "\"/build/owners\""),
+                k("disk_every", "span (10m, 1h)", "10m", U, "period of the disk sweep, one daemon per box", "\"10m\""),
+            ],
         },
         Table {
             path: "gc.shared[]",

@@ -4,6 +4,7 @@
 //! ```toml
 //! [gc]
 //! root = "/build/letibot"          # owner roots: <root>/<box>/<owner>/{target,tmp,home,...}
+//! disk_every = "10m"               # how often the box's one disk sweeper runs
 //! [[gc.shared]]                    # a build target several runs share, and its quota
 //! path = "/build/target"
 //! quota = "200G"
@@ -43,6 +44,8 @@ pub struct Settings {
     /// `<gc.root>/<box>/<owner>/` - where an owner's target, tmp, home and copy-out live.
     pub root: Option<PathBuf>,
     pub shared: Vec<SharedTarget>,
+    /// `[gc] disk_every`: the period of the daemons' disk half, run by one daemon per box.
+    pub disk_every_ms: Option<i64>,
     /// `FIRECODE_STATE`: where firecode keeps a project's layers.
     pub firecode_state: Option<PathBuf>,
     /// `FIRECODE_RUNS`: where firecode keeps a run's own directory.
@@ -95,6 +98,20 @@ impl Settings {
                 .try_into()
                 .map_err(|e| format!("{}: [gc]: {e}", path.display()))?;
             out.root = gc.root.as_deref().map(expand);
+            out.disk_every_ms = match gc.disk_every.as_deref() {
+                Some(span) => Some(
+                    crate::docker::config::span_ms(span)
+                        .ok()
+                        .filter(|ms| *ms > 0)
+                        .ok_or_else(|| {
+                            format!(
+                                "{}: [gc] disk_every {span:?} is not a span like \"10m\"",
+                                path.display()
+                            )
+                        })?,
+                ),
+                None => None,
+            };
             for one in gc.shared {
                 let quota = match &one.quota {
                     Some(q) => Some(bytes(q).map_err(|e| {
@@ -155,6 +172,8 @@ struct File {
 struct GcTable {
     #[serde(default)]
     root: Option<String>,
+    #[serde(default)]
+    disk_every: Option<String>,
     #[serde(default)]
     shared: Vec<SharedTable>,
     /// `[gc.docker]`, read by [`crate::docker::config::Settings`] from this same file - the opt-in
@@ -290,6 +309,19 @@ runs = "/build/firecode/runs"
         let e = Settings::parse(Path::new("/b/leticode.toml"), "[firecode]\nstte = \"/x\"\n")
             .expect_err("a typo");
         assert!(e.contains("stte"), "{e}");
+    }
+
+    /// The disk sweep's period is a span; a bare number or a zero is refused, not defaulted.
+    #[test]
+    fn disk_every_is_a_span() {
+        let p = Path::new("/b/leticode.toml");
+        let s = Settings::parse(p, "[gc]\ndisk_every = \"15m\"\n").unwrap();
+        assert_eq!(s.disk_every_ms, Some(15 * 60 * 1000));
+        assert_eq!(Settings::parse(p, "[gc]\n").unwrap().disk_every_ms, None);
+        for bad in ["\"15\"", "\"0m\""] {
+            let e = Settings::parse(p, &format!("[gc]\ndisk_every = {bad}\n")).expect_err(bad);
+            assert!(e.contains("disk_every"), "{e}");
+        }
     }
 
     /// A file with neither table is the empty settings, not an error: every box that has not
