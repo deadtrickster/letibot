@@ -16,7 +16,10 @@ pub fn configured(tables: &std::collections::BTreeMap<String, McpServerKeys>) ->
 /// each table that names neither or both of `command` and `url`.
 pub fn specs(
     tables: &std::collections::BTreeMap<String, McpServerKeys>,
-) -> (Vec<letibot_mcp_client::ServerSpec>, Vec<letibot_mcp_client::Failure>) {
+) -> (
+    Vec<letibot_mcp_client::ServerSpec>,
+    Vec<letibot_mcp_client::Failure>,
+) {
     let mut specs = Vec::new();
     let mut bad = Vec::new();
     for (name, k) in tables.iter().filter(|(_, k)| k.enabled) {
