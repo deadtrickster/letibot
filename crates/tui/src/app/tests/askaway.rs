@@ -56,6 +56,7 @@ fn model_question(a: &mut App, req_id: &str, deadline: Option<u64>) {
             because: String::new(),
             advice: None,
             subagent: None,
+            shadow: None,
             deadline,
             on_timeout: OnTimeout::Deny,
         },

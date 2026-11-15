@@ -22,6 +22,7 @@ struct Inner {
     main: Option<Weak<Hub>>,
     open: BTreeMap<String, Entry>,
     askers: BTreeMap<String, Asker>,
+    annotator: Option<Arc<dyn Annotator>>,
 }
 
 /// A queue session named for the operator: its role and work, and its workspace in short.
@@ -56,6 +57,26 @@ pub fn named(mut card: SessionEvent, asker: &Asker) -> SessionEvent {
         }
     }
     card
+}
+
+/// A relayed permission call, as the annotator is shown it.
+#[derive(Debug, Clone)]
+pub struct RelayedCall {
+    pub req_id: String,
+    /// The session that asked.
+    pub asker: String,
+    pub tool: String,
+    pub arguments: serde_json::Value,
+    /// Layer A's reading, in the asker's own surroundings.
+    pub reading: String,
+}
+
+/// What the main session says beside a relayed card: one line, never an answer.
+pub trait Annotator: Send + Sync {
+    /// The card's line, or `None`. Bounded by the annotator's own deadline.
+    fn line(&self, call: &RelayedCall) -> Option<String>;
+    /// The operator's answer to a card `line` was asked about.
+    fn answered(&self, req_id: &str, effect: &str);
 }
 
 /// The set, one per daemon. Keyed by the card's `req_id`, which is the ask's id on every surface.
@@ -179,6 +200,58 @@ impl PendingAsks {
     /// What `session` is known as, when it is a named queue session.
     pub fn asker(&self, session: &str) -> Option<Asker> {
         self.lock().askers.get(session).cloned()
+    }
+
+    /// The main session's annotator, or none.
+    pub fn set_annotator(&self, a: Option<Arc<dyn Annotator>>) {
+        self.lock().annotator = a;
+    }
+
+    pub fn annotator(&self) -> Option<Arc<dyn Annotator>> {
+        self.lock().annotator.clone()
+    }
+
+    /// Ask the annotator about a posted card on its own thread. The card is never held for it, and
+    /// a line that comes back after the ask settled is dropped.
+    pub fn annotate(self: &Arc<Self>, call: RelayedCall) -> bool {
+        let Some(a) = self.annotator() else {
+            return false;
+        };
+        let set = Arc::downgrade(self);
+        std::thread::Builder::new()
+            .name("relay-annotate".into())
+            .spawn(move || {
+                if let Some(line) = a.line(&call)
+                    && let Some(set) = set.upgrade()
+                {
+                    set.amend(&call.req_id, &line);
+                }
+            })
+            .is_ok()
+    }
+
+    /// Put `line` on an open card and show it again. `false` when the ask is no longer open.
+    pub fn amend(self: &Arc<Self>, req_id: &str, line: &str) -> bool {
+        let Some(main) = self.main() else {
+            return false;
+        };
+        let (card, sink) = {
+            let mut g = self.lock();
+            let Some(e) = g.open.get_mut(req_id) else {
+                return false;
+            };
+            if let SessionEvent::DecisionRequested { shadow, .. } = &mut e.card {
+                *shadow = Some(line.to_string());
+            }
+            (e.card.clone(), e.sink.clone())
+        };
+        main.post_relayed(card, self.settling(req_id, sink));
+        // Settled between the check and the post: the copy just shown comes off again.
+        if !self.lock().open.contains_key(req_id) {
+            main.withdraw_relayed(req_id, "settled while its line was added");
+            return false;
+        }
+        true
     }
 
     /// Every open ask, typed.

@@ -997,6 +997,7 @@ fn the_conversation_rung_hides_no_warning_no_card_and_no_liveness() {
             because: String::new(),
             advice: None,
             subagent: None,
+            shadow: None,
             deadline: None,
             on_timeout: letibot_sessionlog::event::OnTimeout::Deny,
         },

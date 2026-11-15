@@ -42,6 +42,7 @@ fn card_with(tool: &str, path: &str, edit: ToolEditExcerpt) -> App {
             because: String::new(),
             advice: None,
             subagent: None,
+            shadow: None,
             deadline: None,
             on_timeout: d.on_timeout,
         },

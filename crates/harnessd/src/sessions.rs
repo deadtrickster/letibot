@@ -2941,6 +2941,12 @@ impl<'a> Sessions<'a> {
         // and the gatekeeper's answer path settles them.
         let set = self.registry.pending_asks();
         set.set_main(&root);
+        // The main session's shadow reads every relayed card, observe-only.
+        set.set_annotator(
+            self.open
+                .get(&self.base.session_id)
+                .and_then(|h| h.relay_annotator()),
+        );
         if let Some(gk) = self.registry.get(&self.gatekeeper) {
             gk.set_escalation(set.clone());
         }

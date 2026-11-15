@@ -122,6 +122,7 @@ pub fn card(ask: &Ask, gatekeeper: &str, root: &str) -> SessionEvent {
             ask.asker
         ),
         advice: None,
+        shadow: None,
         deadline: None,
         on_timeout: OnTimeout::Ask,
     }

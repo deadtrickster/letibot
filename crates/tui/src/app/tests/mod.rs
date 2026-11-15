@@ -107,6 +107,7 @@ fn decision_with(kinds: &[letibot_sessionlog::event::OptionKind]) -> OpenDecisio
         // The fixture is this session's own call - see `SubagentAsk` for the card a
         // child's gate posts here instead.
         subagent: None,
+        shadow: None,
         deadline: None,
         on_timeout: letibot_sessionlog::event::OnTimeout::Deny,
         asked_ts: 0,
@@ -799,6 +800,7 @@ fn tall_card(tall: bool) -> App {
             because: String::new(),
             advice: None,
             subagent: None,
+            shadow: None,
             deadline: None,
             on_timeout: d.on_timeout,
         },

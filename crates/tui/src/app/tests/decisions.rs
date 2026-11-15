@@ -693,6 +693,7 @@ fn an_operator_answer_over_an_oracles_advice_keeps_the_two_reasons_apart() {
                 unsure: None,
             }),
             subagent: None,
+            shadow: None,
             deadline: None,
             on_timeout: letibot_sessionlog::event::OnTimeout::Deny,
         },
@@ -1490,4 +1491,17 @@ fn the_guards_note_does_not_survive_the_tool_starting() {
         !screen.contains("asking the guard"),
         "the note outlived the wait: {screen}"
     );
+}
+
+/// A relayed card the shadow answered in time carries its one line; one it did not draws none.
+#[test]
+fn a_relayed_card_draws_the_shadows_line_only_when_it_has_one() {
+    use letibot_sessionlog::event::OptionKind;
+    let a = app();
+    let line = "shadow (deepseek): allow - matches rule \"bash clippy-driver *\"";
+    let mut d = decision_with(&[OptionKind::AllowOnce, OptionKind::RejectOnce]);
+    assert!(!a.decision_lines(&d, 100).join("\n").contains("shadow ("));
+    d.shadow = Some(line.into());
+    let drawn = a.decision_lines(&d, 100).join("\n");
+    assert!(drawn.contains(line), "{drawn}");
 }

@@ -1081,6 +1081,7 @@ fn a_relayed_ask_names_the_session_it_is_for() {
             choices: vec!["4".into(), "8".into()],
             because: String::new(),
             advice: None,
+            shadow: None,
             deadline: None,
             on_timeout: OnTimeout::Ask,
         },

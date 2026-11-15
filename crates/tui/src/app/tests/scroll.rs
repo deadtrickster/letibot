@@ -2071,6 +2071,7 @@ fn a_second_card_does_not_inherit_the_first_ones_scroll() {
             because: String::new(),
             advice: None,
             subagent: None,
+            shadow: None,
             deadline: None,
             on_timeout: d.on_timeout,
         },

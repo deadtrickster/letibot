@@ -141,8 +141,17 @@ impl Answers {
                 card = without_durable(card);
             }
             hub.publish(card.clone());
-            if let Some(set) = &route {
-                set.post(relayed(card, hub, set), self.clone());
+            if let Some(set) = &route
+                && set.post(relayed(card, hub, set), self.clone())
+            {
+                // The main session's shadow is asked beside the card, never before it.
+                set.annotate(letibot_sessionlog::pending_asks::RelayedCall {
+                    req_id: req.id.clone(),
+                    asker: subagent.map_or_else(|| hub.session_id(), |s| s.handle.clone()),
+                    tool: req.tool.clone(),
+                    arguments: req.arguments.clone(),
+                    reading: req.baseline.clone(),
+                });
             }
             // The yellow card says why it is yellow: the call is still `Proposed`, so this
             // note is the only thing on it that explains the wait. A subagent's note lands on
@@ -207,6 +216,9 @@ impl Answers {
         let closed = close(req, &decision);
         if let Some(set) = &route {
             set.settle(&req.id, closed.clone());
+            if let Some(a) = set.annotator() {
+                a.answered(&req.id, effect_of(&decision.outcome));
+            }
         }
         hub.publish(closed);
         decision
@@ -349,6 +361,17 @@ impl Answers {
     }
 }
 
+/// The answer as one word for the shadow's record: what the call did, or that nobody decided.
+fn effect_of(outcome: &DecisionOutcome) -> &'static str {
+    match outcome {
+        DecisionOutcome::Selected { option_id } if option_id.starts_with("allow") => "admit",
+        DecisionOutcome::Selected { .. } => "refuse",
+        DecisionOutcome::Timeout => "timeout",
+        DecisionOutcome::Cancelled => "cancelled",
+        DecisionOutcome::Escalate { .. } | DecisionOutcome::Unavailable => "unavailable",
+    }
+}
+
 /// The daemon's pending set and the main session's name, when `hub` has no deciding head of its
 /// own and its cards go there. A main session is never escalated to itself.
 fn escalation(
@@ -468,6 +491,7 @@ fn pose_question(req_id: &str, q: &Question, deadline_ms: u64) -> SessionEvent {
         },
         advice: None,
         subagent: None,
+        shadow: None,
         deadline: Some(deadline_ms),
         on_timeout: WireOnTimeout::Deny,
     }
@@ -920,6 +944,7 @@ fn pose(
             unsure: a.unsure.map(|k| k.as_str().to_string()),
             latency_ms: a.latency_ms,
         }),
+        shadow: None,
         deadline: Some(deadline_ms),
         on_timeout: match req.on_timeout {
             OnTimeout::Deny => WireOnTimeout::Deny,

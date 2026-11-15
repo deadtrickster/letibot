@@ -859,6 +859,11 @@ impl Shadow {
             .map(|r| r.ask(Request::new(self.position(), shown)))
     }
 
+    /// Which judge answers `job`, in its own words. `None` when the job is off.
+    pub fn label(&self, job: Job) -> Option<String> {
+        self.runners.get(&job).map(|r| r.inner.judge.label())
+    }
+
     pub fn states(&self) -> Vec<(Job, JobState)> {
         self.runners.iter().map(|(j, r)| (*j, r.state())).collect()
     }

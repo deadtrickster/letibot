@@ -438,6 +438,7 @@ mod tests {
             because: String::new(),
             advice: None,
             subagent: None,
+            shadow: None,
             deadline: Some(1),
             on_timeout: OnTimeout::Deny,
         });

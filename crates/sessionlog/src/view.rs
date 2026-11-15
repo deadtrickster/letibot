@@ -80,6 +80,9 @@ pub struct OpenDecision {
     /// attaching mid-question renders the same thing a head that was there from the start does.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advice: Option<crate::event::ModelAdvice>,
+    /// The shadow's one line on a relayed card, when it answered in time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<String>,
     pub deadline: Option<u64>,
     pub on_timeout: OnTimeout,
     /// When it was asked, so a head can show how long it has been waiting rather
@@ -509,6 +512,7 @@ impl SessionView {
                 choices,
                 because,
                 advice,
+                shadow,
                 deadline,
                 on_timeout,
                 subagent,
@@ -531,6 +535,7 @@ impl SessionView {
                     choices: choices.clone(),
                     because: because.clone(),
                     advice: advice.clone(),
+                    shadow: shadow.clone(),
                     deadline: *deadline,
                     on_timeout: *on_timeout,
                     asked_ts: env.ts,

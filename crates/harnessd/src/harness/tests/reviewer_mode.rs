@@ -52,7 +52,8 @@ fn a_reviewer_at_the_operators_allow_all_probes_its_clone_unasked_and_asks_beyon
     ));
     std::fs::create_dir_all(&ws).expect("a clone");
     let ws = std::fs::canonicalize(&ws).expect("canonical");
-    let cfg = config("s-reviewer-mode", &ws);
+    let tag = ws.file_name().unwrap().to_string_lossy().into_owned();
+    let cfg = config(&format!("s-{tag}"), &ws);
     let parts: &'static crate::Parts = Box::leak(Box::new(
         crate::Parts::load(&cfg).expect("the byte vocabulary loads"),
     ));
@@ -104,4 +105,7 @@ fn a_reviewer_at_the_operators_allow_all_probes_its_clone_unasked_and_asks_beyon
         "a push still asks"
     );
     let _ = std::fs::remove_dir_all(&ws);
+    if let Some(db) = &cfg.store {
+        let _ = std::fs::remove_file(db);
+    }
 }

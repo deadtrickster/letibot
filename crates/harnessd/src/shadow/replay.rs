@@ -431,12 +431,16 @@ struct Scope {
     model: String,
     workspace: String,
     store: Store,
+    /// The project's review queue, whose cards are relayed to the operator: its asked calls are
+    /// the operator's answers too. `None` for a single session.
+    queue: Option<String>,
 }
 
 /// The sessions `what` names: one session id, or every conversation of a project folder.
 fn scope_of(what: &str) -> Result<Scope, String> {
     let shared = shared_reader()?;
-    let (workspace, ids): (String, Vec<StoredSession>) = if Path::new(what).is_dir() {
+    let project = Path::new(what).is_dir();
+    let (workspace, ids): (String, Vec<StoredSession>) = if project {
         let ws = std::fs::canonicalize(what)
             .map_err(|e| format!("{what}: {e}"))?
             .to_string_lossy()
@@ -469,11 +473,13 @@ fn scope_of(what: &str) -> Result<Scope, String> {
             sessions.push((s.id, t.items.into_iter().map(|(i, _, _)| i).collect()));
         }
     }
+    let queue = project.then(|| crate::sessions::gatekeeper::session(Path::new(&workspace)));
     Ok(Scope {
         sessions,
         model,
         workspace,
         store,
+        queue,
     })
 }
 
@@ -524,6 +530,11 @@ fn logged_offers(scope: &Scope) -> Vec<LoggedOffer> {
     out
 }
 
+/// A conversation in scope, or a session of the project's review queue, whose asks were relayed.
+fn in_scope(ids: &std::collections::BTreeSet<&str>, queue: Option<&str>, session: &str) -> bool {
+    ids.contains(session) || queue.is_some_and(|g| crate::queue_asks::in_queue_tree(g, session))
+}
+
 /// The calls the operator was asked about in the sessions in scope, with their answers.
 fn asked_calls(scope: &Scope) -> Vec<Asked> {
     let ids: std::collections::BTreeSet<&str> =
@@ -533,7 +544,7 @@ fn asked_calls(scope: &Scope) -> Vec<Asked> {
         .corpus(false, 100_000)
         .unwrap_or_default()
         .into_iter()
-        .filter(|r| r.asked && ids.contains(r.session_id.as_str()))
+        .filter(|r| r.asked && in_scope(&ids, scope.queue.as_deref(), &r.session_id))
         .map(|r| Asked {
             request: r.request_id,
             tool: r.tool,
@@ -653,4 +664,30 @@ pub fn run(args: &[String]) -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod scope_tests {
+    #[test]
+    fn a_projects_permission_replay_includes_its_review_queues_relayed_asks() {
+        let ids: std::collections::BTreeSet<&str> = ["s-op"].into_iter().collect();
+        let gk = "s-gatekeeper-0123456789ab";
+        assert!(super::in_scope(&ids, Some(gk), "s-op"));
+        assert!(super::in_scope(&ids, Some(gk), gk));
+        assert!(super::in_scope(
+            &ids,
+            Some(gk),
+            "s-gatekeeper-0123456789ab-sub-17"
+        ));
+        assert!(!super::in_scope(
+            &ids,
+            Some(gk),
+            "s-gatekeeper-fedcba987654-sub-1"
+        ));
+        assert!(!super::in_scope(
+            &ids,
+            None,
+            "s-gatekeeper-0123456789ab-sub-17"
+        ));
+    }
 }

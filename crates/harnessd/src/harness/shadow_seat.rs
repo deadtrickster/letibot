@@ -12,6 +12,22 @@ type Registered = (
 );
 
 impl Harness {
+    /// This session's shadow as the annotator of the cards relayed to it, when its permission job
+    /// is on. Read through the cell, so a shadow opened later is the one asked.
+    pub(crate) fn relay_annotator(
+        &self,
+    ) -> Option<Arc<dyn letibot_sessionlog::pending_asks::Annotator>> {
+        if !self.cfg.shadow.is_on(Job::Permission) {
+            return None;
+        }
+        Some(Arc::new(crate::shadow::permission::Relay {
+            cell: self.shadow_cell.clone(),
+            rules: crate::shadow::permission::rules_of(&self.cfg.permission),
+            workspace: self.cfg.workspace.clone(),
+            home: std::env::var_os("HOME").map(Into::into).unwrap_or_default(),
+        }))
+    }
+
     /// Open the shadow once the session is stored, and move its position to the rows that count:
     /// an operator message, an agent's line or an answer. Harness notices and display rows do not.
     pub(crate) fn tend_shadow(&mut self) {

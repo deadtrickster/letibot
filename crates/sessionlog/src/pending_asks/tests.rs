@@ -34,6 +34,7 @@ fn card(req_id: &str) -> SessionEvent {
         choices: vec!["yes".into(), "no".into()],
         because: String::new(),
         advice: None,
+        shadow: None,
         deadline: None,
         on_timeout: OnTimeout::Ask,
     }

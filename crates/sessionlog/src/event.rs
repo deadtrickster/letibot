@@ -1167,6 +1167,9 @@ pub enum SessionEvent {
         /// it above the options so the person sees it before choosing.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         advice: Option<ModelAdvice>,
+        /// The shadow's verdict on a relayed card, one line. Observe-only: it settles nothing.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        shadow: Option<String>,
         /// Unix millis. `None` means *wait forever*, which is a policy a human head may choose and an
         /// automated one may not.
         deadline: Option<u64>,

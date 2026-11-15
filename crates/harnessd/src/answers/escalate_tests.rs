@@ -429,3 +429,182 @@ fn a_session_grant_from_a_relayed_ask_lands_on_the_reviewers_gate() {
     );
     assert!(open_of(&w.main).is_empty());
 }
+
+// ------------------------------------------------- the main session's shadow on a relayed card
+
+/// A judge that answers `reply` after `sleep`.
+struct Slow {
+    reply: &'static str,
+    sleep: Duration,
+}
+
+impl crate::shadow::judge::Judge for Slow {
+    fn label(&self) -> String {
+        "deepseek".into()
+    }
+    fn judge(&self, _system: &str, _user: &str) -> Result<String, String> {
+        std::thread::sleep(self.sleep);
+        Ok(self.reply.into())
+    }
+}
+
+#[derive(Default)]
+struct Rows(std::sync::Mutex<Vec<String>>);
+
+impl crate::shadow::record::Recorder for Rows {
+    fn row(&self, title: &str, _body: &str) {
+        self.0.lock().unwrap().push(title.to_string());
+    }
+}
+
+/// The main session's shadow, its permission job on, answering through `judge` with a 300ms
+/// deadline, installed as the set's annotator.
+fn with_shadow(w: &World, judge: Slow) -> Arc<Rows> {
+    use crate::shadow::runner::{Shadow, Timing};
+    let rows = Arc::new(Rows::default());
+    let cfg = crate::shadow::config::ShadowConfig::from_lines(
+        letibot_provider::keys::ShadowLines {
+            enabled: vec!["permission".into()],
+            ..Default::default()
+        },
+        "local".into(),
+    )
+    .unwrap();
+    let judge: Arc<dyn crate::shadow::judge::Judge> = Arc::new(judge);
+    let shadow = Shadow::start(
+        &cfg,
+        "glm/x",
+        None,
+        rows.clone(),
+        &|_, _| judge.clone(),
+        &|_| Timing {
+            deadline: Duration::from_millis(300),
+            budget: Duration::from_secs(5),
+            misses: 3,
+            window: 5,
+            backoff: Duration::from_secs(1),
+            backoff_max: Duration::from_secs(2),
+        },
+        &|_| Box::new(|_, _| {}),
+    )
+    .unwrap();
+    let cell: crate::shadow::permission::Cell = Default::default();
+    *cell.lock().unwrap() = Some((
+        Arc::new(shadow),
+        rows.clone() as Arc<dyn crate::shadow::record::Recorder>,
+    ));
+    w.set
+        .set_annotator(Some(Arc::new(crate::shadow::permission::Relay {
+            cell,
+            rules: vec!["bash clippy-driver *".into()],
+            workspace: "/w/proj".into(),
+            home: "/home/op".into(),
+        })));
+    rows
+}
+
+/// A reviewer's `clippy-driver --version`, asked through the gatekeeper with no head of its own.
+/// The main head sees the card at once, waits `look`, and answers allow; the card it saw last is
+/// returned with how long the first sight took.
+fn relay_a_probe(w: &World, look: Duration) -> (OpenDecision, Duration, AdjudicationDecision) {
+    let adj = SubagentAdjudicator::new(
+        SubagentAsk {
+            handle: REVIEWER.into(),
+            task: "review".into(),
+            root: GATEKEEPER.into(),
+            ..Default::default()
+        },
+        Some(
+            HeadAdjudicator::new(w.gatekeeper.clone(), w.answers.clone())
+                .with_budget(Duration::from_secs(10)),
+        ),
+    );
+    let mut req = request();
+    req.id = "adj-probe-0001".into();
+    req.session_id = REVIEWER.into();
+    req.tool = "bash".into();
+    req.arguments = serde_json::json!({"command": "clippy-driver --version"});
+    let started = std::time::Instant::now();
+    let stop = Arc::new(AtomicBool::new(false));
+    let main = w.main.clone();
+    let head = w.head.clone();
+    let answerer = answer_when_open(w.main.clone(), stop.clone(), move |d| {
+        let first = started.elapsed();
+        std::thread::sleep(look);
+        let last = open_of(&main)
+            .into_iter()
+            .find(|o| o.req_id == d.req_id)
+            .expect("still open");
+        allow(&main, &head, &d.req_id);
+        (last, first)
+    });
+    let d = adj.decide(&req);
+    stop.store(true, Ordering::SeqCst);
+    let (card, first) = answerer
+        .join()
+        .unwrap()
+        .expect("a card reached the main head");
+    (card, first, d)
+}
+
+#[test]
+fn a_relayed_card_carries_the_shadows_line_when_it_answers_in_time() {
+    let w = world();
+    let rows = with_shadow(
+        &w,
+        Slow {
+            reply: r#"{"verdict":"allow","rule":"bash clippy-driver *","evidence":""}"#,
+            sleep: Duration::from_millis(20),
+        },
+    );
+    let (card, first, d) = relay_a_probe(&w, Duration::from_millis(250));
+    assert!(
+        first < Duration::from_millis(200),
+        "the card waited {first:?}"
+    );
+    assert_eq!(
+        card.shadow.as_deref(),
+        Some("shadow (deepseek): allow - matches rule \"bash clippy-driver *\"")
+    );
+    assert!(
+        matches!(d.outcome, DecisionOutcome::Selected { .. }),
+        "{d:?}"
+    );
+    let rows = rows.0.lock().unwrap();
+    assert!(
+        rows.iter()
+            .any(|r| r == "permission · relayed adj-probe-0001 from s-gatekeeper-k-sub-1"),
+        "{rows:?}"
+    );
+    assert!(
+        rows.iter().any(|r| r.starts_with("permission · allow")),
+        "the verdict is recorded: {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|r| r == "permission · operator answered admit adj-probe-0001"),
+        "the operator's answer is recorded beside it: {rows:?}"
+    );
+}
+
+#[test]
+fn a_relayed_card_shows_no_line_and_no_wait_when_the_shadow_times_out() {
+    let w = world();
+    with_shadow(
+        &w,
+        Slow {
+            reply: r#"{"verdict":"allow","rule":"bash clippy-driver *","evidence":""}"#,
+            sleep: Duration::from_millis(900),
+        },
+    );
+    let (card, first, d) = relay_a_probe(&w, Duration::from_millis(500));
+    assert!(
+        first < Duration::from_millis(200),
+        "the card waited {first:?}"
+    );
+    assert_eq!(card.shadow, None, "a late verdict draws no line");
+    assert!(
+        matches!(d.outcome, DecisionOutcome::Selected { .. }),
+        "{d:?}"
+    );
+}

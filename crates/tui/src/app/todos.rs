@@ -176,6 +176,7 @@ impl App {
                 choices: ask.options.clone(),
                 because: String::new(),
                 advice: None,
+                shadow: None,
                 deadline: None,
                 on_timeout: letibot_sessionlog::event::OnTimeout::Ask,
                 asked_ts: 0,

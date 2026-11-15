@@ -401,6 +401,13 @@ impl App {
                 content.push(rano::agent::text::one(l, rano::style::Role::Faint));
             }
         }
+        // The shadow's verdict on a relayed card: observe-only, so it sits with the facts.
+        if let Some(line) = d.shadow.as_deref().filter(|l| !l.trim().is_empty()) {
+            content.push(rano::agent::text::one(
+                rano::agent::text::trim_to(&format!("  {line}"), w),
+                rano::style::Role::Faint,
+            ));
+        }
         let mut choices = rungs;
         // What silence does, below the ladder because that is the order a person reads.
         if d.deadline.is_some() {
