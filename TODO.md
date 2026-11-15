@@ -75,11 +75,10 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R238 | jobwatch measured 103 ms for a `sleep 0.3` job once under load | Code work | left: find whether the elapsed stamp starts late or ends early; the test was not loosened |
 | R239 | db-fuzz's plugin-pane study: what the S1 and plugin-pane landings left open | Code work | findings 1-3, 5, 6, 8 fixed (12eb3f2e, ef008d36, 03cfc2af, 3db3108f); left: #4 (a `~/.claude` HTML skill still beats plugin-pane on "dashboard"), #7 (the room thread's wrong claim), #9 (a room flood makes tool results look lost), #10 (the session's own note) |
 | R241 | The idle reaper SIGTERMs a whole worktree daemon, its attached seat and a running job with it, and nothing reopens the session | Code work | built 2026-11-14: only the owner's own live daemon judges idleness, every project file is checked for the owner's open job, an attached head or open job renews the lease, a daemon serving another live owner is drained, and attach/send reopen a stopped session by id; left: jobs kept across a non-handover stop |
-| R242 | `read` clips a line at 2000 chars and `edit` then refuses it as never shown | Code work | done: a window read with its own `limit` clips at the byte budget (32 KiB) instead, marks the line shown, and the note says so (see the entry); left: a line over 32 KiB is still unreachable to `edit` |
 | R244 | Offers by meaning: evidence and declines | Code work | built: cosine rescaled over a 0.20 baseline in `blended`, a subject offer under the tier needs the skill's or note's name in the operator's words or touched files, untaken offers decline after three rounds and raise the floor per project; left: description words as evidence, the real-model test runs only where the checkpoint is |
 | R245 | The review queue's sessions are not reseated after a daemon restart, and their asks reach nobody | Code work | built: a restart keeps a claimed review claimed and reopens its reviewer on the stored session, a Claude run is started under a known id so it resumes, and every open board ask in the queue's tree is a card on the main session, in the bridge's asks list and the desktop notification; left: live permission and question cards of the queue's tree still fail closed with no head |
 | R255 | The multicall binary and the launcher are both named `letibot`, so an install copies the ELF over the command a person types | Code work | built: the multicall is `letibot-multi`, every install path refuses a non-script under a launcher name, `check-dist-names.sh --built` is a gate step (R222 settled); left: a box's own `target/release` needs a release build before the launcher's verbs find `letibot-multi`, and units installed from the old `letibot` path |
-| R256 | Long lines end to end: `read` cannot reach past 32 KiB of a line, and the tool window cuts every line at the screen edge | Code work | not started (audit package H6, plan 1.14 with R242's remainder); left: all of it |
+| R256 | Long lines end to end: `read` cannot reach past 32 KiB of a line, and the tool window cuts every line at the screen edge | Code work | built (audit H6, plan 1.14, R242's remainder): `read` takes `column_offset` and `columns`, the ledger keeps shown pieces and `edit` lands inside one; rano `c07e8ea` wraps the open window and counts hidden marker lines on the header; left: the unfolded (`/t`) row still cuts at the edge, and `grep` hits on a long line are still cut at 400 chars |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -1015,16 +1014,6 @@ Every close says `idle 30m: no turn, no job and nothing said to it for 30m`. Eac
 
 **Done when:** a test shows a foreign daemon's reaper leaving an owner with a running job in another project's file, a test shows an attached head holding off the close, a SIGTERM with a running job leaves it running for the next daemon, and `leticode_attach` on a reaped package reopens it with its transcript.
 
-## R242 - `read` clips a line at 2000 chars and `edit` then refuses it as never shown
-
-**Status:** fixed, 2026-11-14. left: a line longer than 32 KiB.
-
-Reported by the stroppy-conformity seat on a long markdown table row. `read` clips any line over `Limits::max_read_line_chars` (2000) and does not add a clipped line to the shown-lines ledger (`tools/src/builtins/read.rs`). `edit`'s gate (`unshown_refusal`, `tools/src/builtins/edit.rs`) then refuses with `this session has not been shown lines N-N` and tells the model to `read` that offset and limit, which clips the line again. Nothing could edit the line.
-
-Fixed: a window the call bounds with its own `limit` (the top-level `limit` or a `ranges` entry's) clips at `max_read_bytes` (32 KiB) instead of the character cap. So `read offset=N limit=1` shows the row whole and marks it shown. A read without a limit still clips at 2000, so a minified file does not flood the context, and the note now says to read the line with `limit=1`. Test: `a_long_line_read_with_a_limit_is_shown_whole_and_can_be_edited`.
-
-**Done when:** a line over 32 KiB has an edit path too (an edit whose `old_string` lies inside the displayed prefix, or `bash`), or it is decided that `bash` is that path.
-
 ## R243 - Shadow sessions: a second model that judges what the regexes and similarity floors guess
 
 **Status:** stage 1 landed 2026-11-14: the `shadow` seat (no tools), `SessionOrigin::Shadow` and `SessionGroup::Shadow` (`shadows` under a project's `system` branch in the head), `[shadow]` in providers.toml, and `crates/harnessd/src/shadow/` - the job runner (coalescing, position stamps, deadlines, breaker), the verdict parser with the quote verifier and the closed verdict space, the permission denylist, builtin prompts overridable at `.letibot/shadow/<job>.md`, and the stored shadow session written by `record::StoreRecorder`. Only top-level sessions get a shadow; subagents and the review queue do not.
@@ -1202,12 +1191,18 @@ Fix: the multicall ships under its own name; `install.sh`, `make-dist.sh`, the r
 **Done when:** `cargo build --release --bins` leaves no ELF named `letibot`, `sh scripts/check-dist-names.sh` exits 0 and is a gate step, and an install from an archive or a checkout puts the script at `letibot` and the multicall at its own name with `letibot-askpass` beside it.
 ## R256 - Long lines end to end: `read` cannot reach past 32 KiB of a line, and the tool window cuts every line at the screen edge
 
-**Status:** not started. left: all of it.
+**Status:** built, 2026-11-15. left: the unfolded (`/t`) row still cuts each line at the edge (the plan asks only for the window); `grep` hits on a long line are cut at 400 chars and do not mark a piece shown.
 
 Audit package H6 (`STATUS-fable-5.2-2026-11-15.md`), plan item 1.14, and R242's remainder.
 
 - Data side (R242's remainder): a line over 32 KiB is clipped even in a window `read` bounds with `limit`, and `edit` refuses any hit in it as never shown. kimi's `read` takes a `column_offset` and names the next one when a line continues (`maps/kimi-code.md:202`).
 - Display side (1.14): rano cuts every payload line to the screen width, in the opened window too (`rano: src/agent/tool_row.rs`), and drops envelope marker lines from the payload and its count without saying so.
+
+**Built.**
+- `read` takes `column_offset` (zero-based characters into line `offset`) and `columns` (at most 32768, the default), as kimi does. The call reads that one line, says `line N, characters a-b of L` and names the `column_offset` that continues it. A window clipped at 32 KiB names that `column_offset` too. `ranges` with a column is refused.
+- The shown-lines ledger (`tools/src/files.rs`) keeps byte ranges of a line shown in part, a clipped prefix or a column piece, with the line's fingerprint. `edit`'s gate checks a match's columns against them (`Seen::check_span`, `hit_span`), pieces move with the session's own edits, and a line shown whole piece by piece joins the table. A refusal for a long line names the `read` with `column_offset` that shows the match.
+- rano `c07e8ea` (`src/agent/tool_row.rs`): the open window pages over wrapped rows, the seams count payload lines, and the header says `N marker lines hidden` when envelope lines were dropped. letibot pins it.
+- Tests: `a_line_over_the_budget_is_read_in_pieces_and_edited_inside_one`, `an_edit_inside_the_shown_prefix_of_a_clipped_line_lands`, `a_column_read_past_the_line_or_with_ranges_is_refused_by_name`, `a_part_shown_covers_a_change_inside_it_and_moves_with_an_edit_above`; rano `a_line_wider_than_the_screen_is_read_whole_in_the_window`, `hidden_marker_lines_are_counted_on_the_header`.
 
 **Done when:** a line over 32 KiB is read in pieces with `column_offset` and `columns`, and an edit whose match lies inside a shown piece lands; a 400-column line is fully readable in the window at 80 columns; the header's count plus the stated hidden marker lines equals the payload's lines.
 
