@@ -1047,6 +1047,13 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     // A resident that grew with nothing in the census to account for it: the daemon measuring
     // itself, and no reader has a move - the numbers are in its log.
     ("memory_creep", Class::Failure, Action::Developer),
+    // An MCP server named in config did not start or died: its tools are missing from this
+    // session until the table is fixed or the server comes back.
+    (
+        "mcp_server",
+        Class::Failure,
+        Action::Do("check its `[mcp.NAME]` table in leticode.toml"),
+    ),
     // A bound the daemon relies on to keep its memory flat did not hold. The same shape as
     // `memory_high` and reported beside it: the harness, not the session, is what is failing.
     ("memory_bound_broken", Class::Failure, Action::Developer),
@@ -1649,15 +1656,15 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_92_routine_15_refused_and_103_failures() {
+    fn the_table_is_92_routine_15_refused_and_104_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k, _)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 210, "the table's size");
+        assert_eq!(TABLE.len(), 211, "the table's size");
         assert_eq!(count(Class::Routine), 92, "the seven limits are routine");
         assert_eq!(count(Class::Refused), 15, "the fifteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 103);
+        assert_eq!(count(Class::Failure), 104);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);
