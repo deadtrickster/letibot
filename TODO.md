@@ -1195,7 +1195,9 @@ The operator: "gatekeepr and reviewers and not automatically reseated. and they 
 
 ## R253 - An agent cannot reach a review queue seat: it is in no roster, and a DM from another project is refused
 
-**Status:** open, 2026-11-15. left: all of it.
+**Status:** built, 2026-11-15 (branch `r253-reach`). left: the live check from a real seat (`room_roster seats`, then a `decision` dm to `gatekeeper@rano`) once the room and the bridges run this build.
+
+Built: `room_roster` with `room: seats` lists the box's queue seats (`gatekeeper@<label>`, id, project key, connected, seat state), from connections and room members; listing changes nothing about who wakes. A dm to another project's queue seat is accepted when it is `kind: decision` or `ask` (`room_dm` takes `kind`, sent as a `say` with `to`), or when its `thread` is an operator's message the sender can see; that one is stored with a `relays` ref naming the seq. Plain chatter is refused with `QueueSeatOwnProject`, whose sentence now names the accepted kinds. The same gate now covers `room_say` with `to`, which before stored a dm the seat could never read. A cross-project `ask` is accepted and held in `host` when no room is named. The bridge renders a known refusal with the room's own sentence after its code. Tests: `crates/room/tests/queue_seat.rs` (directory, decision delivered, post refused with the sentence, relay, cross-project ask).
 
 Gatekeepers were taken out of the rooms on purpose (operator, 2026-11-15: "gatekeepers were removed from rooms, they were too chatty, but you can do dms"). Two things break the DM route that was meant to replace them:
 - **Not discoverable.** `room_roster host` lists no `gatekeeper@<project>` and no `s-gatekeeper-<key>`, so the handle has to be guessed. An agent cannot learn that the seat exists or what to call it.
@@ -1212,7 +1214,9 @@ Because neither path worked, the agent fell back to typing into rano's head over
 
 ## R254 - Only the bridge that holds a session can make it run a turn; anything else types into its head
 
-**Status:** open, 2026-11-15. left: all of it.
+**Status:** built, 2026-11-15 (branch `r253-reach`). left: a per-project policy that refuses prompts outright (none exists; today the refusal is the consent rule below), and the live check against a rano session.
+
+Built: `leticode_send` reaches any session on the box. For one this bridge does not hold, it reads the session's folder from the shared store, refuses when that daemon is down (it never starts another folder's daemon), asks the room for consent with a new `may_prompt` frame, then queues the prompt through that daemon with a one-shot head (`fleet::prompt_once`), sent `from` the bridge's handle so it is stored as `Speaker::Peer`. Consent lives in the room beside the dm rule: a session of the sender's own project needs none; another project's needs the operator's seat or `because`, the seq of an operator message the sender can see (`PromptNeedsOperator`, `PromptCitesNotOperator` otherwise). Tests: `crates/room/tests/queue_seat.rs` (consent rule), `crates/bridge/tests/prompt_unheld.rs` (a second bridge holds the session; a refusal naming `because` without consent; with the operator's seq the prompt runs a turn and its row is `speaker: peer`, `from: cc@letibot`; the sender holds nothing after).
 
 `leticode_send` works only for a session this bridge holds: "no session `s-gatekeeper-c74d1fd17483` is held by this bridge; it holds none". A session started by another folder's bridge, a queue seat, or the operator's own TUI session cannot be given a turn by an agent through any door. A room message reaches a session only if it is in that room and the message wakes it.
 

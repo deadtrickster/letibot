@@ -376,9 +376,20 @@ pub enum Refused {
         session: String,
         room: String,
     },
-    /// A queue seat (gatekeeper, reviewer) answers only its own project's sessions and the operator.
+    /// A queue seat (gatekeeper, reviewer) takes another project's chatter from nobody: only a
+    /// `decision`, an `ask`, or a line relaying the operator's message.
     QueueSeatOwnProject {
         session: String,
+    },
+    /// A prompt into another project's session needs the operator's word: theirs, or a message of
+    /// theirs the sender cites.
+    PromptNeedsOperator {
+        session: String,
+    },
+    /// The message a prompt cites as its consent is not the operator's, or the sender cannot see it.
+    PromptCitesNotOperator {
+        session: String,
+        because: u64,
     },
     /// Nobody on this host answers to the name, and these are the top-level sessions that do.
     AskUnknown {
@@ -696,9 +707,21 @@ impl fmt::Display for Refused {
             ),
             Refused::QueueSeatOwnProject { session } => write!(
                 f,
-                "`{session}` is a merge-queue seat: it hears the operator and sessions of its own \
-                 project by DM or ask, and no broadcast. Ask a session of that project, or the \
-                 operator, to put the question to it"
+                "`{session}` is a merge-queue seat and takes no chatter from another project. It \
+                 accepts a dm with `kind: decision`, an `ask`, or a dm whose `thread` is an \
+                 operator's message you are acting on; its own project's sessions and the \
+                 operator may dm it freely"
+            ),
+            Refused::PromptNeedsOperator { session } => write!(
+                f,
+                "`{session}` is another project's session, and a prompt runs a turn in it: cite \
+                 the operator's message you are acting on as `because` (its seq), or ask the \
+                 operator. A `room_dm` reaches it without one"
+            ),
+            Refused::PromptCitesNotOperator { session, because } => write!(
+                f,
+                "#{because} is not an operator's message you can see, so it is no consent to \
+                 prompt `{session}`: cite the operator's own line"
             ),
             Refused::AskUnknown { name, known } => write!(
                 f,

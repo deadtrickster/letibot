@@ -180,6 +180,75 @@ fn attach_once(socket: &Path, session: &str) -> Result<Vec<SessionBrief>, String
     }
 }
 
+/// Queue `text` into `session` through the daemon at `socket`, as `from`'s line, and wait for the
+/// daemon to take it. A one-shot head: it holds nothing after, so the session stays whoever's it
+/// was. Bounded like [`briefs`], for the same daemon that accepts and never answers.
+pub(crate) fn prompt_once(
+    socket: &Path,
+    session: &str,
+    text: &str,
+    from: &str,
+    timeout: Duration,
+) -> Result<u64, String> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let (socket, session, text, from) = (
+        socket.to_path_buf(),
+        session.to_string(),
+        text.to_string(),
+        from.to_string(),
+    );
+    let spawned = std::thread::Builder::new()
+        .name("prompt-once".into())
+        .spawn(move || {
+            let _ = tx.send(prompt_through(&socket, &session, &text, &from));
+        });
+    if let Err(e) = spawned {
+        return Err(format!("no thread to prompt with: {e}"));
+    }
+    rx.recv_timeout(timeout).unwrap_or_else(|_| {
+        Err(format!(
+            "the daemon did not take the prompt in {}s",
+            timeout.as_secs().max(1)
+        ))
+    })
+}
+
+fn prompt_through(socket: &Path, session: &str, text: &str, from: &str) -> Result<u64, String> {
+    let (mut client, _hello, mut reader) = HeadClient::attach(
+        socket,
+        session,
+        0,
+        crate::daemon::HEAD_KIND,
+        crate::daemon::IDENTITY,
+        Caps::default(),
+    )
+    .map_err(|e| e.to_string())?;
+    let id = client
+        .prompt_from(0, text, Vec::new(), None, Some(from.to_string()))
+        .map_err(|e| e.to_string())?;
+    let out = loop {
+        match reader.read::<ServerFrame>() {
+            Ok(ServerFrame::Accepted {
+                client_request_id,
+                seq,
+                ..
+            }) if client_request_id == id => break Ok(seq),
+            Ok(ServerFrame::Rejected {
+                client_request_id,
+                reason,
+                ..
+            }) if client_request_id == id => break Err(format!("the daemon refused it: {reason}")),
+            Ok(ServerFrame::Bye { reason }) => {
+                break Err(format!("the daemon went away: {reason}"));
+            }
+            Ok(_) | Err(letibot_sessionlog::wire::WireError::Malformed { .. }) => {}
+            Err(e) => break Err(e.to_string()),
+        }
+    };
+    let _ = client.detach();
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

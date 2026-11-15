@@ -1731,8 +1731,8 @@ impl Server {
         self.may_see(name, seat, project, &m.room)
     }
 
-    /// A queue seat hears no broadcast and no `@` mention. It hears the operator, and its own
-    /// project's sessions, only when they DM it or ask it: the one-to-one doors.
+    /// A queue seat hears no broadcast and no `@` mention, only the one-to-one doors: a dm or an
+    /// ask. From another project only what [`Server::queue_seat_gate`] let through.
     fn queue_seat_hears(&self, name: &str, m: &chat::Message) -> bool {
         if m.to.as_deref() != Some(name) {
             return false;
@@ -1740,8 +1740,144 @@ impl Server {
         if m.kind == Seat::Operator {
             return true;
         }
-        let one_to_one = m.room == chat::DM_ROOM || m.refs.iter().any(|r| r.kind == "ask");
-        one_to_one && self.queue_seat_kin(name, &m.author)
+        let asked = m.refs.iter().any(|r| r.kind == "ask");
+        if m.room != chat::DM_ROOM && !asked {
+            return false;
+        }
+        asked
+            || self.queue_seat_kin(name, &m.author)
+            || m.say_kind() == crate::SayKind::Decision
+            || m.thread.is_some()
+            || m.refs.iter().any(|r| r.kind == chat::RELAYS)
+    }
+
+    /// The refs a dm to `to` is stored with, or the refusal when `to` is a queue seat that takes no
+    /// such line from `name`. Another project may send a `decision` or an `ask`, or relay an
+    /// operator's message it names by `thread`; plain chatter stays out, which is why the seats
+    /// left the rooms.
+    #[allow(clippy::too_many_arguments)]
+    fn queue_seat_gate(
+        &self,
+        to: &str,
+        name: &str,
+        seat: Seat,
+        project: &str,
+        kind: crate::SayKind,
+        thread: Option<u64>,
+        mut refs: Vec<chat::Ref>,
+    ) -> Result<Vec<chat::Ref>, crate::Refused> {
+        refs.retain(|r| r.kind != chat::RELAYS);
+        if queue_seat_project(to).is_none()
+            || seat == Seat::Operator
+            || self.queue_seat_kin(to, name)
+            || matches!(kind, crate::SayKind::Decision | crate::SayKind::Ask)
+        {
+            return Ok(refs);
+        }
+        match thread.filter(|t| self.operator_said(name, seat, project, *t)) {
+            Some(t) if refs.len() < chat::MAX_REFS => {
+                refs.push(chat::Ref {
+                    kind: chat::RELAYS.to_string(),
+                    id: t.to_string(),
+                });
+                Ok(refs)
+            }
+            _ => Err(crate::Refused::QueueSeatOwnProject {
+                session: to.to_string(),
+            }),
+        }
+    }
+
+    /// Is `seq` the operator's message, one `name` can read? Acting on it is acting for them.
+    fn operator_said(&self, name: &str, seat: Seat, project: &str, seq: u64) -> bool {
+        let found: Option<chat::Message> = {
+            let chat = self.inner.chat.lock().expect("the chat lock");
+            chat.thread_root(seq, |_| true)
+        };
+        found.is_some_and(|m| m.kind == Seat::Operator && self.visible(name, seat, project, &m))
+    }
+
+    /// The consent a prompt into a session this seat does not hold needs: none within its own
+    /// project, the operator's word across projects - theirs, or their message cited by seq.
+    fn may_prompt(
+        &self,
+        project: &str,
+        seat: Seat,
+        name: &str,
+        to: &str,
+        hint: &str,
+        because: Option<u64>,
+    ) -> Result<String, crate::Refused> {
+        let to = to.trim().trim_start_matches('@');
+        let session = self
+            .resolve_name(project, to, Reach::OwnProject)
+            .unwrap_or_else(|_| to.to_string());
+        if session.is_empty() || session == name {
+            return Err(crate::Refused::UnknownAddressee {
+                name: session,
+                known: Vec::new(),
+            });
+        }
+        let known = self.seat_and_project_of(&session).1;
+        let target = match queue_seat_project(&session) {
+            Some(key) => key.to_string(),
+            None if !known.is_empty() => known,
+            None => hint.trim().to_string(),
+        };
+        if seat == Seat::Operator || (!target.is_empty() && target == project) {
+            return Ok(session);
+        }
+        match because {
+            None => Err(crate::Refused::PromptNeedsOperator { session }),
+            Some(b) if self.operator_said(name, seat, project, b) => Ok(session),
+            Some(b) => Err(crate::Refused::PromptCitesNotOperator {
+                session,
+                because: b,
+            }),
+        }
+    }
+
+    /// The box's queue seats: in no room, so no roster lists them, and this is how one is found.
+    /// Listed is not seated - room talk still does not wake them.
+    fn queue_seats(&self) -> Vec<chat::Presence> {
+        let mut rows: BTreeMap<String, chat::Presence> = BTreeMap::new();
+        let seat_row = |id: &str, connected: bool| chat::Presence {
+            name: id.to_string(),
+            id: id.to_string(),
+            kind: Seat::Session,
+            connected,
+            project: queue_seat_project(id).unwrap_or_default().to_string(),
+            label: "queue seat".to_string(),
+            seat: None,
+        };
+        {
+            let rooms = self.inner.rooms.lock().expect("the rooms lock");
+            for m in rooms.values().flat_map(|r| r.members().to_vec()) {
+                if queue_seat_project(&m.session).is_some() && !m.session.contains("-sub-") {
+                    rows.entry(m.session.clone())
+                        .or_insert_with(|| seat_row(&m.session, false));
+                }
+            }
+        }
+        for c in self.conn_list() {
+            let id = &c.who.session;
+            if queue_seat_project(id).is_some() && !id.contains("-sub-") {
+                rows.entry(id.clone())
+                    .or_insert_with(|| seat_row(id, true))
+                    .connected = true;
+            }
+        }
+        let shown = self.gatekeeper_display();
+        let now = now_ms();
+        rows.into_values()
+            .map(|mut r| {
+                if let Some(g) = shown.get(&r.id) {
+                    r.name = g.clone();
+                }
+                r.seat = Some(self.seat_view(&r.id, r.connected, now));
+                r
+            })
+            .collect()
     }
 
     /// Is `other` a session of the project the queue seat `name` serves?
@@ -2391,15 +2527,18 @@ impl Server {
                         },
                     );
                 }
-                if queue_seat_project(&to).is_some()
-                    && seat != Seat::Operator
-                    && !self.queue_seat_kin(&to, name)
-                {
-                    return refuse(
-                        Some(id),
-                        crate::Refused::QueueSeatOwnProject { session: to },
-                    );
-                }
+                let refs = match self.queue_seat_gate(
+                    &to,
+                    name,
+                    seat,
+                    project,
+                    crate::SayKind::Post,
+                    *thread,
+                    Vec::new(),
+                ) {
+                    Ok(r) => r,
+                    Err(why) => return refuse(Some(id), why),
+                };
                 let attachments = match self.attach_blobs(attachments) {
                     Ok(a) => a,
                     Err(why) => return refuse(Some(id), why),
@@ -2434,7 +2573,7 @@ impl Server {
                     seat,
                     Some(to),
                     *thread,
-                    Vec::new(),
+                    refs,
                     attachments,
                     text,
                     now,
@@ -2618,6 +2757,22 @@ impl Server {
                     Err(why) => refuse(None, why),
                 }
             }
+            Request::Roster { room } if room.trim() == chat::SEATS => Response::Roster {
+                rows: self.queue_seats(),
+                room: chat::SEATS.to_string(),
+            },
+            Request::MayPrompt {
+                id,
+                to,
+                project: hint,
+                because,
+            } => match self.may_prompt(project, seat, name, to, hint, *because) {
+                Ok(session) => Response::MayPrompt {
+                    id: id.clone(),
+                    session,
+                },
+                Err(why) => refuse(Some(id), why),
+            },
             Request::Roster { room } => {
                 let room = match room.trim() {
                     "" => Self::default_chat_room(seat, project),
@@ -2911,6 +3066,13 @@ impl Server {
                 known: self.closest(t),
             });
         }
+        let refs = match &to {
+            Some(t) => match self.queue_seat_gate(t, name, seat, project, kind, thread, refs) {
+                Ok(r) => r,
+                Err(why) => return refuse(why),
+            },
+            None => refs,
+        };
         // Looked up before the room: a reply stays in its root's room, so the frame's room does
         // not decide where it lands. The chat lock is released first - a lock held across another
         // lock is how two threads find each other.
@@ -3684,18 +3846,17 @@ impl Server {
         if question.is_empty() {
             return refuse(crate::Refused::ChatEmpty);
         }
+        // Another project's queue seat sees no room of the asker's, so its question is held in
+        // the host room, which both read.
         let room = match room.trim() {
+            "" if queue_seat_project(&target).is_some_and(|k| k != project) => {
+                chat::HOST_ROOM.to_string()
+            }
             "" => Self::default_chat_room(seat, project),
             r => r.to_string(),
         };
         if room == chat::DM_ROOM || !self.may_see(name, seat, project, &room) {
             return refuse(Self::room_refusal(project, &room));
-        }
-        if queue_seat_project(&target).is_some()
-            && seat != Seat::Operator
-            && !self.queue_seat_kin(&target, name)
-        {
-            return refuse(crate::Refused::QueueSeatOwnProject { session: target });
         }
         let (tseat, tproject) = self.seat_and_project_of(&target);
         if !self.may_see(&target, tseat, &tproject, &room) {
@@ -4753,6 +4914,7 @@ fn is_chat_frame(frame: &Request) -> bool {
             | Request::Read { .. }
             | Request::Search { .. }
             | Request::Roster { .. }
+            | Request::MayPrompt { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
             | Request::Signals

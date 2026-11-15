@@ -171,6 +171,13 @@ pub const EVIDENCE: &str = "evidence";
 /// so the frame, the store and every rendering keep their shape, and an old row reads as a post.
 pub const SAY: &str = "say";
 
+/// The ref kind a dm to another project's queue seat carries when it relays an operator's
+/// message: its id is that message's seq. Only the room writes it.
+pub const RELAYS: &str = "relays";
+
+/// The roster scope that lists the box's queue seats. They are in no room, so this is no room.
+pub const SEATS: &str = "seats";
+
 /// How many refs one message may carry.
 pub const MAX_REFS: usize = 8;
 /// The longest ref id, in bytes.
@@ -1772,8 +1779,10 @@ impl Chat {
         }
         if refs.len() > MAX_REFS
             || refs.iter().any(|r| {
-                !matches!(r.kind.as_str(), "todo" | "queue" | "ask" | EVIDENCE | SAY)
-                    || r.id.trim().is_empty()
+                !matches!(
+                    r.kind.as_str(),
+                    "todo" | "queue" | "ask" | EVIDENCE | SAY | RELAYS
+                ) || r.id.trim().is_empty()
                     || r.id.len() > MAX_REF_ID
             })
         {

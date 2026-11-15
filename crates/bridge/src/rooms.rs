@@ -316,19 +316,28 @@ pub fn box_key() -> String {
 /// sends, derived from the same repository root so both land in one room. Empty - the host room -
 /// when `cwd` belongs to no folder at all; an older bridge sends nothing and is there too.
 pub fn hello_room(cwd: &std::path::Path) -> String {
-    let root = repo_root(cwd).or_else(|| {
-        // A folder outside a repository is its own project, as the daemon's roster reads it, so a
-        // seat there is not dropped into the host room when a session in the same folder is not.
-        let dir = std::fs::canonicalize(cwd).ok().filter(|p| p.is_dir())?;
-        Some(dir)
-    });
-    match root {
+    match project_root(cwd) {
         Some(root) => letibot_room::room_name(
             &box_key(),
             &letibot_room::project_key(&root.display().to_string()),
         ),
         None => String::new(),
     }
+}
+
+/// The room's project key for a folder, empty when it is no folder at all.
+pub fn project_of(cwd: &std::path::Path) -> String {
+    project_root(cwd)
+        .map(|root| letibot_room::project_key(&root.display().to_string()))
+        .unwrap_or_default()
+}
+
+fn project_root(cwd: &std::path::Path) -> Option<PathBuf> {
+    repo_root(cwd).or_else(|| {
+        // A folder outside a repository is its own project, as the daemon's roster reads it, so a
+        // seat there is not dropped into the host room when a session in the same folder is not.
+        std::fs::canonicalize(cwd).ok().filter(|p| p.is_dir())
+    })
 }
 
 /// This box's coordinator socket: `$LETIBOT_ROOM_SOCKET`, else `room-<host key>.sock` in the
@@ -1334,6 +1343,11 @@ fn why(v: &Value) -> String {
         .filter(|(k, _)| k.as_str() != "refused")
         .map(|(k, v)| format!("{k}: {}", v.as_str().map_or(v.to_string(), str::to_string)))
         .collect();
+    // The room's own sentence says what would be accepted; the code stays first for a reader
+    // that matches on it. A refusal this build cannot read keeps its fields.
+    if let Ok(known) = serde_json::from_value::<letibot_room::Refused>(v.clone()) {
+        return format!("{name}: {known}");
+    }
     if rest.is_empty() {
         name
     } else {
@@ -1460,17 +1474,23 @@ pub fn tool_list() -> Vec<Value> {
                 "properties": {
                     "to": { "type": "string" },
                     "text": { "type": "string" },
-                    "thread": { "type": "integer" }
+                    "thread": { "type": "integer" },
+                    "kind": {
+                        "type": "string",
+                        "enum": ["post", "fyi", "ask", "decision"],
+                        "description": "`post` when absent. Another project's queue seat (`gatekeeper@<project>`) takes only `decision`, `ask`, or a `thread` on the operator's message you act on."
+                    }
                 },
                 "required": ["to", "text"]
             }),
         ),
         tool(
             "room_roster",
-            "Who is in a room: name, kind, whether connected, project and the tree's label.",
+            "Who is in a room: name, kind, whether connected, project and the tree's label. \
+             `seats`: the queue seats.",
             json!({
                 "type": "object",
-                "properties": { "room": { "type": "string" } },
+                "properties": { "room": { "type": "string", "description": "A room, or `seats`: the box's queue seats, in no room and reached by dm." } },
                 "required": ["room"]
             }),
         ),
@@ -1886,12 +1906,22 @@ fn dispatch(link: &RoomLink, name: &str, args: &Value, workspace: &Path) -> Resu
             link.request(&f).map(with_lines)
         }
         "room_dm" => {
-            let mut f = json!({
-                "type": "dm",
-                "id": link.id(),
-                "to": arg_str(args, "to")?,
-                "text": arg_str(args, "text")?,
-            });
+            // A dm frame has no kind; one that carries a kind is a `say` with `to`, which the
+            // room stores in the same dm channel.
+            let kind = arg_opt_str(args, "kind")?.unwrap_or_default();
+            let mut f = match kind.trim() {
+                "" | "post" => json!({ "type": "dm" }),
+                k @ ("fyi" | "ask" | "decision") => json!({ "type": "say", "room": "", "kind": k }),
+                other => {
+                    return Err(format!(
+                        "`{other}` is not a dm `kind`: `post`, `fyi`, `ask` or `decision` - \
+                         nothing was sent to the room"
+                    ));
+                }
+            };
+            f["id"] = json!(link.id());
+            f["to"] = json!(arg_str(args, "to")?);
+            f["text"] = json!(arg_str(args, "text")?);
             if let Some(n) = arg_opt_u64(args, "thread")? {
                 f["thread"] = json!(n);
             }

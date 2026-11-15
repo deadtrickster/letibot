@@ -812,16 +812,74 @@ impl Bridge {
     /// A line into a session the bridge holds. Queued behind a running turn, as a head's
     /// own prompt is - the daemon never rejects it.
     pub fn send(&self, session: &str, text: &str) -> Result<Value, String> {
+        self.send_because(session, text, None)
+    }
+
+    /// [`Bridge::send`] that also reaches a session this bridge does not hold, citing `because`,
+    /// the seq of the operator's message it acts on, when the session is another project's.
+    pub fn send_because(
+        &self,
+        session: &str,
+        text: &str,
+        because: Option<u64>,
+    ) -> Result<Value, String> {
         if text.trim().is_empty() {
             return Err("`text` is empty: an empty prompt starts no turn".into());
         }
         let h = match self.head(session) {
             Ok(h) => h,
             Err(_) if self.is_gone(session) => self.reopen_gone(session)?,
-            Err(why) => return Err(why),
+            Err(why) => {
+                return self
+                    .send_unheld(session, text, because)
+                    .map_err(|e| format!("{why}. {e}"));
+            }
         };
         h.prompt(text)?;
         Ok(json!({ "queued": true, "session": session }))
+    }
+
+    /// A prompt into a session another head drives, through its own daemon, stored as this
+    /// seat's line. The room decides consent, so a prompt needs what a dm to that seat needs.
+    fn send_unheld(
+        &self,
+        session: &str,
+        text: &str,
+        because: Option<u64>,
+    ) -> Result<Value, String> {
+        let store = match &self.names_from {
+            Some((store, _)) => store.clone(),
+            None => daemon::default_store()?,
+        };
+        let row = crate::store::open_read(&store, "session", None)
+            .and_then(|s| s.session(session).map_err(|e| e.to_string()))?
+            .ok_or_else(|| format!("the store has no session `{session}` to prompt"))?;
+        let d = daemon::resolve(Path::new(&row.workspace_root))?;
+        if !daemon::is_up(&d.socket) {
+            return Err(format!(
+                "`{session}`'s daemon is not running ({}); this bridge does not start another \
+                 folder's daemon to prompt it",
+                d.socket.display()
+            ));
+        }
+        let mut ask = json!({
+            "type": "may_prompt",
+            "id": self.rooms.id(),
+            "to": session,
+            "project": crate::rooms::project_of(Path::new(&row.workspace_root)),
+        });
+        if let Some(b) = because {
+            ask["because"] = json!(b);
+        }
+        self.rooms.request(&ask)?;
+        let seq = crate::fleet::prompt_once(
+            &d.socket,
+            session,
+            text,
+            &crate::rooms::handle(),
+            crate::fleet::ATTACH_TIMEOUT,
+        )?;
+        Ok(json!({ "queued": true, "session": session, "held": false, "seq": seq }))
     }
 
     fn is_gone(&self, session: &str) -> bool {
@@ -1498,15 +1556,18 @@ pub fn list() -> Value {
         ),
         tool(
             "leticode_send",
-            "Send an operator line into a running session. Queued behind a running turn as \
+            "Send a line into a session, stored as yours. Queued behind a running turn as \
               the head's own prompt, so it never loses a race with what the model is doing; \
               the daemon starts a turn for it when the current one ends. A session this bridge \
-              held until its daemon stopped is reopened first.",
+              held until its daemon stopped is reopened first. Any other session on the box is \
+              prompted through its own daemon, with a dm's consent: another project's needs \
+              `because`, the seq of the operator's message you act on.",
             json!({
                 "type": "object",
                 "properties": {
-                    "session": { "type": "string", "description": "The id `leticode_start` answered, or the session's name (the `/rename` title or its slug) in this folder." },
-                    "text": { "type": "string", "description": "What to say to the session." }
+                    "session": { "type": "string", "description": "The id `leticode_start` answered, or the session's name (the `/rename` title or its slug) in this folder. Another folder's session by id." },
+                    "text": { "type": "string", "description": "What to say to the session." },
+                    "because": { "type": "integer", "description": "The seq of the operator's message this acts on: needed for a session of another project that this bridge does not hold." }
                 },
                 "required": ["session", "text"]
             }),
@@ -1982,7 +2043,11 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             let watch_only = arg_bool(args, "watch_only", true)?;
             bridge.attach(&worktree, &session, watch_only)
         }
-        "leticode_send" => bridge.send(&session_arg(bridge, args)?, &arg_str(args, "text")?),
+        "leticode_send" => bridge.send_because(
+            &session_arg(bridge, args)?,
+            &arg_str(args, "text")?,
+            args.get("because").and_then(Value::as_u64),
+        ),
         "leticode_status" => bridge.status(&session_arg(bridge, args)?),
         "leticode_events" => {
             let session = session_arg(bridge, args)?;

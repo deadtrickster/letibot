@@ -258,8 +258,22 @@ pub enum Request {
         #[serde(default)]
         last: Option<u32>,
     },
-    /// Who is in a room.
+    /// Who is in a room. [`crate::chat::SEATS`] is no room: it lists the box's queue seats, which
+    /// are in none.
     Roster { room: String },
+    /// May this seat queue a prompt into `to`, a session it does not hold? The room answers with
+    /// the same consent a dm needs; the prompt itself goes through the session's own daemon.
+    MayPrompt {
+        id: String,
+        to: String,
+        /// The target's project key as the sender's store reads it, for a session not connected
+        /// here. A connected session's own project wins.
+        #[serde(default)]
+        project: String,
+        /// The seq of the operator's message the sender acts on.
+        #[serde(default)]
+        because: Option<u64>,
+    },
     /// What this principal missed since its cursor, through an attention filter. Moves nothing.
     Inbox {
         #[serde(default)]
@@ -466,6 +480,7 @@ impl Request {
             | Request::Done { id, .. }
             | Request::Abandon { id, .. }
             | Request::Dispute { id, .. }
+            | Request::MayPrompt { id, .. }
             | Request::Rule { id, .. } => Some(id),
         }
     }
@@ -642,6 +657,11 @@ pub enum Response {
     Roster {
         room: String,
         rows: Vec<crate::chat::Presence>,
+    },
+    /// The answer to [`Request::MayPrompt`] that consents: the session, resolved.
+    MayPrompt {
+        id: String,
+        session: String,
     },
     Inbox {
         rows: Vec<crate::chat::Message>,
@@ -889,6 +909,7 @@ impl Room {
             | Request::Read { .. }
             | Request::Search { .. }
             | Request::Roster { .. }
+            | Request::MayPrompt { .. }
             | Request::Inbox { .. }
             | Request::Ack { .. }
             | Request::Signals

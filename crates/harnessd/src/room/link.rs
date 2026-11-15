@@ -1688,6 +1688,7 @@ fn answer_sentence(response: &Response, me: &str) -> Result<String, String> {
             None => format!("`{room}` is back in the room lists"),
         },
         Response::Roster { room, rows } => roster_sentence(room, rows),
+        Response::MayPrompt { session, .. } => format!("a prompt to `{session}` is consented"),
         Response::Inbox { rows, skipped, .. } => {
             format!("{} message(s), {skipped} left out", rows.len())
         }

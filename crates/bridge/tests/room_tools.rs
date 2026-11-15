@@ -410,6 +410,25 @@ fn the_tools_round_trip_against_a_coordinator() {
 
     let dm = call(&link, "room_dm", json!({"to": "operator", "text": "ping"})).unwrap();
     assert_eq!(dm["message"]["room"], "dm");
+    // A dm with a kind is a `say` to one principal: the room's dm frame carries no kind.
+    call(
+        &link,
+        "room_dm",
+        json!({"to": "gatekeeper@rano", "text": "two reviewers", "kind": "decision"}),
+    )
+    .unwrap();
+    let kinded = fake.frames("say");
+    let last = kinded.last().expect("a say frame");
+    assert_eq!(last["kind"], "decision", "{last}");
+    assert_eq!(last["to"], "gatekeeper@rano", "{last}");
+    assert!(
+        call(
+            &link,
+            "room_dm",
+            json!({"to": "x", "text": "y", "kind": "blocker"})
+        )
+        .is_err_and(|e| e.contains("nothing was sent"))
+    );
 
     let read = call(&link, "room_read", json!({"room": "host", "since": 0})).unwrap();
     assert_eq!(read["rows"].as_array().unwrap().len(), 1);
