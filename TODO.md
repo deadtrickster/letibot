@@ -901,6 +901,12 @@ Idea: a background poll of the usage endpoint, cached the way `listed_models` (`
 
 **Still open?** `grep -rn 'usage::' crates --include=*.rs` shows only the refusal path.
 
+**Approaching a limit is said before the refusal** (operator, 2026-11-15: "would be nice if im shown im approaching limits"):
+- When a polled window crosses 80%, and again at 95%, the session gets one notice: `kimi 5h at 82% · resets 07:07`. The operator sees it in the head and the model sees it as a fact.
+- The status row's usage figure changes colour at the same thresholds.
+- Each threshold is said once per window, and is said again after the reset.
+- Both thresholds are `[provider]` keys.
+
 **Done when:** with a Kimi preset active, the status row and the model card show the window's use and reset from a cached poll, a test against a fake endpoint checks the rendering and the cache, and no poll runs for a preset with no `usage_url`.
 
 ## R234 - VMs do not boot at load 100-240, and packages fall back to host subagents
