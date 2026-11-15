@@ -1158,6 +1158,40 @@ The operator: "gatekeepr and reviewers and not automatically reseated. and they 
 
 **Done when:** a restart with a review in flight resumes that reviewer's transcript, and an ask on any queue session's board is visible and answerable from the main session's head and from `leticode_asks` without opening the queue's session.
 
+## R253 - An agent cannot reach a review queue seat: it is in no roster, and a DM from another project is refused
+
+**Status:** open, 2026-11-15. left: all of it.
+
+Gatekeepers were taken out of the rooms on purpose (operator, 2026-11-15: "gatekeepers were removed from rooms, they were too chatty, but you can do dms"). Two things break the DM route that was meant to replace them:
+- **Not discoverable.** `room_roster host` lists no `gatekeeper@<project>` and no `s-gatekeeper-<key>`, so the handle has to be guessed. An agent cannot learn that the seat exists or what to call it.
+- **A DM from another project is refused.** On 2026-11-15, `room_dm to=gatekeeper@rano` from `cc@letibot` was refused with `the room refused it: queue seat own project (session: s-gatekeeper-c74d1fd17483)`. A queue seat accepts DMs from its own project only. The operator's decision about rano's reviewers could not be delivered from the letibot session that implemented it. A `decision` post in `host` (#1492) is not seen by a seat that is in no room.
+
+Because neither path worked, the agent fell back to typing into rano's head over tmux, which the store then records as the operator's words (see the attribution row).
+
+**Change:**
+- A directory of the box's queue seats is readable by any seat: `room_roster` with a `seats` scope, or a `queue_seats` door, listing handle, project and state. Being listed is not being in the room: listed seats are not woken by room talk.
+- A DM to a queue seat from another project is accepted when it is `kind: decision` or `ask`, or when it comes from the operator or a seat acting on the operator's request. Plain chatter stays refused, which keeps the reason the seats left the rooms.
+- The refusal says what would be accepted.
+
+**Done when:** a test from a seat in another project finds `gatekeeper@<p>` in the directory, and its `decision` DM is delivered while a plain `post` DM is refused with a sentence naming the kinds that are accepted.
+
+## R254 - Only the bridge that holds a session can make it run a turn; anything else types into its head
+
+**Status:** open, 2026-11-15. left: all of it.
+
+`leticode_send` works only for a session this bridge holds: "no session `s-gatekeeper-c74d1fd17483` is held by this bridge; it holds none". A session started by another folder's bridge, a queue seat, or the operator's own TUI session cannot be given a turn by an agent through any door. A room message reaches a session only if it is in that room and the message wakes it.
+
+So on 2026-11-15 cc@letibot typed two prompts into rano's head over tmux: a shadow check, and a correction to the rano gatekeeper. Both are now stored as the operator's words. Operator: "ideally if roomms work there will be no typing". A tmux fallback means a door is missing.
+
+**Change:** a door that queues a prompt into any session on the box, by id, through the session's own daemon:
+- the sender is recorded as its author (the attribution row's agent speaker);
+- it is refused for seats whose project policy refuses it, with the reason;
+- it is subject to the same consent as a DM: an operator decision, or a seat acting on one.
+
+It can be `leticode_send` widened beyond held sessions, or a room `prompt` kind addressed to a session. Pick the one that matches the existing permission model.
+
+**Done when:** from cc@letibot, a prompt to a rano session that this bridge does not hold is queued and runs a turn, is stored with `cc@letibot` as its author, and a project that refuses it gets a refusal with its reason. No tmux in the path.
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.
