@@ -350,7 +350,7 @@ pub(super) const FLAGS: &[Flag] = &[
     flag(
         &["--spill-dir"],
         Some("DIR"),
-        "spill store root, one directory per project; default <data dir>/spills",
+        "spill store root, one dir per project; default <data dir>/spills",
         None,
     ),
     flag(
