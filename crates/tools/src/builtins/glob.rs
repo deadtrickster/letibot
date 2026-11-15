@@ -4,7 +4,7 @@
 
 use serde_json::Value;
 
-use crate::backend::{DirEntry, default_skip, walk};
+use crate::backend::{DirEntry, walk_ignoring};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
@@ -61,11 +61,14 @@ impl Tool for Glob {
             return Invocation::failed(why, String::new());
         }
 
-        let (entries, truncated) = walk(
+        // The pattern's literal directory is a named path, like `path`: `target/debug/*.d`
+        // reaches into an ignored tree because it asked to.
+        let named = literal_dir(source);
+        let (entries, truncated, ignored) = walk_ignoring(
             ctx.backend,
             &scope,
             ctx.limits.max_walk_entries,
-            &default_skip,
+            &[scope.as_str(), named.as_str()],
         );
         ctx.progress(format!("walked {} entries under {scope}", entries.len()));
         let files: Vec<&DirEntry> = entries.iter().filter(|e| !e.is_dir).collect();
@@ -120,6 +123,9 @@ impl Tool for Glob {
                 false => format!(" Relaxations tried: {tried}."),
             }
         ));
+        if let Some(n) = ignored.note() {
+            body.push_str(&format!("{n}.\n"));
+        }
         Invocation::abstained(
             format!("no path matches `{source}`, and no relaxation of it matches either"),
             body,
@@ -177,6 +183,22 @@ fn ladder(source: &str) -> Vec<(String, Option<String>)> {
     out
 }
 
+/// The part of a pattern before its first wildcard, cut back to a directory; the whole pattern
+/// when it has none, and `.` when nothing is literal.
+fn literal_dir(pattern: &str) -> String {
+    let literal: String = pattern
+        .chars()
+        .take_while(|c| !matches!(c, '*' | '?' | '[' | '{'))
+        .collect();
+    if literal == pattern {
+        return pattern.to_string();
+    }
+    match literal.rfind('/') {
+        Some(i) if i > 0 => literal[..i].to_string(),
+        _ => ".".to_string(),
+    }
+}
+
 /// The listing around the pattern's literal prefix: the part before the first
 /// wildcard, cut back to a directory.
 fn surroundings(ctx: &mut InvokeCtx<'_>, pattern: &str) -> String {
@@ -201,6 +223,30 @@ fn surroundings(ctx: &mut InvokeCtx<'_>, pattern: &str) -> String {
 #[cfg(test)]
 mod tests {
     use crate::testing::harness;
+
+    /// The walk honours `.gitignore` from the root, and a pattern whose literal part names the
+    /// ignored tree reaches it.
+    #[test]
+    fn a_gitignored_tree_is_skipped_unless_the_pattern_names_it() {
+        let mut h = harness();
+        h.write_file(".gitignore", "gen/\n");
+        h.write_file("gen/out.qq", "x\n");
+
+        let r = h.call("glob", r#"{"pattern":"**/*.qq"}"#);
+        assert!(!r.payload.contains("gen/out.qq"), "{}", r.payload);
+        assert!(
+            r.payload
+                .contains("1 file(s) ignored by .gitignore were not searched (under `gen/`)"),
+            "{}",
+            r.payload
+        );
+
+        let r = h.call("glob", r#"{"pattern":"gen/*.qq"}"#);
+        assert!(r.is_grounded(), "{}", r.payload);
+        assert!(r.payload.contains("gen/out.qq"), "{}", r.payload);
+        let r = h.call("glob", r#"{"pattern":"**/*.qq","path":"gen"}"#);
+        assert!(r.payload.contains("gen/out.qq"), "{}", r.payload);
+    }
 
     #[test]
     fn a_hit_lists_the_paths() {

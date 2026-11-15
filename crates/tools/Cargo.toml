@@ -48,6 +48,9 @@ sha2 = "0.10"
 # label; `Pattern::compile` now returns an error and `grep` shows it.
 regex = "1.13"
 regex-syntax = "0.8"
+# `.gitignore` rules for grep and glob, the same matcher ripgrep uses. Only its `gitignore`
+# module: the walk stays on the backend, which may not be a local filesystem.
+ignore = "0.4"
 # The structural half of search: `outline` over a tree-sitter parse. It is a
 # separate crate because the grammars are C and pull a `cc` build, and this
 # crate deliberately has no `build.rs` — see below.

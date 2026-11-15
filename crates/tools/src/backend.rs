@@ -2,6 +2,7 @@
 //! through, and through nothing else. [`HostBackend`] implements read, list, stat and
 //! write; `run` only once a boundary exists, because a boundary is a substrate.
 
+use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
@@ -1180,6 +1181,172 @@ pub fn walk(
     backend.list_tree(root, limit, skip).unwrap_or_default()
 }
 
+/// What a gitignore-aware walk left out: the files under ignored rules, and the first few
+/// paths the rules matched, so a miss can say what it did not search.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct Ignored {
+    pub files: usize,
+    pub examples: Vec<String>,
+}
+
+impl Ignored {
+    /// The sentence a search appends, or nothing when the rules dropped no file.
+    pub fn note(&self) -> Option<String> {
+        if self.files == 0 {
+            return None;
+        }
+        let eg = match self.examples.is_empty() {
+            true => String::new(),
+            false => format!(
+                " (under {})",
+                self.examples
+                    .iter()
+                    .map(|p| format!("`{p}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        };
+        Some(format!(
+            "{} file(s) ignored by .gitignore were not searched{eg}; name one in `path` to \
+             search it",
+            self.files
+        ))
+    }
+}
+
+/// How many ignored paths [`Ignored::examples`] keeps.
+const IGNORED_EXAMPLES: usize = 3;
+
+fn trim_path(p: &str) -> &str {
+    let p = p.strip_prefix("./").unwrap_or(p);
+    let p = p.trim_end_matches('/');
+    if p.is_empty() { "." } else { p }
+}
+
+/// The directory holding `path`, `.` for a top-level relative entry.
+fn dir_of(path: &str) -> &str {
+    match path.rsplit_once('/') {
+        Some(("", _)) => "/",
+        Some((d, _)) => d,
+        None => ".",
+    }
+}
+
+/// Is `path` a named path or one of its ancestors? Those are walked whatever the rules say:
+/// a path the model names is a path it wants searched.
+fn on_named_chain(path: &str, named: &[String]) -> bool {
+    named
+        .iter()
+        .any(|n| n == path || (n.starts_with(path) && n.as_bytes().get(path.len()) == Some(&b'/')))
+}
+
+/// [`walk`] with `.gitignore` honoured, as ripgrep honours it: hidden files are still listed,
+/// and the paths in `named` (and their ancestors) bypass both the rules and [`default_skip`].
+/// The rules are applied after the walk, with every `.gitignore` read in one `read_many`,
+/// because a backend over ssh walks in one round trip and would pay one per directory otherwise.
+pub fn walk_ignoring(
+    backend: &dyn ExecBackend,
+    root: &str,
+    limit: usize,
+    named: &[&str],
+) -> (Vec<DirEntry>, bool, Ignored) {
+    use ignore::gitignore::GitignoreBuilder;
+
+    let named: Vec<String> = named.iter().map(|n| trim_path(n).to_string()).collect();
+    let skip = |e: &DirEntry| !on_named_chain(&e.path, &named) && default_skip(e);
+    let (entries, truncated) = walk(backend, root, limit, &skip);
+
+    // The root's ancestors hold rules for it too, as git reads them; only for a relative root,
+    // whose ancestors are spelled the same way the entries are.
+    let root = trim_path(root);
+    let mut sources: Vec<String> = Vec::new();
+    if root != "." && !root.starts_with('/') && !root.split('/').any(|c| c == "..") {
+        let mut d = root;
+        loop {
+            d = dir_of(d);
+            sources.push(match d {
+                "." => ".gitignore".to_string(),
+                _ => format!("{d}/.gitignore"),
+            });
+            if d == "." {
+                break;
+            }
+        }
+    }
+    sources.extend(
+        entries
+            .iter()
+            .filter(|e| !e.is_dir && e.name == ".gitignore")
+            .map(|e| e.path.clone()),
+    );
+    if sources.is_empty() {
+        return (entries, truncated, Ignored::default());
+    }
+    let refs: Vec<&str> = sources.iter().map(String::as_str).collect();
+    let read = backend
+        .read_many(&refs)
+        .unwrap_or_else(|_| refs.iter().map(|p| backend.read(p)).collect());
+    let mut rules: HashMap<String, ignore::gitignore::Gitignore> = HashMap::new();
+    for (path, bytes) in sources.iter().zip(read) {
+        let Ok(bytes) = bytes else { continue };
+        let dir = dir_of(path);
+        let mut b = GitignoreBuilder::new(dir);
+        for line in String::from_utf8_lossy(&bytes).lines() {
+            // A line that does not parse is one rule lost, not the file.
+            let _ = b.add_line(None, line);
+        }
+        if let Ok(gi) = b.build() {
+            rules.insert(dir.to_string(), gi);
+        }
+    }
+    if rules.is_empty() {
+        return (entries, truncated, Ignored::default());
+    }
+
+    // Walk order puts a directory before its contents, so a pruned parent is known by then.
+    let mut pruned: HashSet<String> = HashSet::new();
+    let mut ignored = Ignored::default();
+    let mut kept = Vec::with_capacity(entries.len());
+    for e in entries {
+        if on_named_chain(&e.path, &named) {
+            kept.push(e);
+            continue;
+        }
+        let parent_pruned = pruned.contains(dir_of(&e.path));
+        let drop = parent_pruned || {
+            let mut verdict = false;
+            let mut d = e.path.as_str();
+            while d != "." && d != "/" {
+                d = dir_of(d);
+                if let Some(gi) = rules.get(d) {
+                    let m = gi.matched(&e.path, e.is_dir);
+                    if m.is_ignore() || m.is_whitelist() {
+                        verdict = m.is_ignore();
+                        break;
+                    }
+                }
+            }
+            verdict
+        };
+        if !drop {
+            kept.push(e);
+            continue;
+        }
+        if !parent_pruned && ignored.examples.len() < IGNORED_EXAMPLES {
+            ignored.examples.push(match e.is_dir {
+                true => format!("{}/", e.path),
+                false => e.path.clone(),
+            });
+        }
+        if e.is_dir {
+            pruned.insert(e.path);
+        } else {
+            ignored.files += 1;
+        }
+    }
+    (kept, truncated, ignored)
+}
+
 /// The default skip set: version-control and build directories, which are never
 /// what a question is about and are most of the bytes.
 pub fn default_skip(e: &DirEntry) -> bool {
@@ -1251,6 +1418,52 @@ mod tests {
         std::fs::write(d.path().join("README.md"), "hello\n").unwrap();
         let b = HostBackend::new(d.path()).unwrap();
         (d, b)
+    }
+
+    /// Nested rules apply below their own directory, a `!` re-includes, an ancestor's rules
+    /// reach a walk rooted below it, and a named path is walked whatever the rules say.
+    #[test]
+    fn walk_ignoring_applies_nested_rules_and_bypasses_named_paths() {
+        let d = tempdir::TempDir::new();
+        for (p, body) in [
+            (".gitignore", "*.tmp\n!keep.tmp\nout/\n"),
+            ("a/.gitignore", "local.rs\n"),
+            ("a/local.rs", ""),
+            ("a/x.rs", ""),
+            ("a/b.tmp", ""),
+            ("a/keep.tmp", ""),
+            ("out/z.rs", ""),
+            ("target/t.rs", ""),
+        ] {
+            let f = d.path().join(p);
+            std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+            std::fs::write(f, body).unwrap();
+        }
+        let b = HostBackend::new(d.path()).unwrap();
+        let files = |r: &(Vec<DirEntry>, bool, Ignored)| -> Vec<String> {
+            r.0.iter()
+                .filter(|e| !e.is_dir)
+                .map(|e| e.path.clone())
+                .collect()
+        };
+
+        let r = walk_ignoring(&b, ".", 1000, &["."]);
+        let got = files(&r);
+        assert!(got.contains(&"a/x.rs".to_string()), "{got:?}");
+        assert!(got.contains(&"a/keep.tmp".to_string()), "{got:?}");
+        for gone in ["a/local.rs", "a/b.tmp", "out/z.rs", "target/t.rs"] {
+            assert!(!got.contains(&gone.to_string()), "{gone} in {got:?}");
+        }
+        assert_eq!(r.2.files, 3, "{:?}", r.2);
+
+        // Rooted at `a`, the root's `.gitignore` still drops `b.tmp`.
+        let got = files(&walk_ignoring(&b, "a", 1000, &["a"]));
+        assert!(!got.contains(&"a/b.tmp".to_string()), "{got:?}");
+
+        // Named, an ignored directory and a default-skipped one are walked.
+        let got = files(&walk_ignoring(&b, ".", 1000, &["out", "target/t.rs"]));
+        assert!(got.contains(&"out/z.rs".to_string()), "{got:?}");
+        assert!(got.contains(&"target/t.rs".to_string()), "{got:?}");
     }
 
     /// A backend rooted at `/` with the workspace as its cwd: a relative path is the

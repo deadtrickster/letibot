@@ -5,7 +5,7 @@
 use letibot_transcript::text::clip_line_counted;
 use serde_json::Value;
 
-use crate::backend::{DirEntry, default_skip, walk};
+use crate::backend::{DirEntry, Ignored, walk_ignoring};
 use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
@@ -171,6 +171,7 @@ impl Tool for Grep {
         let mut tried: Vec<String> = Vec::new();
         let mut files_scanned = 0usize;
         let mut unopened: Option<String> = None;
+        let mut ignored = Ignored::default();
         let mut parseable: Vec<&'static str> = Vec::new();
         // One listing per scope, not one per rung: the ladder has four rungs and three of them can
         // share a scope, and a walk is a round trip over every directory in it. A scope that named
@@ -179,6 +180,7 @@ impl Tool for Grep {
             Some(entry) if !entry.is_dir => Listings {
                 scope: Some(scope.clone()),
                 entries: vec![entry],
+                ignored: Ignored::default(),
             },
             _ => Listings::default(),
         };
@@ -194,6 +196,9 @@ impl Tool for Grep {
                 context,
             );
             files_scanned = files_scanned.max(scan.scanned);
+            if walked.ignored.files > ignored.files {
+                ignored = walked.ignored.clone();
+            }
             // A scan that stopped on its bound or on a dying channel ends the ladder: every rung
             // below would pay the same round trips to learn the same nothing.
             if let Some(stop) = &scan.stop {
@@ -277,6 +282,9 @@ impl Tool for Grep {
                 "nothing under `{scope}` was opened, so this call says NOTHING \
                  about whether `{source}` occurs. Fix the scope and ask again."
             ));
+            if let Some(n) = ignored.note() {
+                why.push_str(&format!("\n{n}."));
+            }
             return Invocation::failed(
                 format!("0 files matched the scope, so `{source}` was never searched for"),
                 why,
@@ -294,6 +302,9 @@ impl Tool for Grep {
         );
         if let Some(n) = &unopened {
             body.push_str(&format!("{n}\n"));
+        }
+        if let Some(n) = ignored.note() {
+            body.push_str(&format!("{n}.\n"));
         }
         body.push_str("relaxations tried, all of them empty:\n");
         for t in &tried {
@@ -448,6 +459,7 @@ struct Scan {
 struct Listings {
     scope: Option<String>,
     entries: Vec<DirEntry>,
+    ignored: Ignored,
 }
 
 impl Listings {
@@ -456,13 +468,9 @@ impl Listings {
     /// a round trip, and the common case is a directory.
     fn of(&mut self, ctx: &InvokeCtx<'_>, scope: &str) -> &[DirEntry] {
         if self.scope.as_deref() != Some(scope) {
-            let mut entries = walk(
-                ctx.backend,
-                scope,
-                ctx.limits.max_walk_entries,
-                &default_skip,
-            )
-            .0;
+            let (mut entries, _, ignored) =
+                walk_ignoring(ctx.backend, scope, ctx.limits.max_walk_entries, &[scope]);
+            self.ignored = ignored;
             if entries.is_empty()
                 && let Some(e) = ctx.backend.stat(scope)
                 && !e.is_dir
@@ -774,6 +782,38 @@ fn mark_shown(ctx: &mut InvokeCtx<'_>, hits: &[Hit]) {
 #[cfg(test)]
 mod tests {
     use crate::testing::harness;
+
+    /// A gitignored tree is not searched from the root, the miss counts what it skipped, and
+    /// naming the path searches it.
+    #[test]
+    fn gitignored_files_are_skipped_counted_and_reachable_by_path() {
+        let mut h = harness();
+        h.write_file(".gitignore", "gen/\n*.log\n");
+        h.write_file("gen/out.rs", "quokka_generated\n");
+        h.write_file("gen/more.rs", "quokka_generated\n");
+        h.write_file("run.log", "quokka_generated\n");
+        h.write_file(".hidden/note.txt", "hidden_sentinel\n");
+
+        let r = h.call("grep", r#"{"pattern":"quokka_generated"}"#);
+        assert!(!r.is_grounded(), "{}", r.payload);
+        assert!(!r.payload.contains("gen/out.rs:"), "{}", r.payload);
+        assert!(
+            r.payload
+                .contains("3 file(s) ignored by .gitignore were not searched"),
+            "{}",
+            r.payload
+        );
+
+        let r = h.call("grep", r#"{"pattern":"quokka_generated","path":"gen"}"#);
+        assert!(r.is_grounded(), "{}", r.payload);
+        assert!(r.payload.contains("gen/out.rs:"), "{}", r.payload);
+        let r = h.call("grep", r#"{"pattern":"quokka_generated","path":"run.log"}"#);
+        assert!(r.payload.contains("run.log:"), "{}", r.payload);
+
+        // Hidden is not ignored.
+        let r = h.call("grep", r#"{"pattern":"hidden_sentinel"}"#);
+        assert!(r.payload.contains(".hidden/note.txt:"), "{}", r.payload);
+    }
 
     #[test]
     fn a_plain_hit_is_path_line_text() {
