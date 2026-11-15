@@ -2604,15 +2604,29 @@ impl Harness {
             // as this one's answer. A pooled batch holds only reads, and none of them fills it.
             self.asked.lock().unwrap_or_else(|e| e.into_inner()).take();
             let mark = self.hub.last_settled();
-            let ran = if batch.len() > 1 {
+            // A command file's `allowed-tools` refuses a call before it reaches the tool.
+            let refused: Vec<Option<String>> = batch
+                .iter()
+                .map(|c| {
+                    self.turn_tools
+                        .as_ref()
+                        .and_then(|t| t.refusal(&c.name, &c.arguments))
+                })
+                .collect();
+            let ran = if batch.len() > 1 && refused.iter().all(Option::is_none) {
                 self.runtime
                     .invoke_pooled(turn_id, batch, &mut self.tool_sink)
             } else {
-                let started = Instant::now();
-                vec![(
-                    self.runtime.invoke(turn_id, &batch[0], &mut self.tool_sink),
-                    started,
-                )]
+                let mut ran = Vec::with_capacity(batch.len());
+                for (call, why) in batch.iter().zip(refused) {
+                    let started = Instant::now();
+                    let r = match why {
+                        Some(why) => self.runtime.refuse(turn_id, call, &mut self.tool_sink, why),
+                        None => self.runtime.invoke(turn_id, call, &mut self.tool_sink),
+                    };
+                    ran.push((r, started));
+                }
+                ran
             };
             // Settled in call order whatever order the pool finished in.
             for (call, (r, started)) in batch.iter().zip(ran) {

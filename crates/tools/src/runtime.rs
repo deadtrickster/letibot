@@ -2120,6 +2120,27 @@ impl ToolRuntime {
             .collect()
     }
 
+    /// A call the session refused before it reached the tool, answered as any early miss is: a
+    /// failed result and its finished event, so a head closes the call it drew.
+    pub fn refuse(
+        &self,
+        turn_id: &str,
+        call: &ToolCall,
+        sink: &mut dyn ToolEventSink,
+        reason: String,
+    ) -> ToolResult {
+        let r = ToolResult::new(
+            call.id.clone(),
+            call.name.clone(),
+            ToolOutcome::Failed {
+                reason: reason.clone(),
+            },
+        )
+        .with_payload(reason);
+        sink.emit(finished_event(turn_id, &r));
+        r
+    }
+
     /// The body of both, with the gate the one thing that varies.
     fn run(
         &self,

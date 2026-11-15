@@ -1,6 +1,7 @@
 //! Markdown command files: `.letibot/commands/NAME.md`, `.claude/commands/NAME.md` and
 //! `<config dir>/commands/NAME.md` become `/NAME ARGS`, expanded with opencode's placeholders and
-//! sent as the operator's prompt. The nearest scope wins on a name clash.
+//! sent as the operator's prompt. A file in a subdirectory is `/DIR/NAME`. The nearest scope wins
+//! on a name clash.
 
 use std::path::{Path, PathBuf};
 
@@ -49,13 +50,20 @@ pub fn dirs(workspace: &Path, user: &Path) -> Vec<(Scope, PathBuf)> {
     out
 }
 
-/// A name a `/` line can carry: one word, no path separators, not a dotfile.
+/// How deep `dir/name` namespaces go. A bound, so a symlink loop under `commands/` ends.
+const MAX_DEPTH: usize = 4;
+
+/// A name a `/` line can carry: `/`-separated segments, none empty or a dotfile, so `..` and an
+/// absolute path never leave the commands directory.
 fn valid_name(name: &str) -> bool {
-    !name.is_empty()
-        && !name.starts_with('.')
-        && name
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+    let segments: Vec<&str> = name.split('/').collect();
+    segments.len() <= MAX_DEPTH
+        && segments.iter().all(|s| {
+            !s.is_empty()
+                && !s.starts_with('.')
+                && s.chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+        })
 }
 
 /// The command `name` resolves to. `Ok(None)` when no scope has the file; `Err` when the nearest
@@ -79,27 +87,46 @@ pub fn find(workspace: &Path, user: &Path, name: &str) -> Result<Option<Command>
 pub fn list(workspace: &Path, user: &Path) -> Vec<Command> {
     let mut out: Vec<Command> = Vec::new();
     for (scope, dir) in dirs(workspace, user) {
-        let Ok(entries) = std::fs::read_dir(&dir) else {
-            continue;
-        };
-        let mut found: Vec<Command> = entries
-            .flatten()
-            .filter_map(|e| {
-                let path = e.path();
-                if path.extension().and_then(|x| x.to_str()) != Some("md") || !path.is_file() {
-                    return None;
-                }
-                let name = path.file_stem()?.to_str()?.to_string();
-                if !valid_name(&name) || out.iter().any(|c| c.name == name) {
-                    return None;
-                }
-                read(&path, &name, scope).ok()
-            })
-            .collect();
-        out.append(&mut found);
+        let mut found = Vec::new();
+        walk(&dir, "", 1, &mut found);
+        for (name, path) in found {
+            if !valid_name(&name) || out.iter().any(|c| c.name == name) {
+                continue;
+            }
+            if let Ok(c) = read(&path, &name, scope) {
+                out.push(c);
+            }
+        }
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+/// The `.md` files under `dir` as `(name, path)`, a subdirectory's named `sub/name`.
+fn walk(dir: &Path, prefix: &str, depth: usize, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for e in entries.flatten() {
+        let path = e.path();
+        let Some(file) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if file.starts_with('.') {
+            continue;
+        }
+        if path.is_dir() {
+            if depth < MAX_DEPTH {
+                walk(&path, &format!("{prefix}{file}/"), depth + 1, out);
+            }
+            continue;
+        }
+        if let Some(stem) = file.strip_suffix(".md")
+            && path.is_file()
+        {
+            out.push((format!("{prefix}{stem}"), path));
+        }
+    }
 }
 
 fn read(path: &Path, name: &str, scope: Scope) -> Result<Command, String> {
@@ -296,16 +323,9 @@ impl Command {
         out.trim().to_string()
     }
 
-    /// What frontmatter this build reads but does not apply yet, for the operator's row.
-    pub fn unapplied(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        if let Some(m) = &self.model {
-            out.push(format!("model `{m}`"));
-        }
-        if !self.allowed_tools.is_empty() {
-            out.push(format!("allowed-tools `{}`", self.allowed_tools.join(", ")));
-        }
-        out
+    /// The tool narrowing `allowed-tools` asks for, or `None` when the file names no tools.
+    pub fn tool_rules(&self) -> Option<ToolRules> {
+        (!self.allowed_tools.is_empty()).then(|| ToolRules::parse(&self.allowed_tools))
     }
 }
 
@@ -316,6 +336,127 @@ fn positional(body: &str) -> Vec<usize> {
         .filter(|&i| b[i] == b'$' && (b'1'..=b'9').contains(&b[i + 1]))
         .map(|i| (b[i + 1] - b'0') as usize)
         .collect()
+}
+
+/// One `allowed-tools` entry: a tool name, and for `bash` the command prefix it is held to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ToolRule {
+    name: String,
+    /// `Bash(git add:*)` is `git add` and any arguments; `Bash(git status)` is that command only.
+    command: Option<(String, bool)>,
+}
+
+/// A command file's `allowed-tools`, held to for the one turn the file starts. The tool schemas
+/// stay seated, since they are prompt bytes; a call outside the list is refused instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolRules {
+    rules: Vec<ToolRule>,
+}
+
+impl ToolRules {
+    pub fn parse(entries: &[String]) -> ToolRules {
+        let rules = entries
+            .iter()
+            .filter_map(|e| {
+                let e = e.trim();
+                let (name, inner) = match e.split_once('(') {
+                    Some((n, rest)) => (n.trim(), Some(rest.trim_end_matches(')').trim())),
+                    None => (e, None),
+                };
+                if name.is_empty() {
+                    return None;
+                }
+                let name = tool_name(name);
+                let command = inner
+                    .filter(|p| name == "bash" && !p.is_empty() && *p != "*")
+                    .map(
+                        |p| match p.strip_suffix(":*").or_else(|| p.strip_suffix('*')) {
+                            Some(prefix) => (prefix.trim_end().to_string(), true),
+                            None => (p.to_string(), false),
+                        },
+                    );
+                Some(ToolRule { name, command })
+            })
+            .collect();
+        ToolRules { rules }
+    }
+
+    /// The list as the model and the operator read it: `bash(git add *), read`.
+    pub fn said(&self) -> String {
+        self.rules
+            .iter()
+            .map(|r| match &r.command {
+                Some((c, true)) => format!("{}({c} *)", r.name),
+                Some((c, false)) => format!("{}({c})", r.name),
+                None => r.name.clone(),
+            })
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
+
+    /// `None` when the call may run, else the reason it is refused. The session's own verbs
+    /// (`SELF_VERBS`) are never narrowed: they act on the session, not on the workspace.
+    pub fn refusal(&self, tool: &str, arguments: &str) -> Option<String> {
+        if letibot_plugin::command::SELF_VERBS.contains(&tool) {
+            return None;
+        }
+        let named: Vec<&ToolRule> = self.rules.iter().filter(|r| r.name == tool).collect();
+        if named.is_empty() {
+            return Some(format!(
+                "this turn runs a command file that allows only: {}; `{tool}` is not one of them",
+                self.said()
+            ));
+        }
+        if named.iter().any(|r| r.command.is_none()) {
+            return None;
+        }
+        let command = serde_json::from_str::<serde_json::Value>(arguments)
+            .ok()
+            .and_then(|v| {
+                v.get("command")
+                    .and_then(|c| c.as_str())
+                    .map(str::to_string)
+            })
+            .unwrap_or_default();
+        let command = command.trim();
+        // A prefix rule would pass `git add x && rm -rf y`, so a held command is one command.
+        let compound = ["&", "|", ";", "`", "$(", "\n", ">", "<"]
+            .iter()
+            .any(|op| command.contains(op));
+        let fits = !compound
+            && named.iter().any(|r| match &r.command {
+                Some((c, true)) => command == c || command.starts_with(&format!("{c} ")),
+                Some((c, false)) => command == c,
+                None => true,
+            });
+        (!fits).then(|| {
+            format!(
+                "this turn runs a command file that allows bash only as: {}; `{command}` is not one of them",
+                self.said()
+            )
+        })
+    }
+}
+
+/// Claude Code's tool names in this tree's spelling: `Read` is `read`, `WebFetch` is `web_fetch`.
+fn tool_name(name: &str) -> String {
+    match name {
+        "MultiEdit" => return "edit".into(),
+        "LS" => return "glob".into(),
+        _ => {}
+    }
+    let mut out = String::new();
+    for (i, c) in name.chars().enumerate() {
+        if c.is_ascii_uppercase() {
+            if i > 0 {
+                out.push('_');
+            }
+            out.push(c.to_ascii_lowercase());
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// The refusal for a `/` verb that nothing answers, naming where a command file would be.
@@ -446,5 +587,67 @@ mod tests {
         let err = find(&ws, Path::new(""), "bad").unwrap_err();
         assert!(err.contains("no closing `---`"), "{err}");
         assert_eq!(find(&ws, Path::new(""), "../etc").unwrap(), None);
+    }
+
+    #[test]
+    fn a_subdirectory_is_a_namespace() {
+        let ws = tempdir("ws");
+        put(
+            &ws.join(".letibot/commands/git"),
+            "commit",
+            "Commit $ARGUMENTS.",
+        );
+        put(&ws.join(".letibot/commands/git/.hidden"), "x", "never");
+        put(&ws.join(".letibot/commands"), "top", "Top.");
+        let c = find(&ws, Path::new(""), "git/commit")
+            .unwrap()
+            .expect("found");
+        assert_eq!(c.expand("it"), "Commit it.");
+        let names: Vec<String> = list(&ws, Path::new(""))
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        assert_eq!(names, vec!["git/commit", "top"]);
+        for bad in [
+            "git/../top",
+            "/top",
+            "git//commit",
+            "git/.hidden/x",
+            "a/b/c/d/e",
+        ] {
+            assert_eq!(find(&ws, Path::new(""), bad).unwrap(), None, "{bad}");
+        }
+        assert!(not_found("git/nope", &ws, Path::new("")).contains("git/nope.md"));
+    }
+
+    #[test]
+    fn allowed_tools_narrow_by_name_and_bash_by_command() {
+        let rules = ToolRules::parse(&[
+            "Bash(git add:*)".into(),
+            "Bash(git status)".into(),
+            "Read".into(),
+            "WebFetch".into(),
+        ]);
+        assert_eq!(
+            rules.said(),
+            "bash(git add *), bash(git status), read, web_fetch"
+        );
+        let bash =
+            |c: &str| rules.refusal("bash", &serde_json::json!({ "command": c }).to_string());
+        assert_eq!(bash("git add src/a.rs"), None);
+        assert_eq!(bash("git add"), None);
+        assert_eq!(bash("git status"), None);
+        assert!(bash("git status -s").is_some());
+        assert!(bash("git addx").is_some());
+        assert!(bash("git add a && rm -rf b").is_some());
+        assert!(bash("git add $(rm x)").is_some());
+        assert_eq!(rules.refusal("read", "{}"), None);
+        assert_eq!(rules.refusal("web_fetch", "{}"), None);
+        let no = rules.refusal("write", "{}").expect("write is not listed");
+        assert!(no.contains("`write` is not one of them"), "{no}");
+        let own = letibot_plugin::command::SELF_VERBS[0];
+        assert_eq!(rules.refusal(own, "{}"), None, "the session's own verbs");
+        let any = ToolRules::parse(&["Bash".into()]);
+        assert_eq!(any.refusal("bash", r#"{"command":"rm -rf x && y"}"#), None);
     }
 }

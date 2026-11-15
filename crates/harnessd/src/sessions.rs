@@ -1171,16 +1171,49 @@ impl<'a> Sessions<'a> {
             }
         };
         let mut note = format!("{} command {}", cmd.scope.word(), cmd.path.display());
-        let unapplied = cmd.unapplied();
-        if !unapplied.is_empty() {
-            note.push_str(&format!(
-                "; read but not applied by this build: {}",
-                unapplied.join(", ")
-            ));
+        let mut text = cmd.expand(rest);
+        let rules = cmd.tool_rules();
+        let mut back = None;
+        if let Some(h) = self.open.get_mut(session_id) {
+            if let Some(spec) = &cmd.model {
+                match h.turn_model(spec) {
+                    Ok(b) => {
+                        back = b;
+                        note.push_str(&format!("; this turn runs on `{spec}`"));
+                    }
+                    Err(why) => note.push_str(&format!(
+                        "; model `{spec}` not applied, this turn runs on `{}`: {why}",
+                        h.model_name()
+                    )),
+                }
+            }
+            if let Some(r) = &rules {
+                note.push_str(&format!("; this turn's tools: {}", r.said()));
+                // Told as well as enforced, so the model does not spend rounds on refusals.
+                text.push_str(&format!(
+                    "\n\n(This command allows only these tools: {}.)",
+                    r.said()
+                ));
+            }
+            h.set_turn_tools(rules);
         }
         said("command_file", note);
-        let text = cmd.expand(rest);
-        Some(match self.run_prompt(session_id, &text, &[], None, None) {
+        let out = self.run_prompt(session_id, &text, &[], None, None);
+        if let Some(h) = self.open.get_mut(session_id) {
+            h.set_turn_tools(None);
+            if let Some(b) = back
+                && let Err(why) = h.end_turn_model(b)
+            {
+                said(
+                    "command_file",
+                    format!(
+                        "the model before /{verb} could not be put back, so this session stays on `{}`: {why}",
+                        h.model_name()
+                    ),
+                );
+            }
+        }
+        Some(match out {
             Ok(reply) => Outcome::Replied(Box::new(reply)),
             Err(e) => Outcome::Failed(e.to_string()),
         })

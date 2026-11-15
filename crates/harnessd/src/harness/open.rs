@@ -3711,6 +3711,7 @@ impl Harness {
             switch_back: None,
             // Nothing waiting: a switch asked for between turns takes effect at once.
             pending_switch: None,
+            turn_tools: None,
             // And no turn owed: only a fallback ever arms one.
             fallback_continuation: None,
             continuation_of_fallback: false,

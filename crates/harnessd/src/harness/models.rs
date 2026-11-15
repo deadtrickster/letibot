@@ -70,6 +70,11 @@ pub(crate) fn switch_back_said(previous: &str, now: &str, code: u16) -> String {
     )
 }
 
+/// What a command file's one-turn model switch goes back to.
+pub struct TurnModelBack {
+    provider: Option<crate::config::ProviderConfig>,
+}
+
 /// The model a session switched away from, kept until a round proves the new one answers: the fact that makes a failed
 /// switch recoverable by the person who typed it. Held in `model_name`'s spelling, which is what `/models` takes, so the
 /// notice's command is not a second name to translate.
@@ -641,6 +646,63 @@ impl Harness {
             return None;
         }
         Some(switch_back_said(&back.previous, &now, code))
+    }
+
+    /// Hold the turn about to run to a command file's `allowed-tools`; `None` lifts it.
+    pub fn set_turn_tools(&mut self, rules: Option<crate::commands::ToolRules>) {
+        self.turn_tools = rules;
+    }
+
+    /// Put a command file's `model` on for the one turn it starts, without writing the session
+    /// row. `Ok(None)` is that model already answering; `Ok(Some(back))` is what
+    /// [`Harness::end_turn_model`] restores. A fleet model is refused: its switch re-renders the
+    /// conversation, and doing that twice for one turn costs more than the turn.
+    pub fn turn_model(&mut self, spec: &str) -> Result<Option<TurnModelBack>, String> {
+        if self.prompt_in_flight.load(Ordering::SeqCst) {
+            return Err("a turn is already running on this session".into());
+        }
+        if self.on_foreign_weights() {
+            return Err(format!(
+                "this session is on a fleet model, and `{spec}` for one turn would re-seat \
+                 the conversation twice"
+            ));
+        }
+        let (provider, model) = crate::slash::split_model_name(spec);
+        let (choice, _) = crate::slash::models_choice(
+            &provider,
+            model.as_deref(),
+            None,
+            self.cfg.providers_file.as_deref(),
+        )
+        .map_err(|lines| lines.join("; "))?;
+        let target = match choice {
+            crate::slash::ModelChoice::OwnServer => None,
+            crate::slash::ModelChoice::Metered(pc) => Some(pc),
+            crate::slash::ModelChoice::Local(m) => {
+                return Err(format!(
+                    "`{}` is a fleet model, and switching to it re-seats the conversation",
+                    m.name
+                ));
+            }
+        };
+        if model_name_of(&target) == self.model_name() {
+            return Ok(None);
+        }
+        let back = TurnModelBack {
+            provider: self.cfg.provider.clone(),
+        };
+        self.set_provider_now(target).map_err(|e| e.to_string())?;
+        Ok(Some(back))
+    }
+
+    /// The model the session was on before [`Harness::turn_model`], put back.
+    pub fn end_turn_model(&mut self, back: TurnModelBack) -> Result<(), String> {
+        if model_name_of(&back.provider) == self.model_name() {
+            return Ok(());
+        }
+        self.set_provider_now(back.provider)
+            .map(|_| ())
+            .map_err(|e| e.to_string())
     }
 
     /// The whole of `/models NAME`, in one place for both callers: the worker's arm and the retry loop's poll. Two

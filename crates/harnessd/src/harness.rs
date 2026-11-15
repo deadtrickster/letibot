@@ -477,6 +477,8 @@ pub struct Harness {
     /// field and not a hub queue, because the request is answered the moment it is taken and what is
     /// left is one act at one moment. A queue would let two switches stack.
     pending_switch: Option<PendingSwitch>,
+    /// A command file's `allowed-tools`, held to while the turn that file started runs.
+    turn_tools: Option<crate::commands::ToolRules>,
     /// The turn the daemon owes after it moved this session off a model that was out: the notice that
     /// opens it, built where the refusal is and taken where a turn ends. Ending the turn on the refusal
     /// was half an answer, so the work goes on in a new turn. At most one, or a chain would ping-pong.
@@ -1877,7 +1879,7 @@ pub(crate) use job_window::{
 };
 #[cfg(test)]
 pub(crate) use models::switch_back_said;
-pub use models::{LocalSwitch, local_switch_decision, local_url_authority};
+pub use models::{LocalSwitch, TurnModelBack, local_switch_decision, local_url_authority};
 pub(crate) use models::{
     NO_MODEL_CHOSEN, OwnServer, PendingSwitch, SwitchBack, key_is_missing, key_is_replaceable,
     leftover_hint, model_name_of, parse_local_url, superseded, told_once, vocab_differs,
