@@ -305,6 +305,102 @@ fn a_session_recorded_under_another_dialect_is_re_rendered_not_refused() {
     );
 }
 
+/// `/fork 3` of ten messages: the fork resumes with three messages and their answers and nothing
+/// of the original's after them, and the original still resumes whole.
+#[test]
+fn a_fork_resumes_with_the_rows_up_to_the_point_and_the_original_still_resumes() {
+    let probe =
+        Parts::load(&config(Path::new("unused"), "", "/tmp")).expect("the wiring must load");
+    let dir = TempDir::new("harnessd-fork");
+    let store_path = dir.path().join("sessions.db");
+    let store = Store::open(&store_path).expect("opening the store");
+    let workspace = dir.path().join("ws");
+    std::fs::create_dir_all(&workspace).expect("the session's own tree");
+    let workspace = workspace.display().to_string();
+    let source = "s-original";
+    store
+        .put_session(&SessionRecord {
+            id: source.into(),
+            title: Some("ten messages".into()),
+            model_id: WANTED.name().into(),
+            dialect_sha: renders_template(&probe),
+            workspace_root: workspace.clone(),
+            owner: "dead".into(),
+            approvers: vec![],
+            role: None,
+            parent_session_id: None,
+        })
+        .expect("putting the session");
+    let prefix_tokens: Vec<u32> = vec![7, 8, 9];
+    let prefix_id = store
+        .put_stable_prefix(&StablePrefixRecord {
+            dialect_sha: renders_template(&probe),
+            system: "you are letibot".into(),
+            tools_json: vec![],
+            tokens: prefix_tokens.clone(),
+            h_init: hash_tokens(&prefix_tokens),
+            vocab_source: probe.vocab.source().to_string(),
+            effort: None,
+        })
+        .expect("putting the prefix");
+    let t0 = format!("{source}#t0");
+    store
+        .put_transcript(&t0, source, &prefix_id)
+        .expect("putting t0");
+    let items: Vec<TranscriptItem> = (0..10)
+        .flat_map(|i| {
+            [
+                user(&format!("prompt {i}")),
+                assistant(&format!("answer {i}")),
+            ]
+        })
+        .collect();
+    write_rows(&store, &t0, &prefix_tokens, &items);
+    drop(store);
+
+    let open = |id: &str| {
+        let cfg = config(&store_path, id, "/tmp");
+        let parts = empty_modes(Parts::load(&cfg).expect("the wiring must load"));
+        let hub = Hub::new(id);
+        let h = Harness::open(&parts, cfg, hub.clone()).expect("the session must resume");
+        (h, hub)
+    };
+
+    let (mut h, _) = open(source);
+    let listed = h.fork_at(None).expect("listing");
+    let letibot_harnessd::harness::ForkOutcome::Listed(messages) = listed else {
+        panic!("a bare /fork lists: {listed:?}");
+    };
+    assert_eq!(messages.len(), 10);
+    assert_eq!(messages[2], "prompt 2");
+    let forked = h.fork_at(Some(3)).expect("forking");
+    let letibot_harnessd::harness::ForkOutcome::Forked {
+        session_id, rows, ..
+    } = forked
+    else {
+        panic!("not forked: {forked:?}");
+    };
+    assert_eq!(rows, 6, "three messages and their answers");
+    assert_eq!(h.items().len(), 20, "the open original is unchanged");
+    assert!(h.fork_at(Some(11)).is_err(), "no message 11");
+    drop(h);
+
+    let (f, hub) = open(&session_id);
+    assert_eq!(f.resumed().expect("the fork resumed").rows, 6);
+    assert_eq!(f.items(), &items[..6]);
+    assert_eq!(
+        hub.snapshot().items.len(),
+        6,
+        "the original's rows after the point are not drawn above the fork"
+    );
+    drop(f);
+
+    let (o, hub) = open(source);
+    assert_eq!(o.resumed().expect("the original resumed").rows, 20);
+    assert_eq!(o.items(), &items[..]);
+    assert_eq!(hub.snapshot().items.len(), 20);
+}
+
 /// Ten lines rather than a dev-dependency.
 struct TempDir(std::path::PathBuf);
 

@@ -4157,6 +4157,11 @@ impl Harness {
             let Ok(t) = store.load_transcript(&id) else {
                 break;
             };
+            // A `/fork`'s parent is another session's whole conversation, which the fork's own rows
+            // already copy up to the point.
+            if t.session_id != self.cfg.session_id {
+                break;
+            }
             let n = t.items.len();
             let take = n.min(room);
             chunks.push(

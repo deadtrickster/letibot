@@ -2781,6 +2781,73 @@ impl Store {
         Ok(())
     }
 
+    /// A new session `new_id` whose conversation is the first `keep` rows of `source`'s current
+    /// transcript, copied verbatim under the same prefix so the chain still verifies. The fork's
+    /// transcript names the source's as its parent; the source is not written to.
+    pub fn fork_session(&self, source: &str, new_id: &str, keep: u32) -> Result<String> {
+        let src = self
+            .session(source)?
+            .ok_or_else(|| StoreError::NotFound(format!("session {source}")))?;
+        if self.session(new_id)?.is_some() {
+            return Err(StoreError::Refused(format!(
+                "session {new_id} already exists"
+            )));
+        }
+        let from = src
+            .transcript_id
+            .clone()
+            .ok_or_else(|| StoreError::NotFound(format!("a transcript of session {source}")))?;
+        let loaded = self.load_transcript(&from)?;
+        if keep as usize > loaded.items.len() {
+            return Err(StoreError::Refused(format!(
+                "transcript {from} holds {} row(s), so it cannot be forked after row {keep}",
+                loaded.items.len()
+            )));
+        }
+        self.put_session(&SessionRecord {
+            id: new_id.to_string(),
+            title: None,
+            model_id: src.model_id.clone(),
+            dialect_sha: src.dialect_sha.clone(),
+            workspace_root: src.workspace_root.clone(),
+            owner: src.owner.clone(),
+            approvers: self.approvers_of(source)?,
+            role: src.role.clone(),
+            parent_session_id: None,
+        })?;
+        self.set_session_origin(new_id, "operator")?;
+        if let Some(fp) = &src.prefix_fingerprint {
+            self.set_prefix_fingerprint(new_id, fp)?;
+        }
+        self.set_provider_choice(new_id, src.provider_choice.as_deref())?;
+        self.set_window(new_id, src.context_window)?;
+        let tid = format!("{new_id}#t0");
+        self.put_fork(&tid, new_id, &loaded.stable_prefix_id, &from, keep)?;
+        self.append_items(
+            &tid,
+            0,
+            loaded.items[..keep as usize]
+                .iter()
+                .map(|(item, row, toks)| (item, row, toks.as_slice())),
+        )?;
+        Ok(tid)
+    }
+
+    fn approvers_of(&self, session_id: &str) -> Result<Vec<String>> {
+        let json: Option<String> = self
+            .at("session")
+            .query_row(
+                "SELECT approvers_json FROM session WHERE id = ?1",
+                params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(match json {
+            Some(j) => serde_json::from_str(&j)?,
+            None => Vec::new(),
+        })
+    }
+
     /// The prefix a transcript was seated with, or `None` when the transcript is not there. The id
     /// and not the record: it is content-addressed, so two ids that differ are two different
     /// prompts, and that is the whole comparison a daemon needs.
