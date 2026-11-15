@@ -215,7 +215,7 @@ fn marks(cursor: bool, now: bool) -> Span {
 }
 
 /// The search field: the query, a caret, and the level's own words pinned to the right.
-fn query_row(query: &str, note: String, w: usize) -> RLine {
+pub(crate) fn query_row(query: &str, note: String, w: usize) -> RLine {
     // The caret is the field's own: the composer's is elsewhere, and a card that owned the keys
     // without saying so would look like it took none.
     let mut spans = vec![

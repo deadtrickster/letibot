@@ -20,8 +20,10 @@ use rano::agent::tree_list::{
 };
 use serde_json::{Value, json};
 
+use crate::app::model_card::SUBSEQUENCE;
 use crate::app::*;
 use crate::ui::render::{trim_to, visible_width};
+use letibot_sessionlog::registry::SessionBrief;
 
 /// The hook this pane answers under.
 pub(crate) const HOOK: &str = "pane_sessions";
@@ -1019,7 +1021,13 @@ impl App {
                 .map(|p| p.name.clone())
                 .unwrap_or_default()
         };
-        let kept: Vec<(usize, &_)> = self.sessions.iter().enumerate().collect();
+        let hit = self.filter_hits(&place, &name_of);
+        let kept: Vec<(usize, &_)> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| hit.live.get(*i).copied().unwrap_or(true))
+            .collect();
         // Capped before the rows are built: the feed's cost to a guest is its size. Whatever the
         // cap leaves out is COUNTED and said, because a list that stops at 250 and says nothing
         // reads as a daemon that holds 250.
@@ -1073,38 +1081,45 @@ impl App {
                     "system": place[i].system.map(|k| k.title()),
                 })
             })
-            .chain(self.archived.iter().map(|s| {
-                // The rows put out of sight ride the same feed with a bucket of their own and no
-                // project: the layer draws them flat under `archived`, and a project line for them
-                // would be a tree of one group that is not a tree.
-                json!({
-                    "id": s.session_id,
-                    "title": s.title,
-                    "slug": s.slug,
-                    "parent": null,
-                    "origin": s.origin.as_str(),
-                    "live": false,
-                    "running": false,
-                    "heads": 0,
-                    "items": 0,
-                    "stored": s.stored_items,
-                    "model": s.wiring.model,
-                    "workspace": s.wiring.workspace,
-                    "waits_on": 0,
-                    "nags_paused": s.nags_paused.is_some(),
-                    "moved_ms": s.moved_ms,
-                    "age": (s.moved_ms > 0)
-                        .then(|| sdk::age_word(now.saturating_sub(s.moved_ms))),
-                    "project": "",
-                    "project_name": "",
-                    "bucket": sdk::ARCHIVED_BUCKET,
-                    "system": null,
-                })
-            }))
+            .chain(
+                self.archived
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, _)| hit.archived.get(*i).copied().unwrap_or(true))
+                    .map(|(_, s)| {
+                        // The rows put out of sight ride the same feed with a bucket of their own and no
+                        // project: the layer draws them flat under `archived`, and a project line for them
+                        // would be a tree of one group that is not a tree.
+                        json!({
+                            "id": s.session_id,
+                            "title": s.title,
+                            "slug": s.slug,
+                            "parent": null,
+                            "origin": s.origin.as_str(),
+                            "live": false,
+                            "running": false,
+                            "heads": 0,
+                            "items": 0,
+                            "stored": s.stored_items,
+                            "model": s.wiring.model,
+                            "workspace": s.wiring.workspace,
+                            "waits_on": 0,
+                            "nags_paused": s.nags_paused.is_some(),
+                            "moved_ms": s.moved_ms,
+                            "age": (s.moved_ms > 0)
+                                .then(|| sdk::age_word(now.saturating_sub(s.moved_ms))),
+                            "project": "",
+                            "project_name": "",
+                            "bucket": sdk::ARCHIVED_BUCKET,
+                            "system": null,
+                        })
+                    }),
+            )
             .collect();
         let fleet: Vec<Value> = self
             .fleet
             .iter()
+            .filter(|f| hit.fleet(f))
             .map(|f| {
                 json!({
                     "id": f.id,
@@ -1126,7 +1141,53 @@ impl App {
             // The one home the head shortens against - the same value the layer uses, so a
             // plugin's rows and the daemon's cannot disagree about what `~` means.
             "home": self.home,
+            "filtered": !self.picker_filter.is_empty(),
         })
+    }
+
+    /// Which rows the session list's filter keeps, over title, slug, project, workspace and id.
+    /// Letters in order are a fallback only when no session contains what was typed, as on the
+    /// model card.
+    fn filter_hits(&self, place: &[Placement], project_name: &dyn Fn(&str) -> String) -> Hits {
+        let q = self.picker_filter.as_str();
+        if q.is_empty() {
+            return Hits::default();
+        }
+        let tier = |s: &SessionBrief, project: String| {
+            [
+                s.title.as_str(),
+                s.slug.as_str(),
+                project.as_str(),
+                s.wiring.workspace.as_str(),
+                s.session_id.as_str(),
+            ]
+            .into_iter()
+            .filter(|f| !f.is_empty())
+            .filter_map(|f| crate::app::model_card::rank(f, q))
+            .min()
+        };
+        let live: Vec<Option<u8>> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .map(|(i, s)| tier(s, project_name(&place[i].project)))
+            .collect();
+        let archived: Vec<Option<u8>> = self
+            .archived
+            .iter()
+            .map(|s| tier(s, String::new()))
+            .collect();
+        let strict = live
+            .iter()
+            .chain(&archived)
+            .flatten()
+            .any(|t| *t < SUBSEQUENCE);
+        let keep = |t: &Option<u8>| t.is_some_and(|t| !strict || t < SUBSEQUENCE);
+        Hits {
+            live: live.iter().map(keep).collect(),
+            archived: archived.iter().map(keep).collect(),
+            query: Some(q.to_string()),
+        }
     }
 
     /// What Enter does on a row, in the head's words - `switch` and `fold` are the head's own
@@ -1263,6 +1324,26 @@ impl App {
     /// which is where a fold lives: a layer remembers nothing, and the head keeps no tree.
     pub(crate) fn set_row_fold(&mut self, id: &str, open: bool) {
         self.picker_folds.insert(id.to_string(), open);
+    }
+}
+
+/// What the session list's filter keeps. With no query every row is kept.
+#[derive(Default)]
+struct Hits {
+    live: Vec<bool>,
+    archived: Vec<bool>,
+    query: Option<String>,
+}
+
+impl Hits {
+    fn fleet(&self, f: &letibot_sessionlog::FleetRow) -> bool {
+        let Some(q) = &self.query else {
+            return true;
+        };
+        [fleet_name(f), f.id.clone()]
+            .iter()
+            .filter_map(|n| crate::app::model_card::rank(n, q))
+            .any(|t| t < SUBSEQUENCE)
     }
 }
 

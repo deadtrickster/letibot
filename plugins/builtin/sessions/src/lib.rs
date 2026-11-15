@@ -60,6 +60,10 @@ struct Feed {
     /// The head's home, so a workspace under it is drawn as `~/…`.
     #[serde(default)]
     home: String,
+    /// The head cut the feed to a typed filter. Every node is drawn open, since a hit inside a
+    /// folded group would otherwise be filtered in and still out of sight.
+    #[serde(default)]
+    filtered: bool,
 }
 
 /// One package session of another daemon.
@@ -227,6 +231,8 @@ struct Ctx<'a> {
     here: &'a str,
     home: &'a str,
     folded: &'a BTreeMap<String, bool>,
+    /// The feed is a filter's hits: see [`Feed::filtered`].
+    filtered: bool,
     /// Sessions the host's cap left out of the feed.
     more: usize,
     /// The chain from `here` up to its root, so the way back is always on the list.
@@ -282,6 +288,7 @@ impl<'a> Ctx<'a> {
             here: &feed.here,
             home: &feed.home,
             folded,
+            filtered: feed.filtered,
             more: feed.more,
             path,
             index,
@@ -297,6 +304,9 @@ impl<'a> Ctx<'a> {
 
     /// What the person has said about a row: `Some(true)` open, `Some(false)` folded away.
     fn opened(&self, id: &str) -> Option<bool> {
+        if self.filtered {
+            return Some(true);
+        }
         self.folded.get(id).copied()
     }
 

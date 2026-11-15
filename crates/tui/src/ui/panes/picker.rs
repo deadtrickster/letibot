@@ -36,7 +36,18 @@ impl App {
     ) -> (Vec<String>, Vec<std::ops::Range<usize>>) {
         // The list is the plugin's - the built-in `sessions` layer answers it and this head draws
         // the answer, one drawing. While the stack is being built the pane is one line about it.
-        let content = self.picker_list(w, h).content;
+        let list = self.picker_list(w, h);
+        let content = list.content;
+        // The live filter is drawn as the model card's search field, over the list it narrows.
+        let field = (!self.picker_filter.is_empty()).then(|| {
+            let n = list.rows.iter().filter(|r| r.session.is_some()).count();
+            let note = match n {
+                1 => "1 match".to_string(),
+                n => format!("{n} matches"),
+            };
+            crate::ui::cards::model::query_row(&self.picker_filter, note, w)
+        });
+        let top = usize::from(field.is_some());
         let stops = &content.stop_rows;
         let spans = stops
             .iter()
@@ -47,10 +58,11 @@ impl App {
                         .find(|&r| content.lines[r] == rano::render::text::Line::default())
                         .unwrap_or(content.lines.len())
                 });
-                start..end
+                start + top..end + top
             })
             .collect();
-        (row_strings(&content.lines, self.cfg.palette()), spans)
+        let lines: Vec<_> = field.into_iter().chain(content.lines).collect();
+        (row_strings(&lines, self.cfg.palette()), spans)
     }
 
     /// The setting card: one renderer for `/mode`, `/models`, `/verbosity` and `/diff`, because

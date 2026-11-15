@@ -40,6 +40,7 @@ impl App {
             self.answer_leaving(&req_id);
         }
         self.sync_front();
+        self.sync_picker_filter();
         r
     }
 

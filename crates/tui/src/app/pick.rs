@@ -2,13 +2,14 @@
 //! for.
 
 use super::*;
+use crate::app::sessions_pane::Listed;
 use letibot_plugin::pane::Act as RowAct;
 use letibot_sessionlog::registry::SessionBrief;
 
 impl App {
-    /// Answer the session picker: a row number, or enough of an id to be unique. An ambiguous
-    /// prefix is refused with the count, never resolved to the first match - switching to the
-    /// wrong session is not a keystroke you can take back, since the next prompt lands there.
+    /// Answer the session picker: a row number, or the filter's row under the cursor while the list
+    /// is on screen, since the reader sees what Enter takes. Unseen (`/switch`), an ambiguous
+    /// prefix is refused with the count: the next prompt lands in whatever was switched to.
     pub(crate) fn pick(&mut self, typed: &str) -> Option<Action> {
         if typed.is_empty() {
             self.close_surface(Surface::Picker);
@@ -23,6 +24,21 @@ impl App {
         {
             let id = self.sessions[i].session_id.clone();
             return self.switch_to(id);
+        }
+        if numbered.is_none() && self.focused_surface() == Some(Surface::Picker) {
+            self.set_picker_filter(filter_of(typed));
+            let rows = self.picker_rows();
+            let switches = |r: &&Listed| matches!(r.enter, Some(RowAct::Switch { .. }));
+            let row = rows
+                .get(self.picker_sel)
+                .filter(switches)
+                .or_else(|| rows.iter().find(switches));
+            if let Some(row) = row
+                && let Some(act) = row.enter.clone()
+            {
+                let id = row.id.clone();
+                return self.perform(&id, &act);
+            }
         }
         // The rows put out of sight are searched too, and deliberately: an archived session is out
         // of SIGHT and not out of reach, and the daemon takes it back into the list as it opens it.
@@ -410,6 +426,46 @@ impl App {
                 .unwrap_or(0),
         };
         self.pick_unseeded = true;
+    }
+}
+
+/// What a composer line filters the session list by, lowercased. A number names a row and a `/` or
+/// `!` line is a command, so neither filters.
+pub(crate) fn filter_of(line: &str) -> String {
+    let t = line.trim();
+    if t.is_empty() || t.starts_with(['/', '!']) || t.parse::<usize>().is_ok() {
+        return String::new();
+    }
+    t.to_lowercase()
+}
+
+impl App {
+    /// The session list's filter follows the composer while the list is in front.
+    pub(crate) fn sync_picker_filter(&mut self) {
+        let want = match self.focused_surface() {
+            Some(Surface::Picker) => filter_of(self.editor.text()),
+            _ => String::new(),
+        };
+        self.set_picker_filter(want);
+    }
+
+    /// A new filter is a new list, so the cursor starts on its top hit; no filter puts it back on
+    /// the session this head is in.
+    pub(crate) fn set_picker_filter(&mut self, want: String) {
+        if want == self.picker_filter {
+            return;
+        }
+        self.picker_filter = want;
+        if !self.is_open(Surface::Picker) {
+            return;
+        }
+        if self.picker_filter.is_empty() {
+            self.seat_picker();
+            return;
+        }
+        let rows = self.picker_rows();
+        self.picker_seat_pending = false;
+        self.picker_sel = rows.iter().position(|r| r.session.is_some()).unwrap_or(0);
     }
 }
 

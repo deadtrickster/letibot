@@ -2494,9 +2494,10 @@ fn a_picker_that_opened_before_its_rows_landed_seeds_when_they_do() {
 }
 
 #[test]
-fn an_ambiguous_pick_is_refused_with_the_count_rather_than_resolved() {
+fn an_ambiguous_switch_is_refused_with_the_count_rather_than_resolved() {
     // Switching to the wrong session is not a keystroke you can take back: the
-    // prompt you type next lands there.
+    // prompt you type next lands there. With the list on screen the filter shows
+    // what Enter takes, so only the unseen `/switch` refuses.
     let mut a = app();
     a.apply(hello(
         "s",
@@ -2507,10 +2508,8 @@ fn an_ambiguous_pick_is_refused_with_the_count_rather_than_resolved() {
         ],
         Hub::new("s").snapshot(),
     ));
-    a.key(Key::CtrlS);
-    typed(&mut a, "cache");
     assert_eq!(
-        a.key(Key::Enter),
+        a.command("switch cache"),
         None,
         "an ambiguous prefix must not switch"
     );

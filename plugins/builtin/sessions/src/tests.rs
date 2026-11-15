@@ -73,6 +73,7 @@ fn feed(sessions: Vec<Session>, here: &str) -> Feed {
         more: 0,
         here: here.to_string(),
         home: "/home/dead".into(),
+        filtered: false,
     }
 }
 
@@ -110,6 +111,23 @@ fn a_child_is_drawn_under_its_parent_once_it_is_opened() {
     let open = draw(&f, &[("s-a", true)]);
     assert_eq!(open[2].id, "s-c", "the child is drawn once the parent is");
     assert_eq!(open[2].depth, 2);
+}
+
+/// A filtered feed is drawn with every node open: a hit inside a folded group is on the screen.
+#[test]
+fn a_filtered_feed_opens_every_group_it_holds() {
+    let mut reviewer = session("s-r", "review the cache");
+    reviewer.system = Some("reviewers".into());
+    let mut child = session("s-c", "cache warmup");
+    child.parent = Some("s-a".into());
+    let mut f = feed(vec![session("s-a", "a"), child, reviewer], "s-x");
+    let shut = ids(&draw(&f, &[(PROJECT, false)]));
+    assert_eq!(shut, vec![format!("[{PROJECT}]")]);
+    f.filtered = true;
+    let open = draw(&f, &[(PROJECT, false)]);
+    let drawn = ids(&open);
+    assert!(drawn.contains(&"s-c".to_string()), "{drawn:?}");
+    assert!(drawn.contains(&"s-r".to_string()), "{drawn:?}");
 }
 
 /// The `system` branch, one folded line per group - and no line for a group with no rows.

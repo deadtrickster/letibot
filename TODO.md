@@ -4868,3 +4868,11 @@ Plan 2.9. In the room composer, an `@` fragment that is path-like (starts with `
 Left. Choosing a file inserts `@path` text, not an attachment chip: a room chip is an uploaded blob, and a file chip needs the upload path decided. Not read: `.git/info/exclude`, the global excludes file and `.ignore`, in both halves, so the tool and the composer agree.
 
 Tests: `backend::tests::walk_ignoring_applies_nested_rules_and_bypasses_named_paths`, `grep::tests::gitignored_files_are_skipped_counted_and_reachable_by_path`, `glob::tests::a_gitignored_tree_is_skipped_unless_the_pattern_names_it` in `crates/tools`; `rooms_compose::at_a_path_completes_files_and_a_handle_stays_a_handle` in `crates/tui`.
+
+## R286 - Live session search: the session list filters as you type
+
+**Status:** built, 2026-11-15. Audit package J4, plan item 1.18 (`/build/oss-harnesses/PLAN-fable-5.2.md`).
+
+**Built.** While the session list is in front, the composer's line is its filter (`App::picker_filter`, synced after every key in `App::key`). A number names a row and a `/` or `!` line is a command, so neither filters (`pick::filter_of`). The head cuts the layer's feed to the hits (`App::filter_hits` in `sessions_pane.rs`) over title, slug, project, workspace and id, with the model card's `rank`: letters in order match only when no session contains the line. The feed says `filtered`, and the built-in `sessions` layer then draws every node open, so a hit inside a folded group or a folded project is on screen. A new filter puts the cursor on the top hit; Enter takes the row under the cursor (`App::pick`). The model card's search field is drawn over the list with the match count. `/switch NAME` with no list on screen still refuses an ambiguous name. Tests: `app::tests::session_search` (three characters narrow the list without Enter, a folded hit is drawn, Enter switches to the top hit and to the one the arrows moved to, numbers and commands do not filter, the subsequence fallback) and `a_filtered_feed_opens_every_group_it_holds` in `plugins/builtin/sessions`.
+
+**Left.** No `"phrase"` or `re:` tiers (pi has them). A layer other than the built-in one gets the cut feed but has to read `filtered` itself to unfold. The matched characters are not highlighted in the rows, since the layer draws them.
