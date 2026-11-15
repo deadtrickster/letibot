@@ -56,7 +56,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R217 | Session rows: one line each, with a gutter mark, an age, a detail line and paging | Code work | built: the built-in `sessions` layer draws ONE row a session (a `?`/`~` gutter mark, the name, and `rows · age` on the right), the id, the path, the model and the heads moved to a faint line under the cursor's row, projects are sorted by when they last moved, every group's line says `N waiting · M generating` for what is folded inside it, `pgup/pgdn` and the wheel page the cursor (the window is drawn around it), and the title says `(i/N)`; left: no `!` permission-ask mark (the feed's wait is untyped - plan 1.32), the counter counts stops so it is a position in the list and not `session n of N`, and `home`/`end` jump nowhere |
 | R219 | Quick asks: `alt-k` sends a preset's prompt with the place, and the answer comes back as marks | Code work | built: rano's `alt-k` menu reaches the head through `on_ask`, the preset's own words and the paragraph the cursor is in leave as one `Prompt` whose `context.ask` carries the preset and the answer mode (so the daemon teaches the `suggest` or `note` fence), the asked range is tinted as a mark of its own until the turn ends, and a returned hunk's accept, reject or revert rides the next prompt's `context.outcomes`; left: `alt-k k` attaches the place through `alt-s`'s chip and sets no `ask`, so a typed question is a chat ask with no reply format; a quick ask made while a turn runs loses its tint when THAT turn ends, because the tint's clock is the turn and not its own answer |
 | R220 | firecode's host copy of a worktree is still wired to the source repo's index | Code work | built: the copy is given a repository of its own before anything runs git in it (`own_git` in `crates/tools/src/firecode.rs`: a bare clone alternating on the source's objects, moved into the copy's `.git`, HEAD set to the worktree's branch and the index rebuilt), and a test copies a worktree, commits in the copy and proves the source worktree's HEAD and `git status` are unchanged; left: nothing |
-| R221 | `sudo_ask` flake: a process that exits mid-read is called unreadable | Needs the operator | `exec::ask::stdin_of` answers `Unreadable` for any failed `readlink /proc/<pid>/fd/0`, so a run's process that left between the cgroup read and the `/proc` read raises the unreadable sentence; telling `ENOENT` (gone, skip it) from `EACCES` (cannot look) is the fix, but `a_process_that_could_not_be_looked_at_is_not_a_no` uses a nonexistent pid to stand in for `EACCES`; left: the design call on what stands in for an unreadable process in that test |
+| R221 | `sudo_ask` flake: a process that exits mid-read is called unreadable | Code work | built: branch `flakes` (`exec::ask` skips a process with `PF_EXITING`, a zombie or a reaped pid; the tests use a real non-dumpable child); left: land |
 | R223 | The daemon's minute sweep runs the reaper's disk half, remote hosts included, once a minute per daemon | Code work | `reap_pass::spawn` runs `lifecycle::pass` every `SWEEP` (60 s), and that pass now includes the disk half (`disks::reap_owner`) and remote hosts' passes over ssh; every daemon on a box does it; left: measure the cost of one sweep (wall time, ssh connections, store load) with N daemons up, and consider one sweeper per box |
 | R224 | Incident 2026-11-13: VM work written into the jail copy and lost on copy-out | Code work | done: firecode 7761c3f (jail beside the state, a copied writable drive refused, a commit alone counts as work) and letibot fix-vm-hostrun a055978d, 2fd044bd (on landing-35); left: none |
 | R225 | The idle reaper closed a live session mid tool call | Code work | done: landing-34, `reap_pass::LeaseBeat` (20d52787) renews the owner's lease on a clock while a turn runs; left: none |
@@ -70,9 +70,10 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R233 | Rate-limit decisions as config values or a fuel-capped wasm call | Needs the operator | not started; left: the operator's shape for the hook record (which decisions, value or plugin, what the call is given and answers) |
 | R234 | VMs do not boot at load 100-240, and packages fall back to host subagents | Code work | left: a measurement of boot time against load, then a queue or an admission rule |
 | R235 | A Claude Code session starts a new `until [ -s ... ]` wait loop every few minutes and never stops the old ones | Needs the operator | an observation about Claude Code's waiters, not a letibot defect; left: the operator's call on whether letibot's own docs or skills warn about it |
-| R236 | `sudo_ask` failed once under load: a run judged unreadable because "one of its processes belongs to another user" | Code work | left: find the race in the process walk (likely a pid gone or reused between the cgroup read and `/proc`, see R221), fix it, prove it under load |
-| R237 | `daemon_takes_a_new_session` missed its 60 s turn deadline once under load | Code work | left: find why; the fake provider thread `unwrap`s every read, so one bad connection may stop it counting (unverified) |
-| R238 | jobwatch measured 103 ms for a `sleep 0.3` job once under load | Code work | left: find whether the elapsed stamp starts late or ends early; the test was not loosened |
+| R236 | `sudo_ask` failed once under load: a run judged unreadable because "one of its processes belongs to another user" | Code work | built: branch `flakes` (exiting processes skipped, an empty scope is not unreadable); 80 of 80 parallel runs green at load 120-180, was 2 of 64 red; left: land |
+| R237 | `daemon_takes_a_new_session` missed its 60 s turn deadline once under load | Code work | built: branch `flakes` (a private `XDG_RUNTIME_DIR`, a fake that skips bad connections, the daemon's log on failure); 18 of 18 parallel runs green, was 4 of 12 red; left: land, and R223 for why the shared rundir stalls a turn |
+| R238 | jobwatch measured 103 ms for a `sleep 0.3` job once under load | Code work | built: branch `flakes` (`Job::started` stamped before the fork, `a_jobs_stamps_hold_the_commands_own_run`); left: land |
+| R285 | Load flakes the flake squad did not reproduce or fix | Code work | left: the shared-rundir cost (R223), shared fixed paths in other tests, the not-reproduced list below |
 | R239 | db-fuzz's plugin-pane study: what the S1 and plugin-pane landings left open | Code work | findings 1-3, 5, 6, 8 fixed (12eb3f2e, ef008d36, 03cfc2af, 3db3108f); left: #4 (a `~/.claude` HTML skill still beats plugin-pane on "dashboard"), #7 (the room thread's wrong claim), #9 (a room flood makes tool results look lost), #10 (the session's own note) |
 | R241 | The idle reaper SIGTERMs a whole worktree daemon, its attached seat and a running job with it, and nothing reopens the session | Code work | built 2026-11-14: only the owner's own live daemon judges idleness, every project file is checked for the owner's open job, an attached head or open job renews the lease, a daemon serving another live owner is drained, and attach/send reopen a stopped session by id; left: moved to R266 |
 | R244 | Offers by meaning: evidence and declines | Code work | built: cosine rescaled over a 0.20 baseline in `blended`, a subject offer under the tier needs the skill's or note's name in the operator's words or touched files, untaken offers decline after three rounds and raise the floor per project; left: description words as evidence, the real-model test runs only where the checkpoint is |
@@ -810,11 +811,11 @@ The fix is to give the copy a git identity of its own before anything can run gi
 
 ## R221 - `sudo_ask` flake: a process that exits mid-read is called unreadable
 
-**Status:** needs the operator, 2026-11-13. left: the design call below.
+**Status:** built on branch `flakes`, 2026-11-15. left: land.
 
-`crates/letibot/tests/sudo_ask.rs` flakes. The cause is in `letibot_tools::exec::ask`: `waiting_for_an_answer` reads `/proc/<pid>/fd/0` for every pid of the run (`stdin_of`), and any failed `read_link` is `StdinRead::Unreadable`, which makes the whole run's answer `Waiting::Unreadable`. A pid listed by the cgroup read that has exited before the `/proc` read fails with `ENOENT`, the same way a root-owned process fails with `EACCES`, so a short-lived child of the run (a subshell, a `sed` in a pipeline) turns the verdict to `Unreadable` and `builtins/bash.rs` says `OperatorRun::Unreadable` - the card/sentence the test asserts is not raised.
+`exec::ask::stdin_of` answered `Unreadable` for any failed `readlink /proc/<pid>/fd/0`. Measured on this box (a fork, a reaping thread and a readlink loop): procfs answers `EACCES`, not `ENOENT`, for a task that is exiting (state R or D with `PF_EXITING`), a zombie, or a pid reaped between the path walk and the link read. 316 067 refusals of zombies and 48 775 of running exiting tasks against 1 329 `ENOENT` in one run, and a live non-dumpable process is `EACCES` with `PF_EXITING` clear. So errno alone cannot tell them apart.
 
-The obvious fix is to tell the two apart: `ENOENT`/`ESRCH` means the process is gone and is skipped, `EACCES` means it could not be looked at and stays `Unreadable`. That breaks `exec::ask::tests::a_process_that_could_not_be_looked_at_is_not_a_no`, which passes `u32::MAX - 1` - a pid that does not exist - to stand in for an `EACCES` process "without needing one". So the fix needs a decision: either the test gets a real unreadable process (a child that calls `PR_SET_DUMPABLE 0`, the way `sudo_ask.rs` already makes one), or a vanished process stays `Unreadable` and the flake is fixed elsewhere (a re-read of the pid list before deciding). Question for the operator: is a process that left during the read "not asking" (skip it) or "could not look" (keep it)?
+The fix: `ENOENT`/`ESRCH` on a working `/proc` is gone, and an `EACCES` is gone when `/proc/<pid>/stat` is missing or its flags (field 9) carry `PF_EXITING`. Only a refused process that is not on its way out stays `Unreadable`. The design question is settled that way: a process that left is not asking, and the unit tests use a real non-dumpable child (the test binary re-run with `PR_SET_DUMPABLE 0`) for the unreadable case instead of a nonexistent pid. New tests: `a_process_that_has_left_is_not_asking` (a reaped pid and a zombie are `No`, a non-dumpable sibling is still `Unreadable`).
 
 ## R223 - The daemon's minute sweep runs the reaper's disk half, remote hosts included, once a minute per daemon
 
@@ -938,33 +939,23 @@ First measure: boot time (start to guest ready) at idle and at a range of loads,
 
 ## R236 - `sudo_ask` failed once under load: a run judged unreadable because "one of its processes belongs to another user"
 
-**Status:** open, 2026-11-14. left: find the race, fix it, prove it under load.
+**Status:** built on branch `flakes`, 2026-11-15. left: land.
 
-`the_password_ask_is_served_while_the_operators_run_is_blocked` (`crates/letibot/tests/sudo_ask.rs:227`, the assertion block around line 339) failed once under load. The run was judged unreadable with the sentence `one of its processes belongs to another user` (`crates/harnessd/src/prompt.rs:170`), so the card the test waits for was not raised. The run has no process of another user, so the walk read a pid that was not the run's: most likely a pid that exited between the cgroup listing and the `/proc/<pid>/fd/0` read (`ENOENT`, which R221 describes) or one reused by another process in that window. This is probably R221's cause showing in this test; R221's design question (what stands in for an unreadable process in `a_process_that_could_not_be_looked_at_is_not_a_no`) still decides the fix.
+Two causes, both at the end of the run. First the R221 refusal of an exiting process. Second, `ProcessHost::job_pids` answered an empty list both for *cannot list* and for *the scope is empty*, and `waiting_for_an_answer(&[])` is `Unreadable`; a run between its last process's exit and its settlement has an empty scope. `job_pids` now returns `Option<Vec<u32>>` (None is cannot say), `ask_if_waiting` returns on an empty scope, and gives no verdict about a run that ended during the read. Reproduced before the fix: 1 of 56 and then 2 of 64 parallel runs red (8 at a time, load 150-250), with the unreadable sentence and its card after `SecretSettled`. After: 80 of 80 green at load 120-180.
 
-**Still open?** `grep -n 'Unreadable' crates/tools/src/exec/ask.rs` and see whether a failed `read_link` still maps to `Unreadable` regardless of errno.
-
-**Done when:** the walk skips a vanished pid (and re-checks a pid's start time or cgroup before trusting its owner, if reuse is the case), and the test passes in a loop under load (for example 50 runs with `stress-ng --cpu` at the box's core count).
+Not done: pid reuse between the cgroup read and `/proc`. With pid_max at its default it was not seen.
 
 ## R237 - `daemon_takes_a_new_session` missed its 60 s turn deadline once under load
 
-**Status:** open, 2026-11-14. left: find why.
+**Status:** built on branch `flakes`, 2026-11-15. left: land, and R223.
 
-`a_daemon_whose_only_session_closed_takes_a_new_one_and_runs_it` (`crates/harnessd/tests/daemon_takes_a_new_session.rs`) failed once under load at its 60 s deadline (`the new session never ran a turn, so it never opened`, about line 241); the turn normally reaches the fake provider in about 5 s. One possible cause, not verified: the fake provider's thread (`fake()`, lines 17-50) `unwrap`s every `read_line` and `read_exact`, so one connection that is reset or short (a health probe, a retried request) panics that thread and nothing is counted after it, which looks like a turn that never ran.
-
-**Still open?** read `fake()` for `unwrap` on reads.
-
-**Done when:** the fake skips a bad connection instead of panicking (and the test says so if its thread died), and the test passes in a loop under load; if it still misses, the daemon's side of the delay is found and filed.
+Reproduced: 2 of 4, then 2 of 8 parallel runs missed the turn, always two at a time, with the daemon log ending at the bare attach and no request reaching the fake. The fake was made robust first (a thread per connection, no `unwrap` on reads) and that alone did not fix it. Giving the daemon its own `XDG_RUNTIME_DIR` did: 18 of 18 green at load 150-360, and each run fell from about 8 s to about 4.7 s. The test daemon was sharing the box's `/run/user/1000/letibot`, which holds about 3 800 records, and its start and sweep passes (`reap_pass`, `lifecycle::pass`) walk it. Which step held the turn was not pinned down; R223 is the entry for what a sweep costs. The test now also writes the daemon's stderr to `daemon.log` in its scratch home and prints it on failure.
 
 ## R238 - jobwatch measured 103 ms for a `sleep 0.3` job once under load
 
-**Status:** open, 2026-11-14. left: find whether the stamp is wrong.
+**Status:** built on branch `flakes`, 2026-11-15. left: land.
 
-`a_backgrounded_result_through_the_sink_publishes_the_jobs_settlement` (`crates/harnessd/src/jobwatch/tests.rs:221`) asserts `(250..5_000).contains(&elapsed_ms)` (line 256) for a `sleep 0.3` job. Once under load it measured `elapsed_ms` 103, SHORTER than the job ran. Load can make a job look longer, never shorter, so this points at the stamp: the start taken late (at the watcher's first look rather than the spawn) or the end taken from a clock that is not the start's. The bound was not loosened, because loosening it would hide exactly this.
-
-**Still open?** find where jobwatch sets the start and end of `elapsed_ms` and whether both come from the same clock and the same moment of the job's life.
-
-**Done when:** the start is the spawn's own instant (or the defect is shown to be elsewhere), with a test that delays the watcher's first look and still reads at least the job's run time.
+Both stamps are `SystemTime` from the same clock, and the end is `Job::settle`. The start was `Job::new`'s `SystemTime::now()`, taken after `cmd.spawn()` returned, the pty input dup and the stdin setup, so a thread descheduled there under load stamped the start late. The host now takes `spawned_at` before the fork and sets it with `Job::with_started`. The test `exec::host::tests::a_jobs_stamps_hold_the_commands_own_run` runs `date +%s%N; sleep 0.3; date +%s%N` and asserts the start is not after the command's first reading and `ran_for` is not shorter than what the command measured. The jobwatch bound was not loosened.
 
 ## R239 - db-fuzz's plugin-pane study: what the S1 and plugin-pane landings left open
 
@@ -1758,6 +1749,25 @@ The question was "can we track that a particular command causes disk hog?" A `dd
 - an iops-heavy job is throttled by `io.max` at the configured rate;
 - with a fake filesystem under the floor, the top writer is frozen and a row says why;
 - without delegation, the sampled fallback is used and the startup line names the setup.
+
+## R285 - Load flakes the flake squad did not reproduce or fix
+
+**Status:** open, 2026-11-15. left: everything below.
+
+The flake squad (branch `flakes`) fixed R221, R236, R237, R238 and these, each reproduced or read to its cause:
+
+- `exec::host::tests::a_job_that_burns_cpu_or_keeps_printing_is_never_ended` - a 300 ms window judged by the host's own tick thread, so a starved test thread looked like a silent job. The test now drives `scan` itself (`Liveness::unticked`) after each move, and a control proves the same scans end both jobs once they stop.
+- `config::tests::a_section_that_turns_the_download_off_keeps_the_refusal` - `read_embeddings` used the real `~/.local/share/letibot`, so the box's own model made the refusal vanish. `read_embeddings_in` takes the data dir and the tests pass a temp one. `a_first_use_fetch_does_not_hold_the_daemon_start` failed once at its 10 s wait for the tier under load (the claim is the start, which is held to 200 ms); the wait is 120 s.
+- `harness::tests::cloud_sampling::a_config_door_answers_a_turn_with_the_key_from_its_named_variable` - the key is HOME's value, and `home_adopts_no_child_repository` and `an_empty_xdg_config_home_is_where_the_daemon_reads_the_user_scope` set HOME, each under a lock of its own that serialised nothing. One `crate::HOME_ENV` lock now covers all three.
+- `harness::open::floor_layer_tests` - store and socket were `<scratch>/s-floor-<tag>.db` with no pid, so two runs of the binary on one box refused each other's claim (4 of 4 runs red with two red tests each). Now per process.
+
+Left:
+
+1. Other daemon-spawning tests still share the box's `XDG_RUNTIME_DIR`: `harnessd/tests/key_ask.rs`, `continue_picks.rs`, `migrated_marker.rs`, `prompt_history_resume.rs`, `store_split_paths.rs`, `store_split_carve.rs`, `letibot/tests/askpass_from_tool_tree.rs`, `dispatch.rs`, `sudo_ask.rs`. None was seen to fail, but R237 shows the cost.
+2. Fixed per-session store names without a pid likely exist beyond `floor_layer_tests` (`grep -rn 'format!("{session}.db")'` found only that one; other spellings were not searched).
+3. Not reproduced at load 70-360 with 4 to 8 parallel copies: `court_activity`, `model_outage`, `provider_trouble` (harnessd), `room::link::kinds_tests`, mergequeue `deadline` tests, letibot `dispatch` (16 of 16 runs green). Not run: `remote_sweep_queue` (no test of that name in the tree), `permission_relay` and bridge `provider_trouble`.
+
+**Done when:** each item above is fixed or shown not to flake under load, then delete this entry.
 
 ## R293 - A skill that is box policy is offered like optional help, so a model ignores it
 
