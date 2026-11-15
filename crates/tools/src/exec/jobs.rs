@@ -493,8 +493,8 @@ impl Masker {
 }
 
 /// Where a run's output goes on living outside the window: the file, the byte of the job's
-/// output its first byte is, and whether it is still growing. Unbounded on purpose, because a
-/// run with no deadline may print for an hour. `path` is a `String` because every reader prints it.
+/// output its first byte is, and whether it is still growing. Bounded only by `[gc.logs]
+/// capture_max`, because a run with no deadline may print for an hour. `path` is a `String` because every reader prints it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OutputFile {
     pub path: String,
@@ -510,6 +510,14 @@ pub struct OutputFile {
     pub problem: Option<String>,
 }
 
+/// The size a job's output file stops at, set once by the daemon from `[gc.logs] capture_max`.
+static CAPTURE_MAX: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1 << 30);
+
+/// Set the bound every output file opened after this stops at.
+pub fn set_capture_max(bytes: u64) {
+    CAPTURE_MAX.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The open file behind an [`OutputFile`], kept with the ring so there is one writer for a
 /// job's bytes: the drain thread that already owns them.
 #[derive(Debug)]
@@ -522,6 +530,8 @@ struct Spill {
     from: u64,
     bytes: u64,
     problem: Option<String>,
+    /// The file stops here; the window goes on.
+    max: u64,
 }
 
 impl Capture {
@@ -637,6 +647,7 @@ impl Capture {
             from: self.dropped,
             bytes: seed.len() as u64,
             problem: None,
+            max: CAPTURE_MAX.load(std::sync::atomic::Ordering::Relaxed),
         });
         Ok(self.output_file().expect("the spill was just set"))
     }
@@ -663,6 +674,7 @@ impl Capture {
             from: 0,
             bytes,
             problem: None,
+            max: CAPTURE_MAX.load(std::sync::atomic::Ordering::Relaxed),
         });
         Ok(())
     }
@@ -674,6 +686,13 @@ impl Capture {
         self.flush_tail();
         if let Some(spill) = &mut self.spill {
             spill.file = None;
+        }
+    }
+
+    /// Stop this job's output file at `bytes`, in place of the box's `capture_max`.
+    pub fn bound_spill(&mut self, bytes: u64) {
+        if let Some(spill) = &mut self.spill {
+            spill.max = bytes;
         }
     }
 
@@ -761,9 +780,23 @@ impl Spill {
         let Some(file) = &mut self.file else {
             return;
         };
-        match file.write_all(bytes) {
-            Ok(()) => self.bytes += bytes.len() as u64,
-            Err(e) => self.problem = Some(format!("{}: {e}", self.path.display())),
+        let room = self.max.saturating_sub(self.bytes) as usize;
+        let take = &bytes[..bytes.len().min(room)];
+        match file.write_all(take) {
+            Ok(()) => self.bytes += take.len() as u64,
+            Err(e) => {
+                self.problem = Some(format!("{}: {e}", self.path.display()));
+                return;
+            }
+        }
+        if take.len() < bytes.len() {
+            // Said as a problem so a reader does not take the file's end for the job's.
+            self.problem = Some(format!(
+                "{} reached its bound of {} bytes (`[gc.logs] capture_max`); the job runs on and \
+                 its latest output is in the window",
+                self.path.display(),
+                self.max
+            ));
         }
     }
 }
@@ -1189,6 +1222,33 @@ mod tests {
             assert_eq!(finished.partial(), None, "{} is a finish", finished.word());
             assert_eq!(partial_of(&finished.word()), None);
         }
+    }
+
+    /// The file stops at its bound with a problem that says so; the window keeps the newest bytes.
+    #[test]
+    fn a_capture_file_stops_at_its_bound() {
+        let dir = std::env::temp_dir().join(format!("letibot-spill-bound-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("a directory to spill into");
+        let path = dir.join("job-jb.out");
+        let mut cap = Capture::new(8);
+        cap.spill_to(&path).expect("the file opens");
+        cap.bound_spill(10);
+        cap.push(b"0123456");
+        cap.push(b"789abcdef");
+        cap.push(b"more");
+        let f = cap.output_file().unwrap();
+        assert_eq!(f.bytes, 10);
+        assert!(
+            f.problem
+                .as_deref()
+                .is_some_and(|p| p.contains("capture_max")),
+            "{f:?}"
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"0123456789");
+        let window = cap.slice(0, usize::MAX);
+        assert_eq!(window.produced, 20);
+        assert_eq!(window.bytes, b"cdefmore");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The spill is the copy that is not bounded: the window drops from the front past its cap,

@@ -504,6 +504,7 @@ fn a_policy_is_made_from_the_owner_and_the_boxes_settings() {
         settings: crate::lifecycle::Settings::default(),
         data_dir: fx.path().join("data"),
         rundir: fx.path().join("run"),
+        daemon_logs: fx.path().join("logs"),
         firecode_runs: None,
         firecode_cache: None,
         proc_root: fx.path().join("proc"),

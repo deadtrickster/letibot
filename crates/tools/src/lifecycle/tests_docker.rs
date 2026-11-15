@@ -44,6 +44,7 @@ impl Fixture {
             settings: Settings::default(),
             data_dir: self.at("data"),
             rundir: self.at("run"),
+            daemon_logs: self.at("logs"),
             firecode_runs: None,
             firecode_cache: None,
             proc_root: self.at("proc"),

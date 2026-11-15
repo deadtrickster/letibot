@@ -3735,3 +3735,36 @@ fn a_store_from_before_the_archive_columns_gains_them() {
         .expect("the columns are there now");
     assert_eq!(s.list_sessions_archived(Archived::Yes).unwrap().len(), 1);
 }
+
+/// A journal grown by writes is back to zero after the checkpoint, and the rows are still there.
+#[test]
+fn a_truncating_checkpoint_shrinks_the_wal() {
+    let dir = std::env::temp_dir().join(format!("letibot-wal-truncate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("one.db");
+    let s = Store::open_private(&path).unwrap();
+    {
+        let c = s.connection();
+        c.execute_batch("CREATE TABLE junk (b BLOB)").unwrap();
+        for _ in 0..200 {
+            c.execute("INSERT INTO junk VALUES (zeroblob(16384))", [])
+                .unwrap();
+        }
+    }
+    let wal = dir.join("one.db-wal");
+    let before = std::fs::metadata(&wal).unwrap().len();
+    assert!(before > 1024 * 1024, "the journal grew: {before}");
+    let done = s.checkpoint_truncate().unwrap();
+    assert_eq!(done.len(), 1);
+    assert!(!done[0].busy, "{done:?}");
+    assert_eq!(done[0].wal_bytes, 0);
+    assert_eq!(std::fs::metadata(&wal).unwrap().len(), 0);
+    let n: i64 = s
+        .connection()
+        .query_row("SELECT count(*) FROM junk", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(n, 200);
+    drop(s);
+    let _ = std::fs::remove_dir_all(&dir);
+}

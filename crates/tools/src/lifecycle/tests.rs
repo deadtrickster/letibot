@@ -124,6 +124,7 @@ impl Stub {
             settings: Settings::default(),
             data_dir: fixture.at("data"),
             rundir: fixture.at("run"),
+            daemon_logs: fixture.at("logs"),
             firecode_runs: Some(fixture.at("runs")),
             firecode_cache: Some(cache.clone()),
             proc_root: fixture.at("proc"),
@@ -566,4 +567,27 @@ fn a_job_kept_across_a_restart_is_a_detached_holding_of_its_owner() {
     assert!(!job.verdict.reaps(), "a live owner's kept job was reaped");
     assert!(job.stamp.contains("pid 4343 start:42"), "{}", job.stamp);
     assert!(reap::activity(&store, &owner, &stub.places).kept);
+}
+
+/// Daemon logs, store journals and job captures are box holdings in the plan and its JSON.
+#[test]
+fn logs_journals_and_captures_are_held_in_the_plan() {
+    let stub = Stub::new("bounded");
+    let store = stub.store();
+    register(&store, &stub.places, &stub.owner()).expect("registered");
+    stub.fixture.file("logs/harnessd-abc.log", &"x".repeat(100));
+    stub.fixture.file("logs/harnessd-abc.log.1", "y");
+    stub.fixture.file("data/shared.db-wal", &"w".repeat(64));
+    stub.fixture.file(
+        &format!("gc/lab2x1/{}/tmp/spill/job-j1.out", stub.sid),
+        &"o".repeat(10),
+    );
+    let plan = plan(&store, &stub.places, None, now_ms()).expect("a plan");
+    let kinds: Vec<&str> = plan.bounded.iter().map(|b| b.kind).collect();
+    assert_eq!(kinds, vec!["log", "wal", "captures"], "{:?}", plan.bounded);
+    assert_eq!((plan.bounded[0].files, plan.bounded[0].bytes), (2, 101));
+    let rendered = plan.render();
+    assert!(rendered.contains("harnessd-abc.log"), "{rendered}");
+    assert!(rendered.contains("shared.db-wal"), "{rendered}");
+    assert_eq!(plan.to_json()["bounded"][2]["kind"], "captures");
 }

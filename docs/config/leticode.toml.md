@@ -311,6 +311,16 @@ One [[gc.shared]] per shared build target.
 | `quota` | size (200G) | none | user only | size above which it is removed |
 | `idle_days` | int | none | user only | unused this long, it is removed |
 
+## `[gc.logs]`
+
+Daemon logs and job output files; the daemon reads it at start.
+
+| key | type | default | level | meaning |
+|---|---|---|---|---|
+| `max` | size (32M) | 32M | user only | a daemon or room log past this is rotated |
+| `keep` | int | 3 | user only | rotated files kept; gc --now removes the rest |
+| `capture_max` | size (1G) | 1G | user only | a job's output file stops growing here |
+
 ## `[gc.docker]`
 
 Opt-in image prune; off by default.

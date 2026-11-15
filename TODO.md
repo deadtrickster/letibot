@@ -93,6 +93,8 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R276 | Auto-archive at settle: reviewers, one-shots, collected subagents and settled packages stay in the list | Code work | built (audit H9, plan 1.6's remainder): six rules with reasons, the never-archive guards, the daemon's pass, the one-shot's exit, `letibot gc --archive-settled [--now]`; the rano review storm was re-gates of a red tip, fixed; left: the reviewer kill race (an orphan reviewer runs a whole review) |
 | R264 | An `external` wait silences the plan-check forever, so a session idle on two open rows got no nag for 10h | Code work | built: an `external` edge is quiet for 2h from its `since_ms` stamp, then asked about on the ladder; `wait_on` steers a roster seat to `ask` and the operator to `operator`; the restart door reads the nag's predicate |
 | R271 | `letibot doctor`: what the box gives letibot, measured, with the fix for each warn or FAIL | Code work | built: the verb, its launcher pass-through, `--json`, exit 0/1/2, and the checks below; left: `[exec] disk_floor` is read with a 5% default until R269 adds the key, and the checks in its "not checked" footer |
+| R272 | Host setup, working rules and failure modes are in memory and chat, not in the docs | Code work | built: `docs/install.md` host setup and the checkout install loop, `AGENTS.md` rules, the bridge's start flag in `docs/claude-code-bridge.md`, `scripts/gate-at.sh` in `docs/gate.md`, `docs/troubleshooting.md` |
+| R281 | Daemon logs, job captures and store journals grow without bound | Code work | built (branch `j18-logs`, plan 1.7): daemon/room log rotation by size, bounded job captures, `wal_checkpoint(TRUNCATE)` at the idle exit, all three in `letibot holds`, `gc` and the bridge's `holds`/`gc_plan`; left: session debug logs under `<data>/logs/<id>` have no age-out, `scripts/letibot`'s shared `harnessd.log` is not rotated, R227 and R228 stay open |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
 | R174 | A Claude Code seat's todo check says false things about running packages | Needs the operator | items 1-5 built: a package whose head is skewed or skipped frames says `cannot say` and its job list is `uncertain`, a package the daemon says it is waiting on is still a child, the offer names the row's own child or none, a chain of rows bottoms out in the working child, and a package job's end is pushed only to a session parked on it; left: a live seat against a daemon on another protocol number |
@@ -1594,6 +1596,43 @@ A single spill is already bounded: a command's capture is an 8 MiB tail ring (`D
 - `lifecycle::Plan::spills` (`spill_holdings`): `letibot holds` prints `spills <project> — <size> in N spill(s), K evicted` after the owners, `letibot gc` lists them under `spill stores` and never reaps them, `--json` carries `spills`.
 
 **Tests.** `spill::durable::tests`: a spill read back through a second store on the same directory; three spills over a 250-byte budget evict the least recently read, the tombstone gives its size and date through a reopened store; a hash never written or a path-shaped one is `NotFound`. `read_spill::tests::an_evicted_hash_says_when_and_how_big`. `lifecycle::tests::the_spill_stores_are_held_with_their_size_and_never_reaped`. `harnessd` `config::tests::a_spill_outlives_its_spiller_and_the_budget_is_read_from_the_project`: a second `build_spiller` on the same `Dir` reads the first one's spill, and the project file's `spill_budget` moves the budget. All on temp directories.
+## R272 - Host setup, working rules and failure modes are in memory and chat, not in the docs
+
+**Status:** built, 2026-11-15, branch `docs-pkg`.
+
+The operator, 2026-11-15: "i think stuff like this commands must be documented". The session sweep of that day found the steps only in chat and memory.
+
+- `docs/install.md` "On Linux": the drkonqi coredump socket mask and why, `firecode net-setup`, the kvm group, `/tmp` off a large tmpfs, `LETIBOT_STORE` as a directory, the launcher as a script with `letibot-multi` and `letibot-askpass`, and the release install loop from a checkout. Each step names its `letibot doctor` row (R271).
+- `AGENTS.md` standing rules: no typing into a head over tmux, rano changes as a branch plus a DM to `cc@rano`, agents test touched crates and the lead runs one gate over the stack (until R258), no binary under a launcher's name.
+- `docs/claude-code-bridge.md`: start with `plugin:leticode@leticode`, no user-scope `leticode` server beside the plugin (R259), the room waiter as the fallback wake.
+- `scripts/gate-at.sh`, moved from the operator's scratchpad, with `LETIBOT_GATE_LOCK` (default `/build/gate.lock`) and `LETIBOT_GATE_LOGS`. Documented in `docs/gate.md`.
+- `docs/troubleshooting.md`: two bridges under one name, the coredump loop (R191, R192), spinning bridges, no room waiter, usage-limit park, the stale prompt on shadows, reaper kills (R241), the launcher overwritten by an ELF.
+
+## R281 - Daemon logs, job captures and store journals grow without bound
+
+**Status:** built, 2026-11-15, branch `j18-logs` (plan 1.7, package J18). left: session debug logs, the shared `harnessd.log`, and the adjacent rows R227 and R228.
+
+`~/logs/harnessd-<key>.log` and `~/logs/room-*.log` had no rotation; rano's daemon log was over 330k lines. A job with no deadline spilled its whole output to `<owner>/tmp/spill/job-<id>.out` with no bound. `wal_checkpoint(TRUNCATE)` ran only in the split migrator (`crates/tokencore/src/migrate_split.rs`), so a 346 MB journal never shrank.
+
+**Built.**
+- `[gc.logs]` in `leticode.toml`: `max` (default `32M`), `keep` (default `3`), `capture_max` (default `1G`). In `crates/config-ref` and `docs/config/leticode.toml.md`. Unknown keys are refused by name.
+- `tools::lifecycle::logs`: `rotate` / `rotate_if_over` (`x.log` to `x.log.1`, older ones shifted, the oldest dropped), `trim_rotated`, and `rotate_stdio`, which moves the daemon's own stdout file aside and `dup2`s a fresh file of the same name onto fds 1 and 2. The writer rotates because the launcher opens the log with `>>`, so only the daemon can reopen its descriptor. The daemon starts a `log-rotate` thread after it binds its socket (`harnessd/src/cli.rs`) and checks every 60 s. A daemon of an older build does not rotate until it is restarted.
+- Job captures: `Capture`'s spill file stops at `capture_max` (`exec::jobs::set_capture_max`, set at daemon start) with a `problem` naming the bound. The window and the byte counts go on. Captures sit in the owner's `tmp`, a cache, so they go when the owner closes.
+- `Store::checkpoint_truncate` runs `wal_checkpoint(TRUNCATE)` on each file of a handle and reports busy per file. The daemon runs it at its idle exit (`daemon.rs`, `Sessions::checkpoint_store`) and logs one line per file. A file another process still reads answers busy and keeps its journal.
+- Holdings: `Plan::bounded` (`lifecycle::bounded_holdings`) lists each daemon/room log with its rotated files, each `*.db-wal` under the data dir and `projects/`, and one `captures` row for every `job-*` file in the box's owner roots. Printed by `letibot holds`, `letibot gc`, in their `--json`, and so in the bridge's `holds` and `gc_plan`. `Places::daemon_logs` is `$LETIBOT_DAEMON_LOGS`, else `~/logs`.
+- `letibot gc --now` removes rotated logs past `keep` and prints how many.
+
+**Tests.** `lifecycle::logs::tests`: rotation at size with keep 3 over four rounds, trim past a lowered keep, a descriptor over the bound reopened on a fresh file, journals and captures listed. `lifecycle::tests::logs_journals_and_captures_are_held_in_the_plan`. `lifecycle::config::tests::the_log_bounds_are_read_and_default` and the reference test for `[gc.logs]`. `exec::jobs::tests::a_capture_file_stops_at_its_bound`. `tokencore` `store::tests::a_truncating_checkpoint_shrinks_the_wal` (a 3 MB journal to 0 bytes, rows kept). All on temp dirs.
+
+**Left.**
+- Session debug logs under `<data>/logs/<session id>/`: plan 1.7 ages them out 30 days after the session is archived. Not done: that directory also holds records that must outlive a session (room notes), so it needs a per-file rule first.
+- `~/logs/harnessd.log` (`SHARED_LOG`, one line per start) is written by the launcher, not a daemon, so nothing rotates it. It grows by one line per start.
+- R227 (target dirs, gate free-space check) and R228 (remote homes, jobs ledgers, fanout dirs) are separate passes and are not in this branch.
+
+**Still open?** `ls -la ~/logs/harnessd-*.log*` on a box running this build: no live file past `[gc.logs] max` for more than a minute.
+
+**Done when:** the left items above are settled or filed on their own.
+
 ## R269 - Per-job disk and IO accounting, an IO throttle and a disk floor
 
 **Status:** built on branch `r269`, 2026-11-15. left: the `io.stat` path measured live (needs the user manager restarted), and the 1 GiB / iops-throttle checks of "Done when" on a box with io passed down.

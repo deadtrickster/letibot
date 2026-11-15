@@ -427,6 +427,9 @@ impl Daemon {
                             sessions.idle_window().map_or(0, |w| w.as_secs() / 60)
                         );
                         self.registry().close();
+                        for line in sessions.checkpoint_store() {
+                            eprintln!("  {line}");
+                        }
                         break;
                     }
                     continue;

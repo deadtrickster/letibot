@@ -304,6 +304,8 @@ pub struct Plan {
     /// Each project's spill store. Not an owner's: a spill follows the conversation, so no reap
     /// removes one and only the store's own budget evicts.
     pub spills: Vec<SpillHolding>,
+    /// Daemon logs, store journals and job captures: the box's files that grow on their own.
+    pub bounded: Vec<super::logs::BoundedHolding>,
     /// The instant the plan was built.
     pub now_ms: i64,
     /// What the user manager holds, when `letibot gc` asked it: the unit table is G5's, and
@@ -400,6 +402,12 @@ impl Plan {
                 out.push_str(&format!("  {}\n", sp.line()));
             }
         }
+        if !self.bounded.is_empty() {
+            out.push_str("\nlogs, journals and captures — bounded by `[gc.logs]`:\n");
+            for b in &self.bounded {
+                out.push_str(&format!("  {}\n", b.line()));
+            }
+        }
         if !self.looks_like_ours.is_empty() {
             out.push_str(
                 "\nunrecorded — looks like ours, and nothing here proves whose. Not reaped by \
@@ -490,6 +498,7 @@ impl Plan {
                 "bytes": sp.usage.bytes,
                 "evicted": sp.usage.evicted,
             })).collect::<Vec<_>>(),
+            "bounded": self.bounded.iter().map(|b| b.to_json()).collect::<Vec<_>>(),
             "would_reap": { "holdings": reaping, "bytes": bytes },
             "totals": self.totals().into_iter()
                 .map(|(c, b)| (c.to_string(), b))
@@ -506,6 +515,15 @@ impl Plan {
     }
 }
 
+/// The box's logs, journals and captures, as the plan lists them.
+pub fn bounded_holdings(places: &Places) -> Vec<super::logs::BoundedHolding> {
+    let policy = &places.settings.logs;
+    let mut out = super::logs::log_holdings(&places.daemon_logs, policy);
+    out.extend(super::logs::wal_holdings(&places.data_dir));
+    out.extend(super::logs::capture_holding(&places.box_dir(), policy));
+    out
+}
+
 /// Build the plan: every owner in `store` (or the one named), its holdings from the rows merged
 /// with a fresh discovery walk, and whatever the places hold that no owner claims. Reads only.
 pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> StoreResult<Plan> {
@@ -519,6 +537,7 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
         owners: Vec::new(),
         looks_like_ours: Vec::new(),
         spills: spill_holdings(&places.data_dir.join(crate::spill::SPILLS_DIR)),
+        bounded: bounded_holdings(places),
         now_ms,
         systemd: None,
         systemd_why: None,
@@ -779,6 +798,7 @@ mod tests {
             settings: Settings::default(),
             data_dir: "/nonexistent/data".into(),
             rundir: "/nonexistent/run".into(),
+            daemon_logs: "/nonexistent/logs".into(),
             firecode_runs: None,
             firecode_cache: None,
             proc_root: "/nonexistent/proc".into(),
@@ -853,6 +873,7 @@ mod tests {
             ],
             looks_like_ours: Vec::new(),
             spills: Vec::new(),
+            bounded: Vec::new(),
             now_ms: 0,
             systemd: None,
             systemd_why: None,

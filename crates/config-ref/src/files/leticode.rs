@@ -397,6 +397,16 @@ pub const LETICODE: File = File {
             ],
         },
         Table {
+            path: "gc.logs",
+            note: "Daemon logs and job output files; the daemon reads it at start.",
+            needs: "",
+            keys: &[
+                k("max", "size (32M)", "32M", U, "a daemon or room log past this is rotated", "\"64M\""),
+                k("keep", "int", "3", U, "rotated files kept; gc --now removes the rest", "5"),
+                k("capture_max", "size (1G)", "1G", U, "a job's output file stops growing here", "\"512M\""),
+            ],
+        },
+        Table {
             path: "gc.docker",
             note: "Opt-in image prune; off by default.",
             needs: "",

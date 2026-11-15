@@ -39,6 +39,7 @@ impl Box_ {
             settings: crate::lifecycle::Settings::default(),
             data_dir: self.at("data"),
             rundir: self.at("run"),
+            daemon_logs: self.at("logs"),
             firecode_runs: Some(runs),
             firecode_cache: Some(cache),
             proc_root: PathBuf::from("/proc"),

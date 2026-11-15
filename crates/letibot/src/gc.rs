@@ -21,7 +21,8 @@ letibot holds [OWNER] [--folder DIR] [--json] [--line] [--top]
   What the owners of this box hold on disk, one line each and one line per holding: the cgroup a
   session's jobs run in (with its process count and memory, which no `ps` can give a seat in a
   sandbox), a VM, its copies, its daemon, its worktree and target. Then each project's spill
-  store under the data directory, with its size. `OWNER` narrows it to one session id.
+  store under the data directory, with its size, then the daemon logs, store journals and job
+  captures with the bounds `[gc.logs]` sets. `OWNER` narrows it to one session id.
 
   --folder DIR   only the owners working against DIR
   --json         the same facts as one object, for a program
@@ -56,8 +57,9 @@ letibot gc [OWNER] [--folder DIR] [--json] [--log | --now [--json]]
                  instead of being committed. Then disk: the caches of every owner whose compute is
                  gone, a copy-out after its work is in refs/letibot/archive/, the run directories
                  of VMs that are down, the shared build targets over their quota under the lock
-                 `rrun` takes, and each remote host's own pass. Every act is journaled, and an act
-                 is done when the thing is ABSENT.
+                 `rrun` takes, each remote host's own pass, and rotated daemon logs past
+                 `[gc.logs] keep`. Every act is journaled, and an act is done when the thing is
+                 ABSENT.
 
   --settle OWNER   settle an owner's work NOW, without waiting out the grace
   --restore OWNER  put an owner's archived branches back; with `--worktree`, also a tree at the
@@ -298,6 +300,7 @@ fn holds(args: &[String]) -> Result<(), String> {
             owners: owners.iter().map(|o| (*o).clone()).collect(),
             looks_like_ours: plan.looks_like_ours.clone(),
             spills: plan.spills.clone(),
+            bounded: plan.bounded.clone(),
             now_ms: plan.now_ms,
             systemd: plan.systemd.clone(),
             systemd_why: plan.systemd_why.clone(),
@@ -314,6 +317,7 @@ fn holds(args: &[String]) -> Result<(), String> {
             }
         );
         print_spills(&plan.spills);
+        print_bounded(&plan.bounded);
         return Ok(());
     }
     if parsed.top {
@@ -325,6 +329,7 @@ fn holds(args: &[String]) -> Result<(), String> {
                 owners: owners.iter().map(|o| (*o).clone()).collect(),
                 looks_like_ours: Vec::new(),
                 spills: Vec::new(),
+                bounded: Vec::new(),
                 now_ms: plan.now_ms,
                 systemd: None,
                 systemd_why: None,
@@ -350,6 +355,7 @@ fn holds(args: &[String]) -> Result<(), String> {
         }
     }
     print_spills(&plan.spills);
+    print_bounded(&plan.bounded);
     Ok(())
 }
 
@@ -357,6 +363,13 @@ fn holds(args: &[String]) -> Result<(), String> {
 fn print_spills(spills: &[lifecycle::SpillHolding]) {
     for sp in spills {
         println!("{}", sp.line());
+    }
+}
+
+/// Daemon logs, store journals and job captures: the box's own, after everything an owner holds.
+fn print_bounded(bounded: &[lifecycle::logs::BoundedHolding]) {
+    for b in bounded {
+        println!("{}", b.line());
     }
 }
 
@@ -449,6 +462,7 @@ fn gc(args: &[String]) -> Result<(), String> {
                 .collect(),
             looks_like_ours: plan.looks_like_ours.clone(),
             spills: plan.spills.clone(),
+            bounded: plan.bounded.clone(),
             now_ms: plan.now_ms,
             systemd: plan.systemd.clone(),
             systemd_why: plan.systemd_why.clone(),
@@ -492,11 +506,28 @@ fn gc_now(owner: Option<&str>, folder: Option<&Path>, json: bool) -> Result<(), 
         }
     };
     let pass = lifecycle::pass(&store, &places, &ops, owner, now).map_err(|e| e.to_string())?;
+    // Rotated logs past the kept count belong to no owner, so the box pass trims them here.
+    let trimmed: Vec<PathBuf> = lifecycle::bounded_holdings(&places)
+        .into_iter()
+        .filter(|b| b.kind == "log")
+        .flat_map(|b| {
+            lifecycle::logs::trim_rotated(Path::new(&b.handle), places.settings.logs.keep)
+        })
+        .collect();
     if json {
-        println!("{}", pass.to_json());
+        let mut out = pass.to_json();
+        out["logs_trimmed"] = serde_json::json!(trimmed);
+        println!("{out}");
         return Ok(());
     }
     print!("{}", pass.render());
+    if !trimmed.is_empty() {
+        println!(
+            "logs: removed {} rotated file(s) past the {} kept",
+            trimmed.len(),
+            places.settings.logs.keep
+        );
+    }
     match reset {
         Some(Ok(t)) => println!(
             "user manager: reset {} failed letibot unit(s): {}",

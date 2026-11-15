@@ -1316,6 +1316,16 @@ struct Shared {
     newer: std::sync::Mutex<Option<NewerStore>>,
 }
 
+/// One file's answer to [`Store::checkpoint_truncate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Checkpointed {
+    pub path: std::path::PathBuf,
+    /// A reader held the journal, so it was not truncated.
+    pub busy: bool,
+    /// The journal's size after the checkpoint.
+    pub wal_bytes: u64,
+}
+
 pub struct Store {
     /// `shared.db` of a split set, or the one file of a single-file store.
     shared: std::sync::Arc<Shared>,
@@ -1697,6 +1707,34 @@ impl Store {
     /// another thread, and a `Connection` is `Send` and not `Sync`.
     pub fn path(&self) -> Option<&Path> {
         self.shared.path.as_deref()
+    }
+
+    /// `wal_checkpoint(TRUNCATE)` on every file of this handle, for a caller at a safe point (a
+    /// daemon's idle exit). A file a reader still holds answers busy and keeps its journal, which
+    /// is correct, so busy is reported and not an error.
+    pub fn checkpoint_truncate(&self) -> Result<Vec<Checkpointed>> {
+        let mut files = vec![std::sync::Arc::clone(&self.shared)];
+        if let Some(Some(project)) = &self.project {
+            files.push(std::sync::Arc::clone(project));
+        }
+        let mut out = Vec::new();
+        for f in files {
+            let Some(path) = f.path.clone() else {
+                continue;
+            };
+            let conn = f.conn();
+            let busy: i64 = conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get(0))?;
+            drop(conn);
+            let mut wal = path.clone().into_os_string();
+            wal.push("-wal");
+            let wal_bytes = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
+            out.push(Checkpointed {
+                path,
+                busy: busy != 0,
+                wal_bytes,
+            });
+        }
+        Ok(out)
     }
 
     /// The connection, held for the duration of one statement or one transaction - the

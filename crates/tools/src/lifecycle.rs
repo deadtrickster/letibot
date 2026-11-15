@@ -21,6 +21,7 @@ use crate::exec::scope::{self, ScopeUse};
 mod archive;
 pub mod autoarchive;
 mod config;
+pub mod logs;
 mod plan;
 mod reap;
 mod remote;
@@ -41,7 +42,7 @@ pub use archive::{Kept, fetch_bundle, keep, namespace};
 pub use config::{Settings, SharedTarget, bytes as size_bytes, config_file};
 pub use plan::{
     DETACHED_JOB, HoldingView, LANDED_GRACE_MS, OwnerView, Plan, SpillHolding, Stranger,
-    UNLANDED_GRACE_MS, Verdict, judge, plan, spill_holdings, stamp_of,
+    UNLANDED_GRACE_MS, Verdict, bounded_holdings, judge, plan, spill_holdings, stamp_of,
 };
 pub use reap::{
     Act, Activity, BoxHands, COPY_OUT_DEADLINE_MS, Ended, Hands, NOTICE_LEAD_MS, Ops, Pass,
@@ -133,6 +134,8 @@ pub struct Places {
     pub data_dir: PathBuf,
     /// `$XDG_RUNTIME_DIR/letibot`: a folder's daemon record is `<key>.json` in it.
     pub rundir: PathBuf,
+    /// Where the launcher points daemon and room logs: `~/logs`.
+    pub daemon_logs: PathBuf,
     /// firecode's `runs/`, when this box has a firecode at all.
     pub firecode_runs: Option<PathBuf>,
     /// `~/.cache/letibot/firecode`: the booted copies and the copy-outs.
@@ -175,6 +178,7 @@ impl Places {
             settings,
             data_dir,
             rundir: rundir(),
+            daemon_logs: daemon_logs_dir(),
             firecode_runs: runs,
             firecode_cache: cache,
             proc_root: PathBuf::from("/proc"),
@@ -254,6 +258,15 @@ pub fn session_dirs(places: &Places, owner: &str) -> std::io::Result<(PathBuf, P
             .create(d)?;
     }
     Ok((spill, session))
+}
+
+/// `$LETIBOT_DAEMON_LOGS`, else `~/logs`, where `scripts/letibot` sends each daemon's output.
+pub fn daemon_logs_dir() -> PathBuf {
+    std::env::var_os("LETIBOT_DAEMON_LOGS")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join("logs")))
+        .unwrap_or_else(|| PathBuf::from("logs"))
 }
 
 /// The owner roots when nothing names them: under the cache directory, never the store, which a

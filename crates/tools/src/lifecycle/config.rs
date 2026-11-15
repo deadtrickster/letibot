@@ -9,6 +9,11 @@
 //! quota = "200G"
 //! idle_days = 3                    # unused for this long and it goes too
 //!
+//! [gc.logs]
+//! max = "32M"                      # a daemon log past this is rotated
+//! keep = 3                         # rotated files kept beside it
+//! capture_max = "1G"               # a job's output file stops growing here
+//!
 //! [firecode]
 //! state = "/build/firecode/state"  # FIRECODE_STATE, handed to `firecode up`
 //! runs = "/build/firecode/runs"    # FIRECODE_RUNS
@@ -42,6 +47,8 @@ pub struct Settings {
     pub firecode_state: Option<PathBuf>,
     /// `FIRECODE_RUNS`: where firecode keeps a run's own directory.
     pub firecode_runs: Option<PathBuf>,
+    /// `[gc.logs]`: how big a daemon log and a job capture may grow.
+    pub logs: super::logs::LogPolicy,
     /// The file this came from, so a line can say where a number was read.
     pub path: Option<PathBuf>,
 }
@@ -101,6 +108,19 @@ impl Settings {
                     idle_days: one.idle_days,
                 });
             }
+            if let Some(logs) = gc.logs {
+                let size = |key: &str, v: &Option<String>, dflt: u64| match v {
+                    Some(q) => bytes(q)
+                        .map_err(|e| format!("{}: [gc.logs] {key} {q:?}: {e}", path.display())),
+                    None => Ok(dflt),
+                };
+                let d = super::logs::LogPolicy::default();
+                out.logs = super::logs::LogPolicy {
+                    max_bytes: size("max", &logs.max, d.max_bytes)?,
+                    keep: logs.keep.unwrap_or(d.keep),
+                    capture_max: size("capture_max", &logs.capture_max, d.capture_max)?,
+                };
+            }
         }
         if let Some(table) = file.firecode {
             let fc: FirecodeTable = table
@@ -143,6 +163,19 @@ struct GcTable {
     #[serde(default)]
     #[allow(dead_code)]
     docker: Option<toml::Value>,
+    #[serde(default)]
+    logs: Option<LogsTable>,
+}
+
+#[derive(Debug, Default, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LogsTable {
+    #[serde(default)]
+    max: Option<String>,
+    #[serde(default)]
+    keep: Option<usize>,
+    #[serde(default)]
+    capture_max: Option<String>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -270,6 +303,27 @@ runs = "/build/firecode/runs"
         assert_eq!(s.firecode_runs, None);
     }
 
+    /// `[gc.logs]` overrides only what it names; an absent table is the defaults.
+    #[test]
+    fn the_log_bounds_are_read_and_default() {
+        let s = Settings::parse(
+            Path::new("/b/leticode.toml"),
+            "[gc.logs]\nmax = \"1M\"\nkeep = 5\n",
+        )
+        .unwrap();
+        assert_eq!(s.logs.max_bytes, 1024 * 1024);
+        assert_eq!(s.logs.keep, 5);
+        assert_eq!(
+            s.logs.capture_max,
+            super::super::logs::LogPolicy::default().capture_max
+        );
+        let none = Settings::parse(Path::new("/b/leticode.toml"), "").unwrap();
+        assert_eq!(none.logs, super::super::logs::LogPolicy::default());
+        let e = Settings::parse(Path::new("/b/leticode.toml"), "[gc.logs]\nkeeep = 2\n")
+            .expect_err("a typo");
+        assert!(e.contains("keeep"), "{e}");
+    }
+
     /// The units are binary, like every other size the tree prints.
     #[test]
     fn a_size_is_written_the_way_a_person_writes_one() {
@@ -308,8 +362,9 @@ mod reference_tests {
     #[test]
     fn gc_and_firecode_tables_are_listed() {
         let mut gc = listed("gc");
-        gc.extend(["shared", "docker"]);
+        gc.extend(["shared", "docker", "logs"]);
         assert_eq!(fields::<GcTable>(), gc);
+        assert_eq!(fields::<LogsTable>(), listed("gc.logs"));
         assert_eq!(fields::<SharedTable>(), listed("gc.shared[]"));
         assert_eq!(fields::<FirecodeTable>(), listed("firecode"));
     }

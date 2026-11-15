@@ -3176,6 +3176,28 @@ impl<'a> Sessions<'a> {
             .collect()
     }
 
+    /// Truncate the store's journals: the idle exit is a safe point, as no turn is writing. One
+    /// line per file, for the daemon log.
+    pub fn checkpoint_store(&self) -> Vec<String> {
+        let Some(at) = self.base.store_at() else {
+            return Vec::new();
+        };
+        let store = match at.open_existing() {
+            Ok(s) => s,
+            Err(e) => return vec![format!("store not checkpointed: {e}")],
+        };
+        match store.checkpoint_truncate() {
+            Ok(files) => files
+                .into_iter()
+                .map(|f| match f.busy {
+                    true => format!("{}: a reader holds the journal, kept", f.path.display()),
+                    false => format!("{}: journal truncated", f.path.display()),
+                })
+                .collect(),
+            Err(e) => vec![format!("store not checkpointed: {e}")],
+        }
+    }
+
     /// The idle exit's window, `None` when this daemon never exits on its own.
     pub fn idle_window(&self) -> Option<Duration> {
         self.base.idle_exit_after
