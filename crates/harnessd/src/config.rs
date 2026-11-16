@@ -2010,6 +2010,13 @@ impl Config {
         !self.is_child() || self.leticode.skills.offer_children == Some(true)
     }
 
+    /// Whether this session is told about the project's past turns. A package runs on a brief a
+    /// bridge handed it (`parent_seat`), like a child on its subagent prompt: the past is not its
+    /// subject, and a recall line there is a round spent on somebody else's conversation.
+    pub fn offers_recall(&self) -> bool {
+        self.parent_seat.is_none()
+    }
+
     /// `[skills.when.<name>]`, both levels resolved: what each skill needs of a seat, over what its
     /// own frontmatter says. The operator's table wins a name both files speak about, whole.
     pub fn skills_when(

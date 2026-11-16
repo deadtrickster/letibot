@@ -2205,7 +2205,7 @@ impl Harness {
             .with_tier(self.cfg.tier())
             .with_tools(seat_tools.iter());
         recall.recall(&self.cfg.daemon_logs(), &self.cfg.session_id);
-        if recall.seated() && !self.compacting && !self.cheap_turn {
+        if recall.seated() && !self.compacting && !self.cheap_turn && self.cfg.offers_recall() {
             let model = self
                 .cfg
                 .embedder
@@ -2311,11 +2311,14 @@ impl Harness {
                 waits.compose(&rows, &brief);
                 done.compose(&done_records, &brief);
                 // The person's own words are the trigger and the subject is what they are doing:
-                // a back-reference in a tool's output is nobody referring back.
-                recall.compose(
-                    &crate::notes_offer::subject(&self.session.items),
-                    &crate::recall_offer::operator_text(&self.session.items),
-                );
+                // a back-reference in a tool's output is nobody referring back. A package hears
+                // nothing at all: its brief is the subject, and the project's past is not.
+                if self.cfg.offers_recall() {
+                    recall.compose(
+                        &crate::notes_offer::subject(&self.session.items),
+                        &crate::recall_offer::operator_text(&self.session.items),
+                    );
+                }
             }
             let mut tail = offers.tail();
             tail.extend(skill_offers.tail());

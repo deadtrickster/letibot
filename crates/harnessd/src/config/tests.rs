@@ -2451,6 +2451,27 @@ fn the_prose_nudge_is_picked_per_model_and_the_flag_overrides_it() {
     assert_eq!(c.prose_nudge("acme/small"), (true, "--intent-prose".into()));
 }
 
+/// A package - a session a bridge started, `parent_seat` - is told nothing about the project's
+/// past turns, the way a child is offered no skills: its brief is the subject it was given.
+#[test]
+fn a_package_is_offered_no_recall() {
+    let base = std::env::temp_dir().join(format!("harnessd-offer-recall-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    std::fs::create_dir_all(&base).unwrap();
+    let mut cfg = Config::for_this_box(&base);
+    cfg.session_id = "s-top".into();
+    assert!(cfg.offers_recall(), "the operator's own session is told");
+    // A subagent still is: its prompt is the operator's own words about this project.
+    cfg.parent_session_id = Some("s-parent".into());
+    assert!(cfg.offers_recall());
+    cfg.parent_seat = Some("cc@letibot".into());
+    assert!(
+        !cfg.offers_recall(),
+        "a package runs on a brief a bridge handed it: the past is not its subject"
+    );
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// A session on a brief gets no skill offers unless `[skills] offer_children` says so; the
 /// operator's own session always does.
 #[test]
