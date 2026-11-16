@@ -373,6 +373,8 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
                 "letibot_room::SayKind::",
                 "letibot_room::SayKind {",
                 "letibot_room::chat::SAY",
+                "letibot_room::chat::DIGEST_AUTHOR",
+                "letibot_room::chat::MAX_READ",
                 "letibot_room::project_key(",
                 "letibot_room::room_name(",
                 "letibot_room::room_of_name(",
@@ -384,7 +386,7 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
             assert_eq!(
                 named, allowed,
                 "`bridge` may name only the protocol number, the upgrade hint, the operator's name, \
-                 the peer-text checks, the say kinds, the room-naming helpers and a refusal's type from the room crate"
+                 the peer-text checks, the say kinds, the digest's author and page size, the room-naming helpers and a refusal's type from the room crate"
             );
             continue;
         }
