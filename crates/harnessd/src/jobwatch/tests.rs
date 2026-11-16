@@ -610,7 +610,7 @@ fn a_grandchilds_settlement_reaches_its_parent_and_rings_its_parent() {
         "the row carries what the grandchild said"
     );
 
-    // And the PARENT's drain is empty - that is the defect, one assert away.
+    // And the parent's drain is empty.
     assert!(
         root_watch.take_completions().is_empty(),
         "a grandchild's settlement is its parent's to be told, not the main session's"
@@ -870,9 +870,8 @@ fn a_childs_job_completion_is_the_childs_and_never_the_parents() {
     );
 }
 
-/// A settlement reaches the session that started it and not its sibling. The *"and to
-/// nobody else"* half: two children of one root, each watching its own subagent and neither
-/// can be told the other's news.
+/// A settlement reaches the session that started it and nobody else: two children of one root,
+/// each watching its own subagent, and neither is told the other's news.
 #[test]
 fn a_settlement_reaches_the_session_that_started_it_and_not_its_sibling() {
     use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
@@ -946,9 +945,8 @@ fn a_settlement_reaches_the_session_that_started_it_and_not_its_sibling() {
     );
 }
 
-/// A child's turn ending does not silence its tree's watchers. [`JobWatchers::shares_tree`]
-/// shared the `stop` flag along with the queue, on the reasoning that *"a tree closes
-/// together"*. It does not
+/// A child's turn ending does not silence its tree's watchers: [`JobWatchers::shares_tree`] shares
+/// the queue, not the `stop` flag.
 #[test]
 fn a_childs_close_does_not_stop_its_trees_watchers() {
     use letibot_sessionlog::registry::{Registry, SessionWiring, Work};
@@ -1739,8 +1737,7 @@ fn the_dead_soon_warning_names_the_job_both_numbers_and_the_way_out() {
 }
 
 /// A background job's writes: the snapshot its `bash` call handed over at the spawn is what the
-/// settlement reads, and nothing else can read both ends of a job (R161). No process is started
-/// here, because this box has no cgroup, so the seam is driven directly: a real git tree, a real
+/// settlement reads. No cgroup on this box, so the seam is driven directly: a real git tree, a real
 /// rewrite, and the queue's own read.
 #[test]
 fn a_jobs_spawn_snapshot_is_read_at_its_settlement() {
@@ -1809,7 +1806,7 @@ fn a_jobs_spawn_snapshot_is_read_at_its_settlement() {
 
 /// A job whose substrate was taken down under it settles as the kill, and never as the exit its
 /// client came back with: the VM's teardown is what ended it, and a row saying `exited 0` over it
-/// is the report the parent reads as a finish (R173).
+/// is the report the parent reads as a finish.
 #[test]
 fn a_job_killed_with_its_substrate_settles_as_the_kill_and_not_its_exit() {
     let root = std::env::temp_dir().join(format!("letibot-vm-lost-{}", std::process::id()));

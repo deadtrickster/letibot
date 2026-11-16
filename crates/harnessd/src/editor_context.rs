@@ -171,10 +171,9 @@ fn open_line(context: &EditorContext, workspace: &str) -> String {
     format!("open in the editor: {}", names.join(", "))
 }
 
-/// `p` relative to the workspace when it is inside it, as `workspace_relative` does for a paste -
-/// both sides canonicalised, because a workspace spelled through a symlink would otherwise never be
-/// a prefix of the path the editor reports. `citations::buffers` spells a mark's anchor the same
-/// way, so the path the model reads in the block is the path its fence can name.
+/// `p` relative to the workspace when inside it, as `workspace_relative` does for a paste - both
+/// sides canonicalised, or a workspace spelled through a symlink is never a prefix. `citations::buffers`
+/// spells a mark's anchor the same way, so the path in the block is the path a fence can name.
 pub(crate) fn workspace_relative(workspace: &str, path: &str) -> String {
     let root = if workspace.is_empty() {
         return path.to_string();
@@ -385,9 +384,8 @@ mod tests {
     }
 
     /// The whole door, end to end and with no model: a prompt with an unsaved `ContextRef` goes into
-    /// the hub, and the USER ITEM the daemon builds holds the words first and then one numbered,
-    /// quarantined block. The mid-turn door is the one that needs no vocabulary to open, and it
-    /// renders through the same `part` the between-turns door does.
+    /// the hub, and the user item the daemon builds holds the words first, then one numbered,
+    /// quarantined block, rendered through the same `part` the between-turns door uses.
     #[test]
     fn a_prompt_with_an_unsaved_ref_becomes_a_user_item_holding_the_block() {
         use letibot_sessionlog::hub::Hub;

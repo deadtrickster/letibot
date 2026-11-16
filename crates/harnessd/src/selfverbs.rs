@@ -1,10 +1,9 @@
-//! The daemon's half of the model's own verbs (X24): each one becomes the same queued command the
+//! The daemon's half of the model's own verbs: each one becomes the same queued command the
 //! operator's head sends, so a session moves itself with no tmux, no head and nobody watching.
 //!
-//! The queue is what makes it safe. A command arrives while the turn that asked for it is still
-//! running, so it waits for that turn to end - which is exactly when a re-seat or a compaction can
-//! happen at all - and the daemon then performs it through the door the head's own verb takes, with
-//! this session as the identity it is recorded under.
+//! The queue makes it safe: a command arrives while the turn that asked for it is running, so it
+//! waits for the turn to end - the only time a re-seat or a compaction can happen - and then goes
+//! through the head verb's own door, recorded under this session.
 
 use std::sync::Arc;
 
@@ -104,7 +103,7 @@ mod tests {
     use super::*;
 
     /// The verb the model calls puts the SAME command in the queue the operator's own verb does,
-    /// with no head and no tmux - which is the whole of X24's first half. Read off the queue itself
+    /// with no head and no tmux. Read off the queue itself
     /// rather than off a reply, because the reply is the tool's opinion of what it did.
     #[test]
     fn the_model_reseats_itself_without_tmux() {

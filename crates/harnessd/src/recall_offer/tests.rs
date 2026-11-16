@@ -119,7 +119,7 @@ fn a_back_reference_is_answered_with_the_call_and_where_the_turn_was() {
     assert!(text.contains("history: true"), "{text}");
     assert!(text.contains("s-etcd"), "the source session: {text}");
     assert!(text.contains("the store split"), "and its title: {text}");
-    // 2025-10-09 is what 1_760_000_000_000 ms is, and the hint names the day and not a delta.
+    // 1_760_000_000_000 ms is that day, and the hint names the day and not a delta.
     assert!(text.contains("2025-10-09"), "{text}");
     assert!(
         text.contains("gone from the next one"),
@@ -183,9 +183,8 @@ fn a_back_reference_with_nothing_indexed_still_points_at_the_tool() {
 }
 
 /// A term that is all over the project is a fold through a subagent, not one turn to read: the hint
-/// reaches for `digest` and asks the person's own question. The fourth unit is what keeps the
-/// corpus from being three copies of one text and only it, where every term has `idf` of zero and
-/// nothing scores at all.
+/// reaches for `digest` and asks the person's own question. The fourth unit keeps every term's
+/// `idf` above zero.
 #[test]
 fn a_match_all_over_the_project_reaches_for_digest() {
     let wide: Vec<RecallUnit> = [

@@ -21,14 +21,7 @@ struct Said {
 /// `--oracle-max-tokens` is the knob. The ceiling is what makes a truncated reply rare rather
 /// than harmless: a cut reply still loses its verdict, and with the reasoning first that verdict
 /// is on the last line. [`UnsureKind::OutOfRoom`] tells it apart from an unreadable answer. The
-/// price is latency, which is bounded and measurable
-///
-/// ```text
-/// n_predict   warm latency
-/// 1         85 ms
-/// 4        296 ms      <- fits
-/// 16      1,143 ms      <- does not
-/// ```
+/// price is bounded latency.
 pub const DEFAULT_MAX_TOKENS: usize = 400;
 
 pub struct HttpOracle {

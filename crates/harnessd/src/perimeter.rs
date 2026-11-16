@@ -77,10 +77,9 @@ pub fn of(cfg: &crate::config::Config) -> Result<Perimeter, String> {
     )
 }
 
-/// The grants a session's perimeter asks for on a view built on ANOTHER machine: its own table's
-/// first, then `[boundary]`'s, which is the order a seat applies them. Both are checked here, so a
-/// file this box refuses refuses the session; a `~/` path stays as written, because that machine's
-/// home is not this one's and only its own shell can say where it is.
+/// The grants a session's perimeter asks for on a view built on another machine: its own table's
+/// first, then `[boundary]`'s, the order a seat applies them. A file this box refuses refuses the
+/// session; a `~/` path stays as written, because only that machine's shell knows its home.
 pub fn grants_for_placement(
     p: &Perimeter,
     workspace: &Path,
@@ -299,7 +298,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// Item 3's last clause: the report prints what the probe MEASURED, not only what the config
+    /// The report prints what the probe measured, not only what the config
     /// asked for - and says so when nothing was measured.
     #[test]
     fn the_report_shows_what_the_probe_measured() {

@@ -14,8 +14,7 @@
 //!
 //! # Why there is no async runtime and no timer
 //!
-//! I12: *"the daemon spawns no timer or poll loop for message delivery"*.
-//! [`Hub::take_own_work`] blocks on a condvar until something is pushed and the accept
+//! The daemon spawns no timer or poll loop for message delivery. [`Hub::take_own_work`] blocks on a condvar until something is pushed and the accept
 //! loop blocks on `accept`; a stop arrives on a self-pipe, because a signal handler may
 //! `write(2)` but may not take a mutex. One `poll` exists, and only after a signal.
 
@@ -241,10 +240,9 @@ impl Daemon {
         Daemon::serve(Registry::of(hub), socket)
     }
 
-    /// [`Daemon::serve`] with the tree a connection is judged by named instead of this process.
-    /// A test that serves in-process and runs a HEAD as its own child needs it: without it the
-    /// child descends from this process and the daemon refuses it as a tool call - the reason
-    /// `serve_registry_rooted` exists one level down. Production never calls this.
+    /// [`Daemon::serve`] with the tree a connection is judged by named instead of this process, for
+    /// a test that serves in-process and runs a head as its own child: otherwise the daemon refuses
+    /// the child as a tool call. Production never calls this.
     pub fn serve_rooted(
         registry: Arc<Registry>,
         socket: &std::path::Path,
@@ -400,7 +398,7 @@ impl Daemon {
                             eprintln!("  reviews -> {served} gatekeeper(s)");
                         }
                     }
-                    // And the GitHub reviewer seat (R118): a scope somebody attached is polled for
+                    // And the GitHub reviewer seat: a scope somebody attached is polled for
                     // on its own minute, on a thread of its own - a review is minutes of a
                     // member's work, and this pass is not where that waits.
                     if let Some(github) = self.registry().github()

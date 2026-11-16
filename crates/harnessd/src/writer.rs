@@ -1,20 +1,10 @@
 //! One process appends to a session's transcript, and this is what says so: the
 //! daemon's half of `letibot_tokencore::store::writers`.
 //!
-//! Two daemons once opened the same session and both appended to it. The store's
-//! trigger noticed, and too late to help: it refuses the second writer's row, so
-//! what is left is one conversation with a hole in it, and no daemon could see
-//! the other.
-//!
-//! ```text
-//! store: rows 11..12 (s-gatekeeper#t0.11..): row 11 of s-gatekeeper#t0: sqlite: transcript_item
-//!        seq must be the next one
-//! store: rows 11..12 (s-gatekeeper#t0.11..): sqlite: transcript_item tok_offset must continue the
-//!        previous row
-//! ```
-//!
-//! So a session is claimed when a harness opens it, and a claim another live
-//! process holds refuses the open by name, before a single row is written.
+//! Two daemons appending to one session leave a conversation with a hole in it: the store's
+//! trigger refuses the second writer's rows, too late to help. So a session is claimed when a
+//! harness opens it, and a claim another live process holds refuses the open by name, before a
+//! single row is written.
 //!
 //! Taken at open, not at the first append: an open is where the harm is decided
 //! and it is not a write lock (SQLite has that) nor the per-repository lease.

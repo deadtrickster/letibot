@@ -1,18 +1,15 @@
 //! The daemon's own reaper: close what is idle, past a hard TTL, or under a daemon that is gone,
-//! let go of it, and free its disk (`docs/lifecycle.md`, packages G2 and G4).
+//! let go of it, and free its disk (`docs/lifecycle.md`).
 //!
-//! The same pass runs three ways and this is the fast one: a daemon that is up notices its own
-//! owner going quiet, where `letibot gc --now` and the timer are what covers the box whose daemons
-//! are not there. It reads the store and the kernel and asks no daemon anything, so an owner whose
+//! The same pass also runs as `letibot gc --now` and on a timer; this is the fast one, in a daemon
+//! that is up. It reads the store and the kernel and asks no daemon anything, so an owner whose
 //! daemon was SIGKILLed is closed by the one that replaced it.
 //!
 //! Every daemon runs the idle half each [`SWEEP`]. The disk half, which walks caches, shared
 //! targets and remote hosts over ssh, is one daemon's per box at `[gc] disk_every` ([`DiskTurn`]).
 //!
-//! A close here is the SAME close a `leticode_stop` is: the registry entry goes, a head left
-//! attached is detached, the worker serves `Work::Close` from its own queue, and the settler brings
-//! down a VM the worker cannot reach (`close_settle`). What this file adds is the decision and the
-//! journal, never a second way to close a session.
+//! A close here is the same close a `leticode_stop` is (registry entry, head detach, `Work::Close`,
+//! `close_settle`). This file adds the decision and the journal, never a second way to close.
 
 use std::io::{Read, Seek, Write};
 use std::path::{Path, PathBuf};
@@ -113,7 +110,7 @@ fn sweep(
     said
 }
 
-/// Put away what settled since this daemon came up (plan 1.6, R276). Older facts are the
+/// Put away what settled since this daemon came up (plan 1.6). Older facts are the
 /// backfill's, `letibot gc --archive-settled`, which lists before it writes.
 pub fn auto_archive(store: &Store, registry: &Registry, now: i64) -> Vec<String> {
     use letibot_tools::lifecycle::autoarchive;

@@ -1,5 +1,4 @@
-//! Where the gate's decisions go so they outlive the daemon. > *"we should assemble my
-//! decisions and model decisions into corpus across our > letibot/leticode runs.
+//! Where the gate's decisions, the operator's and the models', go so they outlive the daemon.
 //!
 //! The corpus is one file per project (§ The corpus, `docs/store-split.md`): the sink here
 //! writes this daemon's own project file, and the sweep below reads every one of them.

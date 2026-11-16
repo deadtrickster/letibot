@@ -1,16 +1,12 @@
 //! What a closed session leaves that the worker cannot reach: its VM, and the owner row that says
 //! its compute is gone.
 //!
-//! A close is answered on the connection's thread, but the harness - and with it the firecode
-//! backend that owns the guest - belongs to the worker, which may be inside that guest's tool call.
-//! Then `Work::Close` is served minutes later, and until it is served nothing else on the worker is
-//! served either: a VM stays up and the next session never boots. This is the door that settles it
-//! without waiting for the worker, and it is deliberately the backend's OWN `down`, so the copy-out
-//! the operator relies on still happens.
+//! A close is answered on the connection's thread, but the firecode backend that owns the guest
+//! belongs to the worker, which may be inside that guest's tool call for minutes. This settles the
+//! VM without waiting for the worker, through the backend's own `down`, so the copy-out still happens.
 //!
 //! The owner's row is the other half (`docs/lifecycle.md` d.3): `closed` is a state nothing goes
-//! back from on its own, so the plan stops calling a closed session's leftovers live, and the
-//! idle-exit test stops holding a daemon for a session that is no longer running.
+//! back from on its own, so a closed session's leftovers are not live and hold no daemon up.
 
 use std::sync::Arc;
 use std::time::{Duration, Instant};

@@ -1,6 +1,6 @@
 //! A todo row that waits on the OPERATOR - the daemon's half: the answer, the words the
-//! model is told, and the loud state the heads draw. The operator's ask, verbatim: *"a todo
-//! can be dependent on todo, and todo can be dependend on ME.
+//! model is told, and the loud state the heads draw. A todo can depend on a todo, and on the
+//! operator.
 
 use letibot_sessionlog::question::QuestionAnswer;
 use letibot_tokencore::store::{TodoItem, TodoNeed, TodoStatus, operator_asks};
@@ -155,8 +155,8 @@ mod tests {
         }
     }
 
-    /// A question that stopped waiting says which route took it - the operator's ask, once
-    /// more: *"when question is resolved models are being able to cancel the ask"*.
+    /// A question that stopped waiting says which route took it, including a model cancelling the
+    /// ask once the question is resolved.
     #[test]
     fn a_question_that_stops_waiting_says_which_route_took_it() {
         let asked = TodoNeed::Operator {
@@ -214,8 +214,8 @@ mod tests {
         }
     }
 
-    /// Every shape a person can answer in is said in words - *"that choice list with an optioin
-    /// to enter my freetext"*, and the card's note and abstention beside it.
+    /// Every shape a person can answer in is said in words - a choice, free text, and the card's
+    /// note and abstention beside it.
     #[test]
     fn each_answer_shape_reads_as_a_sentence() {
         assert_eq!(

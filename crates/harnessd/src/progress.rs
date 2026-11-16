@@ -1,73 +1,24 @@
 //! A progress detector, because a round counter measures effort and not progress.
 //!
-//! `max_tool_rounds` was the only thing that could stop a runaway turn, and it cut
-//! two legitimate sessions: one asked to *"look at the project and suggest
-//! improvements"* and was cut at 12 rounds mid-investigation, another was two rounds
-//! from finishing with every round doing new work. A count of rounds is an
-//! open-loop guard in `docs/closed-loop.md`'s terms - it never looks at the
-//! effect, only at the command. A model that is working hard and a model that is
-//! stuck are indistinguishable to it, and it stopped the first one.
+//! A count of rounds is an open-loop guard (`docs/closed-loop.md`): it never looks at the effect,
+//! so a model working hard and a model that is stuck are indistinguishable to it.
 //!
-//! The message was worse than the cut
+//! The signals are facts the harness already computes: a repeated `(tool, arguments)` pair
+//! ([`letibot_turn::events::args_digest`]), a result byte-identical to one already seen this turn
+//! ([`letibot_tools::payload_digest`]), and a run of attempts that were not effects
+//! ([`letibot_tools::builtins::intent::ledger::is_effect`], the ledger's own predicate, so two
+//! instruments cannot disagree about one turn).
 //!
-//! ```text
-//! the model called tools 12 times without answering
-//! ```
+//! A round made progress when at least one of its calls returned `Ok` with a result this turn had
+//! not already seen. Payload novelty, not argument novelty: editing a file and reading it back is a
+//! byte-identical call with a different answer, and that is progress. The repeated call is kept as
+//! evidence for the stop.
 //!
-//! It *was* answering; it had not finished. That sentence teaches an operator to
-//! distrust the model when the harness was at fault - the same defect as `grep`
-//! reporting absence when it had opened no files.
-//!
-//! # The encoder
-//!
-//! What should stop a turn is a model that is not getting anywhere. This module
-//! is the sensor for that, and it is a sensor rather than a heuristic because every
-//! signal it reads is a fact the harness already computes
-//!
-//! | signal | where it comes from |
-//! |---|---|
-//! | the same `(tool, arguments)` called again | [`letibot_turn::events::args_digest`], already computed for `ToolCallProposed` |
-//! | a result byte-identical to one already seen this turn | [`letibot_tools::payload_digest`], already computed for `ToolEvent::Finished` |
-//! | a run of abstentions, denials or `not_run`s | [`letibot_tools::builtins::intent::ledger::is_effect`] - the ledger's own predicate, not a second one beside it |
-//!
-//! That last row is the load-bearing one. `intent::close_the_turn` already draws the
-//! line this needs: an `Ok` is an effect, and an abstention, a failure, a denial
-//! and a `not_run` are attempts. Rather than restate it here, `is_effect` was
-//! lifted out of `IntentLedger::record_effect` so there is one definition with two
-//! readers. A second, subtly different notion of "did that work" is how two
-//! instruments end up disagreeing about the same turn.
-//!
-//! # The rule, and why it is payload novelty rather than argument novelty
-//!
-//! > A round made progress when at least one of its calls returned `Ok` with a
-//! > result this turn had not already seen.
-//!
-//! The strongest single signal is the repeated `(tool, arguments)` pair, and it is
-//! still not the one the stop is built on - because the case that matters most is
-//! the legitimate one. A model that edits a file and reads it back issues a
-//! *byte-identical call* and gets a *different answer*, and that is progress. A model
-//! that reads the same unchanged file three times issues the same call and gets the
-//! same bytes, and that is not. Only the payload separates them, so the payload is
-//! what decides, and the repeated call is kept for the evidence - which is what
-//! an operator needs to argue with the stop.
-//!
-//! # The tolerance band
-//!
-//! `docs/closed-loop.md`: a closed loop corrects inside the band and faults
-//! outside it. So the stop is two-stage - at `stall_rounds - 1` consecutive stalled
-//! rounds the model is told what the harness sees, once, through the same
-//! steering path; only if the next round is also stalled does the turn
-//! stop. A turn that was working gets a sentence and carries on; a turn that is
-//! looping gets stopped one round later than it would have been. That asymmetry is
-//! deliberate: the measured cost of cutting a working turn is now two wasted
-//! sessions, and the cost of one extra round of a stuck one is one round.
-//!
-//! # What it says when it fires
-//!
-//! Never a count of rounds. It names what it saw, with the denominator
-//! (`docs/tool-design-brief.md`) - *"the last 5 rounds ran 7 calls and 0 of 7
-//! returned a result this turn had not already seen"* - because a stop that cites
-//! evidence is one an operator can contradict, and `rounds: 12` is not.
+//! The stop is two-stage: at `stall_rounds - 1` stalled rounds the model is told what the harness
+//! sees, once, and only a further stalled round stops the turn. Cutting a working turn costs more
+//! than one extra round of a stuck one. The stop names what it saw with the denominator ("the last
+//! 5 rounds ran 7 calls and 0 of 7 returned a result this turn had not already seen"), never a
+//! round count, so an operator can contradict it.
 
 use std::collections::{HashMap, HashSet};
 
@@ -458,9 +409,8 @@ mod tests {
         assert_eq!(d.stalled_run(), 0, "no stalled round was counted");
         assert!(!d.exhausted(), "a loaded host is not a stuck turn");
 
-        // And the same outcome WITHOUT the mark is a stalled round, which is the defect the mark
-        // is narrow enough to leave alone: a wait that timed out against a host that answered is
-        // evidence, and a run of them is the stop.
+        // And the same outcome without the mark is a stalled round: a wait that timed out against a
+        // host that answered is evidence, and a run of them is the stop.
         let mut plain = ProgressDetector::new(2);
         for _ in 0..2 {
             plain.observe(

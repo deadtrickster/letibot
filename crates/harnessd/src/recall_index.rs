@@ -28,12 +28,9 @@ pub struct Built {
     pub scanned: usize,
 }
 
-/// Read the index for `workspace` and warm what it still owes, or `None` when this session has no
-/// store - a session that keeps its conversation in memory has no past beyond its own prompt.
-///
-/// `live` is the transcript the session is carrying: its rows ARE the prompt, and a hint about what
-/// the prompt already says is a line spent saying nothing. `model` keys the cached vectors, so a box
-/// that switches embedders re-earns them rather than comparing two widths.
+/// Read the index for `workspace` and warm what it still owes, or `None` when the session has no
+/// store. `live` is the transcript the session carries, left out because a hint about the prompt
+/// is a wasted line. `model` keys the cached vectors, so a new embedder re-earns them.
 pub fn build(
     store: Option<&Store>,
     workspace: &Path,
@@ -118,10 +115,9 @@ fn scan(
     let Ok(mut sessions) = store.list_sessions_archived(Archived::Any) else {
         return (Vec::new(), 0);
     };
-    // The project's own sessions, the archived ones included (R184): an archived session is out of
-    // sight, and its work is exactly what "remember when we did that?" is about. A subagent and a
-    // package are skipped by default - a child's turns re-tell its parent's work and a package's
-    // are the same brief from another seat, so they crowd the index without answering anything.
+    // The project's own sessions, archived ones included: their work is what "remember when we did
+    // that?" is about. Subagents and packages are skipped by default - they re-tell a parent's work
+    // or a brief, and crowd the index without answering anything.
     sessions.retain(|s| {
         s.workspace_root == want
             && s.parent_session_id.is_none()

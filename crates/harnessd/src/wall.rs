@@ -1,28 +1,9 @@
-//! The wall controller - one state for what a session does at its context wall
-//! changed in one place, and only by a count somebody
+//! The wall controller - one state for what a session does at its context wall, changed in one
+//! place and only by a count the provider measured.
 //!
-//! # The case it answers
-//!
-//! Example: a deepseek-flash session
-//! with a 1,000,000 window: `compacting: 941101 of 1000000 deepseek tokens resident (936387 at
-//! the last round + 4714 appended since)`, then on the head *"⚠ auto-compaction is off
-//! compacted from 941101 to 1039055 tokens and that is STILL within 62500 of the 1000000
-//! window … and a refusal will not force another"*. The first round on the new
-//! transcript (`#t18`) stored `context_tokens = 507355` - deepseek's own count; the head
-//! showed 504k. The fold had HALVED the session. The no-progress guard judged it on an
-//! estimate of a base the provider had not seen yet (in the wrong unit besides) and
-//! latched two switches for the daemon's life: `auto_compact = false` (the pre-emptive
-//! door) and `forced_gave_up` (the refused door - the overrun protection itself). The
-//! operator: *"wtf is this"*, *"window shows 504k tokens"*, and *"why it didnt believe
-//! what api told it"*.
-//!
-//! And the fold that did not help enough had nowhere to go. `plan_overrun` picks the
-//! sliced fold by SIZE only (`resident + MIN_SUMMARY_ROOM > window`); at 941k of 1M the
-//! history fit one summary call, so the ordinary fold ran - a summary of the first half
-//! and the second half verbatim - and that verbatim half is the ~500k that remained.
-//! Nothing escalated from "the ordinary fold did not make enough room" to a smaller
-//! verbatim part or to the sliced fold, though the guard's own comment said the sliced
-//! fold *"may still cure exactly the case the ordinary one failed on"*. It latched.
+//! A fold's result is an estimate until the provider counts the new base, so the controller waits
+//! for that count before judging it, and a fold that did not make enough room escalates to the
+//! next rung of the ladder instead of latching a door shut.
 //!
 //! # The states, and every transition
 //!
@@ -44,10 +25,7 @@
 //!
 //! What no state does: refuse a refused request. A turn the provider refused for
 //! length is folded from every state - the fold its size calls for when the controller
-//! is `Armed`, the sliced fold from anywhere else, `Stuck` included. 2026-10-09 was this
-//! session wedged for thirty refusals by a switch that stood the refused door down with
-//! the pre-emptive one; `forced_gave_up` rebuilt that switch one door along, and this
-//! module is what replaced both.
+//! is `Armed`, the sliced fold from anywhere else, `Stuck` included.
 //!
 //! `Stuck` stands down only the PRE-EMPTIVE door (and the round loop's wall stop with
 //! it, the trade `auto_compact = false` always made), and it is loud - the settings row
@@ -188,8 +166,8 @@ impl WallControl {
         }
         match &self.state {
             WallState::Armed => Some(Fold::Ordinary),
-            // The pre-emptive door does not fold an unmeasured base again: the estimate
-            // is what said 1,039,055 of a base deepseek counted at 507,355.
+            // The pre-emptive door does not fold an unmeasured base again: the estimate can be
+            // twice what the provider counts.
             WallState::Awaiting { transcript: t, .. } if t == transcript => None,
             // A later fork (a manual `/compact`, a `/clear`) replaced the base the wait
             // was for; nothing will ever measure it.
@@ -349,9 +327,7 @@ mod tests {
         }
     }
 
-    /// The live case, replayed on the controller: the fold of
-    /// 941,101 was ESTIMATED at 1,039,055 - past the window - and the first round on `#t18`
-    /// measured 507,355.
+    /// A fold estimated past the window whose first round measures well under it.
     #[test]
     fn an_estimate_over_the_wall_whose_first_round_measures_well_under_it_stands_nothing_down() {
         let mut c = WallControl::default();

@@ -1,6 +1,5 @@
 //! Subagents survive a daemon restart: recorded when started, brought back when the parent
-//! is opened again - the operator: *"we should record them (session persist anyway) and
-//! restart automatically"*.
+//! is opened again.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -65,17 +64,16 @@ pub struct RecordedSpec {
 }
 
 /// Whether a recorded child is a tool's helper rather than the model's child - its record says
-/// so, or (from before helpers were marked) it was briefed as `digest`'s part reader is: *"You are
-/// reading part N of M of a longer body of text on somebody else's behalf"*.
+/// so, or (an unmarked older record) it was briefed as `digest`'s part reader is: "You are
+/// reading part N of M of a longer body of text on somebody else's behalf".
 pub fn is_helper(run: &SubagentRun) -> bool {
     RecordedSpec::from_json(&run.spec_json).is_ok_and(|r| r.helper)
         || letibot_tools::builtins::digest::is_part_reader_brief(&run.prompt)
 }
 
-/// Every recorded child's role, in the store's order - the word its spec carries, and `coder` for
-/// a record from before a role was a profile (`task`'s own default). This is what a sessions list
-/// shows for a child that is on disk: its role is in its RECORD, and the session's own row keeps
-/// the seat it will be re-seated on.
+/// Every recorded child's role, in the store's order - its spec's word, or `coder` (`task`'s
+/// default) for an older record. A sessions list shows this for a child on disk; the session's own
+/// row keeps the seat it will be re-seated on.
 pub fn recorded_roles(runs: &[SubagentRun]) -> Vec<String> {
     runs.iter()
         .map(|r| {
@@ -292,7 +290,7 @@ impl SubagentRecord {
                         .map_err(|e| e.to_string())
                 }),
                 // A row of its own: a restart must not bring this back as a child that
-                // answered, and the row keeps the answer and what died under it (R173).
+                // answered, and the row keeps the answer and what died under it.
                 TaskStatus::Killed { answer, why } => self.store.with(|s| {
                     s.settle_subagent_run(
                         &self.child,
@@ -443,7 +441,7 @@ pub fn decide(
     }
     // A tool's helper is never the model's news. Settled, its answer was read by the tool that
     // started it (or that call is gone); mid-task, nothing waits for it any more. pg-noop's twelve
-    // `digest` readers were handed to the model by a restart as *"12 subagents have finished"*.
+    // `digest` readers were handed to the model by a restart as "12 subagents have finished".
     if is_helper(run) {
         return match run.state.as_str() {
             "running" => Decision::Retire {
@@ -729,7 +727,7 @@ impl EndedIn {
     }
 
     /// The same class in as few words as a list row can hold - a clause that reads on from
-    /// *"it stopped "*, so the row says how far the child got without spending a sentence on it.
+    /// "it stopped ", so the row says how far the child got without spending a sentence on it.
     pub fn brief(&self) -> String {
         match self {
             EndedIn::Nothing => "before it wrote a single row".into(),
@@ -760,8 +758,7 @@ pub fn how_far(
     }
 }
 
-/// Whether `task_resume` may bring this child back - the explicit, one-call door (the
-/// operator *"this is what you wre running and how to restart that"*). `Ok` is its spec.
+/// Whether `task_resume` may bring this child back - the explicit, one-call door. `Ok` is its spec.
 /// Refused by name. `writer_running` is whether the daemon that wrote the record is still up.
 pub fn resumable(
     run: &SubagentRun,

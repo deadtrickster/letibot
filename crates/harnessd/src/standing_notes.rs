@@ -12,9 +12,8 @@ use letibot_tools::builtins::skill::SkillRegistry;
 // that can disagree with the index it describes.
 use letibot_tools::builtins::notes::{abstract_of, first_sentence};
 
-/// How many tokens of standing notes are injected verbatim - the operator's *"verbatim up to
-/// certain size and above it - summarized with references"*. Anchored to the smallest prompt budget
-/// this tree already records (the compaction tail's 2 000 floor); raise it with a measurement.
+/// How many tokens of standing notes are injected verbatim; above it they are summarised with
+/// references. The compaction tail's 2 000 floor; raise it with a measurement.
 pub const NOTES_BUDGET_TOKENS: usize = 2_000;
 
 /// How many headings one file may contribute to its index - without it, a file of ten thousand

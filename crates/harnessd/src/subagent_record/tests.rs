@@ -385,8 +385,8 @@ fn derived_names_are_made_unique_and_carried_ones_kept() {
 }
 
 /// One state for one child, whichever door asks: `task_result` listed
-/// `slt-current-number` as `unknown`, refused it as *"no subagent called … was started here"*
-/// and `task_resume` refused it as *"finished its task"*. The record answers both now.
+/// `slt-current-number` as `unknown`, refused it as "no subagent called … was started here"
+/// and `task_resume` refused it as "finished its task". The record answers both now.
 #[test]
 fn a_recorded_child_reads_the_same_to_task_result_and_task_resume() {
     let mut done = run("done");
@@ -740,7 +740,7 @@ fn how_far_says_where_a_child_with_no_record_stopped() {
         "the class the list calls `Answered` is the one the answer door returns as an answer"
     );
 
-    // Every shape of last row, in both sizes - the clause reads on from *"it stopped "*
+    // Every shape of last row, in both sizes - the clause reads on from "it stopped "
     // and the paragraph never loses the long form a model has been reading.
     for (item, said, brief) in [
         (

@@ -661,9 +661,8 @@ fn an_offer_skips_the_skill_whose_capability_this_seat_lacks() {
 
 // ---- The operator's own prompt, scored against the skills' keywords ----
 
-/// The build's own frontmatter, compiled in from `skills/`. The case this suite was filed on is
-/// `plugin-pane`, and a fixture standing in for its keywords would prove nothing about the words
-/// the skill publishes.
+/// The build's own frontmatter, compiled in from `skills/`: a fixture standing in for a skill's
+/// keywords would prove nothing about the words the skill publishes.
 fn built_in() -> SkillRegistry {
     SkillRegistry::new(SkillRegistry::built_in())
 }

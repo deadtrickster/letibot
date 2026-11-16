@@ -20,7 +20,7 @@ use crate::shadow::verdict::Pick;
 /// Set above words merely shared with a frontmatter: once a reader learns to ignore the line, the feature is dead.
 pub const OFFER_FLOOR: f64 = 0.18;
 
-/// How many skills one round may name. Two is the cap the operator asked for: a wall of names is a
+/// How many skills one round may name. Two: a wall of names is a
 /// list the model learns to skip, and the offer's whole value is that it is rare.
 pub const OFFERS_MAX: usize = 2;
 
@@ -295,12 +295,9 @@ impl Offers {
         }
     }
 
-    /// Compose this round's offers, or decide to say nothing - `false` is the common case.
-    ///
-    /// `text` is the blended subject the round is doing; `prompt` is the operator's newest row, or
-    /// `None` when this session has not been spoken to. A skill is offered when either score passes
-    /// [`OFFER_FLOOR`], and a name the session has already been told may be said once more - and only
-    /// by a prompt whose words are NEW - because asking again is evidence the subject never is.
+    /// Compose this round's offers, or say nothing (`false`, the common case). `text` is the round's
+    /// blended subject, `prompt` the operator's newest row. A skill is offered when either score
+    /// passes [`OFFER_FLOOR`]; a name already told may be said once more, only for a prompt's new words.
     pub fn compose(&mut self, registry: &SkillRegistry, text: &str, prompt: Option<&str>) -> bool {
         self.open.clear();
         let prompt = prompt.map(str::trim).filter(|p| !p.is_empty());

@@ -1,6 +1,5 @@
-//! A head that speaks HTTP, so a model behind harnessd can be used the way a bare
-//! llama-server is. # Why this exists The gatekeeper on this box is a llama-server: the
-//! oracle posts a brief to `/v1/chat/completions` and reads one verdict back.
+//! A head that speaks HTTP, so a model behind harnessd can be used the way a bare llama-server is:
+//! the oracle posts a brief to `/v1/chat/completions` and reads one verdict back.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};

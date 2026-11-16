@@ -180,7 +180,7 @@ pub enum Slash {
     },
     Help(String),
     /// A verb this daemon has not got: `command_<verb>` in the session's own stack is offered the line
-    /// before the sentence that has always answered one (X23). `line` is the rest of the line as
+    /// before the sentence that has always answered one. `line` is the rest of the line as
     /// typed, and `verb` is the word the export is named after.
     Unknown {
         verb: String,
@@ -614,11 +614,9 @@ impl Slash {
     }
 }
 
-/// One `/` line whose verb this daemon has not got: offered to `command_<verb>` in the session's own
-/// stack, and answered with the sentence an unknown verb has always answered when no layer takes it.
-/// A layer that traps, passes or is absent leaves exactly that sentence: the fallback is never
-/// broken by a layer, which is what the shadow gate's replay is for and what a person reading the
-/// head needs.
+/// One `/` line whose verb this daemon has not got: offered to `command_<verb>` in the session's
+/// stack, else answered with the unknown-verb sentence. A layer that traps, passes or is absent
+/// leaves exactly that sentence, so a layer can never break the fallback.
 pub fn unknown_verb(
     host: Option<&crate::plugins::PluginHost>,
     hub: Option<&std::sync::Arc<letibot_sessionlog::hub::Hub>>,
@@ -1432,8 +1430,7 @@ mod tests {
         ));
     }
 
-    /// Switching a session writes no standing choice - the bug that put a model name deepseek
-    /// rejects into the operator's box, from a scripted test run.
+    /// Switching a session writes no standing choice into the operator's `providers.toml`.
     #[test]
     fn switching_a_session_leaves_providers_toml_alone() {
         let d = std::env::temp_dir().join(format!(
@@ -1603,10 +1600,9 @@ mod tests {
     }
 }
 
-/// The supervised-labelling loop, served from the store. Deliberately not routed through
-/// the live gate, for the deadlock `answers` is shaped around. The corpus is one file per project
-/// (§ The corpus, `docs/store-split.md`): `counts` and `recent` are whole-corpus questions and
-/// sweep every project file read-only, naming the ones they could not read.
+/// The supervised-labelling loop, served from the store and not through the live gate, for the
+/// deadlock `answers` is shaped around. `counts` and `recent` are whole-corpus questions: they
+/// sweep every project file read-only and name the ones they could not read.
 pub fn gate(at: Option<&crate::config::StoreAt>, verb: &GateVerb) -> SlashReply {
     let Some(at) = at else {
         return SlashReply {

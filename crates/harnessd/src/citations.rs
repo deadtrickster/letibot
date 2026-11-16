@@ -61,10 +61,9 @@ pub fn parse_label(label: &str) -> Option<Cited> {
     })
 }
 
-/// Every fence in `text` whose label names a range, in order, whether it was written as a block
-/// or on one line: an empty one is a citation, and one labelled `note`/`suggest` is a mark whose
-/// body is the block's own text. Any other fence with something in it is the model's own code,
-/// quoted, and is left alone; an unclosed one is neither.
+/// Every fence in `text` whose label names a range, in order, block or one-line: an empty one is a
+/// citation, one labelled `note`/`suggest` is a mark whose body is the block's text. Any other
+/// fence with content is the model's own quoted code and left alone; an unclosed one is neither.
 pub fn cited_fences(text: &str) -> Vec<Cited> {
     let lines: Vec<&str> = text.lines().collect();
     let mut out = Vec::new();
@@ -158,10 +157,9 @@ fn buffered(buffers: &[Buffer], c: &Cited) -> Option<Vec<String>> {
     )
 }
 
-/// Read one citation through `read` (the session backend's own read, relative to the
-/// session's root). A file that cannot be read, a range past its end and a range longer
-/// than [`MAX_CITED_LINES`] all say so in `error`, with whatever lines there are. A range an
-/// unsaved buffer covers is read from the buffer instead: that is what the model was shown.
+/// Read one citation through `read` (the session backend's read, relative to its root). An
+/// unreadable file, a range past the end or longer than [`MAX_CITED_LINES`] say so in `error`. A
+/// range an unsaved buffer covers is read from the buffer: that is what the model was shown.
 pub fn snapshot(
     c: &Cited,
     buffers: &[Buffer],

@@ -1,10 +1,9 @@
 //! The merge queue's review panel, on a GitHub pull request: the members judge, the gatekeeper
-//! decides, and one GitHub review comes out of the verdicts (R118's third piece).
+//! decides, and one GitHub review comes out of the verdicts.
 //!
-//! A member is any reviewer that answers the queue's [`Verdict`] - R116's headless `claude -p` run
-//! is one ([`Claude`]), and a test stands in another, which is what makes the panel testable with no
-//! `claude` binary and no network. [`decide`] is the gatekeeper's rule over the panel's verdicts, and
-//! it is the same one the merge queue reads: a verdict is `accept`, `reject` or `needs_human`.
+//! A member is any reviewer that answers the queue's [`Verdict`]: a headless `claude -p` run
+//! ([`Claude`]), or a test's stand-in, so the panel is testable with no `claude` and no network.
+//! [`decide`] is the gatekeeper's rule, the same one the merge queue reads.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -67,10 +66,9 @@ pub fn decide(decisions: &[Decision]) -> Result<Decision, String> {
     Ok(Decision::Accept)
 }
 
-/// One GitHub review out of a panel's verdict: the decision first, every member's reasons, and a
-/// reason spelled `path:LINE: what is wrong` as an inline comment on that line.
-/// The event is always `COMMENT`: an unattended reviewer neither approves nor blocks, so the verdict
-/// reaches a person as words rather than as GitHub's own gate.
+/// One GitHub review out of a panel's verdict: the decision, every member's reasons, and a reason
+/// spelled `path:LINE: what is wrong` as an inline comment. Always `COMMENT`: an unattended reviewer
+/// neither approves nor blocks, so the verdict reaches a person as words.
 pub fn review_of_verdict(verdict: &Verdict) -> Review {
     let mut body = format!("verdict: {}", verdict.decision.as_str());
     if verdict.reasons.is_empty() {
@@ -111,7 +109,7 @@ pub struct Panel {
     /// Where a repository is cloned from. GitHub's own URL unless a caller says otherwise, which is
     /// what a test's local repository needs.
     url: Arc<dyn Fn(&str) -> String + Send + Sync>,
-    /// The queue's `review_verdict` floor (K5), when the daemon has one: a pull request is judged
+    /// The queue's `review_verdict` floor, when the daemon has one: a pull request is judged
     /// by the same policy a branch is, so a floor that parks a branch parks a pull request.
     floor: Option<Arc<dyn ReviewFloor>>,
 }
@@ -164,7 +162,7 @@ impl Panel {
         }
         let decisions: Vec<Decision> = verdicts.iter().map(|(_, v)| v.decision).collect();
         let decided = decide(&decisions)?;
-        // The same floor a branch's verdict goes through (K5): the stricter of the two rungs, so it
+        // The same floor a branch's verdict goes through: the stricter of the two rungs, so it
         // can park what the panel would have accepted and can never raise a member's reject.
         let decision = letibot_tools::gatekeeper::floored(
             decided,
@@ -277,10 +275,9 @@ pub fn request_of(job: &Job<'_>) -> ReviewRequest {
     }
 }
 
-/// R116's reviewer as one member: a headless `claude -p` run in the pull request's own tree, whose
-/// `structured_output` is the queue's verdict. The prompt is the queue's own, told which door the
-/// verdict goes through - a run holds no `review_verdict` tool, so telling it to call one is telling
-/// it to fail.
+/// A headless `claude -p` run in the pull request's own tree as one member; its
+/// `structured_output` is the queue's verdict. The prompt says which door the verdict goes through,
+/// because a run holds no `review_verdict` tool.
 pub struct Claude {
     runs: Arc<claude::Runs>,
     settings: claude::Settings,
@@ -367,7 +364,7 @@ impl Member for Claude {
     }
 
     fn answer(&mut self, _session: &Session, _question: &str) -> Option<Result<String, String>> {
-        // R116's run answers with a verdict and nothing else: `read_stdout` reads the structured
+        // A `claude -p` run answers with a verdict and nothing else: `read_stdout` reads the structured
         // output, so a run asked a question in prose is a failed run and not an answer. A mention
         // is answered by a member that holds a conversation, and no kind here does yet.
         None

@@ -1,4 +1,4 @@
-//! One turn tail for every door - `TODO.md`.
+//! One turn tail for every door.
 
 use std::sync::Arc;
 
@@ -31,9 +31,8 @@ pub enum Door {
     OperatorShell,
     /// The turn after the operator's `/reseat`: the model is told its prompt was rebuilt.
     Reseat,
-    /// The turn the daemon owes after it moved the session off a model that was out - the
-    /// operator's ruling: *"when it finally applied the turn didnt continue"*. The
-    /// model that refused has already been replaced.
+    /// The turn the daemon owes after it moved the session off a model that was out, so the
+    /// turn continues. The model that refused has already been replaced.
     Fallback,
     /// The turn a limit park owes, opened at the reset: the provider named when its limit lifts and
     /// the daemon waited for it rather than failing the turn.
@@ -57,7 +56,7 @@ impl Door {
     }
 
     /// Somebody spoke to the session: a new idle period, and the plan-check may be made again
-    /// (*"but certainly not after my message"* - the check is earned back by being spoken to).
+    /// (the check is earned back by being spoken to).
     fn is_spoken_to(&self) -> bool {
         matches!(self, Door::Prompt | Door::Message)
     }
@@ -138,9 +137,8 @@ fn one_turn(
     if door.is_spoken_to() {
         owner.spoken_to(h);
     }
-    // The wall is checked BEFORE the send - measured 2026-10-02: a resumed session sent
-    // 1,463,497 tokens against a 1,048,576 window, because every check ran after a turn and a
-    // reopened session had taken none. Before the clock: the compaction is tidying, not a round.
+    // The wall is checked before the send, or a reopened session that has taken no turn could
+    // send more than its window. Before the clock: the compaction is tidying, not a round.
     if h.compact_if_at_the_wall() {
         owner.compacted(h);
     }
@@ -159,22 +157,20 @@ fn one_turn(
     };
     let before = h.transcript_id().to_string();
     let mut out = settle(h, owner, out);
-    // .E1: a continuation says "continue from the summary above", so it follows only a turn
+    // A continuation says "continue from the summary above", so it follows only a turn
     // whose wall was actually compacted - a fork, a new transcript.
     let mut compacted = h.transcript_id() != before;
     // A wall that compacted is not the end of the prompt. Each continuation is a whole turn
-    // with this same settle. Room is MEASURED, not read off a flag (the no-progress guard
-    // turns `auto_compact` off without freeing anything)
+    // with this same settle. Room is measured, not read off a flag (the no-progress guard
+    // turns `auto_compact` off without freeing anything).
     let mut walls = 0;
     while is_wall(&out) {
         h.measure_resident();
         // Not closed on an estimate. A metered base the provider has not counted is the fork's
-        // estimate, and the continuation's first round is what measures it: the estimate said
-        // ≈ 1,039,055 for a base deepseek counted at 507,355.
+        // estimate, and the continuation's first round is what measures it.
         let room = h.base_is_unmeasured() || h.config().room_for_next_turn(h.ledger_len() as u64);
-        // Only the wall that ends the prompt is its failure - *"there was a wall of red
-        // 'compaction was attempted blabla'"*: each wall the daemon carried on from was published
-        // as the turn's failure, a red footer on a turn that had not ended.
+        // Only the wall that ends the prompt is its failure; a wall the daemon carries on from is
+        // not a red footer on a turn that has not ended.
         match wall_goes_on(compacted, walls, room) {
             WallNext::Fails => {
                 if let Err(e) = &out {
@@ -249,10 +245,9 @@ fn settle(
         && !is_wall(&out)
     {
         match e {
-            // A park is not a failure of the work: the provider put a time on its limit and the same
-            // turn is owed again at that instant. The head still needs a terminal frame or its
-            // spinner stays up for the session's life, and `TurnInterrupted` is the only event that
-            // ends a turn without a verdict - the park's own warning has the news.
+            // A park is not a failure: the same turn is owed again when the provider's limit lifts.
+            // The head still needs a terminal frame or its spinner stays up, and `TurnInterrupted`
+            // is the only event that ends a turn without a verdict; the park's warning has the news.
             HarnessError::LimitParked { said } => {
                 let park = h.limit_park().map(|p| letibot_sessionlog::TurnPark {
                     model: p.model.clone(),

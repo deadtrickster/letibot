@@ -58,8 +58,8 @@ pub enum Owner {
         daemon: Daemon,
     },
     /// Its OWNER row says the owner's compute is gone (`closed` and after): a top-level session
-    /// started with a VM has a `session` row and no `subagent_run` row, which is the case R193 was
-    /// filed on and the one this reaper used to be blind to. `since_ms` is when that state began.
+    /// started with a VM has a `session` row and no `subagent_run` row. `since_ms` is when that
+    /// state began.
     Closed {
         owner: String,
         state: String,
@@ -237,8 +237,8 @@ pub struct Holder {
 }
 
 impl Holder {
-    /// *"fccode1: firecracker pid 861706, run … started …; owner `s-…` (running under daemon
-    /// d-404553, which is gone) - reaped"* - one line of the capacity notice.
+    /// "fccode1: firecracker pid 861706, run … started …; owner `s-…` (running under daemon
+    /// d-404553, which is gone) - reaped" - one line of the capacity notice.
     pub fn line(&self) -> String {
         let (Verdict::Reap(why) | Verdict::Keep(why)) = &self.verdict;
         format!(
@@ -253,12 +253,9 @@ impl Holder {
     }
 }
 
-/// The owner of a VM, read off the store.
-///
-/// Two records can name one: a `subagent_run` row (a child), and the newer `owner` row every
-/// session writes at open. The second is the one that was missing: a top-level session started
-/// with a VM has a `session` row and NO `subagent_run`, so the reaper here judged it
-/// `Unrecorded` and kept a VM nobody was running (R193).
+/// The owner of a VM, read off the store: a `subagent_run` row (a child), or the `owner` row every
+/// session writes at open. A top-level session started with a VM has only the second, and without
+/// it would be judged `Unrecorded`.
 pub fn owner(
     store: &Store,
     child: Option<String>,

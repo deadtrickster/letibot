@@ -1,9 +1,8 @@
-//! `letibot-migrate-split` - R129's migration to the split store (`docs/store-split.md`): the whole
+//! `letibot-migrate-split` - the migration to the split store (`docs/store-split.md`): the whole
 //! file in one offline pass, one project key at a time, or the last step that renames what is left.
 //!
-//! It refuses to run under a live writer, because the pass copies the rows a daemon is holding: the
-//! store's lease is the `session_writer` row taken when a session is opened
-//! (`crates/harnessd/src/writer.rs`), and a claim is live while the pid it names is running.
+//! It refuses to run under a live writer (a `session_writer` row whose pid is running), because the
+//! pass copies the rows a daemon is holding.
 
 use std::path::{Path, PathBuf};
 

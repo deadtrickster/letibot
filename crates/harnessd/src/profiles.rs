@@ -2,9 +2,8 @@
 //!
 //! A profile is a file (`crates/tools/src/profiles.rs`); a SEAT is what a daemon can open (its
 //! backend class, its adjudicator need, its plan mode). A profile names the seat it is seated on,
-//! so `--role explore` and `task {role: "explore"}` reach the same table and one mechanism answers
-//! both. A name that is a seat's own (`--role m1`) resolves to a profile that is nothing but that
-//! seat - the behaviour every session had before profiles existed.
+//! so `--role explore` and `task {role: "explore"}` reach the same table. A seat's own name
+//! (`--role m1`) resolves to a profile that is nothing but that seat.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -15,10 +14,8 @@ use letibot_tools::profiles::{Profile, Profiles};
 use crate::config::{Config, Seat};
 
 /// Every profile this box has, read from the session's workspace and the operator's config dir.
-///
-/// Read per open and per spawn, so a file edited between two children is in force for the second.
-/// Ten small files and a `read_dir`; the profile is a fact about the tree, and a session that
-/// cached it would be a session working to a policy the operator had replaced.
+/// Read per open and per spawn, never cached, so a file edited between two children is in force
+/// for the second.
 pub fn table(cfg: &Config) -> Profiles {
     Profiles::load(&cfg.workspace, config_dir().as_deref())
 }
@@ -29,11 +26,9 @@ fn config_dir() -> Option<PathBuf> {
     file.parent().map(|p| p.to_path_buf())
 }
 
-/// The profile a name resolves to: a file this box has, or - when the name is a seat's own, or one
-/// of the seat's aliases (`m1`, `plan`, `keeper`) - a profile that is nothing but that seat.
-///
-/// The refusal names both tables. A name nobody answers to is a fact about the call, and a model
-/// that asked for `reviewer` on a box whose project renamed it needs the list, not a typo report.
+/// The profile a name resolves to: a file this box has, or, for a seat's own name or alias (`m1`,
+/// `plan`, `keeper`), a profile that is nothing but that seat. The refusal names both tables, so a
+/// model that asked for a renamed role gets the list.
 pub fn resolve(table: &Profiles, name: &str) -> Result<Profile, String> {
     if let Some(row) = table.find(name)? {
         return Ok(row);
@@ -70,9 +65,8 @@ pub fn for_session(cfg: &Config) -> Profile {
 }
 
 /// The word a session's row shows for its role: the profile it was seated as, else its seat's
-/// name. The review queue's own session is the one seat whose ROLE table is not its seat's
-/// ([`crate::sessions::gatekeeper::SEAT`] says why), so it says what it is seated as. A one-line
-/// answer and not a profile read, because a row must not cost a `read_dir`.
+/// name. The review queue's session says what it is seated as ([`crate::sessions::gatekeeper::SEAT`]).
+/// No profile read, because a row must not cost a `read_dir`.
 pub fn role_name(cfg: &Config) -> String {
     if crate::sessions::gatekeeper::is_the_queue_session(cfg) {
         return "review_queue".into();
@@ -101,12 +95,9 @@ pub fn offers(table: &Profiles, profile: &Profile) -> Vec<RoleOffer> {
         .collect()
 }
 
-/// What this seat may reach through `task`: the roles its profile lets it start, with the one
-/// line each, and - for the review queue's own session - the children it was handed instead.
-///
-/// One function, because the description `task` writes and the refusal its spawn makes must be
-/// the same list: a seat told about a role it cannot start is a prompt contradicting a tool, and a
-/// seat refused a role its description promised is worse.
+/// What this seat may reach through `task`: the roles its profile lets it start, one line each,
+/// or, for the review queue's session, the children it was handed. One function, so `task`'s
+/// description and its spawn's refusal are the same list.
 pub fn reach(cfg: &Config, table: &Profiles) -> letibot_tools::builtins::task::TaskReach {
     use letibot_tools::builtins::task::{RoleOffer, TaskReach};
     if crate::sessions::gatekeeper::is_the_queue_session(cfg) {
@@ -214,8 +205,7 @@ mod tests {
         );
     }
 
-    /// A box with no profile directory and a session with no overlay: the seat's own table, which is
-    /// what every session got before this existed.
+    /// A box with no profile directory and a session with no overlay: the seat's own table.
     #[test]
     fn a_session_with_no_profile_is_still_its_seat() {
         let cfg = a_config();

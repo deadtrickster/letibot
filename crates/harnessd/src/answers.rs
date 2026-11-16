@@ -349,8 +349,7 @@ impl Answers {
                 Ok((a, by))
             }
             // The other vocabulary's reply. `Hub::submit` refuses it at the door, so it is
-            // unreachable through the daemon; calling it an answer would be the defect the
-            // two types exist to prevent.
+            // unreachable through the daemon, and it is never called an answer.
             Waited::Answered {
                 reply: Reply::Permission { .. },
                 by,
@@ -942,8 +941,8 @@ fn settle(
                 option_id: option_id.clone(),
             },
             by: format!("human:{by}"),
-            // The operator's own words reach the model. `deny_and_tell` is labelled *"Deny and tell
-            // the model why"*, and the why went nowhere: the basis said only which button was pressed.
+            // The operator's own words reach the model: `deny_and_tell` promises to tell the model
+            // why, so the basis carries the note and not only which button was pressed.
             basis: match note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
                 Some(why) => format!("{by} chose `{option_id}` at the head: \"{why}\""),
                 // A `deny_and_tell` with nothing typed is a denial with no reason given, and
@@ -1376,9 +1375,8 @@ mod escalate_tests;
 mod tell_tests {
     use super::*;
 
-    /// The operator's words reach the model: `deny_and_tell` is labelled *"Deny, and tell the
-    /// model why"* and the why went nowhere, so a refusal with a reason and one without were
-    /// the same sentence.
+    /// The operator's words reach the model: a refusal with a reason and one without are
+    /// different sentences.
     #[test]
     fn a_told_denial_carries_the_reason_and_an_untold_one_says_it_has_none() {
         let r = tests::request();

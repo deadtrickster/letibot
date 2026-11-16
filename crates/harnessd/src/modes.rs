@@ -432,9 +432,8 @@ mod tests {
         assert_eq!(ModeStore::load(&d.path()).consent(&theirs), Some(when));
     }
 
-    /// Two daemons share the store, and neither drops the other's row - the operator
-    /// reported *"and again peerdb allow-all lost after restart/reseat"*. Each workspace has
-    /// its own daemon.
+    /// Two daemons share the store, and neither drops the other's row across a restart or
+    /// reseat. Each workspace has its own daemon.
     #[test]
     fn two_daemons_writing_the_store_keep_each_others_rows() {
         let d = db("two-daemons");

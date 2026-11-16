@@ -304,9 +304,8 @@ impl ChildTodos for ParentTodos {
                         .map(crate::harness::Harness::todo_entry)
                         .collect(),
                 });
-                // AND THE CHILD'S OWN READER IS WOKEN, because a session's board move arms its idle
-                // plan-check - *"childs being just a session should get nags"*. A parked child is blocked
-                // in `Hub::take_own_work_until` and a publish alone does not open that door
+                // And the child's own reader is woken: a board move arms its idle plan-check, and a
+                // parked child is blocked in `Hub::take_own_work_until`, which a publish alone does not open.
                 hub.wake_its_own_reader();
             }
         }

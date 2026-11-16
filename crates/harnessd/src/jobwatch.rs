@@ -41,8 +41,8 @@ pub fn dead_soon_note(w: &letibot_tools::exec::DeadWarning) -> String {
     )
 }
 
-/// Which kind of backgrounded thing this is. A subagent *is* a background job (the
-/// operator's ruling), so the two share one queue one bell and one wake; they differ only
+/// Which kind of backgrounded thing this is. A subagent is a background job, so the two share
+/// one queue, one bell and one wake; they differ only
 /// in how you wait and what a settlement is called.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackgroundKind {
@@ -389,7 +389,7 @@ pub struct JobWatchers {
     read: Arc<Mutex<ReadRecord>>,
     /// Snapshots of the tree a background job was spawned into, keyed by handle: a `bash` call hands
     /// one over at the spawn and the watcher reads it at the settlement, because only the watcher sees
-    /// both ends of a job (R161).
+    /// both ends of a job.
     sweeps: Arc<Mutex<HashMap<String, letibot_tools::detect::Sweep>>>,
 }
 
@@ -459,7 +459,7 @@ impl JobWatchers {
 
     /// These jobs' substrate was taken down under them, before their watchers could see them end.
     /// The exit a client reports after its VM is gone is the teardown's and not the job's own, so
-    /// the watcher that settles one of these says the kill instead (R173).
+    /// the watcher that settles one of these says the kill instead.
     pub fn killed_with_the_substrate(&self, handles: impl IntoIterator<Item = String>) {
         let mut g = self.killed.lock().expect("job watchers");
         g.extend(handles);
@@ -1078,8 +1078,8 @@ impl JobWatchers {
     }
 
     /// Stop every watcher this set has spawned, and hand up what this session will never drain.
-    /// Per set, and the set is per session - see [`JobWatchers::shares_tree`] for the defect
-    /// that came of sharing this across a tree.
+    /// Per set, and the set is per session - see [`JobWatchers::shares_tree`] for why it is not
+    /// shared across a tree.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Release);
         let pending: Vec<JobCompletion> = {
@@ -1238,7 +1238,7 @@ struct SettlementQueue {
     /// after the harness has had its say.
     recorder: Option<JobRecorder>,
     /// The spawn snapshots this session's tools handed over, keyed by handle: read here because the
-    /// settlement is the last moment a job's writes are this job's own (R161).
+    /// settlement is the last moment a job's writes are this job's own.
     sweeps: Arc<Mutex<HashMap<String, letibot_tools::detect::Sweep>>>,
     /// Handles whose substrate was taken down under them - see
     /// [`JobWatchers::killed_with_the_substrate`]. Read at the settle.
@@ -1247,7 +1247,7 @@ struct SettlementQueue {
 
 impl SettlementQueue {
     /// Was this job's substrate taken down under it? Then the exit its client reports is the
-    /// teardown's and not the job's own, so the state the settlement carries is the kill (R173).
+    /// teardown's and not the job's own, so the state the settlement carries is the kill.
     fn killed_with_the_substrate(&self, job: &str) -> bool {
         self.killed.lock().map(|g| g.contains(job)).unwrap_or(false)
     }
@@ -1680,7 +1680,7 @@ fn watch_one(
                     .unwrap_or_else(|| "gone".to_string());
                 // A substrate taken down under it: whatever its client exited with is what the
                 // teardown left behind, so the settlement carries the kill instead - and never an
-                // `exited 0` that reads as a finish (R173).
+                // `exited 0` that reads as a finish.
                 let word = if queue.killed_with_the_substrate(&job) {
                     crate::harness::VM_LOST.to_string()
                 } else {
@@ -1721,7 +1721,7 @@ fn watch_one(
                     .unwrap_or_default();
                 // What it changed while it ran, from the snapshot taken at the spawn. Read here
                 // because this is the last moment it is true, and said as WHEN and not WHO: another
-                // call may have written the same tree in between (R161).
+                // call may have written the same tree in between.
                 let changes = queue.changes_of(&job);
                 if let Some(found) = &changes {
                     if !detail.is_empty() {
@@ -1838,7 +1838,7 @@ fn watch_task(
                 break;
             }
             // Its turn ended and a job of it was killed with the substrate: the parent is told
-            // the same news a failure is, and the sentence carries what died (R173).
+            // the same news a failure is, and the sentence carries what died.
             TaskStatus::Killed { why, .. } => {
                 let slug = runner.slug_of(&job);
                 settled_here("killed", first_line(&why), &job, slug, &queue, &settled);

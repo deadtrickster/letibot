@@ -1,7 +1,6 @@
-//! The scope probe the launcher left running (R274). A user manager that did not answer within
-//! the launcher's bound did not stop the session: the daemon started without its own scope, and
-//! the probe kept going. When it ends, every session is told what systemd said and what that
-//! means for this daemon - a warning on its log and a notice at its next wake.
+//! The scope probe the launcher left running when the user manager did not answer in time and the
+//! daemon started without its own scope. When it ends, every session is told what systemd said: a
+//! warning on the log and a notice at its next wake.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};

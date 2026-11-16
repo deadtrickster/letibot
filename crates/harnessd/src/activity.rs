@@ -15,8 +15,7 @@ use crate::jobwatch::JobWatchers;
 /// function and the tests assert it without a session.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Facts {
-    /// A PROMPT is in flight - not a round. See the module header: the engine's round pair is
-    /// the defect, and this is the span that covers every round of one prompt.
+    /// A prompt is in flight - not a round: the span that covers every round of one prompt.
     pub turn: bool,
     /// That round ended and its calls are still running.
     pub calls: bool,

@@ -34,8 +34,8 @@ fn caller(embedder: &Arc<Embedder>) -> Offers {
     Offers::new().with_tier(Some(Tier::over(Arc::clone(embedder))))
 }
 
-/// The case the caller was filed for: four of fifteen packages found their scope already fixed on
-/// main, and a commit subject is where that is written down.
+/// A package whose scope is already fixed on main gets the offer: a commit subject is where that
+/// is written down.
 #[test]
 fn a_brief_a_commit_already_did_gets_the_offer() {
     let (_m, _d, embedder) = fixture::model("commit");

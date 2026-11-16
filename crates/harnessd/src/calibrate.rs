@@ -1,6 +1,6 @@
-//! Replaying the corpus against the guard, which is how an oracle's scope stops being a
-//! grant and becomes a measurement - [`letibot_tools::authorise::OracleScope`] has always
-//! said that widening it is *"a configuration change with a measurement attached"*, and
+//! Replaying the corpus against the guard, which is how an oracle's scope stops being a grant and
+//! becomes a measurement: widening an [`letibot_tools::authorise::OracleScope`] is a configuration
+//! change with a measurement attached.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -212,8 +212,8 @@ pub fn replay(cfg: &Config, store: &Path, limit: usize) -> Result<Report, String
 }
 
 /// The rows to replay, taken once. `--compare` runs several arms over "the same" calls, and
-/// the store is being written by a live daemon while it does: reading per arm gave each one
-/// a different row set (measured: 26, 28, 34 37), which is not a comparison of anything.
+/// the store is being written by a live daemon while it does, so reading per arm would give each
+/// one a different row set.
 pub fn rows_to_replay(store: &Path, limit: usize) -> Result<Vec<StoredAdjudication>, String> {
     let db = Store::open(store).map_err(|e| format!("opening {}: {e}", store.display()))?;
     let rows = db
@@ -716,7 +716,7 @@ mod tests {
     #[test]
     fn reach_is_floored_by_count_and_capped_below_external() {
         use EffectScope::*;
-        // Two agreed rows at external - the bug that earned it. Capped, and too few.
+        // Two agreed rows at external. Capped, and too few.
         let two_ext = report(vec![
             row(Intent::ReadFile, External, true, true),
             row(Intent::ReadFile, External, true, true),

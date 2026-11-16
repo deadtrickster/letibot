@@ -159,7 +159,7 @@ fn views(hub: &Arc<Hub>) -> Vec<(String, Value)> {
         .collect()
 }
 
-/// **The target's first sentence.** A scope `letibot attach github` asked the daemon to hold is in
+/// The target's first sentence. A scope `letibot attach github` asked the daemon to hold is in
 /// the feed, and `/pane github/github` draws that scope - not `no scope is attached`.
 #[test]
 fn the_daemon_answers_the_github_feed_for_an_attached_scope() {
@@ -218,7 +218,7 @@ fn the_daemon_answers_the_github_feed_for_an_attached_scope() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// **The target's last sentence.** With `post` off, a review is a draft on the row and not one
+/// The target's last sentence. With `post` off, a review is a draft on the row and not one
 /// review leaves the box - whatever else the seat did.
 #[test]
 fn nothing_posts_with_post_off() {
@@ -252,7 +252,7 @@ fn nothing_posts_with_post_off() {
     assert_eq!(feed["posting"], json!(false));
 }
 
-/// **The target's fourth sentence.** A pull request whose words are like an open todo row or a
+/// The target's fourth sentence. A pull request whose words are like an open todo row or a
 /// running session's brief is offered as one to watch - through the daemon's own lexical scorer.
 #[test]
 fn a_pull_request_like_an_open_todo_is_offered() {

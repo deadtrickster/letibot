@@ -14,9 +14,8 @@ use crate::standing_notes;
 use letibot_embeddings::Tier;
 use letibot_tools::similarity::Corpus;
 
-/// The score a note has to reach before it is offered at all - the hint's floor, because *the
-/// first time a reader learns to ignore the hint line, the feature is dead*. MEASURED and moved to
-/// 0.18 from the take-up log: nothing below 0.183 was ever taken. Tune it from that ratio.
+/// The score a note has to reach before it is offered at all, so a reader never learns to ignore
+/// the hint line. Set from the take-up log, where nothing below it was taken; tune it from that.
 pub const OFFER_FLOOR: f64 = 0.18;
 
 /// How many characters of the subject are scored, taken from the most recent end. A cap and not a

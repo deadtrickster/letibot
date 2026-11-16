@@ -120,10 +120,9 @@ impl Held {
     }
 }
 
-/// Everything a session is owed, in arrival order: the room's lines keep the order the room's
-/// reader queued them in among themselves (which is `seq` order), and a result takes its own place
-/// by when it settled. The sort is stable, so two things held at the same instant keep the order
-/// they were held in.
+/// Everything a session is owed, in arrival order: room lines in the reader's queue order (`seq`
+/// order), a result by when it settled. The sort is stable, so two things held at the same instant
+/// keep the order they were held in.
 pub fn in_arrival_order(room: Vec<RoomLine>, results: Vec<JobCompletion>) -> Vec<Held> {
     let mut all: Vec<Held> = results.into_iter().map(Held::Result).collect();
     all.extend(room.into_iter().map(Held::Room));
@@ -138,10 +137,9 @@ pub fn arrivals<T>(items: Vec<T>, at: impl Fn(&T) -> SystemTime) -> Vec<T> {
     items
 }
 
-/// One line per message. A room line can be queued twice - the live push and a reconnect's replay,
-/// a mention and the room it was said in - and the model reads a message once however many paths
-/// carried it. The pen drops the second copy at the push; this is the door's own guard, so a batch
-/// built from two pens cannot say a message twice either.
+/// One line per message. A room line can be queued twice (live push and replay, a mention and its
+/// room), and the model reads a message once. The pen drops the copy at the push; this is the
+/// door's own guard, so a batch built from two pens cannot say a message twice either.
 pub fn once_each(lines: Vec<RoomLine>) -> Vec<RoomLine> {
     let mut seen: Vec<(String, u64)> = Vec::new();
     let mut out = Vec::with_capacity(lines.len());

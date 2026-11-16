@@ -152,7 +152,7 @@ fn a_panels_verdicts_become_one_review() {
     assert_eq!(review.comments[0].body, "this leaks the handle");
 }
 
-/// A `review_verdict` layer parks a pull request the panel would have accepted (K5): the floor is
+/// A `review_verdict` layer parks a pull request the panel would have accepted: the floor is
 /// applied to the panel's own decision, so a project's review policy governs a PR as it governs a
 /// branch - and it can never raise a member's `reject` to an accept.
 #[test]
@@ -376,7 +376,7 @@ fn a_repository(dir: &TempDir, name: &str) -> (PathBuf, String) {
     (repo, url)
 }
 
-/// **The target's third sentence**: a review runs the panel, and its verdict is ONE review draft on
+/// The target's third sentence: a review runs the panel, and its verdict is ONE review draft on
 /// the row - with the tree the panel cut from the pull request's own mirror handed to the member.
 #[test]
 fn a_review_runs_the_panel_and_its_verdict_becomes_one_review_draft() {
@@ -432,7 +432,7 @@ fn a_review_runs_the_panel_and_its_verdict_becomes_one_review_draft() {
     assert!(seen[1].contains("load the widget once"), "{seen:?}");
 }
 
-// ===== R116's reviewer as one member =====
+// ===== a headless Claude reviewer as one member =====
 
 /// A stub `claude`: it appends its arguments to `argv.txt` in the tree it was started in and then
 /// prints the result object the headless docs give.
@@ -452,7 +452,7 @@ fn a_claude_stub(dir: &TempDir, structured: &str) -> PathBuf {
     path
 }
 
-/// R116's reviewer is one member of the panel: the run's `structured_output` is the queue's verdict,
+/// A headless Claude reviewer is one member of the panel: the run's `structured_output` is the queue's verdict,
 /// the prompt is the queue's own told which door to answer through, and the first run carries no
 /// `--resume` because there is no conversation yet.
 #[test]

@@ -1,7 +1,7 @@
 //! A stretch of this project's conversation that the prompt no longer carries, offered at the TAIL
 //! of the request - never the prefix (a prefix change re-prefills) and never a row. Earned by the
-//! operator referring back or by a score over the floor, and silent otherwise: a line learned to be
-//! ignored is a feature that is dead.
+//! operator referring back or by a score over the floor, and silent otherwise, so it is not learned
+//! to be ignored.
 //!
 //! What it points at is `transcript` or `digest`, and the `match` it fills in is a term the row really
 //! carries - `transcript`'s `match` is a substring, not a bag of words.
@@ -543,13 +543,9 @@ pub fn operator_text(items: &[TranscriptItem]) -> String {
     String::new()
 }
 
-/// One unit of a transcript: a person's turn and the reply it got, as the index keeps them. The
-/// reply is the model's own words and not its reasoning or a tool's output: a unit is what was
-/// SAID about the work, and the payloads of a turn would swamp it.
-///
-/// `rows` is `(seq, kind, item_json, at_ms)` in `seq` order, which is what the scan reads. A unit's
-/// id names its transcript as well as its seq, because a fork keeps its parent's rows: seq 0 exists
-/// in every generation of one session, and a key without the transcript would fold them together.
+/// One unit of a transcript: a person's turn and the model's reply in words (no reasoning, no tool
+/// output, which would swamp it). `rows` is `(seq, kind, item_json, at_ms)` in `seq` order. A unit's
+/// id names its transcript too, because a fork keeps its parent's rows and seq 0 recurs.
 pub fn units(
     rows: &[(u32, String, String, i64)],
     session: &str,

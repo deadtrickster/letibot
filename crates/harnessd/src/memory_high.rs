@@ -1,4 +1,4 @@
-//! The two memory bounds G5 puts ABOVE a job's cap (`docs/lifecycle.md` d.7): `memory.high` on an
+//! The two memory bounds above a job's cap (`docs/lifecycle.md` d.7): `memory.high` on an
 //! owner's cgroup, and `MemoryHigh` on `letibot.slice`. Both are throttles - the kernel reclaims
 //! under them and kills nothing - which is why the box gets one and only a job gets `memory.max`.
 //!

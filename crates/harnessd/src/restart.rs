@@ -1,73 +1,31 @@
-//! A daemon restart, made as painless as it can be - what a session was running when its
-//! daemon (harnessd) stopped, brought back or reminded when a daemon opens it again.
+//! A daemon restart - what a session was running when its daemon stopped, brought back or reminded
+//! when a daemon opens it again.
 //!
-//! The operator's rule: restore agents and monitors by default and remind about jobs, but past a
-//! threshold - *"more than 1 hours after the stop"* - simply remind, saying what was running.
+//! Only a daemon stop triggers it. Every record is stamped with the instance that wrote it
+//! (`Registry::instance`), so a session opened by the daemon that already holds its records (a head
+//! attaching, a `/resume`, a parked child) finds nothing of its own. Each record acted on is
+//! re-stamped or closed.
 //!
-//! # Only a daemon stop triggers it
+//! The down time comes from the previous daemon's `daemon_life` row ([`Lifeline`]): an orderly stop
+//! wrote its exact time, and after a crash the last heartbeat is the latest moment it is known to
+//! have been alive, so the down time can be up to one [`BEAT`] too long and the notice says so. It is
+//! measured from the stop to the session's open, not to the daemon's start, so a session opened
+//! hours later does not resume children on a stale tree. With no life row the stop is
+//! [`Stopped::Unknown`] and said to be, never "down 0s".
 //!
-//! Every record is stamped with the instance that wrote it (`Registry::instance`), so a session
-//! opened by the daemon that already holds its records - a head attaching, a `/resume`, a parked
-//! child - finds nothing of its own. Each record acted on is re-stamped or closed as it is.
+//! Under the threshold (`Config::restore_within`): mid-task subagents are resumed
+//! (`crate::subagent_record`), monitors are declared again with the call that declared them (one that
+//! cannot be is reported, not dropped), and jobs are not re-run, because running a command twice can
+//! do harm - the model is reminded of each ([`job_line`]). Over it, or with an unknown down time,
+//! nothing is restored and the model gets one reminder turn with the call that brings each thing
+//! back. The warning is `restart_restored` or `restart_reminded` ([`Outcome`]).
 //!
-//! # How long the daemon was down
-//!
-//! From the previous daemon's `daemon_life` row ([`Lifeline`]): an orderly stop wrote its exact
-//! time, and after a crash the last heartbeat is the latest moment it is KNOWN to have been alive
-//! so the down time can be up to one [`BEAT`] too long and the notice says so.
-//!
-//! The threshold is measured from the STOP to the moment the session is OPENED, not to
-//! the daemon's start: a session opened four hours after the stop would otherwise resume its
-//! children on the tree they were on four hours before. When the open is over a minute late the
-//! notice names both intervals.
-//!
-//! With no life row at all the stop is UNKNOWN, and is said to be - a daemon that kept no
-//! record did not stop "0s ago", and *"down 0s (estimated from nothing)"* is the wall the operator
-//! called hilarious ([`Stopped::Unknown`]).
-//!
-//! # Under the threshold (`Config::restore_within`, default one hour)
-//!
-//! * subagents that were mid-task are resumed (`crate::subagent_record`)
-//! * monitors are declared again with the call that declared them - same name, condition
-//!   owner and TTL - and one that cannot be re-established is reported, not dropped
-//! * jobs are NOT re-run (running a command twice can do harm) - the model is reminded of
-//!   each ([`job_line`]).
-//!
-//! # Over it - or not known to be under it
-//!
-//! Nothing is restored; an unknown down time counts as over the threshold, because restoring is
-//! the act that needs the stop to have been recent. The model gets one reminder turn listing what
-//! was running and the call that brings each back. The operator's warning is `restart_restored`
-//! when something WAS restored and `restart_reminded` otherwise ([`Outcome`]).
-//!
-//! # And a restart with nothing running is said too
-//!
-//! As a clock: the model's sense of time went through a stop and a start, and only the daemon
-//! knows when ([`nothing_running`]), said once per (session, restart)
-//!
-//! ```text
-//! [restart] the daemon came back at 2026-10-12 08:10:56 UTC (down 1s, stopped at 2026-10-12
-//! 08:10:55 UTC): nothing was running
-//! ```
-//!
-//! The two cases take different doors. Something was running ⇒ the wake that continues it
-//! carries the notice. Nothing was ⇒ the sentence is for the clock alone, filed into the session
-//! and read at the next turn, NEVER a turn of its own: a generation spent working out that there
-//! is nothing to do is exactly what the operator called out. The one exception is a session that
-//! owes work - [`Owed`], which is a turn cut off, a settlement nobody was told about, or a board
-//! row still due or still owed - or whose last words promised to act once the operator restarted
-//! ([`promises_a_restart`]), so *"after you restart I'll verify X"* is not left to sit. That one
-//! gets a turn whose first line is the same clock sentence with the work NAMED, one instruction,
-//! and the quiet end below ([`nothing_running_but`]).
-//!
-//! # The quiet end
-//!
-//! A turn that finds there is nothing to do after all - the row was finished elsewhere, the
-//! settlement was read before the stop - ends with an empty reply, which is the door
-//! [`QUIET_END`] defines and says out loud in the sentence. It costs nothing and draws nothing:
-//! an `Assistant` row with no words and no calls renders no lines, so a head is left with the
-//! session idle and no `waiting on:` line, rather than a turn a person has to read to learn that
-//! it was about nothing.
+//! A restart with nothing running is said too, once per (session, restart), as a clock
+//! ([`nothing_running`]): filed into the session and read at the next turn, never a turn of its own.
+//! The exception is a session that owes work ([`Owed`]) or whose last words promised to act after a
+//! restart ([`promises_a_restart`]): it gets a turn with the work named, one instruction, and
+//! [`QUIET_END`] - an empty reply that renders nothing and leaves the session idle when there is
+//! nothing to do after all ([`nothing_running_but`]).
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -82,7 +40,7 @@ use letibot_transcript::{Speaker, TranscriptItem};
 /// How often a daemon writes its heartbeat - the bound on how wrong a crash's down time can be.
 pub const BEAT: Duration = Duration::from_secs(30);
 
-/// The default restore threshold - the operator's *"say more than 1 hours after the stop"*.
+/// The default restore threshold.
 pub const RESTORE_WITHIN: Duration = Duration::from_secs(3600);
 
 /// A hub's queued operator prompts, kept in the session store.
@@ -403,7 +361,7 @@ impl Outcome {
             Outcome::Restored => "restart_restored",
             Outcome::NothingRestorable | Outcome::Reminded => "restart_reminded",
             // Its own word, because it is its own sentence: a head that read this as
-            // `restart_reminded` would be told *"reminded"* about a list that does not exist.
+            // `restart_reminded` would be told "reminded" about a list that does not exist.
             Outcome::Nothing => "restart_nothing",
         }
     }
@@ -422,7 +380,7 @@ pub fn span(d: Duration) -> String {
 }
 
 /// A session opened this long after its daemon came back is told so - otherwise a session
-/// nobody looked at for hours reads *"the daemon was down for 5m"* as the whole of the gap.
+/// nobody looked at for hours reads "the daemon was down for 5m" as the whole of the gap.
 pub const OPENED_LATE_MS: u64 = 60_000;
 
 /// The first line of every restart notice: how long the daemon was down (or that nobody
@@ -482,9 +440,8 @@ pub fn header(
     }
 }
 
-/// A restart that had nothing to restore, said anyway - the operator: *"mb always tell
-/// agent about restart? with the current time lol"*. It carries the down time and says there was
-/// nothing to bring back, which is the whole of the news.
+/// A restart that had nothing to restore, said anyway: the down time, and that there was nothing to
+/// bring back.
 pub fn nothing_running(stop: &Stopped, back_ms: u64) -> String {
     format!(
         "[restart] The daemon restarted ({}). Nothing was running.",
@@ -697,17 +654,15 @@ impl Owed {
     }
 }
 
-/// The quiet end of a restart turn: the one way to say there was nothing to do, said in the
-/// sentence itself so a model does not have to work out that answering nothing is allowed. An
-/// empty reply records an `Assistant` row with no words and no calls, which renders no lines, and
-/// leaves the session idle.
+/// The quiet end of a restart turn, said in the sentence so the model need not work out that
+/// answering nothing is allowed. An empty reply records an `Assistant` row that renders no lines
+/// and leaves the session idle.
 pub const QUIET_END: &str = "If there is nothing left to do after all, answer with an empty reply \
      — no words at all — and this session goes idle.";
 
-/// A restart with nothing running that still owes work - the same clock as [`nothing_running`],
-/// with what it owes NAMED and ONE instruction after it: a model woken to *nothing was running*
-/// alone has no way to know why it is reading it now, and three conditionals to resolve is how it
-/// spends a dozen thinking lines deciding to say nothing.
+/// A restart with nothing running that still owes work - the clock of [`nothing_running`], with what
+/// it owes named and one instruction after it, so the model knows why it was woken and does not
+/// spend its thinking deciding to say nothing.
 pub fn nothing_running_but(stop: &Stopped, back_ms: u64, owed: &Owed) -> String {
     let clock = format!(
         "[restart] The daemon restarted ({}).",
@@ -733,13 +688,9 @@ pub fn nothing_running_but(stop: &Stopped, back_ms: u64, owed: &Owed) -> String 
     )
 }
 
-/// The restart's own sentence, with a layer's half where one answered (X21): `lifecycle_restart` is
-/// asked with the facts, and its `say` becomes the words the model reads before the turn. A layer can
-/// reword what a restart means and CANNOT cancel the wake - the turn runs whatever it answers, and
-/// neither it nor the layer can take back the one instruction the sentence ends with.
-///
-/// One act, not four: a sentence is all a caller that composes text can perform. A row, a monitor or a
-/// room message belongs to a boundary that still has a harness behind it (`open`, `reseat`, `close`).
+/// The restart's own sentence, with a `lifecycle_restart` layer's `say` where one answered. A layer
+/// can reword what a restart means but cannot cancel the wake or the instruction the sentence ends
+/// with. Only a sentence: rows, monitors and room messages belong to `open`, `reseat` and `close`.
 pub fn wake_text(
     host: Option<&crate::plugins::PluginHost>,
     hub: &std::sync::Arc<letibot_sessionlog::hub::Hub>,
@@ -926,8 +877,8 @@ pub fn named_owner(m: &StoredMonitor) -> Option<String> {
     (!owner.is_empty() && owner != "turn" && owner != "session").then(|| owner.to_string())
 }
 
-/// A monitor owned by a named scope, as the model is told - never re-armed on its own: *"who
-/// knows wtf was setup and how relevant it still is"*.
+/// A monitor owned by a named scope, as the model is told - never re-armed on its own, because
+/// nobody knows whether it is still relevant.
 pub fn monitor_scoped_line(m: &StoredMonitor, scope: &str) -> String {
     format!(
         "- monitor `{}` was owned by the scope `{scope}`, which the stopped daemon held — it was \
@@ -951,8 +902,8 @@ pub fn monitor_reminded_line(m: &StoredMonitor) -> String {
 /// The notice the model gets: the header, a line per thing that was running, and - when
 /// nothing was brought back - the one sentence of what to do about it.
 pub fn notice(header: &str, lines: &[String], outcome: Outcome) -> String {
-    // One sentence, and nothing after it: there is no list, and the closing *"nothing above is
-    // running now"* would be a sentence about a list that is not there.
+    // One sentence, and nothing after it: there is no list, and the closing "nothing above is
+    // running now" would be a sentence about a list that is not there.
     if outcome == Outcome::Nothing {
         return header.to_string();
     }
@@ -1093,9 +1044,8 @@ pub fn job_line(
              action=\"list\", which kills nothing).",
         );
     }
-    // Where its output went, read out of the command - the record's own `redirect` was
-    // never filled for a running row by the builds before this one, and the operator's job
-    // `cd … && … > /tmp/acceptance-child.log 2>&1` was reminded as having written no file.
+    // Where its output went, read out of the command as well: an older record's `redirect` may
+    // be empty for a running row.
     let mut files: Vec<String> = job.redirect.iter().cloned().collect();
     for f in letibot_tools::builtins::output_redirect_paths(&job.command) {
         if !files.contains(&f) {
@@ -1509,7 +1459,7 @@ mod tests {
     }
 
     /// The empty case is one sentence and nothing else - no list, and none of the closing
-    /// *"nothing above is running now"* the reminded notice ends with, because there is no list
+    /// "nothing above is running now" the reminded notice ends with, because there is no list
     /// for it to be about. Its header comes from `header`, so the two entry points cannot drift.
     #[test]
     fn an_empty_restart_is_one_sentence_with_nothing_after_it() {
@@ -1751,9 +1701,8 @@ mod tests {
         );
     }
 
-    /// No record of the stop is said as no record - *"these gray walls are hilarious"* about
-    /// *"down 0s (estimated from nothing)"*. An unknown down time restores nothing: it counts as
-    /// over the threshold.
+    /// No record of the stop is said as no record, never "down 0s". An unknown down time restores
+    /// nothing: it counts as over the threshold.
     #[test]
     fn an_unknown_stop_is_said_to_be_unknown_and_restores_nothing() {
         let stop = Stopped::Unknown { seen_ms: 0 };
@@ -1801,9 +1750,8 @@ mod tests {
         );
     }
 
-    /// Restored is said only when something was - a restart under the threshold whose only
-    /// record was a job was raised as `restart_restored`, *"restored where it could be"*, over a
-    /// list that restored nothing.
+    /// Restored is said only when something was: a restart under the threshold whose only record
+    /// is a job restores nothing and is not `restart_restored`.
     #[test]
     fn under_the_threshold_with_nothing_restored_the_notice_says_so() {
         let stop = Stopped::At {
@@ -1878,9 +1826,8 @@ mod tests {
         assert!(line.contains("To run it again: `bash {"), "{line}");
     }
 
-    /// The operator's job, whose record had no redirect (a running row written by a build
-    /// before this one) - reminded as having *"wrote to no file of its own"* while its log was
-    /// the one thing that survived. The reminder reads the command itself.
+    /// A job whose record has no redirect: the reminder reads the redirect out of the command
+    /// itself.
     #[test]
     fn a_job_reminder_finds_the_redirect_in_a_compound_command() {
         let cmd = "cd /tmp/letibot-scratch-1023699/harness && LETIDB_MODE=memory ./run_acceptance.sh > /tmp/acceptance-child.log 2>&1; echo \"exit=$?\"";

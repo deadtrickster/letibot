@@ -816,7 +816,7 @@ fn a_session_answer_on_a_relayed_reviewer_card_covers_the_queue_until_revoked() 
     );
 }
 
-// ------------------------------------------- the shadow answering a reviewer's read (R317)
+// ------------------------------------------- the shadow answering a reviewer's read
 
 const READ_RULE: &str = "read /build/**";
 const ALLOW_READ: &str = r#"{"verdict":"allow","rule":"read /build/**","evidence":""}"#;

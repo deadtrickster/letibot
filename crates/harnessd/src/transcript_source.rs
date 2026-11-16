@@ -37,8 +37,8 @@ impl StoreTranscripts {
     }
 
     /// Which session this query is about. A named one is matched by exact id first, then by a
-    /// case-insensitive substring of the id or the title - the operator's own way of naming one
-    /// is *"check letibot letibot session"*, which is a title fragment and not an id.
+    /// case-insensitive substring of the id or the title, because people name a session by a title
+    /// fragment.
     fn resolve(&self, want: Option<&str>) -> Result<(String, String), String> {
         let sessions = self
             .store()

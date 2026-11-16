@@ -4,20 +4,17 @@
 //! apart from the model endpoint, which is why it is checked by its USAGE paths rather than by a
 //! run - those need no server and they are what a dispatcher can get wrong.
 //!
-//! `die` stays. It is called from nine places, several inside a closure that borrows the
-//! argument iterator, and every one is a usage error whose contract is exit 2 with a message.
-//! Returning `Result` would thread a code through nine sites for no observable difference: the exit
-//! code and the wording are the interface, and both are preserved exactly.
+//! `die` is kept: every caller is a usage error whose contract is exit 2 with a message, several
+//! inside a closure that borrows the argument iterator.
 //!
 //! ```text
 //! letibot-m1 [--workspace DIR] [--turns N] [--dialect qwen|glm] [--effort low]
 //!            [--endpoint HOST:PORT] [--model ALIAS] [--vocab GGUF] [--json FILE]
 //! ```
 //!
-//! The M1 exit is *"C1–C10 pass against harnessd where opencode failed, and `f_keep` p10 ≥ 0.99
-//! over a scripted 30-turn session"*. Every C-test it can reach is reported, and the ones it
-//! cannot are named with the reason - `NOT RUN`, never folded into a pass count, because a
-//! vacuous pass here is exactly the failure this whole project is a reaction to.
+//! The M1 exit is C1-C10 passing and `f_keep` p10 >= 0.99 over the scripted session. Every C-test
+//! it can reach is reported, and the ones it cannot are named `NOT RUN` with the reason, never
+//! folded into a pass count.
 //!
 //! # What each C-test becomes on the token-array path
 //!
@@ -27,7 +24,7 @@
 //! | # | here |
 //! |---|---|
 //! | C1 | the submitted token vector at turn N is an exact prefix of turn N+1's. Read off the ledger, not inferred from cache numbers. |
-//! | C2 | NOT RUN - it is the fidelity gate, which needs no model. GLM 139/139, Qwen 56/56. |
+//! | C2 | NOT RUN - it is the fidelity gate, which needs no model. |
 //! | C3 | the engine's own `PrefixCheck`, which is the prefix invariant: turn N+1's prompt begins with turn N's plus what the model generated. Read off, never recomputed. |
 //! | C4 | `f_keep` p10/p50/p99 and p99 re-prefill over the session, with `f_keep` in the settled form - `cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))`. Those are C3's own two numbers, so C3 and C4 are read from one `PrefixCheck`. |
 //! | C5 | `f_keep` does not collapse on the submission that follows an assistant turn carrying reasoning. |
@@ -47,13 +44,9 @@
 //! "nothing said FAIL", which a run that measured nothing would pass - and the two checks this
 //! instrument cannot produce are named on the line rather than counted as failures.
 //!
-//! # `f_keep` here is the settled form, and `f_sim` is printed beside it
-//!
-//! The C4 originally read `cached_tokens / prompt_tokens`, whose denominator is the *new*
-//! prompt - llama's `f_sim`, which falls purely as a function of how much the conversation grew and
-//! cannot reach 0.99 on any session that returns tool output. C4 is settled as `lcp /
-//! cached_entry`. Both are printed under their own names, because the old one is real and only its
-//! name was wrong.
+//! C4's `f_keep` is `lcp / cached_entry`. llama's `f_sim` (`cached_tokens / prompt_tokens`) is
+//! printed beside it under its own name; its denominator is the new prompt, so it falls as the
+//! conversation grows and cannot reach 0.99 on a session that returns tool output.
 
 use std::path::PathBuf;
 
@@ -326,8 +319,8 @@ impl Step {
     }
 }
 
-/// The scripted session (*"a fixed 30-turn conversation with a fixed tool script
-/// replayed identically against any client"*).
+/// The scripted session: a fixed conversation with a fixed tool script, replayed identically
+/// against any client.
 fn script(turns: usize) -> Vec<Step> {
     let ask = |s: &str| Step::Ask(s.to_string());
     let mut v = vec![
@@ -507,7 +500,7 @@ fn reasoned_in_the_last_turn(items: &[letibot_transcript::TranscriptItem]) -> bo
 }
 
 /// The bar a replayed thought must clear: below this the cache collapsed on the submission that
-/// carried it, and a collapse is the defect C5 exists to see.
+/// carried it, which is what C5 checks.
 const COLLAPSE_KEEP: f64 = 0.90;
 
 /// C5: the submission that follows a turn which thought must still reuse what that turn left.
@@ -845,7 +838,7 @@ fn c4(rows: &[Row]) -> Vec<String> {
         ));
     }
 
-    // `f_sim` is the old reading of C4: cached over this prompt, so appending a tool result caps it
+    // `f_sim` is cached over this prompt, so appending a tool result caps it
     // whatever the cache did. Nothing here compares it to `C4_KEEP`.
     let mut sims: Vec<f64> = rows.iter().filter_map(|r| r.m.f_sim()).collect();
     sims.sort_by(|a, b| a.partial_cmp(b).unwrap());
@@ -937,9 +930,8 @@ mod tests {
         }
     }
 
-    /// The turn that found the defect: the whole 9,000-token entry came back and the prompt still
-    /// grew to 10,093 through a tool result. A pass on the entry, and the same numbers as a fraction
-    /// of the prompt are 0.8917 and would fail.
+    /// The whole cached entry came back and the prompt still grew through a tool result: a pass on
+    /// the entry, though the same numbers as a fraction of the prompt would fail.
     #[test]
     fn c4s_bar_is_about_the_entry_and_not_about_the_prompt() {
         let rows: Vec<Row> = (0..3).map(|i| row(i, 10_093, 9_000, 9_000)).collect();

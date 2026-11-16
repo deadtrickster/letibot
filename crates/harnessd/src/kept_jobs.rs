@@ -129,7 +129,7 @@ pub fn vm_not_kept(n: usize) -> String {
     )
 }
 
-/// A `detached` row as the host takes it back. `None` for a row a build before this one wrote.
+/// A `detached` row as the host takes it back. `None` for a row an older build wrote.
 pub fn detached_of(rec: &ProcessRecord, slug: Option<String>) -> Option<Detached> {
     Some(Detached {
         handle: rec.handle.clone(),

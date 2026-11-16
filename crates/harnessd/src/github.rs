@@ -1,10 +1,9 @@
-//! The daemon's half of the GitHub reviewer seat (R118): the seat it holds for `letibot attach
+//! The daemon's half of the GitHub reviewer seat: the seat it holds for `letibot attach
 //! github <scope>`, the review panel a pull request is judged by, and the feed `/pane github/github`
 //! is drawn from. The seat itself - the poll, the rows, the drafts - is `letibot_github`'s.
 //!
-//! The seat lives HERE and not in the terminal that asked for it, because a pane is drawn from the
-//! daemon's own snapshot: `letibot attach github <scope>` asks this daemon to hold a scope, and the
-//! scope is polled for as long as the daemon runs.
+//! The seat lives here and not in the terminal that asked for it, because a pane is drawn from the
+//! daemon's snapshot: a held scope is polled for as long as the daemon runs.
 
 pub mod panel;
 
@@ -79,7 +78,7 @@ impl Github {
         me
     }
 
-    /// Give the seat the way a pass is made, and the offers it makes: R114's two sources.
+    /// Give the seat the way a pass is made, and the offers it makes.
     pub fn with_pass(
         mut self,
         pass: Maker,
@@ -111,7 +110,7 @@ impl Github {
             .unwrap_or_default();
         let token = config.token.clone();
         let mirrors = root.clone();
-        // The panel's `review_verdict` floor (K5) is read per pass and not captured: it is installed
+        // The panel's `review_verdict` floor is read per pass and not captured: it is installed
         // when the session whose stack answers the hook opens, which is after this seat is built.
         let floors = registry.clone();
         let pass: Maker = Box::new(move || {
@@ -414,7 +413,7 @@ impl Candidates for Around {
     }
 }
 
-/// The tree's lexical score, which is the one R114 kept: a corpus of the candidates, and the subject
+/// The tree's lexical score: a corpus of the candidates, and the subject
 /// weighed against the words that corpus makes cheap.
 pub struct Lexical;
 

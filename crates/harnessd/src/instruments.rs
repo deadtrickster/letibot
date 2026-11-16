@@ -656,9 +656,8 @@ pub fn wall_change(session: &str, c: &crate::wall::Change, window: u64, unit: &s
         .emit();
 }
 
-/// 's context claim, judged - beside the jsonl line (dual-written in phase 1). The
-/// sentence travels as the `snippet`, which the writer keeps for this kind by default
-/// (the operator's decision 5) and strips if `[metrics] snippets` says otherwise.
+/// A context claim, judged - beside the jsonl line. The sentence travels as the `snippet`, which
+/// the writer keeps for this kind by default and strips if `[metrics] snippets` says otherwise.
 pub fn context_claim(session: &str, f: &crate::context_claim::Finding) {
     if !letibot_metrics::enabled() {
         return;
