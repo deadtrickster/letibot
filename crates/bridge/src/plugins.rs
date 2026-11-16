@@ -287,14 +287,13 @@ mod tests {
     /// daemon, instead of `letibot/` relative to wherever the bridge was started.
     #[test]
     fn an_empty_xdg_config_home_is_the_boxes_config_dir() {
-        static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _held = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = letibot_testenv::EnvGuard::lock();
         let home = Dir::new("empty-xdg");
         let before: Vec<(&str, Option<std::ffi::OsString>)> = ["XDG_CONFIG_HOME", "HOME"]
             .into_iter()
             .map(|k| (k, std::env::var_os(k)))
             .collect();
-        // SAFETY: this module's only test that touches the environment, under the lock above.
+        // SAFETY: under the binary's one env lock, held above.
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", "");
             std::env::set_var("HOME", &home.0);

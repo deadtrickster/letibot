@@ -1612,8 +1612,7 @@ mod tests {
     /// path relative to the cwd. Both scopes come from `letibot_plugins::paths`.
     #[test]
     fn an_empty_xdg_config_home_is_the_users_plugin_dir() {
-        static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _held = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = letibot_testenv::EnvGuard::lock();
         let home = std::env::temp_dir().join(format!(
             "letibot-head-xdg-{}-{}",
             std::process::id(),
@@ -1625,7 +1624,7 @@ mod tests {
                 .into_iter()
                 .map(|k| (k, std::env::var_os(k)))
                 .collect();
-        // SAFETY: the module's only test that touches the environment, under the lock above.
+        // SAFETY: under the binary's one env lock, held above.
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", "");
             std::env::set_var("XDG_DATA_HOME", "");
