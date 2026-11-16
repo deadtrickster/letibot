@@ -2105,3 +2105,32 @@ fn an_interrupt_says_whether_the_partial_answer_is_kept() {
         "{screen}"
     );
 }
+
+/// The waiting line says how long its list has held once past a minute, from the time the daemon
+/// published it, and a list from a snapshot, whose start is unknown, says none.
+#[test]
+fn the_waiting_line_says_how_long_it_has_held() {
+    use letibot_sessionlog::activity::{Activity, Waiting};
+    const T: u64 = 1_794_000_000_000;
+    let mut a = app();
+    a.clock(T);
+    a.apply(ServerFrame::Event(env_at(
+        1,
+        T,
+        SessionEvent::ActivityChanged {
+            activity: Activity::of(vec![Waiting::Job("j8032".into())]),
+        },
+    )));
+    assert!(
+        a.turn_status(120).ends_with("waiting on: job j8032"),
+        "{:?}",
+        a.turn_status(120)
+    );
+    a.clock(T + 12 * 60_000 + 5_000);
+    assert!(
+        a.turn_status(120)
+            .ends_with("waiting on: job j8032 (for 12m)"),
+        "{:?}",
+        a.turn_status(120)
+    );
+}

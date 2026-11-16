@@ -1207,6 +1207,9 @@ pub struct App {
     /// `ActivityChanged` and seeded from a snapshot, drawn as one muted line on the status row
     /// ([`App::activity_line`]). `Quiet` is all a daemon without the frame can say.
     pub(crate) activity: letibot_sessionlog::activity::Activity,
+    /// When the daemon published `activity`, Unix millis, or `None` when it came in a snapshot:
+    /// the waiting line says how long it has held.
+    pub(crate) activity_since_ms: Option<u64>,
     /// A fold's long wait, in the compaction's own units. Its own field and not a second use of
     /// `turn.progress`: an overrun compaction summarises a scratch transcript, and forwarding that
     /// count as the session's drew the scratch context as the session's.
@@ -1665,6 +1668,7 @@ impl App {
             status_click: None,
             held: None,
             activity: letibot_sessionlog::activity::Activity::Quiet,
+            activity_since_ms: None,
             auto_compact_off: None,
             nags_paused: None,
             asks_setting: None,

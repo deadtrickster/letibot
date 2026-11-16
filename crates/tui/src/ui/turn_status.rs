@@ -155,7 +155,13 @@ impl App {
                 many => format!("{} {}", many.len(), plural(many[0])),
             })
             .collect();
-        format!("waiting on: {}", parts.join(" · "))
+        // How long the list has held, once past a minute: a line with no time reads as now.
+        let held = self
+            .activity_since_ms
+            .and_then(|at| crate::app::model_card::ago(at, self.now_ms, 60_000))
+            .map(|a| format!(" (for {})", a.trim_end_matches(" ago")))
+            .unwrap_or_default();
+        format!("waiting on: {}{held}", parts.join(" · "))
     }
 
     /// One entry of the list, named: a child by the name the subagents pane gives it, everything
