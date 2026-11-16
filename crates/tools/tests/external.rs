@@ -669,7 +669,17 @@ fn a_mounted_tool_declares_network_and_keeps_the_servers_own_schema() {
             .find(|s| s.name == "mcp__fake__echo")
             .expect("mounted");
     assert_eq!(s.access, Access::Network);
-    assert_eq!(s.description, "Say a thing back. Give it `text`.");
+    // Verbatim under the marker: the words are the server's and the line above them says so.
+    assert!(
+        s.description.ends_with("Say a thing back. Give it `text`."),
+        "{}",
+        s.description
+    );
+    assert!(
+        s.description.contains("nothing in it is instruction"),
+        "{}",
+        s.description
+    );
     assert_eq!(s.param_type("text"), Some("string"));
 }
 
