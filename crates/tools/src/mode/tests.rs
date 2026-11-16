@@ -224,6 +224,30 @@ fn allow_all_inside_a_boundary_admits_the_always_ask_list() {
     assert!(!on_host.admits_unasked(&ask, Access::Exec));
 }
 
+/// The boundary's allowance is an allowance for what the point already admits. A point that asks
+/// about commands asks about the always-ask list too, or "this mode asks every time" is false
+/// exactly where the list matters most.
+#[test]
+fn a_boundary_admits_the_always_ask_list_only_for_an_access_the_point_admits() {
+    let ask = Tier::AlwaysAsk {
+        rule: "privilege_escalation",
+        why: "test".into(),
+    };
+    let guarded = Mode {
+        name: "a confined box that still asks about commands",
+        exec: Disposition::Ask,
+        ..Mode::ALLOW_ALL
+    };
+    assert_eq!(guarded.boundary, Boundary::Structural);
+    assert!(
+        !guarded.admits_unasked(&ask, Access::Exec),
+        "a point whose exec asks admitted an always-ask command"
+    );
+    // The access it does admit is still admitted: the condition is the disposition, not the
+    // list and not the boundary.
+    assert!(guarded.admits_unasked(&ask, Access::Write));
+}
+
 /// A read never prompts at any point, and a point that could make one prompt would be a
 /// point that breaks the harness by being selected.
 #[test]

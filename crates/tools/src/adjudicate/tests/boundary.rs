@@ -686,6 +686,38 @@ fn the_always_ask_tier_still_asks_inside_the_boundary() {
     }
 }
 
+/// A measured boundary is a reason nobody is asked about a command the point already admits. It is
+/// not a reason to admit one the point asks about: `exec` here is `Ask`, so `sudo` is put to
+/// somebody, and the boundary's presence changes nothing about that.
+#[test]
+fn an_always_ask_is_not_admitted_by_a_boundary_at_a_point_that_asks_for_that_access() {
+    let asked = Asked::default();
+    let guarded = crate::mode::Mode {
+        name: "a confined box that still asks about commands",
+        exec: crate::mode::Disposition::Ask,
+        ..crate::mode::Mode::ALLOW_ALL
+    };
+    assert_eq!(guarded.boundary, crate::mode::Boundary::Structural);
+    let mut g = AdjudicatedGate::new(Box::new(Asked(asked.0.clone())))
+        .with_identity("s-test", "agent")
+        .with_mode(guarded)
+        .with_boundary(Some(measured_and_closed()), None)
+        .with_exec_follows_mode(true)
+        .with_surroundings(pinned());
+    let _ = g.admit(&bash(&json!({ "command": "sudo -n true" })));
+    assert_eq!(
+        asked.count(),
+        1,
+        "the point asks about commands, and a boundary is not a standing answer"
+    );
+    assert_ne!(
+        last_by(&g),
+        "gate:mode",
+        "the mode admitted what it asks about"
+    );
+    assert_ne!(last_by(&g), "gate:boundary");
+}
+
 /// The ladder is the first mechanism and `admit`'s option lookup is the second, so an older head
 /// or a replayed answer naming a rung anyway gets nothing run and no grant left on the books for
 /// the gate to decline later.

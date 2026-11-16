@@ -487,8 +487,13 @@ impl Mode {
             Tier::Auto | Tier::MayApprove => self.disposition(access) == Disposition::Admit,
             // Inside a structural boundary there is nobody the list protects, and a
             // consented box took it off with the list in front of them - see [`Boundary`].
-            // Written as "not `Operator`" so a third boundary is a compile error here.
-            Tier::AlwaysAsk { .. } => self.boundary != Boundary::Operator,
+            // Written as "not `Operator`" so a third boundary is a compile error here. The
+            // access still has to be one this point admits: a boundary is a reason nobody is
+            // asked about what the point grants, never a grant for what it asks about.
+            Tier::AlwaysAsk { .. } => {
+                self.boundary != Boundary::Operator
+                    && self.disposition(access) == Disposition::Admit
+            }
             // Layer A's own tier - a secret disclosed across the boundary - is refused by
             // the gate before any point is consulted, and a point cannot reach it. A
             // credential in the copy is still a credential.
