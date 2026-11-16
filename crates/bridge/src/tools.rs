@@ -1892,11 +1892,15 @@ pub fn list() -> Value {
              will happen to it. The facts come from the kernel and the filesystem, so a seat in a \
              sandbox can read its own leftovers: a job's pid it cannot see is not evidence of \
              anything, and this never asks `ps`. Read-only, always. Omit `owner` for every owner \
-             this folder's daemon recorded, which is how a seat finds the packages it started.",
+             this folder's daemon recorded, which is how a seat finds the packages it started. \
+             The answer is COUNTS per owner by default - how many holdings of each class, the \
+             bytes, the memory and the one `holds:` line - because the rows themselves are \
+             megabytes for an owner of a build folder; `full: true` is the rows.",
             json!({
                 "type": "object",
                 "properties": {
-                    "owner": { "type": "string", "description": "One owner: a session id, `s-…`. Omitted: every owner in this folder's store." }
+                    "owner": { "type": "string", "description": "One owner: a session id, `s-…`. Omitted: every owner in this folder's store." },
+                    "full": { "type": "boolean", "description": "The rows themselves, not only the counts: every holding with its stamp, state, size and verdict. Megabytes for an owner of a build folder." }
                 }
             }),
         ),
@@ -2211,7 +2215,11 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
             bridge.collect(&session, &host, folder.as_deref(), vm)
         }
         "leticode_list" => Ok(bridge.list()),
-        "holds" => crate::holds::holds(bridge, arg_opt_str(args, "owner")?.as_deref()),
+        "holds" => crate::holds::holds(
+            bridge,
+            arg_opt_str(args, "owner")?.as_deref(),
+            arg_bool(args, "full", false)?,
+        ),
         "gc_plan" => crate::holds::gc_plan(bridge, arg_opt_str(args, "owner")?.as_deref()),
         "queue" => crate::queue_desk::call(bridge, args),
         "leticode_queue_verb" => crate::queue_desk::verb_call(bridge, args),

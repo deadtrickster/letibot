@@ -545,6 +545,56 @@ impl Plan {
             "systemd_why": self.systemd_why,
         })
     }
+
+    /// The owners as COUNTS, one row each, and no per-holding list: what a model asking "what do
+    /// I hold" needs, because the full list is megabytes of a turn's context for one folder's
+    /// owner. Every number is the same one [`Plan::to_json`] reports, so the two cannot disagree.
+    pub fn summary_json(&self) -> serde_json::Value {
+        let owners: Vec<serde_json::Value> = self
+            .owners
+            .iter()
+            .map(|o| {
+                let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+                let mut here = 0usize;
+                for h in &o.holds {
+                    *counts.entry(h.class.word()).or_default() += 1;
+                    if !matches!(h.state, HoldingState::Gone) {
+                        here += 1;
+                    }
+                }
+                let (now, peak) = o.memory();
+                serde_json::json!({
+                    "owner": o.id,
+                    "kind": o.kind.word(),
+                    "state": o.state.word(),
+                    "repo": o.repo,
+                    "idle_ms": o.idle_for(self.now_ms),
+                    "bytes": o.bytes(),
+                    "count": o.holds.len(),
+                    "live": here,
+                    "counts": counts,
+                    "memory_now": now,
+                    "memory_peak": peak,
+                    "holds_line": o.holds_line(self.now_ms),
+                })
+            })
+            .collect();
+        let (reaping, bytes) = self.would_reap();
+        serde_json::json!({
+            "now_ms": self.now_ms,
+            "owners": owners,
+            "looks_like_ours": self.looks_like_ours.len(),
+            "spills": self.spills.len(),
+            "bounded": self.bounded.len(),
+            "would_reap": { "holdings": reaping, "bytes": bytes },
+            "totals": self.totals().into_iter()
+                .map(|(c, b)| (c.to_string(), b))
+                .collect::<BTreeMap<String, u64>>(),
+            "full": false,
+            "more": "the rows themselves are `full: true` — one owner of a build folder holds \
+                     tens of thousands of them and the list is megabytes",
+        })
+    }
 }
 
 /// The box's logs, journals and captures, as the plan lists them.
