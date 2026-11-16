@@ -13,22 +13,9 @@ use letibot_provider::keys::{LocalModel, ModelProfile};
 use letibot_sessionlog::hub::Hub;
 use letibot_tokencore::apparatus;
 
-/// The GLM this fleet hosts, as the gguf the live tier needs on this box. An explicit
-/// `LETIBOT_GLM_GGUF` wins, matching `apparatus::gguf_path`'s rule that an override is not a hint.
+/// The GLM this fleet hosts, as the gguf the live tier needs on this box.
 fn glm_gguf() -> PathBuf {
-    if let Ok(p) = std::env::var("LETIBOT_GLM_GGUF") {
-        return PathBuf::from(p);
-    }
-    std::env::var_os("HOME")
-        .map(|h| {
-            PathBuf::from(h)
-                .join("models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf")
-        })
-        .unwrap_or_else(|| {
-            PathBuf::from(
-                "/home/dead/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf",
-            )
-        })
+    apparatus::glm_gguf_path()
 }
 
 /// A `/props` that answers on a local socket.

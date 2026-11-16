@@ -13,12 +13,15 @@ pub fn gguf_path() -> PathBuf {
     )
 }
 
-/// The GLM vocabulary, found the way [`gguf_path`] finds the default one: `$HOME` first, then
-/// the literal path, so four tests stop carrying it.
+/// The GLM vocabulary, found the way [`gguf_path`] finds the default one: `LETIBOT_GLM_GGUF`,
+/// then `$HOME`, then the literal path, so four tests stop carrying it.
 pub fn glm_gguf_path() -> PathBuf {
     const UNDER_HOME: &str = "models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf";
     const LITERAL: &str =
         "/home/dead/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf";
+    if let Some(p) = std::env::var_os("LETIBOT_GLM_GGUF").filter(|p| !p.is_empty()) {
+        return PathBuf::from(p);
+    }
     std::env::var_os("HOME")
         .map(|h| PathBuf::from(h).join(UNDER_HOME))
         .filter(|p| p.is_file())
