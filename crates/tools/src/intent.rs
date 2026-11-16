@@ -2236,6 +2236,18 @@ fn touches_own_config(text: &str) -> bool {
     .any(|f| t.contains(&format!("letibot/{f}")))
 }
 
+/// A resolved path inside letibot's config directory, or one of its rule files wherever
+/// `$XDG_CONFIG_HOME` put them. Every file there decides what runs or who is trusted.
+fn is_own_config(path: &str, home: Option<&str>) -> bool {
+    touches_own_config(path)
+        || home.is_some_and(|h| {
+            under(
+                path,
+                &format!("{}/.config/letibot", h.trim_end_matches('/')),
+            )
+        })
+}
+
 /// Public CA bundles and trust stores: world-readable on every box and no secret. Checked before
 /// the store list because `System/Library/Keychains` and `*.pem` would otherwise match it.
 const PUBLIC_CA_PATHS: &[&str] = &[
@@ -2567,6 +2579,10 @@ pub struct Baseline {
     /// literal `cd` moves it, so `cd repo && git checkout -- crates/x.rs` is not refused as
     /// destruction outside the project.
     cwd: Option<String>,
+    /// A write whose resolved path lands in letibot's own config, found where `cwd` and `~` are
+    /// known. The scoped target is the spelling, so `cd ~/.config/letibot && cp x permission.json`
+    /// would otherwise read as a write of `permission.json`.
+    own_config: Option<String>,
     /// True when the class was decided from a path, so the [`Region`] values here are a second
     /// classifier's opinion that cannot place a relative path. The one-line summary stays silent
     /// about regions for such an action; the regions still drive the tier rules.
@@ -2688,6 +2704,7 @@ impl Baseline {
             authenticating: None,
             body_read: false,
             cwd: env.workspace.clone(),
+            own_config: None,
             path_decided: false,
         };
 
@@ -2970,7 +2987,11 @@ impl Baseline {
             if let Some(cmd) = &self.command {
                 seen.push(cmd.source.clone());
             }
-            if let Some(target) = seen.into_iter().find(|t| touches_own_config(t)) {
+            if let Some(target) = self
+                .own_config
+                .clone()
+                .or_else(|| seen.into_iter().find(|t| touches_own_config(t)))
+            {
                 let d = format!("this call writes `{}`", target.trim());
                 ask("changes_its_own_rules", d, self);
             }
@@ -3067,6 +3088,11 @@ impl Baseline {
             // A path-only action (`write`, `read`) has no `cd` to have followed: the
             // absolute path IS the whole fact.
             cwd: None,
+            own_config: paths
+                .iter()
+                .filter(|_| writes)
+                .map(|p| collapse(&env.expand(p)))
+                .find(|p| is_own_config(p, env.home.as_deref())),
             path_decided: true,
         };
         b.intents.insert(if writes {
@@ -3531,6 +3557,14 @@ impl Baseline {
                 // what the operator said. The STAGE's intents, since a union scoped one stage's `Destroy`
                 // onto the next stage's operands.
                 for verb in stage_intents(stage) {
+                    if matches!(verb, Intent::Destroy | Intent::WriteFile)
+                        && self.own_config.is_none()
+                    {
+                        let resolved = collapse(&env.expand(&placed));
+                        if is_own_config(&resolved, env.home.as_deref()) {
+                            self.own_config = Some(resolved);
+                        }
+                    }
                     if matches!(verb, Intent::Destroy | Intent::WriteFile | Intent::Network)
                         && !identity.contains(&i)
                     {
@@ -3574,6 +3608,18 @@ impl Baseline {
                 continue;
             }
             if let Some(text) = w.and_then(|w| w.text()) {
+                if r.op.writes() && self.own_config.is_none() {
+                    let placed = match &self.cwd {
+                        Some(cwd) if !text.starts_with('/') && !text.starts_with('~') => {
+                            format!("{}/{text}", cwd.trim_end_matches('/'))
+                        }
+                        _ => text.to_string(),
+                    };
+                    let resolved = collapse(&env.expand(&placed));
+                    if is_own_config(&resolved, env.home.as_deref()) {
+                        self.own_config = Some(resolved);
+                    }
+                }
                 let region = env.region_of(text);
                 if let Region::Secret(store) = &region
                     && r.op.writes()

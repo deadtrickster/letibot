@@ -533,6 +533,33 @@ fn writing_its_own_rule_files_always_asks() {
     );
 }
 
+/// The rule judges where the write lands, not how it is spelled: after a `cd` the operand is
+/// relative, and `~` is the home the other paths expand.
+#[test]
+fn cd_then_relative_write_to_own_config_asks() {
+    for cmd in [
+        "cd ~/.config/letibot && cp ./x permission.json",
+        "cd /home/dead/.config && cp /tmp/x letibot/permission.json",
+        "cd ~/.config/letibot && printf x > modes.tsv",
+        "cd ~/.config/letibot && cp /tmp/x leticode.toml",
+        "cp /tmp/x ~/.config/letibot/plugin-trust.json",
+        "cd ~/.config/letibot/x/.. && rm hosts.toml",
+    ] {
+        let x = b(cmd);
+        assert!(
+            matches!(&x.tier, Tier::AlwaysAsk { rule, .. } if *rule == "changes_its_own_rules"),
+            "{cmd}: {:?}",
+            x.tier
+        );
+    }
+    let elsewhere = b("cd ~/.config/other && cp ./x permission.json");
+    assert!(
+        !matches!(&elsewhere.tier, Tier::AlwaysAsk { rule, .. } if *rule == "changes_its_own_rules"),
+        "{:?}",
+        elsewhere.tier
+    );
+}
+
 #[test]
 fn ssh_to_a_host_is_adjudicable_and_reading_the_key_is_not() {
     // The pair the flow rule exists for, and neither needs an exception.
