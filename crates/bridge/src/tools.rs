@@ -2391,15 +2391,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
     }
 
-    /// Thirty-eight tools (the leticode verbs, `queue` and its verbs, the room verbs, the todo and seat jobs), each with a
+    /// Thirty-nine tools (the leticode verbs, `queue` and its verbs, the room verbs, the todo and seat jobs), each with a
     /// schema and a required list - the count and the names the design's table fixes. A tool added
     /// to `tools/list` and forgotten in `call` (or the other way round) is the defect this pairs
     /// against.
     #[test]
-    fn the_thirty_eight_tools_are_listed_with_schemas() {
+    fn the_thirty_nine_tools_are_listed_with_schemas() {
         let listed = list();
         let tools = listed["tools"].as_array().expect("tools");
-        assert_eq!(tools.len(), 38, "{listed}");
+        assert_eq!(tools.len(), 39, "{listed}");
         let mut named: Vec<&str> = tools.iter().filter_map(|t| t["name"].as_str()).collect();
         named.sort_unstable();
         let mut want = names();
