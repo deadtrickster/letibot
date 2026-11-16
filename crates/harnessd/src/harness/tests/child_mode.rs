@@ -335,3 +335,92 @@ fn mode_refused_move_writes_no_project_row_and_next_open_succeeds() {
         h.open_notes()
     );
 }
+
+fn session_row(path: &std::path::Path, id: &str) -> Option<&'static str> {
+    crate::modes::ModeStore::load(path)
+        .session(id)
+        .map(|(m, _)| m.name)
+}
+
+/// The bridge's `leticode_mode` goes through the ask door, and a point moved there is what a
+/// restart brings back.
+#[test]
+fn ask_mode_confirm_persists_session_row() {
+    let dir = Scratch::new("mode-ask-row");
+    let Some((parts, cfg, registry, path)) = daemon_at(&dir, Mode::WRITES_ALLOWED) else {
+        return;
+    };
+    let mut sessions = crate::sessions::Sessions::open_first(&parts, cfg, registry)
+        .expect("the first session opens");
+    let h = sessions.held("s-first").unwrap();
+    h.ask_mode_confirm("read-only", "head-bridge", "bridge", "r1")
+        .expect("a narrowing needs nobody's confirmation");
+    assert_eq!(h.config().mode, Mode::READ_ONLY);
+    assert_eq!(session_row(&path, "s-first"), Some(Mode::READ_ONLY.name));
+}
+
+/// Every door that moves a point leaves the session's row at the point it moved to.
+#[test]
+fn every_mode_door_writes_the_session_row() {
+    let dir = Scratch::new("mode-every-door");
+    let Some((parts, cfg, registry, path)) = daemon_at(&dir, Mode::ALWAYS_ASK) else {
+        return;
+    };
+    let mut sessions = crate::sessions::Sessions::open_first(&parts, cfg, registry)
+        .expect("the first session opens");
+
+    // The idle `/mode`.
+    sessions.dispatch("s-first", &mode_command("read-only", false));
+    assert_eq!(session_row(&path, "s-first"), Some(Mode::READ_ONLY.name));
+
+    // The `/mode` a running turn takes.
+    let h = sessions.held("s-first").unwrap();
+    let tui = h.hub.attach(
+        "tui",
+        "dead",
+        letibot_sessionlog::protocol::Caps {
+            can_decide: true,
+            ..Default::default()
+        },
+        0,
+    );
+    h.hub.submit(
+        &tui.head_id,
+        "m2",
+        0,
+        letibot_sessionlog::hub::CommandKind::Mode {
+            name: "writes-allowed".into(),
+            consented: false,
+        },
+    );
+    h.apply_queued_mode();
+    assert_eq!(
+        session_row(&path, "s-first"),
+        Some(Mode::WRITES_ALLOWED.name)
+    );
+
+    // The ask door, applied at once.
+    h.ask_mode_confirm("always-ask", "head-bridge", "bridge", "r3")
+        .unwrap();
+    assert_eq!(session_row(&path, "s-first"), Some(Mode::ALWAYS_ASK.name));
+
+    // The ask door with a person's yes, from a head that was asked.
+    h.ask_mode_confirm("allow-all", "head-bridge", "bridge", "r4")
+        .expect("another head may decide");
+    h.answer_mode_confirm("head-bridge:r4", true, &tui.head_id, "dead")
+        .expect("the person says yes");
+    assert_eq!(h.config().mode, Mode::ALLOW_ALL_HERE);
+    let rows = crate::modes::ModeStore::load(&path);
+    let (m, when) = rows.session("s-first").expect("a row");
+    assert_eq!(m.name, Mode::ALLOW_ALL.name);
+    assert!(when.is_some(), "with the answer beside it");
+
+    // A parent's narrowing, on a child.
+    let (mut child, parent, path) = child_at(&dir, "s-parent-sub-9", Mode::WRITES_ALLOWED).unwrap();
+    *parent.lock().unwrap() = Mode::READ_ONLY;
+    child.narrow_to_parent();
+    assert_eq!(
+        session_row(&path, "s-parent-sub-9"),
+        Some(child.config().mode.name)
+    );
+}

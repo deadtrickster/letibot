@@ -913,21 +913,10 @@ impl Harness {
                 .mode(),
             None => parent,
         };
-        match self.set_mode_consented(target, false) {
+        match self.move_mode(target, false) {
             Ok(said) => {
                 self.mode_source = "narrowed with its parent".into();
                 self.publish_settings();
-                if let Err(e) = self
-                    .mode_store
-                    .read()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .set_session(&self.cfg.session_id, target, None)
-                {
-                    self.warn(
-                        "mode_unpersisted",
-                        format!("could not record `{}` for this session: {e}", target.name),
-                    );
-                }
                 self.warn_mode(
                     "mode_set",
                     format!(
@@ -983,7 +972,7 @@ impl Harness {
             // The same `mode_set` line the `/mode` path writes, because a point that moved
             // has to be legible afterwards on the session it moved in - and this one moved
             // without anybody typing it, which is precisely the case a reader would question.
-            let applied = match self.set_mode_consented(mode, false) {
+            let applied = match self.move_mode(mode, false) {
                 Ok(said) => {
                     self.warn_mode(
                         "mode_set",
@@ -1100,7 +1089,7 @@ impl Harness {
             return Ok(());
         }
         let mode = letibot_tools::mode::Mode::parse(&open.name)?;
-        match self.set_mode_consented(mode, true) {
+        match self.move_mode(mode, true) {
             Ok(said) => {
                 let in_force = self.cfg.mode.name;
                 self.settle_mode_confirm(
