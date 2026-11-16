@@ -137,10 +137,10 @@ impl PluginStack for StackOver {
             letibot_plugin::condition::LookAsk::Read(read) => {
                 // The same look a pane runs, so the confinement and the capability check are one
                 // implementation rather than two that can disagree.
+                let who = by.as_deref().unwrap_or_default();
                 let value = look::run(
                     &LookSpec::Read { read: read.clone() },
-                    self.host.look_trees(),
-                    &caps,
+                    self.host.reach(who, &caps),
                 );
                 Look::Done(result_of(&value))
             }

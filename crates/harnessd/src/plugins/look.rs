@@ -2,10 +2,16 @@
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use letibot_plugins::Capability;
 use letibot_sessionlog::pane::LookSpec;
+use letibot_tools::backend::ExecBackend;
+use letibot_tools::runtime::GateDecision;
+use letibot_tools::schema::Access;
 use serde_json::{Value, json};
+
+use crate::plugins::tool::Decides;
 
 /// How much of a file one look may hand a plugin. A megabyte is a status file, a plan, a log tail -
 /// and a pane that read a gigabyte would spend a session's memory on a screen nobody asked for.
@@ -52,11 +58,76 @@ impl<'a> Trees<'a> {
     }
 }
 
-/// Run one look the pane asked for, against the session's trees, with the capabilities the
-/// answering layer declared.
-pub fn run(spec: &LookSpec, trees: Trees, caps: &[Capability]) -> Value {
+/// What one look may reach: the trees it resolves in, the capabilities the answering layer
+/// declared, the session's view where there is one, and whether that layer's bytes are pinned.
+#[derive(Clone, Copy)]
+pub struct Reach<'a> {
+    pub trees: Trees<'a>,
+    pub caps: &'a [Capability],
+    /// The session's read door. `None` is a host nothing handed one to - a test, or a session the
+    /// daemon has not opened yet - and then a read is this process's, bounded by the capabilities.
+    pub view: Option<&'a dyn Decides>,
+    /// A layer whose bytes a person pinned, which is the only layer a `read:<path>` tree is
+    /// honoured for: the pin is the vetted thing, and a tree outside the workspace is reach.
+    pub trusted: bool,
+}
+
+impl<'a> Reach<'a> {
+    /// A look fenced by its capabilities alone: no view, nothing pinned. What a caller that has
+    /// neither a session nor a trust book can honestly say.
+    pub fn caps(trees: Trees<'a>, caps: &'a [Capability]) -> Reach<'a> {
+        Reach {
+            trees,
+            caps,
+            view: None,
+            trusted: false,
+        }
+    }
+}
+
+/// The session's read door, for the looks that run under a host rather than a tool call: a pane's
+/// look and a condition's, which have no `InvokeCtx` to ask. It is the backend the model's file
+/// tools read through, so a session seated on another machine or in a VM is read there.
+pub struct SessionView {
+    backend: Arc<dyn ExecBackend>,
+}
+
+impl SessionView {
+    pub fn new(backend: Arc<dyn ExecBackend>) -> SessionView {
+        SessionView { backend }
+    }
+}
+
+impl Decides for SessionView {
+    /// No gate: an `exec` look asks the one its own host holds (`conditions::Unasked`), and a
+    /// pane's is refused outright. `None` here is *this door did not judge it*, not *admit*.
+    fn admit_unasked(&self, _name: &str, _access: Access, _args: &Value) -> Option<GateDecision> {
+        None
+    }
+
+    fn read(&self, path: &str) -> Result<Vec<u8>, String> {
+        self.backend.read(path).map_err(|e| e.to_string())
+    }
+
+    fn list(&self, path: &str) -> Result<Vec<letibot_tools::backend::DirEntry>, String> {
+        self.backend.list(path).map_err(|e| e.to_string())
+    }
+
+    fn run(&self, argv: &[String]) -> Result<letibot_tools::backend::Output, String> {
+        self.backend
+            .run(&letibot_tools::backend::Command {
+                argv: argv.to_vec(),
+                cwd: ".".to_string(),
+                env: Vec::new(),
+            })
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Run one look the pane asked for, within what the answering layer reaches.
+pub fn run(spec: &LookSpec, reach: Reach) -> Value {
     match spec {
-        LookSpec::Read { read } => read_file(read, trees, caps),
+        LookSpec::Read { read } => read_file(read, reach),
         // 126 is the shell's own *found but not executable*, so a plugin written for slice 2 draws
         // an unavailable panel instead of an empty one that looks like a finished read.
         LookSpec::Exec { .. } => {
@@ -66,7 +137,9 @@ pub fn run(spec: &LookSpec, trees: Trees, caps: &[Capability]) -> Value {
 }
 
 /// `{"exit":0,"stdout":<the file>,"stderr":""}`, or `exit 1` with the reason in `stderr`.
-fn read_file(path: &str, trees: Trees, caps: &[Capability]) -> Value {
+fn read_file(path: &str, reach: Reach) -> Value {
+    let trees = reach.trees;
+    let caps = reach.caps;
     // Every tree this layer may read: the session's checkout and its own tree if it declared `read`,
     // and each tree it named as `read:<path>`. Nothing else - the declaration is the approval.
     let mut roots: Vec<(String, PathBuf)> = Vec::new();
@@ -86,16 +159,25 @@ fn read_file(path: &str, trees: Trees, caps: &[Capability]) -> Value {
             }
         }
     }
+    // A `read:<path>` tree is honoured only for a layer whose bytes a person pinned. The pin is
+    // what vetted the declaration; an unpinned layer arrives with the checkout, so its declared
+    // tree is kept aside and the refusal below names it rather than silently widening.
+    let mut ignored: Vec<(String, PathBuf)> = Vec::new();
     for cap in caps {
         let Capability::ReadPath(declared) = cap else {
             continue;
         };
         if let Some(tree) = crate::plugins::tool::expand(declared) {
             let real = tree.canonicalize().unwrap_or(tree);
-            roots.push((format!("`read:{declared}`"), real));
+            let what = format!("`read:{declared}`");
+            if reach.trusted {
+                roots.push((what, real));
+            } else {
+                ignored.push((what, real));
+            }
         }
     }
-    if roots.is_empty() {
+    if roots.is_empty() && ignored.is_empty() {
         return refused(format!(
             "the layer did not declare the `read` capability (and names no `read:<path>` tree), \
              so `{path}` is not read for it"
@@ -139,6 +221,16 @@ fn read_file(path: &str, trees: Trees, caps: &[Capability]) -> Value {
     };
     let inside = roots.iter().any(|(_, tree)| real.starts_with(tree));
     if !inside {
+        // A file inside a tree the layer declared and nobody vetted says so, with the way out:
+        // *outside the workspace* is true and useless about a reach that was declared and dropped.
+        if let Some((what, _)) = ignored.iter().find(|(_, tree)| real.starts_with(tree)) {
+            return refused(format!(
+                "`{path}` resolves to {}, inside the tree this layer declared as {what}, and an \
+                 unpinned layer's declared tree is not honoured: pin the layer's bytes and load it \
+                 again if that reach was meant",
+                real.display()
+            ));
+        }
         let named: Vec<String> = roots.iter().map(|(what, _)| what.clone()).collect();
         // The one-tree refusal keeps its own words: it is the sentence a project's own layer reads
         // most often, and a test asserts it.
@@ -157,23 +249,34 @@ fn read_file(path: &str, trees: Trees, caps: &[Capability]) -> Value {
         };
         return refused(why);
     }
-    match real.metadata() {
-        Ok(meta) if meta.is_dir() => {
-            return refused(format!("`{path}` is a directory, and a look reads a file"));
+    // Through the session's view when there is one: the fence a command obeys, and the substrate
+    // the session stands on, so a pane in a VM or on another host is not answered off this disk.
+    let mut bytes = match reach.view {
+        Some(view) => match view.read(&real.display().to_string()) {
+            Ok(bytes) => bytes,
+            Err(why) => return refused(why),
+        },
+        None => {
+            match real.metadata() {
+                Ok(meta) if meta.is_dir() => {
+                    return refused(format!("`{path}` is a directory, and a look reads a file"));
+                }
+                Ok(_) => {}
+                Err(e) => return refused(format!("{}: {e}", real.display())),
+            }
+            let file = match std::fs::File::open(&real) {
+                Ok(file) => file,
+                Err(e) => return refused(format!("{}: {e}", real.display())),
+            };
+            let mut bytes = Vec::new();
+            // One byte over the cap is read so a file of exactly `CAP` is not reported as
+            // truncated, and the text is cut back afterwards.
+            if let Err(e) = file.take(CAP as u64 + 1).read_to_end(&mut bytes) {
+                return refused(format!("{}: {e}", real.display()));
+            }
+            bytes
         }
-        Ok(_) => {}
-        Err(e) => return refused(format!("{}: {e}", real.display())),
-    }
-    let file = match std::fs::File::open(&real) {
-        Ok(file) => file,
-        Err(e) => return refused(format!("{}: {e}", real.display())),
     };
-    let mut bytes = Vec::new();
-    // One byte over the cap is read so a file of exactly `CAP` is not reported as truncated, and
-    // the text is cut back afterwards. Lossy, because a plan with a stray byte is still a plan.
-    if let Err(e) = file.take(CAP as u64 + 1).read_to_end(&mut bytes) {
-        return refused(format!("{}: {e}", real.display()));
-    }
     bytes.truncate(CAP);
     json!({
         "exit": 0,

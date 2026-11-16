@@ -92,6 +92,9 @@ pub struct PluginHost {
     /// [`PluginHost::with_github`]. `None` in a test's host, and a layer declaring the feed is then
     /// handed no key at all rather than an empty seat.
     github: Option<Arc<dyn feed::GithubFeed>>,
+    /// How a pane's or a condition's look reads a file: the session's own backend, set by
+    /// [`PluginHost::with_view`]. `None` in a test's host, and the read is then this process's disk.
+    view: Option<Arc<dyn tool::Decides + Send + Sync>>,
     /// Whether this host installs the binary's own pane layers at the door a head comes through.
     /// The daemon's host does ([`PluginHost::production`]); a host built on a test's loader cannot,
     /// because a fake loader has no engine for a module held in memory.
