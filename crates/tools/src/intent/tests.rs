@@ -1731,6 +1731,25 @@ fn the_grant_is_named_by_the_stage_that_does_the_work() {
     );
 }
 
+/// The read-only git plumbing reads the repository and changes nothing.
+#[test]
+fn git_cherry_is_inspect() {
+    for cmd in [
+        "git cherry -v origin/main",
+        "git cherry origin/main HEAD",
+        "git merge-base HEAD origin/main",
+        "git merge-base --is-ancestor a b",
+        "git rev-list --count HEAD",
+        "git ls-tree -r HEAD crates",
+        "git cat-file -p HEAD:Cargo.toml",
+        "git for-each-ref --format='%(refname)' refs/heads",
+    ] {
+        let base = b(cmd);
+        assert_eq!(base.intents, BTreeSet::from([Intent::Inspect]), "{cmd}");
+        assert!(base.reads_only(), "{cmd} :: {:?}", base.intents);
+    }
+}
+
 /// Toolchain probes print a version or a query and build nothing, so they read as reads. A real
 /// build, and a `--print` handed a source file, stay what they were.
 #[test]

@@ -1285,7 +1285,7 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
                 "status" | "log" | "diff" | "show" | "blame" | "describe" | "rev-parse"
                 | "shortlog" | "ls-files" | "grep" | "whatchanged" | "reflog" | "merge-base"
                 | "rev-list" | "merge-tree" | "ls-tree" | "cat-file" | "diff-tree" | "name-rev"
-                | "count-objects" | "for-each-ref" | "show-ref" | "var"
+                | "count-objects" | "for-each-ref" | "show-ref" | "var" | "cherry"
                 | "version" | "help" | "check-ignore" | "ls-remote" | "fsck" => vec![Inspect],
                 // A new repository, on the operator's disk: a write, not a mystery.
                 "init" => vec![WriteFile],
