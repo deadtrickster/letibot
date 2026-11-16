@@ -894,14 +894,17 @@ fn provider_keys(
                     return Err(format!("{from}: [provider] `{name}` is not a key; {keys}"));
                 };
                 for k in sub.keys() {
-                    if matches!(
+                    if !matches!(
                         k.as_str(),
-                        "on_limit" | "wait_if_within" | "limit_probe" | "fallback"
+                        "slow_notice_seconds"
+                            | "first_byte_seconds"
+                            | "answer_seconds"
+                            | "usage_warn"
                     ) {
                         return Err(format!(
                             "{}:{}: [provider.{name}] `{k}` is not a key here; a preset or model \
-                             table holds `slow_notice_seconds`, `first_byte_seconds` and \
-                             `answer_seconds`",
+                             table holds `slow_notice_seconds`, `first_byte_seconds`, \
+                             `answer_seconds` and a preset's `usage_warn`",
                             path.display(),
                             line_after(text, name, k)
                         ));
@@ -2636,6 +2639,12 @@ fn key_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result<
     let mut out = KeyKeys::default();
     for (name, v) in table {
         let from = at(path, text, name, user);
+        if !name.contains('.') {
+            return Err(format!(
+                "{from}: [keys] `{name}` is not a key: it names no surface - a binding is \
+                 written \"SURFACE.KEY\", as the hint bar spells it (`todos.d`)"
+            ));
+        }
         let key = v.as_str().and_then(non_empty).ok_or_else(|| match v.as_str() {
             Some(_) => format!(
                 "{from}: [keys] `{name}` = \"\" names no key - write the key it becomes, e.g. \"f\""
@@ -2645,12 +2654,6 @@ fn key_keys(value: &toml::Value, path: &Path, text: &str, user: bool) -> Result<
                 kind_of(v)
             ),
         })?;
-        if !name.contains('.') {
-            return Err(format!(
-                "{from}: [keys] `{name}` names no surface - a binding is written \
-                 \"SURFACE.KEY\", as the hint bar spells it (`todos.d`)"
-            ));
-        }
         out.rebind.push(Rebind {
             name: name.clone(),
             key,
