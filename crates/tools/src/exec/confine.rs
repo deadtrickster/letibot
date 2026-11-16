@@ -792,9 +792,19 @@ impl ViewSpec {
     /// substrate to build one still needs, so a session with no command is held to the same view its
     /// commands would have had. A seat carrying the operator's own home is the whole machine.
     pub fn of_seat(project: impl Into<PathBuf>, seat: &crate::exec::seat::SeatView) -> ViewSpec {
-        let mut view = ViewSpec::project_only(project).masking(seat.masked.iter().cloned());
+        let project = project.into();
+        let mut view = ViewSpec::project_only(project.clone()).masking(seat.masked.iter().cloned());
         for g in &seat.grants {
             view = view.granting(g.clone());
+        }
+        // The same read-only set `HostBackend::confined_over` binds, so the file tools of a seat
+        // with no shell hold the line its commands would.
+        let protected = match &seat.home {
+            Some(h) => crate::exec::seat::wide_protected(h),
+            None => crate::exec::seat::git_dir_protected(&project),
+        };
+        for p in protected {
+            view = view.protecting(p);
         }
         match &seat.home {
             Some(h) => view.with_home(HomeView::Dir(h.clone())).wide(),

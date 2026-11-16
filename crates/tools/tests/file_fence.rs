@@ -469,3 +469,131 @@ fn tight_view_file_tools_must_not_read_store_data() {
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
     let _ = std::fs::remove_dir_all(f.root());
 }
+
+/// Refused by the gate or by the fence: either way nothing ran.
+fn stopped(r: &letibot_tools::result::ToolResult) {
+    assert!(
+        matches!(
+            r.outcome,
+            ToolOutcome::Failed { .. } | ToolOutcome::Denied { .. }
+        ),
+        "{}",
+        r.render()
+    );
+}
+
+fn git(dir: &Path, args: &[&str]) {
+    let o = std::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_AUTHOR_NAME", "fixture")
+        .env("GIT_AUTHOR_EMAIL", "fixture@example.test")
+        .env("GIT_COMMITTER_NAME", "fixture")
+        .env("GIT_COMMITTER_EMAIL", "fixture@example.test")
+        .output()
+        .expect("git");
+    assert!(o.status.success(), "{args:?}: {o:?}");
+}
+
+/// The shell view binds a worktree's hooks, config and other refs read-only inside the common dir
+/// it grants read-write; the file tools hold the same line, through a symlink too. The wide seat's
+/// `~/.gitconfig` is read-only the same way.
+#[test]
+fn write_cannot_reach_protected_git_paths() {
+    let f = Fixture::new("gitprot");
+    let repo = f.root().join("repo");
+    let wt = f.root().join("wt");
+    std::fs::create_dir_all(&repo).expect("a repo");
+    git(&repo, &["init", "-q", "-b", "main", "."]);
+    std::fs::write(repo.join("a.txt"), "a\n").expect("a file");
+    git(&repo, &["add", "a.txt"]);
+    git(&repo, &["commit", "-q", "-m", "root"]);
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-q",
+            "-b",
+            "agent/c",
+            wt.to_str().expect("utf-8"),
+        ],
+    );
+    let common = repo.join(".git").canonicalize().expect("the common dir");
+    std::os::unix::fs::symlink(common.join("hooks"), wt.join("h")).expect("a link");
+
+    let mut view = ViewSpec::project_only(&wt).with_home(HomeView::Dir(f.root().join("throwaway")));
+    for g in seat::worktree_git_grants(&wt) {
+        view = view.granting(g);
+    }
+    for p in seat::git_dir_protected(&wt) {
+        view = view.protecting(p);
+    }
+    let tight = seat::seat_view(
+        &Mode::WRITES_ALLOWED,
+        "this machine",
+        &[] as &[&str],
+        &f.home(),
+    );
+    let backend = HostBackend::writable("/")
+        .expect("a whole-host backend")
+        .with_cwd(&wt)
+        .expect("the worktree")
+        .with_home(f.home())
+        .with_file_fence(FileFence::of(&tight, &view));
+    let mut h = harness_over(Box::new(backend), wt.clone(), f.root().join("notes"));
+
+    // The gate stops the link by its real target, and the fence by the view's read-only set.
+    let fence = FileFence::of(&tight, &view);
+    for p in [common.join("hooks/pre-commit"), common.join("config")] {
+        assert!(
+            fence.refusal(&p, true).is_some(),
+            "{} is writable",
+            p.display()
+        );
+    }
+    stopped(&h.call(
+        "write",
+        r##"{"path":"h/pre-commit","content":"#!/bin/sh\n"}"##,
+    ));
+    assert!(
+        !common.join("hooks/pre-commit").exists(),
+        "the hook was planted"
+    );
+    let cfg = common.join("config");
+    stopped(&h.call(
+        "write",
+        &format!(r#"{{"path":"{}","content":"[core]\n"}}"#, cfg.display()),
+    ));
+    // The child's own work still lands: its checkout, and objects in the common dir.
+    let r = h.call("write", r#"{"path":"b.txt","content":"b\n"}"#);
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
+
+    // The wide seat: `~/.gitconfig` reads and is not written.
+    let gitconfig = f.home().join(".gitconfig");
+    std::fs::write(&gitconfig, "[user]\n").expect("a gitconfig");
+    let mut wide_view = f.view();
+    for p in seat::wide_protected(&f.home()) {
+        wide_view = wide_view.protecting(p);
+    }
+    let backend = HostBackend::writable("/")
+        .expect("a whole-host backend")
+        .with_cwd(f.project())
+        .expect("the workspace")
+        .with_home(f.home())
+        .with_file_fence(FileFence::of(&f.seat(), &wide_view));
+    let mut w = harness_over(Box::new(backend), f.project(), f.root().join("notes"));
+    refused(&w.call(
+        "write",
+        &format!(r#"{{"path":"{}","content":"x"}}"#, gitconfig.display()),
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&gitconfig).unwrap_or_default(),
+        "[user]\n"
+    );
+    let r = w.call("read", &format!(r#"{{"path":"{}"}}"#, gitconfig.display()));
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
+    let _ = std::fs::remove_dir_all(f.root());
+}
