@@ -4558,26 +4558,12 @@ fn model_refused(e: &letibot_turn::HttpError) -> bool {
     letibot_http::retry::Policy::the_model_refused(e)
 }
 
-/// One outage of one model endpoint: the ONE live line it is worth, and no row while it lasts.
+/// One outage of one model endpoint: one live line whose count moves, published as
+/// [`SessionEvent::ModelRetry`], since a head files each warning as a new row. It ends withdrawn:
+/// a recovery leaves nothing, a spent ladder one `model_endpoint_retry` row.
 ///
-/// ```text
-/// session · retrying: 3 attempts, 503 server error, 41s · click for details
-/// ```
-///
-/// A row per attempt is a wall of the same sentence with a different number in it, and a counter
-/// means the row's text has to be current. A note on the screen cannot be revised: the head files a
-/// warning under `(code, ts, detail)`, so a second publish carrying a bigger count is a SECOND row.
-///
-/// So the count lives in ONE line whose value moves: the record is opened by the first failed attempt,
-/// changed by every later one, and published as [`SessionEvent::ModelRetry`] - the line's whole value.
-/// It ends by being WITHDRAWN, never by settling: a recovery leaves nothing (a retry that worked asks
-/// nothing of a reader) and a spent ladder leaves one `model_endpoint_retry` row whose card is the
-/// whole of what went wrong.
-///
-/// A failure the ladder never retried is not an outage and says nothing: with no retries the
-/// turn's own `turn_failed` is the whole of the news. Told once structurally, because
-/// [`Harness::settle_outage`] TAKES the record, so no path can tell one outage twice however many
-/// ways it ends. A second outage is a second record, since two outages are not one counter.
+/// A failure never retried is no outage; `turn_failed` is the news. [`Harness::settle_outage`]
+/// takes the record, so no path tells one outage twice; a second outage is a second record.
 pub(crate) struct Outage {
     /// The host that did not answer, as [`retry_host`] spelled it. A failure against a DIFFERENT
     /// host is a different outage - the operator's `/models` and a `[fallback]` both move this,
@@ -4843,40 +4829,12 @@ pub(crate) fn provider_refusal(e: &HarnessError) -> Option<u16> {
         .and_then(letibot_http::retry::Policy::refusal_of_what_was_sent)
 }
 
-/// Is this HTTP failure the context wall, spoken by the thing that owns it?
+/// Is this HTTP failure the context wall? A provider refuses an over-long prompt with a status,
+/// which lands as a backend error, so every recovery gated on `HarnessError::ContextWall` misses it.
 ///
-/// A provider refuses an over-long prompt with a STATUS, not with a wall event  -
-/// `HttpError::Status` renders as `http {code}: {body}` and lands as a backend error,
-/// so every recovery gated on `HarnessError::ContextWall` (the turn tail's
-/// `out.is_ok() || wall`) reads false and no door reacts.
-/// Thirty consecutive
-/// 400s, the first attributed to `monitor`, the last to `todo check`, none recovered.
-///
-/// The two measured shapes, verbatim, because a matcher is only as narrow as its
-/// fixtures:
-///
-/// * llama.cpp, JSON with a type field - the structured signal, preferred:
-///
-///   ```text
-///   {"error":{"code":400,"message":"request (1504198 tokens) exceeds the available context size (262144 tokens), try increasing it","type":"exceed_context_size_error","n_prompt_tokens":1504198,"n_ctx":262144}}
-///   ```
-///
-/// * an OpenAI-shaped provider, plain text naming a context length  -
-///   `error.code` is absent and the numbers live in the sentence:
-///
-///   ```text
-///   This model's maximum context length is 1048576 tokens. However, you requested 1463497 tokens (1463497 in the messages, 0 in the completion). Please reduce the length of the messages or completion. (request_id: 8a448ce7-fabf-4ffa-b350-16e6ddeed6ac)
-///   ```
-///
-/// The rule this implements, and the reason it is ONE function rather than a `contains`
-/// at the call site: parse the body as JSON first and read FIELDS
-/// (`error.type = "exceed_context_size_error"`, with `n_prompt_tokens`/`n_ctx`; or
-/// `error.code = "context_length_exceeded"`, with the numbers parsed out of
-/// `error.message`); only a body that is not JSON at all falls back to the text shape,
-/// matched by its two anchors (`maximum context length is` and `However, you requested`)
-/// and NOT by a bare substring the operator has ruled against (*"prompt-text matching
-/// is an overfit"*). Anything else - a 400 about invalid tokens, a 500 about a slot  -
-/// is a backend error and stays one: if this cannot parse, it does not guess.
+/// Read as fields when the body is JSON (`error.type = "exceed_context_size_error"` with
+/// `n_prompt_tokens`/`n_ctx`, or `error.code = "context_length_exceeded"`), else by the text's two
+/// anchors (`maximum context length is`, `However, you requested`). Otherwise it does not guess.
 fn context_length_refusal(body: &str) -> Option<ContextLengthRefusal> {
     // The structured half: a JSON error object with a field that NAMES the context as the complaint. Both fields are
     // read independently, since an OpenAI-shaped body carries a `type` and a `code` together, so `type` cannot be the

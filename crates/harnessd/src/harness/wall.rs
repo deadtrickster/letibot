@@ -2083,63 +2083,12 @@ impl Harness {
     }
 }
 
-/// The stored provider count and the ledger length it was measured at, or `None`
-/// when there is nothing to anchor to.
+/// The stored provider count and the ledger length it was measured at, as an anchor `(ledger,
+/// provider)` that [`roll_resident`] adds later appends to. Nothing is divided, so a stale count
+/// cannot shrink a big ledger and a later append cannot throw the count away.
 ///
-/// The decision is a free function for the reason `sweep_abandoned_calls` gives
-/// about its own: it can be tested without a daemon, a model or a socket. That is
-/// not tidiness here - a provider cannot be pointed at a canned server (a
-/// `ProviderConfig` names a vendor and nothing else), so a gate left inline in
-/// `Harness::open` could only ever be exercised by a test that talks to
-/// DeepSeek. The bug this replaces was found in production precisely because
-/// nothing checked the pairing.
-///
-/// What it returns is an ANCHOR, not a ratio - `(ledger, provider)`: the
-/// provider counted `provider` tokens for the prompt whose ledger was `ledger`
-/// long. [`roll_resident`] adds what was appended after `ledger` to it, sized the
-/// way the provider will be sent it, and that sum is the resident count.
-///
-/// # Why equality was the test, and why it is not any more
-///
-/// Equality of the stored and rebuilt ledgers was once required, because the pair
-/// is used as a RATIO: `ledger_now ÷ ratio`. A
-/// count from a smaller conversation divided into a bigger ledger overstates the
-/// ratio, and the session compacts too late: a store holding
-/// 940,211, measured on a ~950k-token conversation, was paired with a rebuilt
-/// ledger of 1,486,369; the window came out 1,580,888 for a session already 1.46M
-/// deep, and it died at the provider's 400 on every attempt.
-///
-/// The equality closed that, and opened the opposite hole. Anything appended after
-/// the last round's `persist_context` - a notice, a nag, the tool result of a turn
-/// that did not end in a round - broke it, the pair was refused, the window went
-/// UNSCALED, and the raw ledger was compared against the provider's window.
-/// On deepseek-flash, the first idle pass after a restart logged:
-///
-/// ```text
-/// compacting: 3454266 of 1000000 tokens resident, less than the 62500 the next turn needs
-/// compacted: 75408 tokens resident now, was 3454266.
-/// ```
-///
-/// That is a session the provider counted at ~740k, folded to 75k. The comment at the
-/// call chose that direction on purpose (*"it compacts early, which is the
-/// direction nobody loses a session to"*), and early by 4.6× is losing the
-/// session's working context on every restart.
-///
-/// An anchor has neither failure. The 950k conversation comes back as
-/// 940,211 PLUS the ~536k ledger tokens appended since, sized as sent - larger, so
-/// it compacts; the restarted one comes back as ~740k plus one notice - and does
-/// not. Nothing is divided, so a stale count cannot shrink a big ledger, and a
-/// later append cannot throw the count away.
-///
-/// It refuses in three cases, and each lands on the unscaled window:
-///
-///   * no stored pair - a row written before v12, or one whose turn never
-///     finished. Unverifiable is not the same as wrong, but the two are the same
-///     as unmeasured;
-///   * a stored ledger LONGER than the one rebuilt - the conversation it measured
-///     is not this one (a fork clears the row, so this is a row nothing else
-///     explains, and a count of something else is not evidence);
-///   * a zero on either side, which is not a measurement of anything.
+/// `None` (the unscaled window) for no stored pair, a stored ledger longer than the rebuilt one
+/// (another conversation), or a zero on either side. A free function so it is testable offline.
 pub(crate) fn recovered_scale(
     stored_provider: Option<u64>,
     stored_ledger: Option<u64>,
@@ -2173,28 +2122,9 @@ pub(crate) fn wall_stops_round(
     }
 }
 
-/// Whether the wall stops THIS round - [`wall_stops_round`]'s arithmetic plus the one
-/// question about where the count came from.
-///
-/// A session switched from deepseek to `glm-coding` was stopped at round 0 with
-///
-/// ```text
-/// context wall: stopped after 0 round(s) at 2708271 of 1000000 ledger tokens
-///               (unscaled: no round on glm-coding has measured yet)
-/// ```
-///
-/// The stop was 2,708,271 LEDGER tokens against a 1,000,000-token window, where the ledger
-/// of a metered session is `Vocab::bytes` (one id per byte of the rendered history). It is
-/// not a count of tokens at all, and comparing it with a token window says nothing about
-/// whether the prompt fits. The provider is the only one that can answer that question, and
-/// it answers it with a refusal that the compaction door already handles on evidence
-/// (`WallWhy::Refused`). So at round 0 an unmeasured count does not stop the turn.
-///
-/// Carried is not unmeasured. A ratio measured on the model before the switch converts
-/// bytes into that model's tokens - the same quantity, off by however differently the two
-/// tokenizers count - so the comparison is meaningful and the wall may fire on it, with
-/// every line that prints it saying which model measured the ratio. Only *nothing has ever
-/// been measured* is the case where the arithmetic means nothing at all.
+/// Whether the wall stops this round: [`wall_stops_round`]'s arithmetic plus where the count came
+/// from. A ledger count nothing measured is bytes, not tokens, so at round 0 it does not stop the
+/// turn and the provider's refusal (`WallWhy::Refused`) decides. A carried ratio is a measurement.
 pub(crate) fn wall_stops_this_round(
     round: usize,
     resident: u64,

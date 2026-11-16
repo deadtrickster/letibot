@@ -282,26 +282,12 @@ impl JobWindow {
 /// The window one read of a job's output answers with: the decision half of
 /// [`Harness::job_output_window`], which does the two reads and hands everything to this.
 ///
-/// A job whose command redirects its output to a file answers with the FILE, and the daemon does the
-/// reading, because a head has no business reading the box's filesystem. The redirect is enough on its
-/// own: reading from the file only when the capture was completely empty took a command as either
-/// redirecting or writing, and a compound command does both.
+/// A command that redirects its output to a file answers with the file, read by the daemon since
+/// a head has no business reading the box's filesystem. The capture's bytes are not drawn, but the
+/// read says how many lie outside the window; one source keeps `produced`/`from`/`dropped` coherent.
 ///
-/// ```text
-/// handle  state      produced  redirect
-/// j87     exited 0   2426      /tmp/tpcc-trace2.log   ← the file was NOT read
-/// j82     killed     13        /tmp/tpcc-trace.log    ← same shape
-/// j70     killed      0        /tmp/tpcc-trace-server.log ← this one worked
-/// ```
-///
-/// So when a command names a file, that file is the window whatever the capture holds, and the
-/// capture's bytes are not drawn. They are not lost silently either: the read says how many are
-/// outside the window and where the window is. Splicing the two coordinate spaces together, or
-/// switching to the file only at settlement, would make `produced`/`from`/`dropped` two stories
-/// about one source.
-///
-/// `offset == 0` is the TAIL, the last `limit` bytes, because that is what an output pane is for.
-/// Any other offset is a forward window from there, so a reader can walk to the end of a long log.
+/// `offset == 0` is the tail, the last `limit` bytes; any other offset is a forward window from
+/// there, so a reader can walk to the end of a long log.
 pub(crate) fn job_window_for(
     command: &str,
     state: &letibot_tools::exec::JobState,

@@ -1,21 +1,9 @@
-//! Repair a transcript whose rows were written under a different prefix than the one it names,
-//! by forking it onto the prefix that re-chains it instead of refusing the session for ever.
+//! Repair a transcript whose rows were written under a different prefix than the one it names, by
+//! forking it onto the prefix that re-chains it. Rows are copied, not re-rendered, and nothing
+//! stored is rewritten, so a wrong diagnosis cannot destroy the only copy of a conversation.
 //!
-//! The rows are not damaged: each is correctly hashed from some prefix, and the repair copies
-//! them rather than re-rendering them, because no renderer is guaranteed to reproduce an
-//! assistant row. Nothing stored is rewritten, so a wrong diagnosis cannot destroy the only
-//! copy of a conversation, and the fork hangs off the same session row, so the board, the jobs
-//! and the title all stand.
-//!
-//! Only one shape is repaired: row 0 starts past the end of the named prefix, and a stored
-//! prefix of exactly that length re-chains every row. Anything else keeps the honest refusal.
-//!
-//! ```text
-//! s-gatekeeper#t0 did not restore: row 0 (s-gatekeeper#t0.0) starts at 32162, should start at 24407
-//! ```
-//!
-//! A broken link mid-chain, a row inside the prefix, a length no prefix has: those are shapes
-//! nothing produces, and guessing at a conversation's history is not a repair.
+//! Only one shape is repaired: row 0 starts past the end of the named prefix, and a stored prefix
+//! of exactly that length re-chains every row. Anything else keeps the refusal.
 
 use letibot_tokencore::TokenId;
 use letibot_tokencore::ledger::{LedgerError, LedgerRow};

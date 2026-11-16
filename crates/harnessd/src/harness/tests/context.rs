@@ -391,28 +391,9 @@ fn round_zero_stops_past_the_window_and_later_rounds_inside_the_reserve() {
     assert!(!super::wall_stops_round(0, 5_600, 5_443, 128, 512));
 }
 
-/// A fresh provider is not a reason to refuse - the wall on a count nothing has
-/// measured, and the ratio a switch carries.
-///
-/// On the way from deepseek to
-/// `glm-coding`:
-///
-/// ```text
-/// context wall: stopped after 0 round(s) at 2708271 of 1000000 ledger tokens
-///               (unscaled: no round on glm-coding has measured yet)
-/// ```
-///
-/// The ledger of a metered session is `Vocab::bytes` - one id per byte of the rendered
-/// history - so 2,708,271 of them is not a token count and comparing it with a token
-/// window says nothing. The session had measured the ratio minutes before, on the model
-/// it had just left: 2,704,409 ledger tokens for 792,991 prompt tokens. Carried, that
-/// same history is ~794,000 of glm's 1,000,000-token window, which fits.
-///
-/// Two different rules are pinned here and they must not become one:
-///
-///   * a ratio measured on the model before the switch is an ESTIMATE that may decide;
-///   * nothing measured anywhere is not a count at all, so round 0 is attempted and the
-///     provider's own refusal is what folds - the door that already compacts on evidence.
+/// A fresh provider is no reason to refuse: a ledger count nothing measured is not a token count,
+/// so round 0 is attempted and the provider's refusal folds, while a ratio measured on the model
+/// before a switch is an estimate that may decide. The two rules must not become one.
 #[test]
 fn a_fresh_provider_is_judged_by_the_scale_the_model_before_it_measured() {
     // The session's own numbers.

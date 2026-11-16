@@ -8,11 +8,9 @@
 //!   ToolResult item <──transcript_item── ToolRuntime::invoke ── yes
 //! ```
 //!
-//! Three rules the loop cannot break. Item ids are minted by two different rules, so
-//! [`CapturingSink`] reads the id off the event rather than reimplementing either. A failed turn
-//! commits nothing, so the salvage notice goes in as a plain user item, the only append-only place
-//! it fits. And a tool batch is executed and appended in call order, because GLM's shipped template
-//! sorts tool results by call order and any other order would rewrite bytes already in the KV cache.
+//! Item ids are minted by two rules, so [`CapturingSink`] reads the id off the event. A failed
+//! turn commits nothing, so the salvage notice is a plain user item. Tool results are appended in
+//! call order: GLM's template sorts them so, and any other order rewrites bytes in the KV cache.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;

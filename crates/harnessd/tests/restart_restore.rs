@@ -850,24 +850,12 @@ fn helpers_are_not_restored_and_a_recorded_child_reads_one_way() {
     d.stop(None);
 }
 
-/// A child whose record was never written is still this session's child - listed, readable
-/// and refused by name when nothing can bring it back.
+/// A child whose record was never written is still this session's child: listed, readable, and
+/// refused by name when nothing can bring it back. The store is staged as a lost spawn leaves it
+/// (child session, no `subagent_run` row, unended turn) and every door a model has is asked.
 ///
-/// A `subagent_run` row can be lost (the store was locked when the spawn wrote it) and the child goes
-/// on working, so the daemon's own log is the only place that says so
-///
-/// ```text
-///   s-…-sub-1793488007308855461 · not recorded (sqlite: database is locked); it runs, and a
-///   daemon restart will not bring it back
-/// ```
-///
-/// Its own session row is the second witness, and this is the test that reads it: the store is
-/// staged as a lost spawn leaves it (a child session, no `subagent_run` row, a turn that never
-/// ended), the parent is opened, and every door a model has is asked about the child.
-///
-/// And one child from before the store recorded any, which is the other class and not a loss at
-/// all: a child older than the store's first record must be ABSENT from the list and must be told
-/// *this child is from before this store recorded any child* rather than the refused-write sentence.
+/// A child from before the store recorded any is absent from the list and told *this child is
+/// from before this store recorded any child*, not the refused-write sentence.
 #[test]
 fn a_child_whose_record_was_never_written_is_still_listed_and_readable() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

@@ -1,15 +1,8 @@
-//! Room for the descriptors a test binary's own parallelism needs - a fixture, so that a test
-//! measures its subject instead of the shell's soft open-file limit.
+//! Room for the descriptors a test binary's parallel tests need, so a test measures its subject
+//! and not the soft open-file limit: each harness holds about six (store, corpus, WAL files).
 //!
-//! Where the descriptors go: every harness opens the store AND a corpus connection, and sqlite in
-//! WAL keeps the db, the `-wal` and the `-shm` open - ~6 per harness, and a test binary runs its
-//! tests in parallel by default. Darwin's default SOFT limit is 256 and Linux's is 1024, which is
-//! why none of this has ever been red in CI.
-//!
-//! A soft limit is the RUN's and not the test's subject, and the HARD limit is what bounds it - so a
-//! caller asks for what it needs, this asks the kernel for `min(want, hard)`, prints what it got
-//! and a box that cannot give it says so in those words (through `apparatus::present`, so
-//! `LETIBOT_REQUIRE_APPARATUS=1` refuses the run rather than letting it measure the wrong thing).
+//! This asks the kernel for `min(want, hard)`, prints what it got, and a box that cannot give it
+//! says so through `apparatus::present`, so `LETIBOT_REQUIRE_APPARATUS=1` refuses the run.
 //!
 //! ```ignore
 //! let Some(_) = room::room_for("fifty concurrent subagents", 512) else { return };

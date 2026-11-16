@@ -1,28 +1,11 @@
-//! A stop ends the runs a session has in flight - and says so.
+//! A stop ends the runs a session has in flight, and says so.
 //!
-//! `Registry::close` wakes each session's reader out of `next_command`, but a reader inside a run
-//! has not reached it: when this was measured there was one worker, so a stop that arrived
-//! mid-command waited for that command, and the command's own deadline - two minutes at the `bash`
-//! default - was what ended it.
-//! Measured on a live daemon
+//! `Registry::close` wakes a reader out of `next_command`, but a reader inside a run has not reached
+//! it. Asserted: the run ends and the daemon goes well inside the run's own 120 s deadline, saying
+//! so on the session log while the heads still watch.
 //!
-//! ```text
-//! Stop acked
-//! Bye  after 519 µs      ("daemon shutting down")
-//! the daemon's process is still in /proc
-//! and it is still there 150 s later
-//! ```
-//!
-//! What is asserted: the stop ends the run and the daemon goes, well inside the run's own 120 s
-//! deadline; and the daemon says so on the session log while the heads are still watching. The head
-//! is told the truth either way - it does not leave on the `Bye`, which the connection thread
-//! publishes before the worker has ended (`crates/tui/tests/stop_daemon.rs`'s half).
-//!
-//! # The run, and why it is `/bin/cat`
-//!
-//! The fixture has to be a run that cannot end on its own, or the stop arrives at nothing
-//! `/bin/cat` blocked on the terminal the daemon holds is that state on every box, and `su -c true`
-//! is not - `su` blocks only where it has to ask for a password.
+//! The run is `/bin/cat` blocked on the terminal the daemon holds: it cannot end on its own on any
+//! box, which `su -c true` cannot promise, since `su` blocks only where it asks for a password.
 
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};

@@ -1,28 +1,11 @@
 //! A retry that works leaves nothing; a ladder that gives up leaves one row.
 //!
-//! The report was three rows in three seconds, one per attempt, the same sentence with a different
-//! number in it - and then two more when the endpoint came back:
+//! A ladder in flight is one live line, rewritten in place and withdrawn when it ends: one row if
+//! the ladder was spent or the session moved, nothing if the endpoint came back. The count is kept
+//! in `metrics.db` and on the turn's record.
 //!
-//! ```text
-//! session · model_endpoint_retry · the model endpoint at api.deepseek.com did not answer…   10:31:22
-//! session · model_endpoint_retry · the model endpoint at api.deepseek.com did not answer…   10:31:23
-//! session · model_endpoint_retry · the model endpoint at api.deepseek.com did not answer…   10:31:25
-//! session · answered after 3 attempts, 12s
-//! session · model_endpoint_answered · the model endpoint at api.deepseek.com answered again…
-//! ```
-//!
-//! The operator's question is the rule: *deepseek replied on the third try - why should I focus on
-//! that fact?* A ladder in flight is ONE live line, rewritten in place and withdrawn when it ends;
-//! what a person is left with is one row if the ladder was spent, one row if the session moved, and
-//! nothing at all if the endpoint came back. The count is not lost: `metrics.db` has it per outage
-//! and on the turn's own record, which is where a question about the ladder belongs.
-//!
-//! A real daemon, a real socket, a real head and a loopback stub standing in for the provider -
-//! nothing is mocked above the wire and nothing is injected into the retry policy, because the
-//! subject is *how many rows one outage is worth*. The waits are the ladder's own - 1 s, 2 s, 4 s -
-//! since a fixture that shortened them would measure a retry loop this tree does not have.
-//!
-//! One test and three sessions, because `XDG_CONFIG_HOME` is process-global.
+//! A real daemon, socket and head, a loopback provider stub, and the ladder's own waits. One test
+//! and three sessions, because `XDG_CONFIG_HOME` is process-global.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
