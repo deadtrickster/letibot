@@ -1,4 +1,4 @@
-//! K4: the turn-end door. A `steer_` layer's answer replaces the harness's own decision, and two
+//! The turn-end door. A `steer_` layer's answer replaces the harness's own decision, and two
 //! rules stay the host's - the continuation budget, and an interrupted turn.
 
 use super::*;
@@ -109,7 +109,7 @@ fn a_harness(id: &str) -> Option<Harness> {
     Some(Harness::open(&parts, cfg, Hub::new(id)).expect("the session opens"))
 }
 
-/// K4's rule: the budget is the host's. A layer that spends what the turn has not got is refused,
+/// The budget is the host's. A layer that spends what the turn has not got is refused,
 /// the turn ends as the harness decided, and the refusal is on the session's log.
 #[test]
 fn a_continue_past_the_budget_is_refused() {
@@ -136,7 +136,7 @@ fn a_continue_past_the_budget_is_refused() {
     );
 }
 
-/// K4's other rule: an interrupted turn is the operator's stop, and the budget being left is not
+/// An interrupted turn is the operator's stop, and the budget being left is not
 /// the question - the answer is refused whatever it would have cost.
 #[test]
 fn an_interrupted_turn_is_never_continued() {
@@ -154,7 +154,7 @@ fn an_interrupted_turn_is_never_continued() {
     assert!(refused_on_the_log(&hub), "{:?}", hub.retained());
 }
 
-/// G2's first item, as a project's own rule: a turn that began on a compaction's record goes on,
+/// A project's own rule: a turn that began on a compaction's record goes on,
 /// and every other turn ends as the harness decided. The fact it reads is the one the harness sets
 /// on a fork, taken once so the turn after that is not marked.
 #[test]

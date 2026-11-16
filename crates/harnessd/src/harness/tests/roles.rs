@@ -1,7 +1,6 @@
-// A role profile at the two seams that decide what a child IS: the tool table `role_for` gives it,
-// and message zero `compose_for_seat` builds. Both are pure - no backend, no model, no store - so a
-// box without bwrap or a vocabulary proves them. `crates/tools/src/profiles.rs` proves the parser,
-// `crates/harnessd/src/profiles.rs` the resolution, and this file the two things a spawn leans on.
+// A role profile at the two pure seams that decide what a child is: the tool table `role_for`
+// gives it and message zero `compose_for_seat` builds, so no backend, model or store is needed.
+// The parser and the resolution are proved in `crates/tools/src/profiles.rs` and `profiles.rs`.
 
 use letibot_tools::Profiles;
 

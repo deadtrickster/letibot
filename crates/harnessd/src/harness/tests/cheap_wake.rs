@@ -1,4 +1,4 @@
-//! R169: a wake carrying only passing-by room talk runs cheap (thinking off, a small cap) and
+//! A wake carrying only passing-by room talk runs cheap (thinking off, a small cap) and
 //! may end in silence, which is never nudged. Anything addressed makes it a full turn.
 
 use super::super::turns::CHEAP_WAKE_TOKENS;

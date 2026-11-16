@@ -20,9 +20,9 @@ fn a_harness(id: &str) -> Option<(Harness, std::path::PathBuf)> {
     Some((h, dir))
 }
 
-/// One fallback, one continuation, and none over the operator's stop: the ruling is what arms the notice, and the two
-/// things measured here are its bounds. A notice taken twice would open a turn nobody asked for, and a continuation
-/// started over their interrupt would be aborted by it or ignore it.
+/// One fallback, one continuation, and none over the operator's stop. A notice taken twice would
+/// open a turn nobody asked for, and a continuation started over an interrupt would be aborted by
+/// it or ignore it.
 #[test]
 fn a_fallback_continuation_is_taken_once_and_never_over_a_stop() {
     let Some((mut h, dir)) = a_harness("s-fallback-continuation") else {

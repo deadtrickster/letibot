@@ -1,4 +1,4 @@
-//! R243 stage 2 end to end, on the byte vocabulary: a turn that announced work and stopped is held
+//! End to end, on the byte vocabulary: a turn that announced work and stopped is held
 //! for the shadow's turn_end verdict, and the verdict decides what the next wake says.
 
 use super::*;

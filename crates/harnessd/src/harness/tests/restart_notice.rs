@@ -1,7 +1,6 @@
-//! A restart is said even when there is nothing to restore, and it starts a turn only when the
-//! session owes something. Idle and owing nothing gets a row and no turn - being active before the
-//! stop is not owed work - and owed work gets one turn whose sentence names it, ends in one
-//! instruction, and defines the empty reply that ends it without a row to read.
+//! A restart is said even with nothing to restore, and starts a turn only when the session owes
+//! something. Idle and owing nothing gets a row and no turn; owed work gets one turn whose
+//! sentence names it, ends in one instruction, and defines the empty reply that ends it.
 
 use super::*;
 use letibot_tokencore::store::{SessionRecord, Store, TodoBy, TodoItem, TodoStatus};
@@ -175,8 +174,7 @@ fn reopened_with(dir: &Scratch, id: &str, set: impl FnOnce(&mut Config)) -> Harn
 }
 
 // ---------------------------------------------------------------------------
-// The door a restart turn takes, and the one it ends on - on the BYTE vocabulary,
-// because these tests also run a turn and this box has no GGUF
+// The door a restart turn takes, and the one it ends on, on the byte vocabulary (no GGUF here)
 // ---------------------------------------------------------------------------
 
 /// How many completions the fake model was asked for - the fact that says whether a generation
@@ -431,7 +429,7 @@ fn a_session_mid_turn_reads_the_line_at_its_next_round_boundary() {
 }
 
 // ---------------------------------------------------------------------------
-// What the session still OWES - the door the operator's 2026-11-01 ruling turns on
+// What the session still OWES - the door the wake decision turns on
 // ---------------------------------------------------------------------------
 
 /// A session whose plan still has rows owed is WOKEN, and the sentence says why: the operator expected the work to
@@ -723,10 +721,8 @@ fn restarts_with_no_turn_between_them_leave_one_bare_row() {
     assert_eq!(restart_rows(&h).len(), 2, "{:?}", h.items());
 }
 
-/// **A session active just before the stop is NOT woken on that alone.** It owes nothing a turn
-/// could continue, and a generation spent reading a note to conclude there is nothing to do is
-/// exactly what the operator called out: the note is a row, and the session stays asleep until
-/// somebody types to it.
+/// A session active just before the stop is not woken on that alone: it owes nothing a turn
+/// could continue. The note is a row, and the session sleeps until somebody types to it.
 #[test]
 fn a_recently_active_session_owing_nothing_gets_the_row_and_no_turn() {
     let dir = Scratch::new("restart-recent");
@@ -751,8 +747,8 @@ fn a_recently_active_session_owing_nothing_gets_the_row_and_no_turn() {
     assert_eq!(asked.count(), 0, "a generation was spent on nothing");
 }
 
-/// **A session that owes work spends ONE turn, and the sentence it opens with names the work by
-/// the row's own words.** A model reading *2 todo rows* has to go and look; a model reading what it
+/// A session that owes work spends ONE turn, and the sentence it opens with names the work by
+/// the row's own words. A model reading *2 todo rows* has to go and look; a model reading what it
 /// wrote on the board does not, and the turn after it has nothing left to say.
 #[test]
 fn a_restart_that_owes_work_spends_one_turn_that_names_it() {
@@ -794,10 +790,9 @@ fn a_restart_that_owes_work_spends_one_turn_that_names_it() {
     assert_eq!(asked.count(), 1, "the restart was said twice");
 }
 
-/// **The quiet end leaves nothing to read and nothing to wait on.** A turn that finds the work
-/// already done answers with the empty reply the sentence defines: the row it leaves is an
-/// assistant row with no words and no calls, which renders no lines, and the session afterwards is
-/// idle - no pending delivery, no `waiting on:` line.
+/// The quiet end leaves nothing to read and nothing to wait on: a turn finding the work done
+/// gives the empty reply the sentence defines, a row with no words or calls that renders no
+/// lines, and the session is idle after, with no pending delivery and no `waiting on:` line.
 #[test]
 fn a_quiet_end_leaves_no_drawn_row_and_an_idle_session() {
     let dir = Scratch::new("restart-quiet-end");
@@ -850,7 +845,7 @@ fn a_quiet_end_leaves_no_drawn_row_and_an_idle_session() {
     );
 }
 
-/// **An old session is woken only when its last words wait on the restart**, and one whose last message is
+/// An old session is woken only when its last words wait on the restart, and one whose last message is
 /// unrelated keeps the row (`a_session_that_answered_last_is_told_in_a_row_and_not_woken`).
 #[test]
 fn an_old_session_that_promised_to_continue_after_a_restart_is_woken() {

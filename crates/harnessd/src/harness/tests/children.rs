@@ -1251,8 +1251,7 @@ fn flowy_is_a_door_for_every_root_session_and_for_no_subagent() {
     cfg.flowy = Some(crate::config::FlowyConfig::default());
     let root = role_for(&cfg);
     assert!(root.tools.iter().any(|t| t == "flowy"));
-    // And the person can be asked. The operator's ruling: *"yeah i
-    // want you to be able to ask me for a choice"* - the seat carries it whether or
+    // And the person can be asked: the seat carries it whether or
     // not a room is attached, because asking is not a room's business.
     assert!(
         root.tools.iter().any(|t| t == "ask_user_question"),

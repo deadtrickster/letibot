@@ -1,4 +1,4 @@
-//! R246 end to end, on the byte vocabulary: with the shadow's during job on, its verified pick is
+//! End to end, on the byte vocabulary: with the shadow's during job on, its verified pick is
 //! the round's skill offer and similarity offers nothing; a child session is offered no skills.
 
 use super::*;

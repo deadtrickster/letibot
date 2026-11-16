@@ -1,6 +1,6 @@
-//! K2: one notice door. Every model-facing sentence the harness composes is offered to a
+//! One notice door. Every model-facing sentence the harness composes is offered to a
 //! `notice_<kind>` layer before it is said, mid-turn included, and with no layer it reads
-//! byte-for-byte as it did before the door existed.
+//! byte-for-byte as the harness's own sentence.
 
 use super::*;
 use crate::harness::turns::{queue_mid_turn, say};

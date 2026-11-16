@@ -473,7 +473,7 @@ fn opening_an_archived_session_takes_it_back_into_the_list() {
     );
 }
 
-/// R276: a reviewer the auto-archive put away is opened again by id, at the same door, and the
+/// A reviewer the auto-archive put away is opened again by id, at the same door, and the
 /// note carries the rule's reason.
 #[test]
 fn an_auto_archived_reviewer_is_opened_again_by_id() {

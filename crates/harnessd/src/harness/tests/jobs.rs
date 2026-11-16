@@ -642,7 +642,7 @@ fn a_settlement_carries_what_a_job_of_jobs_says_for_itself() {
 }
 
 /// A killed job's result is what it wrote before the harness ended it. A settlement that said only
-/// `killed by …` reads as a finish, which is the report R160 filed: the notice carries the partial
+/// `killed by …` reads as a finish, so the notice carries the partial
 /// sentence, and a job that finished carries nothing.
 #[test]
 fn a_killed_jobs_settlement_says_its_output_is_partial() {
@@ -1461,7 +1461,7 @@ fn the_jobs_a_vm_child_left_running_are_named_to_its_parent() {
 
     // And the settlement over it: a finish when nothing died, and a kill that carries the
     // child's own words when something did - the two are different statuses, because a `Done`
-    // over a job killed with its VM is the defect (R173).
+    // over a job killed with its VM is the defect.
     use letibot_tools::builtins::task::TaskStatus;
     let answer = "the sleep is still going; the tree is quiet".to_string();
     let clean = vm_child_finish(&[], answer.clone());
@@ -1481,7 +1481,7 @@ fn the_jobs_a_vm_child_left_running_are_named_to_its_parent() {
 
 /// A VM child's hold ends when nothing is running in its VM *and* nothing is still owed: a
 /// settlement queued, held or rung for a turn is the turn that names the job's exit, and the VM
-/// may not close before the child has read it (R173).
+/// may not close before the child has read it.
 #[test]
 fn the_jobs_hold_ends_only_when_nothing_runs_and_nothing_is_owed() {
     use super::{ChildHold, hold_is_over};

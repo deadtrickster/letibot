@@ -966,10 +966,9 @@ fn a_batch_put_back_rings_the_session_that_owes_it() {
     );
 }
 
-/// The room's half of the same rule: a door that took a room line and could not open a turn hands it
-/// back UNACKED and rings. The bell the line arrived with was spent by that turn, so nothing else
-/// would ever start the one that says it - which is the live defect, a head reading
-/// `waiting on: delivery` on a session that is idle and stays idle.
+/// The room's half of the same rule: a door that took a room line and could not open a turn hands
+/// it back unacked and rings. The line's bell was spent by that turn, so otherwise nothing would
+/// start it and a head would read `waiting on: delivery` on a session that stays idle.
 #[test]
 fn a_room_line_put_back_rings_the_session_that_owes_it() {
     use letibot_sessionlog::registry::{Registry, SessionWiring, Work, WorkOrIdle};
@@ -1028,7 +1027,7 @@ fn a_room_line_put_back_rings_the_session_that_owes_it() {
     assert_eq!(took.seqs, vec![7]);
 }
 
-/// R187's own case: #1307 is a peer's passing-by line, queued and ringing nothing, and #1309 mentions
+/// A peer's passing-by line, queued and ringing nothing, then a line that mentions
 /// the session. ONE door takes both, in the order they arrived, so the trigger never arrives before
 /// the line it follows.
 #[test]
@@ -1070,8 +1069,8 @@ fn a_passing_line_then_a_mention_is_one_delivery_in_seq_order() {
     assert!(!got.urgent && !got.from_operator, "a room line is neither");
 }
 
-/// A job that ended between two room lines is said between them. The two used to be two queues with
-/// the room always read first, so the order was the door's and not the arrivals'.
+/// A job that ended between two room lines is said between them: one queue, so the order is the
+/// arrivals' and not the door's.
 #[test]
 fn a_job_that_ended_between_two_room_lines_is_said_between_them() {
     use letibot_room::chat::Reach;
@@ -1160,10 +1159,9 @@ fn a_room_line_alone_reaches_a_running_turn_without_waiting_for_a_boundary() {
     assert!(got.text.contains("#4 for you"), "{}", got.text);
 }
 
-/// A line nothing rang for is held until the quiet window passes, and then said as ONE digest turn:
-/// the ring the idle pass makes opens the turn, the door that opens it says every line in the order
-/// they arrived, and nothing rings before the window is out. This is the black hole R187 left open -
-/// a passing line to an idle session waited for a turn that might never come.
+/// A line nothing rang for is held until the quiet window passes, then said as one digest turn:
+/// the idle pass's ring opens it, the door says every line in arrival order, and nothing rings
+/// before the window is out. A passing line to an idle session never waits for ever.
 #[test]
 fn three_held_passing_lines_are_one_digest_turn_after_the_quiet_window() {
     use letibot_room::chat::Reach;
