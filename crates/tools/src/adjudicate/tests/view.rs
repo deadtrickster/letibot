@@ -507,3 +507,77 @@ fn view_asks_are_recorded_and_shadow_rows_excluded_from_agreement() {
         "the person's answer labels the advice"
     );
 }
+
+/// A ledger in memory whose reads can be made to fail.
+#[derive(Default)]
+struct Flaky {
+    rows: Mutex<Vec<crate::grant_ledger::Stored>>,
+    down: std::sync::atomic::AtomicBool,
+}
+
+impl crate::grant_ledger::GrantLedger for Flaky {
+    fn keep(
+        &self,
+        scope: &crate::grant_ledger::Scope,
+        kept: &crate::grant_ledger::Kept,
+        why: &str,
+        by: &str,
+    ) -> Result<(), String> {
+        let mut rows = self.rows.lock().unwrap();
+        let id = rows.len() as i64 + 1;
+        rows.push(crate::grant_ledger::Stored {
+            id,
+            scope: scope.clone(),
+            kept: kept.clone(),
+            why: why.into(),
+            by: by.into(),
+        });
+        Ok(())
+    }
+
+    fn load(
+        &self,
+        scope: &crate::grant_ledger::Scope,
+    ) -> Result<Vec<crate::grant_ledger::Stored>, String> {
+        if self.down.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err("the store is gone".into());
+        }
+        Ok(self
+            .rows
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|r| &r.scope == scope)
+            .cloned()
+            .collect())
+    }
+
+    fn clear(&self, _: &crate::grant_ledger::Scope, _: &str) -> Result<usize, String> {
+        Ok(0)
+    }
+
+    fn generation(&self) -> Result<String, String> {
+        match self.down.load(std::sync::atomic::Ordering::SeqCst) {
+            true => Err("the store is gone".into()),
+            false => Ok(self.rows.lock().unwrap().len().to_string()),
+        }
+    }
+}
+
+/// A ledger that cannot be read may be hiding a revoke, so the view grants read from it are
+/// unbound until it can be read again.
+#[test]
+fn an_unreadable_ledger_unbinds_the_view_grants_it_held() {
+    let view = Arc::new(ViewGrants::new());
+    let ledger = Arc::new(Flaky::default());
+    let cards = Cards::new("grant_ro");
+    let mut g = gate(cards.clone(), &view, None).with_grant_ledger(ledger.clone(), None);
+    let path = Path::new("/build/letibot-r1");
+    assert_eq!(
+        g.grant_view(path, "bash", ViewAccess::Read),
+        ViewGrant::Granted { writable: false }
+    );
+    ledger.down.store(true, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(g.view_revocations(), vec![crate::view::key(path)]);
+    assert_eq!(view.covers(path, ViewAccess::Read), None);
+}

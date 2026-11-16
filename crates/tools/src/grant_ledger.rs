@@ -1,6 +1,7 @@
 //! Where a gate's session grants are kept so they outlive the process: view widenings,
 //! `allow_session` answers and the memory ceiling. The gate holds a copy and reloads it when
-//! anything in this process kept or revoked one, so a revoke reaches a live session.
+//! anything kept or revoked one, in this process or through the store, so a revoke reaches a
+//! live session.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
@@ -247,6 +248,11 @@ pub trait GrantLedger: Send + Sync {
     fn load(&self, scope: &Scope) -> Result<Vec<Stored>, String>;
     /// Drop every grant of `kind` under `scope`.
     fn clear(&self, scope: &Scope, kind: &str) -> Result<usize, String>;
+    /// A value that moves when any process keeps, changes or revokes a grant, so a gate reloads
+    /// on a revoke another daemon made. The default is this process's [`generation`] alone.
+    fn generation(&self) -> Result<String, String> {
+        Ok(String::new())
+    }
 }
 
 #[cfg(test)]

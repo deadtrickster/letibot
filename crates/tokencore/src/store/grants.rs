@@ -92,6 +92,24 @@ impl Store {
         Ok(())
     }
 
+    /// The grant table's state as one value: it moves on every insert, update and delete, from
+    /// any connection, so a reader can tell a stale copy without re-reading every row.
+    pub fn grant_generation(&self) -> Result<String> {
+        let conn = self.at("session_grant");
+        Ok(conn.query_row(
+            "SELECT COALESCE(MAX(id), 0), COUNT(*), COALESCE(MAX(granted_ms), 0) FROM session_grant",
+            [],
+            |r| {
+                Ok(format!(
+                    "{}:{}:{}",
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, i64>(2)?
+                ))
+            },
+        )?)
+    }
+
     /// Every grant held under `(session_id, scope)`, oldest first.
     pub fn grants(&self, session_id: &str, scope: &str) -> Result<Vec<GrantRow>> {
         self.grant_rows(

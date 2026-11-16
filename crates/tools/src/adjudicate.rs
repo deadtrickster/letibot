@@ -1493,6 +1493,8 @@ pub struct AdjudicatedGate {
     queue: Option<String>,
     /// The ledger generation the copy below was read at.
     loaded_at: u64,
+    /// The ledger's own generation at the last load: a revoke in another process moves it.
+    loaded_store: String,
     /// Grants answered here that the ledger refused, so a reload does not drop them.
     unkept: Vec<crate::grant::Grant>,
     unkept_memory: Option<Option<u64>>,
@@ -1631,6 +1633,7 @@ impl AdjudicatedGate {
             ledger: None,
             queue: None,
             loaded_at: 0,
+            loaded_store: String::new(),
             unkept: Vec::new(),
             unkept_memory: None,
             view_loaded: Vec::new(),
@@ -1664,25 +1667,33 @@ impl AdjudicatedGate {
         out
     }
 
-    /// Read the ledger again when anything in this process kept or revoked a grant. A ledger that
-    /// cannot be read leaves the copy as it was.
+    /// Read the ledger again when anything kept or revoked a grant, here or in another process.
+    /// A ledger that cannot be read unbinds the view grants it held: a revoke may be behind it.
     fn refresh_grants(&mut self) {
         use crate::grant_ledger::Kept;
         let Some(ledger) = self.ledger.clone() else {
             return;
         };
         let at = crate::grant_ledger::generation();
-        if at == self.loaded_at {
+        let Ok(store) = ledger.generation() else {
+            self.drop_kept_views();
+            return;
+        };
+        if at == self.loaded_at && store == self.loaded_store {
             return;
         }
         let mut rows = Vec::new();
         for scope in self.grant_scopes() {
             match ledger.load(&scope) {
                 Ok(r) => rows.extend(r),
-                Err(_) => return,
+                Err(_) => {
+                    self.drop_kept_views();
+                    return;
+                }
             }
         }
         self.loaded_at = at;
+        self.loaded_store = store;
         let mut grants = Vec::new();
         let mut memory: Option<Option<u64>> = None;
         let mut views: Vec<(std::path::PathBuf, bool)> = Vec::new();
@@ -1717,6 +1728,17 @@ impl AdjudicatedGate {
             }
         }
         self.view_loaded = views;
+    }
+
+    /// Unbind every view grant read from the ledger, and read it whole at the next call.
+    fn drop_kept_views(&mut self) {
+        if let Some(view) = &self.view {
+            for (path, _) in &self.view_loaded {
+                view.revoke(path);
+            }
+        }
+        self.view_loaded.clear();
+        self.loaded_at = 0;
     }
 
     /// A view grant the operator just answered, kept.

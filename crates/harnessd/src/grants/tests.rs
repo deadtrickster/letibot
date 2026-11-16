@@ -327,3 +327,35 @@ fn a_queue_grant_expires_after_its_ttl() {
     );
     assert_eq!(cards.count(), 2);
 }
+
+/// A revoke made by another daemon reaches this one's gate: the store moved, though nothing in
+/// this process said so. Revoked through a second store connection, without the process bump.
+#[test]
+fn a_revoke_in_another_process_is_seen_at_the_next_call() {
+    let f = Fixture::new("other-process");
+    let cards = Cards::new("grant_ro", false);
+    let (mut g, view) = f.gate(MAIN, &cards);
+    assert_eq!(
+        g.grant_view(&f.build(), "bash", ViewAccess::Read),
+        ViewGrant::Granted { writable: false }
+    );
+    assert!(g.view_revocations().is_empty());
+
+    let other = f.at.open().unwrap();
+    let row = load(&other, &Scope::Session(MAIN.into())).unwrap();
+    assert_eq!(row.len(), 1, "{row:?}");
+    assert!(other.revoke_grant(row[0].id).unwrap());
+
+    assert_eq!(
+        g.view_revocations(),
+        vec![letibot_tools::view::key(&f.build())],
+        "the next call unbinds it"
+    );
+    assert_eq!(view.covers(&f.build(), ViewAccess::Read), None);
+    assert_eq!(
+        g.grant_view(&f.build(), "bash", ViewAccess::Read),
+        ViewGrant::Granted { writable: false },
+        "asked again, not covered"
+    );
+    assert_eq!(cards.count(), 2);
+}

@@ -59,6 +59,10 @@ impl GrantLedger for StoreLedger {
             .clear_grants(scope.owner(), scope.as_str(), kind)
             .map_err(|e| e.to_string())
     }
+
+    fn generation(&self) -> Result<String, String> {
+        self.store()?.grant_generation().map_err(|e| e.to_string())
+    }
 }
 
 fn default_queue_ttl() -> std::time::Duration {
