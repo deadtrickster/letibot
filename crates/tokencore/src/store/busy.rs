@@ -1,19 +1,6 @@
-//! A busy store is waited for, never died of. `SQLITE_BUSY` is ordinary where sessions share a
-//! file, so a write takes `BEGIN IMMEDIATE` and retries within a budget; only a non-busy
-//! failure is an error.
-//!
-//! [`on_busy`] sleeps each retry and sums the sleep, so a lock wait shows as `waited N ms`. A
-//! laddered attempt sleeps at most [`LADDER_ATTEMPT`] there, since the handler holds the process's
-//! one connection. The lines, on a daemon's stderr:
-//!
-//! ```text
-//! store: a call at store/procs.rs:345 took 11405 ms (waited 11400 ms, 0 busy retries)
-//! store: a call at store.rs:3150 failed after 87 ms (waited 0 ms, 2 busy retries, 3 at this site): database is locked
-//! ```
-//!
-//! A call over [`SLOW_CALL`], where `queued N ms behind another thread` is a wait for this
-//! process's connection; and a [`Flavour`] failure, logged however fast, with its count at that
-//! `file:line` since the process started.
+//! A busy store is waited for, never died of: a write takes `BEGIN IMMEDIATE` and retries within a
+//! budget. [`on_busy`] sums its sleeps so a lock wait shows as `waited N ms`; calls over [`SLOW_CALL`]
+//! and [`Flavour`] failures are logged with their `file:line`.
 
 use std::cell::RefCell;
 use std::sync::Mutex;

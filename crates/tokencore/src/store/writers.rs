@@ -1,11 +1,5 @@
-//! One writer per session's transcript, and the writer is a row: a claim another live process
-//! holds refuses the open by name. The trigger caught the old interleaving only after the damage:
-//! ```text
-//! store: rows 11..12 (s-gatekeeper#t0.11..): row 11 of s-gatekeeper#t0: sqlite: transcript_item
-//!        seq must be the next one
-//! store: rows 11..12 (s-gatekeeper#t0.11..): sqlite: transcript_item tok_offset must continue the
-//!        previous row
-//! ```
+//! One writer per session's transcript, and the writer is a row: a claim another live process holds
+//! refuses the open by name, before interleaved writes can reach the seq triggers.
 
 use rusqlite::{OptionalExtension, params};
 

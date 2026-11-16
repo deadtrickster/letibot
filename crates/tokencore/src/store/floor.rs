@@ -1,13 +1,6 @@
-//! The reader floor: the lowest schema a reader may know and still read this store.
-//!
-//! One `sessions.db` is shared by every daemon on the box, so a newer build that only ADDS
-//! leaves older daemons reading it, and one that rewrites what an older reader reads says so
-//! here, by number. The floor is a row rather than a version because it moves up or not at
-//! all, and a reader below it is refused by name.
-//!
-//! ```text
-//! store: opening "…/sessions.db": store schema is version 33; this build knows 32
-//! ```
+//! The reader floor: the lowest schema a reader may know and still read this store. Every daemon on
+//! the box shares one `sessions.db`, so a build that rewrites what older readers read raises the
+//! floor here, by number. It only moves up, and a reader below it is refused by name.
 
 use rusqlite::{Connection, OptionalExtension, params};
 

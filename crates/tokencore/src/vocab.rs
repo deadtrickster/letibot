@@ -208,14 +208,8 @@ impl Vocab {
     }
 
     /// Tokens back to text, by concatenating [`Vocab::piece_bytes`]. `render_special = true` reproduces
-    /// the exact string a dialect rendered; `false` what a reader is meant to see. It is not
-    /// `llama_detokenize`, which ate the space before punctuation through `clean_up_tokenization_spaces`:
-    /// ```text
-    /// tokenize("… self.session_id != s …")  ->  [.., 842, 961, 274, ..]
-    /// piece(961)              = " !="      <- faithful
-    /// llama_detokenize([961]) = "!="       <- space gone
-    /// llama_detokenize([842, 961]) = "_id!="   <- gone mid-sequence too
-    /// ```
+    /// the exact string a dialect rendered; `false` what a reader is meant to see. Not
+    /// `llama_detokenize`, whose `clean_up_tokenization_spaces` drops the space before punctuation.
     pub fn detokenize(
         &self,
         tokens: &[TokenId],
