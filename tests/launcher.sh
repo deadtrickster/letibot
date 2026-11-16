@@ -1322,6 +1322,24 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# **install_and_launcher_name_the_same_binary**: the install loop writes `~/.local/bin`, and
+# `~/.local/bin/letibot` links into a checkout that has its own target/release. The binaries
+# beside the command typed are the ones run.
+mkdir -p "$T/co/scripts" "$T/co/target/release" "$T/inst"
+cp "$LAUNCHER" "$T/co/scripts/letibot"
+for d in co/target/release inst; do
+  printf '#!/bin/sh\n[ $# -eq 0 ] && exit 0\necho "harnessd from %s"\n' "$d" > "$T/$d/harnessd"
+  chmod +x "$T/$d/harnessd"
+done
+ln -sf "$T/co/scripts/letibot" "$T/inst/letibot"
+out="$(cd "$T/ws" && env -i PATH="$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
+  LETIBOT_ROOM_SOCKET="$ROOM_SOCK" "$(command -v bash)" "$T/inst/letibot" "q" 2>&1 < /dev/null)"
+expect "install_and_launcher_name_the_same_binary: a linked launcher runs the installed build" \
+  "$out" "^harnessd from inst$"
+out="$(cd "$T/ws" && env -i PATH="$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
+  LETIBOT_ROOM_SOCKET="$ROOM_SOCK" "$(command -v bash)" "$T/co/scripts/letibot" "q" 2>&1 < /dev/null)"
+expect "  ...and the checkout's own script runs its target/release" "$out" "^harnessd from co/target/release$"
+
 # **A SESSION THAT LIVES ON A HOST** (`docs/remote-hosts.md` RH4): the verb passes through,
 # and an attach goes to the forwarded socket instead of to this folder's daemon.
 #
