@@ -119,6 +119,21 @@ pub fn door(frame: &ClientFrame) -> Option<&'static str> {
     Some(door)
 }
 
+/// What the visible socket refuses: every operator door, because a connection on it is nobody's
+/// head. A peer's own words are served - filed under its seat, never read as the person's - and so
+/// is the password ask `sudo` raises.
+pub fn peer_refuses(frame: &ClientFrame) -> Option<&'static str> {
+    match frame {
+        ClientFrame::Ack(_)
+        | ClientFrame::Resync
+        | ClientFrame::Detach
+        | ClientFrame::Attach { .. }
+        | ClientFrame::Askpass { .. }
+        | ClientFrame::Prompt { .. } => None,
+        other => door(other),
+    }
+}
+
 /// The id and the seq a frame carries, for the refusal that answers it: a head matches a refusal to
 /// what it sent, and a frame that carries neither gets the empty id and zero, which matches nothing
 /// and therefore cannot settle a card that is not there.

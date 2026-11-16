@@ -441,6 +441,35 @@ fn the_daemons_sockets_are_found_in_the_runtime_dirs() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The wide seat keeps the one socket it was given and masks every other daemon socket: a command
+/// cannot lift its own mode on the socket the person's head is attached to.
+#[test]
+fn the_wide_seat_reaches_only_the_socket_it_was_given() {
+    let dir = std::env::temp_dir().join(format!("letibot-dwide-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let run = dir.join("run/letibot");
+    std::fs::create_dir_all(&run).unwrap();
+    let given = run.join("abc-peer.sock");
+    std::fs::write(run.join("abc.sock"), "").unwrap();
+    std::fs::write(&given, "").unwrap();
+    let all = daemon_sockets_in(std::slice::from_ref(&run), &dir, Some(given.clone()));
+    let hidden = keep_hidden(all, Some(&given));
+    let names: Vec<String> = hidden
+        .iter()
+        .filter_map(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .collect();
+    assert!(
+        names.iter().any(|n| n == "abc.sock"),
+        "the heads' socket is masked in the wide seat too: {hidden:?}"
+    );
+    assert!(
+        !names.iter().any(|n| n == "abc-peer.sock"),
+        "the socket the command was given stays reachable: {hidden:?}"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
+
 /// The wide seat's persistence, history and git-config rules, read from the same lists by both
 /// renderings: denied outright on the macOS profile and masked here, and the read-only files
 /// written nowhere in either.

@@ -577,6 +577,13 @@ impl HostBackend {
             for p in crate::exec::confine::daemon_sockets() {
                 view = view.hiding(p);
             }
+        } else {
+            // The wide seat reaches the daemon through the socket it was given and no other. The
+            // heads' socket is masked here too, so a command cannot lift its own mode.
+            let given = std::env::var_os("LETIBOT_SOCKET").map(PathBuf::from);
+            for p in crate::exec::confine::daemon_sockets_hidden(given.as_deref()) {
+                view = view.hiding(p);
+            }
         }
         // The seat's fence, at either level: a wide view holds all of it, and a tight one holds
         // whatever a grant lets in — the renderer masks the stores its own view reaches.
