@@ -1114,3 +1114,61 @@ fn an_attached_head_holds_a_package_and_it_closes_once_the_head_goes() {
     );
     d.registry.close();
 }
+
+/// A package whose daemon record names this very daemon is idle-closed by this daemon's own pass.
+/// The reaper never signals itself, so the close goes through the registry instead: the owner
+/// ends `closed` rather than stuck `closing` with its jobs killed on every later pass.
+#[test]
+fn an_idle_package_whose_repo_names_its_own_daemon_still_closes() {
+    let _one = serial();
+    let d = a_daemon_with_no_model("harnessd-reap-self");
+    let store_path = d.cfg.store.clone().expect("a store");
+    let store = letibot_tokencore::store::Store::open(&store_path).expect("a second reader");
+
+    // This process's own runtime record, the way the launcher writes one, for a repo of its own.
+    let runtime = d._dir.path.join("run");
+    let repo = d._dir.path.join("repo");
+    std::fs::create_dir_all(runtime.join("letibot")).expect("the rundir");
+    std::fs::create_dir_all(&repo).expect("the repo");
+    std::fs::write(
+        runtime.join("letibot").join("self.json"),
+        serde_json::json!({
+            "workspace": repo.display().to_string(),
+            "pid": std::process::id(),
+            "socket": "",
+        })
+        .to_string(),
+    )
+    .expect("the record");
+    let was = std::env::var_os("XDG_RUNTIME_DIR");
+    // SAFETY: `serial()` holds every test in this binary that reads the runtime dir.
+    unsafe { std::env::set_var("XDG_RUNTIME_DIR", &runtime) };
+
+    let now = letibot_metrics::now_ms() as i64;
+    let ttl = 10 * 60 * 1000;
+    let mut owner = letibot_tokencore::store::OwnerRow::live(
+        ROOT,
+        letibot_tokencore::store::OwnerKind::Package,
+        Some(repo.display().to_string()),
+        now - ttl - 60_000,
+    );
+    owner.idle_ttl_ms = Some(ttl);
+    store.put_owner(&owner).expect("the owner row");
+    let first = letibot_harnessd::reap_pass::pass(&store, Some(&d.registry), "daemon test");
+    let second = letibot_harnessd::reap_pass::pass(&store, Some(&d.registry), "daemon test");
+    match was {
+        // SAFETY: as above.
+        Some(v) => unsafe { std::env::set_var("XDG_RUNTIME_DIR", v) },
+        None => unsafe { std::env::remove_var("XDG_RUNTIME_DIR") },
+    }
+    assert_eq!(
+        store.owner(ROOT).unwrap().unwrap().state,
+        letibot_tokencore::store::OwnerState::Closed,
+        "first: {first:?}\nsecond: {second:?}"
+    );
+    assert!(
+        d.registry.get(ROOT).is_none(),
+        "the daemon still serves the session it closed"
+    );
+    d.registry.close();
+}

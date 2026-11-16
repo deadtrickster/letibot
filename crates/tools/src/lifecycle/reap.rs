@@ -746,7 +746,10 @@ fn reap_compute(
             &why,
             &ops.by,
         ));
-        if state != HoldingState::Gone {
+        // The daemon running this pass is never signalled, and its registry closes the session
+        // on the Close below. Counting it would leave the owner `closing` for ever.
+        let ours = f.kind == DAEMON && f.handle == format!("pid:{}", std::process::id());
+        if state != HoldingState::Gone && !ours {
             left += 1;
         }
     }
