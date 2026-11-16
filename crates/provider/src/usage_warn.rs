@@ -105,6 +105,17 @@ pub struct Said {
     by_window: BTreeMap<String, (Option<u64>, usize)>,
 }
 
+/// Providers report a window's reset with a few seconds of jitter between polls; only a reset
+/// that moved by more than that starts a new window.
+const RESET_JITTER_MS: u64 = 10 * 60 * 1000;
+
+fn same_reset(a: Option<u64>, b: Option<u64>) -> bool {
+    match (a, b) {
+        (Some(a), Some(b)) => a.abs_diff(b) <= RESET_JITTER_MS,
+        (a, b) => a == b,
+    }
+}
+
 impl Said {
     /// The windows of this reading that passed a threshold not yet said for them. A window whose
     /// reset moved is a new window, said from zero. A jump past two thresholds is one notice.
@@ -117,7 +128,7 @@ impl Said {
                 .entry(w.name.clone())
                 .or_insert((w.reset_ms, 0));
             // A plan that names no reset is known to have reset only by its use falling.
-            if e.0 != w.reset_ms || (w.reset_ms.is_none() && level < e.1) {
+            if !same_reset(e.0, w.reset_ms) || (w.reset_ms.is_none() && level < e.1) {
                 *e = (w.reset_ms, 0);
             }
             if level > e.1 {
@@ -139,6 +150,23 @@ pub fn notice(door: &str, w: &Window, now_ms: u64, offset_s: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reset_that_jitters_by_seconds_is_the_same_window_and_says_nothing_new() {
+        let th = Thresholds::default();
+        let mut said = Said::default();
+        let t = 1_794_834_429_000;
+        assert_eq!(said.crossings(&[w("5h", 1.0, Some(t))], &th).len(), 1);
+        for k in 1..6 {
+            assert!(
+                said.crossings(&[w("5h", 1.0, Some(t + k * 1000))], &th)
+                    .is_empty()
+            );
+        }
+        let next = t + 5 * 3_600_000;
+        assert!(said.crossings(&[w("5h", 0.2, Some(next))], &th).is_empty());
+        assert_eq!(said.crossings(&[w("5h", 0.85, Some(next))], &th).len(), 1);
+    }
 
     fn w(name: &str, used: f64, reset_ms: Option<u64>) -> Window {
         Window {
@@ -169,7 +197,7 @@ mod tests {
         assert!(said.crossings(&[w("5h", 0.90, r1)], &th).is_empty());
         assert_eq!(said.crossings(&[w("5h", 0.96, r1)], &th).len(), 1);
         assert!(said.crossings(&[w("5h", 1.0, r1)], &th).is_empty());
-        let r2 = Some(2_000);
+        let r2 = Some(1_000 + 5 * 3_600_000);
         assert!(
             said.crossings(&[w("5h", 0.1, r2)], &th).is_empty(),
             "the reset alone is no notice"
