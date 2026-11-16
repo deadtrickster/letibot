@@ -1512,6 +1512,7 @@ dependencies = [
  "letibot-plugins-rano",
  "letibot-room",
  "letibot-sessionlog",
+ "letibot-testenv",
  "letibot-tokencore",
  "letibot-tools",
  "letibot-transcript",

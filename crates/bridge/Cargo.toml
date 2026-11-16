@@ -71,6 +71,7 @@ rano = { git = "https://github.com/deadtrickster/rano", rev = "593f153bcc45ac30c
 letibot-harnessd = { workspace = true, default-features = false }
 
 [dev-dependencies]
+letibot-testenv.workspace = true
 letibot-config-ref.workspace = true
 # **The fixture that writes an executable needs `write_stub`**, which is the one place in this tree
 # that closes the `ETXTBSY` window a written-then-exec'd file has (`crates/tools/src/testing.rs`,

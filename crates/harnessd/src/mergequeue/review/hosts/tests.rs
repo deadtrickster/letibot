@@ -11,15 +11,13 @@ use crate::mergequeue::capacity;
 pub(crate) struct HostsFile {
     path: PathBuf,
     was: Option<std::ffi::OsString>,
-    _guard: std::sync::MutexGuard<'static, ()>,
+    _guard: letibot_testenv::EnvGuard,
 }
-
-static HOSTS_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl HostsFile {
     pub(crate) fn with(names: &[&str]) -> HostsFile {
         static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let guard = HOSTS_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let guard = letibot_testenv::EnvGuard::lock();
         let dir = std::env::temp_dir().join(format!(
             "letibot-review-hosts-{}-{}",
             std::process::id(),
@@ -35,8 +33,8 @@ impl HostsFile {
         }
         std::fs::write(&path, text).unwrap();
         let was = std::env::var_os("LETIBOT_HOSTS");
-        // SAFETY: the mutex above is held for the guard's whole life, so no other test in this
-        // binary is reading the environment while it says which file the hosts are in.
+        // SAFETY: the binary's one env lock is held for the guard's whole life, so no other test in
+        // this binary is reading the environment while it says which file the hosts are in.
         unsafe { std::env::set_var("LETIBOT_HOSTS", &path) };
         HostsFile {
             path,

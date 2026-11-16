@@ -879,13 +879,12 @@ mod home_tests {
 
     #[test]
     fn home_adopts_no_child_repository() {
-        static HOME: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _g = HOME.lock().unwrap_or_else(|e| e.into_inner());
+        let _g = letibot_testenv::EnvGuard::lock();
         let one = folder("home-one", &[".emacs.d"]);
         let many = folder("home-many", &[".emacs.d", "dots"]);
         let was = std::env::var_os("HOME");
         for home in [&one, &many] {
-            // SAFETY: serialised by HOME above; restored below.
+            // SAFETY: under the binary's one env lock, held above; restored below.
             unsafe { std::env::set_var("HOME", home) };
             let ws = home.display().to_string();
             assert_eq!(repo_of(&ws), None);

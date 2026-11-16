@@ -2314,16 +2314,13 @@ fn write_mark(path: &Path, instance: Option<u64>, seq: u64) {
 #[cfg(test)]
 mod tests {
 
-    /// One test here reads and writes the environment, because a socket's path is derived from it.
-    static ROOM_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// The socket is one path, and the daemon's is the room crate's function of the data directory.
     /// The bridge had its own copy of the key and of the join; a copy agrees until one side is fixed,
     /// and then a seat dials a socket nobody serves. Held together here, both ways round: the data
     /// directory, and the override that moves both.
     #[test]
     fn bridge_and_daemon_dial_the_same_room_socket() {
-        let _held = ROOM_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _held = letibot_testenv::EnvGuard::lock();
         let dir = std::env::temp_dir().join(format!("letibot-room-socket-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -2332,7 +2329,7 @@ mod tests {
                 .into_iter()
                 .map(|k| (k, std::env::var_os(k)))
                 .collect();
-        // SAFETY: the mutex above is this module's only door to the environment.
+        // SAFETY: under the binary's one env lock, held above.
         unsafe {
             std::env::remove_var("LETIBOT_ROOM_SOCKET");
             std::env::set_var("XDG_DATA_HOME", &dir);
