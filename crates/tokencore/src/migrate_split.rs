@@ -864,7 +864,7 @@ fn rows_of(table: &str) -> Option<Rows> {
         // per-session state, a session's background work, the prompt journal, its decisions
         "todo" | "citation" | "session_marks" | "session_mode" | "session_monitor" | "job"
         | "job_context" | "process" | "queued_prompt" | "adjudication" | "session_grant"
-        | "shadow_breaker" => Rows::Session("session_id"),
+        | "shadow_breaker" | "disclosure" => Rows::Session("session_id"),
         // a half-import marker names the session whose rows may be in one file of a set and not
         // the other, so it goes with that session's rows
         "import_pending" => Rows::Session("session_id"),

@@ -1341,6 +1341,14 @@ pub fn developer_log(code: &str, detail: &str) -> Option<String> {
     is_developer(code).then(|| format!("  diagnostic · {code}: {detail}"))
 }
 
+/// Whether a code's sentence is kept across a daemon restart: a failure filed in `/notes` whose
+/// action says how to recover. Live state and a refused line are over by the next daemon.
+pub fn is_durable(code: &str) -> bool {
+    matches!(action(code), Action::Do(_))
+        && class(code).is_failure()
+        && destination(code) == Go::Notes
+}
+
 /// [`class`], as the role it is drawn in.
 pub fn role(code: &str) -> pane::Role {
     class(code).role()

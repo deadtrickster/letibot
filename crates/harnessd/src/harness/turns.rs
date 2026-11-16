@@ -959,6 +959,7 @@ impl Harness {
         };
         // Prompts accepted but not started when the last daemon died: put back, and kept saved.
         let back = crate::restart::StoreJournal::attach(&self.hub, &at);
+        crate::restart::StoreDisclosures::attach(&self.hub, &at);
         if back > 0 {
             eprintln!(
                 "  {} · restart: {back} queued prompt(s) put back",
