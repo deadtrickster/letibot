@@ -39,6 +39,15 @@ impl SecretEnv {
         }
         out
     }
+
+    /// [`SecretEnv::mask`] for text a caller already holds, so no caller has to decide what a
+    /// half-matched code point would mean: a substitution that broke UTF-8 falls back to lossy.
+    pub fn mask_str(&self, text: &str) -> String {
+        match String::from_utf8(self.mask(text.as_bytes())) {
+            Ok(s) => s,
+            Err(e) => String::from_utf8_lossy(e.as_bytes()).into_owned(),
+        }
+    }
 }
 
 /// `GH_TOKEN` and a git credential helper for github.com that answers with it, for a top-level

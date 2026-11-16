@@ -1674,6 +1674,9 @@ pub struct ToolRuntime {
     /// Where a spawned job's change snapshot waits for its settlement. `None` in a runtime with no
     /// daemon behind it, and then a background job's writes are read by nobody but the model.
     pub job_sweeps: Option<std::sync::Arc<dyn crate::detect::JobSweeps>>,
+    /// The values this session holds as secrets, masked out of every result it stores. Empty in a
+    /// runtime nobody told, and then a result is exactly what the tool produced.
+    pub secret: crate::exec::seat::SecretEnv,
 }
 
 /// A call the model proposed and this layer reproposed as a different tool. One shape produces
@@ -1704,9 +1707,13 @@ impl ToolRuntime {
     /// session - the standing notes' own source, answered on another thread - must reach the same
     /// substrate the tools use, and a second connection would be a second session's view of it.
     pub fn new(registry: Registry, backend: Box<dyn ExecBackend>) -> Self {
+        // Asked once, of the backend the session was opened with: the seat is settled by then, and
+        // what it holds as secrets is what every result this runtime stores is masked against.
+        let secret = backend.secret_env();
         ToolRuntime {
             registry,
             backend: std::sync::Arc::from(backend),
+            secret,
             spiller: Spiller::unset(),
             // Fail closed by default: a runtime nobody configured refuses every
             // non-read call rather than allowing it.
@@ -1911,8 +1918,11 @@ impl ToolRuntime {
                 Patch::Done(refused(why.to_string()))
             }
             letibot_plugin::tool_call::Verdict::Answer(text) => {
+                // A layer answering for a tool sees the bytes the tool would have, so its words
+                // are masked like any other result's.
+                let text = self.secret.mask_str(text);
                 let result = ToolResult::new(call.id.clone(), call.name.clone(), ToolOutcome::Ok)
-                    .with_payload(text.to_string());
+                    .with_payload(text);
                 // The result is somebody else's words, and it says so: an `answer` never ran the
                 // tool, so nothing in the payload tells the model whether a `probe` looked or a
                 // `monitor` armed. `[note]` is where every other harness sentence goes.
@@ -2477,6 +2487,14 @@ impl ToolRuntime {
         // Clause 5, on every payload and not only the ones somebody remembered. The budget
         // bounds the tool's output; the envelope and the `[note]` lines are the harness's own
         // bytes, bounded by construction, and are added after.
+        //
+        // Masked before the spill, because the spill writes these bytes to a file: a secret the
+        // session holds must not reach the model, the store or a spill through a tool's output.
+        // It is not a boundary - the file a tool read still holds the token, and an encoding
+        // walks past an exact match - so it is a redaction and says so.
+        if !self.secret.0.is_empty() {
+            invocation.payload = self.secret.mask_str(&invocation.payload);
+        }
         let produced = invocation.payload.len();
         let (payload, spill) = self.spiller.apply(
             invocation.payload,
