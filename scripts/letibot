@@ -83,17 +83,19 @@ raise_open_files() { # raise_open_files ASKED
 }
 raise_open_files "$OPEN_FILES_WANTED"
 
-# Where the binaries are: beside this launcher (the installed layout), else
-# ../../target/release (the source-tree layout). The launcher's own location is resolved
-# through symlinks, since `~/bin/letibot` links to `scripts/letibot`.
+# Where the binaries are: beside the launcher as it was typed (the installed layout, where
+# `~/.local/bin/letibot` may be a link into a checkout and the install loop writes beside it),
+# else beside the script it resolves to, else that checkout's target/release.
 # `LETIBOT_BIN` is authoritative when set: a wrong value is named, not routed around.
+# Exported, so the daemon and every bridge it starts run the same build.
 if [ -n "${LETIBOT_BIN:-}" ]; then
   BIN="$LETIBOT_BIN"
 else
+  _typed="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" 2>/dev/null && pwd -P)" || _typed="$(dirname -- "${BASH_SOURCE[0]}")"
   _self="$(readlink -f -- "${BASH_SOURCE[0]}" 2>/dev/null || printf '%s' "${BASH_SOURCE[0]}")"
   _dir="$(cd -- "$(dirname -- "$_self")" 2>/dev/null && pwd -P)" || _dir="$(dirname -- "$_self")"
   BIN=""
-  for _cand in "$_dir" "$_dir/../target/release"; do
+  for _cand in "$_typed" "$_dir" "$_dir/../target/release"; do
     if [ -x "$_cand/harnessd" ]; then
       BIN="$_cand"
       break
@@ -101,10 +103,11 @@ else
   done
   # Nothing found: keep the FIRST candidate, so the message below names the place a
   # reader would expect to look — beside the launcher.
-  [ -n "$BIN" ] || BIN="$_dir"
+  [ -n "$BIN" ] || BIN="$_typed"
   # Resolved once, so every message names a path a reader can paste.
   BIN="$(cd -- "$BIN" 2>/dev/null && pwd -P || printf '%s' "$BIN")"
 fi
+export LETIBOT_BIN="$BIN"
 # The head is a seat's choice: everything up to the head is the launcher's, and another
 # head (leticl) only draws differently. The places that exec the TUI go through
 # $LETIBOT_HEAD; utility calls (--probe, --list-sessions, --interrupt-all) stay on
@@ -2974,8 +2977,8 @@ if [ -n "$SESSION" ] && [ "$WANT_NEW" != 1 ]; then
 fi
 
 [ -x "$BIN/harnessd" ] || die "no harnessd at $BIN
-  This launcher looks beside itself and in ../../target/release, unless LETIBOT_BIN
-  says otherwise. From a source checkout that means: cargo build --release.
+  This launcher looks beside itself as typed, beside the script it links to, and in
+  that checkout's target/release, unless LETIBOT_BIN says otherwise. From a source checkout that means: cargo build --release.
   From an install the binaries should be beside this script, so re-install, or
   point LETIBOT_BIN at the directory holding them."
 
