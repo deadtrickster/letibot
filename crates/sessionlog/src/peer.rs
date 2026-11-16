@@ -245,21 +245,21 @@ fn descended_from(pid: i32, ancestor: i32) -> bool {
     true
 }
 
-/// Whether the process sits in a cgroup this daemon opened: `letibot.<daemon pid>.<n>` and everything
-/// under it, which is where every tool call and job runs. This is the arm a double-forked child cannot
+/// Whether the process sits in a tool scope of ANY daemon, `letibot.<pid>.<n>` and everything under
+/// it: a tool of another daemon is no head of this one. This is the arm a double-forked child cannot
 /// leave. On macOS the scope is a process group, and a child that calls `setsid` leaves it.
 #[cfg(target_os = "macos")]
-fn in_daemon_tree(pid: i32, daemon: i32) -> bool {
+fn in_daemon_tree(pid: i32, _daemon: i32) -> bool {
     // SAFETY: `getpgid` takes a pid and returns -1 on failure.
     let pgid = unsafe { libc::getpgid(pid) };
     // A peer whose group cannot be read is not placed, so it falls on the refusing side.
-    pgid <= 0 || recorded_group(&std::env::temp_dir().join("letibot-scopes"), daemon, pgid)
+    pgid <= 0 || recorded_group(&std::env::temp_dir().join("letibot-scopes"), pgid)
 }
 
-/// Whether `pgid` is listed in a `cgroup.procs` anywhere under the roots `letibot.<daemon>.<n>` of
+/// Whether `pgid` is listed in a `cgroup.procs` under any daemon's `letibot.<pid>.<n>` root in
 /// `parent`: the file the tool launcher writes its group leader's pid into.
 #[cfg(any(test, target_os = "macos"))]
-fn recorded_group(parent: &std::path::Path, daemon: i32, pgid: i32) -> bool {
+fn recorded_group(parent: &std::path::Path, pgid: i32) -> bool {
     fn walk(dir: &std::path::Path, pgid: i32) -> bool {
         if let Ok(s) = std::fs::read_to_string(dir.join("cgroup.procs"))
             && s.lines().any(|l| l.trim().parse::<i32>() == Ok(pgid))
@@ -273,26 +273,61 @@ fn recorded_group(parent: &std::path::Path, daemon: i32, pgid: i32) -> bool {
             .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
             .any(|e| walk(&e.path(), pgid))
     }
-    let prefix = format!("letibot.{daemon}.");
     let Ok(rd) = std::fs::read_dir(parent) else {
         return false;
     };
+    // Any daemon's scopes: a tool of another daemon is no head of this one.
     rd.flatten()
-        .filter(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+        .filter(|e| is_tool_root(&e.file_name().to_string_lossy()))
         .any(|e| walk(&e.path(), pgid))
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
 fn in_daemon_tree(pid: i32, daemon: i32) -> bool {
-    let Ok(contents) = std::fs::read_to_string(format!("/proc/{pid}/cgroup")) else {
+    let read = |p: i32| std::fs::read_to_string(format!("/proc/{p}/cgroup")).ok();
+    cgroup_inside(read(pid).as_deref(), read(daemon).as_deref())
+}
+
+/// Whether a peer's `/proc/<pid>/cgroup` puts it in ANY daemon's tool scope that this daemon is
+/// not itself inside. Any daemon, because a tool of another daemon is no head of this one; an
+/// unreadable file is inside, because no answer must fall on the refusing side.
+#[cfg(any(test, all(unix, not(target_os = "macos"))))]
+fn cgroup_inside(peer: Option<&str>, daemon: Option<&str>) -> bool {
+    let Some(peer) = peer else {
+        return true;
+    };
+    // The launcher's daemon steps into a `daemon` leaf of its scope (`DAEMON_LEAF` in tools).
+    let daemon = daemon.and_then(cgroup_path).unwrap_or("");
+    let daemon = daemon.strip_suffix("/daemon").unwrap_or(daemon);
+    // No unified line is a v1 host, where no tool scope can exist to be inside of.
+    let Some(path) = cgroup_path(peer) else {
         return false;
     };
-    let root = format!("/letibot.{daemon}.");
-    contents.lines().any(|line| {
-        line.split("::")
-            .nth(1)
-            .is_some_and(|path| path.contains(&root))
-    })
+    // A daemon started from a tool shares that tool's scope with its own heads, so only the
+    // part of the peer's path below the daemon's own counts.
+    let below = path
+        .strip_prefix(daemon)
+        .filter(|rest| daemon.is_empty() || rest.is_empty() || rest.starts_with('/'))
+        .unwrap_or(path);
+    below.split('/').any(is_tool_root)
+}
+
+/// The unified (v2) path of a `/proc/<pid>/cgroup`, the `0::` line.
+#[cfg(any(test, all(unix, not(target_os = "macos"))))]
+fn cgroup_path(contents: &str) -> Option<&str> {
+    contents.lines().find_map(|l| l.strip_prefix("0::"))
+}
+
+/// `letibot.<pid>.<n>`, the root a daemon opens per tool tree. Not `letibot.slice`, which is
+/// where daemons themselves run.
+fn is_tool_root(name: &str) -> bool {
+    let Some(rest) = name.strip_prefix("letibot.") else {
+        return false;
+    };
+    let mut parts = rest.split('.');
+    let num =
+        |p: Option<&str>| p.is_some_and(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    num(parts.next()) && num(parts.next()) && parts.next().is_none()
 }
 
 #[cfg(test)]
@@ -349,6 +384,36 @@ mod tests {
         );
     }
 
+    /// A tool of daemon A connecting to daemon B's socket is a tool call for B as well.
+    #[test]
+    fn a_peer_in_another_daemons_cgroup_is_inside() {
+        let me = std::process::id();
+        let daemon = "0::/user.slice/user@1000.service/letibot.slice/letibot-b.scope\n";
+        let other = format!(
+            "0::/user.slice/user@1000.service/letibot.slice/letibot-a.scope/letibot.{}.0/session.s\n",
+            me + 1
+        );
+        assert!(cgroup_inside(Some(&other), Some(daemon)));
+        assert!(
+            cgroup_inside(None, Some(daemon)),
+            "an unreadable cgroup is the refusing side"
+        );
+        let head = "0::/user.slice/user@1000.service/tmux-spawn-1.scope\n";
+        assert!(!cgroup_inside(Some(head), Some(daemon)), "a head is not");
+        assert!(
+            !cgroup_inside(Some(daemon), Some(daemon)),
+            "the daemon's own slice is not a tool scope"
+        );
+        // A daemon run from a tool: its own heads share the tool's scope, its tools are below it.
+        let nested = format!("0::/u/letibot.{me}.3/session.s\n");
+        assert!(!cgroup_inside(Some(&nested), Some(&nested)));
+        let its_tool = format!("0::/u/letibot.{me}.3/session.s/letibot.{}.0/x\n", me + 7);
+        assert!(cgroup_inside(Some(&its_tool), Some(&nested)));
+        let leaf = "0::/u/letibot.slice/letibot-b.scope/daemon\n";
+        let own_tool = format!("0::/u/letibot.slice/letibot-b.scope/letibot.{me}.0/s\n");
+        assert!(cgroup_inside(Some(&own_tool), Some(leaf)), "its own tool");
+    }
+
     #[test]
     fn stat_ppid_is_read_from_the_last_bracket() {
         // The program name holds a space and a bracket, which a field count from the left misses.
@@ -382,15 +447,11 @@ mod tests {
         let pgid = unsafe { libc::getpgid(grandchild) };
         assert_eq!(pgid, leader.id() as i32, "the grandchild kept the group");
         assert!(
-            recorded_group(&dir, daemon, pgid),
+            recorded_group(&dir, pgid),
             "a double-forked child is inside through its recorded group"
         );
         assert!(
-            !recorded_group(&dir, daemon + 1, pgid),
-            "another daemon's scopes do not count"
-        );
-        assert!(
-            !recorded_group(&dir, daemon, std::process::id() as i32),
+            !recorded_group(&dir, std::process::id() as i32),
             "this process's own group is not recorded, so a head is not inside"
         );
         // SAFETY: `kill` with a pid this test spawned.
