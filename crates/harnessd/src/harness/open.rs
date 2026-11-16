@@ -1417,13 +1417,15 @@ impl Harness {
                     ),
                     true,
                 );
-                // What every command carries: the way back to this daemon (the head's sudo
-                // prompt), `HOME`, and a `sudo` shim ahead of `PATH` when the helper is beside
-                // this binary.
+                // What every command carries: the daemon's VISIBLE socket - the one that serves a
+                // peer's words and `sudo`'s ask and no operator door - `HOME`, and a `sudo` shim
+                // ahead of `PATH` when the helper is beside this binary.
                 let mut env = vec![
                     (
                         "LETIBOT_SOCKET".to_string(),
-                        cfg.socket.display().to_string(),
+                        letibot_sessionlog::server::peer_socket_path(&cfg.socket)
+                            .display()
+                            .to_string(),
                     ),
                     ("LETIBOT_SESSION".to_string(), cfg.session_id.clone()),
                 ];

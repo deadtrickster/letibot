@@ -706,6 +706,19 @@ pub fn daemon_sockets() -> Vec<PathBuf> {
     )
 }
 
+/// [`daemon_sockets`] minus the one socket this command was given: what a view masks when the
+/// command is allowed exactly one door back to the daemon. `sudo -A` needs the one it was given,
+/// and the heads' socket is not a command's to reach at any level.
+pub fn daemon_sockets_hidden(given: Option<&Path>) -> Vec<PathBuf> {
+    keep_hidden(daemon_sockets(), given)
+}
+
+fn keep_hidden(all: Vec<PathBuf>, given: Option<&Path>) -> Vec<PathBuf> {
+    all.into_iter()
+        .filter(|p| Some(p.as_path()) != given)
+        .collect()
+}
+
 /// [`daemon_sockets`] over given directories, so a test does not race the process environment.
 fn daemon_sockets_in(dirs: &[PathBuf], tmp: &Path, named: Option<PathBuf>) -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();

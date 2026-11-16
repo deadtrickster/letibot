@@ -40,6 +40,16 @@ pub fn default_socket_path() -> PathBuf {
     }
 }
 
+/// The socket beside the heads' one: `$KEY.sock` -> `$KEY-peer.sock`. Every command and every
+/// peer is given this one, so the socket a person's head attaches to is reached by nothing else.
+pub fn peer_socket_path(head: &Path) -> PathBuf {
+    let stem = head
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "harnessd".into());
+    head.with_file_name(format!("{stem}-peer.sock"))
+}
+
 fn libc_getuid() -> u32 {
     // No `libc` dependency in a crate that otherwise has none: `getuid` is in the C library
     // every target links, and declaring it works on Linux and macOS alike. The uid only
@@ -61,6 +71,11 @@ pub struct ServerHandle {
     /// (dev, ino) of the socket this daemon bound, so going away removes its own file and
     /// never whatever is at that path by then. See [`unlink_if_ours`].
     socket_id: Option<(u64, u64)>,
+    /// The visible socket beside it, which serves peers and the password ask and no operator
+    /// door: a command is given this one, so the heads' socket is reached by nothing else.
+    visible: Option<PathBuf>,
+    visible_id: Option<(u64, u64)>,
+    visible_accept: Option<JoinHandle<()>>,
     /// The claim on this folder, held for the process's life. Dropped LAST (declaration
     /// order), after the socket file is gone, so no daemon can slip in between.
     claim: Option<FolderClaim>,
@@ -197,18 +212,28 @@ impl ServerHandle {
     /// A daemon shutdown is an abort, as against a head detaching, which is not.
     pub fn shutdown(mut self) {
         self.registry.close();
-        // Unblock the accept loop by connecting to it once.
+        // Unblock the accept loops by connecting to them once. Both poll, and this makes the
+        // heads' one wake now rather than at its next tick.
         let _ = UnixStream::connect(&self.path);
+        if let Some(v) = self.visible.clone() {
+            let _ = UnixStream::connect(&v);
+        }
         if let Some(h) = self.accept.take() {
             let _ = h.join();
         }
-        // Our own file, and only ours - see [`unlink_if_ours`]. The accept thread removes it
-        // when it ends too, and removing it twice is an ignored `ENOENT`.
+        if let Some(h) = self.visible_accept.take() {
+            let _ = h.join();
+        }
+        // Our own files, and only ours - see [`unlink_if_ours`]. The accept threads remove them
+        // when they end too, and removing one twice is an ignored `ENOENT`.
         if let Some(id) = self.socket_id {
             unlink_if_ours(&self.path, id);
         }
-        // `self.claim` is dropped here, last, after the path is clear: the lock is released
-        // only once this daemon's socket is gone, so a start that slots in behind us cannot
+        if let (Some(v), Some(id)) = (self.visible.as_ref(), self.visible_id) {
+            unlink_if_ours(v, id);
+        }
+        // `self.claim` is dropped here, last, after the paths are clear: the lock is released
+        // only once this daemon's sockets are gone, so a start that slots in behind us cannot
         // have its file removed by us on the way out.
     }
 }
@@ -219,6 +244,9 @@ impl Drop for ServerHandle {
         // the session down on a drop would not be.
         if let Some(id) = self.socket_id {
             unlink_if_ours(&self.path, id);
+        }
+        if let (Some(v), Some(id)) = (self.visible.as_ref(), self.visible_id) {
+            unlink_if_ours(v, id);
         }
     }
 }
@@ -575,7 +603,9 @@ pub fn serve_registry_rooted(
                             std::thread::Builder::new()
                                 .name("head-conn".into())
                                 .spawn(move || {
-                                    if let Err(e) = serve_conn_rooted(r2, s, tree_root) {
+                                    if let Err(e) =
+                                        serve_conn_on(r2, s, tree_root, crate::peer::Role::Operator)
+                                    {
                                         // A head going away is the normal case and not
                                         // worth a line; anything else is.
                                         if !matches!(e, WireError::Eof) {
@@ -625,11 +655,79 @@ pub fn serve_registry_rooted(
             r.close();
         })?;
 
+    // The visible socket, beside the heads' one: what every command and every peer is given. It
+    // serves a peer's words and the password ask, and no operator door, so what a tool tree reaches
+    // is not what the person at the keyboard has.
+    let visible_path = peer_socket_path(&path);
+    // A visible socket left by a predecessor is ours to clear: the claim above says this folder
+    // has one daemon and it is this one, so nothing else can be listening on that path.
+    let _ = std::fs::remove_file(&visible_path);
+    let visible_listener = UnixListener::bind(&visible_path)?;
+    std::fs::set_permissions(&visible_path, std::fs::Permissions::from_mode(0o600))?;
+    let _ = visible_listener.set_nonblocking(true);
+    let visible_id = std::fs::metadata(&visible_path)
+        .ok()
+        .map(|m| (m.dev(), m.ino()));
+    let vr = registry.clone();
+    let vpath = visible_path.clone();
+    let vid = visible_id;
+    let visible_accept = std::thread::Builder::new()
+        .name("peer-accept".into())
+        .spawn(move || {
+            loop {
+                if vr.is_closed() {
+                    break;
+                }
+                match visible_listener.accept() {
+                    Ok((s, _)) => {
+                        let _ = s.set_nonblocking(false);
+                        if vr.is_closed() {
+                            break;
+                        }
+                        let r2 = vr.clone();
+                        let _ =
+                            std::thread::Builder::new()
+                                .name("peer-conn".into())
+                                .spawn(move || {
+                                    if let Err(e) =
+                                        serve_conn_on(r2, s, tree_root, crate::peer::Role::Peer)
+                                        && !matches!(e, WireError::Eof)
+                                    {
+                                        eprintln!("peer connection ended: {e}");
+                                    }
+                                });
+                    }
+                    Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(std::time::Duration::from_millis(20));
+                    }
+                    Err(e) if is_transient(&e) => {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                    }
+                    // Nothing here is recoverable: commands and peers have no door on this daemon
+                    // until it is restarted, which is worth a line rather than a silent loop.
+                    Err(e) => {
+                        eprintln!(
+                            "peer accept failed and cannot continue: {e} ({:?}). Commands and \
+                             peers have no door on this daemon until it is restarted.",
+                            e.kind()
+                        );
+                        break;
+                    }
+                }
+            }
+            if let Some(id) = vid {
+                unlink_if_ours(&vpath, id);
+            }
+        })?;
+
     Ok(ServerHandle {
         path,
         registry,
         accept: Some(accept),
         socket_id,
+        visible: Some(visible_path),
+        visible_id,
+        visible_accept: Some(visible_accept),
         claim,
     })
 }
@@ -693,7 +791,12 @@ impl Drop for Seat {
 
 /// One connection, from ATTACH to detach - through however many sessions.
 pub fn serve_conn(registry: Arc<Registry>, stream: UnixStream) -> Result<(), WireError> {
-    serve_conn_rooted(registry, stream, std::process::id() as i32)
+    serve_conn_on(
+        registry,
+        stream,
+        std::process::id() as i32,
+        crate::peer::Role::Operator,
+    )
 }
 
 /// As [`serve_conn`], judging descent against `tree_root`.
@@ -701,6 +804,17 @@ pub fn serve_conn_rooted(
     registry: Arc<Registry>,
     stream: UnixStream,
     tree_root: i32,
+) -> Result<(), WireError> {
+    serve_conn_on(registry, stream, tree_root, crate::peer::Role::Operator)
+}
+
+/// One connection, on a socket whose role is `door`: the heads' socket lets the kind decide, and
+/// the visible one serves peers only, whatever a frame claims.
+pub fn serve_conn_on(
+    registry: Arc<Registry>,
+    stream: UnixStream,
+    tree_root: i32,
+    door: crate::peer::Role,
 ) -> Result<(), WireError> {
     let out = stream.try_clone()?;
     // Read before the stream is handed to the reader, because the peer is a fact about the
@@ -736,8 +850,11 @@ pub fn serve_conn_rooted(
     };
 
     // What this connection is, decided once here and never by a frame: the kind is the only claim
-    // read, and the door it arrived on may narrow it further.
-    let role = crate::peer::Role::of(&kind);
+    // read, and a socket that is not a head's overrides even that.
+    let role = match door {
+        crate::peer::Role::Operator => crate::peer::Role::of(&kind),
+        crate::peer::Role::Peer => crate::peer::Role::Peer,
+    };
 
     // Below the oldest head `compat` translates for, the Hello itself would fail the head's
     // decoder, so the refusal is said instead, naming both builds.
@@ -788,8 +905,9 @@ pub fn serve_conn_rooted(
     let Some(hub) = registry.resolve(&session_id) else {
         // A daemon that holds nothing live is still reachable, or it is one nothing can come back
         // to: a session is made by `NewSession`, and that needs a connection. The bare
-        // attach is served as a control seat, which holds no session and asks for none.
-        if session_id.is_empty() && registry.is_empty() && !peer.inside {
+        // attach is served as a control seat, which holds no session and asks for none - and it is
+        // a head's, so the visible socket is refused it like every other operator door.
+        if session_id.is_empty() && registry.is_empty() && !peer.inside && door.is_operator() {
             return control_seat(registry, reader, writer, kind, identity);
         }
         let mut w = writer.lock().unwrap();
@@ -822,6 +940,27 @@ pub fn serve_conn_rooted(
     // never abort: nothing below cancels a turn.
     let result = loop {
         match reader.read::<ClientFrame>() {
+            // A connection on the visible socket is nobody's head: it is served its own words and
+            // the password ask, and no operator door. What a head can do is not what its tree can.
+            Ok(frame)
+                if door == crate::peer::Role::Peer
+                    && crate::peer::peer_refuses(&frame).is_some() =>
+            {
+                let which = crate::peer::peer_refuses(&frame).expect("the guard said there is one");
+                let (client_request_id, expected_seq) = crate::peer::request_of(&frame);
+                let f = ServerFrame::Rejected {
+                    client_request_id,
+                    reason: format!(
+                        "{which} is the operator's own act, and this connection is on the visible \
+                         socket: only a person's head, attached to the daemon's own socket, has it. \
+                         A prompt from here is served as this seat's words, and `sudo`'s password \
+                         ask is the one door this socket opens."
+                    ),
+                    expected_seq,
+                    actual_seq: seat.hub.head_seq(),
+                };
+                writer.lock().unwrap().write(&f)?;
+            }
             // Who connected decides what it may reach. A command this daemon started carries
             // `LETIBOT_SOCKET` for `sudo` and is not the operator, so askpass is the only door it gets.
             // First arm, so it sees every frame before a door does.
