@@ -34,11 +34,16 @@ fn plan_of(bridge: &Bridge, only: Option<&str>) -> Result<Plan, String> {
     lifecycle::plan(&store, &places, only, now).map_err(|e| e.to_string())
 }
 
-/// `holds`: every owner in this folder's store with what it holds, its sizes and its state - the
-/// `holds:` line the operator reads, and the same facts as data so a model can act on them.
-pub fn holds(bridge: &Bridge, owner: Option<&str>) -> Result<Value, String> {
+/// `holds`: every owner in this folder's store with what it holds. COUNTS by default - a number
+/// per class, the bytes, the memory and the one `holds:` line - because the rows themselves are
+/// megabytes for an owner of a build folder; `full` is the caller asking for the rows as well.
+pub fn holds(bridge: &Bridge, owner: Option<&str>, full: bool) -> Result<Value, String> {
     let plan = plan_of(bridge, owner)?;
-    let mut out = plan.to_json();
+    let mut out = if full {
+        plan.to_json()
+    } else {
+        plan.summary_json()
+    };
     out["read_only"] = json!(true);
     out["store"] = json!(store_of(bridge)?.display().to_string());
     Ok(out)
@@ -124,10 +129,21 @@ mod tests {
         let before = std::fs::read(&path).expect("the file");
         let bridge = Bridge::new().with_names(f.0.clone(), "/w");
 
-        let answered = holds(&bridge, Some("s-42")).expect("holds answers");
+        // The answer a model gets by default: counts, and NOT the rows - an owner of a build
+        // folder holds thousands of them and the list is megabytes of a turn.
+        let answered = holds(&bridge, Some("s-42"), false).expect("holds answers");
         assert_eq!(answered["owners"][0]["owner"], "s-42");
         assert_eq!(answered["owners"][0]["kind"], "package");
-        assert_eq!(answered["owners"][0]["holds"][0]["kind"], "target");
+        assert_eq!(answered["owners"][0]["count"], 1);
+        assert_eq!(answered["owners"][0]["counts"]["cache"], 1);
+        assert_eq!(answered["owners"][0]["bytes"], 4096);
+        assert!(
+            answered["owners"][0]
+                .as_object()
+                .is_some_and(|o| o.contains_key("count") && !o.contains_key("holds")),
+            "the summary carries the counts and no rows: {answered}"
+        );
+        assert_eq!(answered["full"], false);
         assert_eq!(answered["read_only"], true);
         assert!(
             answered["owners"][0]["holds_line"]
@@ -136,6 +152,11 @@ mod tests {
                 .starts_with("holds:"),
             "{answered}"
         );
+
+        // Asked for, the rows themselves are there.
+        let full = holds(&bridge, Some("s-42"), true).expect("holds answers in full");
+        assert_eq!(full["owners"][0]["holds"][0]["kind"], "target");
+        assert_eq!(full["owners"][0]["holds"][0]["bytes"], 4096);
 
         let plan = gc_plan(&bridge, Some("s-42")).expect("the plan answers");
         assert_eq!(plan["read_only"], true);
@@ -158,7 +179,7 @@ mod tests {
     fn no_store_is_said_rather_than_answered_with_nothing() {
         let f = Fixture::new("nostore");
         let bridge = Bridge::new().with_names(f.0.clone(), "/w");
-        let e = holds(&bridge, None).expect_err("no store");
+        let e = holds(&bridge, None, false).expect_err("no store");
         assert!(e.contains("no store"), "{e}");
     }
 }
