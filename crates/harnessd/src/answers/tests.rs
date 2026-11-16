@@ -810,6 +810,7 @@ impl Adjudicator for Stub {
             by: self.name.into(),
             basis: basis.into(),
             latency_ms: 1,
+            grant_at: None,
         }
     }
     fn describe(&self) -> String {
@@ -998,6 +999,7 @@ fn an_oracle_that_selected_is_not_reported_as_a_human() {
         by: "model:glm-5.3-flash".into(),
         basis: "the operator asked for this in the same turn".into(),
         latency_ms: 40,
+        grant_at: None,
     };
     match close(&req, &d) {
         SessionEvent::DecisionAnswered { by, .. } => {

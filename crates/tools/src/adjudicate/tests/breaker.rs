@@ -202,6 +202,7 @@ fn escalation_is_refused_with_the_reason_and_not_treated_as_an_allow() {
             by: "model:small".into(),
             basis: "unsure".into(),
             latency_ms: 1,
+            grant_at: None,
         })
     });
     let mut g = AdjudicatedGate::new(Box::new(adj));

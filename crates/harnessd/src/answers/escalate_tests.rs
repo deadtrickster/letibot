@@ -1421,3 +1421,93 @@ fn the_shadow_oracle_never_answers_an_always_ask() {
     );
     assert!(answering.take_rows().is_empty());
 }
+
+/// The grant's scope is in the answer: the shadow's names the asking session, the operator's on a
+/// relayed queue card names the queue, and the gate keeps each where its answer says.
+#[test]
+fn the_grant_scope_is_read_from_the_answer() {
+    use letibot_tools::Gate as _;
+    use letibot_tools::grant_ledger::{GrantAt, Kept, Scope};
+    let (w, _, _) = view_world(Slow {
+        reply: ALLOW_READ,
+        sleep: Duration::from_millis(20),
+    });
+    let req = view_request(
+        "adj-view-0900",
+        "/build/letibot-r1",
+        letibot_tools::Access::Read,
+    );
+    let (card, d) = ask_watching(&w, &req, "deny", Duration::ZERO);
+    assert!(card.is_none(), "{d:?}");
+    assert_eq!(d.grant_at, Some(GrantAt::Session), "the shadow's: {d:?}");
+
+    let req = view_request(
+        "adj-view-0901",
+        "/home/dead/elsewhere",
+        letibot_tools::Access::Read,
+    );
+    let (card, d) = ask_watching(&w, &req, "grant_ro", Duration::from_millis(50));
+    assert!(card.is_some(), "{d:?}");
+    assert!(d.by.starts_with("human:"), "{}", d.by);
+    assert_eq!(d.grant_at, Some(GrantAt::Queue), "the operator's: {d:?}");
+
+    // Kept where each answer said.
+    let at = grant_store("grant-scope");
+    let mut gate = letibot_tools::AdjudicatedGate::new(Box::new(reviewer_adjudicator(&w)))
+        .with_identity(REVIEWER, "agent")
+        .with_trail_source(|_| reviewer_trail())
+        .with_grant_ledger(
+            Arc::new(crate::grants::StoreLedger::new(at.clone())),
+            letibot_tools::grant_ledger::queue_of(REVIEWER).map(str::to_string),
+        );
+    let stop = Arc::new(AtomicBool::new(false));
+    let (main, head) = (w.main.clone(), w.head.clone());
+    let answerer = answer_when_open(w.main.clone(), stop.clone(), move |d| {
+        main.submit(
+            &head,
+            "c1",
+            0,
+            CommandKind::Answer {
+                req_id: d.req_id.clone(),
+                reply: Reply::Permission {
+                    option_id: "grant_ro".into(),
+                    pattern: None,
+                    note: None,
+                },
+            },
+        );
+        d.clone()
+    });
+    for path in ["/build/letibot-r1", "/home/dead/elsewhere"] {
+        assert_eq!(
+            gate.grant_view(
+                std::path::Path::new(path),
+                "bash",
+                letibot_tools::ViewAccess::Read
+            ),
+            letibot_tools::runtime::ViewGrant::Granted { writable: false },
+            "{path}"
+        );
+    }
+    stop.store(true, Ordering::SeqCst);
+    let _ = answerer.join();
+    let store = at.open().unwrap();
+    let paths = |scope: Scope| -> Vec<String> {
+        crate::grants::load(&store, &scope)
+            .unwrap()
+            .into_iter()
+            .filter_map(|r| match r.kept {
+                Kept::View { path, .. } => Some(path.display().to_string()),
+                _ => None,
+            })
+            .collect()
+    };
+    assert_eq!(
+        paths(Scope::Session(REVIEWER.into())),
+        vec!["/build/letibot-r1".to_string()]
+    );
+    assert_eq!(
+        paths(Scope::Queue(GATEKEEPER.into())),
+        vec!["/home/dead/elsewhere".to_string()]
+    );
+}

@@ -1666,6 +1666,7 @@ impl Adjudicator for Budgeted {
                     budget.as_millis()
                 ),
                 latency_ms: budget.as_millis() as u64,
+                grant_at: None,
             },
         }
     }
@@ -1833,6 +1834,7 @@ impl Adjudicator for ModelAdjudicator {
                         rule.as_str()
                     ),
                     latency_ms: started.elapsed().as_millis() as u64,
+                    grant_at: None,
                 },
                 false,
                 "refuse",
@@ -1856,6 +1858,7 @@ impl Adjudicator for ModelAdjudicator {
                      evidence. {why}"
                     ),
                     latency_ms: started.elapsed().as_millis() as u64,
+                    grant_at: None,
                 },
                 false,
                 "unavailable",
@@ -1889,6 +1892,7 @@ impl Adjudicator for ModelAdjudicator {
                     "{outside}. `harnessd --calibrate` measures the guard against the calls you have answered and can widen this."
                 ),
                 latency_ms: started.elapsed().as_millis() as u64,
+                grant_at: None,
             }, false, "ask", Vec::new());
         }
 
@@ -1954,6 +1958,8 @@ impl Adjudicator for ModelAdjudicator {
                             .join(", ")
                     ),
                     latency_ms: started.elapsed().as_millis() as u64,
+                    // A grant from one authorisation is the asker's alone, never its queue's.
+                    grant_at: Some(crate::grant_ledger::GrantAt::Session),
                 },
                 true,
                 "admit",
@@ -1971,6 +1977,7 @@ impl Adjudicator for ModelAdjudicator {
                     by: me,
                     basis: format!("the guard refused this: {why}"),
                     latency_ms: started.elapsed().as_millis() as u64,
+                    grant_at: None,
                 },
                 true,
                 "refuse",
@@ -1989,6 +1996,7 @@ impl Adjudicator for ModelAdjudicator {
                     by: me,
                     basis: why,
                     latency_ms: started.elapsed().as_millis() as u64,
+                    grant_at: None,
                 },
                 true,
                 "ask",

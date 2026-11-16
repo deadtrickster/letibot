@@ -184,6 +184,7 @@ fn a_silent_oracle_does_not_stop_the_person_being_asked() {
                 by: "model:test".into(),
                 basis: "budget".into(),
                 latency_ms: 400,
+                grant_at: None,
             }
         }
         fn describe(&self) -> String {

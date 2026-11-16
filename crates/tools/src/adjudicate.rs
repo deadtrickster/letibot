@@ -916,6 +916,9 @@ pub struct AdjudicationDecision {
     pub by: String,
     pub basis: String,
     pub latency_ms: u64,
+    /// Where a grant this answer gives is kept, said by whoever answered. `None` is the asking
+    /// session, as for any answer that names no wider scope.
+    pub grant_at: Option<crate::grant_ledger::GrantAt>,
 }
 
 impl AdjudicationDecision {
@@ -928,6 +931,7 @@ impl AdjudicationDecision {
             by: by.to_string(),
             basis: basis.to_string(),
             latency_ms: 0,
+            grant_at: None,
         }
     }
 
@@ -938,6 +942,7 @@ impl AdjudicationDecision {
             by: by.to_string(),
             basis: basis.to_string(),
             latency_ms: 0,
+            grant_at: None,
         }
     }
 }
@@ -984,12 +989,6 @@ pub trait Adjudicator: Send + Sync {
     /// the call, never match nothing.
     fn last_pattern(&self) -> Option<String> {
         None
-    }
-
-    /// Whether the last answer came from a card relayed to the daemon's main session, which is
-    /// what puts a queue session's grant at the queue's scope.
-    fn last_relayed(&self) -> bool {
-        false
     }
 }
 
@@ -1065,6 +1064,7 @@ where
                              offer; a non-conforming answer never opens the gate"
                         ),
                         latency_ms: d.latency_ms,
+                        grant_at: None,
                     };
                 }
                 d
@@ -1075,6 +1075,7 @@ where
                 by: self.id.clone(),
                 basis: "nobody answered".into(),
                 latency_ms: started.elapsed().as_millis() as u64,
+                grant_at: None,
             },
         }
     }
@@ -1155,6 +1156,7 @@ impl Adjudicator for ConsoleAdjudicator {
                     self.who
                 ),
                 latency_ms: started.elapsed().as_millis() as u64,
+                grant_at: None,
             },
             Ok(_) => {
                 let (chosen, basis) = match line.trim().split_once(char::is_whitespace) {
@@ -1176,6 +1178,7 @@ impl Adjudicator for ConsoleAdjudicator {
                             self.who
                         ),
                         latency_ms: started.elapsed().as_millis() as u64,
+                        grant_at: None,
                     };
                 }
                 AdjudicationDecision {
@@ -1184,6 +1187,7 @@ impl Adjudicator for ConsoleAdjudicator {
                     by: format!("human:{}", self.who),
                     basis,
                     latency_ms: started.elapsed().as_millis() as u64,
+                    grant_at: None,
                 }
             }
             Err(e) => AdjudicationDecision::unavailable(
@@ -1494,8 +1498,8 @@ pub struct AdjudicatedGate {
     unkept_memory: Option<Option<u64>>,
     /// View paths last read from the ledger, so a revoked one leaves the record.
     view_loaded: Vec<(std::path::PathBuf, bool)>,
-    /// Whether the last view card was answered on a relayed card.
-    view_relayed: bool,
+    /// The scope the last view card's answer named for its grant.
+    view_grant_at: Option<crate::grant_ledger::GrantAt>,
     /// Who answered the last view card, and their basis.
     view_by: (String, String),
     /// Who answered the last view card, kept past `keep_view` for the note the model reads.
@@ -1630,7 +1634,7 @@ impl AdjudicatedGate {
             unkept: Vec::new(),
             unkept_memory: None,
             view_loaded: Vec::new(),
-            view_relayed: false,
+            view_grant_at: None,
             view_by: Default::default(),
             view_answered_by: None,
         }
@@ -1718,7 +1722,7 @@ impl AdjudicatedGate {
     /// A view grant the operator just answered, kept.
     fn keep_view(&mut self, path: &std::path::Path, answer: &crate::runtime::ViewGrant) {
         if let crate::runtime::ViewGrant::Granted { writable } = answer {
-            let relayed = self.view_relayed;
+            let at = self.view_grant_at;
             let (by, basis) = std::mem::take(&mut self.view_by);
             let why = if by.starts_with(crate::grant_ledger::SHADOW_BY) {
                 basis
@@ -1730,22 +1734,28 @@ impl AdjudicatedGate {
                     path: crate::view::key(path),
                     writable: *writable,
                 },
-                relayed,
+                at,
                 &why,
                 &by,
             );
         }
     }
 
-    /// Write a grant this session was just given down in the ledger: at the queue's scope when
-    /// it was answered on a card relayed from a queue session, else at this session's.
-    fn keep_grant(&mut self, kept: crate::grant_ledger::Kept, relayed: bool, why: &str, by: &str) {
+    /// Write a grant this session was just given down in the ledger, at the scope the answer
+    /// named: the queue's when it says so and this session has one, else this session's.
+    fn keep_grant(
+        &mut self,
+        kept: crate::grant_ledger::Kept,
+        at: Option<crate::grant_ledger::GrantAt>,
+        why: &str,
+        by: &str,
+    ) {
         use crate::grant_ledger::{Kept, Scope};
         let Some(ledger) = self.ledger.clone() else {
             return;
         };
-        let scope = match (&self.queue, relayed) {
-            (Some(q), true) => Scope::Queue(q.clone()),
+        let scope = match (&self.queue, at) {
+            (Some(q), Some(crate::grant_ledger::GrantAt::Queue)) => Scope::Queue(q.clone()),
             _ => Scope::Session(self.session_id.clone()),
         };
         match ledger.keep(&scope, &kept, why, by) {
@@ -2849,15 +2859,15 @@ impl AdjudicatedGate {
             crate::authorise::TaskDirection::of_parts(tool, &reading, req.class.scope).key();
         self.advice = None;
         self.standing = None;
-        let (d, by_model) = match self.view_by_model(&req) {
-            Some(d) => (d, true),
-            None => (self.adjudicator.decide(&req), false),
+        let d = match self.view_by_model(&req) {
+            Some(d) => d,
+            None => self.adjudicator.decide(&req),
         };
         self.file_exchange();
         if self.advice.is_none() {
             self.advice = self.adjudicator.last_advice();
         }
-        self.view_relayed = !by_model && self.adjudicator.last_relayed();
+        self.view_grant_at = d.grant_at;
         self.view_by = (d.by.clone(), d.basis.clone());
         self.view_answered_by = Some(d.by.clone());
         let answer = self.view_answer(&d);
@@ -3095,11 +3105,10 @@ impl Gate for AdjudicatedGate {
                     (Some(Some(was)), Some(b)) => Some(was.max(b)),
                     (None, Some(b)) => Some(b),
                 });
-                let relayed = self.adjudicator.last_relayed();
                 if let Some(m) = self.memory_session {
                     self.keep_grant(
                         crate::grant_ledger::Kept::Memory(m),
-                        relayed,
+                        d.grant_at,
                         &format!("granted by an answer to {}", req.id),
                         &d.by,
                     );
@@ -3324,6 +3333,7 @@ impl Gate for AdjudicatedGate {
                     direction.key()
                 ),
                 latency_ms: 0,
+                grant_at: None,
             };
             let tell = self.surface(&req, &d, "not_run", breaker_state.clone());
             let why = d.basis.clone();
@@ -3352,6 +3362,7 @@ impl Gate for AdjudicatedGate {
                 by: "boundary:normaliser".into(),
                 basis: why.clone(),
                 latency_ms: 0,
+                grant_at: None,
             };
             let tell = self.surface(&req, &d, "not_run", breaker_state.clone());
             self.breaker.refused(&direction);
@@ -3377,6 +3388,7 @@ impl Gate for AdjudicatedGate {
                     rule.as_str()
                 ),
                 latency_ms: 0,
+                grant_at: None,
             };
             let tell = self.surface(&req, &d, "denied", breaker_state.clone());
             self.breaker.refused(&direction);
@@ -3418,6 +3430,7 @@ impl Gate for AdjudicatedGate {
                 by: "boundary:host".into(),
                 basis: basis.clone(),
                 latency_ms: 0,
+                grant_at: None,
             };
             let tell = self.surface(&req, &d, "denied", breaker_state.clone());
             let id = req.id.clone();
@@ -3702,6 +3715,7 @@ impl Gate for AdjudicatedGate {
                 by: a.by.clone(),
                 basis: a.basis.clone(),
                 latency_ms: a.latency_ms,
+                grant_at: None,
             };
             self.breaker.admitted(&direction);
             // This path consulted the oracle too, so it files the exchange: without it the brief
@@ -3714,7 +3728,6 @@ impl Gate for AdjudicatedGate {
         let decision = self.adjudicator.decide(&req);
         self.file_exchange();
         let typed_pattern = self.adjudicator.last_pattern();
-        let relayed = self.adjudicator.last_relayed();
 
         match &decision.outcome {
             DecisionOutcome::Selected { option_id } => {
@@ -3789,7 +3802,7 @@ impl Gate for AdjudicatedGate {
                                 let why = grant.why.clone();
                                 self.keep_grant(
                                     crate::grant_ledger::Kept::Allow(grant),
-                                    relayed,
+                                    decision.grant_at,
                                     &why,
                                     &decision.by,
                                 );

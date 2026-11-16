@@ -32,6 +32,14 @@ pub fn queue_of(session_id: &str) -> Option<&str> {
     root.starts_with("s-gatekeeper").then_some(root)
 }
 
+/// The scope an answer names for the grant it gives: the asking session, or the queue it
+/// belongs to. The gate turns it into a [`Scope`] with the ids it knows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GrantAt {
+    Session,
+    Queue,
+}
+
 /// Who a grant belongs to.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Scope {

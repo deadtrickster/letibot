@@ -245,6 +245,7 @@ impl ShadowAdjudicator {
             by: shadow_by(&self.cell),
             basis: why,
             latency_ms: 0,
+            grant_at: None,
         }
     }
 }

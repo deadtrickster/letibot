@@ -15,7 +15,7 @@ use super::*;
 const GATEKEEPER: &str = "s-gatekeeper-c74d1fd17483";
 const MAIN: &str = "s-1794057745451974498";
 
-/// Answers every card with `answer`, as if on a relayed card when `relayed`, and counts them.
+/// Answers every card with `answer`, naming the queue's scope when `relayed`, and counts them.
 #[derive(Clone)]
 struct Cards {
     answer: &'static str,
@@ -40,15 +40,15 @@ impl Cards {
 impl Adjudicator for Cards {
     fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
         *self.seen.lock().unwrap() += 1;
-        AdjudicationDecision::selected(req, self.answer, "human:test", "because")
+        let mut d = AdjudicationDecision::selected(req, self.answer, "human:test", "because");
+        if self.relayed {
+            d.grant_at = Some(letibot_tools::grant_ledger::GrantAt::Queue);
+        }
+        d
     }
 
     fn describe(&self) -> String {
         "asked at the head: a test".into()
-    }
-
-    fn last_relayed(&self) -> bool {
-        self.relayed
     }
 }
 
