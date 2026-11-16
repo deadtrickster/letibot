@@ -119,6 +119,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R316 | The shadow runs auto mode: its permission job becomes layer B, the oracle `automode` expects | Code work | plan below: one oracle, not two; stages reads, workspace writes, exec of known shapes, everything but the always-ask list; each stage promoted on etalon, store and BashArena replays and demoted by a disagreement breaker |
 | R317 | The shadow answers a review-queue seat's relayed read of a path outside its view (R316 stage 1) | Code work | built: an in-time `allow` citing a listed rule grants the read for that session with no card, one row on the main session, `/shadow revoke`, a two-disagreement breaker, `[shadow] answer_reads`; left: below |
 | R318 | `digest` and the queue's red-tip fixer asked for roles the seat's list refuses | Code work | built (branch `digest-role`): the part reader is `researcher`, else `explore`, else the narrowest no-write role the seat may start, never `coder`, and a seat with none is refused before the split; the queue session's list adds `coder` beside `gatekeeper` |
+| R319 | A job's end was delivered, then ten minutes later a turn-less row said its wait was over | Code work | built (branch `wait-at-delivery`): a delivered settlement takes its job waits off in the row that carries it and says so; the sweep is the backstop for undelivered endings, and a freed row that can start gets a turn, not a silent note |
 | R278 | No cap on concurrent children, and a second spawn of a running child's objective starts a duplicate | Code work | built (audit J9, plan 2.1 and the 3.4 same-objective refusal): `[subagents] max_running` per root session's tree (8), `daemon_max_running` per daemon (32, user file only), `when_full` queue (default) or refuse; a queued child starts when a running one answers, `job_kill` takes it out of the queue; a spawn with a running sibling's objective is refused naming it; left: the end-to-end turn test, a queued child's place in the head's subagent pane |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
@@ -2059,6 +2060,23 @@ Seen live: the operator pressed `c` in the todos pane by accident. It sent `/nag
 - Who paused: `NagBy`, read off the queued command's identity - the operator, the model (`agent:<self>`, its `nag_pause_self`), another session, the bridge, the board. `nags_paused` / `nags_resumed` rows and the `nags` settings value (`paused until 14:30 (by the model, since 23:38)`) name it, so the resident line does too.
 - The `nags` settings row is an on/off choice. The config pane sends `/nag pause` on `on`, `/nag resume` otherwise.
 - The picker no longer shows a stored pause on a session this daemon does not hold.
+
+## R319 - A job's end was delivered, then a turn-less row said its wait was over
+
+**Status:** built, 2026-11-16. Branch `wait-at-delivery`.
+
+Seen live on rano (s-1794057745451974498). At 09:02:01 j87339 ended (exit 0); its settlement was delivered as a turn and the model acted on it at once. At 09:12:01 the R301 sweep wrote `todo · j87339 ended (exit 0) at 11-16 09:02 - no longer a wait of 'agent/ behind cargo features...'` with no turn after it. To the operator that reads as a session told something and ignoring it.
+
+Cause: delivery named the waiting rows (`waiting_on_these`) but never took the wait off. The sweep skipped the handle for its digest grace (`JobWatchers::grace_left`, capped at `held_results_cap`, 10 minutes), then resolved it and wrote its note with `say_without_a_turn`.
+
+**Change:**
+- `Deliveries::stored` and `Deliveries::read` call `waits_told`, which runs `TodoBoard::resolve_job_waits` for the job settlements the row carries. Both doors run it, so every path (wake, turn start, round boundary, nag) frees the waits when its row goes in; a batch put back frees nothing.
+- The settlement's line says it: `Waiting on this: "..." (yours) — no longer waiting now that it has ended; update it with `todo_write`.` Child waits keep the old wording, since the board does not resolve them.
+- `Harness::resolve_ended_job_waits` is the backstop only and returns `FreedWaits`. When a freed row is ready (`todo::is_ready`, the check's `unmet_needs`), the note goes to `board_notices` and the sweep rings the session's wake, so the note opens a turn. Otherwise it is a note row, as before. `continue_after_restart` carries `board_notices` too, for a restored child.
+
+**Tests:** `harness::tests::delivery::a_delivered_settlement_resolves_its_waits_in_the_same_row`; `tests/job_waits.rs::the_nag_tick_resolves_a_wait_no_job_end_reached` (ready row: no turn-less row, a wake rung once, the note in the wake's row); `a_restore_resolves_stale_waits_on_ended_and_missing_jobs` (blocked rows: the note row stays).
+
+**Left:** a row freed at delivery is askable by the plan check right away, not after the digest grace's extra turn; the clock's window still spaces the check. A wait attached to a job after its settlement was delivered is still resolved by the sweep with a note.
 
 ## R301 - A row waiting on a job that ended is freed and noted
 

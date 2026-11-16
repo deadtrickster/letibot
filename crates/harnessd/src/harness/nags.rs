@@ -12,6 +12,14 @@ struct TheNag {
     next: Option<Duration>,
 }
 
+/// What the job-wait sweep freed: how many jobs' waits, and whether a freed row can start now, so
+/// the note rides a turn and the caller must ring for one.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FreedWaits {
+    pub(crate) jobs: usize,
+    pub(crate) wake: bool,
+}
+
 impl Harness {
     /// The operator's half of the board: replaces their rows and leaves the model's alone, so anything reading the
     /// board afterwards sees both. `moved` is a STATE and never a membership, since a name the operator can silence is
@@ -193,9 +201,9 @@ impl Harness {
     }
 
     /// Take every job wait off the open rows whose job no longer runs - ended, killed, or gone from
-    /// the table after a restart - and leave the model one note saying how each ended. An ending
-    /// still in its grace (the model has not had a turn with it) waits for the next sweep.
-    pub(crate) fn resolve_ended_job_waits(&mut self) -> usize {
+    /// the table after a restart - and leave the model one note saying how each ended. A delivered
+    /// settlement freed its rows already, so this is the backstop for one that never arrived.
+    pub(crate) fn resolve_ended_job_waits(&mut self) -> FreedWaits {
         let board = self.todos.clone();
         let graced = |handle: &str| {
             self.job_watch.as_ref().is_some_and(|w| {
@@ -227,18 +235,32 @@ impl Harness {
             ))
         });
         if resolved.is_empty() {
-            return 0;
+            return FreedWaits::default();
         }
         let note = letibot_tools::builtins::todo::resolved_waits_note(&resolved);
         let rows: Vec<String> = resolved.iter().flat_map(|r| r.rows.clone()).collect();
-        if let Err(e) = self.say_without_a_turn(&Facts::Todo { rows }, &note) {
+        // A freed row that can start now is work, and a note without a turn would read as ignored:
+        // it rides the next turn instead, which the caller rings for.
+        let board = self.todos.snapshot();
+        let children = self.child_sessions();
+        let jobs = self.running_jobs(&board);
+        let wake = board.iter().any(|r| {
+            rows.iter().any(|c| c == &r.content)
+                && letibot_tools::builtins::todo::is_ready(&board, r, &children, &jobs)
+        });
+        if wake {
+            self.board_notices.push(note);
+        } else if let Err(e) = self.say_without_a_turn(&Facts::Todo { rows }, &note) {
             eprintln!(
                 "  {} · todos: the resolved job waits were not noted ({e})",
                 self.cfg.session_id
             );
         }
         self.flush_todos_or_say("a resolved job wait");
-        resolved.len()
+        FreedWaits {
+            jobs: resolved.len(),
+            wake,
+        }
     }
 
     /// The `[todo check]` text, or nothing; a postponed row is not part of it. Read through

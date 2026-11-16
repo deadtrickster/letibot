@@ -1,5 +1,6 @@
 //! A todo row waiting on a job that no longer runs is freed - at open, and at the nag clock's
-//! tick when no job-end event reached it - with one note saying how the job ended.
+//! tick when no job-end event reached it - with one note saying how the job ended. A freed row
+//! that can start gets that note in a turn, never as a turn-less row.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::sessions::Outcome;
@@ -124,17 +125,26 @@ fn job_needs(sessions: &Sessions, id: &str) -> Vec<(String, Vec<TodoNeed>)> {
 }
 
 /// A restore whose rows wait on jobs that ended or that the store no longer holds frees them, and
-/// a failed job's exit status is in the note.
+/// a failed job's exit status is in the note. The rows still wait on an open row, so nothing can
+/// start and the note is a row of its own.
 #[test]
 fn a_restore_resolves_stale_waits_on_ended_and_missing_jobs() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
+    let after_prep = |content: &str, jobs: &[&str]| {
+        let mut r = row(content, jobs);
+        r.needs.push(TodoNeed::Row {
+            content: "prep".into(),
+        });
+        r
+    };
     let (path, id) = seeded(
         "restore",
         &[
-            row("K4 surface family", &["j86131", "j86141"]),
-            row("K6 land the records", &["j86141", "j99999", "j86254"]),
+            row("prep", &[]),
+            after_prep("K4 surface family", &["j86131", "j86141"]),
+            after_prep("K6 land the records", &["j86141", "j99999", "j86254"]),
         ],
         &[
             job("j86131", "exited 0"),
@@ -146,7 +156,10 @@ fn a_restore_resolves_stale_waits_on_ended_and_missing_jobs() {
     let (sessions, _registry) = opened(&parts, &path, &id);
 
     for (content, needs) in job_needs(&sessions, &id) {
-        assert!(needs.is_empty(), "`{content}` still waits on {needs:?}");
+        assert!(
+            needs.iter().all(|n| !matches!(n, TodoNeed::Job { .. })),
+            "`{content}` still waits on {needs:?}"
+        );
     }
     let said = notes(&sessions, &id);
     assert!(said.contains("j86131 ended (exit 0) at "), "{said}");
@@ -168,11 +181,39 @@ fn a_restore_resolves_stale_waits_on_ended_and_missing_jobs() {
     );
     // Persisted, so the next daemon does not resolve them a second time.
     let stored = Store::open(&path).unwrap().todos(&id).unwrap();
-    assert!(stored.iter().all(|t| t.needs.is_empty()), "{stored:?}");
+    assert!(
+        stored
+            .iter()
+            .all(|t| t.needs.iter().all(|n| !matches!(n, TodoNeed::Job { .. }))),
+        "{stored:?}"
+    );
+}
+
+/// Whether the worker has a wake waiting for this session.
+fn woken(registry: &Registry, id: &str) -> bool {
+    matches!(
+        registry.next_work_until(Some(std::time::Instant::now())),
+        letibot_sessionlog::registry::WorkOrIdle::Work(
+            letibot_sessionlog::registry::Work::Woken(w)
+        ) if w == id
+    )
+}
+
+/// Every transcript row's body that carries `needle`.
+fn rows_saying(sessions: &Sessions, id: &str, needle: &str) -> Vec<String> {
+    sessions
+        .harness_of(id)
+        .expect("open")
+        .items()
+        .iter()
+        .map(letibot_sessionlog::view::body_of)
+        .filter(|b| b.contains(needle))
+        .collect()
 }
 
 /// A job that ended with no job-end event delivered - here, one the operator's row names after it
-/// was already over - is resolved at the nag clock's next tick.
+/// was already over - is resolved at the nag clock's next tick. The freed row can start, so the
+/// note is no turn-less row: the session is woken and the note opens that turn.
 #[test]
 fn the_nag_tick_resolves_a_wait_no_job_end_reached() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
@@ -180,7 +221,9 @@ fn the_nag_tick_resolves_a_wait_no_job_end_reached() {
     };
     let (path, id) = seeded("tick", &[], &[job("j7", "exited 0")]);
     let parts = Parts::load(&config(&path, &id)).expect("the vocabulary must load");
-    let (mut sessions, _registry) = opened(&parts, &path, &id);
+    let (mut sessions, registry) = opened(&parts, &path, &id);
+    // The wake a restore rings at open, so the one asserted below is the sweep's.
+    while woken(&registry, &id) {}
     let out = sessions.dispatch(
         &id,
         &QueuedCommand {
@@ -221,13 +264,21 @@ fn the_nag_tick_resolves_a_wait_no_job_end_reached() {
         job_needs(&sessions, &id),
         vec![("after the gate".to_string(), Vec::new())]
     );
-    let said = notes(&sessions, &id);
+    assert_eq!(notes(&sessions, &id), "", "no turn-less row");
     assert!(
-        said.contains("[todo] j7 ended (exit 0) at ")
-            && said.ends_with("- no longer a wait of `after the gate`."),
-        "{said}"
+        woken(&registry, &id),
+        "the freed row is ready: a turn is rung"
     );
-    // One-time: a second tick has nothing to say.
+    // One-time: a second tick has nothing to say and rings nothing.
     sessions.deliver_due_nags();
-    assert_eq!(notes(&sessions, &id).matches("j7").count(), 1);
+    assert!(!woken(&registry, &id));
+
+    // The wake's turn opens with the note. Its model is unreachable; the row is in all the same.
+    let _ = sessions.wake(&id);
+    let said = rows_saying(&sessions, &id, "[todo] j7 ended (exit 0) at ");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(
+        said[0].contains("- no longer a wait of `after the gate`."),
+        "{said:?}"
+    );
 }

@@ -811,8 +811,8 @@ fn the_completion_names_the_rows_waiting_on_it() {
     assert!(
         said.ends_with(
             "\nWaiting on this: \"make tier 1 green\" (the operator's), \"CRITERION, NOT A TASK — \
-             stays open until the gate is green\" (yours) — update them with `todo_write` now that \
-             it has ended."
+             stays open until the gate is green\" (yours) — no longer waiting now that it has \
+             ended; update them with `todo_write`."
         ),
         "{said}"
     );
@@ -862,7 +862,58 @@ fn the_completion_names_the_rows_waiting_on_it() {
         two.contains("\nWaiting on these: \"make tier 1 green\" (the operator's, on `j12`)"),
         "{two}"
     );
-    assert!(two.ends_with("now that they have ended."), "{two}");
+    assert!(
+        two.ends_with("no longer waiting now that they have ended; update them with `todo_write`."),
+        "{two}"
+    );
+}
+
+/// The settlement's row is where its job waits end: stored, the rows it names are off the job,
+/// so the sweep has nothing left to say about it later. A row that never went in frees nothing.
+#[test]
+fn a_delivered_settlement_resolves_its_waits_in_the_same_row() {
+    let dir = Scratch::new("waits-at-delivery");
+    let hub = Hub::new("s-r79");
+    let w = watchers(&hub, false);
+    let board = Arc::new(TodoBoard::new(waiting_board()));
+    let d = Deliveries::new(
+        Arc::clone(&w),
+        Some(Arc::clone(&board)),
+        DeliveryLog::under(&dir.0, "s-r79"),
+        Duration::from_secs(600),
+        "s-r79",
+    );
+    let job_waits = || {
+        board
+            .snapshot()
+            .iter()
+            .filter(|r| r.needs.iter().any(|n| matches!(n, TodoNeed::Job { .. })))
+            .count()
+    };
+
+    // Taken and put back: the turn did not open, so the waits stand.
+    w.hold(vec![settled("j12", "exited 0", SystemTime::now())]);
+    let now = d.at_turn_start_unread();
+    d.put_back(now);
+    assert_eq!(job_waits(), 2);
+
+    let now = d.at_turn_start_unread();
+    let text = now.text();
+    assert!(text.contains("`j12` exited 0"), "{text}");
+    assert!(
+        text.contains("\"make tier 1 green\" (the operator's)")
+            && text.contains("no longer waiting now that it has ended"),
+        "the wait's end is in the settlement itself: {text}"
+    );
+    d.stored(&now);
+    assert_eq!(job_waits(), 0, "resolved as the row was stored");
+    d.read(&now);
+    assert!(
+        board
+            .resolve_job_waits(|h| Some(format!("{h} ended")))
+            .is_empty(),
+        "the sweep finds nothing to note about j12"
+    );
 }
 
 /// A `when: job` firing is not delayed by the grace: the grace is for the CHECK, which must not ask about a row before

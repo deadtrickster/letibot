@@ -3487,13 +3487,19 @@ impl<'a> Sessions<'a> {
         let mut ran = self.ask_courts(|s| s.deliver_due_nags());
         // Out of band of job-end delivery: a missed ending, a compaction or a restart must not
         // leave a row waiting on a job that no longer runs.
-        let freed: Vec<String> = self
+        let freed: Vec<(String, bool)> = self
             .open
             .iter_mut()
-            .filter_map(|(id, h)| (h.resolve_ended_job_waits() > 0).then(|| id.clone()))
+            .filter_map(|(id, h)| {
+                let freed = h.resolve_ended_job_waits();
+                (freed.jobs > 0).then(|| (id.clone(), freed.wake))
+            })
             .collect();
-        for id in &freed {
+        for (id, wake) in &freed {
             self.rearm_todo_nag(id);
+            if *wake {
+                self.registry.bell().ring_wake(id);
+            }
         }
         let now = Instant::now();
         let due: Vec<String> = self

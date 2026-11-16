@@ -1741,6 +1741,18 @@ fn human_gap(gap: Duration) -> String {
     }
 }
 
+/// Whether `row` is open and nothing it needs is unmet - the check's own reading of ready, for a
+/// door that frees a row and must decide whether that is a turn.
+pub fn is_ready(
+    board: &[TodoItem],
+    row: &TodoItem,
+    children: &ChildSessions,
+    jobs: &RunningJobs,
+) -> bool {
+    matches!(row.status, TodoStatus::Pending | TodoStatus::InProgress)
+        && unmet_needs(board, row, children, jobs).is_empty()
+}
+
 /// The plan a turn ended without finishing, as a message for the model, or `None` when there is
 /// nothing to say. The trigger is pending work, so the list becomes a contract at the one moment
 /// it can be honoured; an empty or fully completed list is silent.

@@ -776,6 +776,8 @@ impl Harness {
     pub fn continue_after_restart(&mut self, notice: &str) -> Result<Reply, HarnessError> {
         let mut parts = vec![notice.to_string()];
         parts.append(&mut self.restart_notices);
+        // The restore's sweep may have freed a row that can start; its note rides this turn.
+        parts.append(&mut self.board_notices);
         let owed = std::mem::take(&mut self.restart_owed);
         let riding = self.batch_riding_in();
         let text = match &riding {

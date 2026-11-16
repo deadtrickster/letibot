@@ -548,15 +548,25 @@ pub(crate) fn waiting_on_these(done: &[JobCompletion], rows: &[TodoItem]) -> Str
     if named.is_empty() {
         return String::new();
     }
-    let verb = match (one, done[0].kind) {
-        (true, BackgroundKind::Job) => "it has ended",
-        (true, BackgroundKind::Subagent) => "it has finished",
-        (false, BackgroundKind::Job) => "they have ended",
-        (false, BackgroundKind::Subagent) => "they have finished",
-    };
     let them = if named.len() == 1 { "it" } else { "them" };
+    // A job wait is taken off as this notice is stored (`Deliveries::waits_told`), so the notice
+    // says so: the sweep then has nothing left to say about this job later.
+    let tail = match (one, done[0].kind) {
+        (true, BackgroundKind::Job) => {
+            format!("no longer waiting now that it has ended; update {them} with `todo_write`.")
+        }
+        (false, BackgroundKind::Job) => {
+            format!("no longer waiting now that they have ended; update {them} with `todo_write`.")
+        }
+        (true, BackgroundKind::Subagent) => {
+            format!("update {them} with `todo_write` now that it has finished.")
+        }
+        (false, BackgroundKind::Subagent) => {
+            format!("update {them} with `todo_write` now that they have finished.")
+        }
+    };
     format!(
-        "\n{}{} — update {them} with `todo_write` now that {verb}.",
+        "\n{}{} — {tail}",
         if one {
             WAITING_ON_THIS
         } else {
@@ -1037,6 +1047,7 @@ impl Deliveries {
     /// subagent's `delivered` in the store, and the room's seen mark for the lines it carries.
     pub(crate) fn read(&self, now: &HeldNow) {
         let results = results_of(&now.told);
+        self.waits_told(&results);
         if !results.is_empty() {
             self.watch.read_now(&results);
             // Every caller has the notice's row in the transcript already, so the store may say
@@ -1050,10 +1061,29 @@ impl Deliveries {
     /// written at once, not at the turn's end. [`Self::read`] still runs after the turn.
     pub(crate) fn stored(&self, now: &HeldNow) {
         let results = results_of(&now.told);
+        self.waits_told(&results);
         if !results.is_empty() {
             self.watch.stored(&results);
         }
         crate::room::wake::ack_through(&self.me, now.ack);
+    }
+
+    /// Take every job wait on these settlements off the board: the notice the model is reading
+    /// already said so (`waiting_on_these`). Idempotent, since `stored` and `read` both run it.
+    fn waits_told(&self, results: &[JobCompletion]) {
+        let Some(board) = &self.todos else { return };
+        if !results.iter().any(|c| c.kind == BackgroundKind::Job) {
+            return;
+        }
+        board.resolve_job_waits(|handle| {
+            results
+                .iter()
+                .find(|c| {
+                    c.kind == BackgroundKind::Job
+                        && (c.job == handle || c.slug.as_deref() == Some(handle))
+                })
+                .map(|c| c.job.clone())
+        });
     }
 
     /// Nothing was told - the turn that was to carry it did not open - so it is held again for the
