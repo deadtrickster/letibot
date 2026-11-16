@@ -55,10 +55,14 @@ pub(crate) fn user_row_lines(
                 crate::ui::transcript::blocks::peer_block(from, said, it.ts, cfg),
             )
         }
-        letibot_transcript::Speaker::Agent => (
-            RowClass::Other,
-            session_row_lines(&text, it.ts, cfg, subagents, job_tails, ctx.cards),
-        ),
+        // A skill handed over is a harness context row, folded to one line naming it.
+        letibot_transcript::Speaker::Agent => {
+            let text = crate::ui::transcript::blocks::fold_skill(&text).unwrap_or(text);
+            (
+                RowClass::Other,
+                session_row_lines(&text, it.ts, cfg, subagents, job_tails, ctx.cards),
+            )
+        }
     }
 }
 

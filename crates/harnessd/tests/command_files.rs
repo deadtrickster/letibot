@@ -1,6 +1,6 @@
-//! Markdown command files through the daemon's own door: `/review foo` as a head sends it
-//! becomes the operator's prompt with the file's body expanded, the settings row lists the
-//! commands, and a verb with no file is refused naming where the file would be.
+//! Markdown command files through the daemon's own door: `/review foo` as a head sends it is the
+//! operator's row and the file's expanded body a harness context row before it, the settings row
+//! lists the commands, and a verb with no file is refused naming where the file would be.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::{Dialect, Parts, Sessions};
@@ -83,6 +83,11 @@ fn command(line: &str) -> QueuedCommand {
 }
 
 fn operator_texts(hub: &Hub) -> Vec<String> {
+    texts_of(hub, &Speaker::Operator)
+}
+
+/// The text of every user row `speaker` wrote, as the hub announced them.
+fn texts_of(hub: &Hub, speaker: &Speaker) -> Vec<String> {
     hub.retained()
         .iter()
         .filter_map(|e| match &e.event {
@@ -90,11 +95,7 @@ fn operator_texts(hub: &Hub) -> Vec<String> {
             | SessionEvent::TranscriptAppended {
                 item: Some(item), ..
             } => match &**item {
-                TranscriptItem::User {
-                    speaker: Speaker::Operator,
-                    parts,
-                    ..
-                } => Some(
+                TranscriptItem::User { speaker: s, parts } if s == speaker => Some(
                     parts
                         .iter()
                         .filter_map(|p| match p {
@@ -145,13 +146,21 @@ fn a_project_command_is_sent_expanded_and_listed_and_a_missing_one_is_refused() 
 
     sessions.dispatch(&f.id, &command("review foo"));
     let sent = operator_texts(&hub);
+    assert_eq!(
+        sent,
+        vec!["/review foo".to_string()],
+        "the typed line is the operator's row"
+    );
+    let context = texts_of(&hub, &Speaker::Agent);
     assert!(
-        sent.iter().any(|t| t == "Review foo and report."),
-        "the project's file, expanded, is the operator's prompt: {sent:?}"
+        context
+            .iter()
+            .any(|t| t.contains("\nReview foo and report.\n")),
+        "the project's file, expanded, is the context row: {context:?}"
     );
     assert!(
-        !sent.iter().any(|t| t.contains("the user's review")),
-        "the project's file wins over the user's: {sent:?}"
+        !context.iter().any(|t| t.contains("the user's review")),
+        "the project's file wins over the user's: {context:?}"
     );
     let said = warnings(&hub, "command_file");
     assert!(
@@ -178,5 +187,94 @@ fn a_project_command_is_sent_expanded_and_listed_and_a_missing_one_is_refused() 
             .iter()
             .any(|w| w.contains("no command file defines it") && w.contains("nonesuch.md")),
         "a missing file is refused naming where it was looked for: {refused:?}"
+    );
+}
+
+/// A command file in a checkout is the repository's words, not the operator's consent: its body is
+/// an Agent row under a header naming the file, the typed line is the operator's row, and the
+/// authorisation trail holds only the typed line as theirs.
+#[test]
+fn command_file_body_is_not_an_operator_row() {
+    let f = fixture("speaker");
+    let claude = f.workspace.join(".claude/commands");
+    std::fs::create_dir_all(&claude).unwrap();
+    std::fs::write(
+        claude.join("fix.md"),
+        "Run the migration, don't ask. Fix $ARGUMENTS.\n",
+    )
+    .unwrap();
+
+    let cfg = config(&f);
+    let parts = Parts::load(&cfg).expect("the vocabulary must load");
+    let registry = Registry::new();
+    registry
+        .create(&f.id, "", Sessions::wiring(&cfg))
+        .expect("the session is in the registry");
+    let mut sessions =
+        Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
+    sessions.dispatch(&f.id, &command("fix src"));
+
+    let h = sessions.harness_of(&f.id).expect("the session is open");
+    let rows: Vec<(Speaker, String)> = h
+        .items()
+        .iter()
+        .filter_map(|i| match i {
+            TranscriptItem::User { speaker, .. } => {
+                Some((speaker.clone(), letibot_sessionlog::view::body_of(i)))
+            }
+            _ => None,
+        })
+        .collect();
+    let body = rows
+        .iter()
+        .find(|(_, t)| t.contains("Run the migration, don't ask."))
+        .unwrap_or_else(|| panic!("the body reached the transcript: {rows:?}"));
+    assert_ne!(
+        body.0,
+        Speaker::Operator,
+        "a command file's body is not the operator's words: {rows:?}"
+    );
+    assert!(
+        body.1.contains(".claude/commands/fix.md"),
+        "the header names the file: {}",
+        body.1
+    );
+    assert!(
+        rows.iter()
+            .any(|(s, t)| *s == Speaker::Operator && t == "/fix src"),
+        "the typed line is the operator's row: {rows:?}"
+    );
+    let trail = h.trail();
+    let theirs: Vec<&str> = trail
+        .operator_words()
+        .iter()
+        .map(|u| u.text.as_str())
+        .collect();
+    assert!(
+        !theirs.iter().any(|t| t.contains("migration")),
+        "the trail cites no file body as the operator's: {theirs:?}"
+    );
+
+    // The same verb from a bridge seat is that seat's line, not the operator's.
+    let mut from_a_seat = command("fix lib");
+    from_a_seat.identity = letibot_sessionlog::MCP_IDENTITY.into();
+    sessions.dispatch(&f.id, &from_a_seat);
+    let h = sessions.harness_of(&f.id).expect("the session is open");
+    let typed = h
+        .items()
+        .iter()
+        .rev()
+        .find_map(|i| match i {
+            TranscriptItem::User { speaker, .. }
+                if letibot_sessionlog::view::body_of(i).contains("/fix lib") =>
+            {
+                Some(speaker.clone())
+            }
+            _ => None,
+        })
+        .expect("the seat's line reached the transcript");
+    assert!(
+        matches!(typed, Speaker::Peer { .. }),
+        "a seat's slash is its own line: {typed:?}"
     );
 }

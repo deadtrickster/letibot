@@ -1136,14 +1136,16 @@ impl<'a> Sessions<'a> {
     }
 
     /// A `/verb` no daemon verb answers, from a head: a `command_<verb>` layer first, as the head
-    /// asks one, then a command file run as the operator's prompt. `None` leaves the line to the
-    /// unknown-verb sentence, which names where a file would have been.
+    /// asks one, then a command file. The typed line is `voice`'s row and the file's body is a
+    /// context row before it, since a checkout's file is not the operator's consent. `None` leaves
+    /// the line to the unknown-verb sentence, which names where a file would have been.
     fn command_file(
         &mut self,
         session_id: &str,
         line: &str,
         verb: &str,
         rest: &str,
+        voice: &crate::harness::Voice,
     ) -> Option<Outcome> {
         let host = self.plugins.get(session_id).cloned();
         let hub = self.registry.get(session_id);
@@ -1208,14 +1210,9 @@ impl<'a> Sessions<'a> {
             h.set_turn_tools(rules);
         }
         said("command_file", note);
-        let out = self.run_prompt(
-            session_id,
-            &text,
-            &[],
-            None,
-            &crate::harness::Voice::Operator,
-            Vec::new(),
-        );
+        let body = crate::commands::context_row(&cmd, &text);
+        let typed = format!("/{}", line.trim_start_matches('/'));
+        let out = self.run_prompt(session_id, &typed, &[], None, voice, vec![body]);
         if let Some(h) = self.open.get_mut(session_id) {
             h.set_turn_tools(None);
             if let Some(b) = back
@@ -4456,8 +4453,10 @@ impl<'a> Sessions<'a> {
                 };
                 match settled {
                     Ok(line) => {
+                        let voice = crate::harness::Voice::of_command(cmd);
                         match self.turn(session_id, Door::Prompt, |h| {
-                            h.submit_operator(&line).map(Some)
+                            h.submit_voiced(&voice, &line, Vec::new(), Vec::new())
+                                .map(Some)
                         }) {
                             None => Outcome::Ignored,
                             Some(Ok(reply)) => Outcome::Replied(Box::new(reply)),
@@ -4543,8 +4542,9 @@ impl<'a> Sessions<'a> {
             // thread of its own - a run that held THIS worker held every other session's work with it.
             CommandKind::LoadSkill { name, then } => {
                 let (name, then) = (name.clone(), then.clone());
+                let voice = crate::harness::Voice::of_command(cmd);
                 match self.turn(session_id, Door::Prompt, |h| {
-                    h.load_skill(&name, &then).map(Some)
+                    h.load_skill(&name, &then, &voice).map(Some)
                 }) {
                     None => Outcome::Ignored,
                     Some(Ok(reply)) => Outcome::Replied(Box::new(reply)),
@@ -4799,7 +4799,13 @@ impl<'a> Sessions<'a> {
                 let line = line.clone();
                 if let crate::slash::Slash::Unknown { verb, line: rest } =
                     crate::slash::Slash::parse(&line)
-                    && let Some(outcome) = self.command_file(session_id, &line, &verb, &rest)
+                    && let Some(outcome) = self.command_file(
+                        session_id,
+                        &line,
+                        &verb,
+                        &rest,
+                        &crate::harness::Voice::of_command(cmd),
+                    )
                 {
                     return outcome;
                 }

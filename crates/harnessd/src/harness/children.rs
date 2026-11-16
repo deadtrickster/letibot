@@ -1216,7 +1216,8 @@ pub(crate) fn serve_child_with(
                 match sub.answer_operator_ask(content, question, answer) {
                     Ok(line) => {
                         later_turn(sub, turns, Door::Prompt, |h| {
-                            h.submit_operator(&line).map(Some)
+                            h.submit_voiced(&voice, &line, Vec::new(), Vec::new())
+                                .map(Some)
                         });
                     }
                     Err(why) => {

@@ -1533,12 +1533,21 @@ impl Harness {
         );
     }
 
-    /// The operator hands this session one skill's body: `/skills NAME` and the pane's Enter. The body
-    /// is their message, the label says where it came from because a skill is not their words, and the
-    /// rest of the line goes on as their own prompt in the same turn.
-    pub fn load_skill(&mut self, name: &str, then: &str) -> Result<Reply, HarnessError> {
+    /// Somebody hands this session one skill's body: `/skills NAME` and the pane's Enter. The body is
+    /// the harness's context row, since a skill file is not anybody's consent. The typed line, or the
+    /// rest of it, is `voice`'s own row in the same turn.
+    pub fn load_skill(
+        &mut self,
+        name: &str,
+        then: &str,
+        voice: &Voice,
+    ) -> Result<Reply, HarnessError> {
         let skill = self.skills.load_any(name).map_err(HarnessError::Setup)?;
-        self.submit_operator(&skill_message(&skill, then))
+        let words = match then.trim() {
+            "" => format!("/skills {name}"),
+            then => then.to_string(),
+        };
+        self.submit_voiced(voice, &words, Vec::new(), vec![skill_message(&skill, "")])
     }
 
     /// Say what this session is waiting on, if it has changed. Almost every move is caught by the hub

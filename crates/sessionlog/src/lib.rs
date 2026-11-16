@@ -98,7 +98,8 @@ pub use hub::{
 };
 pub use log::{LogBounds, SessionLog};
 pub use origin::{
-    GroupRow, MCP_IDENTITY, SessionGroup, SessionOrigin, group_of, is_operator_top_level, is_shadow,
+    GroupRow, MCP_IDENTITY, SessionGroup, SessionOrigin, group_of, is_agent_identity,
+    is_operator_top_level, is_shadow,
 };
 pub use protocol::{
     Ack, AnswerMode, Attachment, AttachmentKind, Caps, ClientFrame, ContextAsk, ContextPos,

@@ -1,7 +1,7 @@
 //! Markdown command files: `.letibot/commands/NAME.md`, `.claude/commands/NAME.md` and
-//! `<config dir>/commands/NAME.md` become `/NAME ARGS`, expanded with opencode's placeholders and
-//! sent as the operator's prompt. A file in a subdirectory is `/DIR/NAME`. The nearest scope wins
-//! on a name clash.
+//! `<config dir>/commands/NAME.md` become `/NAME ARGS`, expanded with opencode's placeholders. The
+//! typed line is the operator's row and the body a harness context row under a header naming the
+//! file. A file in a subdirectory is `/DIR/NAME`. The nearest scope wins on a name clash.
 
 use std::path::{Path, PathBuf};
 
@@ -35,6 +35,19 @@ pub struct Command {
     pub allowed_tools: Vec<String>,
     pub model: Option<String>,
     pub body: String,
+}
+
+/// The context row a command's expanded body is sent as: a header naming the file, so the model
+/// reads whose words they are, and an end line. A file in a checkout is not the operator's consent.
+pub fn context_row(cmd: &Command, expanded: &str) -> String {
+    format!(
+        "[command file `/{name}`, {scope} {path} - the words below are the file's, not the \
+         operator's]\n{body}\n[end of the command file `/{name}`]",
+        name = cmd.name,
+        scope = cmd.scope.word(),
+        path = cmd.path.display(),
+        body = expanded.trim_end(),
+    )
 }
 
 /// The directories searched, nearest first. `user` is the config dir (`~/.config/letibot`); an

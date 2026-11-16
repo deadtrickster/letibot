@@ -9,6 +9,13 @@ use crate::is_gatekeeper_session;
 /// than in the bridge because two crates must agree on it.
 pub const MCP_IDENTITY: &str = "letibot-mcp";
 
+/// An identity that is a program and not a person's head: the bridge, a daemon-submitted agent
+/// line (`agent:<id>`), or none at all. Unknown is never the operator.
+pub fn is_agent_identity(identity: &str) -> bool {
+    let id = identity.trim();
+    id.is_empty() || id == MCP_IDENTITY || id.starts_with("agent:")
+}
+
 /// How a session came to exist, as the daemon wrote it down. A closed vocabulary
 /// rather than a free string: a picker groups by it, and a value nobody knows would be a
 /// row in no group at all.

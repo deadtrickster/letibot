@@ -312,10 +312,10 @@ fn the_roots_on_the_config_are_what_the_skills_list_holds() {
     assert_eq!(box_skill.source, "the operator's");
 }
 
-/// `/skills NAME rest` hands the body over as the person's own turn, and the rest of the line
-/// follows it into the same turn.
+/// `/skills NAME rest` hands the body over as a context row of the harness's, and the rest of the
+/// line follows it into the same turn as the person's own row.
 #[test]
-fn a_handed_over_skill_reaches_the_model_as_the_persons_turn() {
+fn a_handed_over_skill_reaches_the_model_beside_the_persons_turn() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
@@ -338,29 +338,45 @@ fn a_handed_over_skill_reaches_the_model_as_the_persons_turn() {
         prompt.contains("and start now"),
         "the rest of the line follows it: {prompt}"
     );
-    // The row is the OPERATOR's, because the operator handed it over: a row saying the harness's
-    // would authorise nothing and read as the agent talking to itself.
+    // A skill file is not the operator's consent, so its body is the harness's row; what they typed
+    // is theirs.
     let items = f
         .sessions
         .harness_of(&f.id)
         .expect("the session is open")
         .items()
         .to_vec();
-    let said = items
+    let rows: Vec<(Speaker, String)> = items
         .iter()
-        .find_map(|i| match i {
-            TranscriptItem::User { speaker, parts } if *speaker == Speaker::Operator => {
-                parts.iter().find_map(|p| match p {
-                    UserPart::Text { text } if text.contains(BODY_MARK) => Some(text.clone()),
-                    _ => None,
-                })
-            }
+        .filter_map(|i| match i {
+            TranscriptItem::User { speaker, parts } => Some((
+                speaker.clone(),
+                parts
+                    .iter()
+                    .filter_map(|p| match p {
+                        UserPart::Text { text } => Some(text.as_str()),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            )),
             _ => None,
         })
+        .collect();
+    let body = rows
+        .iter()
+        .find(|(_, t)| t.contains(BODY_MARK))
         .expect("the body is in a row");
+    assert_eq!(body.0, Speaker::Agent, "{rows:?}");
     assert!(
-        said.contains("[skill `handover`"),
-        "the row says whose words those are: {said}"
+        body.1.contains("[skill `handover`"),
+        "the row says whose words those are: {}",
+        body.1
+    );
+    assert!(
+        rows.iter()
+            .any(|(s, t)| *s == Speaker::Operator && t == "and start now"),
+        "the rest of the line is the operator's row: {rows:?}"
     );
 }
 

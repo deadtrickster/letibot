@@ -82,15 +82,17 @@ pub struct QueuedCommand {
 }
 
 impl QueuedCommand {
-    /// Who sent this prompt when it was not the operator: the frame's sender, or the bridge's own
-    /// identity for a prompt that names none (an older bridge, a prompt restored from the journal).
+    /// Who sent this command when it was not the operator: a prompt's named sender, or the
+    /// connection's identity when that is a program's (see [`crate::is_agent_identity`]). Read for
+    /// every kind, so a slash, a skill or a todo answer from a bridge is never the operator's.
     pub fn peer(&self) -> Option<String> {
-        let CommandKind::Prompt { from, .. } = &self.kind else {
-            return None;
+        let from = match &self.kind {
+            CommandKind::Prompt { from, .. } => from.clone(),
+            _ => None,
         };
-        from.clone()
-            .filter(|f| !f.trim().is_empty())
-            .or_else(|| (self.identity == crate::MCP_IDENTITY).then(|| self.identity.clone()))
+        from.filter(|f| !f.trim().is_empty()).or_else(|| {
+            crate::is_agent_identity(&self.identity).then(|| self.identity.trim().to_string())
+        })
     }
 }
 
