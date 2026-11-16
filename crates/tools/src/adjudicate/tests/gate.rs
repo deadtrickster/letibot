@@ -251,11 +251,11 @@ fn an_allow_admits_and_a_session_grant_is_not_asked_twice() {
     assert_eq!(g.grants().len(), 1, "and the grant is listable");
 }
 
-/// A point whose grants are `Once` still offers the session grant, because `allow_always` on the
-/// same ladder is stronger: withholding it is a button whose effect the gate would decline, the
-/// same defect in the other direction.
+/// A point whose grants are `Once` means once: the session rung is not on its ladder, and an
+/// answer that names it anyway is refused as an option the request did not offer. Both halves are
+/// the same fact read twice, so the two cannot disagree.
 #[test]
-fn a_once_scoped_point_offers_the_session_grant_and_the_gate_honours_it() {
+fn a_once_point_records_no_session_grant() {
     use std::sync::{Arc, Mutex};
     let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let s = seen.clone();
@@ -275,36 +275,49 @@ fn a_once_scoped_point_offers_the_session_grant_and_the_gate_honours_it() {
     });
     let mut g = AdjudicatedGate::new(Box::new(adj)).with_mode(crate::mode::Mode::ALWAYS_ASK);
     let args = json!({"path": "src/lib.rs"});
-    assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
-    assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
 
-    let ids = seen.lock().unwrap().clone();
+    let ids = {
+        let first = g.admit(&call("edit", &args));
+        let ids = seen.lock().unwrap().clone();
+        assert!(
+            !matches!(first, GateDecision::Admit),
+            "a session grant was honoured at a point that grants once: {first:?}"
+        );
+        ids
+    };
     assert!(
-        ids.iter().any(|i| i == "allow_session"),
-        "a point whose grants are `Once` must still offer the session grant \
-             while it offers the durable rule: {ids:?}"
+        !ids.iter().any(|i| i == "allow_session"),
+        "a point whose grants are `Once` offered the session rung: {ids:?}"
     );
     assert!(
         ids.iter().any(|i| i == "allow_always"),
-        "and the durable rule is still offered: {ids:?}"
+        "the durable rule is a rule and stays on the ladder: {ids:?}"
     );
     assert!(
         ids.iter().any(|i| i == "allow_once"),
-        "allowing this one call must still be offered: {ids:?}"
+        "allowing this one call is what a once point grants: {ids:?}"
     );
+    assert!(
+        g.grants().is_empty(),
+        "a grant recorded at a once point: {:?}",
+        g.grants()
+    );
+
+    // Nothing stood for the second call either, so it is asked again and refused again.
+    let second = g.admit(&call("edit", &args));
+    assert!(!matches!(second, GateDecision::Admit), "{second:?}");
     assert_eq!(
         asked.load(std::sync::atomic::Ordering::Relaxed),
-        1,
-        "the second call was settled by the grant, not asked again"
+        2,
+        "the second call was settled by nothing"
     );
-    assert_eq!(g.grants().len(), 1, "the answer stands for the session");
 }
 
-/// The durable rule is already on the ladder here, so the weaker grant follows it: an explicit
-/// answer overrides the point's default. The mode still means the second call is not asked,
-/// because the grant covers it and not because the mode stopped asking.
+/// `always-ask` grants `Once`, so its answer settles the one call it was given for. A session
+/// grant named here is an option the ladder never offered, and the gate refuses it rather than
+/// turning it into a standing grant the point does not have.
 #[test]
-fn at_always_ask_an_allow_session_answer_stands_for_the_session() {
+fn at_always_ask_an_allow_session_answer_settles_only_that_call() {
     let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let a = asked.clone();
     let adj = AskAdjudicator::new("test", move |req: &AdjudicationRequest| {
@@ -318,14 +331,20 @@ fn at_always_ask_an_allow_session_answer_stands_for_the_session() {
     });
     let mut g = AdjudicatedGate::new(Box::new(adj)).with_mode(crate::mode::Mode::ALWAYS_ASK);
     let args = json!({"path": "src/lib.rs"});
-    assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
-    assert_eq!(g.admit(&call("edit", &args)), GateDecision::Admit);
+    assert!(!matches!(
+        g.admit(&call("edit", &args)),
+        GateDecision::Admit
+    ));
+    assert!(!matches!(
+        g.admit(&call("edit", &args)),
+        GateDecision::Admit
+    ));
     assert_eq!(
         asked.load(std::sync::atomic::Ordering::Relaxed),
-        1,
-        "the grant the answer took settles the second call"
+        2,
+        "the answer stood for nothing beyond its own call"
     );
-    assert_eq!(g.grants().len(), 1, "and the grant is recorded");
+    assert!(g.grants().is_empty(), "and no grant is recorded");
 }
 
 /// An admission nobody was consulted about is the kind that stops appearing in an audit, so the

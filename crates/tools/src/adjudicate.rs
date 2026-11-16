@@ -510,7 +510,7 @@ fn deny_rungs() -> Vec<DecisionOption> {
 
 /// The durable rung, when one can be offered at all. `None` from [`derived_pattern`]
 /// means the matcher would ask again whatever rule were written, so the rung is left off
-/// rather than shown and then quietly ignored. One helper for all three ladders.
+/// rather than shown and then quietly ignored.
 fn durable_rung(derived: Option<&str>) -> Option<DecisionOption> {
     derived.map(|d| DecisionOption {
         id: "allow_always".into(),
@@ -519,30 +519,58 @@ fn durable_rung(derived: Option<&str>) -> Option<DecisionOption> {
     })
 }
 
-/// The session rung, when a grant taken now could cover a later call: `Grant::covers`
-/// refuses an unresolved action before it looks at coverage, so a session grant over an
-/// unreadable command would cover nothing. The condition is [`Offer::session`].
-fn session_rung(offer: &Offer, label: String) -> Option<DecisionOption> {
-    offer.session.then(|| DecisionOption {
+/// The session rung, when the point grants for the session AND a grant taken now could cover a
+/// later call: `Grant::covers` refuses an unresolved action before it looks at coverage, so a
+/// session grant over an unreadable command would cover nothing. The condition is
+/// [`Offer::session`] at a point whose grants are [`crate::mode::GrantScope::Session`].
+fn session_rung(
+    offer: &Offer,
+    scope: crate::mode::GrantScope,
+    label: String,
+) -> Option<DecisionOption> {
+    (scope == crate::mode::GrantScope::Session && offer.session).then(|| DecisionOption {
         id: "allow_session".into(),
         label,
         kind: OptionKind::AllowSession,
     })
 }
 
-pub fn permission_options(offer: &Offer) -> Vec<DecisionOption> {
+/// What the session rung says: the program that does the work when the call names one, the class
+/// otherwise. `NO_PROGRAM` is a key and must match nothing a command produces, so printing it
+/// would put a placeholder where a noun belongs, on the surface where a person decides.
+fn session_label(offer: &Offer) -> String {
+    if offer.program == NO_PROGRAM {
+        "Allow this class for the rest of the session".to_string()
+    } else {
+        format!(
+            "Allow `{}` (this class) for the rest of the session",
+            offer.program
+        )
+    }
+}
+
+/// The ladder for one call, out of one builder: the point's `scope` decides whether the session
+/// rung is on it, [`Offer`] what that rung names and what the durable rule would write. One
+/// builder because the card and the recording site must not disagree about what an answer buys.
+///
+/// A point whose grants are [`crate::mode::GrantScope::Once`] has no session rung: the answer
+/// settles the one call it was given for, and the gate refuses `allow_session` selected there.
+pub fn options(offer: &Offer, scope: crate::mode::GrantScope) -> Vec<DecisionOption> {
     let mut out = vec![DecisionOption {
         id: "allow_once".into(),
         label: "Allow this one".into(),
         kind: OptionKind::AllowOnce,
     }];
-    out.extend(session_rung(
-        offer,
-        "Allow this class for the rest of the session".into(),
-    ));
+    out.extend(session_rung(offer, scope, session_label(offer)));
     out.extend(durable_rung(offer.derived.as_deref()));
     out.extend(deny_rungs());
     out
+}
+
+/// The ladder at a point whose grants are per session, for a caller outside the gate that holds
+/// an [`Offer`] and none of the gate's other facts.
+pub fn permission_options(offer: &Offer) -> Vec<DecisionOption> {
+    options(offer, crate::mode::GrantScope::Session)
 }
 
 /// What a ladder may offer for one call, and why anything is missing from it. Computed once
@@ -562,50 +590,6 @@ impl Offer {
     pub fn note_line(&self) -> Option<&str> {
         self.note.as_deref().filter(|n| !n.trim().is_empty())
     }
-}
-
-/// The ladder for an exec-class call. The session rung is offered whenever the durable one
-/// is: a rule that outlives the session is stronger than a grant that dies with the daemon,
-/// so offering only the stronger is backwards. See [`Offer`] for what may be left off.
-pub fn exec_options(offer: &Offer) -> Vec<DecisionOption> {
-    // A call with no command has no program to name, so the label names the class.
-    // `NO_PROGRAM` is a key and must match nothing a command produces, so printing it
-    // would put a placeholder where a noun belongs, on the surface where a person decides.
-    let session_label = if offer.program == NO_PROGRAM {
-        "Allow this class for the rest of the session".to_string()
-    } else {
-        format!(
-            "Allow `{}` (this class) for the rest of the session",
-            offer.program
-        )
-    };
-    let mut out = vec![DecisionOption {
-        id: "allow_once".into(),
-        label: "Allow this one".into(),
-        kind: OptionKind::AllowOnce,
-    }];
-    out.extend(session_rung(offer, session_label));
-    out.extend(durable_rung(offer.derived.as_deref()));
-    out.extend(deny_rungs());
-    out
-}
-
-/// The ladder at a point whose grants are [`crate::mode::GrantScope::Once`]. The session
-/// rung is here too, because an explicit answer is the operator overriding the point's
-/// default, and a durable rule was already on the ladder.
-pub fn once_only_options(offer: &Offer) -> Vec<DecisionOption> {
-    let mut out = vec![DecisionOption {
-        id: "allow_once".into(),
-        label: "Allow this one".into(),
-        kind: OptionKind::AllowOnce,
-    }];
-    out.extend(session_rung(
-        offer,
-        "Allow this class for the rest of the session".into(),
-    ));
-    out.extend(durable_rung(offer.derived.as_deref()));
-    out.extend(deny_rungs());
-    out
 }
 
 /// One aggregated line of history: what the gate did before, on actions of this same task
@@ -2452,15 +2436,12 @@ impl AdjudicatedGate {
             options: {
                 // One computation, and every rung reads it: `derived` is what *Always allow*
                 // would write, `session` is whether a grant taken now could cover a later call,
-                // and `note` says why whichever is missing is missing.
+                // and `note` says why whichever is missing is missing. The point's own `grants`
+                // is the last word on the session rung, which is why it is the builder's.
                 if matches!(baseline.tier, Tier::AlwaysAsk { .. }) {
                     always_ask_options()
-                } else if call.access == Access::Exec {
-                    exec_options(&offer)
-                } else if self.mode.grants == crate::mode::GrantScope::Session {
-                    permission_options(&offer)
                 } else {
-                    once_only_options(&offer)
+                    options(&offer, self.mode.grants)
                 }
             },
             // `None` when nothing was left off, so a complete ladder says nothing rather than
@@ -3815,6 +3796,10 @@ impl Gate for AdjudicatedGate {
                                 self.permission.push(rule);
                             }
                         } else if k == OptionKind::AllowSession
+                            // Read off the same fact the ladder is built from: a point whose
+                            // grants are `Once` has no session rung, so an answer naming one
+                            // from an older head records nothing and settles nothing.
+                            && self.mode.grants == crate::mode::GrantScope::Session
                             && !matches!(req.tier, Tier::AlwaysAsk { .. })
                             && unconfined_code.is_none()
                         {

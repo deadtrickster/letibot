@@ -69,10 +69,13 @@ fn an_allow_session_over_an_unreadable_command_is_not_honoured() {
 }
 
 /// The other side of the same condition, so dropping the rung everywhere fails here rather than
-/// passing quietly.
+/// passing quietly: at a point that grants for the session the rung is on the ladder, and a
+/// complete ladder has nothing to explain.
 #[test]
 fn a_readable_command_is_offered_the_session_grant_and_the_card_is_silent() {
-    let mut g = AdjudicatedGate::closed().with_surroundings(pinned());
+    let mut g = AdjudicatedGate::closed()
+        .with_surroundings(pinned())
+        .with_mode(crate::mode::Mode::WRITES_ALLOWED);
     // Exec, so that the ladder is the exec one and not a read admitted by the mode.
     let args = json!({"command": "sed -n 1p /w/a.rs"});
     let req = g.request_for(&bash_at(&args, "s#1"));
@@ -142,7 +145,8 @@ fn the_session_rung_names_the_program_that_does_the_work() {
             ))
         },
     )))
-    .with_surroundings(pinned());
+    .with_surroundings(pinned())
+    .with_mode(crate::mode::Mode::WRITES_ALLOWED);
     let fmt = json!({"command": "cd /w && export CARGO_TARGET_DIR=$PWD/target && cargo fmt --all"});
     let _ = g.admit(&bash_at(&fmt, "s#1"));
     let taken = g.grants().first().expect("a grant was taken").clone();
@@ -263,9 +267,8 @@ fn every_rung_is_one_line_and_the_two_refusals_are_one_shape() {
     let offer = offered(Some("sed -i*"), "sed");
     let ladders = [
         always_ask_options(),
-        exec_options(&offer),
-        permission_options(&offer),
-        once_only_options(&offer),
+        options(&offer, crate::mode::GrantScope::Session),
+        options(&offer, crate::mode::GrantScope::Once),
         view_grant_options(),
         memory_grant_options(),
     ];
@@ -286,7 +289,7 @@ fn every_rung_is_one_line_and_the_two_refusals_are_one_shape() {
     }
     // The two refusals, spelled once: a head types the reason on either, so neither describes
     // itself differently from the other.
-    for opts in [&ladders[1], &ladders[2], &ladders[3]] {
+    for opts in [&ladders[1], &ladders[2]] {
         let deny = opts.iter().find(|o| o.id == "deny").expect("a refusal");
         let tell = opts
             .iter()
@@ -296,7 +299,7 @@ fn every_rung_is_one_line_and_the_two_refusals_are_one_shape() {
         assert_eq!(tell.label, "Deny, and tell the model why");
     }
     // The view grant's ladder ends in its own refusal, and it is one line too.
-    let view = &ladders[4];
+    let view = &ladders[3];
     assert_eq!(
         view.iter()
             .find(|o| o.id == "deny")

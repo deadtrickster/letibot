@@ -1167,13 +1167,14 @@ something is missing.
 | rung | id | offered when |
 |---|---|---|
 | this one | `allow_once` | always |
-| this class, for the session | `allow_session` | `Offer::session`: a grant taken now could cover a later call, which `Grant::covers` decides - it refuses an unresolved action before it looks at coverage, so a session grant over an unreadable command would cover nothing |
+| this class, for the session | `allow_session` | the point's `grants` is `Session` *and* `Offer::session`: a grant taken now could cover a later call, which `Grant::covers` decides - it refuses an unresolved action before it looks at coverage, so a session grant over an unreadable command would cover nothing |
 | always | `allow_always` | `derived_pattern` found a rule that would match: not for a heredoc, and not for a command with a segment that sets state for a later one |
 | no | `deny` | always |
 | no, and tell it why | `deny_and_tell` | always |
 
-A point whose grants are `Once` gets the session rung anyway, because an explicit answer is the
-operator overriding the point's default. On a host with no boundary a call that runs project code
+A point whose grants are `Once` has no session rung, and an answer naming one is refused as an
+option the request did not offer: once means once, so the answer settles the call it was given
+for. On a host with no boundary a call that runs project code
 offers neither standing rung, and the note says why (R98). Three other ladders are the same shape with
 their own nouns: `view_grant_options` (read it, read and write it, no - read-only first, where Enter
 lands), `memory_grant_options` (this once, up to this for the session, no) and `always_ask_options`
