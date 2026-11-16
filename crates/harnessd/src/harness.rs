@@ -909,7 +909,9 @@ impl Harness {
     }
 
     /// A parent that narrowed narrows its live children: each moves, at its next call, to the
-    /// nearest point its seat can carry that is no wider than the parent's, and says so.
+    /// nearest point its seat can carry that is no wider than the parent's, and says so. A child
+    /// that cannot be moved there may not stay where it is, so it is held at `read-only` and every
+    /// write and command is refused as an access that point does not seat.
     pub(crate) fn narrow_to_parent(&mut self) {
         let Some(parent) = self.parent_mode() else {
             return;
@@ -936,14 +938,29 @@ impl Harness {
                     ),
                 );
             }
-            Err(why) => self.warn_mode(
-                "mode_set_refused",
-                format!(
-                    "the parent moved to `{}` and this session could not follow from `{from}`: {why}",
-                    parent.name
-                ),
-            ),
+            Err(why) => self.hold_at_floor(format!(
+                "the parent moved to `{}` and this session could not follow from `{from}`: {why}",
+                parent.name
+            )),
         }
+    }
+
+    /// The fallback for a narrowing that could not be applied: the narrowest point any seat can
+    /// carry. It drops every standing grant taken at the wider point, and the gate then refuses a
+    /// write or a command as an access this point does not seat.
+    fn hold_at_floor(&mut self, why: String) {
+        let floor = letibot_tools::mode::Mode::READ_ONLY;
+        let _ = self.gate().set_mode(floor);
+        self.cfg.mode = floor;
+        self.mode_source = "held at read-only: its parent narrowed and it could not follow".into();
+        self.publish_settings();
+        self.warn_mode(
+            "mode_set_refused",
+            format!(
+                "{why}. It is held at `read-only` until its parent widens, so every write and \
+                 every command is refused"
+            ),
+        );
     }
 
     /// Does the point asked for need a PERSON's answer here: the two facts `set_mode_consented` reads

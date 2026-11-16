@@ -283,6 +283,38 @@ fn a_reopened_child_follows_its_parent_once_the_parent_opens() {
     );
 }
 
+/// A child that cannot be moved to the point its parent narrowed to may not run where it is: it
+/// is held at `read-only`, so the next write is refused rather than run at the wider point with a
+/// warning on the log and nothing else.
+#[test]
+fn a_failed_narrowing_refuses_the_next_call() {
+    let dir = Scratch::new("child-mode-floor");
+    let Some((mut h, _, _)) = child_at(&dir, "s-parent-sub-2", Mode::WRITES_ALLOWED) else {
+        return;
+    };
+    assert_eq!(h.config().mode, Mode::WRITES_ALLOWED);
+
+    h.hold_at_floor(
+        "the parent moved to `read-only` and this session could not follow: test fixture".into(),
+    );
+    assert_eq!(
+        h.config().mode,
+        Mode::READ_ONLY,
+        "a child that cannot follow is not left at the wider point"
+    );
+
+    assert!(
+        !h.config().mode.seats(letibot_tools::schema::Access::Write),
+        "the point a failed narrowing leaves refuses every write: the gate's seat arm is what \
+         makes that a refusal, and `a_point_that_does_not_seat_an_access_refuses_it` is its test"
+    );
+    let held = warnings(&h.hub, "mode_set_refused");
+    assert!(
+        held.iter().any(|w| w.contains("held at `read-only`")),
+        "the log says it is held rather than only that it could not follow: {held:?}"
+    );
+}
+
 fn mode_command(name: &str, consented: bool) -> letibot_sessionlog::hub::QueuedCommand {
     letibot_sessionlog::hub::QueuedCommand {
         head_id: "head-1".into(),
