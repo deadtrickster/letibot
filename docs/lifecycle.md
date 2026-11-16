@@ -980,7 +980,7 @@ first and never runs from a daemon's pass.
 | The systemd user manager refuses scopes (R191) | Owners are created `unbounded` and say so. The sweep reports unit-table fill. It does not restart the manager. |
 | The reaper would reap itself | Skipped by rule 6. A package cannot run `gc --now` on its ancestors. |
 | An agent moves a tree out of its owner root | It cannot write outside it from a confined seat. In an allow-all host seat it can, and then the thing has no stamp and shows up under "looks like ours". This is the residue the design accepts, and the reason VM placement is the default for packages. |
-| A reopened owner while its work grace runs | Reopen sets `live`, clears `closed_ms`, and the settle timers start again. A worktree already archived and removed is restored by `--restore` on reopen, automatically. |
+| A reopened owner while its work grace runs | Reopen sets `live`. The first close stays recorded (`closed_ms`), the settle grace runs from the latest close (`last_closed_ms`), and the next close re-stamps it — so a second close waits its grace again. A worktree already archived and removed is restored by `--restore` on reopen, automatically. |
 | firecode changes its layout | The VM stamp is firecode's own files. The `owner` file and `gc --run` are firecode verbs with tests on both sides. |
 
 ### d.11 What this does not do

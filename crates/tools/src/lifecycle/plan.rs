@@ -744,7 +744,7 @@ pub fn judge(owner: &OwnerRow, h: &HoldingView, places: &Places, now_ms: i64) ->
                     owner.state.word()
                 )),
                 HoldingClass::Work => {
-                    let base = owner.closed_ms.unwrap_or(now_ms);
+                    let base = owner.closed_at().unwrap_or(now_ms);
                     let (grace, why) = match &owner.landed_sha {
                         Some(sha) => (
                             LANDED_GRACE_MS,

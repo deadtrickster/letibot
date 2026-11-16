@@ -197,6 +197,56 @@ fn a_reopened_package_older_than_hard_ttl_is_not_closed() {
     assert!(close_due(&row, &activity(true), reopen_at + day).is_some());
 }
 
+/// A close that follows a reopen waits its work grace again: the grace runs from the LAST close,
+/// not the first one the row still records (I63).
+#[test]
+fn a_second_close_restarts_work_grace() {
+    let b = Box_::new("second-close");
+    let store = b.store();
+    let day = 24 * 60 * 60 * 1000;
+    let first = crate::lifecycle::owner_for_open(&store, "s-1", OwnerKind::Package, None, 1_000)
+        .expect("the first open");
+    store.put_owner(&first).expect("live");
+    store
+        .set_owner_state("s-1", OwnerState::Closed, "idle 30m", 2_000)
+        .expect("the first close");
+    // Reopened a day later, and closed again a minute after that.
+    store.reopen_owner("s-1", day).expect("reopened");
+    store
+        .set_owner_state("s-1", OwnerState::Closed, "idle 30m", day + 60_000)
+        .expect("the second close");
+    let row = store.owner("s-1").unwrap().unwrap();
+    assert_eq!(
+        row.closed_ms,
+        Some(2_000),
+        "the first close stays the record"
+    );
+    let grace = crate::lifecycle::plan::UNLANDED_GRACE_MS;
+    assert_eq!(
+        crate::lifecycle::work::due_at(&row),
+        Some(day + 60_000 + grace),
+        "the grace runs from the second close, so the tree is not archived at once"
+    );
+    // The plan's judge agrees: the same instant, not `reap now`.
+    let holding = crate::lifecycle::plan::HoldingView {
+        kind: "worktree".into(),
+        class: letibot_tokencore::store::HoldingClass::Work,
+        host: None,
+        handle: "/w/wt-x".into(),
+        state: letibot_tokencore::store::HoldingState::Held,
+        stamp: String::new(),
+        bytes: None,
+        archive: None,
+        why: None,
+        memory: None,
+        verdict: crate::lifecycle::plan::Verdict::Keep(String::new()),
+    };
+    match crate::lifecycle::plan::judge(&row, &holding, &b.places(), day + 120_000) {
+        crate::lifecycle::plan::Verdict::At(at, _) => assert_eq!(at, day + 60_000 + grace),
+        other => panic!("the judge must wait the second grace: {other:?}"),
+    }
+}
+
 /// The operator's hold stops every automatic trigger; an expired one does not.
 #[test]
 fn a_hold_stops_the_close_and_an_expired_one_does_not() {

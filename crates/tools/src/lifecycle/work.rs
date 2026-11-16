@@ -27,7 +27,7 @@ pub fn due_at(owner: &OwnerRow) -> Option<i64> {
     match owner.state {
         OwnerState::Settling | OwnerState::Settled => Some(i64::MIN),
         OwnerState::Closed => {
-            let base = owner.closed_ms.unwrap_or(owner.created_ms);
+            let base = owner.closed_at().unwrap_or(owner.created_ms);
             Some(match &owner.landed_sha {
                 Some(_) => base + LANDED_GRACE_MS,
                 None => base + UNLANDED_GRACE_MS,

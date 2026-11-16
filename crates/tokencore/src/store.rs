@@ -204,7 +204,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 57;
+pub const SCHEMA_VERSION: i64 = 58;
 
 /// A session's plan-check pause as its row holds it: `until` is `0` for until resumed, else the
 /// unix ms it ends at. `at_ms` and `by` are `None` on a row written before v51.
@@ -2742,6 +2742,18 @@ impl Store {
             // no import was ever left half-done with nothing to say so. A session's import is the
             // project file's, so a set's shared file is not given the table.
             self.batch_for(file, transfer::IMPORT_PENDING_SQL)?;
+        }
+        if from < 58 {
+            // v58: an owner's latest close, which the work grace runs from. NULL reads as the
+            // first close, which is what every earlier build measured from.
+            if self.probe("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'owner'")?
+                && !self.probe(
+                    "SELECT 1 FROM pragma_table_info('owner') WHERE name = 'last_closed_ms'",
+                )?
+            {
+                self.conn()
+                    .execute_batch("ALTER TABLE owner ADD COLUMN last_closed_ms INTEGER")?;
+            }
         }
         Ok(())
     }
