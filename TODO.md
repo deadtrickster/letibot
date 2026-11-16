@@ -221,6 +221,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R380 | Flow scripts: review panel, sweep, rebase, and a bridge door | Parked | design only, a feature - after the stability phase; phase I, lead 32; M; after R373, R375; design `docs/design/box-daemon-and-orchestration.md` |
 | R381 | Heads and rano: the box pane, flow rows, a usage age | Parked | design only, a feature - after the stability phase; phase J, lead 52; M; after R375, R373; design `docs/design/box-daemon-and-orchestration.md` |
 | R382 | The model picker hides which providers have headroom | Code work | built on `picker-limits`; left: no `balance $X` (no preset's usage endpoint reports a balance, deepseek has none), a refusal or limit is daemon-wide per door and forgotten at restart |
+| R383 | A VCS command drew as nine hand edits | Code work | built on `vcs-fold`; left: `jj` global flags with a value (`-R repo`) hide the verb, and a background job's settlement gets the net change but no git line |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | `trees/<key>` landed (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | firecode's package image: the wasm32 target, a cargo cache warmed from the workspace's locks, shfmt and shellcheck - the guest's memory said in the brief (the overlay half is done, 99166493d) |
 | R201 | Nothing letibot starts is ever torn down | Code work | G6 unjoined (`docker::seat_env` has no caller, so no socket or `DOCKER_HOST` at open) - G5 (memory) not built - compute reservations not built - G3's `--adopt` run is the operator's - `--restore --worktree` makes one tree. Lifecycle findings are R329, R343 |
@@ -4231,6 +4232,23 @@ The row is built at read time: a session's harness installs a `LiveRowsSource` (
 Opening the picker polls the doors nobody watches. Protocol 80 adds `ClientFrame::PollUsage` and the `usage_poll_v1` feature (`FEATURE_USAGE_POLL`, its `compat::SINCE` row, `wire_golden/v80`). `App::open_model_pick` queues it only when the daemon echoed the feature, so it is the picker's alone and not every `Settings` sender's. The server hands it to `Registry::poll_usage`; the harness's `UsagePollSource` polls, on a thread of its own, each keyed door with a usage endpoint through `usage_poll::poll_once`, which is debounced per door by the poll period and reuses a fresh reading, then `Registry::push_settings` sends the rows.
 
 Tests. `crates/tui/src/app/tests/model_card.rs`: `the_picker_draws_each_doors_reading_and_a_limited_one`, `a_billing_refusal_shows_no_balance`, `a_provider_with_no_reading_shows_nothing`, `a_stale_reading_shows_its_age`. `crates/harnessd/src/harness/door_limits.rs`: the words for windows, age, limits, spent windows and refusals, and no row when nothing is known. `crates/sessionlog/src/registry/tests.rs`: `live_rows_are_built_at_each_read`. `crates/provider/src/usage_poll/tests.rs`: `a_door_reading_is_listed_and_readable_inside_a_tell`, `a_pickers_poll_is_debounced_per_door`. `crates/harnessd/tests/picker_usage_poll.rs`: `opening_the_picker_polls_a_door_no_session_has_watched` (an isolated HOME and XDG, every preset key variable and `LETIBOT_*` door removed, a `providers.toml` fixture pointing `kimi-code` at a loopback mock; the reading reaches the row and a second open sends nothing). `model_card.rs`: `the_picker_asks_for_a_poll_only_from_a_daemon_that_echoed_it`.
+
+## R383 - A VCS command drew as nine hand edits
+
+**Status:** built on `vcs-fold`, 2026-11-16. Severity: medium (misleading row).
+
+A bash call in an arangodb session ran `git stash; git checkout origin/devel; git apply --check ...; back on the branch`. The row drew a `[note]` listing nine paths inline with "a diff is drawn for each, and each one was detected afterwards, not made by `edit`", nine diffs, and a footer saying the same again. A VCS operation read as nine hand edits. The sweep also diffed a clean file against wherever `HEAD` stood after the command, not where it stood before.
+
+**Fix.**
+- `detect::Before` records `HEAD`, the `HEAD` reflog length and the stash entries. `changed_since` is the net change: content now against the before-state (the read dirty bytes, or the old `HEAD`'s blob). A checkout there and back reports nothing. A dirty file restored to `HEAD` (stash, reset) is a change.
+- `intent::vcs_verbs` (layer A, from `shell::normalise`) names git checkout, switch, stash (push, pop, apply), reset, rebase, merge, pull, restore, cherry-pick, revert, am, and jj edit, new, restore, rebase, undo, abandon, squash, next, prev.
+- For those the note is one line, `git: <verbs> · N files moved · net change: none|M files`, and the net change's paths on the next line. `detect::moved` counts files from the reflog steps, the stash entries made or dropped, and dirty files now clean. Net-change diffs are still attached.
+- Any other command: the note counts on its first line and lists on the next. It goes first, so a folded row shows it.
+- The head draws each detected diff as one line while folded (`path · +N diff rows · /t unfolds it`), whole when open, and no provenance footer. Job settlements too, since their notice already says "when, not who".
+
+**Tests.** `crates/tools/src/builtins/bash/tests.rs`: `a_checkout_there_and_back_is_one_line_with_no_net_change`, `a_sed_on_two_files_is_one_note_and_two_diffs`, `a_stash_that_leaves_the_tree_changed_says_the_git_line_and_draws_the_net_change`, `a_checkout_that_stays_diffs_against_the_commit_it_left`, `vcs_verbs_are_read_from_the_parse`. `crates/tui/src/app/tests/detected.rs`: `a_checkout_there_and_back_draws_one_line_and_no_diff`, `a_sed_on_two_files_draws_one_note_and_two_folded_diffs`, `a_stash_that_leaves_the_tree_changed_draws_the_git_line_and_folds_the_net_change`, `a_detected_diff_is_folded_to_one_line_until_t`.
+
+**Left.** `jj` global flags with a value (`jj -R repo edit`) hide the verb. A background job's settlement gets the net change but no git line.
 
 ## R212 - An ACP client cannot hold a letibot session
 
