@@ -2,6 +2,8 @@
 //!
 //! Public rather than `#[cfg(test)]` so the TUI can use [`recorded_session`] as a fixture.
 
+pub mod wire_corpus;
+
 use letibot_transcript::{ToolOutcome, TranscriptItem, UserPart};
 
 use crate::event::{

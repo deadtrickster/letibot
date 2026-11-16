@@ -1,0 +1,25 @@
+name: Wire skew
+
+# Two builds on one wire: this build's daemon and head frames, read by the decoder of the build
+# before the current protocol and of the newest release tag. Run locally with
+# `act -j wire-skew`, since hosted runs are rate limited.
+
+on:
+  push:
+    paths: ['crates/sessionlog/**', 'crates/transcript/**', 'scripts/wire-skew.sh']
+  pull_request:
+    paths: ['crates/sessionlog/**', 'crates/transcript/**', 'scripts/wire-skew.sh']
+  workflow_dispatch:
+
+jobs:
+  wire-skew:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The older builds are checked out from this history, tags included.
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Older builds read this build's frames
+        run: bash scripts/wire-skew.sh
