@@ -1848,3 +1848,77 @@ fn toolchain_probes_are_reads_and_builds_are_not() {
     );
     assert!(b("rustup update").intents.contains(&Intent::PackageChange));
 }
+
+/// The operator's own checkout is where their uncommitted work lives: the verbs that discard it,
+/// move the branch under them or rewrite history ask there EVERY time, by name, and the same verbs
+/// are ordinary work in a worktree letibot cut - which is how a package is meant to run them.
+#[test]
+fn the_live_checkouts_destructive_git_verbs_ask_and_a_worktrees_do_not() {
+    let d = std::env::temp_dir().join(format!("letibot-live-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&d);
+    // A main checkout: `.git` is a DIRECTORY.
+    let live = d.join("live");
+    std::fs::create_dir_all(live.join(".git")).unwrap();
+    // A worktree: `.git` is a FILE naming the entry under the main checkout's `.git/worktrees/`.
+    let wt = d.join("wt");
+    std::fs::create_dir_all(&wt).unwrap();
+    std::fs::write(
+        wt.join(".git"),
+        format!(
+            "gitdir: {}\n",
+            live.join(".git/worktrees/agent-x").display()
+        ),
+    )
+    .unwrap();
+    let at = |ws: &std::path::Path| Surroundings {
+        workspace: Some(ws.display().to_string()),
+        ..env()
+    };
+    let asks = |cmd: &str, ws: &std::path::Path| match Baseline::of_command(cmd, &at(ws)).tier {
+        Tier::AlwaysAsk { rule, why } => Some((rule, why)),
+        _ => None,
+    };
+
+    for cmd in [
+        "git stash",
+        "git checkout main",
+        "git switch other",
+        "git reset --hard HEAD~1",
+        "git rebase main",
+        "git clean -fdx",
+        "git -C . stash",
+        "cd /tmp && git reset --hard",
+    ] {
+        let Some((rule, why)) = asks(cmd, &live) else {
+            panic!("`{cmd}` in the live checkout did not ask")
+        };
+        assert_eq!(rule, "live_checkout", "{cmd}");
+        assert!(
+            why.contains("this is your live checkout; use a worktree"),
+            "{cmd} asked for the wrong reason: {why}"
+        );
+        // The same verb in a worktree letibot cut is not this rule's business.
+        assert!(
+            asks(cmd, &wt).is_none_or(|(r, _)| r != "live_checkout"),
+            "`{cmd}` in a worktree asked as the live checkout"
+        );
+    }
+
+    // The reads and the branch CREATIONS are not this rule, even in the live checkout.
+    for cmd in [
+        "git stash list",
+        "git stash show",
+        "git checkout -b new-thing",
+        "git switch -c other",
+        "git checkout -- src/x.rs",
+        "git status",
+        "git reset --soft HEAD~1",
+        "cargo test",
+    ] {
+        assert!(
+            asks(cmd, &live).is_none_or(|(r, _)| r != "live_checkout"),
+            "`{cmd}` asked as the live checkout"
+        );
+    }
+    let _ = std::fs::remove_dir_all(&d);
+}
