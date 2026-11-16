@@ -12,6 +12,7 @@ repository.workspace = true
 # LAN version of them — and it is why the provider is its own crate rather than
 # a module of `turn`: the engine stays a state machine with no runtime under it.
 [dependencies]
+letibot-paths.workspace = true
 # The reference block `write_section` regenerates.
 letibot-config-ref.workspace = true
 letibot-backend.workspace = true

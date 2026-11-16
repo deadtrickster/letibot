@@ -104,7 +104,8 @@ run() {
   printf '%s' "$toml" > "$T/home/.config/letibot/providers.toml"
   (cd "${RUN_WS:-$T/ws}" && env -i PATH="${RUN_PATH_EXTRA:-}$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
     LETIBOT_BIN="$T/bin" LETIBOT_ENDPOINT= STUB_ARGV="$T/argv.log" \
-    XDG_DATA_HOME="${RUN_XDG_DATA_HOME:-}" \
+    XDG_DATA_HOME="${RUN_XDG_DATA_HOME:-}" XDG_CONFIG_HOME="${RUN_XDG_CONFIG_HOME:-}" \
+    LETIBOT_PROVIDERS="${RUN_LETIBOT_PROVIDERS:-}" \
     LETIBOT_ROOM_SOCKET="${ROOM_SOCK_OVERRIDE-$ROOM_SOCK}" ROOM_ARGV="$T/room-argv.log" \
     LETIBOT_SCOPE_RUNTIME_MAX="${LETIBOT_SCOPE_RUNTIME_MAX:-}" \
     "$(command -v bash)" "$LAUNCHER" "$@" 2>&1 < /dev/null)
@@ -260,6 +261,10 @@ else
                                                 fails=$((fails + 1))
 fi
 
+LOCAL_HOME_ONLY='[model."local.flash"]
+url = "http://127.0.0.1:59997"
+model = "qwen-3.8-flash-next"
+'
 DEFAULT_ONLY='[deepseek]
 
 [default]
@@ -295,6 +300,35 @@ refuse "  ...and nothing runs" "$out" "^harnessd "
 
 out="$(run "$DEFAULT_ONLY" --status)"
 expect "--status says there is no local home rather than refusing" "$out" "^local +none"
+
+# The providers file is the daemon's (`letibot_paths::config_dir`): XDG_CONFIG_HOME when absolute,
+# and no LETIBOT_PROVIDERS, which no Rust reader honours.
+mkdir -p "$T/xdgconfig/letibot"
+printf '%s' "$LOCAL_HOME_ONLY" > "$T/xdgconfig/letibot/providers.toml"
+out="$(RUN_XDG_CONFIG_HOME="$T/xdgconfig" run '' "one question")"
+expect "the launcher reads XDG_CONFIG_HOME's providers.toml, as the daemon does" "$out" "--endpoint 127.0.0.1:59997( |$)"
+out="$(RUN_LETIBOT_PROVIDERS="$T/xdgconfig/letibot/providers.toml" run '' --status)"
+expect "  ...and LETIBOT_PROVIDERS is not a second file" "$out" "in $T/home/\.config/letibot/providers\.toml"
+out="$(RUN_XDG_CONFIG_HOME="relative" run '' --status)"
+expect "  ...and a relative XDG_CONFIG_HOME is unset" "$out" "in $T/home/\.config/letibot/providers\.toml"
+
+# The readers follow `keys::parse_file`: a comment after a header or a value, and a block that
+# is split in two, are read as the daemon reads them.
+out="$(run '[deepseek]
+
+[default] # where turns go
+provider = "deepseek" # mine
+' --model deepseek-chat "one question")"
+expect "a commented [default] is still the default" "$out" "^harnessd .*--provider deepseek --model deepseek-chat( |$)"
+out="$(run '[model."local.flash"]
+url = "http://127.0.0.1:59996"
+
+[deepseek]
+
+[model."local.flash"]
+model = "qwen-3.8-flash-next"
+' "one question")"
+expect "a block split in two is one block" "$out" "--endpoint 127.0.0.1:59996( |$)"
 
 # ---------------------------------------------------------------------------------------
 # **HELP AND MISTAKES, WHICH NEED NO DAEMON.**

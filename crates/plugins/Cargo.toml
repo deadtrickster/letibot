@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+letibot-paths.workspace = true
 serde_json.workspace = true
 # `plugin.toml` is a real TOML file with arrays and a quoted purpose, so it is parsed with the
 # parser the tree already uses for `prompts.toml` rather than with the flat `key = "value"`

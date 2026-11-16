@@ -1455,6 +1455,7 @@ dependencies = [
  "letibot-github",
  "letibot-harnessd",
  "letibot-metrics",
+ "letibot-paths",
  "letibot-room",
  "letibot-sessionlog",
  "letibot-tokencore",
@@ -1485,6 +1486,7 @@ dependencies = [
 name = "letibot-activation"
 version = "0.6.0"
 dependencies = [
+ "letibot-paths",
  "libc",
 ]
 
@@ -1636,6 +1638,7 @@ dependencies = [
  "letibot-mcp-client",
  "letibot-metrics",
  "letibot-opencode",
+ "letibot-paths",
  "letibot-plugin",
  "letibot-plugins",
  "letibot-plugins-rano",
@@ -1701,6 +1704,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-paths"
+version = "0.6.0"
+
+[[package]]
 name = "letibot-plugin"
 version = "0.6.0"
 dependencies = [
@@ -1714,6 +1721,7 @@ version = "0.6.0"
 dependencies = [
  "letibot-config-ref",
  "letibot-metrics",
+ "letibot-paths",
  "letibot-plugin",
  "serde_json",
  "sha2",
@@ -1737,6 +1745,7 @@ dependencies = [
  "letibot-backend",
  "letibot-config-ref",
  "letibot-http",
+ "letibot-paths",
  "letibot-transcript",
  "serde",
  "serde_json",
@@ -1800,6 +1809,7 @@ dependencies = [
  "letibot-config-ref",
  "letibot-embeddings",
  "letibot-metrics",
+ "letibot-paths",
  "letibot-plugin",
  "letibot-plugins",
  "letibot-tokencore",
@@ -1895,6 +1905,7 @@ name = "letibot-websearch"
 version = "0.6.0"
 dependencies = [
  "letibot-config-ref",
+ "letibot-paths",
  "letibot-tools",
  "serde",
  "serde_json",

@@ -13,6 +13,7 @@ default = ["local"]
 local = ["dep:letibot-llama", "letibot-sessionlog/local", "letibot-turn/local"]
 
 [dependencies]
+letibot-paths.workspace = true
 letibot-transcript.workspace = true
 letibot-dialect.workspace = true
 letibot-dialect-glm.workspace = true

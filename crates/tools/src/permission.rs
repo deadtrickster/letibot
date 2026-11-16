@@ -840,12 +840,7 @@ fn sed_prints_only(script: &str) -> bool {
 /// `~/.config/letibot/permission.json`: the file an "always allow" answer appends to
 /// and the operator edits by hand.
 pub fn file_path() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
-        })?;
-    Some(base.join("letibot").join("permission.json"))
+    letibot_paths::config_dir().map(|d| d.join("permission.json"))
 }
 
 /// The rules in the file, or none when there is no file. A file that does not parse is an error and not

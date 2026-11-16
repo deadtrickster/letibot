@@ -38,10 +38,7 @@ pub struct ModeStore {
 /// `$XDG_CONFIG_HOME/letibot/modes.tsv`, or `$HOME/.config/letibot/modes.tsv` - where the
 /// rows were kept before the store held them, read once to import them.
 pub fn legacy_path() -> Option<PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))?;
-    Some(base.join("letibot").join("modes.tsv"))
+    letibot_paths::config_dir().map(|d| d.join("modes.tsv"))
 }
 
 impl ModeStore {
