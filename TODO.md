@@ -1105,7 +1105,7 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 **Residue.**
 - The header has no estimate mark: rano's `header::Context` has no field for it, so an estimated base shows as a size with no cache fraction. Needs a rano change through cc@rano.
-- A daemon restart, or a harness reopened in one daemon, says a held usage crossing once more: `UsageSaid` is in memory per harness.
+- A daemon restart, or a harness reopened in one daemon, said a held usage crossing once more (rano 19:05:19, 4 s after the restart). Built on branch `usage-seed`: `UsageSaid::seed` takes the newest stored `[usage]` row per window of the door as said, its reset read back from the notice at the row's `created_at` (`usage_poll::reset_of`, a minute off for a clock, half a day for a date). No schema change. Test: `a_restart_does_not_say_a_stored_crossing_again` (harnessd `harness/tests/usage_notice.rs`), fails without the seed. A notice folded away by a compaction is said again.
 - A head that attaches after the stopped turn ended still shows a lift notice from the snapshot's warnings: the snapshot carries no turn-end time. The facts frame (I76) is where that belongs.
 - Lead 41's second half, `esc` from the composer offering to close the pane, is not built: esc there arms the interrupt, and changing it needs the operator's call.
 - `every_pane_draws_its_key_map` skips the session picker, whose list takes about 25s to build in a debug test.

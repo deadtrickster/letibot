@@ -153,20 +153,62 @@ pub fn label(w: &Window, now_ms: u64, offset_s: i64) -> String {
     let when = if ahead < 24 * 3_600_000 {
         clock
     } else if ahead < 7 * 24 * 3_600_000 {
-        // 1970-01-01 was a Thursday.
-        const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
         format!(
             "{} {clock}",
             DAYS[local.div_euclid(86_400).rem_euclid(7) as usize]
         )
     } else {
         let (_, m, d) = civil(local.div_euclid(86_400));
-        const MONTHS: [&str; 12] = [
-            "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
-        ];
         format!("{} {d}", MONTHS[(m - 1) as usize])
     };
     format!("{} {pct}% · resets {when}", w.name)
+}
+
+// 1970-01-01 was a Thursday.
+const DAYS: [&str; 7] = ["Thu", "Fri", "Sat", "Sun", "Mon", "Tue", "Wed"];
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// The reset a [`label`]'s `resets WHEN` names, read back at `near_ms`, no earlier than the label
+/// was made, with how far the true instant can be from it: a clock is cut to the minute, a date
+/// to the day. `None` for text `label` does not write.
+pub fn reset_of(when: &str, near_ms: u64, offset_s: i64) -> Option<(u64, u64)> {
+    const DAY: i64 = 86_400;
+    let clock = |s: &str| {
+        let (h, m) = s.split_once(':')?;
+        let (h, m) = (h.parse::<i64>().ok()?, m.parse::<i64>().ok()?);
+        ((0..24).contains(&h) && (0..60).contains(&m)).then_some(h * 3600 + m * 60)
+    };
+    let near = (near_ms / 1000) as i64 + offset_s;
+    let today = near.div_euclid(DAY);
+    let (first, at, half) = match when.split_once(' ') {
+        None => {
+            let at = clock(when)?;
+            (
+                (today..=today + 1).find(|d| d * DAY + at + 60 > near)?,
+                at,
+                30,
+            )
+        }
+        Some((day, hm)) if DAYS.contains(&day) => {
+            let at = clock(hm)?;
+            let first = (today..=today + 7)
+                .find(|d| DAYS[d.rem_euclid(7) as usize] == day && d * DAY + at + 60 > near)?;
+            (first, at, 30)
+        }
+        Some((mon, dd)) => {
+            let m = MONTHS.iter().position(|x| *x == mon)? as i64 + 1;
+            let dd: i64 = dd.parse().ok()?;
+            let first = (today..=today + 366).find(|d| {
+                let (_, cm, cd) = civil(*d);
+                (cm, cd) == (m, dd)
+            })?;
+            (first, DAY / 2, DAY / 2)
+        }
+    };
+    let local = first * DAY + at + half;
+    Some(((local - offset_s).max(0) as u64 * 1000, half as u64 * 1000))
 }
 
 /// ` (4m ago)` for a reading taken at `at_ms` that is older than `every`, else nothing: a figure
