@@ -376,6 +376,10 @@ impl Bridge {
         if brief.trim().is_empty() {
             return Err("`brief` is empty: a session with no brief runs no turn".into());
         }
+        // Before any daemon or session: an unknown mode would leave the brief running at the
+        // daemon's own point, which can be wider than the caller asked for.
+        letibot_tools::mode::Mode::parse(mode)
+            .map_err(|why| format!("nothing was started and no brief was sent: {why}"))?;
         // A package is its own worktree and its own branch, made HERE and row first: the owner row
         // and its root are written before anything exists to leak, and the session is opened on
         // the id already written down.
@@ -491,16 +495,17 @@ impl Bridge {
         }
         // Before the brief, so the first tool call already runs at the point the caller
         // asked for: `Mode` is queued like a prompt and takes effect from the next call.
-        if let Err(e) = h.set_mode(mode) {
-            // A session that cannot be moved is still a session - say so and let the brief
-            // run at the daemon's own point rather than losing the session to the failure.
-            answer["mode_requested"] = json!(mode);
-            answer["mode_error"] = json!(e);
-        } else {
-            answer["mode"] = json!(mode);
-            if placed {
-                queued.push("mode");
-            }
+        if let Err(why) = h.set_mode(mode) {
+            // Held and briefless, as for the model: the daemon's own point may be wider.
+            self.hold(&h);
+            return Err(format!(
+                "`{session}` was opened, and its mode could not be set to `{mode}`, so the \
+                 brief was not sent: {why}"
+            ));
+        }
+        answer["mode"] = json!(mode);
+        if placed {
+            queued.push("mode");
         }
         let sent = h.prompt(brief);
         // Held even when the send failed: the session exists, and a caller that wants to
