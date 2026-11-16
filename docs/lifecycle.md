@@ -596,6 +596,15 @@ does not count, so a finished package closes 30 minutes after it last did anythi
 down with its copy-out, and its daemon exits. Only the owner's own daemon judges idleness while it
 is up: a reaper in another process reads none of its heads, turns or jobs.
 
+The close order, stated once so no invariant has to guess it: the operator's hold stops every
+trigger outright; then a parent's close and the hard TTL fire before the busy check, by design —
+a child does not outlive its parent's compute, and the hard TTL is the backstop a missing caller
+bound needs — and the owner's own jobs end on such a close, because a hard close drains. Only
+then does idleness get a say, and it never fires with a turn in flight or a job running. The
+lease (`lease_ms`) is the clock the idle TTL is measured from and is renewed by activity; the
+hold (`held_until_ms`) is the operator's opt-out and renews nothing. A busy owner is still
+closed by the two hard triggers; an idle one is never closed for being busy.
+
 Start grace: a daemon that came up less than 5 minutes ago judges no owner idle or orphaned. Its
 first pass runs before its session is opened, on the lease the previous daemon left. Hard TTL and
 a closed parent still apply.
