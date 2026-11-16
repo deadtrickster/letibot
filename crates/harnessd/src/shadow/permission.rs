@@ -172,10 +172,17 @@ impl CorpusSink for ShadowSink {
 /// shadow granted.
 pub const BREAKER_AT: u32 = 2;
 
+/// The breaker's job key in the store, beside the session whose shadow answers.
+const BREAKER_JOB: &str = "permission";
+
 /// The main session's answering state, kept across the relays built for it: the switch, the
-/// breaker, the shapes granted, and the rows owed to the main session.
+/// breaker, the shapes granted, and the rows owed to the main session. With a store the breaker
+/// and the granted shapes outlive the daemon, as the grants they guard do.
 pub struct Answering {
     on: AtomicBool,
+    /// `answer_reads` as configured: what a re-arm may turn back on.
+    configured: bool,
+    at: Option<(crate::config::StoreAt, String)>,
     disagreements: AtomicU32,
     granted: Mutex<BTreeSet<String>>,
     /// Cards that went to the operator, by request, with their shape.
@@ -186,14 +193,83 @@ pub struct Answering {
 
 impl Answering {
     pub fn new(on: bool) -> Arc<Answering> {
+        Answering::open(on, None)
+    }
+
+    /// The state as `at` keeps it: a tripped breaker stays tripped, its count stands, and the
+    /// shapes the shadow granted are read back from its grants. An unreadable store answers nothing.
+    pub fn open(configured: bool, at: Option<(crate::config::StoreAt, String)>) -> Arc<Answering> {
+        let mut on = configured;
+        let mut disagreements = 0;
+        let mut granted = BTreeSet::new();
+        if let Some((at, session)) = &at {
+            match at.open() {
+                Ok(store) => {
+                    match store.breaker(session, BREAKER_JOB) {
+                        Ok(Some(b)) => {
+                            disagreements = b.disagreements;
+                            on &= b.tripped_ms.is_none();
+                        }
+                        Ok(None) => {}
+                        Err(_) => on = false,
+                    }
+                    for g in crate::grants::shadow_grants(&store).unwrap_or_default() {
+                        if let letibot_tools::grant_ledger::Kept::View { path, .. } = &g.kept {
+                            granted.insert(shape(&path.display().to_string()));
+                        }
+                    }
+                }
+                Err(_) => on = false,
+            }
+        }
         Arc::new(Answering {
             on: AtomicBool::new(on),
-            disagreements: AtomicU32::new(0),
-            granted: Mutex::default(),
+            configured,
+            at,
+            disagreements: AtomicU32::new(disagreements),
+            granted: Mutex::new(granted),
             asked: Mutex::default(),
             rows: Mutex::default(),
             wake: Mutex::default(),
         })
+    }
+
+    /// Whether the breaker is tripped, as opposed to answering never being configured.
+    pub fn tripped(&self) -> bool {
+        self.configured && !self.is_on()
+    }
+
+    /// `/shadow arm`: the operator's explicit re-arm, the only way a tripped breaker clears.
+    pub fn arm(&self) -> Result<String, String> {
+        if !self.configured {
+            return Err("answer_reads is off in [shadow], so there is nothing to arm".into());
+        }
+        self.persist(0, None, "")?;
+        self.disagreements.store(0, Ordering::SeqCst);
+        self.on.store(true, Ordering::SeqCst);
+        Ok("the shadow answers relayed reads again, with 0 disagreements".into())
+    }
+
+    /// The breaker as the store keeps it. No store is nothing to keep.
+    fn persist(&self, n: u32, tripped_ms: Option<i64>, why: &str) -> Result<(), String> {
+        let Some((at, session)) = &self.at else {
+            return Ok(());
+        };
+        at.open()
+            .map_err(|e| e.to_string())
+            .and_then(|s| {
+                s.put_breaker(
+                    session,
+                    BREAKER_JOB,
+                    &letibot_tokencore::store::BreakerRow {
+                        disagreements: n,
+                        tripped_ms,
+                        why: why.to_string(),
+                    },
+                )
+                .map_err(|e| e.to_string())
+            })
+            .map_err(|e| format!("the shadow's breaker could not be kept: {e}"))
     }
 
     /// Answering, and the breaker has not tripped.
@@ -231,9 +307,12 @@ impl Answering {
         if let Some(r) = rec {
             r.row(&format!("permission · disagreement {n}: {why}"), "");
         }
-        if n >= BREAKER_AT && self.on.swap(false, Ordering::SeqCst) {
+        let trips = n >= BREAKER_AT;
+        // A breaker that cannot be kept trips here: a restart must not find it armed.
+        let kept = self.persist(n, trips.then(unix_ms), why);
+        if (trips || kept.is_err()) && self.on.swap(false, Ordering::SeqCst) {
             let title = format!(
-                "shadow stopped answering reads after {n} disagreements · observe-only until restart"
+                "shadow stopped answering reads after {n} disagreements · observe-only until /shadow arm"
             );
             if let Some(r) = rec {
                 r.row(&format!("permission · {title}"), why);
@@ -243,10 +322,17 @@ impl Answering {
     }
 }
 
-/// The ask's shape for the breaker: the seat's kind and the path's first two components.
-fn shape(kind: &str, path: &str) -> String {
+fn unix_ms() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64)
+}
+
+/// The ask's shape for the breaker: the path's first two components. Any seat's read of it is
+/// the same shape, so a shape read back from a stored grant needs no seat.
+fn shape(path: &str) -> String {
     let prefix: PathBuf = std::path::Path::new(path).components().take(3).collect();
-    format!("{kind} read {}", prefix.display())
+    format!("read {}", prefix.display())
 }
 
 /// The seat kind of a review-queue asker, or `None` for any other session.
@@ -385,18 +471,18 @@ impl Relay {
         let judge = shadow.label(Job::Permission);
         let line = line_of(judge.as_deref(), &outcome);
         let acting = match (&scoped, &c.gate, may_act && self.answering.is_on()) {
-            (Ok((path, kind)), Some(gate), true) => {
-                acting_rule(&outcome, path, &ruleset_of(gate)).map(|r| (path.clone(), *kind, r))
+            (Ok((path, _)), Some(gate), true) => {
+                acting_rule(&outcome, path, &ruleset_of(gate)).map(|r| (path.clone(), r))
             }
             _ => None,
         };
-        let Some((path, kind, rule)) = acting else {
-            if let Ok((path, kind)) = &scoped {
+        let Some((path, rule)) = acting else {
+            if let Ok((path, _)) = &scoped {
                 self.answering
                     .asked
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .insert(c.req_id.clone(), shape(kind, path));
+                    .insert(c.req_id.clone(), shape(path));
             }
             return line.map(Note::Line);
         };
@@ -429,7 +515,7 @@ impl Relay {
             .granted
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(shape(kind, &path));
+            .insert(shape(&path));
         self.answering.push_row(row.clone(), body);
         Some(Note::Answer {
             option_id: "grant_ro".into(),

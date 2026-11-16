@@ -43,7 +43,7 @@ mod recall;
 mod seat;
 pub mod split;
 mod told;
-pub use grants::{GRANTS_SQL, GrantRow, NewGrant};
+pub use grants::{BREAKER_SQL, BreakerRow, GRANTS_SQL, GrantRow, NewGrant};
 pub use leases::{Ask, FIRST_PORT, LEASES_SQL, Lease};
 pub use owners::{
     HoldingClass, HoldingRow, HoldingState, OWNERS_SQL, OwnerKind, OwnerRow, OwnerState, ReapAct,
@@ -204,7 +204,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 51;
+pub const SCHEMA_VERSION: i64 = 52;
 
 /// A session's plan-check pause as its row holds it: `until` is `0` for until resumed, else the
 /// unix ms it ends at. `at_ms` and `by` are `None` on a row written before v51.
@@ -1909,6 +1909,7 @@ impl Store {
         self.conn().execute_batch(recall::RECALL_SQL)?;
         self.conn().execute_batch(owners::OWNERS_SQL)?;
         self.conn().execute_batch(grants::GRANTS_SQL)?;
+        self.conn().execute_batch(grants::BREAKER_SQL)?;
         self.conn().execute("DELETE FROM schema_version", [])?;
         self.conn().execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
@@ -2652,6 +2653,11 @@ impl Store {
                     "ALTER TABLE session_grant ADD COLUMN granted_by TEXT NOT NULL DEFAULT ''",
                 )?;
             }
+        }
+        if from < 52 {
+            // v52: the shadow's breaker, kept beside its grants. Additive: a new table, empty,
+            // which reads as armed with no disagreement - what every earlier daemon started at.
+            self.conn().execute_batch(grants::BREAKER_SQL)?;
         }
         Ok(())
     }

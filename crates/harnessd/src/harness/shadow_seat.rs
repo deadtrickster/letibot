@@ -65,7 +65,11 @@ impl Harness {
         let state = |a: &crate::shadow::permission::Answering| {
             format!(
                 "answer_reads: {} · {} of {} disagreements",
-                if a.is_on() { "on" } else { "off" },
+                match (a.is_on(), a.tripped()) {
+                    (true, _) => "on",
+                    (false, true) => "tripped, /shadow arm re-arms",
+                    (false, false) => "off",
+                },
                 a.disagreements(),
                 crate::shadow::permission::BREAKER_AT
             )
@@ -77,6 +81,16 @@ impl Harness {
         } else if reply.ok {
             reply.lines.push(state(&self.shadow_answering));
         }
+        self.shadow_answered_rows();
+        reply
+    }
+
+    /// `/shadow arm`: the operator's re-arm of a tripped breaker, said in the main session.
+    pub(crate) fn shadow_arm(&mut self) -> crate::slash::SlashReply {
+        let reply = match self.shadow_answering.arm() {
+            Ok(line) => crate::slash::SlashReply::listing(vec![line]),
+            Err(e) => crate::slash::SlashReply::refused(vec![e]),
+        };
         self.shadow_answered_rows();
         reply
     }

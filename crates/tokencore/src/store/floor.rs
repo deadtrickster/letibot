@@ -87,6 +87,7 @@ pub const READER_ARMS: &[(i64, Arm)] = &[
     (49, Arm::Additive), // process.cgroup: a NULLed column
     (50, Arm::Additive), // session_grant: a new table, which an older reader never names
     (51, Arm::Additive), // session.nags_paused_at/by, session_grant.granted_by: defaulted columns
+    (52, Arm::Additive), // shadow_breaker: a new table, which an older reader never names
 ];
 
 /// The floor a store at `version` carries: the newest arm at or below it that [`Arm::Breaks`],

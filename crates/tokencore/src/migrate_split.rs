@@ -802,9 +802,8 @@ fn rows_of(table: &str) -> Option<Rows> {
         "stable_prefix" => Rows::Referenced,
         // per-session state, a session's background work, the prompt journal, its decisions
         "todo" | "citation" | "session_marks" | "session_mode" | "session_monitor" | "job"
-        | "job_context" | "process" | "queued_prompt" | "adjudication" | "session_grant" => {
-            Rows::Session("session_id")
-        }
+        | "job_context" | "process" | "queued_prompt" | "adjudication" | "session_grant"
+        | "shadow_breaker" => Rows::Session("session_id"),
         // parent and child are always in one daemon, and a child that never got a session row of
         // its own still has a parent that did
         "subagent_run" => Rows::Session("parent_id"),

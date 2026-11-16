@@ -1659,10 +1659,11 @@ impl<'a> Sessions<'a> {
                 let set = self.registry.pending_asks();
                 crate::grants::permissions(&store, session_id, gatekeeper, revoke, Some(&set))
             }
-            Slash::Shadow { revoke } => {
+            Slash::Shadow { revoke, arm } => {
                 let set = self.registry.pending_asks();
                 let store = self.base.store_at().and_then(|a| a.open().ok());
                 match self.open.get_mut(session_id) {
+                    Some(h) if arm => h.shadow_arm(),
                     Some(h) => h.shadow_verb(store.as_ref(), &set, revoke),
                     None => SlashReply {
                         lines: vec![format!("session {session_id} is not open")],

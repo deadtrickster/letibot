@@ -12,11 +12,20 @@ use crate::config::{Config, StoreAt};
 /// A [`GrantLedger`] over the session store.
 pub struct StoreLedger {
     at: StoreAt,
+    queue_ttl: std::time::Duration,
 }
 
 impl StoreLedger {
     pub fn new(at: StoreAt) -> StoreLedger {
-        StoreLedger { at }
+        StoreLedger {
+            at,
+            queue_ttl: default_queue_ttl(),
+        }
+    }
+
+    pub fn with_queue_ttl(mut self, ttl: std::time::Duration) -> StoreLedger {
+        self.queue_ttl = ttl;
+        self
     }
 
     fn store(&self) -> Result<letibot_tokencore::store::Store, String> {
@@ -40,7 +49,9 @@ impl GrantLedger for StoreLedger {
     }
 
     fn load(&self, scope: &Scope) -> Result<Vec<Stored>, String> {
-        load(&self.store()?, scope)
+        let store = self.store()?;
+        expire_queue(&store, scope, self.queue_ttl)?;
+        load(&store, scope)
     }
 
     fn clear(&self, scope: &Scope, kind: &str) -> Result<usize, String> {
@@ -48,6 +59,44 @@ impl GrantLedger for StoreLedger {
             .clear_grants(scope.owner(), scope.as_str(), kind)
             .map_err(|e| e.to_string())
     }
+}
+
+fn default_queue_ttl() -> std::time::Duration {
+    std::time::Duration::from_secs(crate::mergequeue::settings::GRANT_TTL_HOURS * 3600)
+}
+
+/// How long `cfg`'s queue grants last: `[queue] grant_ttl_hours`, the default when it cannot be
+/// read.
+pub fn queue_ttl(cfg: &Config) -> std::time::Duration {
+    let hours = cfg
+        .read_project_config
+        .then(|| crate::mergequeue::settings::for_repository(&cfg.workspace).ok())
+        .flatten()
+        .map_or(crate::mergequeue::settings::GRANT_TTL_HOURS, |s| {
+            s.grant_ttl_hours
+        });
+    std::time::Duration::from_secs(hours * 3600)
+}
+
+/// Drop `scope`'s grants older than `ttl` when it is a queue's. A session's live with it.
+pub fn expire_queue(
+    store: &letibot_tokencore::store::Store,
+    scope: &Scope,
+    ttl: std::time::Duration,
+) -> Result<(), String> {
+    let Scope::Queue(owner) = scope else {
+        return Ok(());
+    };
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as i64);
+    let gone = store
+        .expire_grants(owner, scope.as_str(), now - ttl.as_millis() as i64)
+        .map_err(|e| e.to_string())?;
+    if gone > 0 {
+        letibot_tools::grant_ledger::bump();
+    }
+    Ok(())
 }
 
 /// Every grant `store` keeps under `scope`. A row this build cannot read is left out.
@@ -194,7 +243,9 @@ pub fn kept_views(
     cfg: &Config,
 ) -> Vec<(PathBuf, bool, String)> {
     let mut out = Vec::new();
+    let ttl = queue_ttl(cfg);
     for scope in scopes_for(cfg) {
+        let _ = expire_queue(store, &scope, ttl);
         for s in load(store, &scope).unwrap_or_default() {
             if let Kept::View { path, writable } = s.kept {
                 let why = match &s.scope {

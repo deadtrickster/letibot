@@ -3078,7 +3078,10 @@ impl Harness {
                 // Session and queue grants, kept so a restart re-applies them.
                 let g = match cfg.store_at() {
                     Some(at) => g.with_grant_ledger(
-                        Arc::new(crate::grants::StoreLedger::new(at)),
+                        Arc::new(
+                            crate::grants::StoreLedger::new(at)
+                                .with_queue_ttl(crate::grants::queue_ttl(&cfg)),
+                        ),
                         crate::grants::queue_for(&cfg),
                     ),
                     None => g,
@@ -3618,8 +3621,10 @@ impl Harness {
             wiring: parts.wiring.clone(),
         };
         let limit_episodes = limit_hook::load(&cfg);
-        let shadow_answering =
-            crate::shadow::permission::Answering::new(cfg.shadow.answers_reads());
+        let shadow_answering = crate::shadow::permission::Answering::open(
+            cfg.shadow.answers_reads(),
+            cfg.store_at().map(|at| (at, cfg.session_id.clone())),
+        );
         let mut h = Harness {
             mode_store: parts.mode_store.clone(),
             // The claim on this session's transcript, held for the harness's life - see

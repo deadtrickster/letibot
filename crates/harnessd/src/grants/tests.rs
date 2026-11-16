@@ -235,3 +235,96 @@ fn revoking_a_grant_removes_it_from_the_store_and_a_running_session() {
     let other = permissions(&store, "s-other", None, Some(rows[0].id), None);
     assert!(!other.ok);
 }
+
+/// A tripped breaker outlives the daemon with the grants it guards, and only `/shadow arm`
+/// clears it.
+#[test]
+fn breaker_survives_reopen_while_grants_persist() {
+    use crate::shadow::permission::{Answering, Relay};
+    use letibot_tools::grant_ledger::GrantLedger as _;
+    let f = Fixture::new("breaker");
+    let reviewer = format!("{GATEKEEPER}-sub-1");
+    let ledger = StoreLedger::new(f.at.clone());
+    for name in ["a", "b", "c"] {
+        std::fs::create_dir_all(f.build().join(name)).unwrap();
+        ledger
+            .keep(
+                &Scope::Session(reviewer.clone()),
+                &Kept::View {
+                    path: letibot_tools::view::key(&f.build().join(name)),
+                    writable: false,
+                },
+                "the shadow allowed it",
+                "shadow:deepseek",
+            )
+            .unwrap();
+    }
+    let answering = Answering::open(true, Some((f.at.clone(), MAIN.to_string())));
+    assert!(answering.is_on());
+    let set = PendingAsks::new();
+    set.set_annotator(Some(Arc::new(Relay {
+        cell: Default::default(),
+        home: "/home/op".into(),
+        answering: answering.clone(),
+        revocable: true,
+    })));
+    let store = f.store();
+    for _ in 0..2 {
+        let r = shadow(&store, Some(&set), Some(None));
+        assert!(r.ok, "{:?}", r.lines);
+    }
+    assert!(!answering.is_on(), "two revokes trip it");
+
+    // A restart: nothing in memory, only the store.
+    drop((set, answering));
+    let after = Answering::open(true, Some((f.at.clone(), MAIN.to_string())));
+    assert!(!after.is_on(), "a restart does not re-arm it");
+    assert!(after.tripped());
+    assert_eq!(after.disagreements(), 2);
+    let listed = shadow(&store, None, None);
+    assert_eq!(listed.lines.len(), 1, "{:?}", listed.lines);
+    assert!(
+        listed.lines[0].contains("(by shadow:deepseek)"),
+        "{:?}",
+        listed.lines
+    );
+
+    // The operator's re-arm, kept too.
+    after.arm().unwrap();
+    assert!(after.is_on());
+    let again = Answering::open(true, Some((f.at.clone(), MAIN.to_string())));
+    assert!(again.is_on());
+    assert_eq!(again.disagreements(), 0);
+    assert!(
+        Answering::open(false, Some((f.at.clone(), MAIN.to_string())))
+            .arm()
+            .is_err(),
+        "nothing to arm while answer_reads is off"
+    );
+}
+
+/// A queue grant covers later reviewers for its TTL, then asks again.
+#[test]
+fn a_queue_grant_expires_after_its_ttl() {
+    let f = Fixture::new("ttl");
+    let cards = Cards::new("grant_ro", true);
+    let (mut first, _) = f.gate(&format!("{GATEKEEPER}-sub-1"), &cards);
+    first.grant_view(&f.build(), "bash", ViewAccess::Read);
+    assert_eq!(cards.count(), 1);
+    std::thread::sleep(std::time::Duration::from_millis(5));
+
+    let id = format!("{GATEKEEPER}-sub-2");
+    let mut next = AdjudicatedGate::new(Box::new(cards.clone()))
+        .with_identity(&id, "agent")
+        .with_view_grants(Arc::new(ViewGrants::new()))
+        .with_grant_ledger(
+            Arc::new(StoreLedger::new(f.at.clone()).with_queue_ttl(std::time::Duration::ZERO)),
+            letibot_tools::grant_ledger::queue_of(&id).map(str::to_string),
+        );
+    assert_eq!(
+        next.grant_view(&f.build(), "bash", ViewAccess::Read),
+        ViewGrant::Granted { writable: false },
+        "an expired queue grant is asked again"
+    );
+    assert_eq!(cards.count(), 2);
+}

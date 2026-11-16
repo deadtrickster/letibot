@@ -80,6 +80,8 @@ pub const PROJECT_TABLES: &[&str] = &[
     "recall_unit",
     // what the operator granted a session from a card, and the queue grants under its gatekeeper
     "session_grant",
+    // the shadow's breaker, beside the grants it made
+    "shadow_breaker",
 ];
 
 /// Shared file - what is read across folders or arbitrated between daemons. The doc's list plus the
@@ -157,7 +159,7 @@ pub fn tables_in(file: StoreFile) -> impl Iterator<Item = &'static str> {
 
 /// The batches `Store::migrate` builds a fresh file from, in its own order, plus the reader-floor
 /// table its `ensure_reader_floor` runs. One list, so a batch added there is routed or refused here.
-pub(super) fn batches() -> [&'static str; 19] {
+pub(super) fn batches() -> [&'static str; 20] {
     [
         SCHEMA_SQL,
         SESSION_INDEXES_SQL,
@@ -177,6 +179,7 @@ pub(super) fn batches() -> [&'static str; 19] {
         RECALL_SQL,
         owners::OWNERS_SQL,
         grants::GRANTS_SQL,
+        grants::BREAKER_SQL,
         READER_FLOOR_SQL,
     ]
 }

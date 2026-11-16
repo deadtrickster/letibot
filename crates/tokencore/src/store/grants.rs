@@ -22,6 +22,27 @@ CREATE TABLE IF NOT EXISTS session_grant (
 CREATE INDEX IF NOT EXISTS session_grant_by_session ON session_grant (session_id, scope);
 "#;
 
+/// A session's shadow breaker per job: kept beside the grants it made, so a restart that keeps
+/// the grants keeps the trip too. Only an explicit re-arm clears it.
+pub const BREAKER_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS shadow_breaker (
+    session_id    TEXT NOT NULL,     -- the session whose shadow answers
+    job           TEXT NOT NULL,     -- the shadow job: 'permission'
+    disagreements INTEGER NOT NULL,
+    tripped_ms    INTEGER,           -- NULL while armed
+    why           TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (session_id, job)
+);
+"#;
+
+/// A job's breaker as stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreakerRow {
+    pub disagreements: u32,
+    pub tripped_ms: Option<i64>,
+    pub why: String,
+}
+
 /// One stored grant.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GrantRow {
@@ -56,7 +77,7 @@ impl Store {
                  (session_id, scope, kind, key, body, why, granted_ms, granted_by)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
              ON CONFLICT(session_id, scope, kind, key)
-                 DO UPDATE SET body = ?5, why = ?6, granted_by = ?8",
+                 DO UPDATE SET body = ?5, why = ?6, granted_ms = ?7, granted_by = ?8",
             params![
                 g.session_id,
                 g.scope,
@@ -124,6 +145,45 @@ impl Store {
         )?)
     }
 
+    /// Drop the grants under `(session_id, scope)` granted before `before_ms`. How many went.
+    pub fn expire_grants(&self, session_id: &str, scope: &str, before_ms: i64) -> Result<usize> {
+        Ok(self.exec(
+            "DELETE FROM session_grant WHERE session_id = ?1 AND scope = ?2 AND granted_ms < ?3",
+            params![session_id, scope, before_ms],
+        )?)
+    }
+
+    /// `session_id`'s breaker for `job`, or `None` when it never counted a disagreement.
+    pub fn breaker(&self, session_id: &str, job: &str) -> Result<Option<BreakerRow>> {
+        use rusqlite::OptionalExtension;
+        let conn = self.at("shadow_breaker");
+        Ok(conn
+            .query_row(
+                "SELECT disagreements, tripped_ms, why FROM shadow_breaker
+                 WHERE session_id = ?1 AND job = ?2",
+                params![session_id, job],
+                |r| {
+                    Ok(BreakerRow {
+                        disagreements: r.get::<_, i64>(0)?.max(0) as u32,
+                        tripped_ms: r.get(1)?,
+                        why: r.get(2)?,
+                    })
+                },
+            )
+            .optional()?)
+    }
+
+    pub fn put_breaker(&self, session_id: &str, job: &str, b: &BreakerRow) -> Result<()> {
+        self.exec(
+            "INSERT INTO shadow_breaker (session_id, job, disagreements, tripped_ms, why)
+             VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(session_id, job)
+                 DO UPDATE SET disagreements = ?3, tripped_ms = ?4, why = ?5",
+            params![session_id, job, b.disagreements as i64, b.tripped_ms, b.why],
+        )?;
+        Ok(())
+    }
+
     /// Drop everything a session holds: its life is over.
     pub fn forget_session_grants(&self, session_id: &str) -> Result<usize> {
         Ok(self.exec(
@@ -177,6 +237,30 @@ mod tests {
         assert_eq!(s.forget_session_grants("s-gk").unwrap(), 1);
         assert_eq!(s.grants("s-gk", "queue").unwrap().len(), 1);
         assert_eq!(s.clear_grants("s-gk", "queue", "view").unwrap(), 1);
+    }
+
+    #[test]
+    fn a_breaker_is_kept_until_rewritten() {
+        let s = Store::open_in_memory().unwrap();
+        assert_eq!(s.breaker("s-1", "permission").unwrap(), None);
+        let tripped = BreakerRow {
+            disagreements: 2,
+            tripped_ms: Some(7),
+            why: "revoked".into(),
+        };
+        s.put_breaker("s-1", "permission", &tripped).unwrap();
+        assert_eq!(
+            s.breaker("s-1", "permission").unwrap(),
+            Some(tripped.clone())
+        );
+        assert_eq!(s.breaker("s-2", "permission").unwrap(), None);
+        let armed = BreakerRow {
+            disagreements: 0,
+            tripped_ms: None,
+            why: String::new(),
+        };
+        s.put_breaker("s-1", "permission", &armed).unwrap();
+        assert_eq!(s.breaker("s-1", "permission").unwrap(), Some(armed));
     }
 
     #[test]

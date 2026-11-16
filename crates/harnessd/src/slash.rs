@@ -122,9 +122,10 @@ pub enum Slash {
         row: Option<usize>,
     },
     /// `/shadow` lists the reads the shadow answered; `/shadow revoke [N]` takes grant N back,
-    /// the newest when N is left out.
+    /// the newest when N is left out; `/shadow arm` re-arms a tripped breaker.
     Shadow {
         revoke: Option<Option<usize>>,
+        arm: bool,
     },
     /// What this session's commands get: paths, network, env, hidden. See [`crate::perimeter`].
     Boundary,
@@ -400,13 +401,15 @@ impl Slash {
                 ),
             },
             Some("shadow") => match (words.get(1).copied(), words.get(2).map(|n| n.parse::<usize>())) {
-                (None, _) => Slash::Shadow { revoke: None },
+                (None, _) => Slash::Shadow { revoke: None, arm: false },
+                (Some("arm"), None) => Slash::Shadow { revoke: None, arm: true },
                 (Some("revoke"), None | Some(Ok(_))) if words.len() <= 3 => Slash::Shadow {
                     revoke: Some(words.get(2).and_then(|n| n.parse().ok())),
+                    arm: false,
                 },
                 _ => Slash::Help(
                     "/shadow lists the reads the shadow answered; /shadow revoke [N] takes grant N \
-                     back (the newest when N is left out)"
+                     back (the newest when N is left out); /shadow arm re-arms a tripped breaker"
                         .into(),
                 ),
             },

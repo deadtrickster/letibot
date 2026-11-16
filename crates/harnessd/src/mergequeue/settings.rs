@@ -177,6 +177,9 @@ pub struct QueueSettings {
     /// `[queue] reviewers_run_suites`: a reviewer's `bash` may run whole test suites. Off by
     /// default, because the gate runs the suite and a reviewer that repeats it dies at its limits.
     pub reviewers_run_suites: bool,
+    /// `[queue] grant_ttl_hours`: how long a session answer on a relayed queue card covers the
+    /// queue. It covers every later reviewer, so it is bounded in time rather than by one seat.
+    pub grant_ttl_hours: u64,
     /// `[queue.claude]`, when this project's reviewers are Claude Code runs (`claude -p`) instead
     /// of letibot children. `None`, the table absent, is the letibot reviewer.
     pub claude: Option<super::review::claude::Settings>,
@@ -199,6 +202,7 @@ impl Default for QueueSettings {
             reviewers_at_once: None,
             reviewer_hosts: Some(vec!["local".to_string()]),
             reviewers_run_suites: false,
+            grant_ttl_hours: GRANT_TTL_HOURS,
             claude: None,
             path: None,
         }
@@ -236,6 +240,8 @@ struct QueueTable {
     reviewer_hosts: Option<Vec<String>>,
     #[serde(default)]
     reviewers_run_suites: Option<bool>,
+    #[serde(default)]
+    grant_ttl_hours: Option<i64>,
     /// `[queue.claude]`: present is *this project's reviewers are Claude Code runs*.
     #[serde(default)]
     claude: Option<ClaudeTable>,
@@ -277,6 +283,9 @@ struct FileWithQueue {
 /// The settings for the repository at `repo` - the nearest `leticode.toml` at or above it.
 /// No file, or a file with no `[queue]`, is the defaults. A `[queue]` that does not parse, or
 /// names a key this build does not know, is an `Err` naming the file - never a silent default.
+/// A queue grant's life when `[queue] grant_ttl_hours` is not set.
+pub const GRANT_TTL_HOURS: u64 = 24;
+
 pub fn for_repository(repo: &Path) -> Result<QueueSettings, String> {
     let Some(path) = LeticodeConfig::discover(repo) else {
         return Ok(QueueSettings::default());
@@ -326,6 +335,17 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
                 "{}: [queue] gate_train = {other} — it is how many approved branches one gate may \
                  judge together, so it is 1 (one branch, one gate — the default) or more. `0` would \
                  mean a train that never runs a gate",
+                path.display()
+            ));
+        }
+    };
+    let grant_ttl_hours = match q.grant_ttl_hours {
+        None => GRANT_TTL_HOURS,
+        Some(n) if n >= 1 => n as u64,
+        Some(other) => {
+            return Err(format!(
+                "{}: [queue] grant_ttl_hours = {other} - it is how long a queue grant lasts, so \
+                 it is 1 or more (the default is {GRANT_TTL_HOURS})",
                 path.display()
             ));
         }
@@ -394,6 +414,7 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
         reviewers_at_once,
         reviewer_hosts,
         reviewers_run_suites: q.reviewers_run_suites.unwrap_or(false),
+        grant_ttl_hours,
         claude: match q.claude {
             None => None,
             Some(c) => Some(claude_settings(&c, path)?),

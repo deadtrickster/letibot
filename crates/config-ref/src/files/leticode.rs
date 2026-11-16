@@ -303,6 +303,7 @@ pub const LETICODE: File = File {
                 k("reviewers_at_once", "int >= 1", "placement's", P, "concurrent reviewers", "2"),
                 k("reviewer_hosts", "list; [\"*\"] = all", "[\"local\"]", P, "hosts a host reviewer may use", "[\"local\"]"),
                 k("reviewers_run_suites", "bool", "false", P, "reviewers may run whole test suites, not only named tests", "true"),
+                k("grant_ttl_hours", "int >= 1", "24", P, "how long a session answer on a relayed reviewer card covers the queue", "8"),
             ],
         },
         Table {
