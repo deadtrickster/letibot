@@ -2849,10 +2849,15 @@ impl AdjudicatedGate {
             crate::authorise::TaskDirection::of_parts(tool, &reading, req.class.scope).key();
         self.advice = None;
         self.standing = None;
-        let d = self.adjudicator.decide(&req);
+        let (d, by_model) = match self.view_by_model(&req) {
+            Some(d) => (d, true),
+            None => (self.adjudicator.decide(&req), false),
+        };
         self.file_exchange();
-        self.advice = self.adjudicator.last_advice();
-        self.view_relayed = self.adjudicator.last_relayed();
+        if self.advice.is_none() {
+            self.advice = self.adjudicator.last_advice();
+        }
+        self.view_relayed = !by_model && self.adjudicator.last_relayed();
         self.view_by = (d.by.clone(), d.basis.clone());
         self.view_answered_by = Some(d.by.clone());
         let answer = self.view_answer(&d);
@@ -2863,6 +2868,23 @@ impl AdjudicatedGate {
         };
         self.record(req, d, effect, direction);
         answer
+    }
+
+    /// At a point the model decides, its advisor answers a may-approve view ask first. Its allow
+    /// is the decision; anything else goes to the person with the advice beside it.
+    fn view_by_model(&mut self, req: &AdjudicationRequest) -> Option<AdjudicationDecision> {
+        if self.mode.decider != crate::mode::Decider::Model
+            || !matches!(req.tier, Tier::MayApprove)
+            || self.unasked
+        {
+            return None;
+        }
+        let advisor = self.advisor.clone()?;
+        let d = advisor.decide(req);
+        self.advice = advisor.last_advice();
+        let admits = self.advice.as_ref().is_some_and(|a| a.consulted)
+            && matches!(&d.outcome, DecisionOutcome::Selected { option_id } if option_id == "allow_once");
+        admits.then_some(d)
     }
 
     /// A view ask's decision, as the grant it amounts to.

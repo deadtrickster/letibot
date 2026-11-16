@@ -2010,6 +2010,11 @@ impl Harness {
             stored,
             writer,
         } = Self::open_the_stored(&mut cfg, &mut notes)?;
+        // The shadow's answering state, shared by its oracle on the gate and its relay annotator.
+        let shadow_answering = crate::shadow::permission::Answering::open(
+            cfg.shadow.answers_reads(),
+            cfg.store_at().map(|at| (at, cfg.session_id.clone())),
+        );
         Self::say_the_embedder(&hub, &cfg);
         // The owner row and its root, before anything this session creates: a row with no resource is
         // harmless, a resource with no row is a leak. A store that refuses leaves a note rather than
@@ -2861,7 +2866,8 @@ impl Harness {
             // The guard model, by the same fact the advisor is built from: `cfg.oracle` is `Some` when an endpoint is
             // known. Without this `automode` cannot open however the box is configured. Reachability
             // is not tested here, since a probe at open would wait on another box.
-            if cfg.oracle.is_some() {
+            // Or the shadow, as layer B for stage-1 reads, once the operator set `answer_reads`.
+            if cfg.oracle.is_some() || crate::shadow::is_oracle(&cfg) {
                 have.push(Prereq::Oracle);
             }
             // What the role actually seated, read off the resolved schemas rather than off its
@@ -2995,6 +3001,15 @@ impl Harness {
                 let advisor: Option<std::sync::Arc<dyn Adjudicator>> = match &cfg.oracle {
                     Some(_) => {
                         Some(model_adjudicator(&cfg, "`--oracle`", Some(hub.clone()))?.into())
+                    }
+                    None if crate::shadow::is_oracle(&cfg) => {
+                        Some(Arc::new(crate::shadow::oracle::ShadowAdjudicator::new(
+                            shadow_cell.clone(),
+                            shadow_answering.clone(),
+                            std::env::var_os("HOME").map(Into::into).unwrap_or_default(),
+                            cfg.workspace.clone(),
+                            cfg.store_at().is_some(),
+                        )))
                     }
                     None => None,
                 };
@@ -3629,10 +3644,6 @@ impl Harness {
             wiring: parts.wiring.clone(),
         };
         let limit_episodes = limit_hook::load(&cfg);
-        let shadow_answering = crate::shadow::permission::Answering::open(
-            cfg.shadow.answers_reads(),
-            cfg.store_at().map(|at| (at, cfg.session_id.clone())),
-        );
         let mut h = Harness {
             mode_store: parts.mode_store.clone(),
             // The claim on this session's transcript, held for the harness's life - see

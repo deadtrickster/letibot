@@ -8,6 +8,7 @@ pub mod during;
 pub mod feed;
 pub mod guard;
 pub mod judge;
+pub mod oracle;
 pub mod permission;
 pub mod prompts;
 pub mod record;
@@ -18,6 +19,8 @@ pub mod turn_end;
 pub mod verdict;
 pub mod words;
 
+#[cfg(test)]
+mod oracle_tests;
 #[cfg(test)]
 mod persistent_tests;
 #[cfg(test)]
@@ -141,14 +144,25 @@ impl Slot {
 
 /// The shadow for a session with `cfg`, on `watched_model`. `NotYet` while its row or transcript is
 /// still to be written; `Off` for a session no job watches, which is every session by default.
+/// Whether this session gets a shadow: a job on, a top-level session that is not a gatekeeper or
+/// a shadow itself, and a store to record in.
+pub fn watches(cfg: &crate::config::Config) -> bool {
+    cfg.shadow.any_on()
+        && cfg.parent_session_id.is_none()
+        && cfg.parent_seat.is_none()
+        && !letibot_sessionlog::is_gatekeeper_session(&cfg.session_id)
+        && cfg.seat != crate::config::Seat::Shadow
+        && cfg.store_at().is_some()
+}
+
+/// Whether the shadow is this session's oracle: [`watches`], with `answer_reads` on.
+pub fn is_oracle(cfg: &crate::config::Config) -> bool {
+    cfg.shadow.answers_reads() && watches(cfg)
+}
+
 pub fn open_for(cfg: &crate::config::Config, watched_model: &str, wake: Wake) -> Slot {
     let shadow = &cfg.shadow;
-    if !shadow.any_on()
-        || cfg.parent_session_id.is_some()
-        || cfg.parent_seat.is_some()
-        || letibot_sessionlog::is_gatekeeper_session(&cfg.session_id)
-        || cfg.seat == crate::config::Seat::Shadow
-    {
+    if !watches(cfg) {
         return Slot::Off;
     }
     let Some(at) = cfg.store_at() else {

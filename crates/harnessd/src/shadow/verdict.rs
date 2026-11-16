@@ -36,6 +36,9 @@ pub struct Shown {
     /// The preapproved rules a permission `allow` may rely on. Under `strict`, a rule quoted from
     /// anywhere else is no rule.
     pub rules: Vec<String>,
+    /// An oracle brief: a permission `allow` cites trail numbers instead of a rule. The stage-1
+    /// gate read the call's paths before the brief was built, so there is no call here.
+    pub oracle: bool,
 }
 
 /// One authored stretch of [`Shown::data`]: byte range, author, and transcript row.
@@ -116,7 +119,11 @@ pub struct Pick {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
-    Allow { rule: String },
+    /// `rule` is the rule relied on; `cites` the trail numbers an oracle brief's allow names.
+    Allow {
+        rule: String,
+        cites: Vec<usize>,
+    },
     Ask,
 }
 
@@ -204,6 +211,8 @@ struct PermissionReply {
     verdict: String,
     #[serde(default)]
     rule: String,
+    #[serde(default)]
+    cites: Vec<usize>,
     #[serde(default)]
     evidence: String,
 }
@@ -456,7 +465,13 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
                 Err(e) => return log.reject("schema", e.to_string()),
             };
             let allow = match r.verdict.as_str() {
-                "allow" if r.rule.is_empty() => {
+                "allow" if shown.oracle && r.cites.is_empty() => {
+                    return log.reject(
+                        "verdict",
+                        "`allow` needs the trail numbers of the operator's words".into(),
+                    );
+                }
+                "allow" if !shown.oracle && r.rule.is_empty() => {
                     return log.reject("verdict", "`allow` needs the rule it relied on".into());
                 }
                 "allow" => true,
@@ -464,20 +479,26 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
                 other => return log.reject("verdict", format!("`{other}` is not allow or ask")),
             };
             log.pass("schema");
+            // An oracle brief lists no rules, so a quoted rule there is no evidence and is dropped.
+            let rule = if shown.oracle { "" } else { r.rule.as_str() };
             if let Err(why) = verify(
                 &shown.data,
-                [("rule", r.rule.as_str()), ("evidence", r.evidence.as_str())],
+                [("rule", rule), ("evidence", r.evidence.as_str())],
             ) {
                 return log.reject("quotes", why);
             }
             log.pass("quotes");
             let mut decision = if allow {
-                Decision::Allow { rule: r.rule }
+                Decision::Allow {
+                    rule: if shown.oracle { String::new() } else { r.rule },
+                    cites: r.cites,
+                }
             } else {
                 Decision::Ask
             };
             // Under `strict` the rule is one the harness listed, not a line the history holds.
-            if let Decision::Allow { rule } = &decision
+            if let Decision::Allow { rule, .. } = &decision
+                && !shown.oracle
                 && shown.strict
                 && !shown.rules.iter().any(|r| r.contains(rule.as_str()))
             {
@@ -487,7 +508,9 @@ pub fn check(job: Job, reply: &str, shown: &Shown) -> Checked {
                 decision = Decision::Ask;
             }
             // An allow still meets the denylist, whatever the transcript said. Blocked is ask.
-            if matches!(decision, Decision::Allow { .. }) {
+            if matches!(decision, Decision::Allow { .. }) && shown.oracle {
+                log.pass("denylist: read by the stage-1 gate before the brief");
+            } else if matches!(decision, Decision::Allow { .. }) {
                 match shown.call.as_ref().map(guard::allow_passes) {
                     Some(Ok(())) => log.pass("denylist"),
                     Some(Err(why)) => {

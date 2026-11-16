@@ -266,7 +266,6 @@ fn breaker_survives_reopen_while_grants_persist() {
         cell: Default::default(),
         home: "/home/op".into(),
         answering: answering.clone(),
-        revocable: true,
     })));
     let store = f.store();
     for _ in 0..2 {

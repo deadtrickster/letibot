@@ -543,11 +543,22 @@ fn with_shadow_lines(
     *w.rules.lock().unwrap() = rules.iter().map(|r| r.to_string()).collect();
     w.set
         .set_annotator(Some(Arc::new(crate::shadow::permission::Relay {
-            cell,
+            cell: cell.clone(),
             home: "/home/op".into(),
             answering: answering.clone(),
-            revocable: true,
         })));
+    // The oracle the main session installs when `answer_reads` is on, as `relay_queue_asks` does.
+    if cfg.answers_reads() {
+        w.set.set_oracle(Some(Arc::new(
+            crate::shadow::oracle::ShadowAdjudicator::new(
+                cell,
+                answering.clone(),
+                "/home/op".into(),
+                REVIEW_WORKSPACE.into(),
+                true,
+            ),
+        )));
+    }
     (rows, answering)
 }
 
@@ -856,7 +867,18 @@ fn a_session_answer_on_a_relayed_reviewer_card_covers_the_queue_until_revoked() 
 // ------------------------------------------- the shadow answering a reviewer's read
 
 const READ_RULE: &str = "read /build/**";
-const ALLOW_READ: &str = r#"{"verdict":"allow","rule":"read /build/**","evidence":""}"#;
+const ALLOW_READ: &str = r#"{"verdict":"allow","rule":"read /build/**","cites":[0],"evidence":""}"#;
+
+/// The reviewer's trail: one operator message, `[0]`, that asks for the review's reads.
+fn reviewer_trail() -> letibot_tools::authorise::AuthorisationTrail {
+    letibot_tools::authorise::AuthorisationTrail::from_messages(
+        vec![letibot_tools::authorise::Utterance::operator(
+            "review the branch, reading the build tree as you need",
+            0,
+        )],
+        1,
+    )
+}
 
 /// The main session's shadow answering a reviewer's view asks.
 fn view_world(judge: Slow) -> (World, Arc<Rows>, Arc<crate::shadow::permission::Answering>) {
@@ -877,6 +899,16 @@ fn view_request(id: &str, path: &str, access: letibot_tools::Access) -> Adjudica
     req.options = letibot_tools::adjudicate::view_grant_options();
     req.tier = letibot_tools::adjudicate::Tier::MayApprove;
     req.baseline = format!("a path outside the view: {path}");
+    // As `ask_to_see` builds it: layer A's reading of the path, and the asker's trail.
+    let mut reading = letibot_tools::intent::Baseline::of_paths(
+        [path],
+        access == letibot_tools::Access::Write,
+        false,
+        &letibot_tools::intent::Surroundings::default(),
+    );
+    reading.tier = letibot_tools::adjudicate::Tier::MayApprove;
+    req.reading = Some(reading);
+    req.trail = reviewer_trail();
     req
 }
 
@@ -941,25 +973,22 @@ fn a_reviewers_read_the_shadow_allows_in_time_is_granted_with_no_card_and_one_ro
     let (card, d) = ask_watching(&w, &req, "deny", Duration::ZERO);
 
     assert!(card.is_none(), "no card reached the operator: {card:?}");
+    // The oracle's word: the asker's gate reads `allow_once` on a view ask as the read-only rung.
     assert_eq!(
         d.outcome,
         DecisionOutcome::Selected {
-            option_id: "grant_ro".into()
+            option_id: "allow_once".into()
         },
         "{d:?}"
     );
     assert_eq!(d.by, "shadow:deepseek", "never filed as a person's answer");
+    assert!(d.basis.contains("citing trail entry 0"), "{}", d.basis);
     let main_rows = answering.take_rows();
     assert_eq!(main_rows.len(), 1, "{main_rows:?}");
     assert_eq!(
         main_rows[0].0,
-        "shadow allowed reviewer of agent-p2-followups to read /build/letibot-r1 \
-         (rule: read /build/**) · alt-n to see · /shadow revoke"
-    );
-    assert!(
-        main_rows[0]
-            .1
-            .contains("rule relied on: \"read /build/**\"")
+        "shadow allowed s-gatekeeper-k-sub-1 to read /build/letibot-r1 · alt-n to see · \
+         /shadow revoke"
     );
     assert!(
         main_rows[0]
@@ -968,9 +997,8 @@ fn a_reviewers_read_the_shadow_allows_in_time_is_granted_with_no_card_and_one_ro
     );
     let rows = rows.0.lock().unwrap();
     assert!(
-        rows.iter()
-            .any(|r| r == "permission · answered adj-view-0001: read /build/letibot-r1 for s-gatekeeper-k-sub-1"),
-        "the shadow's record has the answer: {rows:?}"
+        rows.iter().any(|r| r.starts_with("permission")),
+        "the shadow's record has the exchange: {rows:?}"
     );
     assert!(open_of(&w.main).is_empty() && open_of(&w.gatekeeper).is_empty());
 }
@@ -1036,28 +1064,34 @@ fn a_shadow_timeout_on_a_read_shows_the_card() {
     );
     let (card, d) = ask_watching(&w, &req, "grant_ro", Duration::ZERO);
     let card = card.expect("a timeout leaves the card to the operator");
-    assert_eq!(card.shadow, None);
+    let line = card.shadow.unwrap_or_default();
+    assert!(line.contains("no answer inside"), "{line}");
     assert!(d.by.starts_with("human:"), "{}", d.by);
     assert!(answering.take_rows().is_empty());
 }
 
-/// The rule the verdict quotes is a label: the grant cites the asker's rule that covers the path.
+/// An allow is a grant only when it cites the operator's own words: no cite, or a number that
+/// names nothing in the trail, leaves the card to the operator.
 #[test]
-fn a_quoted_rule_is_only_a_label() {
-    let (w, _, answering) = view_world(Slow {
-        reply: r#"{"verdict":"allow","rule":"a path outside the view","evidence":""}"#,
-        sleep: Duration::from_millis(20),
-    });
-    let req = view_request(
-        "adj-view-0005",
-        "/build/letibot-r1",
-        letibot_tools::Access::Read,
-    );
-    let (card, d) = ask_watching(&w, &req, "deny", Duration::from_millis(50));
-    assert!(card.is_none(), "{d:?}");
-    assert_eq!(d.by, "shadow:deepseek");
-    let rows = answering.take_rows();
-    assert!(rows[0].0.contains("(rule: read /build/**)"), "{rows:?}");
+fn an_allow_that_cites_no_operator_words_shows_the_card() {
+    for reply in [
+        r#"{"verdict":"allow","rule":"read /build/**","evidence":""}"#,
+        r#"{"verdict":"allow","rule":"read /build/**","cites":[7],"evidence":""}"#,
+    ] {
+        let (w, _, answering) = view_world(Slow {
+            reply,
+            sleep: Duration::from_millis(20),
+        });
+        let req = view_request(
+            "adj-view-0005",
+            "/build/letibot-r1",
+            letibot_tools::Access::Read,
+        );
+        let (card, d) = ask_watching(&w, &req, "deny", Duration::from_millis(50));
+        assert!(card.is_some(), "{reply}: {d:?}");
+        assert!(d.by.starts_with("human:"), "{reply}: {}", d.by);
+        assert!(answering.take_rows().is_empty(), "{reply}");
+    }
 }
 
 #[test]
@@ -1072,6 +1106,7 @@ fn a_shadow_grant_is_kept_like_any_other_and_both_revokes_trip_the_breaker() {
     let record = Arc::new(letibot_tools::view::ViewGrants::new());
     let mut gate = letibot_tools::AdjudicatedGate::new(Box::new(reviewer_adjudicator(&w)))
         .with_identity(REVIEWER, "agent")
+        .with_trail_source(|_| reviewer_trail())
         .with_view_grants(record.clone())
         .with_grant_ledger(
             Arc::new(crate::grants::StoreLedger::new(at.clone())),
@@ -1213,7 +1248,8 @@ fn a_later_no_to_a_granted_shape_counts_toward_the_breaker() {
     );
     let (card, d) = ask_watching(&w, &req, "deny", Duration::from_millis(50));
     let card = card.expect("an `ask` leaves the card to the operator");
-    assert_eq!(card.shadow.as_deref(), Some("shadow (deepseek): ask"));
+    let line = card.shadow.unwrap_or_default();
+    assert!(line.starts_with("shadow:deepseek would ask"), "{line}");
     assert!(d.by.starts_with("human:"), "{}", d.by);
     assert_eq!(answering.disagreements(), 1, "a No to a shape it granted");
 }
@@ -1315,5 +1351,73 @@ fn a_read_outside_the_askers_repository_shows_the_card() {
     let (card, d) = ask_watching(&w, &req, "deny", Duration::from_millis(50));
     assert!(card.is_some(), "{d:?}");
     assert!(d.by.starts_with("human:"), "{}", d.by);
+    assert!(answering.take_rows().is_empty());
+}
+
+/// The annotator only annotates. Even with its verdict an allow, and no oracle installed, the
+/// relayed read goes to the operator with the line on it.
+#[test]
+fn relay_never_answers_a_card() {
+    use letibot_sessionlog::pending_asks::Note;
+    let (w, _, answering) = view_world(Slow {
+        reply: ALLOW_READ,
+        sleep: Duration::from_millis(20),
+    });
+    w.set.set_oracle(None);
+    let req = view_request(
+        "adj-view-0700",
+        "/build/letibot-r1",
+        letibot_tools::Access::Read,
+    );
+    let (card, d) = ask_watching(&w, &req, "grant_ro", Duration::from_millis(250));
+    assert!(card.is_some(), "{d:?}");
+    assert!(d.by.starts_with("human:"), "{}", d.by);
+    assert!(answering.take_rows().is_empty());
+    // A note is a line and nothing else: this match is exhaustive.
+    let call = letibot_sessionlog::pending_asks::RelayedCall::default();
+    match w.set.annotator().and_then(|a| a.note(&call)) {
+        Some(Note::Line(_)) | None => {}
+    }
+}
+
+/// The shadow decides a may-approve read only: an always-ask reaches the operator without the
+/// shadow being asked, whatever it would say.
+#[test]
+fn the_shadow_oracle_never_answers_an_always_ask() {
+    let (w, rows, answering) = view_world(Slow {
+        reply: ALLOW_READ,
+        sleep: Duration::from_millis(20),
+    });
+    let mut req = view_request(
+        "adj-view-0800",
+        "/build/letibot-r1",
+        letibot_tools::Access::Read,
+    );
+    let oracle = w.set.oracle().expect("installed");
+    for tier in [
+        letibot_tools::adjudicate::Tier::AlwaysAsk {
+            rule: "credential_use",
+            why: "a test".into(),
+        },
+        letibot_tools::adjudicate::Tier::Auto,
+    ] {
+        req.tier = tier;
+        let d = oracle.decide(&req);
+        assert!(
+            matches!(d.outcome, DecisionOutcome::Escalate { .. }),
+            "{d:?}"
+        );
+        assert!(oracle.last_advice().is_none(), "nobody was consulted");
+    }
+    assert!(
+        !rows
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.starts_with("permission ·")),
+        "{:?}",
+        rows.0.lock().unwrap()
+    );
     assert!(answering.take_rows().is_empty());
 }

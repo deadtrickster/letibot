@@ -22,6 +22,8 @@ struct Inner {
     open: BTreeMap<String, Entry>,
     askers: BTreeMap<String, Asker>,
     annotator: Option<Arc<dyn Annotator>>,
+    #[cfg(feature = "tools")]
+    oracle: Option<Arc<dyn letibot_tools::Adjudicator>>,
 }
 
 /// A queue session named for the operator: its role and work, and its workspace in short.
@@ -94,37 +96,25 @@ pub struct AskerRule {
     pub action: String,
 }
 
-/// What the annotator says about a card before it is shown.
+/// What the annotator says about a card. A line only: a relayed card is answered by the operator
+/// or by the set's oracle ([`PendingAsks::oracle`]), never by its annotator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Note {
     /// One line on the card, which still goes to the operator.
     Line(String),
-    /// The card answered for the operator with `option_id`, by `by`. `row` is the main session's
-    /// one compact row about it.
-    Answer {
-        option_id: String,
-        by: String,
-        row: String,
-    },
 }
 
-/// What the main session says beside a relayed card: one line, and an answer only through
-/// [`Annotator::note`].
+/// What the main session says beside a relayed card.
 pub trait Annotator: Send + Sync {
     /// The card's line, or `None`. Bounded by the annotator's own deadline.
     fn line(&self, call: &RelayedCall) -> Option<String>;
     /// The operator's answer to a card `line` was asked about.
     fn answered(&self, req_id: &str, effect: &str);
-    /// Asked before the card is posted: an answer settles it with no card. The default never
-    /// answers.
+    /// The card's note: its line, as [`Note`].
     fn note(&self, call: &RelayedCall) -> Option<Note> {
         self.line(call).map(Note::Line)
     }
-    /// Whether [`Annotator::note`] may answer `call`, so a caller asks before the card only then.
-    fn may_answer(&self, _call: &RelayedCall) -> bool {
-        false
-    }
-    /// The operator took back a grant [`Annotator::note`] gave.
+    /// The operator took back a grant the set's oracle gave.
     fn revoked(&self, _grant: &RevokedGrant) {}
 }
 
@@ -269,14 +259,16 @@ impl PendingAsks {
         self.lock().annotator.clone()
     }
 
-    /// Ask the annotator before posting `call`'s card, inside its deadline. `None` when there is
-    /// no annotator or it may not answer this call, and the card goes up as before.
-    pub fn note_before(&self, call: &RelayedCall) -> Option<Note> {
-        let a = self.annotator()?;
-        if !a.may_answer(call) {
-            return None;
-        }
-        a.note(call)
+    /// The main session's oracle for relayed asks: an adjudicator that may settle one before its
+    /// card is posted, within the scope it has earned. `None` posts every card.
+    #[cfg(feature = "tools")]
+    pub fn set_oracle(&self, o: Option<Arc<dyn letibot_tools::Adjudicator>>) {
+        self.lock().oracle = o;
+    }
+
+    #[cfg(feature = "tools")]
+    pub fn oracle(&self) -> Option<Arc<dyn letibot_tools::Adjudicator>> {
+        self.lock().oracle.clone()
     }
 
     /// Ask the annotator about a posted card on its own thread. The card is never held for it, and

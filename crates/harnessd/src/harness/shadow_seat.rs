@@ -28,8 +28,21 @@ impl Harness {
             cell: self.shadow_cell.clone(),
             home: std::env::var_os("HOME").map(Into::into).unwrap_or_default(),
             answering: self.shadow_answering.clone(),
-            revocable: self.cfg.store_at().is_some(),
         }))
+    }
+
+    /// This session's shadow as the oracle of the reads relayed to it, when it is one.
+    pub(crate) fn relay_oracle(&self) -> Option<Arc<dyn letibot_tools::Adjudicator>> {
+        if !crate::shadow::is_oracle(&self.cfg) {
+            return None;
+        }
+        Some(Arc::new(crate::shadow::oracle::ShadowAdjudicator::new(
+            self.shadow_cell.clone(),
+            self.shadow_answering.clone(),
+            std::env::var_os("HOME").map(Into::into).unwrap_or_default(),
+            self.cfg.workspace.clone(),
+            self.cfg.store_at().is_some(),
+        )))
     }
 
     /// The rows the shadow owes this session for the reads it answered, appended now.

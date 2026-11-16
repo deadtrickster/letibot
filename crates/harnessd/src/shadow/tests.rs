@@ -1527,7 +1527,10 @@ fn only_a_covering_rule_on_an_allow_verdict_acts() {
     ];
     let allow = |rule: &str| {
         Outcome::Verdict(Verdict::Permission {
-            decision: Decision::Allow { rule: rule.into() },
+            decision: Decision::Allow {
+                rule: rule.into(),
+                cites: Vec::new(),
+            },
             evidence: String::new(),
         })
     };

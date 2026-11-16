@@ -9,7 +9,7 @@ use letibot_sessionlog::event::{
     OnTimeout as WireOnTimeout, OptionKind, SessionEvent, SubagentAsk,
 };
 use letibot_sessionlog::hub::{AnswerSink, Hub, Reply};
-use letibot_sessionlog::pending_asks::{Note, RelayedCall};
+use letibot_sessionlog::pending_asks::RelayedCall;
 use letibot_tools::adjudicate::{
     AdjudicationDecision, AdjudicationRequest, Adjudicator, DecisionOutcome, ModelAdvice,
     OnTimeout, OptionKind as ToolOptionKind, RequestKind,
@@ -144,26 +144,22 @@ impl Answers {
             return AdjudicationDecision::unavailable(req, "gate:no-head", &no_head(subagent));
         }
 
-        // The main session's shadow may answer a relayed read before any card goes up.
+        // The main session's oracle may settle a relayed read before any card goes up. Its
+        // allow is the asker's gate's to keep, like any answer; anything else is the card's line.
         let call = route
             .as_ref()
             .map(|set| relayed_call(req, hub, subagent, set, gate));
         let mut line = None;
-        if let (Some(set), Some(call)) = (&route, &call) {
-            match set.note_before(call) {
-                // The asker's gate keeps the grant like any other, answered by the shadow.
-                Some(Note::Answer { option_id, by, row }) => {
-                    return AdjudicationDecision {
-                        request_id: req.id.clone(),
-                        outcome: DecisionOutcome::Selected { option_id },
-                        by,
-                        basis: row,
-                        latency_ms: started.elapsed().as_millis() as u64,
-                    };
-                }
-                Some(Note::Line(l)) => line = Some(l),
-                None => {}
+        if let (Some(set), Some(call)) = (&route, &call)
+            && let Some(oracle) = set.oracle()
+            && crate::shadow::permission::relayed_read(call, &home()).is_ok()
+        {
+            let d = oracle.decide(req);
+            if matches!(&d.outcome, DecisionOutcome::Selected { option_id } if option_id == "allow_once")
+            {
+                return d;
             }
+            line = Some(format!("{} would ask - {}", d.by, one_line(&d.basis)));
         }
 
         let deadline_ms = unix_millis() + budget.as_millis() as u64;
@@ -412,6 +408,11 @@ impl Answers {
             }
         }
     }
+}
+
+/// The operator's home, for the shadow's read denylist.
+fn home() -> std::path::PathBuf {
+    std::env::var_os("HOME").map(Into::into).unwrap_or_default()
 }
 
 /// A relayed permission call as the main session's shadow is shown it.

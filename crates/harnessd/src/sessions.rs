@@ -3024,6 +3024,12 @@ impl<'a> Sessions<'a> {
                 .get(&self.base.session_id)
                 .and_then(|h| h.relay_annotator()),
         );
+        // And decides a relayed read within stage 1, through its oracle, when it is one.
+        set.set_oracle(
+            self.open
+                .get(&self.base.session_id)
+                .and_then(|h| h.relay_oracle()),
+        );
         if let Some(gk) = self.registry.get(&self.gatekeeper) {
             gk.set_escalation(set.clone());
         }

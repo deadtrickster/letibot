@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use letibot_sessionlog::pending_asks::{
-    Annotator, AskerGate, AskerRule, Note, RelayedCall, RevokedGrant,
+    Annotator, AskerGate, AskerRule, RelayedCall, RevokedGrant,
 };
 use letibot_tools::authorise::{CorpusRow, CorpusSink, OperatorOverride};
 use letibot_tools::permission::{Action, Rule, Ruleset};
@@ -301,6 +301,30 @@ impl Answering {
         }
     }
 
+    /// A read the shadow granted through the oracle: its shape counts toward a later No, and the
+    /// main session gets one row about it.
+    pub fn granted_read(&self, req_id: &str, session: &str, path: &str, basis: &str) {
+        self.granted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(shape(path));
+        self.push_row(
+            format!("shadow allowed {session} to read {path} · alt-n to see · /shadow revoke"),
+            format!(
+                "verdict: allow\nbasis: {basis}\ngrant: read-only `{path}` into the view of \
+                 {session}, for that session\nrequest: {req_id}\nrevoke: /shadow revoke"
+            ),
+        );
+    }
+
+    /// A read the shadow was asked about and left to the operator, so their No can be scored.
+    pub fn asked_read(&self, req_id: &str, path: &str) {
+        self.asked
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(req_id.to_string(), shape(path));
+    }
+
     /// One disagreement, and the breaker at [`BREAKER_AT`]: answering stops, observe-only.
     fn disagree(&self, why: &str, rec: Option<&Arc<dyn Recorder>>) {
         let n = self.disagreements.fetch_add(1, Ordering::SeqCst) + 1;
@@ -359,6 +383,16 @@ pub fn scope(c: &RelayedCall, home: &std::path::Path) -> Result<(String, &'stati
     Ok((path, kind))
 }
 
+/// Whether a relayed call may go to the main session's oracle: [`scope`], and an Allow rule of
+/// the asker's own that covers the read (C7). `Ok` is the path.
+pub fn relayed_read(c: &RelayedCall, home: &std::path::Path) -> Result<String, String> {
+    let (path, _) = scope(c, home)?;
+    let gate = c.gate.as_ref().ok_or("the asker's gate is not known")?;
+    covering_rule(&path, &ruleset_of(gate))
+        .map(|_| path.clone())
+        .ok_or_else(|| format!("no rule of the asker's allows a read of `{path}`"))
+}
+
 /// The rule an `allow` may act on: the asker's rule that covers a read of `path` by the gate's
 /// own matcher, last match wins and a Deny is seen. The model's verdict only gates it; the rule
 /// it quoted is a label. Void, stale, timed out, `ask` or no covering Allow is `None`.
@@ -406,17 +440,13 @@ pub fn ruleset_of(g: &AskerGate) -> Ruleset {
         .collect()
 }
 
-/// The main session's shadow on a relayed card: asked under the permission job's deadline, its
-/// verdict one line on the card and the operator's answer beside it in the record. It answers only
-/// a review-queue seat's read of a path outside its view, while `answering` is on, and judges it
-/// in the asker's own rules and workspace, never the main session's.
+/// The main session's shadow beside a relayed card: one line on it, and the operator's answer
+/// beside the verdict in the record. Annotator only: a relayed read is settled by the set's
+/// oracle ([`super::oracle::ShadowAdjudicator`]) or by the operator, never here.
 pub struct Relay {
     pub cell: Cell,
     pub home: PathBuf,
     pub answering: Arc<Answering>,
-    /// Whether a grant answered here is kept where `/shadow revoke` finds it: a daemon with a
-    /// store. Without one the shadow only observes.
-    pub revocable: bool,
 }
 
 impl Relay {
@@ -455,94 +485,20 @@ impl Relay {
         }
         s
     }
-
-    /// The verdict, and the answer when `may_act` and it may act.
-    fn judge(&self, c: &RelayedCall, may_act: bool) -> Option<Note> {
-        let (shadow, rec) = self.parts()?;
-        let scoped = scope(c, &self.home);
-        rec.row(
-            &format!("permission · relayed {} from {}", c.req_id, c.asker),
-            match &scoped {
-                Ok(_) => "a read-only view widening the shadow may answer",
-                Err(_) => "",
-            },
-        );
-        let outcome = shadow.ask(Job::Permission, self.shown_for(c))?;
-        let judge = shadow.label(Job::Permission);
-        let line = line_of(judge.as_deref(), &outcome);
-        let acting = match (&scoped, &c.gate, may_act && self.answering.is_on()) {
-            (Ok((path, _)), Some(gate), true) => {
-                acting_rule(&outcome, path, &ruleset_of(gate)).map(|r| (path.clone(), r))
-            }
-            _ => None,
-        };
-        let Some((path, rule)) = acting else {
-            if let Ok((path, _)) = &scoped {
-                self.answering
-                    .asked
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(c.req_id.clone(), shape(path));
-            }
-            return line.map(Note::Line);
-        };
-        let role = c.role.as_deref().unwrap_or(&c.asker);
-        let who = role.split(" (").next().unwrap_or(role);
-        let row = format!(
-            "shadow allowed {who} to read {path} (rule: {rule}) · alt-n to see · /shadow revoke"
-        );
-        let evidence = match &outcome {
-            Outcome::Verdict(Verdict::Permission { evidence, .. }) => evidence.clone(),
-            _ => String::new(),
-        };
-        let body = format!(
-            "verdict: allow\njudge: {}\nrule relied on: \"{rule}\"\nevidence: \"{}\"\n\
-             grant: read-only `{path}` into the view of {role} ({}), for that session\n\
-             request: {}\nrevoke: /shadow revoke",
-            judge.as_deref().unwrap_or("shadow"),
-            evidence.trim(),
-            c.asker,
-            c.req_id
-        );
-        rec.row(
-            &format!(
-                "permission · answered {}: read {path} for {}",
-                c.req_id, c.asker
-            ),
-            &body,
-        );
-        self.answering
-            .granted
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(shape(&path));
-        self.answering.push_row(row.clone(), body);
-        Some(Note::Answer {
-            option_id: "grant_ro".into(),
-            by: format!("shadow:{}", judge.as_deref().unwrap_or("permission")),
-            row,
-        })
-    }
 }
 
 impl Annotator for Relay {
     fn line(&self, c: &RelayedCall) -> Option<String> {
-        match self.judge(c, false)? {
-            Note::Line(l) => Some(l),
-            Note::Answer { .. } => None,
+        let (shadow, rec) = self.parts()?;
+        rec.row(
+            &format!("permission · relayed {} from {}", c.req_id, c.asker),
+            "",
+        );
+        if let Ok((path, _)) = scope(c, &self.home) {
+            self.answering.asked_read(&c.req_id, &path);
         }
-    }
-
-    fn note(&self, c: &RelayedCall) -> Option<Note> {
-        self.judge(c, true)
-    }
-
-    fn may_answer(&self, c: &RelayedCall) -> bool {
-        self.revocable
-            && self.answering.is_on()
-            && c.gate.is_some()
-            && scope(c, &self.home).is_ok()
-            && self.parts().is_some()
+        let outcome = shadow.ask(Job::Permission, self.shown_for(c))?;
+        line_of(shadow.label(Job::Permission).as_deref(), &outcome)
     }
 
     fn answered(&self, req_id: &str, effect: &str) {
@@ -601,7 +557,7 @@ pub fn line_of(judge: Option<&str>, outcome: &Outcome) -> Option<String> {
         }
     };
     Some(match decision {
-        Decision::Allow { rule } => format!("{who}: allow - matches rule \"{rule}\""),
+        Decision::Allow { rule, .. } => format!("{who}: allow - matches rule \"{rule}\""),
         Decision::Ask => format!("{who}: ask{}", tail(evidence)),
     })
 }
