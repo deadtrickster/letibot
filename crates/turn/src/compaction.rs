@@ -73,7 +73,7 @@ Your reply ended inside reasoning with no output. Write the summary now.";
 pub const SUMMARY_FIDELITY_PER_MILLE: u64 = 150;
 
 /// How much of the record's room its pins may take, in per-mille: a quarter, so the record still has
-/// room to say what it did while `AGENTS.md` is carried verbatim (X15's `pinned_tokens`).
+/// room to say what it did while `AGENTS.md` is carried verbatim (`pinned_tokens`).
 pub const PINNED_PER_MILLE: u64 = 250;
 
 /// The most a record may be, whatever the window: a record is the state of the work, and a window of
@@ -155,7 +155,7 @@ impl SummaryBudget {
         }
     }
 
-    /// What a compaction may spend keeping text verbatim (X15's `pinned_tokens`): a stated share of
+    /// What a compaction may spend keeping text verbatim (`pinned_tokens`): a stated share of
     /// the record's own room, since a pin competes with the record for the same window.
     pub fn pinned(&self) -> u64 {
         self.tokens * PINNED_PER_MILLE / 1_000
@@ -254,7 +254,7 @@ pub struct Section {
 }
 
 /// The record's sections, as data: what [`summary_instruction`] asks for, what a `compact_` layer
-/// chooses among (X15), and what a test holds both texts to.
+/// chooses among, and what a test holds both texts to.
 pub const SECTIONS: [Section; 8] = [
     Section {
         heading: "## Objective",
@@ -792,7 +792,7 @@ pub struct SummaryAsk<'a> {
     /// carries no tail at all.
     pub carried: &'a str,
     /// The template a `compact_` layer chose, or `None` for the harness's own - which is what the
-    /// re-seat's summary asks with, since a re-seat is not a compaction (X15).
+    /// re-seat's summary asks with, since a re-seat is not a compaction.
     pub template: Option<&'a Template>,
 }
 
