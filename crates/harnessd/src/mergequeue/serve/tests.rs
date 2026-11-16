@@ -2013,8 +2013,142 @@ fn a_red_target_and_a_blocked_review_ring_the_project_once_each() {
             .unwrap()
     );
     run(&q, 3);
-    assert_eq!(*w.door.projects.lock().unwrap(), vec!["s-b".to_string()]);
+    assert_eq!(
+        *w.door.projects.lock().unwrap(),
+        vec!["s-b".to_string(), "s-b".to_string()],
+        "once for waiting behind the red tip, once for its own block"
+    );
     assert_eq!(w.door.repositories.lock().unwrap().len(), 1, "still once");
+}
+
+/// The red tip's review row, moved by hand to the reviewer's reject, with the fixer it opened.
+fn reject_red_tip(w: &World, fixer: Option<&str>) -> String {
+    let red = w
+        .store()
+        .review_rows(Some(&w.key()))
+        .unwrap()
+        .into_iter()
+        .find(|r| r.kind == ReviewKind::Target)
+        .expect("the red tip is a review row");
+    let mut mv = Move::new("reviewer", "broken by the hand commit")
+        .owned_by(red.owner.clone())
+        .set("owner", "");
+    if let Some(f) = fixer {
+        mv = mv.set("fixes", f);
+    }
+    assert!(
+        w.store()
+            .move_review(
+                &red.id,
+                red.state,
+                ReviewState::Rejected,
+                &mv,
+                gate::now_ms()
+            )
+            .unwrap()
+    );
+    red.head_sha
+}
+
+/// A red target wakes every session with a row behind it once, and again once when the fixer's
+/// branch is rejected: the rows never move, so nothing else would wake them.
+#[test]
+fn a_red_target_and_its_rejected_fix_wake_every_session_waiting_behind_it_once_each() {
+    let w = World::new("behind");
+    commit(&w.repo, "broken", "x\n", "red");
+    let (wt, base, head) = branch(&w.repo, "b", "b.txt");
+    w.enqueue("b", &wt, &base, &head);
+    let (wt2, base2, head2) = branch(&w.repo, "c", "c.txt");
+    w.enqueue("c", &wt2, &base2, &head2);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 3);
+    let rung = |w: &World| {
+        let mut p = w.door.projects.lock().unwrap().clone();
+        p.sort();
+        p
+    };
+    assert_eq!(rung(&w), vec!["s-b", "s-c"], "one wake each at red");
+    run(&q, 3);
+    assert_eq!(rung(&w).len(), 2, "and only once");
+
+    let red = reject_red_tip(&w, Some("s-fixer"));
+    run(&q, 2);
+    assert_eq!(rung(&w).len(), 2, "a fixer at work is no stop");
+    let (fb, fwt) = a_fix_tree(&w, &red, "f1");
+    commit(&fwt, "fix.txt", "f\n", "try a fix");
+    fix_branch(&w, "fix1", &fb, &fwt, &red);
+    run(&q, 1);
+    let f = w.store().review_row("fix1").unwrap().unwrap();
+    assert!(
+        w.store()
+            .move_review(
+                "fix1",
+                f.state,
+                ReviewState::Rejected,
+                &Move::new("reviewer", "rejected: it does not remove `broken`")
+                    .owned_by(f.owner.clone())
+                    .set("owner", ""),
+                gate::now_ms(),
+            )
+            .unwrap()
+    );
+    run(&q, 3);
+    assert_eq!(
+        rung(&w),
+        vec!["s-b", "s-b", "s-c", "s-c"],
+        "a rejected fixer wakes every waiter once more"
+    );
+    let b =
+        &crate::mergequeue::behind::behind(&w.store(), Some(&w.key()), gate::now_ms()).unwrap()[0];
+    let mine: Vec<_> = b.waiting.iter().filter(|x| x.session == "s-b").collect();
+    let said = crate::mergequeue::behind::told(b, &mine);
+    for part in ["`main`", "red", "because", "rejected", "`b`", "Next: "] {
+        assert!(said.contains(part), "`{part}`: {said}");
+    }
+}
+
+/// A fixer that ended without a branch in review is a stop, once its grace is over.
+#[test]
+fn a_fixer_that_ends_without_a_branch_is_a_stop_after_its_grace() {
+    let w = World::new("gaveup");
+    commit(&w.repo, "broken", "x\n", "red");
+    let (wt, base, head) = branch(&w.repo, "b", "b.txt");
+    w.enqueue("b", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 3);
+    reject_red_tip(&w, Some("s-fixer"));
+    w.store()
+        .put_subagent_run(&letibot_tokencore::store::SubagentRun {
+            child_id: "s-fixer".into(),
+            parent_id: "s-queue".into(),
+            state: "done".into(),
+            prompt: "fix main".into(),
+            spec_json: "{}".into(),
+            instance: "test".into(),
+            resumes: 0,
+            outcome: Some("I could not".into()),
+            later_answer: None,
+            delivered: false,
+            started_ms: 1,
+            updated_ms: 1,
+        })
+        .unwrap();
+    let now = gate::now_ms();
+    let fix = |at: u64| {
+        crate::mergequeue::behind::behind(&w.store(), Some(&w.key()), at).unwrap()[0]
+            .fix
+            .clone()
+    };
+    assert!(
+        matches!(fix(now), crate::mergequeue::behind::Fix::Going(_)),
+        "inside the grace its branch may still be on its way"
+    );
+    let late = fix(now + crate::mergequeue::behind::FIXER_GRACE_MS + 1_000);
+    assert_eq!(late.key(), "gave-up:s-fixer", "{late:?}");
+    assert!(
+        late.words().contains("without putting a branch up"),
+        "{late:?}"
+    );
 }
 
 // ===== The review queue's upkeep =====

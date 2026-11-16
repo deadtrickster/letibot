@@ -10,6 +10,7 @@ use std::thread::JoinHandle;
 use letibot_sessionlog::SessionEvent;
 use letibot_tokencore::store::{MergeRow, ReviewRow, Store, StoreError};
 
+pub mod behind;
 pub mod capacity;
 pub mod carry;
 pub mod desk;
