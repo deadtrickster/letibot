@@ -1243,6 +1243,15 @@ mod tests {
     }
 
     fn tmp_providers(tag: &str, body: &str) -> std::path::PathBuf {
+        // One file per tag: two tests on one tag race on the same path under a parallel run.
+        static TAKEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+        let mut taken = TAKEN.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            !taken.iter().any(|t| t == tag),
+            "tmp_providers tag `{tag}` is taken"
+        );
+        taken.push(tag.to_string());
+        drop(taken);
         let d = std::env::temp_dir().join(format!("letibot-prof-{}-{tag}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let f = d.join("providers.toml");
@@ -1477,43 +1486,47 @@ mod tests {
     fn a_shadow_line_that_means_nothing_is_a_fault() {
         for (name, text, says) in [
             (
-                "shadow_job",
+                "fault_shadow_job",
                 "[shadow]\nenabled = [\"offers\"]\n",
                 "names `offers`",
             ),
-            ("shadow_key", "[shadow]\nturn_ends = \"x\"\n", "not a key"),
             (
-                "shadow_mode",
+                "fault_shadow_key",
+                "[shadow]\nturn_ends = \"x\"\n",
+                "not a key",
+            ),
+            (
+                "fault_shadow_mode",
                 "[shadow]\nmode = \"forever\"\n",
                 "is not one of",
             ),
             (
-                "shadow_every",
+                "fault_shadow_every",
                 "[shadow]\nfresh_every = \"often\"\n",
                 "not a count",
             ),
             (
-                "shadow_reads_bad",
+                "fault_shadow_reads_bad",
                 "[shadow]\nanswer_reads = \"yes\"\n",
                 "not true or false",
             ),
             (
-                "shadow_list",
+                "fault_shadow_list",
                 "[shadow]\nenabled = \"turn_end\"\n",
                 "not a list",
             ),
             (
-                "shadow_table",
+                "fault_shadow_table",
                 "[shadow.offers]\n\"*\" = \"x\"\n",
                 "not a job",
             ),
             (
-                "shadow_glob",
+                "fault_shadow_glob",
                 "[shadow.during]\n\"kimi*\" = \"x\"\n",
                 "not a key",
             ),
             (
-                "shadow_twice",
+                "fault_shadow_twice",
                 "[shadow]\nduring = \"a\"\n[shadow.during]\n\"*\" = \"b\"\n",
                 "written twice",
             ),
