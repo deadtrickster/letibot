@@ -107,6 +107,7 @@ impl App {
         // the reason the turn in flight is: a head that attached between two rounds has seen no
         // `ActivityChanged`, and the round-level turn would draw it as idle while a call runs.
         self.activity = s.activity.clone();
+        self.activity_since_ms = None;
         // A snapshot renumbers nothing, so the ids a collapse was made on come back, and the pairings are
         // pruned below where the new rows are known. Clearing them here was the event that un-collapsed every
         // notice. The same session or a different one is read once at the top, since three things ask.

@@ -40,6 +40,9 @@ impl App {
                 {
                     t.ends_turn = Some(true);
                 }
+                if activity != self.activity {
+                    self.activity_since_ms = (ts > 0).then_some(ts);
+                }
                 self.activity = activity;
                 Disposition::Control
             }
