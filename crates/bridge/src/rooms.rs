@@ -155,6 +155,42 @@ fn write_nick(dir: &std::path::Path, cwd: &std::path::Path, nick: &str) -> Resul
         .map_err(|e| format!("cannot keep the nick in {}: {e}", file.display()))
 }
 
+/// Where the name the room gave this folder's bridge is kept: beside the nick, keyed the same way.
+/// A restart that asked for the folder's own name again would be a NEW seat to the room, and the
+/// cursor it had read is the seat's - so the settled name outlives the process that settled it.
+fn settled_file(dir: &std::path::Path, cwd: &std::path::Path) -> PathBuf {
+    let mut name = nick_file(dir, cwd);
+    name.set_file_name(format!(
+        "{}.name",
+        name.file_name().unwrap_or_default().to_string_lossy()
+    ));
+    name
+}
+
+/// The name this folder's bridge settled on, when it is the name `base` still asks for: a nick the
+/// operator changed since is a name the room never gave, and the folder's own name wins again.
+pub fn settled_name(dir: &std::path::Path, cwd: &std::path::Path, base: &str) -> Option<String> {
+    let text = std::fs::read_to_string(settled_file(dir, cwd)).ok()?;
+    let (asked, settled) = text.trim().split_once(' ')?;
+    (asked == base && !settled.is_empty()).then(|| settled.to_string())
+}
+
+/// Keep the name the room gave this folder's bridge, with the name it was asked for beside it.
+pub fn remember_name(
+    dir: &std::path::Path,
+    cwd: &std::path::Path,
+    base: &str,
+    settled: &str,
+) -> Result<(), String> {
+    let file = settled_file(dir, cwd);
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot keep the name in {}: {e}", parent.display()))?;
+    }
+    std::fs::write(&file, format!("{base} {settled}\n"))
+        .map_err(|e| format!("cannot keep the name in {}: {e}", file.display()))
+}
+
 /// A nick: lowercase letters, digits and `-`, at most 20, not a session prefix, the operator or
 /// a bridge alias.
 fn valid_nick(nick: &str) -> Result<(), String> {
@@ -239,13 +275,35 @@ pub fn family_for(name: &str) -> String {
 /// `-<salt>` twin and its neighbour; past that the folder has more bridges than names.
 const TWIN_TRIES: u8 = 3;
 
-fn name_cell() -> &'static Mutex<String> {
-    static NAME: std::sync::OnceLock<Mutex<String>> = std::sync::OnceLock::new();
-    NAME.get_or_init(|| {
+/// The folder's own name, before the room has said anything: what the settled name is compared to.
+fn base_cell() -> &'static Mutex<String> {
+    static BASE: std::sync::OnceLock<Mutex<String>> = std::sync::OnceLock::new();
+    BASE.get_or_init(|| {
         let env = std::env::var(NAME_ENV).ok();
         let cwd = std::env::current_dir().unwrap_or_default();
         let nick = read_nick(&data_dir(), &cwd);
         Mutex::new(base_name(env.as_deref(), nick.as_deref(), &cwd))
+    })
+}
+
+/// The name the folder does the asking with, ignoring whatever the room gave it.
+fn base() -> String {
+    base_cell()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone()
+}
+
+fn name_cell() -> &'static Mutex<String> {
+    static NAME: std::sync::OnceLock<Mutex<String>> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        let dir = data_dir();
+        let cwd = std::env::current_dir().unwrap_or_default();
+        let base = base();
+        // The name the room gave this folder last time comes first: asking again for the folder's
+        // own name would be a new seat, and its cursor is the seat's.
+        let settled = settled_name(&dir, &cwd, &base).unwrap_or(base);
+        Mutex::new(settled)
     })
 }
 
@@ -263,7 +321,11 @@ fn set_handle(name: String) {
 
 fn family_cell() -> &'static Mutex<Option<String>> {
     static FAMILY: std::sync::OnceLock<Mutex<Option<String>>> = std::sync::OnceLock::new();
-    FAMILY.get_or_init(|| Mutex::new(None))
+    // A restart under a settled twin name is still the folder's family.
+    FAMILY.get_or_init(|| {
+        let (asked, now) = (base(), handle());
+        Mutex::new((asked != now).then(|| family_for(&asked)))
+    })
 }
 
 /// The name this bridge asked for before another bridge in the folder held it. The room pushes
@@ -291,6 +353,14 @@ fn reraise_after() -> Duration {
 /// The room wire's version. A coordinator on another number refuses the hello with both numbers,
 /// which reaches the tool as its error.
 pub const PROTOCOL: u16 = letibot_room::ROOM_PROTOCOL_VERSION;
+
+/// The salt a refused name is suffixed with: this process, and which try it is - so two tries in
+/// one process never ask for the same name twice.
+fn fresh_salt(tried: u32) -> u32 {
+    std::process::id()
+        .wrapping_mul(0x9e37_79b9)
+        .wrapping_add(tried.wrapping_mul(0x85eb_ca6b))
+}
 
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 const REDIAL_EVERY: Duration = Duration::from_secs(2);
@@ -655,7 +725,10 @@ struct Inner {
     live: Mutex<Option<Live>>,
     /// One round trip at a time: replies carry no id of their own.
     call: Mutex<()>,
-    waiting: Mutex<Option<Sender<Value>>>,
+    /// The round trip waiting for its reply, and the connection GENERATION it waits on: a reader
+    /// left over from a dropped connection outlives the drop, and must neither answer nor end a
+    /// wait that belongs to a newer one.
+    waiting: Mutex<Option<(u64, Sender<Value>)>>,
     hook: Mutex<Option<Hook>>,
     /// Watchers that see every chat frame and deliver none of them - the permission relay reads
     /// verdicts here, and a message it reads is still pushed to Claude Code as it always was.
@@ -828,8 +901,8 @@ impl RoomLink {
             .map_err(|_| "the room closed the connection before saying hello".to_string())?;
         // Another bridge already holds this name (two folders of one name): take a suffixed one
         // for good, so the name does not change under a reader mid-session. Bounded, because a
-        // coordinator that holds every name offered would otherwise be asked forever - each
-        // rename shortens the name, and the salt is fresh so two attempts are two names.
+        // coordinator that holds every name offered would otherwise be asked forever. The name
+        // suffixed is always the folder's own, never one already suffixed or settled.
         if first["why"]["refused"] == "name_in_use"
             && !*self.inner.named.lock().unwrap_or_else(|e| e.into_inner())
         {
@@ -845,10 +918,9 @@ impl RoomLink {
                     handle()
                 ));
             }
-            if family().is_none() {
-                set_family(Some(family_for(&handle())));
-            }
-            set_handle(suffixed(&handle(), std::process::id() ^ (tried as u32 + 1)));
+            let asked = base();
+            set_family(Some(family_for(&asked)));
+            set_handle(suffixed(&asked, fresh_salt(u32::from(tried))));
             return self.open();
         }
         match first["type"].as_str() {
@@ -860,6 +932,10 @@ impl RoomLink {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner()) =
                     first["protocol"].as_u64().map(|p| p as u16);
+                // The name the room gave this folder is kept, so a restart asks for it and keeps
+                // the seat - and with it the cursor, which belongs to the seat and not the process.
+                let cwd = std::env::current_dir().unwrap_or_default();
+                let _ = remember_name(&data_dir(), &cwd, &base(), &handle());
                 let now = first["instance"].as_u64().unwrap_or(0);
                 let mut seen = self
                     .inner
@@ -989,11 +1065,16 @@ impl RoomLink {
 
     fn round_trip(&self, frame: &Value) -> Result<Value, String> {
         let (tx, rx) = mpsc::channel();
-        *self.inner.waiting.lock().unwrap_or_else(|e| e.into_inner()) = Some(tx);
+        let mut mine: Option<u64> = None;
         let sent = {
             let mut live = self.inner.live.lock().unwrap_or_else(|e| e.into_inner());
             match live.as_mut() {
-                Some(l) => write_line(&mut l.writer, frame),
+                Some(l) => {
+                    mine = Some(l.generation);
+                    *self.inner.waiting.lock().unwrap_or_else(|e| e.into_inner()) =
+                        Some((l.generation, tx));
+                    write_line(&mut l.writer, frame)
+                }
                 None => Err("the room connection is not open".to_string()),
             }
         };
@@ -1011,7 +1092,9 @@ impl RoomLink {
                 ),
             })
         });
-        *self.inner.waiting.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        if let Some(at) = mine {
+            end_wait(&self.inner, at);
+        }
         got
     }
 
@@ -1372,10 +1455,7 @@ fn read_loop(mut reader: BufReader<UnixStream>, weak: Weak<Inner>, generation: u
                 Some("event") => false,
                 Some("bye") => true,
                 _ => {
-                    let slot = inner.waiting.lock().unwrap_or_else(|e| e.into_inner());
-                    if let Some(tx) = slot.as_ref() {
-                        let _ = tx.send(f);
-                    }
+                    deliver_reply(&inner, generation, f);
                     false
                 }
             },
@@ -1389,16 +1469,30 @@ fn read_loop(mut reader: BufReader<UnixStream>, weak: Weak<Inner>, generation: u
                 }
             }
             // Nobody will answer a round trip parked on this connection now: end its wait here,
-            // so a redial is a retry rather than the rest of a timeout spent on a gone peer.
-            drop(
-                inner
-                    .waiting
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .take(),
-            );
+            // so a redial is a retry rather than the rest of a timeout spent on a gone peer. Only
+            // this reader's own wait - a newer connection's round trip is not this one's to end.
+            end_wait(&inner, generation);
             return;
         }
+    }
+}
+
+/// Hand a reply to the round trip waiting for it on THIS connection. `false` is a frame from a
+/// connection that has been replaced: its reader outlives the drop, and the wait now on the slot
+/// belongs to a newer round trip which this frame cannot answer.
+fn deliver_reply(inner: &Inner, generation: u64, frame: Value) -> bool {
+    let slot = inner.waiting.lock().unwrap_or_else(|e| e.into_inner());
+    match slot.as_ref() {
+        Some((at, tx)) if *at == generation => tx.send(frame).is_ok(),
+        _ => false,
+    }
+}
+
+/// End the round trip waiting on connection `generation`, and only that one.
+fn end_wait(inner: &Inner, generation: u64) {
+    let mut slot = inner.waiting.lock().unwrap_or_else(|e| e.into_inner());
+    if slot.as_ref().is_some_and(|(at, _)| *at == generation) {
+        slot.take();
     }
 }
 
@@ -2084,15 +2178,17 @@ fn dispatch(link: &RoomLink, name: &str, args: &Value, workspace: &Path) -> Resu
 /// acks, since the cursor is the bridge's and an ack would hide the message from its session. Exit
 /// 0 a message on stdout, 20 coordinator unreachable, 30 deadline passed.
 pub fn wait(link: &RoomLink, attention: Attention, deadline: Instant) -> (i32, String) {
-    wait_marked(link, attention, deadline, &wait_mark_path())
+    wait_marked(link, attention, deadline, None)
 }
 
-/// [`wait`] with the mark kept at `mark`.
+/// [`wait`] with the mark kept where `mark` says, or - for `None` - where this waiter's own seat
+/// says: the mark is the SETTLED handle's, because a second bridge in one folder is named with a
+/// suffix on its hello, and a mark filed under the base name would be that bridge's.
 pub fn wait_marked(
     link: &RoomLink,
     attention: Attention,
     deadline: Instant,
-    mark: &Path,
+    mark: Option<&Path>,
 ) -> (i32, String) {
     let (tx, rx) = mpsc::channel::<Value>();
     link.share_name();
@@ -2103,13 +2199,23 @@ pub fn wait_marked(
     }));
     loop {
         // After a drop the cursor still holds what was missed, so a reopen replays it.
-        match link.ensure() {
+        if let Err(e) = link.ensure() {
+            return (20, e);
+        }
+        // The mark is asked for AFTER the hello and never before: a second bridge in one folder is
+        // renamed on it, and the folder's own name would file this waiter's seat under that one's.
+        let settled;
+        let mark = match mark {
+            Some(given) => given,
+            None => {
+                settled = wait_mark_path();
+                settled.as_path()
+            }
+        };
+        match replay(link, attention, mark) {
+            Ok(Some(found)) => return (0, found),
+            Ok(None) => {}
             Err(e) => return (20, e),
-            Ok(_) => match replay(link, attention, mark) {
-                Ok(Some(found)) => return (0, found),
-                Ok(None) => {}
-                Err(e) => return (20, e),
-            },
         }
         // The live window: until the connection drops or something arrives.
         loop {
@@ -2153,8 +2259,9 @@ fn replay(link: &RoomLink, attention: Attention, mark: &Path) -> Result<Option<S
 }
 
 /// One mark per seat and Claude Code process: the waiter loop restarts this binary for every
-/// message, and two sessions of one name each need their own.
-fn wait_mark_path() -> PathBuf {
+/// message, and two sessions of one name each need their own. Public because a test proves WHICH
+/// name the mark is under, and that is a fact about this path and no other.
+pub fn wait_mark_path() -> PathBuf {
     let key = format!("{}#{}", handle(), session_pid());
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in key.as_bytes() {
@@ -2551,6 +2658,84 @@ mod tests {
         }
         // A handle short enough to keep whole keeps the family the old code spelled.
         assert_eq!(family_for("cc@letibot"), "cc@letibot");
+    }
+
+    /// A8-F14: the room's name for this folder outlives the process that was given it. A restart
+    /// that asked for the folder's own name again would be a new seat, and the cursor it had read
+    /// is the seat's - so a restart would replay what the other seat had already read.
+    #[test]
+    fn a_restarted_bridge_asks_for_the_name_the_room_gave_it() {
+        let root = std::env::temp_dir().join(format!(
+            "bridge-settled-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cwd = root.join("Projects/letibot/letibot");
+        std::fs::create_dir_all(&cwd).expect("a folder");
+        let data = root.join("data");
+        assert_eq!(
+            settled_name(&data, &cwd, "cc@letibot"),
+            None,
+            "nothing is settled yet"
+        );
+        remember_name(&data, &cwd, "cc@letibot", "cc@letibot-1a2b").expect("the name is kept");
+        assert_eq!(
+            settled_name(&data, &cwd, "cc@letibot").as_deref(),
+            Some("cc@letibot-1a2b"),
+            "a restart asks for the name the room gave it"
+        );
+        assert_eq!(
+            settled_name(&data, &cwd, "cc@other"),
+            None,
+            "a name asked for under another nick is not this one's"
+        );
+        assert_eq!(
+            settled_name(&data, &root.join("elsewhere"), "cc@letibot"),
+            None,
+            "and the file is the folder's"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    /// A8-F13: a reader outlives the connection it served, so a frame from an older connection
+    /// must not answer a newer round trip, and an older reader's end must not end its wait.
+    #[test]
+    fn a_stale_readers_frame_and_its_end_leave_a_newer_wait_alone() {
+        let link = RoomLink::at("/nonexistent/room.sock");
+        let inner = link.inner.clone();
+        let (tx, rx) = mpsc::channel();
+        *inner.waiting.lock().unwrap_or_else(|e| e.into_inner()) = Some((7, tx));
+        assert!(
+            !deliver_reply(&inner, 6, json!({ "type": "history" })),
+            "an older connection's frame is nobody's reply"
+        );
+        assert!(rx.try_recv().is_err(), "and it was not handed over");
+        end_wait(&inner, 6);
+        assert!(
+            inner
+                .waiting
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_some(),
+            "an older reader's end is not the newer wait's"
+        );
+        assert!(
+            deliver_reply(&inner, 7, json!({ "type": "history" })),
+            "its own connection's frame is"
+        );
+        assert_eq!(rx.try_recv().expect("the frame")["type"], "history");
+        end_wait(&inner, 7);
+        assert!(
+            inner
+                .waiting
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_none(),
+            "the wait this reader served is ended by its own end"
+        );
     }
 
     #[test]

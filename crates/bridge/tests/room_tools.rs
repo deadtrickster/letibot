@@ -847,7 +847,7 @@ fn room_wait_exits_on_a_matching_message_and_not_on_others() {
                 &link,
                 Attention::ToMe,
                 Instant::now() + Duration::from_millis(1500),
-                &mark,
+                Some(&mark),
             )
         });
         wait_until(|| !fake.conns.lock().unwrap().is_empty());
@@ -866,7 +866,7 @@ fn room_wait_exits_on_a_matching_message_and_not_on_others() {
                 &link2,
                 Attention::ToMe,
                 Instant::now() + Duration::from_secs(20),
-                &mark,
+                Some(&mark),
             )
         });
         wait_until(|| fake.conns.lock().unwrap().len() >= 2);
@@ -890,7 +890,7 @@ fn room_wait_exits_on_a_matching_message_and_not_on_others() {
         &link3,
         Attention::ToMe,
         Instant::now() + Duration::from_millis(1200),
-        &mark,
+        Some(&mark),
     );
     assert_eq!(code, 30, "the marked message is not delivered again");
     assert!(
@@ -909,7 +909,7 @@ fn room_wait_exits_on_a_matching_message_and_not_on_others() {
         &gone,
         Attention::ToMe,
         Instant::now() + Duration::from_secs(5),
-        &mark,
+        Some(&mark),
     );
     assert_eq!(code, 20);
     assert!(why.contains("no room coordinator"), "{why}");
