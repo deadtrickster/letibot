@@ -39,7 +39,7 @@ impl Drop for Dir {
 
 fn user(text: &str) -> TranscriptItem {
     TranscriptItem::User {
-        speaker: Default::default(),
+        speaker: letibot_transcript::Speaker::Operator,
         parts: vec![UserPart::Text { text: text.into() }],
     }
 }

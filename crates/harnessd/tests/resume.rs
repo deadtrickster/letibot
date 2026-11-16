@@ -24,7 +24,7 @@ const CURRENT_ROWS: u32 = 3;
 
 fn user(text: &str) -> TranscriptItem {
     TranscriptItem::User {
-        speaker: Default::default(),
+        speaker: letibot_transcript::Speaker::Operator,
         parts: vec![UserPart::Text { text: text.into() }],
     }
 }
