@@ -1548,41 +1548,6 @@ pub fn unwrap_wrapper(program: &str, argv: &[Word]) -> Option<(String, usize)> {
 
 // Regions and secrets
 
-/// The directories whose bytes are secret. Not the decider (the flow rule is), but it has to know what
-/// a secret is: [`crate::secrets::STORES`], which the gate and the seat read too, plus the four this
-/// side adds because a read of them is a disclosure even where nothing writes one.
-pub fn secret_dirs() -> Vec<&'static str> {
-    let mut out = crate::secrets::stores();
-    // `.docker` and not only its config file: a whole directory of registries is a read-side
-    // secret, and the two `/etc` files are absolute, which the flow rule knows the difference of.
-    out.extend([
-        ".docker",
-        ".config/flowy",
-        "/etc/shadow",
-        "/etc/sudoers",
-        "/etc/ssl/private",
-        "/private/etc/ssl/private",
-    ]);
-    out
-}
-
-/// Files that are secret wherever they sit, matched on the final path segment. Exact names and
-/// extensions only, because a substring test puts every path with "key" in it in the store.
-const SECRET_FILE_NAMES: &[&str] = &[
-    "id_rsa",
-    "id_dsa",
-    "id_ecdsa",
-    "id_ed25519",
-    ".netrc",
-    ".npmrc",
-    ".pypirc",
-    ".git-credentials",
-    "credentials",
-    "shadow",
-];
-
-const SECRET_EXTENSIONS: &[&str] = &[".pem", ".p12", ".pfx", ".jks", ".keystore"];
-
 /// Where a path lands. Coarse on purpose: it is the key the circuit breaker uses,
 /// and a key as fine as a path would change with every re-spelling of the same
 /// intention (see [`crate::authorise::TaskDirection`]).
@@ -2286,7 +2251,7 @@ fn secret_hit(path: &str, home: Option<&str>) -> Option<String> {
     if is_public_ca(path) {
         return None;
     }
-    for dir in secret_dirs() {
+    for dir in crate::secrets::read_secrets() {
         if dir.starts_with('/') {
             if under(path, dir) {
                 return Some(dir.to_string());
@@ -2308,10 +2273,13 @@ fn secret_hit(path: &str, home: Option<&str>) -> Option<String> {
     }
     // Only then the file itself: a key or a credential file outside any known store.
     let last = path.rsplit('/').next().unwrap_or(path);
-    if SECRET_FILE_NAMES.contains(&last) {
+    if crate::secrets::SECRET_FILE_NAMES.contains(&last) {
         return Some(last.to_string());
     }
-    if let Some(ext) = SECRET_EXTENSIONS.iter().find(|e| last.ends_with(*e)) {
+    if let Some(ext) = crate::secrets::SECRET_EXTENSIONS
+        .iter()
+        .find(|e| last.ends_with(*e))
+    {
         return Some((*ext).to_string());
     }
     None

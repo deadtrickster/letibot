@@ -375,3 +375,47 @@ fn a_seat_with_no_measured_view_is_fenced_from_its_own_perimeter() {
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
     let _ = std::fs::remove_dir_all(f.root());
 }
+
+/// What the flow rule calls a secret, a wide seat's file tools refuse to read: `cat` of the same
+/// path is asked, and `read` has no card to show, so the fence is its only check.
+#[test]
+fn a_wide_seat_file_read_refuses_flow_rule_secrets() {
+    let f = Fixture::new("flowsecret");
+    let flowy = f.home().join(".config/flowy/token");
+    let pem = f.project().join("deploy.pem");
+    let stray = f.project().join("old/id_rsa");
+    let claude = f.home().join(".claude/.credentials.json");
+    for p in [&flowy, &pem, &stray, &claude] {
+        std::fs::create_dir_all(p.parent().expect("a parent")).expect("a dir");
+        std::fs::write(p, "fake-secret\n").expect("a fake secret");
+    }
+    let fence = FileFence::of(&f.seat(), &f.view()).owning(&f.store(), "s-1");
+    let mut h = f.harness();
+    for p in [&flowy, &pem, &stray, &claude] {
+        assert!(
+            fence.refusal(p, false).is_some(),
+            "{} is a secret",
+            p.display()
+        );
+        let r = h.call("read", &format!(r#"{{"path":"{}"}}"#, p.display()));
+        assert!(
+            !r.render().contains("fake-secret"),
+            "{} was read: {}",
+            p.display(),
+            r.render()
+        );
+        refused(&r);
+    }
+    let why = refused(&h.call(
+        "grep",
+        &format!(
+            r#"{{"pattern":"fake","path":"{}"}}"#,
+            f.home().join(".config/flowy").display()
+        ),
+    ));
+    assert!(why.contains("secret"), "{why}");
+    // An ordinary file beside them still reads.
+    let r = h.call("read", r#"{"path":"main.rs"}"#);
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
+    let _ = std::fs::remove_dir_all(f.root());
+}

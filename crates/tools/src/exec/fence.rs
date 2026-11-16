@@ -29,6 +29,9 @@ pub struct FileFence {
     inside: Option<Vec<(PathBuf, bool)>>,
     /// This session's children's spills, readable and never writable.
     children: Option<ChildSpills>,
+    /// Refuse a read of what the flow rule calls a secret. A command reading one is asked; a file
+    /// tool is `Access::Read`, skips the gate, and so has only this check.
+    secrets: bool,
 }
 
 impl FileFence {
@@ -60,6 +63,8 @@ impl FileFence {
             firecode_only: seat.firecode_only.clone(),
             inside,
             children: view.children.clone().filter(|_| !view.wide),
+            // A seat with no boundary has no list, and a refusal would claim one.
+            secrets: !seat.masked.is_empty() || !view.wide,
             ..Default::default()
         }
     }
@@ -111,6 +116,18 @@ impl FileFence {
             .max_by_key(|d| d.components().count())
         {
             return Some(self.sentence(path, hit));
+        }
+        if !write
+            && self.secrets
+            && let Some(which) =
+                crate::intent::Surroundings::secret_store_of(&path.to_string_lossy(), None)
+        {
+            return Some(format!(
+                "`{}` is a secret (`{which}`): a command that reads it is asked first, and a file \
+                 tool has no card to show, so `read`, `grep` and `glob` refuse it. If the operator \
+                 should see the question, read it with `bash`.",
+                path.display()
+            ));
         }
         let roots = self.inside.as_ref()?;
         if !write && self.children.as_ref().is_some_and(|c| c.holds(path)) {
@@ -238,6 +255,49 @@ mod tests {
         ViewSpec::project_only(project)
             .with_home(HomeView::Dir(home.into()))
             .wide()
+    }
+
+    /// The fence and the flow rule name one set of secrets: every path the flow rule calls a
+    /// secret is refused to a wide seat's `read`, and an ordinary path is not.
+    #[test]
+    fn the_fence_refuses_every_read_the_flow_rule_calls_secret() {
+        let home = Path::new("/h");
+        let fence = FileFence::of(&seat(home, Level::Wide), &wide_view(Path::new("/p"), home));
+        let secret = |p: &Path| {
+            crate::intent::Surroundings::secret_store_of(&p.to_string_lossy(), Some("/h")).is_some()
+        };
+        let mut paths: Vec<PathBuf> = crate::secrets::read_secrets()
+            .into_iter()
+            .map(|d| home.join(d).join("x"))
+            .collect();
+        paths.extend(
+            crate::secrets::SECRET_FILE_NAMES
+                .iter()
+                .map(|n| Path::new("/p/sub").join(n)),
+        );
+        paths.extend(
+            crate::secrets::SECRET_EXTENSIONS
+                .iter()
+                .map(|e| PathBuf::from(format!("/p/deploy{e}"))),
+        );
+        for p in &paths {
+            assert!(secret(p), "{} is on the table", p.display());
+            assert!(fence.refusal(p, false).is_some(), "{}", p.display());
+        }
+        for p in [
+            "/p/main.rs",
+            "/h/notes.txt",
+            "/etc/ssl/certs/ca.pem",
+            "/h/.claude/skills/x.md",
+        ] {
+            let p = Path::new(p);
+            assert_eq!(
+                fence.refusal(p, false).is_some(),
+                secret(p),
+                "{}",
+                p.display()
+            );
+        }
     }
 
     /// The two rules this exists for: the store is reachable only where the session's own folder
