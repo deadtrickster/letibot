@@ -129,7 +129,7 @@ fn a_round_is_stored_before_reviews_run() {
     // And the wait was for the round's own rows, which are in the store once the lock frees.
     let other = Store::open_private(&path).expect("the store opens");
     let tool_results: i64 = other
-        .connection()
+        .connection_of("transcript")
         .query_row(
             "SELECT COUNT(*) FROM transcript_item ti \
              JOIN transcript t ON t.id = ti.transcript_id \
