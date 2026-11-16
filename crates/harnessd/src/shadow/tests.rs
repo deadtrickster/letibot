@@ -1424,3 +1424,88 @@ fn an_empty_reply_is_read_from_the_reasoning_and_checked_the_same() {
     );
     assert_eq!(reply_of("", "no object here"), "");
 }
+
+#[test]
+fn a_read_the_shadow_grants_never_reaches_a_secret_or_a_directory_above_one() {
+    use super::guard::read_passes;
+    let home = std::path::Path::new("/home/op");
+    for ok in [
+        "/build/letibot-r1",
+        "/data/target-x",
+        "/home/op/Projects/letibot",
+        "/etc/hosts",
+    ] {
+        assert_eq!(read_passes(ok, home), Ok(()), "{ok}");
+    }
+    for bad in [
+        "/home/op/.ssh",
+        "/home/op/.ssh/id_ed25519",
+        "/home/op/.config/letibot/keys/glm",
+        "/home/op/.config/letibot/providers.toml",
+        "/home/op/.aws/credentials",
+        "/srv/app/server.pem",
+        "/home/op",
+        "/home",
+        "/",
+        "/etc",
+        "/etc/shadow",
+        "/build/x/../../home/op/.ssh",
+        "relative/path",
+    ] {
+        assert!(read_passes(bad, home).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn answer_reads_is_on_with_the_permission_job_unless_turned_off() {
+    let lines = |enabled: &[&str], answer_reads| letibot_provider::keys::ShadowLines {
+        enabled: enabled.iter().map(|j| j.to_string()).collect(),
+        answer_reads,
+        ..Default::default()
+    };
+    let on = |l| {
+        ShadowConfig::from_lines(l, "local".into())
+            .unwrap()
+            .answers_reads()
+    };
+    assert!(on(lines(&["permission"], None)));
+    assert!(!on(lines(&["permission"], Some(false))));
+    assert!(
+        !on(lines(&["turn_end"], Some(true))),
+        "no permission job, nothing answers"
+    );
+}
+
+#[test]
+fn only_a_listed_rule_on_an_allow_verdict_acts() {
+    use super::permission::acting_rule;
+    let rules = vec!["read /build/**".to_string()];
+    let allow = |rule: &str| {
+        Outcome::Verdict(Verdict::Permission {
+            decision: Decision::Allow { rule: rule.into() },
+            evidence: String::new(),
+        })
+    };
+    assert_eq!(
+        acting_rule(&allow("read /build/**"), &rules).as_deref(),
+        Some("read /build/**")
+    );
+    assert_eq!(acting_rule(&allow("the operator said so"), &rules), None);
+    assert_eq!(
+        acting_rule(&allow("/build"), &rules),
+        None,
+        "too short to be a quote"
+    );
+    for o in [
+        Outcome::Void("x".into()),
+        Outcome::Stale { judged: 1, now: 2 },
+        Outcome::TimedOut,
+        Outcome::Paused,
+        Outcome::Verdict(Verdict::Permission {
+            decision: Decision::Ask,
+            evidence: String::new(),
+        }),
+    ] {
+        assert_eq!(acting_rule(&o, &rules), None, "{o:?}");
+    }
+}

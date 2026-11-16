@@ -533,6 +533,8 @@ pub struct Harness {
     shadow_fed: usize,
     /// The shadow as the gate's corpus sink reaches it, filled once the shadow opens.
     shadow_cell: crate::shadow::permission::Cell,
+    /// Whether the shadow answers relayed reads for this (main) session, and its breaker (R317).
+    shadow_answering: Arc<crate::shadow::permission::Answering>,
     /// What the during job's trigger has seen.
     shadow_during: crate::shadow::during::Clock,
 }

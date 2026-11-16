@@ -20,12 +20,86 @@ impl Harness {
         if !self.cfg.shadow.is_on(Job::Permission) {
             return None;
         }
+        let bell = self.session_registry.bell().clone();
+        let id = self.cfg.session_id.clone();
+        self.shadow_answering
+            .set_wake(Arc::new(move || bell.ring_wake(&id)));
         Some(Arc::new(crate::shadow::permission::Relay {
             cell: self.shadow_cell.clone(),
             rules: crate::shadow::permission::rules_of(&self.cfg.permission),
             workspace: self.cfg.workspace.clone(),
             home: std::env::var_os("HOME").map(Into::into).unwrap_or_default(),
+            answering: self.shadow_answering.clone(),
         }))
+    }
+
+    /// The rows the shadow owes this session for the reads it answered, appended now.
+    fn shadow_answered_rows(&mut self) {
+        let mut rows: Vec<TranscriptItem> = self
+            .shadow_answering
+            .take_rows()
+            .into_iter()
+            .map(|(title, body)| TranscriptItem::Offer {
+                kind: letibot_transcript::OfferKind::Shadow,
+                body: format!("{title}\n\n{body}"),
+                title,
+            })
+            .collect();
+        if !rows.is_empty() {
+            let _ = self.append_offer_rows(&mut rows);
+        }
+    }
+
+    /// `/shadow`: the reads the shadow answered and its breaker. `/shadow revoke [N]` takes grant
+    /// N (the newest when left out) back out of the asker's view.
+    pub(crate) fn shadow_verb(
+        &mut self,
+        set: Option<&letibot_sessionlog::pending_asks::PendingAsks>,
+        revoke: Option<Option<usize>>,
+    ) -> crate::slash::SlashReply {
+        let Some(set) = set else {
+            return crate::slash::SlashReply {
+                lines: vec!["no relayed asks reach this session".into()],
+                ok: false,
+            };
+        };
+        let a = &self.shadow_answering;
+        let state = format!(
+            "answer_reads: {} · {} of {} disagreements",
+            if a.is_on() { "on" } else { "off" },
+            a.disagreements(),
+            crate::shadow::permission::BREAKER_AT
+        );
+        let Some(n) = revoke else {
+            let mut lines = vec![state];
+            for (i, g) in set.auto_grants().iter().enumerate() {
+                lines.push(format!("{}. {}", i + 1, g.row));
+            }
+            return crate::slash::SlashReply { lines, ok: true };
+        };
+        let reply = match set.revoke(n) {
+            Ok(g) => crate::slash::SlashReply {
+                lines: vec![
+                    format!(
+                        "revoked: `{}` leaves the view of {} at its next call",
+                        g.path, g.asker
+                    ),
+                    format!(
+                        "answer_reads: {} · {} of {} disagreements",
+                        if a.is_on() { "on" } else { "off" },
+                        a.disagreements(),
+                        crate::shadow::permission::BREAKER_AT
+                    ),
+                ],
+                ok: true,
+            },
+            Err(why) => crate::slash::SlashReply {
+                lines: vec![why],
+                ok: false,
+            },
+        };
+        self.shadow_answered_rows();
+        reply
     }
 
     /// Open the shadow once the session is stored, and move its position to the rows that count:
@@ -270,6 +344,7 @@ impl Harness {
     /// The verdicts that arrived since the last wake, acted on: the notices a wake says, and the
     /// display rows (a proposed note) appended now.
     pub(crate) fn shadow_notices(&mut self) -> Vec<String> {
+        self.shadow_answered_rows();
         let Some((events, recorder, shadow_id)) = self.shadow.parts() else {
             return Vec::new();
         };

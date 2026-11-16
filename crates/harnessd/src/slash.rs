@@ -68,6 +68,7 @@ pub const VERBS: &[&str] = &[
     "permissions",
     "prune",
     "queue",
+    "shadow",
     "supervise",
     "tools",
 ];
@@ -119,6 +120,11 @@ pub enum Slash {
     Note {
         accept: bool,
         row: Option<usize>,
+    },
+    /// `/shadow` lists the reads the shadow answered; `/shadow revoke [N]` takes grant N back,
+    /// the newest when N is left out.
+    Shadow {
+        revoke: Option<Option<usize>>,
     },
     /// What this session's commands get: paths, network, env, hidden. See [`crate::perimeter`].
     Boundary,
@@ -390,6 +396,17 @@ impl Slash {
                 _ => Slash::Help(
                     "/note accept [N] saves the shadow's proposed note on row N (the newest when \
                      N is left out); /note decline [N] drops it"
+                        .into(),
+                ),
+            },
+            Some("shadow") => match (words.get(1).copied(), words.get(2).map(|n| n.parse::<usize>())) {
+                (None, _) => Slash::Shadow { revoke: None },
+                (Some("revoke"), None | Some(Ok(_))) if words.len() <= 3 => Slash::Shadow {
+                    revoke: Some(words.get(2).and_then(|n| n.parse().ok())),
+                },
+                _ => Slash::Help(
+                    "/shadow lists the reads the shadow answered; /shadow revoke [N] takes grant N \
+                     back (the newest when N is left out)"
                         .into(),
                 ),
             },

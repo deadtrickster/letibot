@@ -19,6 +19,8 @@ pub struct ShadowConfig {
     stateless: bool,
     /// Every Nth persistent question is also asked statelessly; 0 is never.
     fresh_every: u32,
+    /// `answer_reads = false` turns it off; unset is on.
+    answer_reads_off: bool,
 }
 
 /// How often a persistent question is checked against a fresh call when the file does not say.
@@ -49,6 +51,7 @@ impl ShadowConfig {
             default,
             stateless: lines.mode.as_deref() == Some("stateless"),
             fresh_every: lines.fresh_every.unwrap_or(FRESH_EVERY),
+            answer_reads_off: lines.answer_reads == Some(false),
             ..ShadowConfig::default()
         };
         if let Some(m) = lines.mode.as_deref()
@@ -74,6 +77,18 @@ impl ShadowConfig {
     /// Each job a running conversation (R257), unless `mode = "stateless"`.
     pub fn persistent(&self) -> bool {
         !self.stateless
+    }
+
+    /// Whether the permission job answers a relayed read-only view ask for the operator (R317).
+    /// On whenever the permission job is, unless `answer_reads = false`.
+    pub fn answers_reads(&self) -> bool {
+        self.is_on(Job::Permission) && !self.answer_reads_off
+    }
+
+    /// For a test or a caller that sets the switch in code.
+    pub fn with_answer_reads(mut self, on: bool) -> ShadowConfig {
+        self.answer_reads_off = !on;
+        self
     }
 
     pub fn fresh_every(&self) -> u32 {
@@ -119,6 +134,12 @@ impl ShadowConfig {
                 None => format!("{}: off", j.as_str()),
             })
             .collect();
+        if self.is_on(Job::Permission) {
+            out.push(match self.answers_reads() {
+                true => "answer_reads: on, relayed read-only view asks".to_string(),
+                false => "answer_reads: off".to_string(),
+            });
+        }
         out.push(match self.persistent() {
             true => format!(
                 "mode: persistent, a fresh call every {} questions",

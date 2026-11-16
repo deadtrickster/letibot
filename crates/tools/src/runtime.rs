@@ -823,6 +823,12 @@ pub trait Gate: Send + Sync {
         ViewGrant::NotAsked
     }
 
+    /// Paths taken back out of this session's view since the last call, to unbind before the
+    /// next one runs. The default is none.
+    fn view_revocations(&mut self) -> Vec<std::path::PathBuf> {
+        Vec::new()
+    }
+
     /// May this call run with more memory than the model may take on its own? Asked before the
     /// command starts, when its `memory` ask is above the ceiling or is uncapped. The default is
     /// `NotAsked`, and the call does not run on a question nobody answered.
@@ -2186,6 +2192,16 @@ impl ToolRuntime {
             sink.emit(finished_event(turn_id, &r));
             return r;
         };
+
+        // A grant taken back elsewhere leaves this view before anything else runs.
+        let revoked = self
+            .gate
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .view_revocations();
+        for path in revoked {
+            let _ = self.backend.revoke_from_view(&path);
+        }
 
         // Clause 2, before anything else looks at the arguments.
         let (args, repairs) = match salvage(&call.arguments, &schema) {

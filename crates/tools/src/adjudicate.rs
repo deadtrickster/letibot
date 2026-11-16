@@ -1469,6 +1469,8 @@ pub struct AdjudicatedGate {
     /// asked about again by its siblings or its parent. `None` in a gate nobody wired one to,
     /// which asks as it did before the record existed.
     view: Option<std::sync::Arc<crate::view::ViewGrants>>,
+    /// How far this session has read the record's revocations.
+    view_revoked_seen: usize,
     /// Whose call a view ask is, when this session is a subagent's: a card that named only the
     /// path would leave the operator deciding for a child they cannot see.
     asker: Option<String>,
@@ -1608,6 +1610,7 @@ impl AdjudicatedGate {
             unasked: false,
             admissions: None,
             view: None,
+            view_revoked_seen: 0,
             asker: None,
             ledger: None,
             queue: None,
@@ -2860,6 +2863,15 @@ impl Gate for AdjudicatedGate {
                 answer
             }
         }
+    }
+
+    fn view_revocations(&mut self) -> Vec<std::path::PathBuf> {
+        let Some(view) = &self.view else {
+            return Vec::new();
+        };
+        let (paths, next) = view.revoked_since(self.view_revoked_seen);
+        self.view_revoked_seen = next;
+        paths
     }
 
     /// The memory ask above the ceiling, as a card the OPERATOR answers. `AlwaysAsk`, not

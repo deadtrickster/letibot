@@ -9,6 +9,7 @@ use letibot_sessionlog::event::{
     OnTimeout as WireOnTimeout, OptionKind, SessionEvent, SubagentAsk,
 };
 use letibot_sessionlog::hub::{AnswerSink, Hub, Reply};
+use letibot_sessionlog::pending_asks::{AutoGrant, Note, RelayedCall};
 use letibot_tools::adjudicate::{
     AdjudicationDecision, AdjudicationRequest, Adjudicator, DecisionOutcome, ModelAdvice,
     OnTimeout, OptionKind as ToolOptionKind, RequestKind,
@@ -142,6 +143,36 @@ impl Answers {
             return AdjudicationDecision::unavailable(req, "gate:no-head", &no_head(subagent));
         }
 
+        // The main session's shadow may answer a relayed read before any card goes up.
+        let call = route
+            .as_ref()
+            .map(|set| relayed_call(req, hub, subagent, set));
+        let mut line = None;
+        if let (Some(set), Some(call)) = (&route, &call)
+            && let Some(revoker) = hub.view_revoker()
+        {
+            match set.note_before(call) {
+                Some(Note::Answer { option_id, by, row }) => {
+                    set.granted(AutoGrant {
+                        req_id: req.id.clone(),
+                        asker: call.asker.clone(),
+                        path: call.view_read.clone().unwrap_or_default(),
+                        row: row.clone(),
+                        revoker,
+                    });
+                    return AdjudicationDecision {
+                        request_id: req.id.clone(),
+                        outcome: DecisionOutcome::Selected { option_id },
+                        by,
+                        basis: row,
+                        latency_ms: started.elapsed().as_millis() as u64,
+                    };
+                }
+                Some(Note::Line(l)) => line = Some(l),
+                None => {}
+            }
+        }
+
         let deadline_ms = unix_millis() + budget.as_millis() as u64;
         // The slot exists before the question does. See `wait`.
         let waited = {
@@ -157,17 +188,20 @@ impl Answers {
                 }
             }
             hub.publish(card.clone());
-            if let Some(set) = &route
-                && set.post(relayed(card, hub, set), self.clone())
-            {
-                // The main session's shadow is asked beside the card, never before it.
-                set.annotate(letibot_sessionlog::pending_asks::RelayedCall {
-                    req_id: req.id.clone(),
-                    asker: subagent.map_or_else(|| hub.session_id(), |s| s.handle.clone()),
-                    tool: req.tool.clone(),
-                    arguments: req.arguments.clone(),
-                    reading: req.baseline.clone(),
-                });
+            if let Some(set) = &route {
+                let mut shown = relayed(card, hub, set);
+                if let (Some(l), SessionEvent::DecisionRequested { shadow, .. }) =
+                    (&line, &mut shown)
+                {
+                    *shadow = Some(l.clone());
+                }
+                // Asked already when it could answer; otherwise beside the card, never before it.
+                if set.post(shown, self.clone())
+                    && line.is_none()
+                    && let Some(call) = call
+                {
+                    set.annotate(call);
+                }
             }
             // The yellow card says why it is yellow: the call is still `Proposed`, so this
             // note is the only thing on it that explains the wait. A subagent's note lands on
@@ -383,10 +417,45 @@ impl Answers {
     }
 }
 
+/// A relayed permission call as the main session's shadow is shown it.
+fn relayed_call(
+    req: &AdjudicationRequest,
+    hub: &Arc<Hub>,
+    subagent: Option<&SubagentAsk>,
+    set: &letibot_sessionlog::pending_asks::PendingAsks,
+) -> RelayedCall {
+    let asker = subagent.map_or_else(|| hub.session_id(), |s| s.handle.clone());
+    RelayedCall {
+        req_id: req.id.clone(),
+        role: set.asker(&asker).map(|a| a.role),
+        asker,
+        tool: req.tool.clone(),
+        arguments: req.arguments.clone(),
+        reading: req.baseline.clone(),
+        view_read: view_read(req),
+    }
+}
+
+/// The path, when `req` asks only to read one path outside the view: the read class, may-approve,
+/// a card that offers the read-only rung, and nothing in the arguments but the path.
+fn view_read(req: &AdjudicationRequest) -> Option<String> {
+    let only_path = req.arguments.as_object().is_some_and(|o| o.len() == 1);
+    let read = req.class.access == letibot_tools::schema::Access::Read
+        && matches!(req.tier, letibot_tools::adjudicate::Tier::MayApprove)
+        && req.options.iter().any(|o| o.id == "grant_ro");
+    (only_path && read)
+        .then(|| req.arguments.get("path")?.as_str().map(str::to_string))
+        .flatten()
+}
+
 /// The answer as one word for the shadow's record: what the call did, or that nobody decided.
 fn effect_of(outcome: &DecisionOutcome) -> &'static str {
     match outcome {
-        DecisionOutcome::Selected { option_id } if option_id.starts_with("allow") => "admit",
+        DecisionOutcome::Selected { option_id }
+            if option_id.starts_with("allow") || option_id.starts_with("grant") =>
+        {
+            "admit"
+        }
         DecisionOutcome::Selected { .. } => "refuse",
         DecisionOutcome::Timeout => "timeout",
         DecisionOutcome::Cancelled => "cancelled",

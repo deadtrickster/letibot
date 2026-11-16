@@ -120,6 +120,14 @@ pub trait ExecBackend: Send + Sync {
         ))
     }
 
+    /// Unbind a path an earlier grant put in this session's view. Commands already running
+    /// keep the namespace they started in. The default refuses, as [`Self::grant_into_view`] does.
+    fn revoke_from_view(&self, _path: &Path) -> Result<String, BackendError> {
+        Err(BackendError::Io(
+            "this backend has no project-scoped view to narrow".into(),
+        ))
+    }
+
     fn read(&self, path: &str) -> Result<Vec<u8>, BackendError>;
 
     /// The same answers as [`Self::read`], for a whole page of paths, in one call: the seam a
@@ -603,17 +611,6 @@ impl HostBackend {
         writable: bool,
         why: &str,
     ) -> Result<String, BackendError> {
-        let Some(host) = self.processes.as_ref() else {
-            return Err(BackendError::Io(
-                "this backend starts no processes, so it has no view to grant into".into(),
-            ));
-        };
-        let Some(view) = host.current_view() else {
-            return Err(BackendError::Io(
-                "this session has no project-scoped view, so there is nothing to widen: what a command here can reach is already what this user can reach"
-                    .into(),
-            ));
-        };
         let g = if writable {
             crate::exec::confine::Grant::ReadWrite {
                 path: path.to_path_buf(),
@@ -625,7 +622,26 @@ impl HostBackend {
                 why: why.to_string(),
             }
         };
-        let widened = view.granting(g);
+        self.reshape_view(|view| view.granting(g))
+    }
+
+    /// The view rebuilt by `change` and re-probed, so the boundary described is the one that runs.
+    fn reshape_view(
+        &self,
+        change: impl FnOnce(crate::exec::confine::ViewSpec) -> crate::exec::confine::ViewSpec,
+    ) -> Result<String, BackendError> {
+        let Some(host) = self.processes.as_ref() else {
+            return Err(BackendError::Io(
+                "this backend starts no processes, so it has no view to grant into".into(),
+            ));
+        };
+        let Some(view) = host.current_view() else {
+            return Err(BackendError::Io(
+                "this session has no project-scoped view, so there is nothing to widen: what a command here can reach is already what this user can reach"
+                    .into(),
+            ));
+        };
+        let widened = change(view);
         // A grant widens the files, never the network decision the session was opened with.
         let egress = host
             .boundary()
@@ -730,6 +746,10 @@ impl ExecBackend for HostBackend {
         why: &str,
     ) -> Result<String, BackendError> {
         self.grant_into_view_impl(path, writable, why)
+    }
+
+    fn revoke_from_view(&self, path: &Path) -> Result<String, BackendError> {
+        self.reshape_view(|view| view.revoking(path))
     }
 
     /// Runs only on a backend built by [`HostBackend::executable`], and even there it runs

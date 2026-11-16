@@ -3119,6 +3119,10 @@ impl Harness {
         // unprompted turn, built whether or not this session can start a process: `task` needs no host.
         let bell = Some(Arc::clone(session_registry.bell()));
         let processes = backend.processes_arc();
+        // How a read the main session's shadow granted this tree is taken back.
+        if let Some(g) = &cfg.view_grants {
+            hub.set_view_revoker(Arc::new(crate::shadow::permission::TreeRevoker(g.clone())));
+        }
         // The heir's slot, filled the moment the host exists: a child that ends hands its survivors
         // here, and a slot filled later is a child whose estate had nowhere to go.
         *heir_slot.lock().unwrap_or_else(|e| e.into_inner()) = processes.clone();
@@ -3618,6 +3622,8 @@ impl Harness {
             wiring: parts.wiring.clone(),
         };
         let limit_episodes = limit_hook::load(&cfg);
+        let shadow_answering =
+            crate::shadow::permission::Answering::new(cfg.shadow.answers_reads());
         let mut h = Harness {
             mode_store: parts.mode_store.clone(),
             // The claim on this session's transcript, held for the harness's life - see
@@ -3760,6 +3766,7 @@ impl Harness {
             shadow_counted: (0, 0),
             shadow_fed: 0,
             shadow_cell,
+            shadow_answering,
             shadow_during: Default::default(),
         };
         h.announce_the_open(stale, stale_for_model);

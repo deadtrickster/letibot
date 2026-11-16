@@ -1661,6 +1661,16 @@ impl<'a> Sessions<'a> {
                 let gatekeeper = self.base.serve_queues.then_some(self.gatekeeper.as_str());
                 crate::grants::permissions(&store, session_id, gatekeeper, revoke)
             }
+            Slash::Shadow { revoke } => {
+                let set = self.registry.pending_asks();
+                match self.open.get_mut(session_id) {
+                    Some(h) => h.shadow_verb(Some(&set), revoke),
+                    None => SlashReply {
+                        lines: vec![format!("session {session_id} is not open")],
+                        ok: false,
+                    },
+                }
+            }
             Slash::Note { accept, row } => match self.open.get_mut(session_id) {
                 Some(h) => h.answer_note_proposal(accept, row),
                 None => SlashReply {

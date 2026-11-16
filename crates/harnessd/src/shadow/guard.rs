@@ -128,3 +128,52 @@ fn resolve(p: &str, call: &Call) -> PathBuf {
 fn inside(p: &Path, workspace: &Path) -> bool {
     p.starts_with(workspace)
 }
+
+/// Paths a read the shadow grants must not reach, beyond the secret stores: the daemon's own keys
+/// and configuration, which hold credentials and decide what runs unasked.
+const OWN_CONFIG: [&str; 2] = [".config/letibot", ".local/share/letibot/keys"];
+
+/// `Ok` when the shadow may grant a read of `path`: absolute, not a secret store or credential
+/// file, and no such place below it. `Err` names the first thing that is.
+pub fn read_passes(path: &str, home: &Path) -> Result<(), String> {
+    let p = Path::new(path.trim());
+    if !p.is_absolute() {
+        return Err(format!("`{path}` is not an absolute path"));
+    }
+    let p = lexical(p);
+    let home_s = home.to_str();
+    if let Some(store) =
+        letibot_tools::intent::Surroundings::secret_store_of(&p.to_string_lossy(), home_s)
+    {
+        return Err(format!("`{path}` is in the secret store `{store}`"));
+    }
+    if p.components().any(|c| c.as_os_str() == "keys") {
+        return Err(format!("`{path}` names a keys directory"));
+    }
+    // A directory above a secret would put it in the view too: home itself, `/`, `/etc`.
+    let mut below: Vec<PathBuf> = OWN_CONFIG.iter().map(|d| home.join(d)).collect();
+    for d in letibot_tools::intent::secret_dirs() {
+        match d.strip_prefix('/') {
+            Some(_) => below.push(PathBuf::from(d)),
+            None => below.push(home.join(d)),
+        }
+    }
+    if let Some(d) = below.iter().find(|d| d.starts_with(&p) || p.starts_with(d)) {
+        return Err(format!("`{path}` reaches `{}`", d.display()));
+    }
+    Ok(())
+}
+
+fn lexical(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::ParentDir => {
+                out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other),
+        }
+    }
+    out
+}

@@ -23,6 +23,7 @@ struct Inner {
     open: BTreeMap<String, Entry>,
     askers: BTreeMap<String, Asker>,
     annotator: Option<Arc<dyn Annotator>>,
+    answered: Vec<AutoGrant>,
 }
 
 /// A queue session named for the operator: its role and work, and its workspace in short.
@@ -60,23 +61,80 @@ pub fn named(mut card: SessionEvent, asker: &Asker) -> SessionEvent {
 }
 
 /// A relayed permission call, as the annotator is shown it.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RelayedCall {
     pub req_id: String,
     /// The session that asked.
     pub asker: String,
+    /// The asker's role, when it is a named queue session: `reviewer of …`, `…'s gatekeeper`.
+    pub role: Option<String>,
     pub tool: String,
     pub arguments: serde_json::Value,
     /// Layer A's reading, in the asker's own surroundings.
     pub reading: String,
+    /// The path, when the ask is ONLY a read of a path outside the asker's view: a read class,
+    /// `may_approve`, and a card that offers the read-only rung.
+    pub view_read: Option<String>,
 }
 
-/// What the main session says beside a relayed card: one line, never an answer.
+/// What the annotator says about a card before it is shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Note {
+    /// One line on the card, which still goes to the operator.
+    Line(String),
+    /// The card answered for the operator with `option_id`, by `by`. `row` is the main session's
+    /// one compact row about it.
+    Answer {
+        option_id: String,
+        by: String,
+        row: String,
+    },
+}
+
+/// What the main session says beside a relayed card: one line, and an answer only through
+/// [`Annotator::note`].
 pub trait Annotator: Send + Sync {
     /// The card's line, or `None`. Bounded by the annotator's own deadline.
     fn line(&self, call: &RelayedCall) -> Option<String>;
     /// The operator's answer to a card `line` was asked about.
     fn answered(&self, req_id: &str, effect: &str);
+    /// Asked before the card is posted: an answer settles it with no card. The default never
+    /// answers.
+    fn note(&self, call: &RelayedCall) -> Option<Note> {
+        self.line(call).map(Note::Line)
+    }
+    /// Whether [`Annotator::note`] may answer `call`, so a caller asks before the card only then.
+    fn may_answer(&self, _call: &RelayedCall) -> bool {
+        false
+    }
+    /// The operator took back a grant [`Annotator::note`] gave.
+    fn revoked(&self, _grant: &AutoGrant) {}
+}
+
+/// Takes a path back out of a session tree's view: how an answered read is undone.
+pub trait ViewRevoker: Send + Sync {
+    /// `true` when the record held the path and it is now gone.
+    fn revoke(&self, path: &str) -> bool;
+}
+
+/// A read the annotator granted for the operator, kept so `/shadow revoke` can take it back.
+#[derive(Clone)]
+pub struct AutoGrant {
+    pub req_id: String,
+    pub asker: String,
+    pub path: String,
+    pub row: String,
+    pub revoker: Arc<dyn ViewRevoker>,
+}
+
+impl std::fmt::Debug for AutoGrant {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AutoGrant")
+            .field("req_id", &self.req_id)
+            .field("asker", &self.asker)
+            .field("path", &self.path)
+            .finish()
+    }
 }
 
 /// The set, one per daemon. Keyed by the card's `req_id`, which is the ask's id on every surface.
@@ -209,6 +267,58 @@ impl PendingAsks {
 
     pub fn annotator(&self) -> Option<Arc<dyn Annotator>> {
         self.lock().annotator.clone()
+    }
+
+    /// Ask the annotator before posting `call`'s card, inside its deadline. `None` when there is
+    /// no annotator or it may not answer this call, and the card goes up as before.
+    pub fn note_before(&self, call: &RelayedCall) -> Option<Note> {
+        let a = self.annotator()?;
+        if !a.may_answer(call) {
+            return None;
+        }
+        a.note(call)
+    }
+
+    /// Keep a grant the annotator answered, newest last.
+    pub fn granted(&self, grant: AutoGrant) {
+        self.lock().answered.push(grant);
+    }
+
+    /// The grants the annotator answered that are still in force, oldest first.
+    pub fn auto_grants(&self) -> Vec<AutoGrant> {
+        self.lock().answered.clone()
+    }
+
+    /// Take back grant `n` (1-based, oldest first), or the newest. The annotator is told, which
+    /// counts against it.
+    pub fn revoke(&self, n: Option<usize>) -> Result<AutoGrant, String> {
+        let grant = {
+            let mut g = self.lock();
+            if g.answered.is_empty() {
+                return Err("the shadow has answered no ask that is still in force".into());
+            }
+            let at = match n {
+                None => g.answered.len() - 1,
+                Some(n) if (1..=g.answered.len()).contains(&n) => n - 1,
+                Some(n) => {
+                    return Err(format!(
+                        "there is no grant {n}; the shadow holds {}",
+                        g.answered.len()
+                    ));
+                }
+            };
+            g.answered.remove(at)
+        };
+        if !grant.revoker.revoke(&grant.path) {
+            return Err(format!(
+                "`{}` was no longer in the view record; nothing changed",
+                grant.path
+            ));
+        }
+        if let Some(a) = self.annotator() {
+            a.revoked(&grant);
+        }
+        Ok(grant)
     }
 
     /// Ask the annotator about a posted card on its own thread. The card is never held for it, and

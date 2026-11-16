@@ -116,6 +116,8 @@ pub struct ViewGrants {
 struct Inner {
     granted: Vec<Granted>,
     open: HashMap<PathBuf, Arc<Open>>,
+    /// Keys taken back, in order. Each session's gate reads past its own cursor and unbinds them.
+    revoked: Vec<PathBuf>,
 }
 
 /// One card, and the asks that wait on it instead of raising a second.
@@ -236,6 +238,27 @@ impl ViewGrants {
         self.lock().granted.retain(|e| e.path != key);
     }
 
+    /// Take `path` back: its entry leaves the record and every session of the tree is told to
+    /// unbind it at its next call. `false` when the record held no entry for exactly this path.
+    pub fn revoke(&self, path: &Path) -> bool {
+        let key = key(path);
+        let mut g = self.lock();
+        let before = g.granted.len();
+        g.granted.retain(|e| e.path != key);
+        let had = g.granted.len() != before;
+        if had {
+            g.revoked.push(key);
+        }
+        had
+    }
+
+    /// The paths revoked after cursor `from`, and the cursor to read from next.
+    pub fn revoked_since(&self, from: usize) -> (Vec<PathBuf>, usize) {
+        let g = self.lock();
+        let from = from.min(g.revoked.len());
+        (g.revoked[from..].to_vec(), g.revoked.len())
+    }
+
     /// Claim the one card for this path, or take the answer somebody else already has.
     pub fn claim(&self, path: &Path, access: ViewAccess) -> Claim {
         let key = key(path);
@@ -298,6 +321,23 @@ fn covering(g: &Inner, path: &Path, access: ViewAccess) -> Option<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_revoke_leaves_the_record_and_every_cursor_reads_it_once() {
+        let g = ViewGrants::new();
+        g.record(Path::new("/build/x"), false);
+        g.record(Path::new("/build/y"), false);
+        assert!(g.revoke(Path::new("/build/x/")));
+        assert!(!g.revoke(Path::new("/build/x")), "already gone");
+        assert_eq!(g.covers(Path::new("/build/x/a"), ViewAccess::Read), None);
+        assert_eq!(
+            g.covers(Path::new("/build/y"), ViewAccess::Read),
+            Some(false)
+        );
+        let (paths, next) = g.revoked_since(0);
+        assert_eq!(paths, vec![PathBuf::from("/build/x")]);
+        assert_eq!(g.revoked_since(next).0, Vec::<PathBuf>::new());
+    }
 
     #[test]
     fn every_spelling_of_one_path_is_one_key() {

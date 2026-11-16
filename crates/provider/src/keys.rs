@@ -594,6 +594,9 @@ pub struct ShadowLines {
     pub mode: Option<String>,
     /// Every Nth persistent question is also asked of a fresh stateless call; 0 is never.
     pub fresh_every: Option<u32>,
+    /// Whether the permission job answers relayed read-only view asks. `None` is the default,
+    /// which is on while the permission job is.
+    pub answer_reads: Option<bool>,
 }
 
 /// The spellings `[shadow] mode` takes.
@@ -658,6 +661,16 @@ pub fn shadow(file: Option<&Path>) -> Result<ShadowLines, Unreadable> {
                     ))
                 })?;
                 out.fresh_every = Some(n);
+            } else if k == "answer_reads" {
+                out.answer_reads = Some(match v.trim() {
+                    "true" => true,
+                    "false" => false,
+                    _ => {
+                        return Err(fault(format!(
+                            "[shadow] answer_reads = {v} is not true or false"
+                        )));
+                    }
+                });
             } else if known(k) {
                 let model = v.trim();
                 if model.is_empty() {
@@ -669,7 +682,7 @@ pub fn shadow(file: Option<&Path>) -> Result<ShadowLines, Unreadable> {
                     .insert("*".into(), model.to_string());
             } else {
                 return Err(fault(format!(
-                    "[shadow] `{k}` is not a key: the keys are `enabled`, `mode`, `fresh_every` and the jobs, {}",
+                    "[shadow] `{k}` is not a key: the keys are `enabled`, `mode`, `fresh_every`, `answer_reads` and the jobs, {}",
                     SHADOW_JOBS.join(", ")
                 )));
             }
@@ -1458,6 +1471,12 @@ mod tests {
         let t = shadow(Some(&f)).unwrap();
         assert_eq!(t.mode.as_deref(), Some("stateless"));
         assert_eq!(t.fresh_every, Some(4));
+        assert_eq!(t.answer_reads, None);
+        let f = tmp_providers(
+            "shadow_reads",
+            "[shadow]\nenabled = [\"permission\"]\nanswer_reads = false\n",
+        );
+        assert_eq!(shadow(Some(&f)).unwrap().answer_reads, Some(false));
     }
 
     #[test]
@@ -1478,6 +1497,11 @@ mod tests {
                 "shadow_every",
                 "[shadow]\nfresh_every = \"often\"\n",
                 "not a count",
+            ),
+            (
+                "shadow_reads_bad",
+                "[shadow]\nanswer_reads = \"yes\"\n",
+                "not true or false",
             ),
             (
                 "shadow_list",

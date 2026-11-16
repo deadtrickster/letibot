@@ -1,10 +1,12 @@
 //! The `permission` job, observe-only: every call the gate put in front of the operator is judged
 //! by the shadow once the card settles, without waiting, and the operator's answer is the label.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use letibot_sessionlog::pending_asks::{Annotator, RelayedCall};
+use letibot_sessionlog::pending_asks::{Annotator, AutoGrant, Note, RelayedCall};
 use letibot_tools::authorise::{CorpusRow, CorpusSink, OperatorOverride};
 
 use super::Job;
@@ -163,22 +165,140 @@ impl CorpusSink for ShadowSink {
     }
 }
 
+/// Disagreements that turn answering off: an operator revoke, or a later No to a shape the
+/// shadow granted.
+pub const BREAKER_AT: u32 = 2;
+
+/// The main session's answering state, kept across the relays built for it: the switch, the
+/// breaker, the shapes granted, and the rows owed to the main session.
+pub struct Answering {
+    on: AtomicBool,
+    disagreements: AtomicU32,
+    granted: Mutex<BTreeSet<String>>,
+    /// Cards that went to the operator, by request, with their shape.
+    asked: Mutex<BTreeMap<String, String>>,
+    rows: Mutex<Vec<(String, String)>>,
+    wake: Mutex<Option<super::Wake>>,
+}
+
+impl Answering {
+    pub fn new(on: bool) -> Arc<Answering> {
+        Arc::new(Answering {
+            on: AtomicBool::new(on),
+            disagreements: AtomicU32::new(0),
+            granted: Mutex::default(),
+            asked: Mutex::default(),
+            rows: Mutex::default(),
+            wake: Mutex::default(),
+        })
+    }
+
+    /// Answering, and the breaker has not tripped.
+    pub fn is_on(&self) -> bool {
+        self.on.load(Ordering::SeqCst)
+    }
+
+    pub fn disagreements(&self) -> u32 {
+        self.disagreements.load(Ordering::SeqCst)
+    }
+
+    pub fn set_wake(&self, w: super::Wake) {
+        *self.wake.lock().unwrap_or_else(|e| e.into_inner()) = Some(w);
+    }
+
+    /// The main session's rows since the last take, as `(title, body)`.
+    pub fn take_rows(&self) -> Vec<(String, String)> {
+        std::mem::take(&mut *self.rows.lock().unwrap_or_else(|e| e.into_inner()))
+    }
+
+    fn push_row(&self, title: String, body: String) {
+        self.rows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((title, body));
+        let wake = self.wake.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some(w) = wake {
+            w();
+        }
+    }
+
+    /// One disagreement, and the breaker at [`BREAKER_AT`]: answering stops, observe-only.
+    fn disagree(&self, why: &str, rec: Option<&Arc<dyn Recorder>>) {
+        let n = self.disagreements.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Some(r) = rec {
+            r.row(&format!("permission · disagreement {n}: {why}"), "");
+        }
+        if n >= BREAKER_AT && self.on.swap(false, Ordering::SeqCst) {
+            let title = format!(
+                "shadow stopped answering reads after {n} disagreements · observe-only until restart"
+            );
+            if let Some(r) = rec {
+                r.row(&format!("permission · {title}"), why);
+            }
+            self.push_row(title, format!("the last disagreement: {why}"));
+        }
+    }
+}
+
+/// The ask's shape for the breaker: the seat's kind and the path's first two components.
+fn shape(kind: &str, path: &str) -> String {
+    let prefix: PathBuf = std::path::Path::new(path).components().take(3).collect();
+    format!("{kind} read {}", prefix.display())
+}
+
+/// The seat kind of a review-queue asker, or `None` for any other session.
+fn queue_kind(role: Option<&str>) -> Option<&'static str> {
+    let role = role?;
+    if role.starts_with("reviewer of ") {
+        Some("reviewer")
+    } else if role.ends_with("'s gatekeeper") {
+        Some("gatekeeper")
+    } else {
+        None
+    }
+}
+
+/// Whether `c` is a call the shadow may answer: a review-queue seat's read of one path outside
+/// its view, past the read denylist. `Ok` is the path and the seat kind.
+pub fn scope(c: &RelayedCall, home: &std::path::Path) -> Result<(String, &'static str), String> {
+    let path = c.view_read.clone().ok_or("not a read-only view widening")?;
+    let kind = queue_kind(c.role.as_deref()).ok_or("not a review-queue seat")?;
+    super::guard::read_passes(&path, home)?;
+    Ok((path, kind))
+}
+
+/// The rule an `allow` relied on, when it may act: a verdict, an allow, and its rule one the
+/// harness listed. Void, stale, timed out, `ask` or an unlisted rule is `None`.
+pub fn acting_rule(outcome: &Outcome, rules: &[String]) -> Option<String> {
+    let Outcome::Verdict(Verdict::Permission {
+        decision: Decision::Allow { rule },
+        ..
+    }) = outcome
+    else {
+        return None;
+    };
+    let rule = rule.trim();
+    (rule.len() >= super::verdict::MIN_QUOTE && rules.iter().any(|r| r.contains(rule)))
+        .then(|| rule.to_string())
+}
+
 /// The main session's shadow on a relayed card: asked under the permission job's deadline, its
-/// verdict one line on the card and the operator's answer beside it in the record. It never acts.
+/// verdict one line on the card and the operator's answer beside it in the record. It answers only
+/// a review-queue seat's read of a path outside its view, while `answering` is on.
 pub struct Relay {
     pub cell: Cell,
     pub rules: Vec<String>,
     pub workspace: PathBuf,
     pub home: PathBuf,
+    pub answering: Arc<Answering>,
 }
 
-impl Annotator for Relay {
-    fn line(&self, c: &RelayedCall) -> Option<String> {
-        let (shadow, rec) = self
-            .cell
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clone()?;
+impl Relay {
+    fn parts(&self) -> Option<(Arc<Shadow>, Arc<dyn Recorder>)> {
+        self.cell.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn shown_for(&self, c: &RelayedCall) -> Shown {
         let call = Call {
             tool: c.tool.clone(),
             args: c.arguments.clone(),
@@ -189,23 +309,141 @@ impl Annotator for Relay {
         let mut s = shown(&c.req_id, &c.tool, &c.arguments, &self.rules, None, call);
         s.data.push_str(&format!(
             "\nasked by: {} (relayed)\nlayer A: {}\n",
-            c.asker, c.reading
+            c.role.as_deref().unwrap_or(&c.asker),
+            c.reading
         ));
+        if let Some(p) = &c.view_read {
+            s.data.push_str(&format!(
+                "asking: read access to {p}, outside the asker's view; no write, exec or network\n"
+            ));
+        }
+        s
+    }
+
+    /// The verdict, and the answer when `may_act` and it may act.
+    fn judge(&self, c: &RelayedCall, may_act: bool) -> Option<Note> {
+        let (shadow, rec) = self.parts()?;
+        let scoped = scope(c, &self.home);
         rec.row(
             &format!("permission · relayed {} from {}", c.req_id, c.asker),
-            "",
+            match &scoped {
+                Ok(_) => "a read-only view widening the shadow may answer",
+                Err(_) => "",
+            },
         );
-        let outcome = shadow.ask(Job::Permission, s)?;
-        line_of(shadow.label(Job::Permission).as_deref(), &outcome)
+        let outcome = shadow.ask(Job::Permission, self.shown_for(c))?;
+        let judge = shadow.label(Job::Permission);
+        let line = line_of(judge.as_deref(), &outcome);
+        let acting = match (&scoped, may_act && self.answering.is_on()) {
+            (Ok((path, kind)), true) => {
+                acting_rule(&outcome, &self.rules).map(|r| (path.clone(), *kind, r))
+            }
+            _ => None,
+        };
+        let Some((path, kind, rule)) = acting else {
+            if let Ok((path, kind)) = &scoped {
+                self.answering
+                    .asked
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert(c.req_id.clone(), shape(kind, path));
+            }
+            return line.map(Note::Line);
+        };
+        let role = c.role.as_deref().unwrap_or(&c.asker);
+        let who = role.split(" (").next().unwrap_or(role);
+        let row = format!(
+            "shadow allowed {who} to read {path} (rule: {rule}) · alt-n to see · /shadow revoke"
+        );
+        let evidence = match &outcome {
+            Outcome::Verdict(Verdict::Permission { evidence, .. }) => evidence.clone(),
+            _ => String::new(),
+        };
+        let body = format!(
+            "verdict: allow\njudge: {}\nrule relied on: \"{rule}\"\nevidence: \"{}\"\n\
+             grant: read-only `{path}` into the view of {role} ({}), for that session\n\
+             request: {}\nrevoke: /shadow revoke",
+            judge.as_deref().unwrap_or("shadow"),
+            evidence.trim(),
+            c.asker,
+            c.req_id
+        );
+        rec.row(
+            &format!(
+                "permission · answered {}: read {path} for {}",
+                c.req_id, c.asker
+            ),
+            &body,
+        );
+        self.answering
+            .granted
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(shape(kind, &path));
+        self.answering.push_row(row.clone(), body);
+        Some(Note::Answer {
+            option_id: "grant_ro".into(),
+            by: format!("shadow:{}", judge.as_deref().unwrap_or("permission")),
+            row,
+        })
+    }
+}
+
+impl Annotator for Relay {
+    fn line(&self, c: &RelayedCall) -> Option<String> {
+        match self.judge(c, false)? {
+            Note::Line(l) => Some(l),
+            Note::Answer { .. } => None,
+        }
+    }
+
+    fn note(&self, c: &RelayedCall) -> Option<Note> {
+        self.judge(c, true)
+    }
+
+    fn may_answer(&self, c: &RelayedCall) -> bool {
+        self.answering.is_on() && scope(c, &self.home).is_ok() && self.parts().is_some()
     }
 
     fn answered(&self, req_id: &str, effect: &str) {
-        if let Some((_, rec)) = self.cell.lock().unwrap_or_else(|e| e.into_inner()).clone() {
-            rec.row(
+        let rec = self.parts().map(|(_, r)| r);
+        if let Some(r) = &rec {
+            r.row(
                 &format!("permission · operator answered {effect} {req_id}"),
                 "",
             );
         }
+        let shape = self
+            .answering
+            .asked
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(req_id);
+        if effect == "refuse"
+            && let Some(shape) = shape
+            && self
+                .answering
+                .granted
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(&shape)
+        {
+            self.answering.disagree(
+                &format!("operator answered No to {req_id}, a shape the shadow granted ({shape})"),
+                rec.as_ref(),
+            );
+        }
+    }
+
+    fn revoked(&self, g: &AutoGrant) {
+        let rec = self.parts().map(|(_, r)| r);
+        self.answering.disagree(
+            &format!(
+                "operator revoked the read of {} for {} ({})",
+                g.path, g.asker, g.req_id
+            ),
+            rec.as_ref(),
+        );
     }
 }
 
@@ -235,4 +473,13 @@ pub fn rules_of(rules: &[letibot_tools::permission::Rule]) -> Vec<String> {
         .filter(|r| r.action == letibot_tools::permission::Action::Allow)
         .map(|r| format!("{} {}", r.permission, r.pattern))
         .collect()
+}
+
+/// A session tree's view record as the main session revokes from it.
+pub struct TreeRevoker(pub Arc<letibot_tools::view::ViewGrants>);
+
+impl letibot_sessionlog::pending_asks::ViewRevoker for TreeRevoker {
+    fn revoke(&self, path: &str) -> bool {
+        self.0.revoke(std::path::Path::new(path))
+    }
 }

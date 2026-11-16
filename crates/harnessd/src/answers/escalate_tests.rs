@@ -460,6 +460,15 @@ impl crate::shadow::record::Recorder for Rows {
 /// The main session's shadow, its permission job on, answering through `judge` with a 300ms
 /// deadline, installed as the set's annotator.
 fn with_shadow(w: &World, judge: Slow) -> Arc<Rows> {
+    with_shadow_rules(w, judge, &["bash clippy-driver *"]).0
+}
+
+/// [`with_shadow`] with `rules` preapproved, and the answering state it was given.
+fn with_shadow_rules(
+    w: &World,
+    judge: impl crate::shadow::judge::Judge + 'static,
+    rules: &[&str],
+) -> (Arc<Rows>, Arc<crate::shadow::permission::Answering>) {
     use crate::shadow::runner::{Shadow, Timing};
     let rows = Arc::new(Rows::default());
     let cfg = crate::shadow::config::ShadowConfig::from_lines(
@@ -493,14 +502,16 @@ fn with_shadow(w: &World, judge: Slow) -> Arc<Rows> {
         Arc::new(shadow),
         rows.clone() as Arc<dyn crate::shadow::record::Recorder>,
     ));
+    let answering = crate::shadow::permission::Answering::new(true);
     w.set
         .set_annotator(Some(Arc::new(crate::shadow::permission::Relay {
             cell,
-            rules: vec!["bash clippy-driver *".into()],
+            rules: rules.iter().map(|r| r.to_string()).collect(),
             workspace: "/w/proj".into(),
             home: "/home/op".into(),
+            answering: answering.clone(),
         })));
-    rows
+    (rows, answering)
 }
 
 /// A reviewer's `clippy-driver --version`, asked through the gatekeeper with no head of its own.
@@ -801,4 +812,345 @@ fn a_session_answer_on_a_relayed_reviewer_card_covers_the_queue_until_revoked() 
         2,
         "a revoked grant asks again, in a session that was already running"
     );
+}
+
+// ------------------------------------------- the shadow answering a reviewer's read (R317)
+
+const READ_RULE: &str = "read /build/**";
+const ALLOW_READ: &str = r#"{"verdict":"allow","rule":"read /build/**","evidence":""}"#;
+
+/// A reviewer's view ask for `path` at `access`, as the gate raises it, and the tree's record
+/// revocable from the gatekeeper's hub.
+fn view_world(
+    judge: Slow,
+) -> (
+    World,
+    Arc<Rows>,
+    Arc<crate::shadow::permission::Answering>,
+    Arc<letibot_tools::view::ViewGrants>,
+) {
+    let w = world();
+    name_reviewer(&w.set);
+    let (rows, answering) = with_shadow_rules(&w, judge, &[READ_RULE]);
+    let grants = Arc::new(letibot_tools::view::ViewGrants::new());
+    w.gatekeeper
+        .set_view_revoker(Arc::new(crate::shadow::permission::TreeRevoker(
+            grants.clone(),
+        )));
+    (w, rows, answering, grants)
+}
+
+fn view_request(id: &str, path: &str, access: letibot_tools::Access) -> AdjudicationRequest {
+    let mut req = request();
+    req.id = id.into();
+    req.session_id = REVIEWER.into();
+    req.tool = "bash".into();
+    req.target = path.into();
+    req.class = letibot_tools::adjudicate::ActionClass::host(access, false, false);
+    req.arguments = serde_json::json!({ "path": path });
+    req.options = letibot_tools::adjudicate::view_grant_options();
+    req.tier = letibot_tools::adjudicate::Tier::MayApprove;
+    req.baseline = format!("a path outside the view: {path}");
+    req
+}
+
+fn reviewer_adjudicator(w: &World) -> SubagentAdjudicator {
+    SubagentAdjudicator::new(
+        reviewer_ask(),
+        Some(
+            HeadAdjudicator::new(w.gatekeeper.clone(), w.answers.clone())
+                .with_budget(Duration::from_secs(10)),
+        ),
+    )
+}
+
+/// Ask `req` through the reviewer, watching the main session: the first card seen and its
+/// shadow line, answered `option` by the operator after `look`.
+fn ask_watching(
+    w: &World,
+    req: &AdjudicationRequest,
+    option: &'static str,
+    look: Duration,
+) -> (Option<OpenDecision>, AdjudicationDecision) {
+    let stop = Arc::new(AtomicBool::new(false));
+    let (main, head) = (w.main.clone(), w.head.clone());
+    let answerer = answer_when_open(w.main.clone(), stop.clone(), move |d| {
+        std::thread::sleep(look);
+        let last = open_of(&main)
+            .into_iter()
+            .find(|o| o.req_id == d.req_id)
+            .unwrap_or_else(|| d.clone());
+        main.submit(
+            &head,
+            "c1",
+            0,
+            CommandKind::Answer {
+                req_id: d.req_id.clone(),
+                reply: Reply::Permission {
+                    option_id: option.into(),
+                    pattern: None,
+                    note: None,
+                },
+            },
+        );
+        last
+    });
+    let d = reviewer_adjudicator(w).decide(req);
+    stop.store(true, Ordering::SeqCst);
+    (answerer.join().unwrap(), d)
+}
+
+#[test]
+fn a_reviewers_read_the_shadow_allows_in_time_is_granted_with_no_card_and_one_row() {
+    let (w, rows, answering, _) = view_world(Slow {
+        reply: ALLOW_READ,
+        sleep: Duration::from_millis(20),
+    });
+    let req = view_request(
+        "adj-view-0001",
+        "/build/letibot-r1",
+        letibot_tools::Access::Read,
+    );
+    let (card, d) = ask_watching(&w, &req, "deny", Duration::ZERO);
+
+    assert!(card.is_none(), "no card reached the operator: {card:?}");
+    assert_eq!(
+        d.outcome,
+        DecisionOutcome::Selected {
+            option_id: "grant_ro".into()
+        },
+        "{d:?}"
+    );
+    assert_eq!(d.by, "shadow:deepseek", "never filed as a person's answer");
+    let main_rows = answering.take_rows();
+    assert_eq!(main_rows.len(), 1, "{main_rows:?}");
+    assert_eq!(
+        main_rows[0].0,
+        "shadow allowed reviewer of agent-p2-followups to read /build/letibot-r1 \
+         (rule: read /build/**) · alt-n to see · /shadow revoke"
+    );
+    assert!(
+        main_rows[0]
+            .1
+            .contains("rule relied on: \"read /build/**\"")
+    );
+    assert!(
+        main_rows[0]
+            .1
+            .contains("grant: read-only `/build/letibot-r1`")
+    );
+    let rows = rows.0.lock().unwrap();
+    assert!(
+        rows.iter()
+            .any(|r| r == "permission · answered adj-view-0001: read /build/letibot-r1 for s-gatekeeper-k-sub-1"),
+        "the shadow's record has the answer: {rows:?}"
+    );
+    let grants = w.set.auto_grants();
+    assert_eq!(grants.len(), 1);
+    assert_eq!(grants[0].path, "/build/letibot-r1");
+    assert!(open_of(&w.main).is_empty() && open_of(&w.gatekeeper).is_empty());
+}
+
+#[test]
+fn a_reviewers_read_write_ask_still_shows_the_card_with_the_shadow_line() {
+    let (w, _, answering, _) = view_world(Slow {
+        reply: ALLOW_READ,
+        sleep: Duration::from_millis(20),
+    });
+    let req = view_request(
+        "adj-view-0002",
+        "/build/letibot-r1",
+        letibot_tools::Access::Write,
+    );
+    let (card, d) = ask_watching(&w, &req, "grant_rw", Duration::from_millis(250));
+
+    let card = card.expect("the operator was asked");
+    assert_eq!(
+        card.shadow.as_deref(),
+        Some("shadow (deepseek): allow - matches rule \"read /build/**\"")
+    );
+    assert_eq!(
+        d.outcome,
+        DecisionOutcome::Selected {
+            option_id: "grant_rw".into()
+        }
+    );
+    assert!(d.by.starts_with("human:"), "{}", d.by);
+    assert!(answering.take_rows().is_empty());
+    assert!(w.set.auto_grants().is_empty());
+}
+
+#[test]
+fn a_denylisted_path_is_never_auto_granted() {
+    for path in [
+        "/home/op/.ssh/id_ed25519",
+        "/home/op",
+        "/",
+        "/home/op/.config/letibot/keys",
+    ] {
+        let (w, _, answering, _) = view_world(Slow {
+            reply: ALLOW_READ,
+            sleep: Duration::from_millis(20),
+        });
+        let req = view_request("adj-view-0003", path, letibot_tools::Access::Read);
+        let (card, d) = ask_watching(&w, &req, "deny", Duration::from_millis(50));
+        assert!(card.is_some(), "{path}: the operator was asked");
+        assert!(d.by.starts_with("human:"), "{path}: {}", d.by);
+        assert!(answering.take_rows().is_empty(), "{path}");
+        assert!(w.set.auto_grants().is_empty(), "{path}");
+    }
+}
+
+#[test]
+fn a_shadow_timeout_on_a_read_shows_the_card() {
+    let (w, _, answering, _) = view_world(Slow {
+        reply: ALLOW_READ,
+        sleep: Duration::from_millis(900),
+    });
+    let req = view_request(
+        "adj-view-0004",
+        "/build/letibot-r1",
+        letibot_tools::Access::Read,
+    );
+    let (card, d) = ask_watching(&w, &req, "grant_ro", Duration::ZERO);
+    let card = card.expect("a timeout leaves the card to the operator");
+    assert_eq!(card.shadow, None);
+    assert!(d.by.starts_with("human:"), "{}", d.by);
+    assert!(answering.take_rows().is_empty());
+    assert!(w.set.auto_grants().is_empty());
+}
+
+#[test]
+fn an_unlisted_rule_never_acts() {
+    let (w, _, _, _) = view_world(Slow {
+        reply: r#"{"verdict":"allow","rule":"a path outside the view","evidence":""}"#,
+        sleep: Duration::from_millis(20),
+    });
+    let req = view_request(
+        "adj-view-0005",
+        "/build/letibot-r1",
+        letibot_tools::Access::Read,
+    );
+    let (card, d) = ask_watching(&w, &req, "deny", Duration::from_millis(50));
+    assert!(
+        card.is_some(),
+        "a rule the harness did not list is no grant"
+    );
+    assert!(d.by.starts_with("human:"), "{}", d.by);
+}
+
+#[test]
+fn a_revoke_removes_the_grant_and_two_disagreements_trip_the_breaker() {
+    let (w, rows, answering, grants) = view_world(Slow {
+        reply: ALLOW_READ,
+        sleep: Duration::from_millis(20),
+    });
+    for (n, path) in ["/build/letibot-r1", "/build/letibot-r2"]
+        .iter()
+        .enumerate()
+    {
+        let req = view_request(
+            &format!("adj-view-01{n}"),
+            path,
+            letibot_tools::Access::Read,
+        );
+        let (card, d) = ask_watching(&w, &req, "deny", Duration::ZERO);
+        assert!(card.is_none(), "{d:?}");
+        // What the reviewer's gate does with the answer.
+        grants.record(std::path::Path::new(path), false);
+    }
+    answering.take_rows();
+
+    let g = w.set.revoke(None).expect("the newest grant");
+    assert_eq!(g.path, "/build/letibot-r2");
+    assert_eq!(
+        grants.covers(
+            std::path::Path::new("/build/letibot-r2"),
+            letibot_tools::ViewAccess::Read
+        ),
+        None,
+        "the record no longer holds it"
+    );
+    let (revoked, _) = grants.revoked_since(0);
+    assert_eq!(revoked, vec![std::path::PathBuf::from("/build/letibot-r2")]);
+    assert_eq!(answering.disagreements(), 1);
+    assert!(answering.is_on());
+
+    w.set.revoke(Some(1)).expect("the older grant");
+    assert_eq!(answering.disagreements(), 2);
+    assert!(!answering.is_on(), "two disagreements: observe-only");
+    let main_rows = answering.take_rows();
+    assert!(
+        main_rows
+            .iter()
+            .any(|(t, _)| t.starts_with("shadow stopped answering reads after 2 disagreements")),
+        "{main_rows:?}"
+    );
+    assert!(
+        rows.0
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|r| r.starts_with("permission · disagreement 1: operator revoked")),
+    );
+
+    // Tripped: the next read goes to the operator with the shadow's line.
+    let req = view_request(
+        "adj-view-0200",
+        "/build/letibot-r3",
+        letibot_tools::Access::Read,
+    );
+    let (card, d) = ask_watching(&w, &req, "grant_ro", Duration::from_millis(250));
+    assert!(card.is_some(), "{d:?}");
+    assert!(d.by.starts_with("human:"), "{}", d.by);
+}
+
+/// A judge that gives its replies in order, the last one from then on.
+struct Replies(std::sync::Mutex<Vec<&'static str>>);
+
+impl crate::shadow::judge::Judge for Replies {
+    fn label(&self) -> String {
+        "deepseek".into()
+    }
+    fn judge(&self, _system: &str, _user: &str) -> Result<String, String> {
+        let mut g = self.0.lock().unwrap();
+        Ok(if g.len() > 1 { g.remove(0) } else { g[0] }.to_string())
+    }
+}
+
+#[test]
+fn a_later_no_to_a_granted_shape_counts_toward_the_breaker() {
+    let w = world();
+    name_reviewer(&w.set);
+    let (_, answering) = with_shadow_rules(
+        &w,
+        Replies(std::sync::Mutex::new(vec![
+            ALLOW_READ,
+            r#"{"verdict":"ask","rule":"","evidence":""}"#,
+        ])),
+        &[READ_RULE],
+    );
+    w.gatekeeper
+        .set_view_revoker(Arc::new(crate::shadow::permission::TreeRevoker(Arc::new(
+            letibot_tools::view::ViewGrants::new(),
+        ))));
+    let req = view_request(
+        "adj-view-0300",
+        "/build/letibot-r1/a",
+        letibot_tools::Access::Read,
+    );
+    let (card, d) = ask_watching(&w, &req, "deny", Duration::ZERO);
+    assert!(card.is_none(), "{d:?}");
+    assert_eq!(answering.disagreements(), 0);
+
+    let req = view_request(
+        "adj-view-0301",
+        "/build/letibot-r1/b",
+        letibot_tools::Access::Read,
+    );
+    let (card, d) = ask_watching(&w, &req, "deny", Duration::from_millis(50));
+    let card = card.expect("an `ask` leaves the card to the operator");
+    assert_eq!(card.shadow.as_deref(), Some("shadow (deepseek): ask"));
+    assert!(d.by.starts_with("human:"), "{}", d.by);
+    assert_eq!(answering.disagreements(), 1, "a No to a shape it granted");
 }

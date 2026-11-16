@@ -862,6 +862,16 @@ impl ViewSpec {
         self
     }
 
+    /// The view without the file grants bound at `path`. The agent socket is not a file grant
+    /// and stays.
+    pub fn revoking(mut self, path: &Path) -> ViewSpec {
+        let key = crate::view::key(path);
+        self.grants.retain(|g| {
+            matches!(g, Grant::AgentSocket { .. }) || crate::view::key(g.path()) != key
+        });
+        self
+    }
+
     /// What a host path is, from inside the view: three answers, not two, because a fresh
     /// tmpfs inside the view is not the host's `/tmp`. Lexical on purpose: a `stat` on the
     /// host would disclose what the operator has, and cannot answer about an absent path.
