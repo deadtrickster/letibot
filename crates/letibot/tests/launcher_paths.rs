@@ -33,6 +33,11 @@ fn launcher_providers(dir: &Path, vars: &[(&str, &OsString)]) -> PathBuf {
         std::fs::create_dir_all(d).expect("a fixture directory");
     }
     letibot_tools::testing::write_stub(&bin.join("harnessd"), "#!/bin/sh\nexit 1\n");
+    // The launcher asks the multicall for this folder's socket.
+    let multi = bin.join("letibot-multi");
+    std::fs::copy(env!("CARGO_BIN_EXE_letibot-multi"), &multi).expect("the binary is copied");
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&multi, std::fs::Permissions::from_mode(0o755)).expect("executable");
     let mut cmd = std::process::Command::new("bash");
     cmd.arg(&script)
         .arg("--status")

@@ -220,6 +220,7 @@ fn one_shot(tag: &str, scope: &str, probe_hangs: bool) -> OneShot {
     for d in [&home, &bin, &rundir.join("letibot"), &wt] {
         std::fs::create_dir_all(d).unwrap();
     }
+    letibot_multi(&bin);
     // An unanswered probe and a join gate from a run two hours ago.
     for old in ["scope-probe-1", "scope-join-1-1"] {
         let p = rundir.join("letibot").join(old);
@@ -307,7 +308,12 @@ fn a_hanging_real_scope_does_not_hang_the_one_shot() {
         r.took,
         r.stderr
     );
-    assert_eq!(r.stdout.trim(), "ran", "the one-shot ran unscoped:\n{}", r.stderr);
+    assert_eq!(
+        r.stdout.trim(),
+        "ran",
+        "the one-shot ran unscoped:\n{}",
+        r.stderr
+    );
     assert_eq!(r.status, Some(3), "its own status:\n{}", r.stderr);
     assert!(r.stderr.contains("made no scope"), "{}", r.stderr);
     assert!(r.no_join_left(), "the given-up join is killed");
@@ -321,7 +327,12 @@ fn a_scope_that_joins_runs_the_one_shot_in_it_with_its_status() {
                 echo scoped >>\"$HOME/scoped\"\nexec \"$@\"";
     let r = one_shot("join", join, false);
     assert_eq!(r.stdout.trim(), "ran", "{}", r.stderr);
-    assert_eq!(r.status, Some(3), "the scoped command's status:\n{}", r.stderr);
+    assert_eq!(
+        r.status,
+        Some(3),
+        "the scoped command's status:\n{}",
+        r.stderr
+    );
     assert!(r.home.join("scoped").is_file(), "it ran in the scope");
     assert!(!r.stderr.contains("made no scope"), "{}", r.stderr);
     assert!(r.took < Duration::from_secs(10), "{:?}", r.took);
@@ -330,11 +341,17 @@ fn a_scope_that_joins_runs_the_one_shot_in_it_with_its_status() {
 #[test]
 fn a_probe_that_never_answers_does_not_hang_the_one_shot() {
     let r = one_shot("never", "exec sleep 20", true);
-    assert!(r.took < Duration::from_secs(10), "{:?}:\n{}", r.took, r.stderr);
+    assert!(
+        r.took < Duration::from_secs(10),
+        "{:?}:\n{}",
+        r.took,
+        r.stderr
+    );
     assert_eq!(r.stdout.trim(), "ran", "{}", r.stderr);
     assert_eq!(r.status, Some(3), "{}", r.stderr);
     assert!(
-        r.stderr.contains("the systemd user manager is not answering"),
+        r.stderr
+            .contains("the systemd user manager is not answering"),
         "{}",
         r.stderr
     );
@@ -417,7 +434,10 @@ time.sleep(10)
         .flatten()
         .map(|e| std::fs::read_to_string(e.path()).unwrap_or_default())
         .collect::<String>();
-    assert!(log.contains("made no scope"), "the daemon's log says so:\n{log}");
+    assert!(
+        log.contains("made no scope"),
+        "the daemon's log says so:\n{log}"
+    );
     let pids = std::fs::read_to_string(home.join("scope-pids")).unwrap_or_default();
     assert!(
         pids.lines()

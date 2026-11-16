@@ -246,3 +246,93 @@ fn where_prints_the_bridges_socket_and_ensure_starts_that_daemon() {
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The launcher's socket for a folder is `letibot-multi where`'s, not a hash of its own: a
+/// `LETIBOT_WORKSPACE` inside a checkout is that checkout's daemon, as the resolver says.
+#[test]
+fn the_launcher_socket_equals_where_json() {
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "python3, which the fake daemon binds its socket with",
+        on_path("python3"),
+    ) else {
+        return;
+    };
+    // A short root: the socket path must fit `sun_path`.
+    let dir = PathBuf::from(format!("/tmp/lbwj-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let (home, rundir, bin, repo) = (
+        dir.join("home"),
+        dir.join("run"),
+        dir.join("bin"),
+        dir.join("repo"),
+    );
+    let sub = repo.join("sub");
+    for d in [&home, &rundir, &bin, &sub] {
+        std::fs::create_dir_all(d).expect("a fixture directory");
+    }
+    let git = std::process::Command::new("git")
+        .args(["init", "-q"])
+        .arg(&repo)
+        .status()
+        .expect("git runs");
+    assert!(git.success());
+    fake_daemon(&bin.join("harnessd"));
+    letibot_tools::testing::write_stub(&bin.join("room"), "#!/bin/sh\nexit 0\n");
+    letibot_tools::testing::write_stub(&bin.join("head-stub"), "#!/bin/sh\necho head \"$@\"\n");
+    let me = bin.join("letibot-multi");
+    std::fs::copy(env!("CARGO_BIN_EXE_letibot-multi"), &me).expect("the binary is copied");
+    use std::os::unix::fs::PermissionsExt as _;
+    std::fs::set_permissions(&me, std::fs::Permissions::from_mode(0o755)).expect("executable");
+    let room = dir.join("room.sock");
+    let _room = std::os::unix::net::UnixListener::bind(&room).expect("bind the room");
+
+    let env = |c: &mut std::process::Command| {
+        c.env_clear()
+            .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("HOME", &home)
+            .env("XDG_RUNTIME_DIR", &rundir)
+            .env("LETIBOT_BIN", &bin)
+            .env("LETIBOT_ROOM_SOCKET", &room)
+            .env("LETIBOT_ROOM_SUPERVISOR", bin.join("room"));
+    };
+    let mut asked = std::process::Command::new(&me);
+    asked.args(["where"]).arg(&sub).arg("--json");
+    env(&mut asked);
+    let asked = asked.output().expect("where runs");
+    let v: serde_json::Value =
+        serde_json::from_slice(&asked.stdout).expect("where --json is one object");
+    let socket = v["socket"].as_str().expect("a socket").to_string();
+
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../scripts/letibot")
+        .canonicalize()
+        .unwrap();
+    let mut launch = std::process::Command::new("bash");
+    launch.arg(&script).arg("--new").current_dir(&sub);
+    env(&mut launch);
+    launch
+        .env("LETIBOT_WORKSPACE", &sub)
+        .env("LETIBOT_HEAD", bin.join("head-stub"))
+        .stdin(std::process::Stdio::null());
+    let out = launch.output().expect("the launcher runs");
+    let said = String::from_utf8_lossy(&out.stdout);
+    let err = String::from_utf8_lossy(&out.stderr);
+    let record = Path::new(&socket).with_extension("json");
+    let pid = std::fs::read_to_string(&record)
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .and_then(|r| r["pid"].as_i64());
+    // SAFETY: SIGTERM to the fixture daemon this test started.
+    if let Some(pid) = pid {
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+    }
+    assert!(out.status.success(), "the launcher refused:\n{err}");
+    assert_eq!(
+        said.trim(),
+        format!("head --socket {socket}"),
+        "the head attaches where `letibot-multi where` says:\n{err}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

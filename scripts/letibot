@@ -136,9 +136,34 @@ fi
 # `stat`/`date`; macOS uses `ps`, `lsof`, BSD `stat`/`date` and perl's `POSIX::setsid`.
 # Every caller goes through these helpers.
 HOST_OS="$(uname -s)"
-# The first twelve hex of the workspace's SHA-256 — `launcher.rs`'s key, on either box.
-sha12() {
-  if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi | cut -c1-12
+# A folder's key and socket are the resolver's (`letibot-multi where --json`, which is
+# `bridge::daemon::resolve`): a second spelling of the hash here names sockets nobody serves.
+# folder_where DIR -- sets W_FOLDER, W_KEY and W_SOCKET; on failure WHERE_WHY, and returns 1.
+WHERE_WHY=""
+folder_where() {
+  local json
+  W_FOLDER="" W_KEY="" W_SOCKET=""
+  if [ ! -x "$BIN/letibot-multi" ]; then
+    WHERE_WHY="no letibot-multi at $BIN (it names a folder's daemon socket)"
+    return 1
+  fi
+  if ! json="$("$BIN/letibot-multi" where "$1" --json 2>&1)"; then
+    WHERE_WHY="letibot-multi where could not place $1: ${json##*$'\n'}"
+    return 1
+  fi
+  # The fields are read with sed, so a path JSON had to escape is refused, not misread.
+  case "$json" in *\\*)
+    WHERE_WHY="letibot-multi where answered with an escaped path, which this launcher does not read: $json"
+    return 1
+    ;;
+  esac
+  W_FOLDER="$(printf '%s\n' "$json" | sed -n 's/.*"folder":"\([^"]*\)".*/\1/p')"
+  W_KEY="$(printf '%s\n' "$json" | sed -n 's/.*"project":"\([^"]*\)".*/\1/p')"
+  W_SOCKET="$(printf '%s\n' "$json" | sed -n 's/.*"socket":"\([^"]*\)".*/\1/p')"
+  if [ -z "$W_FOLDER" ] || [ -z "$W_KEY" ] || [ -z "$W_SOCKET" ]; then
+    WHERE_WHY="letibot-multi where gave no folder, project and socket: $json"
+    return 1
+  fi
 }
 # Is this pid still there? Linux: its `/proc` directory. macOS: `ps` has a state for it,
 # and the state is not a zombie's.
@@ -425,9 +450,15 @@ rundir() {
   die "cannot create the runtime directory $RUNDIR
          set XDG_RUNTIME_DIR to a directory this account can write"
 }
-KEY="$(printf '%s' "$WORKSPACE" | sha12)"
-SOCKET="${LETIBOT_SOCKET:-$RUNDIR/$KEY.sock}"
+# The resolver's folder too: `LETIBOT_WORKSPACE` in a subdirectory is that checkout's daemon,
+# as it is for `letibot where` and the bridge. Asked once; a verb that needs none still runs
+# without letibot-multi, and `need_where` refuses the ones that do.
+KEY="" SOCKET=""
+if folder_where "$WORKSPACE"; then
+  WORKSPACE="$W_FOLDER" KEY="$W_KEY" SOCKET="$W_SOCKET"
+fi
 RECORD="$RUNDIR/$KEY.json"
+need_where() { [ -n "$KEY" ] || die "$WHERE_WHY"; }
 # The data home as `lifecycle::data_dir` reads it: XDG_DATA_HOME only when absolute. The verbs,
 # the bridge and the room resolve the same, so the daemon's store is the one they act on.
 case "${XDG_DATA_HOME:-}" in
@@ -1777,8 +1808,15 @@ retarget() {
       [ "$n" -ge "$want" ] || die "there is no daemon $want — \`letibot --ls\` numbers them"
       ;;
   esac
-  KEY="$(printf '%s' "$WORKSPACE" | sha12)"
-  SOCKET="${sock:-$RUNDIR/$KEY.sock}"
+  if folder_where "$WORKSPACE"; then
+    WORKSPACE="$W_FOLDER" KEY="$W_KEY"
+  elif [ -n "$rec" ]; then
+    # A numbered record names its own socket and file; its key is the file's name.
+    KEY="$(basename "$rec" .json)"
+  else
+    die "$WHERE_WHY"
+  fi
+  SOCKET="${sock:-$W_SOCKET}"
   RECORD="${rec:-$RUNDIR/$KEY.json}"
   [ -n "${LETIBOT_LOG:-}" ] || LOG="$HOME/logs/harnessd-$KEY.log"
 }
@@ -1837,7 +1875,8 @@ EOF
     echo "letibot: '$name' names $n sessions in other folders:" >&2
     i=0
     while [ "$i" -lt "$n" ]; do
-      rec="$RUNDIR/$(printf '%s' "${wss[$i]}" | sha12).json"
+      rec=""
+      if folder_where "${wss[$i]}"; then rec="$RUNDIR/$W_KEY.json"; fi
       state=stopped
       if [ -f "$rec" ] && pid_alive "$(record_field_of "$rec" pid)"; then state="daemon up"; fi
       printf '  %d) %s  %s  %s ago  %s\n' "$((i + 1))" "${titles[$i]}" "$(tilde "${wss[$i]}")" "${ages[$i]}" "$state" >&2
@@ -2529,6 +2568,7 @@ SESSIONS_EOF
     # beside the socket makes the daemon's stop leave them running; one still there after the
     # stop was never read, so the daemon predates this and ended them as a plain stop does.
     [ $# -eq 1 ] || die "--restart takes nothing after it"
+    need_where
     if daemon_pid >/dev/null; then
       marker="$SOCKET.restart"
       : >"$marker"
@@ -2677,13 +2717,14 @@ SESSIONS_EOF
       not_stopped "$line" "$pid" "$advice" "$log" "$from" "$waited"
       return 1
     }
-    # log_of WORKSPACE -- the log that folder's daemon writes (see LOG above).
+    # log_of RECORD -- the log that record's daemon writes (see LOG above): the record is
+    # named by the folder's key, which also names the log.
     log_of() {
       if [ -n "${LETIBOT_LOG:-}" ]; then
         echo "$LETIBOT_LOG"
         return 0
       fi
-      echo "$HOME/logs/harnessd-$(printf '%s' "$1" | sha12).log"
+      echo "$HOME/logs/harnessd-$(basename "$1" .json).log"
     }
     if [ "$STOP_ALL" = 1 ]; then
       # And the exit status agrees with the words, as the single-target path's
@@ -2707,7 +2748,7 @@ SESSIONS_EOF
             INTR_FAILED=""
           fi
           # The room's log is named after its socket (see `room_paths`), not after its workspace.
-          rlog="$(log_of "$ws")"
+          rlog="$(log_of "$r")"
           if [ "$is_room" = room ] && [ -n "$sock" ]; then
             rlog="$HOME/logs/$(basename "$sock" .sock).log"
           fi
@@ -2728,6 +2769,7 @@ SESSIONS_EOF
       done
       exit "$all_failed"
     fi
+    need_where
     if p="$(daemon_pid)"; then
       # Abort the turns before the signal, for every stop: a stop must not start a turn and must
       # interrupt the turns it holds. A busy worker otherwise finishes its turn after SIGTERM, with
@@ -2751,6 +2793,7 @@ SESSIONS_EOF
     exit 0
     ;;
   --status)
+    need_where
     if up; then
       echo "up: $(daemon_line)"
       stale="$(daemon_stale_line)"
@@ -2875,6 +2918,7 @@ SESSIONS_EOF
     # Connect only. A second argument names another folder's daemon — as a
     # directory, or as the number `letibot --ls` printed beside it.
     retarget "${2:-}"
+    need_where
     if live_detached; then refuse_detached; fi
     if live; then
       # The protocol question, asked here too, so a skewed daemon gets the full sentence (`--stop`,
@@ -2892,6 +2936,7 @@ SESSIONS_EOF
     exit 1
     ;;
 esac
+need_where
 
 # Which session this invocation is about, decided before anything is started.
 # SESSION is the id to reopen; NEW_TITLE (when set) means make a fresh one instead.
