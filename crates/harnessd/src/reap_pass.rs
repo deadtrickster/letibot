@@ -379,6 +379,15 @@ mod tests {
                     .position(|d| d.as_ref().is_some_and(DiskTurn::holds))
                     .expect("someone holds the turn");
                 daemons[holder] = None;
+                // A fork elsewhere in this binary can hold a copy of the lock's fd until its exec;
+                // wait for the release, since an hour of minutes here passes in microseconds.
+                for _ in 0..500 {
+                    if let Some(probe) = take_lock(&path) {
+                        drop(probe);
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
             }
             for (i, d) in daemons.iter_mut().enumerate() {
                 let Some(d) = d else { continue };
