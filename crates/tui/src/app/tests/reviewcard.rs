@@ -197,9 +197,8 @@ fn the_readers_read_every_shape_the_queue_writes() {
     }
 }
 
-/// The BUT clause is the decisive one - the operator's rule: *"for "could not decide" the
-/// sentence starting with BUT is the decisive one if present; otherwise the first sentence"*  -
-/// and its first clause is what the line carries.
+/// For "could not decide", the sentence starting with BUT is the decisive one if present, else the
+/// first sentence, and its first clause is what the line carries.
 #[test]
 fn the_sentence_that_opens_with_but_is_the_reason() {
     let r = notice_review(CANNOT_DECIDE).expect("the operator's notice parses");

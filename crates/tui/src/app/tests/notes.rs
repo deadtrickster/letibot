@@ -400,10 +400,8 @@ fn a_pane_that_dies_at_once_leaves_a_row_with_its_sentence_and_its_status() {
     );
 }
 
-/// Whether `/notes` holds this code and the reader has not retired it: what "drawn" used to mean
-/// for a warning, now that every warning's sentence is filed BESIDE the conversation - `/notes` is
-/// the surface, and the same three rules (the mute, the watermark, the reader's own retirement)
-/// decide whether a note is live.
+/// Whether `/notes` holds this code and the reader has not retired it: the mute, the watermark and
+/// the reader's retirement decide whether a note is live.
 fn note_live(a: &App, code: &str) -> bool {
     a.notes
         .iter()
@@ -583,8 +581,8 @@ fn ctrl_n_is_a_watermark_so_the_next_notice_arrives_alone() {
             },
         )));
     }
-    // **The premise: three notices of one kind are three notes, and the mark is what quiets
-    // them** - every assertion below is about the mark rather than about how many lines were
+    // The premise: three notices of one kind are three notes, and the mark is what quiets
+    // them - every assertion below is about the mark rather than about how many lines were
     // drawn, because a warning's sentence is filed beside the conversation now.
     let _ = a.screen(120, 40);
     assert_eq!(
@@ -1270,8 +1268,8 @@ fn a_fresh_attach_shows_the_conversation_and_not_what_came_before_it() {
     assert!(listed.contains("[before this window]"), "{listed}");
     a.key(Key::Esc);
 
-    // **The control, and without it this test would pass on a head that draws no
-    // notes at all.** A fact that happens while this head is watching is news, and
+    // The control, and without it this test would pass on a head that draws no
+    // notes at all. A fact that happens while this head is watching is news, and
     // news is drawn where it happened.
     let live = hub.publish(SessionEvent::Warning {
         code: "context_wall".into(),
@@ -1824,7 +1822,7 @@ fn a_notice_expires_in_time_and_not_in_frames() {
         a.screen(80, 12).join("\n").contains("hello"),
         "frames do not age a notice"
     );
-    // **The boundary, and not \"eventually\": present a millisecond before the
+    // The boundary, and not \"eventually\": present a millisecond before the
     // deadline, gone the millisecond it is due - and never `screen()` in between, so
     // the only thing that moved is the clock.
     a.clock(1_000 + NOTICE_MS - 1);
@@ -2566,10 +2564,8 @@ fn a_stale_prefix_is_drawn_as_a_note_row_and_not_as_a_failure() {
 
 // ─────────────── a dismissed notice stays dismissed in every view ───────────────
 
-/// A run folded into one counter, at the end of a conversation too long to walk whole - the
-/// operator's frame: `[2 tool calls]` above the composer edge, and the notices he cleared above
-/// the live pane. The filler is load-bearing: a short conversation never enters the tail walk
-/// (`hist_floor` stays 0), so a test built on one pins nothing.
+/// A run folded into one counter at the end of a conversation too long to walk whole. The filler is
+/// load-bearing: a short conversation never enters the tail walk (`hist_floor` stays 0).
 fn a_run_with_notices() -> App {
     let mut a = app();
     a.walk_limit = 1;
@@ -2898,10 +2894,8 @@ fn ctrl_n_then_a_queued_row_draws_no_notice() {
     );
 }
 
-/// K9's done-test: a warning kind `[warnings] mute` names is never drawn, and nothing else about
-/// it changes - it is filed, counted and findable, exactly as a retired note is. The file half
-/// (`[warnings] mute` -> this list) is `crates/leticode-config`'s own test; this is the half that
-/// is the screen's.
+/// A warning kind `[warnings] mute` names is never drawn, and is still filed, counted and findable.
+/// The file half is `crates/leticode-config`'s own test.
 #[test]
 fn a_muted_warning_kind_is_never_drawn() {
     // A code the head still draws: `compacted` twins the model's own summary row and is filed

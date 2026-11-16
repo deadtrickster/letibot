@@ -519,8 +519,8 @@ fn a_click_one_column_off_the_labels_opens_nothing() {
     );
 }
 
-/// **A head with nothing in flight draws the edge but no label, and no click along it
-/// opens anything.** The counts are drawn only while they are true, so the click's target
+/// A head with nothing in flight draws the edge but no label, and no click along it
+/// opens anything. The counts are drawn only while they are true, so the click's target
 /// is absent with them - the same frame, the same row, nothing to claim the pointer.
 #[test]
 fn a_head_with_nothing_running_has_no_label_to_click() {

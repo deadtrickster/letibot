@@ -1,4 +1,4 @@
-//! The `link_` hook (X26, `docs/plugins-plan.md` §4.6): the words on the frame that name something
+//! The `link_` hook: the words on the frame that name something
 //! the head's own references do not know, asked of a layer ONCE per frame and cached by word.
 
 use super::*;

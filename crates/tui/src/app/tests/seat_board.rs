@@ -1,4 +1,4 @@
-//! A Claude Code seat's board on the head's todo pane (R144, `docs/seat-todo.md`): a seat is not a
+//! A Claude Code seat's board on the head's todo pane: a seat is not a
 //! session, so its boards arrive on the `Todos` read beside the session's, and the pane only draws
 //! them - the seat in another process writes them, and no key here moves one of its rows.
 
@@ -38,7 +38,7 @@ fn board(a: &mut App, todos: Vec<TodoEntry>, seats: Vec<SeatBoard>) {
 /// The package a seat orchestrates: one of this daemon's sessions, named so the pane can draw it.
 const PACKAGE: &str = "s-1789462738453908838";
 
-/// **The head draws a seat's board.** Its handle and its rows, in the pane the session's board is
+/// The head draws a seat's board. Its handle and its rows, in the pane the session's board is
 /// drawn in, under the session's and above the repo's file: a row carries its mark and its author,
 /// which is the whole of what a session's row carries.
 #[test]
@@ -96,7 +96,7 @@ fn a_seats_board_is_drawn_in_the_todo_pane_with_its_rows() {
     );
 }
 
-/// **A seat's row shows the wait it was written with**, and that wait is a package of THIS daemon:
+/// A seat's row shows the wait it was written with, and that wait is a package of THIS daemon:
 /// the edge is `wait_on`'s `Child`, drawn with the short name the subagents pane gives it, exactly as
 /// a session's row waiting on its own child is.
 #[test]
@@ -135,7 +135,7 @@ fn a_seat_row_waiting_on_a_package_shows_the_package() {
     );
 }
 
-/// **Nothing on a seat's board is the head's to act on.** The stops are the session's rows and the
+/// Nothing on a seat's board is the head's to act on. The stops are the session's rows and the
 /// file's items, so the cursor cannot land on a seat's row and Enter there is nothing: the seat
 /// writes its own board and this pane only reads it.
 #[test]
@@ -176,7 +176,7 @@ fn a_seats_rows_are_not_stops_and_add_no_cursor() {
     assert_eq!(a.todos_sel, 0, "the walk wrapped past the seat's rows");
 }
 
-/// **A head told about no seats draws the pane it always drew.** Two heads, one board, and the one
+/// A head told about no seats draws the pane it always drew. Two heads, one board, and the one
 /// that was never told the field exists: a daemon from before this frame, or a folder with no seat
 /// in it, is not a pane with a section on it.
 #[test]

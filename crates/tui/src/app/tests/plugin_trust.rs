@@ -144,9 +144,8 @@ fn plugin_lists_the_placed_layers_and_their_standing() {
     assert!(!listed.contains("not pinned"), "{listed}");
 }
 
-/// A built-in needs no pin, and the door says so rather than pinning it. The operator's rule
-/// is *"only the builtins run freely"*: a built-in is the binary's own bytes, so a `/plugin
-/// trust` over one would be a record that changes nothing.
+/// A built-in needs no pin, and the door says so rather than pinning it: a built-in is the
+/// binary's own bytes, so a `/plugin trust` over one would be a record that changes nothing.
 #[test]
 fn plugin_trust_refuses_a_builtin_by_name() {
     let project = a_project("builtin");

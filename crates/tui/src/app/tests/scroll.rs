@@ -1089,8 +1089,8 @@ fn scroll_still_works_after_ctrl_t() {
         a.body_len
     );
 
-    // Close the window, and it still scrolls. **The chord toggles the window and
-    // nothing else now**, so this is one press to open and one to close.
+    // Close the window, and it still scrolls. The chord toggles the window and
+    // nothing else now, so this is one press to open and one to close.
     a.key(Key::CtrlV);
     a.screen(80, 24);
     assert!(a.payload_sel.is_some(), "ctrl-t did not open the window");
@@ -1486,9 +1486,9 @@ fn a_tail_frame_is_far_cheaper_than_a_full_walk() {
     }
 }
 
-/// R123.3: the walks' per-row lookups - the run's bounds, the open run's row, the calls in
-/// force, the answered set - were each a rescan of `items`, so one long hidden run made paging
-/// over it quadratic. 20,000 hidden results in one run must page inside a generous bound.
+/// The walks' per-row lookups - the run's bounds, the open run's row, the calls in force, the
+/// answered set - must not rescan `items`, or a long hidden run pages quadratically. 20,000
+/// hidden results in one run must page inside a generous bound.
 #[test]
 fn a_page_through_a_run_of_20_000_hidden_rows_stays_under_a_bound() {
     // A whole row in one value, the shape a snapshot hands the head, so the setup is one push
@@ -5847,9 +5847,8 @@ fn letting_lines_go_from_above_with_every_row_above_the_keep_cuts_nothing() {
     assert_eq!(a.spans.len(), 1);
 }
 
-/// R134: a live pane taller than the glass puts lines below the last row that no span holds. A
-/// notch down from the last row lands in them, clamps back onto that row and never reaches the
-/// bottom, so only Esc freed it.
+/// A live pane taller than the glass puts lines below the last row that no span holds. A notch
+/// down from the last row must reach the bottom, not clamp back onto that row.
 #[test]
 fn walking_down_into_a_live_pane_taller_than_the_glass_reaches_the_tail() {
     let mut a = app();

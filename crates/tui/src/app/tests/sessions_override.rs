@@ -147,7 +147,7 @@ fn a_projects_sessions_layer_renames_a_branch_and_hides_its_rows() {
     std::fs::remove_dir_all(&project).ok();
 }
 
-/// **A project layer that names a verb it did not declare is refused, and the pane says so** - the
+/// A project layer that names a verb it did not declare is refused, and the pane says so - the
 /// manifest is what a reviewer reads, and a view that reaches past it is not drawn. It is not
 /// quietly replaced by a second drawing either: the refusal is the whole answer.
 #[test]
@@ -192,8 +192,8 @@ fn a_layer_that_uses_an_undeclared_act_is_refused_and_said() {
     std::fs::remove_dir_all(&project).ok();
 }
 
-/// **A layer written for the groups is refused at load, by name, and the built-in's tree is
-/// drawn.** A group line and a branch line are both rows, so the manifest is the only place a host
+/// A layer written for the groups is refused at load, by name, and the built-in's tree is
+/// drawn. A group line and a branch line are both rows, so the manifest is the only place a host
 /// can tell the two shapes apart.
 #[test]
 fn a_layer_written_for_the_groups_is_refused_and_the_builtins_tree_is_drawn() {

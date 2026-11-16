@@ -1,7 +1,6 @@
-//! Putting a session out of sight from the head, and taking it back: `del` asks twice and the
-//! DAEMON does the write, so an archive outlives the head that made it; the archived rows come back
-//! as a folded group of their own; `ctrl-z`, `/archive`, `/close` and `/forget` are the verbs, and
-//! the row this head stands in is none of them.
+//! Archiving a session from the head and taking it back: `del` asks twice and the daemon writes,
+//! the archived rows come back as a folded group, and the row this head stands in is never
+//! archived.
 
 use super::*;
 use letibot_plugins::Stack;

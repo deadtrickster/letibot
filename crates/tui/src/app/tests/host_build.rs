@@ -1,8 +1,6 @@
-//! The head's stack is built on a thread of its own (R175 item 5): the frame that first asks for
-//! one draws ONE LINE saying the list is being built, and the layer's drawing appears on a later
-//! frame. There is no second drawing to swap in - see `app::sessions_pane`. Both halves are here,
-//! and a real build is asked for rather than only the machinery, because a thread nobody ever
-//! starts would leave the pane saying *building* for ever.
+//! The head's stack is built on its own thread: the first frame draws one line saying the list is
+//! being built, and the layer's drawing appears later. A real build is asked for, so a thread that
+//! never starts would fail here.
 
 use super::*;
 use crate::app::sessions_pane::{Host, HostBuild, RanoLoader};
@@ -23,11 +21,9 @@ fn a_head_with_a_session() -> App {
     a
 }
 
-/// The frame that asks for a stack does not wait for it, and draws ONE LINE about the list being
-/// built - not a list of its own that then changes shape. The build is HELD open by the test - a
-/// thread cannot be held still - and it is the real `Host`, with the binary's own layers at the
-/// bottom, that is handed over. This is the redraw swap, as a test: no session row is on the screen
-/// before the layer's answer, and the line that is there says what it is waiting for.
+/// The frame that asks for a stack does not wait, and draws one line about the build, not a list of
+/// its own. The test holds the build open and hands over the real `Host`, so no session row shows
+/// before the layer's answer.
 #[test]
 fn the_head_draws_one_line_before_the_host_is_built() {
     let mut a = a_head_with_a_session();

@@ -533,8 +533,8 @@ fn an_older_daemon_seats_this_head_read_only_and_the_refusal_says_the_sentence()
     );
 }
 
-/// **`ctrl-^` is the deliberate override: the lock lifts, the seating's asks go out, and
-/// the composer sends again.** A head that only knew how to refuse would have implemented
+/// `ctrl-^` is the deliberate override: the lock lifts, the seating's asks go out, and
+/// the composer sends again. A head that only knew how to refuse would have implemented
 /// half the ruling.
 #[test]
 fn ctrl_caret_lifts_the_read_only_and_pays_the_seatings_asks() {
@@ -1168,8 +1168,8 @@ fn collect_git(a: &mut App) {
     }
 }
 
-/// **A reading of a directory that is not a repository is ABSENT, and the head remembers
-/// which directory it read** - so a session switch re-reads at once and the interval applies
+/// A reading of a directory that is not a repository is ABSENT, and the head remembers
+/// which directory it read - so a session switch re-reads at once and the interval applies
 /// only within one workspace.
 #[test]
 fn a_refresh_of_something_that_is_not_a_repository_draws_nothing_and_is_remembered() {
@@ -1891,10 +1891,8 @@ fn a_click_picks_the_row_under_the_pointer_and_enter_still_switches() {
             .position(|l| l.contains(needle))
             .unwrap_or_else(|| panic!("{needle} is drawn: {frame:#?}")) as u16
     }
-    // The header takes row 0, the title and blank two more, then the project's line and its legend -
-    // and ONE row a session, which is the arithmetic the handler must get right. The first row is
-    // found by its mark and its words; the identity line under the cursor's own row is the one
-    // extra line on the screen.
+    // The header takes row 0, title and blank two more, then the project line and legend, then one
+    // row per session. The cursor's row has one extra identity line under it.
     assert_eq!(
         row_of(&mut a, "two"),
         row_of(&mut a, "~ one") + 2,

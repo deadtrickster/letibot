@@ -79,9 +79,8 @@ fn todo_answer(content: &str, question: &str, answer: QuestionAnswer) -> Option<
     })
 }
 
-/// **Answer → the next waiting row's card opens; the last answer → the card closes and the line
-/// says nothing waits.** *"i answered what was asked by the todo, and it didnt hide"* - the answer
-/// went, and nothing on the screen said so.
+/// Answer → the next waiting row's card opens; the last answer → the card closes and the line
+/// says nothing waits.
 #[test]
 fn an_answer_opens_the_next_waiting_row_and_the_last_one_closes_the_card() {
     let mut a = app();
@@ -176,7 +175,6 @@ fn a_board_still_asking_after_an_answer_asks_again() {
 }
 
 /// Esc on a todo card: nothing sent, the line stays, alt-a brings it back with the draft.
-/// *"sometimes i need time to think and just let the card stay"*.
 #[test]
 fn esc_puts_a_todo_card_away_and_alt_a_brings_back_its_draft() {
     let mut a = app();
@@ -212,8 +210,8 @@ fn esc_puts_a_todo_card_away_and_alt_a_brings_back_its_draft() {
     );
 }
 
-/// **The model's question put away keeps waiting under its own deadline, and the line counts it
-/// down** - so the operator is not surprised when it lapses. alt-a brings it back with the draft.
+/// The model's question put away keeps waiting under its own deadline, and the line counts it
+/// down - so the operator is not surprised when it lapses. alt-a brings it back with the draft.
 #[test]
 fn esc_puts_the_models_question_away_and_the_line_shows_its_deadline() {
     let mut a = app();
@@ -462,8 +460,7 @@ fn alt_h_folds_the_waiting_line_into_a_count_on_the_edge_and_news_unfolds_it() {
     );
 }
 
-/// `/asks` lists every question waiting, answering none - *"a way for me to see all
-/// questions without answering them"*.
+/// `/asks` lists every question waiting, answering none.
 #[test]
 fn slash_asks_lists_every_question_and_answers_none() {
     let mut a = App::new(plain_cfg(100));

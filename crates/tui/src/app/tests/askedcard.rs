@@ -278,9 +278,7 @@ fn options_block(a: &App) -> Vec<String> {
     rows[at..].to_vec()
 }
 
-/// The options are one per line, and the one the operator chose is marked. The operator,
-/// pasting this popup with every option on one `options offered:` line: *"here - lets render
-/// options offered vertically, and mark what i chose"*.
+/// The options are one per line, and the one the operator chose is marked.
 #[test]
 fn the_popup_draws_the_options_vertically_and_marks_the_choice() {
     let a = popup_for(KLICK, Some(K2), 200);

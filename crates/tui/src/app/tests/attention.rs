@@ -426,8 +426,8 @@ fn a_question_the_head_has_read_the_board_for_dies_with_its_row() {
     assert!(line(&mut a).is_empty());
 }
 
-/// **A second row's question still draws while the first is gone - the COUNT, not just the
-/// presence.** The line's `(+1 more)` is read from the board too: a head that counted the
+/// A second row's question still draws while the first is gone - the COUNT, not just the
+/// presence. The line's `(+1 more)` is read from the board too: a head that counted the
 /// settings row's number would keep saying two after one was taken back.
 #[test]
 fn the_line_counts_the_questions_the_board_still_holds() {

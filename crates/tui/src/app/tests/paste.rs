@@ -127,10 +127,8 @@ fn a_test_build_cannot_name_the_operators_attachment_directory() {
     );
 }
 
-/// And ctrl-v is the window it always was, whatever the clipboard holds: the picture is `cmd-v`'s
-/// and the key that opens a row does not look at the clipboard at all - the regression this
-/// split must not reintroduce, in the direction that mattered (a screenshot chipped instead of a
-/// window opened).
+/// ctrl-v is the window whatever the clipboard holds: the picture is `cmd-v`'s, and the key that
+/// opens a row never reads the clipboard.
 #[test]
 fn ctrl_v_with_an_image_on_the_clipboard_still_opens_the_payload_window() {
     let mut a = a_picture_with_clipboard("ctrl-v-window");

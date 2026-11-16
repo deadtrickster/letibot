@@ -1,7 +1,6 @@
-//! K6: a row's card comes from the typed facts it was delivered with, through the `card_` hook
-//! (`docs/plugin-extension-points-wide.md` X22). The built-in `cards` layer is compiled from the
-//! same readers the head falls back to, so the three things these tests pin are: a reworded notice
-//! keeps its card, a row is asked about once, and the layer draws what the readers drew.
+//! A row's card comes from its typed facts, through the `card_` hook. The built-in `cards` layer is
+//! compiled from the head's fallback readers, so these pin: a reworded notice keeps its card, a row
+//! is asked about once, and the layer draws what the readers drew.
 
 use super::*;
 use letibot_plugins::Stack;
@@ -187,10 +186,8 @@ fn the_card_cache_evicts_the_least_recently_used() {
     );
 }
 
-/// The built-in `cards` layer draws what the readers draw, on the readers' own fixtures: the layer
-/// is not a second drawing of a notice but the same one, compiled into a module. A fixture no reader
-/// knows is the layer's cue to say nothing - the head's own generic line is still drawn - and the
-/// test says so rather than pretending the layer answered it.
+/// The built-in `cards` layer draws what the readers draw, on the readers' own fixtures. A fixture
+/// no reader knows gets nothing from the layer, and the head's generic line is drawn.
 #[test]
 fn the_builtin_cards_layer_draws_what_the_readers_drew() {
     let host = builtin_host("fixtures");

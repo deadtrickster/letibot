@@ -1,6 +1,5 @@
-//! A round's counts are drawn after its reply - the operator: *"we still have problems with
-//! [n tools called, m thinking lines] they often appear above the current reply or backfilled"*,
-//! and their ruling on where they go: *all of it after the reply*.
+//! A round's counts (`[n tool calls, m thinking lines]`) are drawn after its reply, never above
+//! it or backfilled.
 
 use super::*;
 

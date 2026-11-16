@@ -163,8 +163,8 @@ fn the_feed_carries_the_hosts_clock_and_its_scope() {
     assert_eq!(feed["not_queued"][0], "letim");
 }
 
-/// **The clock is quantised to the second, so a frame that changes nothing a row can draw costs no
-/// wasm call** - the host answers a pane once per distinct `Input`, and a millisecond clock in the
+/// The clock is quantised to the second, so a frame that changes nothing a row can draw costs no
+/// wasm call - the host answers a pane once per distinct `Input`, and a millisecond clock in the
 /// feed is a cache that misses on every tick.
 #[test]
 fn the_feeds_clock_moves_once_a_second_and_not_once_a_frame() {

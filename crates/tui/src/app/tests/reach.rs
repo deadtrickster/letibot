@@ -148,8 +148,8 @@ fn a_message_to_a_local_model_nobody_serves_opens_the_chooser_with_the_reason() 
     assert!(a.reach.reason.is_none() && a.reach.held.is_none());
 }
 
-/// A local model that answers is not interrupted - the message goes, no card - **and the check
-/// is per attempt**: the same session, the server gone, the next message opens the chooser; the
+/// A local model that answers is not interrupted - the message goes, no card - and the check
+/// is per attempt: the same session, the server gone, the next message opens the chooser; the
 /// server back, the one after that is sent. Nothing is latched either way.
 #[test]
 fn a_message_to_a_local_model_that_answers_is_sent_and_the_check_is_per_attempt() {
@@ -207,10 +207,8 @@ fn no_local_model_on_the_box_opens_the_chooser_without_a_probe() {
     );
 }
 
-/// A cloud row with no key goes through the key card, and the held message follows it - the
-/// switch with the key, then the re-read, the default (`/default-model`, so it is asked once per
-/// box), and the message, in that order. The box holds a key for `glm` only, which is what makes
-/// `deepseek` a row to ask about.
+/// A cloud row with no key goes through the key card and the held message follows: the switch with
+/// the key, the re-read, `/default-model`, then the message. The box holds a key for `glm` only.
 #[test]
 fn choosing_a_provider_with_no_key_leads_to_the_key_card_and_the_message_follows() {
     let mut a = on_local("glm", "/models/qwen.gguf");

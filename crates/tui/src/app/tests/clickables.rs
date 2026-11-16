@@ -231,8 +231,7 @@ fn a_system_row_and_an_offer_open_on_a_click() {
 }
 
 /// A warning is not a row of the conversation, so there is no legend to click: the sentence is
-/// opened from `/notes`, which is the pane's own key. This test used to walk every warning card's
-/// legend; the walk it pins now is the one `/notes` needs, so it asserts the sentence is there.
+/// opened from `/notes`, which is the pane's own key, so this asserts the sentence is there.
 #[test]
 fn a_warning_is_opened_from_notes_not_from_a_row() {
     for (code, detail) in [

@@ -485,7 +485,7 @@ fn cursor(a: &App) -> Option<String> {
 }
 
 /// A tree with a conversation that has rows under it: the project's line, the conversation, and
-/// its child's own child - the shape R159's keys are asked about.
+/// its child's own child - the shape the tree keys are asked about.
 fn a_tree_with_three_levels() -> App {
     let mut a = a_daemon_with_two_projects();
     a.set_row_fold("s-habr", true);
@@ -494,8 +494,7 @@ fn a_tree_with_three_levels() -> App {
 }
 
 /// `←` on an expanded session closes THAT session and nothing else, and the cursor stays on the
-/// row it just closed. Filed by the operator on 2026-11-08: this key closed the whole project and
-/// left the cursor on whichever project's line slid into the hole.
+/// row it just closed, not the whole project.
 #[test]
 fn left_on_an_expanded_session_closes_only_it_and_keeps_the_cursor() {
     let mut a = a_tree_with_three_levels();

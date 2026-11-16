@@ -27,9 +27,8 @@ const NOTHING_WARNING: &str = include_str!("fixtures/restart_nothing_warning.txt
 /// Nothing running, but a turn owed: the promise alone, and every clause `Owed` can say.
 const OWED_PROMISE_NOTICE: &str = include_str!("fixtures/restart_owed_promise_notice.txt");
 const OWED_WORK_NOTICE: &str = include_str!("fixtures/restart_owed_work_notice.txt");
-/// The operator's paste, as the daemon before this build wrote it - *"down for 0s …
-/// estimated from nothing (no record said when)"*. A head attached to an older daemon still
-/// reads it; not pinned, because no daemon from this build writes it.
+/// The older daemon's wording of a restart with no record. A head attached to an older daemon
+/// still reads it; not pinned, because no daemon from this build writes it.
 const PASTED_NOTICE: &str = include_str!("fixtures/restart_pasted_notice.txt");
 const PASTED_WARNING: &str = include_str!("fixtures/restart_pasted_warning.txt");
 /// A real restart, as its store and its daemon log hold it - the notice the

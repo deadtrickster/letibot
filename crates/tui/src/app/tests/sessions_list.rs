@@ -763,7 +763,7 @@ fn thirty_sessions_at_a_hundred_columns_are_one_row_each_with_an_age() {
 }
 
 /// A name too long for the row is cut before the facts are: rano draws the right-hand column only
-/// when both halves fit, so an over-long title used to cost the row its age silently.
+/// when both halves fit, so an over-long title would cost the row its age silently.
 #[test]
 fn a_long_name_is_cut_before_the_facts_are_dropped() {
     let now = letibot_sessionlog::registry::now_ms();

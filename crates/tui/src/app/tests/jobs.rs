@@ -129,9 +129,7 @@ fn a_settled_jobs_row_draws_compact_and_not_as_the_promise() {
         },
     )));
     let screen = a.screen(120, 30).join("\n");
-    // Two lines since the compact card (`job_card`): the job, how it ended and what it ran,
-    // then what it wrote - the operator's *"first line is j<id> - slug - truncated cmd and
-    // second line is truncated output"*.
+    // Two lines (`job_card`): `j<id> - slug - truncated cmd`, then the truncated output.
     assert!(
         screen.contains("j57 · exited 0 3.0s · sleep 3; echo done"),
         "the row names the job, how it ended and what it ran: {screen}"
@@ -503,7 +501,7 @@ fn the_jobs_pane_joins_the_command_and_marks_a_running_job() {
         ],
     ));
     // Both jobs, so the settled one is unfolded to be drawn - it lives under the
-    // `finished` group by default (the operator's ask), and this test is about the ROW.
+    // `finished` group by default, and this test is about the ROW.
     a.jobs_finished_open = true;
     let lines = a.jobs_lines(100).join("\n");
     assert!(lines.contains("cargo test --workspace"), "{lines}");
@@ -1054,7 +1052,7 @@ fn a_job_list_older_than_a_job_event_is_discarded_and_asked_again() {
 }
 
 /// A job's completion draws the files it changed while it ran: the daemon snapshots the tree at the
-/// spawn and reads it at the settlement (R161), so the two panels are the job's own measurement - and
+/// spawn and reads it at the settlement, so the two panels are the job's own measurement - and
 /// the row says WHEN, never WHO, because another call may have written the same tree meanwhile.
 #[test]
 fn a_jobs_completion_draws_the_files_it_changed() {

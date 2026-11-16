@@ -242,7 +242,7 @@ fn every_says_literal_on_the_conversation_bar_does_what_it_says() {
     }
 }
 
-// ---- K9: `[keys]` in `leticode.toml` ----
+// ---- `[keys]` in `leticode.toml` ----
 
 /// One `[keys]` line, as the reader hands it over: the name, the key, and the line it was on.
 fn rebind(name: &str, key: &str) -> leticode_config::Rebind {
@@ -257,9 +257,9 @@ fn rebind(name: &str, key: &str) -> leticode_config::Rebind {
     }
 }
 
-/// K9's done-test: a rebound key is honoured - the new key reaches the binding, the old one does
-/// not, and the bar and the help say the new one - and a key the head claims GLOBALLY is not
-/// rebindable, which is W8's rule: a binding is rebound within its surface, never the escape.
+/// A rebound key is honoured: the new key reaches the binding, the old one does not, and the bar
+/// and the help say the new one. A globally claimed key is not rebindable: a binding is rebound
+/// within its surface, never the escape.
 #[test]
 fn a_rebound_key_is_honoured_and_a_global_chord_is_not_rebindable() {
     let keys = leticode_config::KeyKeys {
@@ -285,10 +285,8 @@ fn a_rebound_key_is_honoured_and_a_global_chord_is_not_rebindable() {
         "the old key still reaches the binding it was moved off"
     );
 
-    // And nothing advertises the old key: the bar's words for the move are `f`'s, and the help's
-    // are too - an advertisement of a press that does nothing is the defect W8 names. The two
-    // screens ask the binding different questions (the bar says what a press would do NOW, the
-    // help says both directions of a switch), so each is read for what it writes.
+    // Nothing advertises the old key: the bar and the help both use `f`'s words. They ask the
+    // binding different questions, so each is read for what it writes.
     let now = a
         .switch_says(&moved)
         .expect("the binding still says something");
@@ -373,10 +371,8 @@ fn f1_opens_the_help_and_closes_it() {
     assert_eq!(a.top_surface(), None, "and it closes again");
 }
 
-/// The refusal list is the head's own chords, and the half of it a table can prove is proved here:
-/// every chord a surface advertises and every chord a switch names is a word the rebinding refuses.
-/// The rest (esc, ctrl-c, and the chords with no table to read) are arms of `key_chords` and
-/// `key_dispatch`, so they are the list's own word - stated once, in [`GLOBAL_CHORDS`].
+/// The refusal list is the head's own chords: every chord a surface advertises and every chord a
+/// switch names is refused as a rebinding. The rest live in [`GLOBAL_CHORDS`].
 #[test]
 fn the_global_chords_are_the_ones_the_tables_advertise() {
     use crate::app::keys::bindings::{GLOBAL_CHORDS, Word, word_of};

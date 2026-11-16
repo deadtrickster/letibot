@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 /// A module that fails every call - a layer that traps, or runs out of fuel: from the stack's side
-/// of the seam the two are one thing (`docs/plugins-plan.md`).
+/// of the seam the two are one thing.
 struct Trap;
 
 impl Module for Trap {
@@ -155,10 +155,8 @@ fn a_layer_that_traps_falls_down_to_the_builtin() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// **No layer at all - a head whose built-in table could not be built - says so in one line, and
-/// draws no list of its own.** The built-in `sessions` layer is part of the binary, so a stack
-/// without it is a defect: the pane names it, the refusal says why, and there is no second drawing
-/// to fall back to (`docs/plugins-plan.md` §7).
+/// No layer at all says so in one line and draws no list of its own. The built-in `sessions` layer
+/// is part of the binary, so a stack without it is a defect the pane names.
 #[test]
 fn a_broken_builtin_says_so_and_draws_no_second_list() {
     let tmp = tempdir("empty");

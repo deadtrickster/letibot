@@ -57,7 +57,7 @@ fn a_sessions_developer_diagnostics_are_one_info_line() {
     let screen = a.screen(200, 40);
     let joined = screen.join("\n");
     // Not a row: a developer's diagnostic is `/notes` and the daemon's log, and the conversation
-    // gets nothing at all - not even the one line it used to.
+    // gets nothing at all.
     assert_eq!(rows_with(&screen, "diagnostics ·").len(), 0, "{joined}");
     // More of them: the listing grows and the screen does not.
     for (code, detail) in [

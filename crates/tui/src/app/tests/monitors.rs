@@ -107,8 +107,7 @@ fn del_retires_the_monitor_under_the_cursor() {
     );
 }
 
-/// Enter shows a monitor whole, with the call that armed it - the operator: *"i want to see
-/// monitor command in the details"*, looking at a timer whose row said nothing of what it was for.
+/// Enter shows a monitor whole, with the call that armed it, so a timer says what it is for.
 #[test]
 fn enter_shows_the_monitor_and_the_call_that_armed_it() {
     let mut a = attached();

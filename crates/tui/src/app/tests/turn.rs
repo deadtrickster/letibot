@@ -232,20 +232,8 @@ fn the_prefill_line_reads_as_nearly_done_when_the_prompt_was_mostly_cached() {
     }
 }
 
-/// A turn that only thinks and writes calls still draws its row, and the row still moves.
-///
-/// MEASURED LIVE on the deepseek (`messages`) backend, and this test is that
-/// measurement written down. The operator's screen read
-///
-/// ```text
-///   ⠹ Responding · 2m19s · 145 chars
-///   ⠼ Responding · 2m34s · 145 chars      header: 15.1s · 2826 out · 188 tok/s
-/// ```
-///
-/// The number was frozen for two and a half minutes while the turn produced 2826 output tokens (*"still thinking glued to Responding"*).
-/// Two answers: the number counts every channel (`107 chars` against `6384` on the same turn), and, the operator's ruling, the number
-/// is gone entirely; the spinner and clock move on the head's own clock. So a turn of only reasoning and tool-call deltas is still
-/// drawn, says `Responding`, carries no figure, and moves with nothing arriving.
+/// A turn of only reasoning and tool-call deltas still draws its row: it says `Responding`, carries
+/// no character count, and the spinner and clock move on the head's own clock with nothing arriving.
 #[test]
 fn a_turn_that_only_thinks_and_writes_calls_still_draws_its_row() {
     let mut a = app();
@@ -853,9 +841,8 @@ fn while_a_turn_runs_the_header_shows_no_clock() {
         "the header repeats the composer row's clock: {header}"
     );
 
-    // And the rate and the count did NOT move with it. `last_timings` is what they are for,
-    // and the operator's earlier complaint about them was *"the rate comes and goes"* - so the
-    // rate stays on the round that just ended while the duration becomes the turn's.
+    // And the rate and the count did NOT move with it: the rate stays on the round that just
+    // ended (`last_timings`) while the duration becomes the turn's.
     assert!(
         header.contains("tok/s"),
         "the rate went missing with the duration: {header}"
@@ -1210,10 +1197,8 @@ fn the_thinking_count_never_falls_not_even_when_its_reasoning_lands() {
             .is_some_and(|t| t.reasoning.raw().is_empty()),
         "the live reasoning still holds what the row carries, so it is counted twice"
     );
-    // And the count on the GLASS did not fall: a folded thought draws nothing, so its run must
-    // leave a marker standing for it - a row the reader cannot see is a row the record lost. This
-    // assertion is what pinned that: the run index used to read only the rung, so a lone folded
-    // thought left neither the row nor a marker.
+    // The count on the glass did not fall: a folded thought draws nothing, so its run must leave a
+    // marker, and the run index must read more than the rung.
     assert!(
         after_landing >= last,
         "the count fell when its reasoning landed as a row — it was counting the same work \

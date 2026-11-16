@@ -1,4 +1,4 @@
-//! The walls the review measured on real rows, one notice at a time. A notice drawn at eighty
+//! Walls from real rows, one notice at a time. A notice drawn at eighty
 //! columns is one screen row or two, and the whole of it is a click away. The texts here are the
 //! producers' own: each wall was a stored row, so a fixture that is shorter than one proves nothing.
 

@@ -485,8 +485,8 @@ fn the_session_list_owns_the_word_running_and_the_event_owns_everything_else() {
     assert_eq!(a.subagents[0].task, "audit the store");
     assert_eq!(a.subagents[0].answer.as_deref(), Some("3529 files"));
 
-    // **And the other way round: the child has stopped, and the row still claims it is
-    // running.** The finish happened before the list was cut, so the list is the later
+    // And the other way round: the child has stopped, and the row still claims it is
+    // running. The finish happened before the list was cut, so the list is the later
     // word - and the count above the composer stops lying about a child that is idle.
     let mut stopped = a_family();
     stopped[1].status.running = false;
@@ -1287,8 +1287,7 @@ fn the_fold_survives_going_down_into_a_child_and_back_up() {
         "the round trip re-opened the group the operator had folded"
     );
     // And it is drawn folded: the finished children are under the group row and not on the
-    // glass. This is the operator's *"it doesnt group finished subagents"* read off the screen
-    // rather than off the flag.
+    // glass, read off the screen rather than off the flag.
     let screen = a.screen(100, 24).join("\n");
     assert!(screen.contains("finished (2)"), "{screen}");
     assert!(

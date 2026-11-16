@@ -20,10 +20,8 @@ fn a_head_with_one_session() -> App {
     a
 }
 
-/// **An idle frame does not re-run the guest.** The one-slot cache is keyed by the whole input, so
-/// anything in it that moves on its own makes every frame a different question - and the clock
-/// was: `now` in the feed meant the key changed every millisecond. An age is a BUCKET now
-/// (`letibot_plugin::sessions::age_word`), so frames inside one bucket ask once.
+/// An idle frame does not re-run the guest. The one-slot cache is keyed by the whole input, so the
+/// feed carries age buckets (`letibot_plugin::sessions::age_word`), not a clock.
 #[test]
 fn an_idle_frame_does_not_ask_the_guest_again() {
     let mut a = a_head_with_one_session();

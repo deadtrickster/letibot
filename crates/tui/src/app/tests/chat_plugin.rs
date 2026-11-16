@@ -1,11 +1,6 @@
-//! The chat as a layer (`docs/plugin-extension-points.md` §5 P5): the `chat` feed, the memo that
-//! asks it once per generation, the input's two hooks, the acts an answer performs, and the native
-//! adapter a broken layer falls to in the same frame.
-//!
-//! Most of the layer here is scripted - a `Module` that answers what a test says - because what is
-//! being proved is the HOST's half. The last section stands this binary's own `chat` layer in
-//! instead (P6): it is what the head draws with, so the parity between what it answers and what the
-//! native adapter builds is proved on the real module, not on a script.
+//! The chat as a layer: the `chat` feed, the once-per-generation memo, the input hooks, the acts an
+//! answer performs, and the native adapter a broken layer falls to. Most tests script the layer to
+//! prove the host's half; the last section uses this binary's own `chat` layer for parity.
 
 use super::rooms::{history, msg as wire_msg, opened, reply};
 use super::*;
@@ -16,11 +11,8 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-/// The fuel a full 200-message window costs at the wasm boundary, measured on lubuntu1 2026-11-11
-/// against this binary's own `sessions` layer - the cheapest pane layer the tree has, whose input
-/// parse IS the feed's JSON. It is recorded in `docs/plugin-extension-points.md` §5 P5; the ceiling
-/// below is a little over twice it, so a doubling of the engine's own work is a failure and the
-/// engine's own 50M per-call cap is never near.
+/// The fuel a 200-message window costs through this binary's `sessions` layer, the cheapest pane
+/// layer. The ceiling is a little over twice it, well under the engine's 50M per-call cap.
 const FUEL_200: u64 = 3_456_254;
 const FUEL_CEILING: u64 = 8_000_000;
 
@@ -111,7 +103,7 @@ impl Loader for ScriptedLoader {
     }
 }
 
-/// The chat layer's manifest, as H0's `manifest.rs` spells it: the three hooks, the one feed, the
+/// The chat layer's manifest, as `manifest.rs` spells it: the three hooks, the one feed, the
 /// acts. `actions` is a parameter because the allowlist is what one test is about.
 fn manifest(actions: &str) -> String {
     format!(
@@ -279,7 +271,7 @@ fn the_chat_feed_carries_now_ms_and_the_local_offset() {
 // ─────────────────────────────── the input ───────────────────────────────
 
 /// Enter on the layer's input calls `command_<pane>` with the line, the key it bound, the reply
-/// target and the chips - the whole shape of `X5`, and never a keystroke.
+/// target and the chips, and never a keystroke.
 #[test]
 fn enter_in_a_plugin_input_calls_its_command_hook_with_the_line() {
     let seen = Seen::default();
@@ -451,10 +443,9 @@ fn a_trapping_chat_layer_falls_back_to_the_native_renderer() {
 
 // ─────────────────────────────── the window ───────────────────────────────
 
-/// A window of 200 messages is a real feed: it is under `WINDOW_BYTES`, it is asked through a wasm
-/// engine, and the fuel it costs is recorded and asserted under a ceiling. The layer is this
-/// binary's own `sessions` pane - the cheapest one there is - asked with the chat window, so the
-/// number is the boundary's price and not a guess about P6's policy.
+/// A 200-message window is a real feed: under `WINDOW_BYTES`, asked through a wasm engine, and its
+/// fuel asserted under a ceiling. The cheapest layer is used, so the number is the boundary's
+/// price.
 #[test]
 fn a_window_of_200_messages_answers_under_the_fuel_cap() {
     let mut a = opened(1_000);
@@ -522,7 +513,7 @@ fn a_window_of_200_messages_answers_under_the_fuel_cap() {
 
 // ─────────────────────────── the pane's own renderer ───────────────────────────
 
-/// A pane's `stream` block is drawn by P2's renderer: the entry above, the body under it, the
+/// A pane's `stream` block is drawn by the stream renderer: the entry above, the body under it, the
 /// divider where the layer put one - and the entry is what the cursor rests on, not a screen row.
 #[test]
 fn a_plugin_panes_stream_block_draws_through_the_chat_renderer() {
@@ -571,7 +562,7 @@ fn a_plugin_panes_stream_block_draws_through_the_chat_renderer() {
 // ─────────────────────────────── the keys ───────────────────────────────
 
 /// A pane that owns the composer must not eat the letters, so its own keys are live only once Tab
-/// put the reader into the view (`X8`): Esc hands them back.
+/// put the reader into the view: Esc hands them back.
 #[test]
 fn a_views_own_keys_are_live_only_in_cursor_mode() {
     let mut a = app();
@@ -619,7 +610,7 @@ fn a_views_own_keys_are_live_only_in_cursor_mode() {
     assert_eq!(a.focused_surface(), Some(Surface::PluginPane));
 }
 
-// ────────────────────── P6: the built-in chat layer itself ──────────────────────
+// ────────────────────── the built-in chat layer itself ──────────────────────
 
 /// The head with this binary's OWN layers at the bottom and rano compiling them: the built-in
 /// `chat` layer, asked the way the head asks it. `None` from [`App::chat_view`] is *the native
@@ -693,10 +684,8 @@ fn scenes() -> Vec<Scene> {
         );
     }
 
-    // A year ago, yesterday and today, so every label the divider can say is drawn. The three
-    // instants are a year apart and a day apart on purpose: a layer is handed ONE offset and the
-    // adapter reads the zone per message, so a window that spans a DST change is the one thing the
-    // two cannot agree on - and a test that crossed one would be testing the calendar, not the layer.
+    // A year ago, yesterday and today, so every divider label is drawn. The instants avoid a DST
+    // change: a layer gets one offset while the adapter reads the zone per message.
     fn days(a: &mut App) {
         reply(a, super::rooms::rooms_reply(&[("host", 2, 3, 0)]));
         reply(
@@ -801,10 +790,8 @@ fn msg_ts(seq: u64, ts: u64, author: &str, text: &str) -> Value {
            "text": text})
 }
 
-/// **P6's parity.** For the same `RoomsView`, the stream the built-in layer answers is the stream
-/// the native adapter builds: the same runs and headers, the same hues, the same mentions, the same
-/// dividers and the same quote. It is the whole point of the layer, so it is asserted whole -
-/// `Stream` compares field by field, and a decision that differs shows up as a diff of entries.
+/// Parity: for the same `RoomsView`, the built-in layer's stream is the stream the native adapter
+/// builds. Asserted whole, so any differing decision shows as a diff of entries.
 #[test]
 fn the_builtin_chat_layer_draws_what_the_native_adapter_draws() {
     for (what, scene) in scenes() {
@@ -879,7 +866,7 @@ fn the_parity_scenes_draw_runs_dividers_and_a_quote() {
     );
 }
 
-/// **Completion parity.** Tab on the layer's input ranks what the native completion ranks, for the
+/// Completion parity. Tab on the layer's input ranks what the native completion ranks, for the
 /// same view: the roster first with a prefix ahead of a substring, the head's verbs, and the
 /// bridge's aliases - the layer's answer is the answer a room's own Tab gives.
 #[test]
@@ -916,9 +903,8 @@ fn the_builtin_chat_layer_completes_what_the_native_completion_completes() {
     }
 }
 
-/// **The 200-message window through the built-in layer.** P5 measured what the boundary costs a
-/// pane on a full window; this is the same window asked of the layer that actually draws a chat,
-/// and the ceiling is P5's. The number is printed so a change that doubles it is visible.
+/// The 200-message window through the built-in chat layer, under the same fuel ceiling. The
+/// number is printed so a change that doubles it is visible.
 #[test]
 fn the_builtin_chat_layers_window_answers_under_the_fuel_cap() {
     let now = 1_793_735_794_500;
@@ -988,7 +974,7 @@ fn the_builtin_chat_layers_window_answers_under_the_fuel_cap() {
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
-/// **The module's size.** A guest is embedded in the binary, so its size is the binary's: this one
+/// The module's size. A guest is embedded in the binary, so its size is the binary's: this one
 /// is a conversation's worth of policy and must not become the largest of the six.
 #[test]
 fn the_builtin_chat_module_is_no_bigger_than_the_largest_builtin() {

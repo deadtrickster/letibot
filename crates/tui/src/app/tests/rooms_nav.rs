@@ -1,10 +1,6 @@
-//! P4: moving through the chat rather than through the channels. The message cursor, the jump to
-//! the tail and to the unread divider, the `N new` count, `Ctrl+K`, `/search`, and the pictures a
-//! message carries - fetched once, kept in a bounded cache, opened whole, and uploaded in parts.
-//!
-//! Every one of them acts on the entries of a STREAM rather than on the rows a message was drawn
-//! on, which is what makes the last test here possible: a plugin's `Block::Stream` is walked by the
-//! same arrows, with no line of the pane knowing what a room is.
+//! Moving through the chat: the message cursor, jumps, the `N new` count, `Ctrl+K`, `/search`, and
+//! message pictures. All act on stream entries, so the last test walks a plugin's `Block::Stream`
+//! with the same keys.
 
 use super::*;
 use crate::app::chat_media::{PART, PICTURES};

@@ -1505,7 +1505,7 @@ fn the_help_screen_names_both_settings_and_what_a_bare_one_does() {
     );
 }
 
-// ---- K9: `[verbosity.<name>]` in `leticode.toml` ----
+// ---- `[verbosity.<name>]` in `leticode.toml` ----
 
 /// One profile, as the reader hands the head over: the name and the list of things it shows.
 fn profile(name: &str, show: &[&str]) -> leticode_config::ProfileKeys {
@@ -1520,10 +1520,9 @@ fn profile(name: &str, show: &[&str]) -> leticode_config::ProfileKeys {
     }
 }
 
-/// K9's done-test: a profile a file defines IS the list of things it shows - what it names is
-/// open, a `SWITCH=LEVEL` is that level, and what it leaves out is hidden. The head then reads
-/// its name wherever a profile name is read (the verb, `head.toml`, the status row), and a word
-/// the head's own switch table does not know is refused with the line it was written on.
+/// A profile a file defines is the list of things it shows: named is open, `SWITCH=LEVEL` is that
+/// level, left out is hidden. Its name is read everywhere a profile name is, and an unknown word is
+/// refused with its line.
 #[test]
 fn a_verbosity_profile_is_a_list_of_shown_things() {
     let keys = leticode_config::VerbosityKeys {
@@ -1649,8 +1648,6 @@ fn a_long_config(n: usize) -> App {
 }
 
 /// Down keeps the cursor on the screen, all the way round, and comes back to the top.
-/// The operator: *"if i keep pressing down the selector eventually goes out of
-/// view and doesnt wrap … until i reenter config pane"*.
 #[test]
 fn down_keeps_the_config_cursor_in_view_and_wraps_to_the_first_row() {
     let mut a = a_long_config(30);

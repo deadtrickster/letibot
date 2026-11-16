@@ -413,8 +413,8 @@ fn the_head_hands_the_layer_the_board_and_the_session_and_the_repo_outline() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// A layer that traps is said, and the layer below answers - fail down, loudly
-/// (`docs/plugins-plan.md`). The broken layer costs the person a sentence and
+/// A layer that traps is said, and the layer below answers - fail down, loudly.
+/// The broken layer costs the person a sentence and
 /// nothing else: the built-in `todo` below it reads the line, and the row is added.
 #[test]
 fn a_layer_that_traps_is_said_and_the_builtin_below_answers() {

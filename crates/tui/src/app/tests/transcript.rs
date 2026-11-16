@@ -521,9 +521,8 @@ fn a_queued_echo_waits_below_the_working_until_the_daemon_takes_it() {
         !after_text.contains("▌ queued · ") && !after_text.contains("▌ unconfirmed · "),
         "the announced row still carries a queued claim: {after_text}"
     );
-    // And the move is the ruling. From this moment the words are above the reply, which is
-    // the half of the report that must not come back: *"reply started streaming above the
-    // queued message … pure ui desync."*
+    // From this moment the words are above the reply, never streaming above the queued
+    // message.
     let words_after = after
         .iter()
         .position(|l| l.contains("Q2 the message"))
@@ -1213,7 +1212,7 @@ fn a_compaction_draws_one_row_with_its_unit_and_what_it_kept_and_dropped() {
     assert_eq!(rows.len(), 1, "one compaction is one note:\n{listing}");
     let row = rows[0];
     // `/notes` lists the daemon's sentence verbatim, with the unit it counted in and both halves
-    // of what it kept - the card the conversation used to draw is gone with the row.
+    // of what it kept; the conversation draws no card.
     assert!(
         row.contains("958397 → 100005 deepseek tokens"),
         "the size before and after, in the unit the daemon counted it in: {row:?}"
@@ -1433,9 +1432,8 @@ fn a_compaction_resolves_the_echoes_it_supersedes() {
     );
 }
 
-/// A refusal's reasoning folds, and the envelope never shows. Both halves
-/// of *"it just throws up on my chat"*: layer A's reason is a document, and the
-/// row under it was carrying the marker the model reads.
+/// A refusal's reasoning folds, and the envelope never shows: layer A's reason is a document,
+/// and the row under it carries the marker the model reads.
 #[test]
 fn a_reason_that_is_a_document_folds_to_its_first_sentence() {
     assert!(is_envelope("<<<TOOL_ERROR 5ebfdef6>>>"));
@@ -1726,8 +1724,7 @@ fn the_bar_says_what_ctrl_v_does_and_names_the_verb_that_does_the_rest() {
 
 #[test]
 fn a_recorded_session_renders_without_a_daemon() {
-    // W8 is a leaf: give it a recorded log and it is built and demoed before a
-    // turn engine exists.
+    // The head renders a recorded log without a daemon or a turn engine.
     let mut a = app();
     for e in testing::recorded_session() {
         a.apply(ServerFrame::Event(letibot_sessionlog::event::Envelope {
@@ -1767,8 +1764,8 @@ fn a_sessions_reply_re_folds_the_rows_and_the_count() {
         "the premise: and none is counted"
     );
 
-    // The daemon's answer to the `ListSessions` the seating asked for. **A `Sessions` frame,
-    // not a `Hello`** - this is the reply the re-ask actually produces, and it is the one the
+    // The daemon's answer to the `ListSessions` the seating asked for. A `Sessions` frame,
+    // not a `Hello` - this is the reply the re-ask actually produces, and it is the one the
     // arm reads for the picker alone.
     a.apply(ServerFrame::Sessions {
         sessions: a_family(),
@@ -2337,8 +2334,7 @@ fn an_answered_question_is_on_the_screen_at_every_rung() {
             screen.contains("sqlite") && screen.contains("only for the CUDA box"),
             "the operator's answer is hidden at `{name}`:\n{screen}"
         );
-        // The result is its header, folded (`asked_card`; the operator: *"again, too much on my
-        // screen, i saw the resulting selector anyway"*) - on the screen, and counting.
+        // The result is its header, folded (`asked_card`) - on the screen, and counting.
         assert!(
             screen.contains("ask_user_question") && screen.contains("60 lines"),
             "the result of the person's answer is hidden at `{name}`:\n{screen}"
@@ -4080,8 +4076,7 @@ fn a_marker_is_glued_to_a_line_once_however_many_frames_draw_it() {
         4,
         testing::proposed_on("t1", "c1", "bash", "\"cargo test\""),
     )));
-    // CONSECUTIVE CALLS, which is the shape the operator named - *"sometimes on consequtive
-    // tool calls and things"*. Each round: a call finishes with its result row, and the next is
+    // CONSECUTIVE CALLS. Each round: a call finishes with its result row, and the next is
     // proposed, so between two renders the run grows and the marker's text changes.
     for n in 0..4u64 {
         let seq = 10 + n * 8;
@@ -5084,10 +5079,8 @@ fn a_call_the_transcript_has_answered_is_not_drawn_executing() {
     );
 }
 
-/// A settling call is on the screen in every frame: the live card while it runs, the row's own header
-/// once it is announced, the row itself when the body lands. The card retires at the announcement - the
-/// row draws from there - and the diff comes back with the body; what must never happen is a frame in
-/// which the call is in neither half.
+/// A settling call is on screen in every frame: the live card while it runs, the row's header once
+/// announced, the row when the body lands. No frame may show the call in neither half.
 #[test]
 fn a_settling_call_is_drawn_in_every_frame_of_its_hand_over() {
     settling_call_is_drawn_in_every_frame(false);
@@ -5218,10 +5211,8 @@ fn settling_call_is_drawn_in_every_frame(tail: bool) {
         "finished",
         &["@@ -1,1 +1,3"],
     );
-    // 2. The result row announced with its body not yet landed. Before R183 this was the frame that flickered:
-    // the card was the only thing that knew the call and the row drew nothing, so a head that stood the card
-    // down there left the call in neither half. The row draws its own header now, once, and the pane stands
-    // down - the diff comes back with the body.
+    // 2. The result row announced with its body not yet landed: the row draws its own header and
+    // the pane stands down; the diff comes back with the body.
     let announced = frame(
         &mut a,
         testing::appended(result_id, "tool_result"),
@@ -5823,9 +5814,8 @@ fn the_chord_is_named_on_one_run_and_the_verb_on_the_others() {
     a.visibility = Visibility::of(Profile::CONVERSATION);
     a.invalidate_history();
     let quiet = a.screen(110, 40).join("\n");
-    // The seam is OFF - the operator: *"dont print \" dot /verbosity\" or ctrl-t opens
-    // it - we dont need that."* What an earlier check asserted is therefore gone by ruling, and
-    // what replaces it is the ruling itself: neither spelling is on the screen, on any run.
+    // The seam is OFF: neither the `/verbosity` hint nor `ctrl-t opens it` is on the screen, on
+    // any run.
     assert!(
         !quiet.contains("ctrl-v opens it"),
         "the chord is still advertised on a marker: {quiet}"
@@ -6974,8 +6964,8 @@ fn every_edge_bound_code_has_a_counter_in_this_head() {
         "counting an edge-bound note must raise the ⚠ — the mark is the whole reason it \
              is not a row in the conversation"
     );
-    // **And a code this head has no register for is REFUSED, not counted into a
-    // neighbour's cell.** The false half is the one the arm acts on: it is what makes
+    // And a code this head has no register for is REFUSED, not counted into a
+    // neighbour's cell. The false half is the one the arm acts on: it is what makes
     // `alarm_only_unregistered` a sentence rather than a silent deletion.
     assert!(
         !a.count_edge_note("something_this_head_has_never_heard_of"),
@@ -7515,10 +7505,9 @@ fn settled_lines(a: &App, streaming: &str) -> Vec<(String, Vec<String>)> {
         .collect()
 }
 
-/// The newest row's text drawn into an earlier row's slot (R267). The live marker is glued to the
-/// newest line and taken back next frame by looking for a line that ends with it. When the newest
-/// row re-rendered in between, the only such line was an EARLIER row with the same marker, and it
-/// was overwritten with the newest row's text - "history just changed before my eyes".
+/// The newest row's text must not be drawn into an earlier row's slot. The live marker is taken
+/// back by finding a line ending with it; when the newest row re-rendered, only an earlier row
+/// matched.
 #[test]
 fn a_streaming_row_never_rewrites_an_earlier_row() {
     for held in [false, true] {

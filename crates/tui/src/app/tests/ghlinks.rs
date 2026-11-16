@@ -1,5 +1,5 @@
-//! The words in a reply that name something become links - the operator: *"do we render links
-//! as links? any chance to infer github branch names and prs?"*, and *"yes i want all 5"*.
+//! The words in a reply that name something become links, including inferred GitHub branches and
+//! PRs.
 
 use super::*;
 

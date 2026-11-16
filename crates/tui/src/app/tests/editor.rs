@@ -1144,8 +1144,8 @@ fn ctrl_e_on_an_empty_prompt_opens_the_editor_asking_for_a_file() {
     );
 }
 
-/// The editor stays on the screen while the prompt is typed in - *"editor is just a
-/// pane"*. `ctrl-]` crosses to the composer and back; only `ctrl-e` puts it away, and `ctrl-]`
+/// The editor stays on the screen while the prompt is typed in: it is just a pane. `ctrl-]`
+/// crosses to the composer and back; only `ctrl-e` puts it away, and `ctrl-]`
 /// (or a click on a change) brings a put-away pane back too.
 #[test]
 fn typing_in_the_prompt_leaves_the_editor_up_and_ctrl_bracket_brings_back_a_hidden_one() {
@@ -1246,10 +1246,8 @@ fn the_editor_pane_wears_the_heads_frame_not_nanos() {
         !bar.contains("ctrl-q") && !bar.contains("C-q"),
         "the old chord is not advertised: {bar}"
     );
-    // The text is inside the frame, and the cursor's place is on the head's status row. rano's own
-    // row is up here because opening the file flashed `Read 30 lines`, which is rano's news - the
-    // steady state, where the head's is the only status row, is
-    // `a_focused_pane_leaves_one_key_row_one_status_row_and_its_own_theme`.
+    // The text is inside the frame and the cursor's place is on the head's status row. rano's own
+    // row shows here only because opening the file flashed `Read 30 lines`.
     assert!(flat.contains("line 11"), "{flat}");
     assert!(flat.contains("11:1"), "the head's status row: {flat}");
     // Typing into the file says so in the edge.
@@ -1345,10 +1343,8 @@ fn a_focused_pane_leaves_one_key_row_one_status_row_and_its_own_theme() {
         "the pane's bottom edge advertises keys: {left:?}"
     );
 
-    // THE THEME: the rano theme is scoped to the pane's draw, so its cells take its colours and the
-    // conversation beside them keeps the head's. `Faint` is the role both sides use - the pane's
-    // line numbers, and whatever the head dims - so one role showing two looks is the proof that
-    // the scope is a draw's and not the process's.
+    // The rano theme is scoped to the pane's draw: its cells take its colours and the conversation
+    // keeps the head's. One role, `Faint`, showing two looks proves the scope is the draw's.
     const MAGENTA: &str = "38;2;255;0;255";
     let mut theme = rano::theme::Theme {
         name: "test".into(),
@@ -1428,9 +1424,8 @@ fn the_editor_keeps_two_columns_clear_on_the_right_of_its_frame() {
     }
 }
 
-/// The popup names its file once, in its top edge - the operator: the path was
-/// in the edge and again on the first row, because the diff renderer heads every edit view with
-/// the file's name (right for a card in the conversation, a repeat inside a frame that says it).
+/// The popup names its file once, in its top edge, though the diff renderer heads every edit view
+/// with the file's name (right for a card in the conversation, a repeat inside a frame).
 #[test]
 fn the_diff_popup_names_its_file_once() {
     let ws = workspace("popname");
@@ -1462,8 +1457,7 @@ fn the_diff_popup_names_its_file_once() {
 }
 
 /// The diff's style is discoverable where the diff is drawn. `/diff` switches split and
-/// unified, and the popup's own edge is the only thing a reader looking at a change sees; nothing
-/// there named it, which is the operator asking *"how to switch diff style?"*.
+/// unified, and the popup's own edge is the only thing a reader looking at a change sees.
 #[test]
 fn the_diff_popup_names_the_switch_that_draws_it_two_ways() {
     let ws = workspace("popstyle");
@@ -1498,9 +1492,8 @@ fn the_diff_popup_names_the_switch_that_draws_it_two_ways() {
     assert_eq!(a.take_injected(), b"/diff\r", "the hint types the verb");
 }
 
-/// The popup closes by a click on its own `esc closes` - the operator: *"i open
-/// diff popup by clicking - i cant close it by clicking … all keymap items anywhere must be
-/// clickable"*. The hint is a button that types its key, by the route a keypress takes.
+/// The popup closes by a click on its own `esc closes`: every keymap item is clickable. The hint
+/// is a button that types its key, by the route a keypress takes.
 #[test]
 fn a_click_on_a_key_hint_is_that_key() {
     fn click_text(a: &mut App, screen: &[String], needle: &str) {
@@ -1547,9 +1540,8 @@ fn a_click_on_a_key_hint_is_that_key() {
     );
 }
 
-/// **The pointer: hover marks what a click would do, a still press is a click, and a drag
-/// selects and copies** - the operator: *"simple mouse selection doesnt work in
-/// letibot - only with shift"*, and *"i want clickable things to be somehow hinted"*.
+/// The pointer: hover marks what a click would do, a still press is a click, and a drag
+/// selects and copies without shift.
 #[test]
 fn hover_marks_a_button_a_still_press_clicks_and_a_drag_copies() {
     let ws = workspace("pointer");
@@ -1666,8 +1658,8 @@ fn a_selection_does_not_swallow_what_is_typed() {
     );
 }
 
-/// A code block copies as code - the operator: *"can i copy code block without
-/// vertical bars?"*. The block's frame is drawn as text (`┌─ lang`, a `│ ` rail, `└─`), and a
+/// A code block copies as code, without its rail. The block's frame is drawn as text
+/// (`┌─ lang`, a `│ ` rail, `└─`), and a
 /// selection across it copies the code alone, its own indentation kept.
 #[test]
 fn a_selected_code_block_copies_without_its_frame() {
@@ -1767,9 +1759,8 @@ fn a_selected_code_block_copies_without_its_frame() {
     );
 }
 
-/// A drag holds the view, and Esc drops the selection and lets it follow - the operator,
-/// *"can we auto trigger ctrl-p once selection starts?"* and *"cancel selection on
-/// esc"*. A hold the operator took with ctrl-p is theirs: dropping a selection leaves it.
+/// A drag holds the view, and Esc drops the selection and lets it follow. A hold the operator
+/// took with ctrl-p is theirs: dropping a selection leaves it.
 #[test]
 fn a_drag_holds_the_view_and_esc_lets_it_follow() {
     let ws = workspace("dragheld");
@@ -1823,8 +1814,7 @@ fn a_drag_holds_the_view_and_esc_lets_it_follow() {
     );
 }
 
-/// The whole clickable block lights up - the operator: *"can you light up the
-/// whole clickable block?"*. An edit card is several rows and any of them opens it, so the pointer
+/// The whole clickable block lights up. An edit card is several rows and any of them opens it, so the pointer
 /// over one of them brightens every one.
 #[test]
 fn hovering_an_edit_card_brightens_all_of_its_rows() {

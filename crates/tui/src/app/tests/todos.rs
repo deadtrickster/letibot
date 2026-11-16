@@ -528,7 +528,7 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
     )));
     assert_eq!(mine(&a).len(), 1, "the head sees its own row back");
 
-    // **`done 1` marks the FIRST OF THE OPERATOR'S ROWS** - not the first of the union, which
+    // `done 1` marks the FIRST OF THE OPERATOR'S ROWS - not the first of the union, which
     // is the model's. A number over the union would edit a row that is not theirs to edit.
     match a.command("todo done 1") {
         Some(Action::SetOperatorTodos { items, .. }) => {
@@ -567,7 +567,7 @@ fn the_operator_can_add_and_dispose_of_their_own_todo_rows() {
         "the act is said out loud, and says the row stays: {:?}",
         a.notice
     );
-    // **A bare `/todo` opens the CARD** - the shape `/mode` and `/models` keep, where an act
+    // A bare `/todo` opens the CARD - the shape `/mode` and `/models` keep, where an act
     // with more than one part is chosen from a card rather than typed blind.
     assert_eq!(a.command("todo"), None);
     assert!(
@@ -907,7 +907,7 @@ fn a_cancelled_row_stays_on_the_board_and_is_not_open_work() {
         "the header counts only what is owed: {screen}"
     );
 
-    // **And `resume` is the way back**, which is the other half of *kept in history*: the row was
+    // And `resume` is the way back, which is the other half of *kept in history*: the row was
     // never lost, so it can be picked up again.
     match a.command("todo resume 1") {
         Some(Action::SetOperatorTodos { items, .. }) => {
@@ -1468,7 +1468,7 @@ fn a_row_filed_from_the_card_can_carry_a_condition() {
     }
     assert!(a.todo_draft.is_none(), "the card came down");
 
-    // **The same card with the `when` field left alone files an unconditional row** - empty is
+    // The same card with the `when` field left alone files an unconditional row - empty is
     // *not recorded here*, the convention the whole record keeps.
     let mut b = app();
     b.session_id = "s1".into();
@@ -1521,8 +1521,8 @@ fn a_row_filed_from_the_card_can_carry_a_condition() {
     }
 }
 
-/// **The attach queues the board read when a seed is due, and the template's items land
-/// on the operator's half - text, body and mark copied, the daemon's rows kept.**
+/// The attach queues the board read when a seed is due, and the template's items land
+/// on the operator's half - text, body and mark copied, the daemon's rows kept.
 #[test]
 fn starter_todos_copy_onto_the_operators_half() {
     let dir = std::env::temp_dir().join(format!("letibot-seed-{}", std::process::id()));
@@ -2397,7 +2397,7 @@ fn a_parents_row_names_its_author() {
     );
 }
 
-/// **A row's `needs` are part of reading it** - the edges that say what has to land first, which
+/// A row's `needs` are part of reading it - the edges that say what has to land first, which
 /// the pane's one-line row cannot carry at all.
 #[test]
 fn the_overlay_shows_what_the_row_needs() {
@@ -3039,7 +3039,7 @@ fn d_opens_the_folded_group_and_d_again_folds_it() {
         a.notice
     );
 
-    // **And `d` again folds it** - the fold is not a one-way door, and the rows go back under the
+    // And `d` again folds it - the fold is not a one-way door, and the rows go back under the
     // same line and the same count.
     a.key(Key::Char('d'));
     let back = a.screen(110, 40).join("\n");
@@ -3305,7 +3305,7 @@ fn a_board_of_only_done_rows_draws_the_group_and_does_not_say_none_yet() {
     );
 }
 
-/// **The repo's `[x]` items are gathered the same way, one section at a time** - a `TODO.md` is
+/// The repo's `[x]` items are gathered the same way, one section at a time - a `TODO.md` is
 /// sections, and an item belongs to the heading over it, so the grouping stops at the heading and
 /// the heading keeps the file's own cookie (`[1/2]`), which counts the file and not this pane.
 #[test]
@@ -3431,7 +3431,7 @@ fn folding_the_group_under_the_cursor_keeps_the_cursor_on_the_screen() {
     );
 }
 
-/// **`d` says which way it stands** - a bar that went on offering `folds done` over a group that is
+/// `d` says which way it stands - a bar that went on offering `folds done` over a group that is
 /// already shut names a key whose press does the opposite of what it says. The head opens folded
 /// (`HeadPrefs::default`), so the first sentence a reader meets is the showing one.
 #[test]

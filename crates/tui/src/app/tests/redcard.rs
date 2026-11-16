@@ -473,8 +473,8 @@ fn a_shape_the_parser_does_not_know_falls_back() {
     assert!(!joined.contains("‼"), "{joined}");
 }
 
-/// **A gate killed at its memory cap is UNJUDGED, not red - one line, from the session notice
-/// and from the `gate_killed` warning alike**, and the whole text one click away.
+/// A gate killed at its memory cap is UNJUDGED, not red - one line, from the session notice
+/// and from the `gate_killed` warning alike, and the whole text one click away.
 #[test]
 fn a_gate_killed_at_its_cap_is_one_unjudged_line() {
     let line = "‼ main UNJUDGED at 9562d70c · letibot · gate killed at its memory cap · click for \

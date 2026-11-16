@@ -118,7 +118,7 @@ fn tinted(a: &App) -> Option<(usize, usize, String)> {
         .map(|m| (m.line, m.end_line, m.source.clone()))
 }
 
-/// **`alt-k r` asks the session.** The preset's own words and the paragraph the cursor is in leave
+/// `alt-k r` asks the session. The preset's own words and the paragraph the cursor is in leave
 /// as a prompt at once - with `ask.answer = suggest`, so the daemon teaches the `suggest` fence -
 /// and nothing goes through the composer.
 #[test]
@@ -197,7 +197,7 @@ fn the_asked_range_is_tinted_until_the_turn_ends() {
     assert!(a.file_marks.groups(&a.resolve_path(ARTICLE)).is_empty());
 }
 
-/// **Accepting the returned hunk puts one outcome on the next prompt.** The daemon's `suggest`
+/// Accepting the returned hunk puts one outcome on the next prompt. The daemon's `suggest`
 /// fence becomes a pending hunk, `alt-d` then `a` takes it, and the composer's next message carries
 /// what the operator did - which is the only door the session learns it by.
 #[test]

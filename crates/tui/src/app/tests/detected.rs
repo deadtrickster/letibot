@@ -217,8 +217,8 @@ fn a_detected_panel_folds_the_way_an_edits_does() {
     );
 }
 
-/// Two files changed by one command are two diffs on one row, and the row says how many (R161):
-/// the first is drawn as the old single-file panel was, the others are named under it while folded and
+/// Two files changed by one command are two diffs on one row, and the row says how many:
+/// the first is drawn as a single-file panel, the others are named under it while folded and
 /// drawn whole when the fold is open - a sweep that rewrote twenty files must not bury its command.
 #[test]
 fn two_changed_files_are_two_diffs_and_the_count_is_said() {

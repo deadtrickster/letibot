@@ -473,8 +473,8 @@ fn models_with_an_argument_still_goes_straight_to_the_daemon() {
     );
 }
 
-/// **The shell path leaves plain and `/` lines alone, and the slash path
-/// leaves `!` lines alone** - each completes only its own sigil, so a line
+/// The shell path leaves plain and `/` lines alone, and the slash path
+/// leaves `!` lines alone - each completes only its own sigil, so a line
 /// is never completed by the wrong one.
 #[test]
 fn the_shell_path_leaves_plain_and_slash_lines_alone_and_vice_versa() {

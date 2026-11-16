@@ -98,7 +98,7 @@ fn the_notice_parser_reads_the_notice_without_bytes_or_own_command() {
         "{first}"
     );
     // A kill ends the work and not the output: the card says so, so a reader of the card cannot
-    // take `killed by job_kill` for a finish either (R160).
+    // take `killed by job_kill` for a finish either.
     assert!(
         jobs[0].partial,
         "a killed job's notice says the output is partial"
@@ -548,9 +548,8 @@ fn the_rows_waiting_on_a_completion_are_kept_on_the_compact_row() {
     );
 }
 
-/// A notice lights up whole under the pointer - the operator: *"the card highlighted line by
-/// line on hover, yet click on each goes to the same job/agent card"*. Every row of it opens the
-/// same notice, so the pointer over any one brightens all of them, as an edit card does.
+/// A notice lights up whole under the pointer: every row of it opens the same notice, so the
+/// pointer over any one brightens all of them, as an edit card does.
 #[test]
 fn hovering_a_notice_brightens_every_row_it_opens_from() {
     let mut a = with_notice(MINE);

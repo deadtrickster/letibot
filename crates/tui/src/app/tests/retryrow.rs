@@ -160,9 +160,7 @@ fn retry_rows(frame: &[String]) -> Vec<String> {
 
 #[test]
 fn one_retried_call_is_one_row_at_eighty_columns() {
-    // ── BEFORE: three attempts, and no row at all ────────────────────────────────────────
-    // A warning is not a row of the conversation any more, so three attempts used to be three
-    // lines and are now three sentences in `/notes` - which is why the LIVE line below is the
+    // Three attempts and no row: a warning is not a conversation row, so the live line below is the
     // one place a retry can be watched.
     let mut before = app();
     for n in 1..=3 {

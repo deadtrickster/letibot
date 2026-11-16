@@ -526,9 +526,7 @@ fn closing_the_fold_keeps_the_cursor_on_a_row_that_is_there() {
     );
 }
 
-/// A finished row's verb acts on IT once the fold is open - the operator's own need: *"so merge
-/// queue has 4 failed items, we need a way to restart them"*. The four failed items are finished
-/// rows, so before the fold could be opened there was no key that could reach one.
+/// A finished row's verb acts on IT once the fold is open, so failed items can be restarted.
 #[test]
 fn a_finished_rows_verb_acts_on_the_row_the_fold_revealed() {
     let mut a = a_head_with_a_queue();
@@ -773,8 +771,7 @@ fn a_rebuilt_layer_in_the_sessions_plugin_directory_redraws_the_pane() {
 #[test]
 #[ignore]
 fn probe_render_the_pane() {
-    // The operator's own shape: two rows the queue is working on, four it has failed with, and
-    // the history folded away - the frame that was *"illegible mess"* before this pane.
+    // Two rows the queue is working on, four it has failed with, and the history folded away.
     let fixture = || {
         let mut a = a_head_with_a_queue();
         a.apply(queue_frame(queues(
@@ -899,8 +896,8 @@ fn a_snapshot_at(
     s
 }
 
-/// **The detail of a running gate names the step, its command, how long it has been going, and the
-/// end of what it has written** - the answer to *is it stuck?*, drawn from the snapshot alone.
+/// The detail of a running gate names the step, its command, how long it has been going, and the
+/// end of what it has written - the answer to *is it stuck?*, drawn from the snapshot alone.
 #[test]
 fn the_detail_of_a_running_gate_names_the_step_and_the_tail() {
     let mut a = app();

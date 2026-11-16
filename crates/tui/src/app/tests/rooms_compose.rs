@@ -1,10 +1,6 @@
-//! The composer in a room: the `@` completion and the room's `/` verbs, the history and the drafts
-//! of an input, the reply target, the chips a paste leaves and what a submitted line becomes.
-//!
-//! The completion, the history and the drafts are reached through `app::chat_input`'s entry
-//! points, which are the seam the key table calls; the send goes through `rooms_outgoing` and then
-//! `rooms_say`, which is the pair the composer's dispatch makes. The daemon is a fake: replies are
-//! built by hand, as `rooms.rs` does.
+//! The composer in a room: `@` completion, the room's `/` verbs, history, drafts, the reply target,
+//! chips and the submitted line. Reached through `app::chat_input`'s entry points and sent through
+//! `rooms_outgoing` then `rooms_say`. The daemon is a fake.
 
 use super::rooms::{history as chat_history, msg, opened, reply, rooms_reply};
 use super::*;
@@ -15,7 +11,7 @@ use rano::style::Palette;
 use serde_json::json;
 
 const PROJECT: &str = "project/ab12cd34ef56";
-/// The blob id a chip carries once P4's upload has answered. A fixture, not a hash.
+/// The blob id a chip carries once the upload has answered. A fixture, not a hash.
 const BLOB: &str = "9f2c4e0d";
 
 /// The send as the composer's dispatch makes it: the line goes through `rooms_outgoing` for its
@@ -392,7 +388,7 @@ fn alt_enter_adds_a_line_and_enter_sends_both() {
 #[test]
 fn a_pasted_picture_becomes_a_chip_and_a_blob_reference() {
     let mut a = opened(1_000);
-    // P4's upload queues the parts and answers the chip at once; its blob id arrives with the
+    // The upload queues the parts and answers the chip at once; its blob id arrives with the
     // room's reply, so the chip is in the line before it names anything.
     assert!(a.rooms_paste_picture(vec![0x89, b'P', b'N', b'G'], "shot.png"));
     assert!(a.input().starts_with("[image 1 · png"), "{}", a.input());

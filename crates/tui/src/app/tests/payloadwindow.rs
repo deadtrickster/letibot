@@ -350,10 +350,8 @@ fn a_click_on_a_settled_row_toggles_it() {
     );
 }
 
-/// A click that is not on a line of the payload is not a click on the window: the `↑ N more lines
-/// above` and `… +N lines` seams act on nothing, so a reader pointing at *"61 elided"* cannot move
-/// the window by accident. The row's HEADER is the row's own, and a click there is the pointer's
-/// `ctrl-v` - it closes the window it opened, the second half of `a_click_on_a_settled_row_toggles_it`.
+/// A click off the payload's lines is not a click on the window: the elision seams act on nothing.
+/// The row's header is the row's own, and a click there closes the window (the pointer's `ctrl-v`).
 #[test]
 fn a_click_on_a_seam_acts_on_nothing() {
     let mut a = long_result(97);
@@ -515,8 +513,7 @@ fn the_seam_names_the_fold_it_is_in() {
 }
 
 /// The seam's own count is what the key acts on. A folded row keeps one line, so a two-line payload's
-/// marker says `… +1 lines` - and the row that says `ctrl-v opens it` is the row the key opens. The
-/// key used to want three lines, so the row marked `+1 lines` was one it refused.
+/// marker says `… +1 lines` - and the row that says `ctrl-v opens it` is the row the key opens.
 #[test]
 fn the_row_marked_one_line_opens_on_the_key() {
     let mut a = app();

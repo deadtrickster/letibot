@@ -1,4 +1,4 @@
-//! X23 at the head: a `/` line this head has not got is offered to `command_<verb>` before it is the
+//! The command hook at the head: a `/` line this head has not got is offered to `command_<verb>` before it is the
 //! daemon's, and the acts this head performs are the ones its own code knows. Nothing is faked but the
 //! layer's answer: the real module is compiled and the lines go through `App::command`.
 
@@ -257,10 +257,9 @@ fn an_act_the_head_does_not_know_says_so_and_sends_nothing() {
     std::fs::remove_dir_all(&tmp).ok();
 }
 
-/// Every verb this head answers is either one a layer cannot take or one a LAYER SHIPPED WITH this
-/// build answers: `HOST_VERBS` is checked against the head's own tables here, so a new `/verb` cannot
-/// arrive without a decision about it - the same rule `HOST_KEYS` has, one namespace over. `/todo`
-/// is the exception the built-in `command_todo` layer IS, which is the hook's whole design.
+/// Every verb this head answers is either one a layer cannot take or one a shipped layer answers,
+/// so a new `/verb` needs a decision, as `HOST_KEYS` does. `/todo` is the built-in `command_todo`
+/// layer.
 #[test]
 fn every_head_verb_is_one_a_layer_cannot_take() {
     let covered = |verb: &str| {

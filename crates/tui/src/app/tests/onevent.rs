@@ -1,7 +1,6 @@
-//! One event is one row, and that row is the model's: a warning the daemon raises beside a notice
-//! the model was sent is filed BESIDE the conversation (`/notes`, `/status`), never drawn. The
-//! screen with the notice and the screen with the notice plus its warning are byte-identical, which
-//! is the whole of the rule and the only assertion that cannot be satisfied by hiding the row.
+//! One event is one row, the model's: a warning raised beside a notice the model was sent is filed
+//! beside the conversation, never drawn. The screens with and without the warning are
+//! byte-identical.
 
 use super::*;
 use letibot_transcript::Speaker;
@@ -72,11 +71,8 @@ fn notice(text: &str) -> TranscriptItem {
     }
 }
 
-/// The rule, for each of the four events that used to draw two rows: the model's row is drawn, the
-/// warning's sentence is not, and the warning is still there to be read - `/notes` lists it.
-///
-/// The transcript is read from `hist_lines`, not the screen: the screen's last lines are the status
-/// line, where a refusal or a failure is said as it lands, and that is not a row of the record.
+/// For each event with a twin warning: the model's row is drawn, the warning's sentence is not, and
+/// `/notes` lists the warning. Read from `hist_lines`, because the screen's last lines are status.
 fn one_row(row: TranscriptItem, code: &str, said: &str, fingerprint: &str) {
     let mut a = watched(row, code, said);
     // Laid out first: `hist_lines` is written by the frame.

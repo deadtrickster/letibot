@@ -218,7 +218,7 @@ fn the_rooms_view_has_no_list_of_its_own_beside_the_sidebar() {
     let rows = a.screen(160, 24);
     let headings = rows.iter().filter(|r| r.contains("Sessions")).count();
     assert_eq!(headings, 1, "{rows:#?}");
-    // The room's title starts at the left edge, where its own list used to be.
+    // The room's title starts at the left edge.
     let (x, _) = pos(&rows, "host room", false);
     assert!(x < 8, "{x}: {rows:#?}");
 

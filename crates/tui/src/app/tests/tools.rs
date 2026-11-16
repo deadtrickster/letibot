@@ -824,7 +824,7 @@ fn one_call_reads_the_same_word_whatever_row_draws_it() {
     }
 }
 
-/// **The diff layout setting.** `/diff` bare
+/// The diff layout setting. `/diff` bare
 /// is a card; `/diff NAME` is the same function the card calls.
 #[test]
 fn the_diff_card_offers_both_styles_and_sets_the_one_taken() {

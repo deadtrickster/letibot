@@ -1,6 +1,5 @@
-//! Subagents named by their slugs - the operator: *"lets do slugs for subagents too"*. Every
-//! place the head named a child by its session id (or by nothing but its brief) names it by the
-//! slug the daemon gave it, and a child nobody named is drawn exactly as before.
+//! Subagents named by their slugs: where the head would name a child by its session id or brief,
+//! it uses the slug the daemon gave it, and a child nobody named is drawn unchanged.
 
 use super::*;
 

@@ -293,8 +293,8 @@ fn a_merge_rows_gate_steps_draw_and_timed_out_is_its_own_word() {
     assert!(screen.contains("timed out"), "{screen}");
 }
 
-/// **The verbs send `/queue VERB ID` for the row under the cursor, and a verb the daemon would
-/// refuse is said, not sent**.
+/// The verbs send `/queue VERB ID` for the row under the cursor, and a verb the daemon would
+/// refuse is said, not sent.
 #[test]
 fn the_verbs_send_for_the_row_under_the_cursor_and_refuse_what_the_daemon_would() {
     let mut a = layer(app());
@@ -385,9 +385,8 @@ fn a_queue_move_asks_for_the_snapshot_again_whether_or_not_the_pane_is_open() {
     );
 }
 
-/// The head asks for the queues when it is seated, not when the pane first opens - the root
-/// of *"not all heads still show the queue"*: a head that never opened the pane never drew a
-/// standing on its edge.
+/// The head asks for the queues when it is seated, not when the pane first opens: a head that
+/// never opened the pane would never draw a standing on its edge.
 #[test]
 fn an_attach_asks_for_the_queues_so_the_edge_has_a_standing() {
     let mut a = app();

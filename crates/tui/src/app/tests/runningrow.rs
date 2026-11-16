@@ -1,5 +1,5 @@
 //! An expanded `[N tool calls]` lists every call it counts: the call still running is its last
-//! row, drawn live, and the same row takes the result when it lands (R295).
+//! row, drawn live, and the same row takes the result when it lands.
 
 use super::*;
 

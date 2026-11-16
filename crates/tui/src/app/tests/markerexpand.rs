@@ -222,7 +222,7 @@ fn an_expansion_draws_no_notice_the_watermark_covers() {
 
     // And the next tool call does not change the answer. The run is still open; the round's
     // rows land, `carry_live_open` re-applies the lift to them, and the wall stays where the press
-    // put it - the operator's *"then they hide on the next tool call. then they show."*
+    // put it.
     for (i, (id, path)) in [("c0", "a.rs"), ("c1", "b.rs")].iter().enumerate() {
         let item = format!("s.{}", 3 + i);
         a.apply(ServerFrame::Event(env(
@@ -258,8 +258,7 @@ fn an_expansion_draws_no_notice_the_watermark_covers() {
         "the round's rows brought a warning row back:\n{landed}"
     );
 
-    // Collapse and expand again - the toggle is the operator's *"then they show"*, and the
-    // second door must answer what the first one did.
+    // Collapse and expand again: the second door must answer what the first one did.
     a.key(Key::Esc);
     let folded = a.screen(120, 40).join("\n");
     assert_eq!(

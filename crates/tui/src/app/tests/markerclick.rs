@@ -1,6 +1,5 @@
-//! A run's marker opens by its parts - the operator: *"when I see this "[7 tool calls, 11
-//! thinking lines]" and then click on tool calls section or thinking section i wanted them to
-//! expand. Esc should fold them back"*.
+//! A run's marker opens by its parts: a click on the tool calls or the thinking section of
+//! `[7 tool calls, 11 thinking lines]` expands that part, and Esc folds it back.
 
 use super::*;
 

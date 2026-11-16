@@ -126,11 +126,8 @@ fn a_card_that_was_never_taken_to_an_oracle_says_so_and_one_that_was_does_not() 
     );
 }
 
-/// A typed line is the marked rung's material, not a selector: on an always-allow it is the rule's
-/// coverage, on a refusal it is the reason the model is given, and on a rung with no use for words
-/// nothing is answered at all.
-///
-/// > *"please add globbing to my answers somehow too"*
+/// A typed line is the marked rung's material, not a selector: an always-allow's coverage, a
+/// refusal's reason, and on a rung with no use for words nothing is answered.
 #[test]
 fn a_typed_line_is_the_marked_rungs_material() {
     use crate::ui::cards::decision::{MarkedWords, Words, marked_words, words_for};
@@ -1288,9 +1285,8 @@ fn the_row_count_is_the_kinds_own_field_in_both_directions() {
     assert!(matches!(b.key(Key::Enter), Some(Action::Answer { .. })));
 }
 
-/// The card names the files the action would write, because the operator's *"it cant catch those
-/// pesky python edits"* was a wire that was severed, not a classifier that could not see them. An
-/// unresolved path is drawn differently from a resolved one, and an empty list draws nothing.
+/// The card names the files the action would write. An unresolved path is drawn differently from
+/// a resolved one, and an empty list draws nothing.
 #[test]
 fn the_card_names_the_files_the_action_would_write() {
     use letibot_sessionlog::event::{OptionKind, WriteTarget};

@@ -1,5 +1,5 @@
-//! Every notice is ONE line, and its details a click - or alt-n - away. These are the walls the
-//! review measured on real rows, drawn through the whole head.
+//! Every notice is ONE line, and its details a click - or alt-n - away. The walls are real rows,
+//! drawn through the whole head.
 
 use super::redcard::{holds, popup_text, rows_with, with_notice, with_warning};
 use super::*;

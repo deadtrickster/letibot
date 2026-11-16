@@ -558,8 +558,7 @@ fn say(a: &mut App, text: &str) -> String {
     }
 }
 
-/// A failed send keeps its line and its reason in the channel it was aimed at, across the
-/// polls that used to wipe the error within one interval.
+/// A failed send keeps its line and its reason in the channel it was aimed at, across polls.
 #[test]
 fn a_failed_send_keeps_its_line_and_reason_through_a_poll() {
     let mut a = opened(1_000);
@@ -569,8 +568,7 @@ fn a_failed_send_keeps_its_line_and_reason_through_a_poll() {
         &id,
         json!({"type": "refused", "id": id, "why": "unknown_addressee"}),
     );
-    // The poll that follows used to clear the error and leave the composer empty: the words
-    // and the reason both went.
+    // The poll that follows must not clear the error or empty the composer.
     reply(&mut a, rooms_reply(&[("host", 1, 0, 0)]));
     reply(&mut a, history("host", vec![]));
     let all = screen(&mut a, 80).join("\n");

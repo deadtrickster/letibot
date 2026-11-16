@@ -82,7 +82,7 @@ fn drawing(images: bool) -> RenderConfig {
     }
 }
 
-/// No picture in the cache, which is P4's stub and every test that is not about pictures.
+/// No picture in the cache: the stub, for every test that is not about pictures.
 fn absent(_: &str) -> Option<Picture> {
     None
 }
@@ -431,7 +431,7 @@ fn a_picture_without_a_protocol_is_one_row_naming_it() {
     let s = crate::app::chat_adapter::stream(&v, &chan(), &names(&[]), "operator", TS);
     let cfg = drawing(false);
     assert!(!cfg.images, "the terminal speaks no pictures");
-    // P4's cache is the stub on this build: the bytes are not here, and the row still says the
+    // The cache is the stub on this build: the bytes are not here, and the row still says the
     // size, because the wire carried the store's measurement of the picture's own header.
     let drew = drawn(&s, 80, &cfg, &absent, &blobs());
     let out = rows(&drew, &cfg);
@@ -709,7 +709,7 @@ fn a_fact_that_does_not_fit_the_header_goes_under_the_body() {
 
 /// The cursor and the search are the pane's to move and the renderer's to draw: the entry under the
 /// cursor is picked out whole, and every hit of the needle is painted as a match - which is what
-/// P4's keys and P4's `/search` land on.
+/// the chat keys and `/search` land on.
 #[test]
 fn the_entry_under_the_cursor_and_the_searches_hits_are_picked_out() {
     let s = stream(
