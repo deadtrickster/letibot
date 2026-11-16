@@ -81,6 +81,29 @@ printf 'openfiles-hard %s\n' "$(ulimit -Hn)"
 STUB
 cp "$T/bin/harnessd" "$T/bin/letibot-tui"
 chmod +x "$T/bin/harnessd" "$T/bin/letibot-tui"
+# **The resolver's answer, as `bridge::daemon::resolve` gives it**: the launcher asks
+# `letibot-multi where DIR --json` for a folder's key and socket. This is the stub's copy of the
+# rule; `where.rs` holds the launcher to the real binary.
+cat > "$T/bin/where-json" << 'STUB'
+#!/usr/bin/env bash
+d="$(cd "$1" && pwd -P)" || exit 1
+top="$(git -C "$d" rev-parse --show-toplevel 2> /dev/null)" && d="$(cd "$top" && pwd -P)"
+if command -v sha256sum > /dev/null 2>&1; then sum=(sha256sum); else sum=(shasum -a 256); fi
+key="$(printf '%s' "$d" | "${sum[@]}" | cut -c1-12)"
+proto=null
+[ -f "$(dirname "$0")/../stub-protocol" ] && proto="$(cat "$(dirname "$0")/../stub-protocol")"
+printf '{"folder":"%s","live":false,"project":"%s","protocol":%s,"socket":"%s","this_build":36}\n' \
+  "$d" "$key" "$proto" "${LETIBOT_SOCKET:-$XDG_RUNTIME_DIR/letibot/$key.sock}"
+STUB
+# The multicall: answers the launcher's own `where DIR --json`, prints the argv of anything else.
+cat > "$T/bin/letibot-multi.default" << 'STUB'
+#!/usr/bin/env bash
+if [ "$#" -eq 3 ] && [ "$1" = where ] && [ "$3" = --json ]; then exec "$(dirname "$0")/where-json" "$2"; fi
+printf 'letibot-multi'; printf ' %q' "$@"; printf '\n'
+[ -z "${LETIBOT_STORE:-}" ] || printf 'store=%s\n' "$LETIBOT_STORE"
+STUB
+chmod +x "$T/bin/where-json" "$T/bin/letibot-multi.default"
+cp "$T/bin/letibot-multi.default" "$T/bin/letibot-multi"
 
 fails=0
 # **The launcher's liveness reader has to be on the PATH this harness gives it.** It is
@@ -684,11 +707,7 @@ time.sleep(120)' "$SOCK_P" &
   else
     # The number the refusal quotes is ASKED of the resolver (`letibot where --json`), because a
     # daemon that accepts a differing head says nothing about a version in its prose.
-    cat > "$T/bin/letibot-multi" << 'STUB'
-#!/usr/bin/env bash
-printf '%s\n' '{"socket":"/tmp/s.sock","live":true,"project":"ws","folder":"/tmp/ws","protocol":22,"this_build":36}'
-STUB
-    chmod +x "$T/bin/letibot-multi"
+    echo 22 > "$T/stub-protocol"
     out="$(run "$DEFAULT_ONLY")"
     expect "a daemon speaking another protocol is refused, not attached to" "$out" "speaks protocol 22 and this build speaks 36"
     expect "  ...and the sentence names the way out" "$out" "letibot --stop"
@@ -699,8 +718,7 @@ STUB
     expect "--attach refuses in the same words" "$out" "speaks protocol 22 and this build speaks 36"
     refuse "  ...and does not claim to have attached" "$out" "attached to harnessd"
 
-    # Gone again: the cases below stub their own, with the argv they are checking.
-    rm -f "$T/bin/letibot-multi"
+    rm -f "$T/stub-protocol"
     kill "$_listener" 2> /dev/null || true
   fi
 else
@@ -1330,6 +1348,8 @@ cp "$LAUNCHER" "$T/co/scripts/letibot"
 for d in co/target/release inst; do
   printf '#!/bin/sh\n[ $# -eq 0 ] && exit 0\necho "harnessd from %s"\n' "$d" > "$T/$d/harnessd"
   chmod +x "$T/$d/harnessd"
+  cp "$T/bin/letibot-multi.default" "$T/$d/letibot-multi"
+  cp "$T/bin/where-json" "$T/$d/where-json"
 done
 ln -sf "$T/co/scripts/letibot" "$T/inst/letibot"
 out="$(cd "$T/ws" && env -i PATH="$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
@@ -1346,12 +1366,6 @@ expect "  ...and the checkout's own script runs its target/release" "$out" "^har
 # The launcher never migrated anything itself — that is `letibot migrate` — but it is the thing
 # that decides WHERE a head attaches, and the record in the rundir is the whole of what it
 # reads. Both halves are pinned here.
-cat > "$T/bin/letibot-multi" << 'STUB'
-#!/usr/bin/env bash
-printf 'letibot-multi'; printf ' %q' "$@"; printf '\n'
-[ -z "${LETIBOT_STORE:-}" ] || printf 'store=%s\n' "$LETIBOT_STORE"
-STUB
-chmod +x "$T/bin/letibot-multi"
 
 # **Which socket this folder's daemon listens on** — what a program that drives letibot (rano's
 # editor panel) asks instead of re-deriving `<rundir>/<sha12>.sock`. The launcher does not answer
