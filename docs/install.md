@@ -161,7 +161,7 @@ The keys that use io are in `docs/config/leticode.toml.md` under `[exec]`: `io_w
 
 Each step below is done once per box, except the firecode taps, which a reboot removes. The root steps are one-time setup, not something a session asks for on each run. `letibot doctor` measures every one of them and prints the fix for the rows that fail. [troubleshooting.md](troubleshooting.md) has what each failure looks like.
 
-**Mask drkonqi's coredump socket** on a KDE desktop. A gate test killed for file size dumps core. drkonqi's coredump launcher is socket-activated per crash, crashes on letibot's dumps and loops. The user manager collected about 128k failed units, `systemd-run --user --scope` stopped answering, and every daemon came up without its scope and with memory caps off (R191, R192). No root needed:
+**Mask drkonqi's coredump socket** on a KDE desktop. A gate test killed for file size dumps core. drkonqi's coredump launcher is socket-activated per crash, crashes on letibot's dumps and loops. The user manager collected about 128k failed units, `systemd-run --user --scope` stopped answering, and every daemon came up without its scope and with memory caps off. No root needed:
 
 ```sh
 systemctl --user mask --now drkonqi-coredump-launcher.socket

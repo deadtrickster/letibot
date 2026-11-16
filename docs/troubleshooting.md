@@ -9,7 +9,7 @@ is in [install.md](install.md), "On Linux".
 
 **Symptom.** A DM or mention for `cc@<folder>` never wakes the session, and the roster shows the
 seat twice, as `cc@letibot` and `cc@letibot-8e0`. The bridge that held the base name pushed the
-message, its cursor moved, and Claude Code dropped the push (R259).
+message, its cursor moved, and Claude Code dropped the push.
 
 **Check.** Doctor rows `no user-scope leticode MCP server`, `one bridge per Claude session` and
 `claude channel flag`. By hand: `claude mcp get leticode`.
@@ -23,7 +23,7 @@ restart each running session. [claude-code-bridge.md](claude-code-bridge.md) has
 **Symptom.** A daemon starts with "memory caps OFF", the launcher says "no systemd user manager
 here", or `systemd-run --user --scope` hangs. A gate test killed for file size dumped core,
 drkonqi's coredump launcher crashed on the dump and looped, and the user manager collected about
-128k failed units (R191, R192).
+128k failed units.
 
 **Check.** Doctor rows `drkonqi coredump socket masked`, `user manager failed units` and `daemons in
 their own scope`. Doctor does not time `systemd-run --user --scope` itself; it lists that in its
@@ -71,29 +71,28 @@ status row names the reset. Read `on_limit`, `wait_if_within` and `[fallback]` i
 **Fix.** Add a `[fallback]` entry for the model, for example
 `"kimi-code-global/*" = ["deepseek/deepseek-v4-flash"]`, and keep `on_limit = "switch"` (the
 default when a fallback exists). A reset within `wait_if_within` (45m) is waited for. To move a
-parked turn now, press Esc to end it, or switch the model with `/models`, which retries it there
-(R265).
+parked turn now, press Esc to end it, or switch the model with `/models`, which retries it there.
 
 ## Stale prompt card on shadow sessions
 
-Fixed. **Symptom.** A "PROMPT IS STALE" card on an `s-...-shadow` session, or on the gatekeeper and
+**Symptom.** A "PROMPT IS STALE" card on an `s-...-shadow` session, or on the gatekeeper and
 reviewers, that nobody answers.
 
 **Check.** Doctor row `daemons run the installed binary` lists daemons on a build older than the
 fix.
 
 **Fix.** Install a build with the fix (shadows get no card, daemon-run sessions reseat before a
-turn, `[sessions] auto_reseat`, R262) and restart those daemons.
+turn, `[sessions] auto_reseat`) and restart those daemons.
 
 ## Reaper kills
 
 **Symptom.** A worktree daemon, its attached seat or a running job is ended by the idle reaper, with
-nothing reopening the session. A tool call running past 30 minutes lost its session (R241).
+nothing reopening the session. A tool call running past 30 minutes lost its session.
 
 **Check.** No doctor row: `reap_event kills of live daemons` is in its "not checked" footer. Read
 the journal with `letibot gc --log`, and what holds each owner with `letibot holds`.
 
-**Fix.** Install a build with R241 and R266: only the owner's live daemon judges idleness, an
+**Fix.** Install a current build: only the owner's live daemon judges idleness, an
 attached head or an open job renews the lease, and a stopped session reopens by id through
 `leticode_attach` or `leticode_send`. Read `letibot gc` (the plan) before `letibot gc --now`.
 

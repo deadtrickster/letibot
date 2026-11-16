@@ -100,7 +100,7 @@ What keeps that table true:
   written against 70 sends none, and the daemon renders nothing for it. A differing number is served
   rather than refused — the daemon says so on its own log, because nobody can tell which side is
   wrong — so the number is a FACT to read, not a gate: the panel takes the daemon's from `Hello` and
-  compares it to the one it was written against (the client pinned today says 70). What a panel then
+  compares it to the one it was written against. What a panel then
   refuses to offer is the panel's business; this side promises only that the newer field is defaulted.
 - **What it does not know, it counts and skips.** An unknown `frame` or `event` tag is delivered
   as `Unknown` and counted (`Client::skipped`), never fatal: a newer daemon must not blank the

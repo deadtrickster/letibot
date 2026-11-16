@@ -889,16 +889,15 @@ chatted. `message` is the room `Message` as JSON. A head merges it as though a `
 
 ### Versions
 
-`ROOM_PROTOCOL_VERSION` is 12, the room's own number: 12 added the room's ARCHIVE - `archive_room`,
-`unarchive_room`, `archived`, and `archived_ms` on the `rooms` rows - so a version-11 coordinator
-refuses a room put away rather than reading it as a room it cannot see. 11 added the ask by SCOPE -
-`ask`'s `path`
-and `topic`, resolved in the room, and `why` on the ask that says which rule resolved it - so a scope
-put to a version-10 coordinator is refused by name instead of being read as an ask of a session called
-`""`. 10 added the ask itself - `ask`, `reply`, `decline`, `withdraw`, `retire` and `asks` - for the
-same reason: a skew is refused rather than obeyed halfway. 9 had added the blob store and `attachments`
-on a `say`.
-`PROTOCOL_VERSION` (head to daemon) is 65: 65 added `ServerFrame::RoomChatPushed`.
+`ROOM_PROTOCOL_VERSION` is 12, the room's own number, and the coordinator serves clients from
+`OLDEST_CLIENT` (11) up to it; anything else gets `Bye` with `protocol_refusal`'s sentence. 12 added
+the room archive (`archive_room`, `unarchive_room`, `archived`, `archived_ms` on `rooms` rows), 11 the
+ask by scope (`path`, `topic`, `why`), 10 the ask itself (`ask`, `reply`, `decline`, `withdraw`,
+`retire`, `asks`), 9 the blob store and `attachments` on a `say`. The number moves at release points:
+a frame added mid-series rides the current number (`wire.rs`), so an older coordinator of the same
+number does not know it. `MayPrompt` and Hello's `share` and `family` arrived that way under 12.
+`PROTOCOL_VERSION` (head to daemon) is the session protocol's own number, in
+`crates/sessionlog/src/protocol.rs`; `ServerFrame::RoomChatPushed` is one of its frames.
 
 Neither moved for `evidence` - a say's evidence is a `refs` entry of a new kind - nor for the `note` a
 `said` carries when the room has advice to give: it is `#[serde(default)]` and empty for every post the
@@ -1005,7 +1004,7 @@ is also past it for `room_inbox`.
 
 What Claude Code sees depends on how it was started. Started with the channel flag for this server
 (`--dangerously-load-development-channels server:<name>`, or `plugin:<plugin>@<marketplace>` when the
-`leticode` plugin registered it; interactive sessions only, TODO.md R117), an
+`leticode` plugin registered it; interactive sessions only), an
 idle session starts a turn on `<channel source="..." room="host" author="s-a" seq="14">#14 [host] s-a ->
 cc@app: text</channel>`. Without the flag Claude Code drops the notification - and then the plugin's
 own monitor is what wakes the seat, running the wait below in a loop (`claude-plugin/`). The messages are

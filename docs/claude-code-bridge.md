@@ -66,7 +66,7 @@ Claude Code drops every channel notification from a server the flag does not nam
 **Never also register a user-scope `leticode` MCP server.** With both, one session runs two
 `letibot-mcp` bridges. The second takes a suffixed name (`cc@letibot-8e0`), a DM to `cc@letibot`
 reached the plugin bridge whose channel the flag did not cover, the cursor moved, and the session saw
-nothing (R259). R259 now delivers to every bridge of a name, and one bridge is still the setup. To
+nothing. The room now delivers to every bridge of a name, and one bridge is still the setup. To
 remove a hand registration: `claude mcp remove leticode -s user`, then restart the session.
 
 **The room waiter is the fallback wake.** Without the channel, or when a push is lost, the plugin's
@@ -242,7 +242,7 @@ is not installed here, so no real client has loaded the capability.
   <repository> <row>` exiting on land (0), rejection or veto (10, the reviewers' words), gate
   failure (20), or timeout (30).
 
-**Built: `queue`** (R258). `{action: "enqueue", branch, why, target?}` puts a pushed branch up for
+**Built: `queue`**. `{action: "enqueue", branch, why, target?}` puts a pushed branch up for
 review through `mergequeue::enqueue::enqueue_branch`, the same checks a seat's `queue` tool makes,
 recorded under `bridge:<handle>`. `{action: "status", id?}` reads that row's review and landing
 state, or the repository's queue without `id`. It writes to the daemon's store and refuses when
