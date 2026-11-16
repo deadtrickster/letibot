@@ -63,7 +63,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R334 | B14 plugins and MCP: unpinned layers decide, MCP servers inherit the env, `.mcp.json` trusted by prefix | Code work | B14: I93, I94, I95; M; after - |
 | R335 | B15 header facts: header ctx survives a clear, a reseat and a re-ingest | Code work | B15: I72; M; after B1 (R320), B6 (R326) |
 | R336 | B16 workflow stability: the orchestration layer fails silently | Code work | B16: I28, I81, I100, leads 27-33, 37; M |
-| R337 | the shadow as the real `AuthorisationOracle`: the view-read trail, `allow_once` on a view, hygiene, one grant model | Code work | I12, I13, I14, I15, I16, I17; L; after B2 (R322), B3 (R323) |
+| R337 | the shadow as the real `AuthorisationOracle`: the view-read trail, `allow_once` on a view, hygiene, one grant model | Code work | built on `r337-oracle`, not landed; left: revoke reaching running commands (I16), I17 (f) replay numbers, queue seats' trails hold no operator words |
 | R338 | role per connection and the masked operator socket | Code work | I6; M; after B1 (R320) |
 | R339 | gate ladder after "once means once" | Code work | I29, I30, I31, I32, I33, I34, I35, I36; M; after B4 (R324), B6 (R326) |
 | R340 | confinement remainder: tight egress, job-capture-only masking, env-only credential fence | Code work | I39, I40, I41; M; after B5 (R325) |
@@ -1061,7 +1061,7 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R337 - the shadow as the real `AuthorisationOracle`: the view-read trail, `allow_once` on a view, hygiene, one grant model
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I12, I13, I14, I15, I16, I17. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built 2026-11-16 on `r337-oracle` (base `b2-shadow`), not landed. Filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I12, I13, I14, I15, I16, I17. Record: `docs/review/2026-11-16/INTEGRATION.md`.
 
 **Scope.** Automode prerequisite, after B2 and B3. I12, I15 and I17 (i) are the R316 stage-1 gate. I13 is the oracle move: the shadow becomes layer B of `AuthorisationOracle` and the Relay path is retired (C6). I14 and I16 close the grant model: scope in the answer, revoke reaching running commands and other processes.
 
@@ -1072,6 +1072,27 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 **Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
 
 **Folded rows.** R317's two leftovers that are not in INTEGRATION: a sibling that waited on the same path's card (`Claim::Shares`) is granted too, as for an operator answer; and `tools` `adjudicate::tests::outcomes::a_reviewers_probe_runs_at_allow_all_and_anything_beyond_still_asks` was red on land-10 (`gate:mode` where `gate:reviewer` is expected) - re-check it.
+
+**Built (r337-oracle).** One commit per finding, I17 in two.
+- I12 `025e60d19`: `ask_to_see` reads the path through the gate's `Surroundings` (`intent::view_tier`: a secret store is `AlwaysAsk credential_use`), carries the reading and the trail the harness collects. Test `view_ask_for_credential_path_is_always_ask`.
+- I15 `8294c4352`: an oracle's `allow_once` on a view ask is `grant_ro`, never `grant_rw`. Test `an_oracle_allow_on_a_view_request_is_granted_read_only`.
+- I17 (i) `26f7a92cb`: view asks are corpus rows through `record()`; a `shadow:` row is not asked and carries no operator label. Test `view_asks_are_recorded_and_shadow_rows_excluded_from_agreement`.
+- I13 `51e956991`: `shadow::oracle::ShadowOracle` (an `AuthorisationOracle`: the gate's `ModelBrief`, ALLOW must cite trail numbers naming operator words, 2.5s deadline, earned stage-1 scope inspect+read up to `host_other`) behind `ModelAdjudicator`, wrapped by `ShadowAdjudicator` (may-approve, resolved read, every path past `read_passes`, `answer_reads` on, breaker armed, a store). `Note` has no `Answer`; `Relay` only annotates. A relayed queue read goes to `PendingAsks::oracle` after `relayed_read` (scope plus the asker's covering rule, C7). A top-level session with `[shadow] answer_reads = true` has `Prereq::Oracle`, so `/mode automode` opens with the shadow as its advisor, and a view ask at a model-decided point goes to the advisor first. Tests `relay_never_answers_a_card`, `the_shadow_oracle_never_answers_an_always_ask`, `an_allow_that_cites_no_operator_words_shows_the_card`, `at_automode_the_shadow_grants_a_view_read_without_a_card`, `at_automode_the_shadow_decides_a_read_and_nothing_else`.
+- I14 `4f1008927`: `AdjudicationDecision::grant_at` carries the scope (`Queue` for an operator answer on a relayed queue card, `Session` for an oracle allow); `keep_grant` reads it. `last_relayed`/`take_relayed` are gone. Test `the_grant_scope_is_read_from_the_answer`.
+- I16 `3bd21caca`: `GrantLedger::generation` is store-side (`Store::grant_generation`: max id, count, newest `granted_ms`), so a revoke in another process reloads the gate; an unreadable ledger unbinds the view grants it held. Tests `a_revoke_in_another_process_is_seen_at_the_next_call`, `an_unreadable_ledger_unbinds_the_view_grants_it_held`. No schema change.
+- I17 a-h `8ddb485e9`: (a) control characters refused in view-read paths, asker fields spanned `Author::Peer`; (b) the asker's latest operator words are the stated task; (c) `Verdict::During::strict`, stateless offers never act; (e) no second ask beside the card after an oracle decline or timeout; (g) docs; (h) queue membership from `queue_of`. Tests `a_relayed_path_with_a_control_character_is_no_view_read` (a, b), `a_stateless_during_offer_never_acts`, `a_shadow_timeout_is_not_asked_again_beside_the_card`, `queue_membership_is_read_from_the_session_id`.
+
+**How the tests were checked.** Each proving test was run with its commit's source changes reverted and failed: I12, I15, I17 (i), I16, I17 (a, b, c, h) in this worktree; `relay_never_answers_a_card` and I17 (e) on a scratch worktree at `26f7a92cb` (the Relay answered `grant_ro` with no card; the timeout was asked twice). I14's test does not compile on its base (the answer had no scope), which is the finding. The automode tests use `ShadowAdjudicator`, new in I13.
+
+**Residue.**
+- I16, rest: a revoke does not reach a command already running (its mount namespace keeps the bind), and nothing kills or unmounts a child's namespace on revoke. Exec-start revoke check not added.
+- I17 (d): refuted in code - `Kept::matches` checks the last kept turn's hash chain, which covers every earlier turn's rows. `a_restart_on_an_earlier_turns_changed_rows_starts_over` pins it.
+- I17 (f): needs `shadow replay` numbers on labelled turn ends (live store and model); not run.
+- Queue seats: a relayed read is judged on the asker's own trail. A reviewer's trail holds no operator words since B3, so the shadow asks (the card goes up) until the operator's words reach the seat. Stage 1 step 1 therefore answers nothing for reviewers yet; the main session (stage 1b) works.
+- The main session's row for a shadow grant names the session id, not the queue role.
+- R317 leftovers: a sibling waiting on the same path (`Claim::Shares`) is released by the shadow's answer because it now returns through `ask_to_see`, but no test pins it. `a_reviewers_probe_runs_at_allow_all_and_anything_beyond_still_asks` is green on this branch.
+- `shadow replay --job permission` still replays the rule question, not the oracle question.
+- Flaky under load (passed alone): `tools --test confine a_sessions_tmp_is_created_at_open_and_removed_at_close`, `tools --test shell_suites`, `harnessd shadow::tests::a_slow_median_pauses_the_job_too`.
 
 **Findings, verbatim from the record.**
 
