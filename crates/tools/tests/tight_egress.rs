@@ -200,8 +200,9 @@ fn a_tight_seat_command_cannot_reach_loopback() {
         .expect("a measured boundary wraps");
     let connect = format!(
         "python3 -c 'import socket,sys; s=socket.socket(); s.settimeout(2); \
-         s.connect((\"127.0.0.1\", {port})); print(\"REACHED\")' 2>&1"
+         s.connect((\"127.0.0.1\", {port})); print(\"REACH\" + \"ED\")' 2>&1"
     );
+    // Split in the source: a traceback quotes the line, and the word must come only from a connect.
     let out = std::process::Command::new(&argv[0])
         .args(&argv[1..])
         .arg("/bin/sh")
