@@ -352,41 +352,63 @@ fn the_clients_that_cannot_hear_a_room_event_say_so_where_a_person_looks() {
         let manifest = root.join("crates").join(crate_name).join("Cargo.toml");
         let text = std::fs::read_to_string(&manifest)
             .unwrap_or_else(|e| panic!("{} is readable: {e}", manifest.display()));
-        // The bridge takes the protocol number and the pure text checks of peer lines from the
-        // room crate, so a dependency is allowed while nothing that connects is named in its source.
+        // The bridge's seat dials the room on its own wire and takes the room crate's types and
+        // pure helpers, so it never drifts from them. Nothing of the crate that connects or serves
+        // is named in its source: the heads stay clients of the daemon.
         if crate_name == "bridge" && text.contains("letibot-room") {
             let mut used = String::new();
-            for entry in std::fs::read_dir(root.join("crates/bridge/src")).expect("bridge src") {
-                let src =
-                    std::fs::read_to_string(entry.expect("an entry").path()).unwrap_or_default();
-                used.push_str(&src);
+            let mut dirs = vec![root.join("crates/bridge/src")];
+            while let Some(dir) = dirs.pop() {
+                for entry in std::fs::read_dir(&dir).expect("bridge src") {
+                    let path = entry.expect("an entry").path();
+                    if path.is_dir() {
+                        dirs.push(path);
+                    } else if path.extension().is_some_and(|e| e == "rs") {
+                        used.push_str(&std::fs::read_to_string(&path).unwrap_or_default());
+                    }
+                }
+            }
+            for connects in [
+                "letibot_room::client",
+                "letibot_room::server",
+                "letibot_room::Server",
+            ] {
+                assert!(
+                    !used.contains(connects),
+                    "`bridge` names `{connects}`: {why}"
+                );
             }
             let named = used.matches("letibot_room::").count();
+            // Each entry is matched on its own, so no entry may be a prefix of another.
             let allowed: usize = [
                 "letibot_room::ROOM_PROTOCOL_VERSION",
                 "letibot_room::wire::upgrade_hint",
+                "letibot_room::wire::frame_refusal(",
                 "letibot_room::EVIDENCE",
                 "letibot_room::claims_operator(",
                 "letibot_room::unbacked(",
                 "letibot_room::OPERATOR",
-                "letibot_room::DM_ROOM",
-                "letibot_room::SayKind::",
-                "letibot_room::SayKind {",
-                "letibot_room::chat::SAY",
+                "letibot_room::Message>",
+                "letibot_room::Refused",
+                "letibot_room::chat::Reach::",
                 "letibot_room::chat::DIGEST_AUTHOR",
                 "letibot_room::chat::MAX_READ",
                 "letibot_room::project_key(",
                 "letibot_room::room_name(",
                 "letibot_room::room_of_name(",
-                "letibot_room::Refused",
+                "letibot_room::host_key",
+                "letibot_room::lease::host_key_of",
+                "letibot_room::socket_path(",
             ]
             .iter()
             .map(|item| used.matches(item).count())
             .sum();
             assert_eq!(
                 named, allowed,
-                "`bridge` may name only the protocol number, the upgrade hint, the operator's name, \
-                 the peer-text checks, the say kinds, the digest's author and page size, the room-naming helpers and a refusal's type from the room crate"
+                "`bridge` may name only the room crate's wire types and pure helpers: the protocol \
+                 number, upgrade hint and frame refusal, the message, its reach and a refusal's \
+                 type, the operator's name, the peer-text checks, the digest's author and page \
+                 size, the room-naming helpers, and the host key and socket path"
             );
             continue;
         }

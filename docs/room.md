@@ -1106,7 +1106,7 @@ event, and two of them cannot be.
 |---|---|---|---|
 | a leticode session (`crates/harnessd`) | yes, one `SessionRoom` per top-level session | yes | the reader turns an `Event` or a chat message that names the session into a sentence (`room::wake`), queues it and rings `Bell::ring_wake`; `Harness::wake` runs a turn with it |
 | the head (`letibot-tui`) | no | no, the daemon wakes it | no socket. Its pane comes from the daemon's feed, its chat from `RoomChat` |
-| the bridge (`letibot-bridge`) | its heads no, its `cc@<folder>` seat yes (own wire; only the protocol number and the claim readings come from `letibot-room`) | its heads no. The seat pushes chat to Claude Code as a channel event | a bridge head hears a room event only through a turn. The seat is [Claude Code](#claude-code) |
+| the bridge (`letibot-bridge`) | its heads no, its `cc@<folder>` seat yes (own connection, typed by `letibot-room`: the message and its reach, the host key and socket path, room names and the claim readings come from it, its client and server never do) | its heads no. The seat pushes chat to Claude Code as a channel event | a bridge head hears a room event only through a turn. The seat is [Claude Code](#claude-code) |
 | a firecode VM agent | no | no | a subagent is refused at the door |
 
 A tag's agent and the arbiter work the queue and are never woken by chat.
