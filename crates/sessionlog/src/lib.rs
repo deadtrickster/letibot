@@ -104,12 +104,13 @@ pub use origin::{
 };
 pub use protocol::{
     Ack, AnswerMode, Attachment, AttachmentKind, Caps, ClientFrame, ContextAsk, ContextPos,
-    ContextRange, ContextRef, DAEMON_FEATURES, EditorContext, FEATURE_QUEUE_PROMPT,
-    HEAD_RUN_KIND_PATH, HEAD_RUN_KIND_TEXT, HEAD_RUN_KIND_URL, HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY,
-    HeadRunTool, MarkOutcome, NOTE_STOPPING, OpenBuffer, PROMPT_FROM_SINCE, PROTOCOL_VERSION,
-    PaneBrief, PromptDelivery, QUEUE_PROMPT_SINCE, ServerFrame, TURN_ENDED_SINCE, TermLine,
-    accepted_features, head_run_tool, head_run_verb, operator_line_refusal, operator_shell_command,
-    protocol_skew, send_line, term_command, term_line,
+    ContextRange, ContextRef, DAEMON_FEATURES, DRIVER_TODOS_SINCE, EditorContext,
+    FEATURE_QUEUE_PROMPT, HEAD_RUN_KIND_PATH, HEAD_RUN_KIND_TEXT, HEAD_RUN_KIND_URL,
+    HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY, HeadRunTool, MarkOutcome, NOTE_STOPPING, OpenBuffer,
+    PROMPT_FROM_SINCE, PROTOCOL_VERSION, PaneBrief, PromptDelivery, QUEUE_PROMPT_SINCE,
+    ServerFrame, TURN_ENDED_SINCE, TermLine, accepted_features, head_run_tool, head_run_verb,
+    operator_line_refusal, operator_shell_command, protocol_skew, send_line, term_command,
+    term_line,
 };
 pub use question::{AnswerDefect, QuestionAnswer};
 pub use registry::{

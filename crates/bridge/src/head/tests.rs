@@ -158,6 +158,101 @@ fn a_silent_session_is_reported_with_the_wait_and_the_cause() {
     server.shutdown();
 }
 
+/// A daemon at an older protocol: it greets with the version asked for, records every frame it is
+/// sent, and answers a frame its build predates with the `Bye` that ends the connection - which is
+/// what a 76 daemon's reader does to `DriverTodos`, and what closed a live package's head.
+fn a_daemon_at(
+    protocol: u32,
+    socket: &std::path::Path,
+) -> (Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::os::unix::net::UnixListener::bind(socket).expect("bind");
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let recorded = seen.clone();
+    let handle = std::thread::spawn(move || {
+        // One connection: the bridge opens one for the board write, and a listener that kept
+        // accepting would hold the test's join open for ever.
+        if let Some(Ok(stream)) = listener.incoming().next() {
+            let mut writer = stream.try_clone().expect("a writer");
+            let mut reader = BufReader::new(stream);
+            let mut line = String::new();
+            if reader.read_line(&mut line).is_err() {
+                return;
+            }
+            let hello = ServerFrame::Hello {
+                protocol_version: protocol,
+                session_id: "s".into(),
+                head_id: "h".into(),
+                dropped: 0,
+                snapshot: None,
+                resumed_from: Some(0),
+                scrubbed: Default::default(),
+                wiring: Default::default(),
+                sessions: Vec::new(),
+            };
+            let _ = writeln!(writer, "{}", serde_json::to_string(&hello).expect("json"));
+            line.clear();
+            while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+                let v: serde_json::Value = serde_json::from_str(line.trim()).unwrap_or_default();
+                let frame = v["frame"].as_str().unwrap_or_default().to_string();
+                recorded.lock().unwrap().push(frame.clone());
+                if frame == "driver_todos" {
+                    // Not a frame this build's reader has an arm for: it says goodbye.
+                    let bye = ServerFrame::Bye {
+                        reason: "unknown variant `driver_todos`".into(),
+                    };
+                    let _ = writeln!(writer, "{}", serde_json::to_string(&bye).expect("json"));
+                    return;
+                }
+                line.clear();
+            }
+        }
+    });
+    (seen, handle)
+}
+
+/// A board write refused by name, not by losing the head: `DriverTodos` arrived at 77, so a 76
+/// daemon reads it as an unreadable line and closes the connection the package was holding.
+#[test]
+fn leticode_todo_against_v76_refuses_and_keeps_the_head() {
+    let socket = letibot_sessionlog::testing::scratch_root()
+        .join(format!("bridge-v76-{}.sock", std::process::id()));
+    let (seen, stub) = a_daemon_at(letibot_sessionlog::DRIVER_TODOS_SINCE - 1, &socket);
+    let d = crate::daemon::Daemon {
+        workspace: socket.clone(),
+        key: "k".into(),
+        socket,
+        log: Default::default(),
+        store: Default::default(),
+        placement: None,
+        started: false,
+    };
+    let h = Head::attach(&d, "s").expect("attach");
+    let rows = vec![letibot_sessionlog::event::TodoState {
+        content: "land the fix".into(),
+        status: letibot_sessionlog::event::TodoStatus::InProgress,
+    }];
+    let why = h
+        .driver_todos(rows, Duration::from_secs(5))
+        .expect_err("a 76 daemon cannot take a driver's rows");
+    assert!(
+        why.contains("76") && why.contains("77"),
+        "the refusal names both numbers: {why}"
+    );
+    assert!(
+        !seen.lock().unwrap().iter().any(|f| f == "driver_todos"),
+        "nothing was written: {:?}",
+        seen.lock().unwrap()
+    );
+    assert!(
+        h.snapshot().closed.is_none(),
+        "the head is still attached and nothing closed it"
+    );
+    // The stub's read ends when this head's connection does, which is when the head goes.
+    drop(h);
+    stub.join().ok();
+}
+
 /// A question is answered by its choice, its number, typed words, or an abstention.
 #[test]
 fn a_question_is_answered_by_choice_number_words_or_abstention() {

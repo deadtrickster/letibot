@@ -22,6 +22,10 @@ pub const TURN_ENDED_SINCE: u32 = 76;
 /// without a bump, so a 74 daemon may still store a peer's line as the operator's.
 pub const PROMPT_FROM_SINCE: u32 = 74;
 
+/// The first version whose daemons read [`ClientFrame::DriverTodos`]: a daemon below it fails the
+/// frame and answers `Bye`, which ends the connection a package's head was holding.
+pub const DRIVER_TODOS_SINCE: u32 = 77;
+
 /// The first version whose daemons read `Prompt.delivery`: before it, a queued prompt steers. It
 /// arrived under 76 without a bump, so a head asks for [`FEATURE_QUEUE_PROMPT`] and queues only
 /// when the daemon echoed it in [`ServerFrame::Features`].

@@ -214,7 +214,7 @@ pub(crate) fn prompt_once(
 }
 
 fn prompt_through(socket: &Path, session: &str, text: &str, from: &str) -> Result<u64, String> {
-    let (mut client, _hello, mut reader) = HeadClient::attach(
+    let (mut client, hello, mut reader) = HeadClient::attach(
         socket,
         session,
         0,
@@ -223,6 +223,20 @@ fn prompt_through(socket: &Path, session: &str, text: &str, from: &str) -> Resul
         Caps::default(),
     )
     .map_err(|e| e.to_string())?;
+    // The line is sent as this seat's, and `Prompt.from` arrived at 74: below it the daemon keeps
+    // the field nowhere, which records the bridge's words as the operator's.
+    if let ServerFrame::Hello {
+        protocol_version, ..
+    } = &hello
+        && *protocol_version < letibot_sessionlog::PROMPT_FROM_SINCE
+    {
+        return Err(format!(
+            "`{session}`'s daemon speaks protocol {protocol_version} and a prompt that names its \
+             author arrived at {}: it would store this line as the operator's own. Nothing was \
+             sent; restart that daemon from the installed build.",
+            letibot_sessionlog::PROMPT_FROM_SINCE
+        ));
+    }
     let id = client
         .prompt_from(0, text, Vec::new(), None, Some(from.to_string()))
         .map_err(|e| e.to_string())?;
