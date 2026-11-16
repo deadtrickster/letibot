@@ -55,7 +55,16 @@ fn child_with(
     cfg.mode = at;
     touch(&mut cfg);
     let parts = Parts::load(&cfg).expect("the vocabulary loads");
-    let mut h = Harness::open(&parts, cfg, Hub::new(id)).expect("the session opens");
+    // A gate that holds a point: `Harness::open` seats `NoBoundary` when nothing can be asked, and
+    // that gate has no mode to move, so a test about which point a child may stand at cannot run.
+    let mut h = Harness::open_with(
+        &parts,
+        cfg,
+        Hub::new(id),
+        Some(Box::new(letibot_tools::adjudicate::NoAdjudicator)),
+        None,
+    )
+    .expect("the session opens");
     let parent = Arc::new(std::sync::Mutex::new(at));
     h.follow_parent(parent.clone());
     Some((h, parent, path))
