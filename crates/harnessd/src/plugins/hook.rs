@@ -836,20 +836,50 @@ impl PluginHost {
     }
 }
 
-/// A rewrite may only make a call smaller: the tool is fixed by the contract, and no argument
-/// may appear that the model did not send.
-fn only_smaller(was: &serde_json::Value, now: &serde_json::Value) -> Result<(), String> {
-    match (was, now) {
-        (_, serde_json::Value::Null) => Ok(()),
-        (serde_json::Value::Object(was), serde_json::Value::Object(now)) => {
-            match now.keys().find(|k| !was.contains_key(*k)) {
-                Some(k) => Err(format!(
-                    "its rewrite adds the argument `{k}`, and a layer can only make a call smaller"
-                )),
-                None => Ok(()),
-            }
+/// A rewrite may only make a call smaller: the tool is fixed by the contract, no argument may
+/// appear that the model did not send, and a value it did send is not the layer's to change.
+pub(crate) fn only_smaller(was: &Value, now: &Value) -> Result<(), String> {
+    smaller_at(was, now, "")
+}
+
+/// One level of [`only_smaller`], walking the path so a refusal names the argument it refused.
+fn smaller_at(was: &Value, now: &Value, at: &str) -> Result<(), String> {
+    let named = |key: &str| {
+        if at.is_empty() {
+            key.to_string()
+        } else {
+            format!("{at}.{key}")
         }
-        _ => Err("its rewrite changes the shape of the arguments, and a layer can only make a call smaller".into()),
+    };
+    match (was, now) {
+        // A hole where the call had something is smaller, not different: the tool reads it as absent.
+        (_, Value::Null) => Ok(()),
+        (Value::Object(was), Value::Object(now)) => match now.keys().find(|k| !was.contains_key(*k)) {
+            Some(k) => Err(format!(
+                "its rewrite adds the argument `{}`, and a layer can only make a call smaller",
+                named(k)
+            )),
+            None => now.iter().try_for_each(|(k, v)| {
+                smaller_at(was.get(k).unwrap_or(&Value::Null), v, &named(k))
+            }),
+        },
+        // A list may lose elements and not gain them, and what it keeps is what the model sent.
+        (Value::Array(was), Value::Array(now)) => {
+            if now.len() > was.len() {
+                return Err(format!(
+                    "its rewrite adds an element to `{at}`, and a layer can only make a call smaller"
+                ));
+            }
+            now.iter().zip(was).try_for_each(|(n, w)| smaller_at(w, n, at))
+        }
+        (was, now) if was == now => Ok(()),
+        _ if at.is_empty() => Err(
+            "its rewrite changes the shape of the arguments, and a layer can only make a call smaller"
+                .into(),
+        ),
+        _ => Err(format!(
+            "its rewrite changes the value of `{at}`, and a layer can only make a call smaller"
+        )),
     }
 }
 
