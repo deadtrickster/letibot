@@ -166,6 +166,9 @@ fn a_daemon_at(
     socket: &std::path::Path,
 ) -> (Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
     use std::io::{BufRead, BufReader, Write};
+    // A socket file outlives the process that bound it, so a second run of this test at a reused
+    // path would fail to bind rather than test anything.
+    let _ = std::fs::remove_file(socket);
     let listener = std::os::unix::net::UnixListener::bind(socket).expect("bind");
     let seen = Arc::new(Mutex::new(Vec::new()));
     let recorded = seen.clone();
