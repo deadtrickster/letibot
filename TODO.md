@@ -756,6 +756,15 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 **Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Batch B8 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I46. Record: `docs/review/2026-11-16/INTEGRATION.md`.
 
+**Built (branch `b8-limit`, on `ccc95d272`), waiting for the full gate.** One commit, `0674d3907`. The proving test was run on the base and failed (the re-try's `[limit]` row read as not mid-turn), then passed with the fix. With the fix in and the restore call or the notice reuse disabled, it fails at the park coming back and the notice count.
+- I46 (`tokencore`, `harnessd`): schema 56 (additive, reader floor unchanged) adds `session.limit_state`, one JSON `LimitState` (park `{until_ms, reset_ms, model, said}`, probing `{refused, asked}`, return, limited). `Harness::save_limit_state` writes it on every change, deduped against the last write. `Harness::restore_limit_state` runs at both `Sessions` open paths after `restore_provider_choice`, puts the park back with its status row and seat, and says `limit_park_restored`. `restart::mid_turn` reads past a park's resume notice; the Esc ending (`restart::PARK_INTERRUPTED`) still ends the turn. `owed_after_a_restart` does not count the turn as owed while a restored park holds it, so the restart wakes no turn into a refusal. A re-try refused again sends its standing notice instead of appending another (A1-F8). Tests: `a_restart_after_a_refused_probe_still_owes_the_turn` (`harnessd/tests/limits.rs`: park, refused re-try, new daemon, same park and step, the third step and the answer), the notice count in `a_park_re_tries_on_its_steps_and_the_first_answer_lifts_it`, `a_parks_resume_notice_is_read_past_and_its_interrupt_is_not` (`restart.rs`), `a_v55_store_gains_the_limit_state_column` (`tokencore`).
+
+**Residue.**
+- Hook episodes stay in the daemon's own state file (`limit_hook.rs` `STATE_FILE`), keyed by model, not in `LimitState`. They were already durable; folding them in moves a per-daemon fact onto each session row.
+- A subagent's harness does not restore its limit state: children are reopened by `children.rs`, which restores no provider choice either, and their parks are not driven by `Sessions::resume_due_limits`. A parked child across a restart is still lost.
+- A session forked by `Store::fork_session` does not carry the limit state. The fork is a new session and starts unlimited.
+- The v51 `nags_paused_by` comment lost its commas: sqlite's `DROP COLUMN` of a last column cuts at the last comma before it, and a comma inside that comment left an unparsable table.
+
 **Scope.** `harnessd/src/harness/limit.rs`, `restart.rs` `mid_turn`, `open.rs` restore. One persisted `LimitState` (C17).
 
 **Proving tests.** `a_restart_after_a_refused_probe_still_owes_the_turn`. Each fails on the snapshot.
