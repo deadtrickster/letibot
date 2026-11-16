@@ -1407,6 +1407,56 @@ pub fn is_fleeting(code: &str) -> bool {
     FLEETING.contains(&code)
 }
 
+/// The `(code, detail)` an event files as a warning, for the view and the head alike: a `Warning` as
+/// it is, and a spent account's `ProviderTrouble` as `provider_quota`. The other troubles are the
+/// live line's, and a trouble that moved the session is said by `model_fallback`.
+pub fn warned_of(event: &crate::event::SessionEvent) -> Option<(String, String)> {
+    use crate::event::SessionEvent;
+    match event {
+        SessionEvent::Warning { code, detail, .. } => Some((code.clone(), detail.clone())),
+        SessionEvent::ProviderTrouble {
+            kind,
+            model,
+            detail,
+            reset_ms,
+            count,
+            switched_to: None,
+        } if kind == "quota" => Some((
+            "provider_quota".into(),
+            quota_sentence(model, detail, *reset_ms, *count),
+        )),
+        _ => None,
+    }
+}
+
+/// A spent account's sentence. One spelling, so a head that hears the event live and again in a
+/// snapshot holds one note.
+pub fn quota_sentence(model: &str, detail: &str, reset_ms: Option<u64>, count: u32) -> String {
+    let mut said = format!("{model}: {detail}");
+    if let Some(at) = reset_ms.map(clock_time).filter(|at| !at.is_empty()) {
+        said.push_str(&format!(", and the provider said its limit lifts at {at}"));
+    }
+    if count > 1 {
+        said.push_str(&format!(" — {count} in a row"));
+    }
+    said
+}
+
+/// `HH:MM:SS` local time, or empty when the clock cannot be read.
+fn clock_time(ms: u64) -> String {
+    if ms == 0 {
+        return String::new();
+    }
+    let secs = (ms / 1000) as libc::time_t;
+    // SAFETY: `localtime_r` writes into `tm` and reads `secs`; both are owned here.
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    let ok = unsafe { !libc::localtime_r(&secs, &mut tm).is_null() };
+    if !ok {
+        return String::new();
+    }
+    format!("{:02}:{:02}:{:02}", tm.tm_hour, tm.tm_min, tm.tm_sec)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

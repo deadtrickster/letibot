@@ -779,14 +779,18 @@ impl SessionView {
             SessionEvent::HeadDetached { head_id, .. } => {
                 self.heads.retain(|h| &h.head_id != head_id);
             }
-            SessionEvent::Warning { code, detail, .. } => {
-                self.warnings.push(Warned {
-                    code: code.clone(),
-                    detail: detail.clone(),
-                    ts: env.ts,
-                });
-                let over = self.warnings.len().saturating_sub(self.bounds.warnings);
-                self.warnings.drain(..over);
+            SessionEvent::Warning { .. } | SessionEvent::ProviderTrouble { .. } => {
+                // A late head is told of a spent account by its snapshot: the trouble's warning
+                // is filed beside the conversation, so it never draws one failure twice.
+                if let Some((code, detail)) = crate::warning::warned_of(&env.event) {
+                    self.warnings.push(Warned {
+                        code,
+                        detail,
+                        ts: env.ts,
+                    });
+                    let over = self.warnings.len().saturating_sub(self.bounds.warnings);
+                    self.warnings.drain(..over);
+                }
             }
             // A password request is live for two minutes and answered on the connection that
             // asked; a head attaching later has nothing to do with it, and a settled one is
@@ -798,9 +802,6 @@ impl SessionView {
             // about. The settlement is not carried either - the run's own rows are.
             | SessionEvent::PromptRequested { .. }
             | SessionEvent::PromptSettled { .. }
-            // The typed twin of a warning a person reads, and a snapshot that kept both would
-            // draw one failure twice: the turn's own end is the durable copy.
-            | SessionEvent::ProviderTrouble { .. }
             | SessionEvent::ScreenRequested { .. } => {}
             // The plan is a full document: it belongs in the log, where a head can ask for it by
             // seq, and carrying every one of them in every snapshot would make the snapshot grow

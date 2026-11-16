@@ -267,17 +267,7 @@ impl App {
                 match letibot_sessionlog::warning::destination(&code) {
                     letibot_sessionlog::warning::Go::Status => self.say(&detail),
                     letibot_sessionlog::warning::Go::Model => {}
-                    letibot_sessionlog::warning::Go::Notes => {
-                        // A fault is never only a list nobody opened: the edge counts it, and
-                        // `/status` holds the number. A routine note asks the reader nothing and
-                        // is listed alone.
-                        let class = letibot_sessionlog::warning::class(&code);
-                        if class.is_refused() {
-                            self.refused += 1;
-                        } else if class.is_failure() {
-                            self.failed += 1;
-                        }
-                    }
+                    letibot_sessionlog::warning::Go::Notes => self.count_fault(&code),
                 }
                 // The weather counter (`warning::ALARM_ONLY`) is a second count over the same
                 // rule: one code, one counter, and a code that names the edge and has none says so.
@@ -321,24 +311,28 @@ impl App {
         if switched_to.is_some() || kind != "quota" {
             return Disposition::Filtered;
         }
-        // The account cannot pay: no wait lifts it, so this is the one trouble that is a row - a
-        // Failure, whose action is the table's (`provider_quota`).
-        let mut said = format!("{model}: {detail}");
-        if let Some(at) = reset_ms {
-            let at = crate::ui::transcript::blocks::clock_time(at);
-            if !at.is_empty() {
-                said.push_str(&format!(", and the provider said its limit lifts at {at}"));
-            }
-        }
-        if count > 1 {
-            said.push_str(&format!(" — {count} in a row"));
-        }
-        self.note(Note::Warned(Warned {
-            code: format!("provider_{kind}"),
-            detail: said,
+        // The account cannot pay: a Failure the model never got, so it is filed beside the
+        // conversation and counted on the edge, as every `Go::Notes` failure is.
+        let code = "provider_quota";
+        let detail = letibot_sessionlog::warning::quota_sentence(&model, &detail, reset_ms, count);
+        self.count_fault(code);
+        self.note_beside(Note::Warned(Warned {
+            code: code.into(),
+            detail,
             ts,
         }));
-        Disposition::Rendered
+        Disposition::Filtered
+    }
+
+    /// A fault is never only a list nobody opened: the edge counts it, and `/status` holds the
+    /// number. A routine note asks the reader nothing and is listed alone.
+    fn count_fault(&mut self, code: &str) {
+        let class = letibot_sessionlog::warning::class(code);
+        if class.is_refused() {
+            self.refused += 1;
+        } else if class.is_failure() {
+            self.failed += 1;
+        }
     }
 
     /// The model not answering, as one live line rewritten on each attempt. A count that goes down

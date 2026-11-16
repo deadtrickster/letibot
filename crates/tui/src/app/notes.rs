@@ -32,7 +32,9 @@ impl App {
         self.notice_until = Some(self.now_ms.saturating_add(NOTICE_MS));
     }
 
-    /// File something that happened between rows, at the row it happened at.
+    /// File something that happened between rows, at the row it happened at. Test-only: every
+    /// warning the daemon raises is filed beside the conversation ([`App::note_beside`]).
+    #[cfg(test)]
     pub(crate) fn note(&mut self, n: Note) {
         // A warning is announced once, so it is noted once: the same `Warning` reaches a head from the snapshot at
         // anchor 0 and from the live arm at the current end, and the second copy reads as pinned under the
