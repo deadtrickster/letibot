@@ -1970,7 +1970,7 @@ room_paths() {
   if [ -n "${LETIBOT_ROOM_SOCKET:-}" ]; then
     ROOM_SOCKET="$LETIBOT_ROOM_SOCKET"
   else
-    ROOM_SOCKET="$ROOM_DATA/room-$(room_host_key "$(uname -n)").sock"
+    ROOM_SOCKET="$ROOM_DATA/room-$(room_host_key "$(room_host_name)").sock"
   fi
   # `harnessd`'s `room::lease_path` puts the lease beside the socket it belongs to, named by the
   # same key, so a box that moves its socket with `LETIBOT_ROOM_SOCKET` moves both.
@@ -1983,6 +1983,16 @@ room_paths() {
 # 32-bit arithmetic is exact for the low half: multiply by the 64-bit prime's low half (435),
 # starting from `0xcbf29ce484222325 & 0xffffffff`; bash 3.2 can spell only these.
 # `crates/room/src/lease.rs`'s `the_host_key_matches_what_the_launcher_derives` pins the same table.
+# `letibot_room::lease::host_name`, in bash: a Mac's local host name, which DHCP does not rename,
+# else `uname -n`.
+room_host_name() {
+  local name=""
+  if [ "$(uname -s)" = Darwin ]; then
+    name="$(scutil --get LocalHostName 2>/dev/null || true)"
+  fi
+  [ -n "$name" ] || name="$(uname -n)"
+  printf '%s' "$name"
+}
 room_host_key() { # room_host_key NAME
   local raw="$1" safe hex h b
   # Per character, as the Rust maps: in a UTF-8 locale one non-ASCII character is one dash.

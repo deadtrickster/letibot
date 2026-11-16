@@ -298,6 +298,22 @@ fn now_ns() -> u128 {
 
 /// This box's name, as `uname -n` answers it - what a person comparing two boxes would type.
 pub fn host_name() -> String {
+    // A Mac's `uname -n` is what DHCP last handed it (`mbp-von-dead.fritz.box`, then
+    // `mac.fritz.box`), and every new one was a new room beside the old. Its local host name is
+    // the operator's own, and stays put.
+    #[cfg(target_os = "macos")]
+    if let Some(name) = std::process::Command::new("scutil")
+        .args(["--get", "LocalHostName"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|s| !s.is_empty())
+    {
+        return name;
+    }
     std::process::Command::new("uname")
         .arg("-n")
         .stdin(std::process::Stdio::null())
