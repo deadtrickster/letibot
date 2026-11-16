@@ -313,6 +313,16 @@ fn say_memory_caps() {
         ),
         Err(why) => eprintln!("harnessd: io NOT delegated — {why}"),
     }
+    // The process cap is per job and has no delegation of its own to say: `pids.max` refuses a
+    // fork, so a scope that cannot hold one is a fork loop that runs until the box stops
+    // answering. Said here, once, because a job's own row cannot carry it.
+    match letibot_tools::exec::task_delegation() {
+        Ok(()) => eprintln!(
+            "harnessd: process caps on — a job's scope is limited to \
+             `[exec] tasks_max` processes"
+        ),
+        Err(why) => eprintln!("harnessd: process caps OFF — {why}"),
+    }
 }
 
 /// Nothing this process booted on another machine outlives it. A guest is booted by a

@@ -942,6 +942,7 @@ fn provider_keys(
 /// disk_floor_action = "freeze" # or "kill"
 /// io_pressure_full = 60    # system io "full" pressure, percent, that throttles the top writer; 0 = off
 /// disk_watch = ["/build"]  # filesystems watched besides each job's cwd
+/// tasks_max = 512          # processes one job's scope may hold; 0 = no cap
 /// ```
 ///
 /// `false` keeps the advice only. The project's file wins over the user's. `job_dead_after_seconds`
@@ -959,6 +960,9 @@ pub struct ExecKeys {
     pub disk_floor_action: Option<letibot_tools::exec::diskio::FloorAction>,
     pub io_pressure_full: Option<f64>,
     pub disk_watch: Option<Vec<PathBuf>>,
+    /// The most processes one job's scope may hold. A fork loop holds almost no memory and
+    /// copies itself, so a memory cap never sees it; this is the bound that does.
+    pub tasks_max: Option<u32>,
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
@@ -981,6 +985,8 @@ struct ExecTable {
     #[serde(default)]
     io_pressure_full: Option<f64>,
     #[serde(default)]
+    tasks_max: Option<u32>,
+    #[serde(default)]
     disk_watch: Option<Vec<PathBuf>>,
 }
 
@@ -998,7 +1004,7 @@ fn exec_keys(value: &toml::Value) -> Result<ExecKeys, String> {
         format!(
             "[exec]: {e}; the keys are `auto_background` (bool), `foreground_seconds`, \
              `job_dead_after_seconds` (0 turns the dead check off), `io_wbps`, `io_wiops`, \
-             `disk_floor`, `disk_floor_action`, `io_pressure_full` and `disk_watch`"
+             `disk_floor`, `disk_floor_action`, `io_pressure_full`, `disk_watch` and `tasks_max`"
         )
     })?;
     use letibot_tools::exec::diskio::{DiskFloor, FloorAction, parse_size};
@@ -1043,6 +1049,7 @@ fn exec_keys(value: &toml::Value) -> Result<ExecKeys, String> {
         disk_floor_action,
         io_pressure_full: t.io_pressure_full,
         disk_watch: t.disk_watch,
+        tasks_max: t.tasks_max,
     })
 }
 
@@ -1098,6 +1105,28 @@ pub fn job_dead_after(
         }
     }
     window
+}
+
+/// The most processes one job's scope may hold: `[exec] tasks_max`, the project's over the
+/// user's, [`DEFAULT_TASKS_MAX`] when no file said anything, and 0 for a file that turned the
+/// bound off. A fork loop holds almost no memory, so this is the only cap that meets one.
+pub fn tasks_max(user: &LeticodeConfig, workspace: &Path, read_project: bool) -> u32 {
+    let mut n = letibot_tools::exec::host::DEFAULT_TASKS_MAX;
+    let mut apply = |k: &ExecKeys| {
+        if let Some(v) = k.tasks_max {
+            n = v;
+        }
+    };
+    apply(&user.exec);
+    if read_project && let Some(path) = LeticodeConfig::discover(workspace) {
+        match LeticodeConfig::load(&path) {
+            Ok(project) => apply(&project.exec),
+            Err(why) => {
+                eprintln!("  leticode.toml: {why} - this session's [exec] is the level below")
+            }
+        }
+    }
+    n
 }
 
 /// The io policy a session's jobs run under: defaults, then the user file, then the nearest
@@ -3175,6 +3204,7 @@ impl LeticodeConfig {
                 disk_floor: other.exec.disk_floor.or(self.exec.disk_floor),
                 disk_floor_action: other.exec.disk_floor_action.or(self.exec.disk_floor_action),
                 io_pressure_full: other.exec.io_pressure_full.or(self.exec.io_pressure_full),
+                tasks_max: other.exec.tasks_max.or(self.exec.tasks_max),
                 disk_watch: other
                     .exec
                     .disk_watch

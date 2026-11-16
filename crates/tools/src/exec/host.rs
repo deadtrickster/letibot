@@ -1086,7 +1086,12 @@ pub struct HostProcesses {
     liveness: Arc<Liveness>,
     /// Disk IO accounting, the throttle and the disk floor. See [`super::diskio::IoGuard`].
     io: Arc<super::diskio::IoGuard>,
-    reaps: Mutex<Vec<Reaping>>,
+    /// The process cap every job's scope carries (`pids.max`), or 0 for none. Read at each spawn
+    /// so the daemon's `[exec] tasks_max` reaches jobs it starts after the setting changed.
+    tasks_max: std::sync::atomic::AtomicU32,
+    /// Behind an `Arc` because the thread that ends a job at its process cap records the reaping
+    /// itself: a kill nobody can read back is the empty-haystack bug this list exists to end.
+    reaps: Arc<Mutex<Vec<Reaping>>>,
     /// Every promotion, for the same reason `reaps` exists: a lifetime that
     /// changed under the model is a fact somebody has to be able to read back.
     promotions: Mutex<Vec<Promotion>>,
@@ -1176,6 +1181,16 @@ pub const SETTLED_CAPTURE_BUDGET: usize = 64 * 1024 * 1024;
 /// deadline it fired are a small record a caller reads back, not a history, and a daemon that has
 /// been up for a month must not carry every kill it ever made.
 pub const RECORD_LIMIT: usize = 512;
+
+/// The most processes one job may hold out of the box: `[exec] tasks_max` and
+/// [`HostProcesses::set_tasks_max`]. Large enough for a parallel build's compiler fleet and far
+/// below what a fork loop needs to take a box, which is the run this bound exists for.
+pub const DEFAULT_TASKS_MAX: u32 = 512;
+
+/// How often the watcher of a capped scope asks the kernel whether it refused a fork. Short
+/// enough that a fork loop is ended within a moment of hitting the wall, and cheap: one read of
+/// three small cgroup files.
+const TASK_CAP_TICK: Duration = Duration::from_millis(100);
 
 /// Keep `records` to `limit`, dropping the OLDEST first: the newest is the one a caller asking *what
 /// just happened* wants, and the front is where the oldest are.
@@ -1463,7 +1478,8 @@ impl HostProcesses {
             jobs: Mutex::new(Vec::new()),
             by_id: Mutex::new(std::collections::HashMap::new()),
             claimed_slugs: Mutex::new(Vec::new()),
-            reaps: Mutex::new(Vec::new()),
+            reaps: Arc::new(Mutex::new(Vec::new())),
+            tasks_max: std::sync::atomic::AtomicU32::new(DEFAULT_TASKS_MAX),
             promotions: Mutex::new(Vec::new()),
             pinned_path: std::env::var("PATH").unwrap_or_else(|_| {
                 "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".into()
@@ -1921,6 +1937,17 @@ impl HostProcesses {
         self.liveness.window()
     }
 
+    /// The most processes one job may hold: `[exec] tasks_max`, 0 for no cap. `pids.max` refuses
+    /// a fork past it, so a fork loop meets a wall at its own scope rather than the box's.
+    pub fn set_tasks_max(&self, n: u32) {
+        self.tasks_max
+            .store(n, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn tasks_max(&self) -> u32 {
+        self.tasks_max.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// The `[exec]` io keys: the per-job `io.max`, the disk floor and the pressure throttle.
     pub fn set_io_policy(&self, policy: super::diskio::IoPolicy) {
         self.io.set_policy(policy);
@@ -1964,6 +1991,38 @@ impl HostProcesses {
         reaps.push(r.clone());
         bound_records(&mut reaps, RECORD_LIMIT);
         r
+    }
+
+    /// End a job whose scope refused a fork at its process cap. `pids.max` refuses the fork and
+    /// ends NOTHING, so a loop that ignores the refusal spins for ever: this is the half that
+    /// ends it, and it records the reaping so no kill happens that nobody can read back.
+    fn watch_task_cap(&self, job: Arc<Job>, cap: u32) {
+        let tree = Arc::clone(&self.tree);
+        let reaps = Arc::clone(&self.reaps);
+        let name = format!("letibot-tasks-{}", job.id);
+        let _ = std::thread::Builder::new().name(name).spawn(move || {
+            while job.state().is_running() {
+                if tree
+                    .task_use(&job.lifetime().scope)
+                    .is_some_and(|u| u.refused > 0)
+                {
+                    // Marked before the kill, as `kill_job_as` does: the waiter thread would
+                    // otherwise overwrite the reason with the SIGKILL it is about to see.
+                    job.settle(JobState::Killed {
+                        by: format!(
+                            "its process cap of {cap}: it forked past `pids.max`, which refuses \
+                             the fork and ends nothing, so the scope was ended"
+                        ),
+                    });
+                    let r = tree.end(&job.lifetime().scope);
+                    let mut g = reaps.lock().expect("reaps");
+                    g.push(r);
+                    bound_records(&mut g, RECORD_LIMIT);
+                    return;
+                }
+                std::thread::sleep(TASK_CAP_TICK);
+            }
+        });
     }
 
     fn record_promotion(&self, p: Promotion) -> Promotion {
@@ -2137,6 +2196,15 @@ impl ProcessHost for HostProcesses {
             None
         } else {
             self.io.cap_new(self.tree.as_ref(), &cgroup.path, &cwd)
+        };
+        // The process cap goes on with them, and it is asked for on every job: a fork loop holds
+        // no memory and copies itself, so the count is the only bound that meets it. `pids.max`
+        // REFUSES the fork rather than killing anything, which is why the job is also watched.
+        let tasks_capped = match self.tasks_max() {
+            0 => None,
+            // As with memory: the guest is where the processes are, not this host.
+            _ if confined.memory_is_elsewhere() => None,
+            n => self.tree.cap_tasks(&cgroup, n).ok().map(|()| n),
         };
 
         let procs = Cgroup2::procs_path(&cgroup);
@@ -2389,6 +2457,11 @@ impl ProcessHost for HostProcesses {
             None => job,
         });
         job.set_throttled(io_capped);
+        // Only when the cap was really set: a watcher on a scope with no `pids.max` would never
+        // see a refusal, and `[exec] tasks_max = 0` is the operator turning the bound off.
+        if let Some(n) = tasks_capped {
+            self.watch_task_cap(Arc::clone(&job), n);
+        }
         // The parent's copy of the output file goes: the child holds its own.
         drop(follow);
         if let Some(p) = super::procs::read(pid) {

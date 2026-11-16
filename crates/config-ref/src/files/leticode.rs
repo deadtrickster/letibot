@@ -124,6 +124,7 @@ pub const LETICODE: File = File {
                 k("disk_floor_action", "freeze | kill", "freeze", PW, "what the floor does to them; `job_resume` thaws a frozen job", "\"freeze\""),
                 k("io_pressure_full", "percent", "60", PW, "system io `full` pressure (avg10) that, held for 20s, throttles the top writer through io.max; 0 = off", "60"),
                 k("disk_watch", "list of paths", "[\"/build\", $CARGO_TARGET_DIR]", PW, "filesystems the floor watches besides each job's cwd; replaces the default", "[\"/build\"]"),
+                k("tasks_max", "int", "512", PW, "processes one job's cgroup may hold (`pids.max`); a job that forks past it is ended; 0 = no cap", "512"),
             ],
         },
         Table {

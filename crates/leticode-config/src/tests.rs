@@ -688,6 +688,27 @@ fn the_dead_after_window_is_a_key_and_zero_turns_the_check_off() {
     );
 }
 
+/// `[exec] tasks_max` is the process cap a fork loop meets: 512 when no file said anything, a
+/// project's number over the user's, and `0` the operator turning the bound off.
+#[test]
+fn the_process_cap_is_a_key_and_zero_turns_it_off() {
+    use letibot_tools::exec::host::DEFAULT_TASKS_MAX;
+    let dir = project_dir("tasks_max");
+    let none = LeticodeConfig::default();
+    assert_eq!(tasks_max(&none, &dir, true), DEFAULT_TASKS_MAX);
+    assert_eq!(DEFAULT_TASKS_MAX, 512, "the box's own default");
+    write_file(&dir, "[exec]\ntasks_max = 64\n");
+    assert_eq!(tasks_max(&none, &dir, true), 64);
+    // Nothing said for the project is the level below.
+    assert_eq!(tasks_max(&none, &dir, false), DEFAULT_TASKS_MAX);
+    write_file(&dir, "[exec]\ntasks_max = 0\n");
+    assert_eq!(tasks_max(&none, &dir, true), 0, "zero turns the cap off");
+    // And a misspelt key refuses the file by name rather than leaving the default in force.
+    let path = write_file(&dir, "[exec]\ntasks = 64\n");
+    let why = LeticodeConfig::load(&path).unwrap_err();
+    assert!(why.contains("[exec]") && why.contains("tasks_max"), "{why}");
+}
+
 /// The `[exec]` io keys: defaults, sizes with units, the floor as a percent or a size, `0` off,
 /// and a bad action refused by name.
 #[test]

@@ -329,6 +329,26 @@ pub trait ScopeTree: Send + Sync {
         self.memory_caps()
     }
 
+    /// Whether this tree can cap a scope's process count, and if not why, in the sentence a
+    /// session is shown. A fork loop is the one runaway a memory cap never notices: it holds
+    /// almost no memory and copies itself, so a count is the only bound that meets it.
+    fn task_caps(&self) -> Result<(), String> {
+        Err("this host's lifetime mechanism has no pids controller".into())
+    }
+
+    /// Cap `scope` at `n` processes. `pids.max` REFUSES a fork past the cap and ends nothing, so a
+    /// caller that must end a fork loop has to watch [`task_use`](Self::task_use) and end the
+    /// scope itself.
+    fn cap_tasks(&self, _scope: &ScopeId, _n: u32) -> Result<(), String> {
+        self.task_caps()
+    }
+
+    /// What `scope`'s process count did, read from the kernel: what is in it, its cap, and how
+    /// many forks it refused. The last is the only evidence a loop that ignores the refusal leaves.
+    fn task_use(&self, _scope: &ScopeId) -> Option<TaskUse> {
+        None
+    }
+
     /// What `scope`'s memory did, read from the kernel - before the scope is ended, because
     /// ending it removes the files this reads.
     /// Whether this tree's scopes carry the io controller (`io.stat`, `io.max`), or why not.
@@ -460,6 +480,40 @@ pub fn use_at(dir: &Path) -> Option<ScopeUse> {
                     .find_map(|l| l.strip_prefix("usage_usec "))
                     .and_then(|v| v.trim().parse().ok())
             }),
+    })
+}
+
+/// What a scope's process count did, as the kernel counted it: what is in it, the cap it ran
+/// under, and how many forks it refused. `refused` is the whole of the evidence a fork loop
+/// leaves - the kernel only fails the fork, which a loop that ignores `EAGAIN` never reports.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct TaskUse {
+    /// `pids.current`.
+    pub current: u64,
+    /// `pids.max`; `None` is the word `max`, an uncapped scope and not a missing file.
+    pub max: Option<u64>,
+    /// `pids.events`' `max`: forks this scope refused because it was at its cap.
+    pub refused: u64,
+}
+
+/// [`TaskUse`] for one cgroup directory, or `None` when the directory is not there at all.
+pub fn task_use_at(dir: &Path) -> Option<TaskUse> {
+    let read = |name: &str| -> Option<u64> {
+        std::fs::read_to_string(dir.join(name))
+            .ok()?
+            .trim()
+            .parse::<u64>()
+            .ok()
+    };
+    let events = std::fs::read_to_string(dir.join("pids.events")).ok()?;
+    Some(TaskUse {
+        current: read("pids.current")?,
+        max: read("pids.max"),
+        refused: events
+            .lines()
+            .find_map(|l| l.strip_prefix("max "))
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0),
     })
 }
 
@@ -906,6 +960,8 @@ pub struct Cgroup2 {
     memory: Result<(), String>,
     /// Whether scopes under this root carry `io`, or why not. See [`super::diskio::io_delegation`].
     io: Result<(), String>,
+    /// Whether scopes under this root can carry a process cap, or why not. See [`pids_in`].
+    pids: Result<(), String>,
 }
 
 /// Where a delegated cgroup v2 hierarchy is mounted.
@@ -924,6 +980,7 @@ impl Cgroup2 {
                 let mut t = Self::probe_under(base)?;
                 t.memory = Ok(());
                 t.io = io_in(base, &t.root);
+                t.pids = pids_in(base, &t.root);
                 Ok(t)
             }
             Err(_) => Self::probe_under(&own_cgroup()?),
@@ -974,6 +1031,10 @@ impl Cgroup2 {
                 }
             }),
             io: Err(
+                "this tree was built under a chosen parent, not the daemon's delegated scope"
+                    .into(),
+            ),
+            pids: Err(
                 "this tree was built under a chosen parent, not the daemon's delegated scope"
                     .into(),
             ),
@@ -1028,6 +1089,25 @@ fn io_in(base: &Path, root: &Path) -> Result<(), String> {
     }
     std::fs::write(root.join("cgroup.subtree_control"), "+io")
         .map_err(|e| format!("enabling io under `{}` failed: {e}", root.display()))
+}
+
+/// pids on a tree root under the delegated scope: offered by `base` and enabled on `root`'s
+/// subtree, so every scope opened under it can carry a `pids.max`.
+fn pids_in(base: &Path, root: &Path) -> Result<(), String> {
+    let offered = |p: &Path| {
+        std::fs::read_to_string(p.join("cgroup.controllers"))
+            .unwrap_or_default()
+            .split_whitespace()
+            .any(|c| c == "pids")
+    };
+    if !offered(base) || !offered(root) {
+        return Err(format!(
+            "`{}` does not offer the pids controller to its children",
+            base.display()
+        ));
+    }
+    std::fs::write(root.join("cgroup.subtree_control"), "+pids")
+        .map_err(|e| format!("enabling pids under `{}` failed: {e}", root.display()))
 }
 
 /// The harness's own cgroup path, from `/proc/self/cgroup`.
@@ -1086,8 +1166,30 @@ pub fn delegate_memory() -> &'static Result<PathBuf, String> {
         if controllers.split_whitespace().any(|c| c == "io") {
             let _ = std::fs::write(own.join("cgroup.subtree_control"), "+io");
         }
+        // And another, for the same reason: pids is delegated separately too, and a scope that
+        // cannot hold a process cap is one a fork loop fills.
+        if controllers.split_whitespace().any(|c| c == "pids") {
+            let _ = std::fs::write(own.join("cgroup.subtree_control"), "+pids");
+        }
         Ok(own)
     })
+}
+
+/// Whether a job's scope can carry a process cap here, answered without making one: the daemon
+/// says this once at start. A scope that cannot hold a `pids.max` is a fork loop that runs until
+/// the box stops answering, so the absence has to be as loud as the cap.
+pub fn task_delegation() -> Result<(), String> {
+    let base = delegate_memory().as_ref().map_err(Clone::clone)?;
+    let offered = std::fs::read_to_string(base.join("cgroup.controllers")).unwrap_or_default();
+    if offered.split_whitespace().any(|c| c == "pids") {
+        Ok(())
+    } else {
+        Err(format!(
+            "the pids controller is not delegated to `{}` (it has: `{}`)",
+            base.display(),
+            offered.trim()
+        ))
+    }
 }
 
 /// A cgroup of its own for work the daemon runs for itself, opened in the delegated scope beside
@@ -1392,6 +1494,9 @@ impl ScopeTree for Cgroup2 {
         if self.io.is_ok() {
             let _ = std::fs::write(base.join("cgroup.subtree_control"), "+io");
         }
+        if self.pids.is_ok() {
+            let _ = std::fs::write(base.join("cgroup.subtree_control"), "+pids");
+        }
         std::fs::create_dir_all(&dir).map_err(|e| ExecError::Cgroup {
             op: "mkdir",
             path: dir.display().to_string(),
@@ -1415,6 +1520,24 @@ impl ScopeTree for Cgroup2 {
 
     fn io_controls(&self) -> Result<(), String> {
         self.io.clone()
+    }
+
+    fn task_caps(&self) -> Result<(), String> {
+        self.pids.clone()
+    }
+
+    fn cap_tasks(&self, scope: &ScopeId, n: u32) -> Result<(), String> {
+        self.pids.clone()?;
+        std::fs::write(scope.path.join("pids.max"), n.to_string()).map_err(|e| {
+            format!(
+                "writing `{}` failed: {e}",
+                scope.path.join("pids.max").display()
+            )
+        })
+    }
+
+    fn task_use(&self, scope: &ScopeId) -> Option<TaskUse> {
+        task_use_at(&scope.path)
     }
 
     fn cap_memory(&self, scope: &ScopeId, bytes: u64) -> Result<(), String> {
@@ -2466,5 +2589,40 @@ mod tests {
                 .is_some_and(|n| n.contains("setsid")),
             "the record has to say what a group kill cannot reach: {reaping:?}"
         );
+    }
+
+    /// A scope's process count is the kernel's three files, and `max` in `pids.max` is an uncapped
+    /// scope rather than a missing one: a reader that turned it into `0` would show every job as
+    /// capped at nothing, and a reader that called a missing directory a zero would call a dead
+    /// scope a quiet one.
+    #[test]
+    fn a_scopes_process_count_is_read_from_the_kernels_own_files() {
+        let dir = std::env::temp_dir().join(format!("letibot-pids-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("pids.current"), "7\n").unwrap();
+        std::fs::write(dir.join("pids.max"), "64\n").unwrap();
+        std::fs::write(dir.join("pids.events"), "max 3\n").unwrap();
+        assert_eq!(
+            task_use_at(&dir),
+            Some(TaskUse {
+                current: 7,
+                max: Some(64),
+                refused: 3,
+            })
+        );
+        // The kernel's word for "no cap", and a fork it never refused.
+        std::fs::write(dir.join("pids.max"), "max\n").unwrap();
+        std::fs::write(dir.join("pids.events"), "max 0\n").unwrap();
+        assert_eq!(
+            task_use_at(&dir),
+            Some(TaskUse {
+                current: 7,
+                max: None,
+                refused: 0,
+            })
+        );
+        assert_eq!(task_use_at(&dir.join("gone")), None, "a scope that is gone");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
