@@ -53,6 +53,9 @@ fn child_with(
     cfg.vocab_gguf = Some(gguf);
     cfg.parent_session_id = Some("s-parent".into());
     cfg.mode = at;
+    // A search key on the box seats `web_search`, and a gated tool with nobody behind the gate
+    // refuses the open.
+    cfg.web_search = None;
     touch(&mut cfg);
     let parts = Parts::load(&cfg).expect("the vocabulary loads");
     // A gate that holds a point: `Harness::open` seats `NoBoundary` when nothing can be asked, and
