@@ -1,6 +1,7 @@
 //! A stdio MCP server for tests. `--die-at-start` exits before answering, `--once FILE` only when
 //! FILE exists. Tools: `echo`, `big`, `fail` (`isError`), `crash` (exits mid-call), `pwd`, and
-//! `grow`, which adds `extra` and sends `notifications/tools/list_changed`.
+//! `grow`, which adds `extra` and sends `notifications/tools/list_changed`, `env` (one variable's
+//! value, empty when unset), and `spawn`, which starts a `sleep` grandchild and says its pid.
 
 use std::io::{BufRead, Write};
 
@@ -54,6 +55,10 @@ fn main() {
                  "inputSchema": {"type": "object"}},
                 {"name": "pwd", "description": "Say the working directory.",
                  "inputSchema": {"type": "object"}},
+                {"name": "env", "description": "Say one environment variable.",
+                 "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}}},
+                {"name": "spawn", "description": "Start a grandchild and say its pid.",
+                 "inputSchema": {"type": "object"}},
                 ]);
                 if grown {
                     tools.as_array_mut().unwrap().push(json!({"name": "extra",
@@ -82,6 +87,20 @@ fn main() {
                     }
                     Some("extra") => text("extra ran"),
                     Some("pwd") => text(&std::env::current_dir().unwrap().display().to_string()),
+                    Some("env") => {
+                        let name = args.get("name").and_then(Value::as_str).unwrap_or("");
+                        text(&std::env::var(name).unwrap_or_default())
+                    }
+                    Some("spawn") => {
+                        let child = std::process::Command::new("sleep")
+                            .arg("600")
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
+                            .spawn()
+                            .unwrap();
+                        text(&child.id().to_string())
+                    }
                     Some("crash") => {
                         eprintln!("fake: crashing on purpose");
                         std::process::exit(7);

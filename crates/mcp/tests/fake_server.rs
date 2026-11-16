@@ -65,7 +65,12 @@ fn tools_are_listed_searched_and_called() {
         .iter()
         .map(|t| t.name.clone())
         .collect();
-    assert_eq!(tools, ["echo", "big", "fail", "crash", "grow", "pwd"]);
+    assert_eq!(
+        tools,
+        [
+            "echo", "big", "fail", "crash", "grow", "pwd", "env", "spawn"
+        ]
+    );
     let mut h = harness(Arc::new(cat), allow_all_mcp());
 
     let r = h.call("mcp_search", r#"{"query":"echo"}"#);

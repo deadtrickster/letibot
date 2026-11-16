@@ -57,6 +57,11 @@ pub(crate) fn open(spec: &ServerSpec) -> Result<Box<dyn Wire>, String> {
     }
 }
 
+/// The daemon's variables a stdio server is handed: where it runs, never a credential.
+const KEPT_ENV: &[&str] = &[
+    "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
+];
+
 /// Bytes of a server's stderr kept for the report when it dies.
 const STDERR_TAIL: usize = 2048;
 
@@ -78,8 +83,19 @@ impl StdioWire {
         cwd: Option<&std::path::Path>,
     ) -> Result<StdioWire, String> {
         let mut cmd = Command::new(command);
+        // Its own group, so the drop's `killpg` reaches what an `npx` wrapper forked.
+        #[cfg(unix)]
+        std::os::unix::process::CommandExt::process_group(&mut cmd, 0);
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
+        }
+        // Cleared, then stated: the daemon's env carries provider keys. The kept names say where
+        // a program runs, not who it acts for, and the spec's own env is what the operator gave.
+        cmd.env_clear();
+        for name in KEPT_ENV {
+            if let Some(v) = std::env::var_os(name) {
+                cmd.env(name, v);
+            }
         }
         let mut child = cmd
             .args(args)
@@ -239,6 +255,12 @@ impl Wire for StdioWire {
 
 impl Drop for StdioWire {
     fn drop(&mut self) {
+        #[cfg(unix)]
+        if let Ok(pgid) = libc::pid_t::try_from(self.child.id()) {
+            // SAFETY: the group was made at spawn and is led by our unreaped child, so its id
+            // cannot have been reused.
+            unsafe { libc::killpg(pgid, libc::SIGKILL) };
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
     }

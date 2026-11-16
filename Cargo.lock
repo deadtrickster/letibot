@@ -1672,6 +1672,7 @@ version = "0.6.0"
 dependencies = [
  "letibot-tools",
  "letibot-transcript",
+ "libc",
  "serde_json",
  "ureq",
 ]

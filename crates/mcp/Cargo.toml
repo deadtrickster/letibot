@@ -12,6 +12,8 @@ letibot-tools.workspace = true
 # Blocking, rustls: the same client `letibot-provider` uses, so https needs no second TLS stack.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 serde_json.workspace = true
+# `killpg` on drop: a server's own process group dies with it.
+libc = "0.2"
 
 # The fake stdio server the tests drive. A bin so `CARGO_BIN_EXE_` names it; nothing installs it.
 [[bin]]
