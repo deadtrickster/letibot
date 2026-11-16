@@ -82,17 +82,39 @@ pub fn role_name(cfg: &Config) -> String {
 /// description carries and the spawn enforces. A name the box has no profile for is not offered:
 /// an allowlist entry that resolves to nothing is a promise the refusal would have to break.
 pub fn offers(table: &Profiles, profile: &Profile) -> Vec<RoleOffer> {
+    startable_of(table, profile)
+        .into_iter()
+        .map(|row| RoleOffer {
+            name: row.name,
+            purpose: row.purpose,
+        })
+        .collect()
+}
+
+fn startable_of(table: &Profiles, profile: &Profile) -> Vec<Profile> {
     profile
         .subagents()
         .into_iter()
-        .filter_map(|name| {
-            let row = resolve(table, &name).ok()?;
-            Some(RoleOffer {
-                name: row.name.clone(),
-                purpose: row.purpose.clone(),
-            })
-        })
+        .filter_map(|name| resolve(table, &name).ok())
         .collect()
+}
+
+/// The profiles behind [`reach`]'s names, for a builtin that picks its own helper's role
+/// (`digest`'s part reader) from what the spawn will accept.
+pub fn startable(cfg: &Config) -> Vec<Profile> {
+    let table = table(cfg);
+    if crate::sessions::gatekeeper::is_the_queue_session(cfg) {
+        return queue_roles(&table);
+    }
+    startable_of(&table, &for_session(cfg))
+}
+
+/// The review queue's own children: its reviewers, and the coder it opens on a red target's tip
+/// (`mergequeue::review`). The spawn checks every start against this list.
+fn queue_roles(table: &Profiles) -> Vec<Profile> {
+    let mut roles = vec![of_seat(table, Seat::Gatekeeper)];
+    roles.extend(resolve(table, "coder").ok());
+    roles
 }
 
 /// What this seat may reach through `task`: the roles its profile lets it start, one line each,
@@ -101,13 +123,16 @@ pub fn offers(table: &Profiles, profile: &Profile) -> Vec<RoleOffer> {
 pub fn reach(cfg: &Config, table: &Profiles) -> letibot_tools::builtins::task::TaskReach {
     use letibot_tools::builtins::task::{RoleOffer, TaskReach};
     if crate::sessions::gatekeeper::is_the_queue_session(cfg) {
-        // The queue's clock starts its reviewers and nothing else, and `gatekeeper` is the daemon's
-        // own seat - no profile may name it, so this is the one door onto it.
-        let gatekeeper = of_seat(table, Seat::Gatekeeper);
-        return TaskReach::own_children().with_roles(vec![RoleOffer {
-            name: gatekeeper.name.clone(),
-            purpose: gatekeeper.purpose.clone(),
-        }]);
+        // The queue's clock starts its reviewers and its red-tip fixer, and `gatekeeper` is the
+        // daemon's own seat - no profile may name it, so this is the one door onto it.
+        let roles = queue_roles(table)
+            .into_iter()
+            .map(|row| RoleOffer {
+                name: row.name,
+                purpose: row.purpose,
+            })
+            .collect();
+        return TaskReach::own_children().with_roles(roles);
     }
     TaskReach::anywhere().with_roles(offers(table, &for_session(cfg)))
 }
@@ -203,6 +228,27 @@ mod tests {
             offers.iter().all(|r| !r.purpose.is_empty()),
             "a role with no purpose is a role a model cannot choose: {offers:?}"
         );
+    }
+
+    /// The queue starts reviewers and opens a coder on a red tip; the spawn refuses any role
+    /// missing from this list.
+    #[test]
+    fn the_queue_may_start_its_reviewers_and_its_red_tip_fixer() {
+        let mut cfg = a_config();
+        cfg.session_id = letibot_sessionlog::GATEKEEPER_SESSION_PREFIX.to_string();
+        let reach = reach(&cfg, &Profiles::builtins());
+        reach.may_start("gatekeeper").expect("its reviewers");
+        reach.may_start("coder").expect("its red-tip fixer");
+        assert!(reach.may_start("explore").is_err());
+    }
+
+    /// The default list has no `researcher`, so `digest` reads through `explore`.
+    #[test]
+    fn a_default_seat_has_a_part_reader_for_digest() {
+        let table = Profiles::builtins();
+        let rows = startable_of(&table, &of_seat(&table, Seat::Coder));
+        let role = letibot_tools::builtins::digest::part_reader_role(&rows).expect("a reader");
+        assert_eq!(role, "explore");
     }
 
     /// A box with no profile directory and a session with no overlay: the seat's own table.

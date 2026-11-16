@@ -2631,7 +2631,11 @@ impl Harness {
                     None => Arc::new(letibot_tools::builtins::transcript::NoTranscript),
                 };
             let digest: Arc<dyn letibot_tools::builtins::digest::DigestRunner> = Arc::new(
-                letibot_tools::builtins::digest::SubagentDigest::new(digest_runner),
+                letibot_tools::builtins::digest::SubagentDigest::new(digest_runner).with_roles({
+                    // The part reader's role comes from the list the spawn enforces.
+                    let cfg = cfg.clone();
+                    Arc::new(move || crate::profiles::startable(&cfg))
+                }),
             );
             // The gate's own record, by the same argument and from the same file: a model must not
             // derive the storage, its format, or where it lives.

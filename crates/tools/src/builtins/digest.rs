@@ -37,6 +37,57 @@ pub trait DigestRunner: Send + Sync {
         n: usize,
         of: usize,
     ) -> Result<String, String>;
+
+    /// Whether a fold can start at all, asked once before the rows are split.
+    fn ready(&self) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+/// The roles a seat may start, read per call: a profile edited between two digests is in force
+/// for the second, as it is for `task`.
+pub type StartableRoles = Arc<dyn Fn() -> Vec<crate::profiles::Profile> + Send + Sync>;
+
+/// The part reader's role among those this seat may start: `researcher`, else `explore`, else
+/// the narrowest role whose profile denies writes. Never `coder`: the reader is also seated
+/// `read-only`, but its role must not be one whose purpose is editing.
+pub fn part_reader_role(startable: &[crate::profiles::Profile]) -> Result<String, String> {
+    use crate::schema::Access;
+    for preferred in ["researcher", "explore"] {
+        if startable.iter().any(|p| p.name == preferred) {
+            return Ok(preferred.to_string());
+        }
+    }
+    let denies = |p: &crate::profiles::Profile| p.access.as_ref().map_or(0, |a| a.deny.len());
+    startable
+        .iter()
+        .filter(|p| p.name != "coder")
+        .filter(|p| {
+            p.access
+                .as_ref()
+                .is_some_and(|a| a.deny.contains(&Access::Write))
+        })
+        .min_by_key(|p| {
+            (
+                std::cmp::Reverse(denies(p)),
+                p.tools.as_ref().map_or(usize::MAX, Vec::len),
+                p.name.clone(),
+            )
+        })
+        .map(|p| p.name.clone())
+        .ok_or_else(|| {
+            let names: Vec<&str> = startable.iter().map(|p| p.name.as_str()).collect();
+            format!(
+                "this seat can start no read-only role to read the parts (it can start: {}), \
+                 so nothing was split or read. A profile that lists `researcher` or `explore` \
+                 in its `subagents:` can digest.",
+                if names.is_empty() {
+                    "none".to_string()
+                } else {
+                    names.join(", ")
+                }
+            )
+        })
 }
 
 /// What every part reader's brief says of itself, after its part number - the words
@@ -68,6 +119,8 @@ pub struct SubagentDigest {
     /// How long one chunk may take before the fold gives up and reports what it
     /// has. Generous: the child is reading, not searching.
     per_chunk: std::time::Duration,
+    /// `None` is a runner with no role list, which starts `researcher`.
+    roles: Option<StartableRoles>,
 }
 
 impl SubagentDigest {
@@ -75,6 +128,21 @@ impl SubagentDigest {
         SubagentDigest {
             runner,
             per_chunk: std::time::Duration::from_secs(300),
+            roles: None,
+        }
+    }
+
+    /// The reader is chosen from what this seat may start, since the spawn refuses any other
+    /// role and a helper is not exempt from the seat's profile.
+    pub fn with_roles(mut self, roles: StartableRoles) -> Self {
+        self.roles = Some(roles);
+        self
+    }
+
+    fn reader(&self) -> Result<String, String> {
+        match &self.roles {
+            None => Ok("researcher".into()),
+            Some(roles) => part_reader_role(&roles()),
         }
     }
 
@@ -85,6 +153,10 @@ impl SubagentDigest {
 }
 
 impl DigestRunner for SubagentDigest {
+    fn ready(&self) -> Result<(), String> {
+        self.reader().map(|_| ())
+    }
+
     fn fold(
         &self,
         question: &str,
@@ -111,7 +183,7 @@ impl DigestRunner for SubagentDigest {
             },
         );
         let spec = TaskSpec {
-            role: "researcher".into(),
+            role: self.reader()?,
             downgrade: crate::schema::Downgrade::parse("read-only").unwrap_or_default(),
             // This tool's helper, not the model's child: its answer is read right here and
             // nowhere else, so a daemon restart must neither resume it nor hand its answer to the
@@ -238,6 +310,13 @@ impl Tool for DigestTool {
                     .to_string(),
             );
         };
+
+        if let Err(why) = self.runner.ready() {
+            return Invocation::failed(
+                format!("digest cannot start: {why}"),
+                "Nothing was read and no subagent was started.".to_string(),
+            );
+        }
 
         let s = |k: &str| {
             args.get(k)
@@ -832,5 +911,126 @@ mod tests {
         ] {
             assert!(!is_part_reader_brief(not), "{not}");
         }
+    }
+
+    /// A runner that refuses what the seat may not start, as the daemon's spawn does.
+    struct Seated {
+        reach: super::super::task::TaskReach,
+        started: Mutex<Vec<TaskSpec>>,
+    }
+
+    impl Seated {
+        fn new(roles: &[&str]) -> Arc<Seated> {
+            let offers = roles
+                .iter()
+                .map(|r| super::super::task::RoleOffer {
+                    name: r.to_string(),
+                    purpose: String::new(),
+                })
+                .collect();
+            Arc::new(Seated {
+                reach: super::super::task::TaskReach::anywhere().with_roles(offers),
+                started: Mutex::new(Vec::new()),
+            })
+        }
+    }
+
+    impl TaskRunner for Seated {
+        fn start(&self, _prompt: &str, spec: &TaskSpec) -> Result<String, String> {
+            self.reach.may_start(&spec.role)?;
+            let mut s = self.started.lock().unwrap();
+            s.push(spec.clone());
+            Ok(format!("s-1-sub-{}", s.len()))
+        }
+        fn collect(&self, _h: &str, _t: std::time::Duration) -> TaskStatus {
+            TaskStatus::Done {
+                answer: "read".into(),
+                child: None,
+            }
+        }
+    }
+
+    fn profiles(names: &[&str]) -> StartableRoles {
+        let names: Vec<String> = names.iter().map(|n| n.to_string()).collect();
+        Arc::new(move || {
+            let table = crate::profiles::Profiles::builtins();
+            names
+                .iter()
+                .filter_map(|n| table.find(n).ok().flatten())
+                .collect()
+        })
+    }
+
+    fn digest_on(roles: &[&str]) -> (Arc<Seated>, crate::ToolResult) {
+        let seat = Seated::new(roles);
+        let runner = Arc::new(SubagentDigest::new(seat.clone()).with_roles(profiles(roles)));
+        let rows: Vec<TranscriptRow> = (0..40)
+            .map(|i| row(0, i, &format!("row {i}: {}", "x".repeat(2_000))))
+            .collect();
+        let r = ask(rows, runner, serde_json::json!({"question": "q"}));
+        (seat, r)
+    }
+
+    /// A seat without `researcher` (the default list) digests through `explore`, every part read.
+    #[test]
+    fn a_seat_without_researcher_reads_every_part_through_explore() {
+        let (seat, r) = digest_on(&["coder", "explore", "reviewer"]);
+        assert!(
+            r.payload.contains("Read by a subagent over 40 row(s)"),
+            "{:?} {}",
+            r.outcome,
+            r.payload
+        );
+        let started = seat.started.lock().unwrap();
+        assert!(started.len() > 1, "{} part(s)", started.len());
+        for s in started.iter() {
+            assert_eq!(s.role, "explore");
+            assert!(s.helper);
+            assert!(s.downgrade.deny.contains(&crate::schema::Access::Write));
+        }
+    }
+
+    #[test]
+    fn a_seat_with_researcher_still_reads_through_researcher() {
+        let (seat, _) = digest_on(&["coder", "explore", "researcher"]);
+        let started = seat.started.lock().unwrap();
+        assert!(!started.is_empty());
+        assert!(
+            started.iter().all(|s| s.role == "researcher"),
+            "{started:?}"
+        );
+    }
+
+    /// Without `researcher` or `explore`, the narrowest no-write role; never `coder`.
+    #[test]
+    fn the_reader_is_the_narrowest_read_only_role_and_never_coder() {
+        let table = crate::profiles::Profiles::builtins();
+        let pick = |names: &[&str]| {
+            let rows: Vec<_> = names
+                .iter()
+                .filter_map(|n| table.find(n).ok().flatten())
+                .collect();
+            part_reader_role(&rows)
+        };
+        assert_eq!(pick(&["coder", "reviewer"]).unwrap(), "reviewer");
+        assert!(pick(&["coder"]).is_err());
+        assert!(pick(&[]).is_err());
+    }
+
+    /// No read-only role: refused before the rows are split, nothing started.
+    #[test]
+    fn a_seat_with_no_read_only_role_refuses_before_splitting() {
+        let (seat, r) = digest_on(&["coder"]);
+        assert!(
+            matches!(&r.outcome, letibot_transcript::ToolOutcome::Failed { .. }),
+            "{:?}",
+            r.outcome
+        );
+        assert!(seat.started.lock().unwrap().is_empty());
+        let said = match &r.outcome {
+            letibot_transcript::ToolOutcome::Failed { reason } => format!("{reason} {}", r.payload),
+            _ => r.payload.clone(),
+        };
+        assert!(said.contains("no read-only role"), "{said}");
     }
 }
