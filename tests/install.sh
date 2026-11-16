@@ -200,10 +200,10 @@ out="$(built rel)"
 cp "$ELF" "$T/rel/letibot"
 touch -t 202001010000 "$T/rel/letibot"
 out="$(built rel)"
-if [ "${out%%$'\n'*}" = 0 ] && printf '%s' "$out" | grep -q 'stale build product'; then
-  note "check: an ELF letibot older than letibot-multi is named as stale"
+if [ "${out%%$'\n'*}" != 0 ] && printf '%s' "$out" | grep -q 'stale build product'; then
+  note "check: an ELF letibot older than letibot-multi fails as stale"
 else
-  fail "check: an ELF letibot older than letibot-multi is named as stale" "$out"
+  fail "check: an ELF letibot older than letibot-multi fails as stale" "$out"
 fi
 touch "$T/rel/letibot"
 touch -t 202001010000 "$T/rel/letibot-multi"
@@ -212,6 +212,25 @@ if [ "${out%%$'\n'*}" != 0 ] && printf '%s' "$out" | grep -q 'compiled binary un
   note "check: a freshly built ELF named letibot fails the check"
 else
   fail "check: a freshly built ELF named letibot fails the check" "$out"
+fi
+
+# An interpolated matrix triple cannot be compared with install.sh, so it is refused.
+mkdir -p "$T/dist/scripts" "$T/dist/.github/workflows"
+cp "$ROOT/install.sh" "$T/dist/"
+cp "$ROOT/scripts/check-dist-names.sh" "$ROOT/scripts/make-dist.sh" "$T/dist/scripts/"
+cp "$ROOT"/.github/workflows/*.yml "$T/dist/.github/workflows/"
+st=0
+out="$(sh "$T/dist/scripts/check-dist-names.sh" 2>&1)" || st=$?
+[ "$st" = 0 ] && note "check: the repo's own workflows pass" || fail "check: the repo's own workflows pass" "$out"
+# The value is literal YAML text.
+# shellcheck disable=SC2016
+printf 'jobs:\n  b:\n    with:\n      triple: ${{ inputs.triple }}\n' >"$T/dist/.github/workflows/extra.yml"
+st=0
+out="$(sh "$T/dist/scripts/check-dist-names.sh" 2>&1)" || st=$?
+if [ "$st" != 0 ] && printf '%s' "$out" | grep -q 'cannot read'; then
+  note "check: an interpolated matrix triple is refused, not dropped"
+else
+  fail "check: an interpolated matrix triple is refused, not dropped" "$out"
 fi
 
 # ---------------------------------------------------------------------------------------

@@ -29,12 +29,19 @@ if [ -z "$known" ]; then
 fi
 
 # What the workflows build. The matrix lists them literally, as `triple: <name>`,
-# so this does not have to understand YAML.
-built=$(grep -h 'triple:' "$repo"/.github/workflows/*.yml 2>/dev/null |
+# so this does not have to understand YAML. An interpolated value cannot be read, so it is
+# refused rather than dropped.
+values=$(grep -h 'triple:' "$repo"/.github/workflows/*.yml 2>/dev/null |
   sed 's/.*triple:[[:space:]]*//' |
-  grep -v '^$' |
-  grep -v '^[$]' |
-  sort -u)
+  grep -v '^$' || true)
+interpolated=$(printf '%s\n' "$values" | grep '[$]' || true)
+if [ -n "$interpolated" ]; then
+  echo "check-dist-names: a workflow names a triple this check cannot read:" >&2
+  printf '  triple: %s\n' "$interpolated" >&2
+  echo "  List each triple literally in the matrix." >&2
+  exit 1
+fi
+built=$(printf '%s\n' "$values" | grep -v '^$' | sort -u || true)
 if [ -z "$built" ]; then
   echo "check-dist-names: no triples found in the workflows" >&2
   exit 1
@@ -145,8 +152,7 @@ for r in $roles; do
 done
 
 # No compiled binary under a launcher's name in a build's output. An install loop that copies
-# `target/release/*` would put it over the command a person types. A file older than
-# `letibot-multi` is a leftover from before the rename and is named, not failed.
+# `target/release/*` would put it over the command a person types, stale or not.
 if [ -n "$built_dir" ]; then
   [ -x "$built_dir/letibot-multi" ] || {
     echo "check-dist-names: no letibot-multi in $built_dir: run cargo build --release first." >&2
@@ -158,7 +164,7 @@ if [ -n "$built_dir" ]; then
     head -c 2 "$f" | grep -q '^#!' && continue
     if [ "$built_dir/letibot-multi" -nt "$f" ]; then
       echo "check-dist-names: $f is a stale build product, older than letibot-multi; delete it." >&2
-      continue
+      exit 1
     fi
     echo "check-dist-names: $f is a compiled binary under the launcher's name." >&2
     echo "  A bin target named \`$l\` is back; the multicall ships as letibot-multi." >&2
