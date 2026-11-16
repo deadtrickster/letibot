@@ -1,6 +1,5 @@
-//! **The launcher never waits on a user manager that does not answer** (TODO.md R274). A manager
-//! pegged at 100% CPU blocked `letibot --continue` for ever on `rooms is-on`, while the room's
-//! own socket answered. Each case puts a `systemctl` or `systemd-run` that hangs first on `PATH`.
+//! The launcher never waits on a user manager that does not answer. Each case puts a
+//! `systemctl` or `systemd-run` that hangs first on `PATH`, while the room's own socket answers.
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};

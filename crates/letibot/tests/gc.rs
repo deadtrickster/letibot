@@ -1,9 +1,7 @@
-//! **`letibot gc` prints the plan and the store and the disk are byte-identical afterwards**
-//! (`docs/lifecycle.md` G1's fourth done-when).
+//! `letibot gc` prints the plan, and the store and the disk are byte-identical afterwards.
 //!
 //! The verb is driven as a person runs it - the real binary, its own `$HOME`, store, gc root and
-//! cache in a fixture - because the whole claim is about what the PROCESS does to the box, and a
-//! library call cannot be byte-identical or not.
+//! cache in a fixture - because the claim is about what the process does to the box.
 
 use std::path::{Path, PathBuf};
 
@@ -140,7 +138,7 @@ impl Drop for Fixture {
     }
 }
 
-/// **Done when** `letibot gc` on a store with a closed owner prints a plan and the store and the
+/// `letibot gc` on a store with a closed owner prints a plan and the store and the
 /// disk are byte-identical afterwards.
 #[test]
 fn a_plan_on_a_store_with_a_closed_owner_changes_neither_the_store_nor_the_disk() {
@@ -259,7 +257,7 @@ fn holds_lists_remote_holdings_per_host() {
 }
 
 /// `holds --top` orders the box's owners by the memory their cgroups hold and says what the box
-/// itself has left: the view where the question is who is holding this machine (G5). It removes
+/// itself has left: the view where the question is who is holding this machine. It removes
 /// nothing, and an owner whose cgroup the walk could not read is a zero it earned.
 #[test]
 fn holds_top_orders_owners_by_memory_and_names_the_boxs_own_answer() {
@@ -320,11 +318,9 @@ fn git(dir: &Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&out.stdout).trim().to_string()
 }
 
-/// **Done when** `letibot gc --adopt 'wt-pk-*'` on a repository with several worktrees lists them
-/// under an owner `legacy-<date>`, the plan gives each of them a verdict, and nothing is removed
-/// without `--now` (`docs/lifecycle.md` d.4 rule 4, G3).
-///
-/// The live run on lab2x1 is the operator's: this proves the verb against a throwaway repository.
+/// `letibot gc --adopt 'wt-pk-*'` on a repository with several worktrees lists them under an
+/// owner `legacy-<date>`, the plan gives each of them a verdict, and nothing is removed without
+/// `--now`. Proved against a throwaway repository.
 #[test]
 fn adopting_worktrees_nothing_recorded_plans_them_and_removes_nothing() {
     let f = Fixture::new("adopt");
@@ -384,7 +380,7 @@ fn adopting_worktrees_nothing_recorded_plans_them_and_removes_nothing() {
             wt.display()
         );
         assert!(wt.exists(), "adoption removes nothing");
-        // The stamp is the whole difference between *looks like ours* and *ours* (d.4).
+        // The stamp is the whole difference between *looks like ours* and *ours*.
         let admin = std::process::Command::new("git")
             .arg("-C")
             .arg(wt)
@@ -464,7 +460,7 @@ fn adopting_worktrees_nothing_recorded_plans_them_and_removes_nothing() {
     );
 }
 
-/// R276's backfill: `--archive-settled` lists what it would archive and writes nothing; with
+/// `--archive-settled` lists what it would archive and writes nothing; with
 /// `--now` it archives those and keeps the operator's own session in the list.
 #[test]
 fn archive_settled_lists_first_and_archives_only_with_now() {

@@ -1,9 +1,7 @@
-//! **`letibot --where` is the bridge's own answer, and `--ensure` starts the daemon it names.**
+//! `letibot --where` is the bridge's own answer, and `--ensure` starts the daemon it names.
 //!
-//! A program that drives letibot from outside — rano's editor panel — asks this instead of
-//! re-deriving `<rundir>/<sha256(folder)[..12]>.sock`. Two spellings of that rule would name a
-//! socket nothing listens on, so this drives `scripts/letibot` against a fake `harnessd` and
-//! compares what it printed with `bridge::daemon::resolve`, the resolver it must agree with.
+//! Drives `scripts/letibot` against a fake `harnessd` and compares what it printed with
+//! `bridge::daemon::resolve`, so an outside program never re-derives the socket path.
 
 use std::path::{Path, PathBuf};
 
@@ -57,10 +55,8 @@ fn on_path(program: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// The launcher's own answer for one invocation, run the way a person's shell runs it: from the
-/// worktree, with nothing of the operator's environment, and with `$LETIBOT_BIN` naming the
-/// fixture's binaries. `home` and `rundir` are handed over rather than derived from `bin`, so the
-/// fixture a case needs is the fixture it gets.
+/// The launcher's own answer for one invocation, run from the worktree with nothing of the
+/// operator's environment and `$LETIBOT_BIN` naming the fixture's binaries.
 fn run(
     worktree: &Path,
     bin: &Path,
@@ -135,7 +131,7 @@ fn where_prints_the_bridges_socket_and_ensure_starts_that_daemon() {
     }
     let d = daemon::resolve(&worktree).expect("the folder's daemon resolves");
 
-    // **1. Nothing is listening: `--where --json` says where, and that it is down.**
+    // 1. Nothing is listening: `--where --json` says where, and that it is down.
     let (ok, out, err) = run(&worktree, &bin, &home, &rundir, &["--where", "--json"]);
     assert!(
         ok,
@@ -158,7 +154,7 @@ fn where_prints_the_bridges_socket_and_ensure_starts_that_daemon() {
         "{out}"
     );
 
-    // **2. The plain form is the path a script can take, and the state on its own line.**
+    // 2. The plain form is the path a script can take, and the state on its own line.
     let (ok, out, err) = run(&worktree, &bin, &home, &rundir, &["--where"]);
     assert!(ok, "`letibot --where` exited non-zero. stderr:\n{err}");
     let lines: Vec<&str> = out.lines().collect();
@@ -169,7 +165,7 @@ fn where_prints_the_bridges_socket_and_ensure_starts_that_daemon() {
     );
     assert_eq!(lines.get(1).copied(), Some("down"), "{out}");
 
-    // **3. `--ensure` starts one, and the answer says so.**
+    // 3. `--ensure` starts one, and the answer says so.
     let (ok, out, err) = run(
         &worktree,
         &bin,
@@ -199,7 +195,7 @@ fn where_prints_the_bridges_socket_and_ensure_starts_that_daemon() {
         d.socket.display()
     );
 
-    // **3b. `--ensure` against a live daemon is a READ.** A panel asks every time it opens, and
+    // 3b. `--ensure` against a live daemon is a READ. A panel asks every time it opens, and
     // starting a second daemon over a conversation somebody is in would end it.
     let (ok, out, err) = run(
         &worktree,
@@ -217,7 +213,7 @@ fn where_prints_the_bridges_socket_and_ensure_starts_that_daemon() {
         "a daemon that is already live is left alone, and this call started one:\n{err}"
     );
 
-    // **4. And the record a live daemon leaves is the launcher's own**, because
+    // 4. The record a live daemon leaves is the launcher's own, because
     // `--ls` and `--stop` read it: a daemon started here must not be invisible to them.
     let record = d.socket.with_extension("json");
     let text = std::fs::read_to_string(&record).unwrap_or_else(|e| {

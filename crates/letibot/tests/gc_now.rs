@@ -1,5 +1,4 @@
-//! **One `letibot gc --now` ends what a killed daemon left, and `letibot hold` stops it**
-//! (`docs/lifecycle.md` G2's third and fourth done-whens).
+//! One `letibot gc --now` ends what a killed daemon left, and `letibot hold` stops it.
 //!
 //! The verb is driven as a person runs it - the real binary, its own `$HOME`, store, cache and
 //! runtime dir in a fixture - because the claim is about what a process that never talks to a
@@ -216,12 +215,9 @@ fn wait_dead(pid: u32) -> bool {
     false
 }
 
-/// **Done when** a daemon SIGKILLed with a job and a VM running leaves neither after one
-/// `letibot gc --now`, run by a process that never talks to a daemon.
-///
-/// Read as: the job's cgroup is what says it is running - here the `process` row's `(pid, start)`,
-/// which is the hand a box with no cgroup uses - and the VM is brought down with firecode's own
-/// ladder. The owner's row goes to `closed`, and the two are proved gone by `/proc` and by
+/// A daemon SIGKILLed with a job and a VM running leaves neither after one `letibot gc --now`,
+/// run by a process that never talks to a daemon. The job is found by the `process` row's
+/// `(pid, start)`, as on a box with no cgroup, and both are proved gone by `/proc` and by
 /// firecode's own records rather than by what the verb printed.
 #[test]
 fn a_dead_daemons_job_and_vm_are_ended_by_one_gc_now() {
@@ -276,7 +272,7 @@ fn a_dead_daemons_job_and_vm_are_ended_by_one_gc_now() {
     );
 }
 
-/// **Done when** `letibot hold` on that owner makes the same pass keep everything and say why.
+/// `letibot hold` on that owner makes the same pass keep everything and say why.
 #[test]
 fn a_hold_stops_the_pass_and_says_why() {
     let f = Fixture::new("held");
@@ -364,7 +360,7 @@ fn a_hold_is_a_clock_and_an_unknown_owner_is_refused() {
 
 /// The user manager's table is printed by the plan, and `gc --now` resets a failed unit named
 /// `letibot-*` while leaving one of another name alone: that unit is the record of a crash this
-/// box did not cause (G5, `docs/lifecycle.md` d.7). The manager is a script in the fixture's own
+/// box did not cause. The manager is a script in the fixture's own
 /// `bin/`, first on the verb's `PATH`, so nothing here reaches the real one.
 #[test]
 fn the_plan_names_the_unit_table_and_only_letibots_failed_units_are_reset() {

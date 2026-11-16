@@ -1,9 +1,6 @@
-//! A session's whole daemon, on another machine - and back (`docs/remote-hosts.md` RH4).
+//! A session's whole daemon, on another machine - and back (`docs/remote-hosts.md`).
 //!
-//! The operator: *"move load from laptops - I start doing something, it starts eating resources
-//! and just stays on the hot laptop"*, then *"I want daemon migration to host thing now"*, and
-//! widening it: *"back and forth lol or just midween hosts"*. So this is not *up* and *down*: it
-//! is one move with a source and a destination, and `local` is an endpoint like any other.
+//! One move with a source and a destination, and `local` is an endpoint like any other.
 //!
 //! ```text
 //!   letibot --migrate SESSION --to lab2x1     laptop  -> lab2x1
@@ -51,12 +48,10 @@
 //! refusals can describe it; the relay costs a temp file and buys the same verification at both
 //! ends. The tree is relayed the same way, for the same reason.
 //!
-//! # What this module deliberately is NOT
+//! # Remote tools are a different thing
 //!
-//! RH1 (`docs/remote-hosts.md`) runs a session's TOOLS on a host with the daemon staying here;
-//! this moves the daemon. They meet at two seams - `hosts.toml` and the git layout
-//! `root/<repo>/<short id>` - and both are implemented here *small and replaceable*, against the
-//! doc's spelling, so whichever lands second can delete the copy instead of negotiating with it.
+//! Remote sessions run a session's TOOLS on a host with the daemon staying here; this moves the
+//! daemon. They share `hosts.toml` and the git layout `root/<repo>/<short id>`.
 
 use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
@@ -70,8 +65,8 @@ use letibot_sessionlog::activity::Activity;
 use letibot_sessionlog::client::HeadClient;
 use letibot_sessionlog::protocol::{Caps, NOTE_SESSION_CLOSED, ServerFrame};
 use letibot_tokencore::store::{ImportInto, SessionTransfer, Store};
-// One `hosts.toml` reader and one ssh argv, shared with RH1: the only thing a migration
-// reads about a host is what `crates/tools` reads about it.
+// One `hosts.toml` reader and one ssh argv, shared with remote sessions: a migration reads
+// about a host only what `crates/tools` reads about it.
 use letibot_tools::remote::{Host, Hosts, Paths, Ssh};
 use letibot_tools::rpc::{Outcome, Retried};
 
@@ -2076,7 +2071,7 @@ mod tests {
     use super::*;
 
     /// The file's grammar, and that a typo is refused rather than ignored - through the one
-    /// reader this box has, which is `crates/tools`'s since RH5: a migration and a remote session
+    /// reader this box has, `crates/tools`'s: a migration and a remote session
     /// must not read one file two ways.
     #[test]
     fn a_hosts_file_is_read_and_a_key_it_does_not_have_is_refused() {

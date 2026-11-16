@@ -18,11 +18,9 @@ const SAFE: &[(&str, &[&str])] = &[
     ("render-qwen", &[]),
 ];
 
-/// One temp home for the whole suite. The binary these tests drive reads `$HOME/.config/letibot`
-/// and `$HOME/.local/share/letibot`, so a test with the operator's `$HOME` writes into the
-/// operator's config - and on a fresh box the first such write says so on stderr, which is a
-/// line the two-line assertions below count. Made once and never removed: a suite that deletes
-/// it races the next test to make it.
+/// One temp home for the whole suite, so the binary never writes the operator's config (and
+/// a first-write notice never adds a stderr line the assertions count). Made once and never
+/// removed: a suite that deletes it races the next test to make it.
 fn home() -> std::path::PathBuf {
     static HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
     HOME.get_or_init(|| {
@@ -282,10 +280,8 @@ fn an_unknown_session_id_names_the_real_ones_and_where_to_list_them() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// A store query is a store query. `--delete` on a box that has never run a daemon must leave
-/// `$XDG_CONFIG_HOME` as it found it: the daemon installed its preapproved list from the config's
-/// own read, so the first such query on a fresh box answered a two-line refusal with three - and
-/// every test that built a `Config` wrote the operator's real config.
+/// A store query writes nothing: `--delete` on a box that has never run a daemon leaves
+/// `$XDG_CONFIG_HOME` as it found it.
 #[test]
 fn a_store_query_writes_nothing_into_the_config_dir() {
     let dir = std::env::temp_dir().join(format!("letibot-cli-clean-{}", std::process::id()));

@@ -1,36 +1,13 @@
-//! The password ask and the operator's own run: who serves whom, and what happens when the
-//! daemon cannot see.
+//! The password ask and the operator's own `!` run: who serves whom, and what happens when the
+//! daemon cannot see. The rule is `PROTOCOL_VERSION` 33's: a run must not block the door that
+//! serves it.
 //!
-//! The operator's report: `! sudo apt install mc` - *"after entering the sudo password, the
-//! command appears queued and the daemon hangs."* Reproduced several times, and the live
-//! daemon's log carried only its startup disclosures, which is why this file exists.
+//! The ask does not queue behind the run: `Askpass` is answered on the helper's own connection
+//! thread (`sessionlog/src/server.rs`) and the head's `Secret` on the head's, and neither goes
+//! near the command queue.
 //!
-//! Two mechanisms were proposed, and the rule both are measured against is the one this tree
-//! already writes down in `letibot_sessionlog`'s `PROTOCOL_VERSION` 33 section
-//!
-//! > A run must not block the door that serves it.
-//!
-//! The daemon served every session from one worker when this was measured
-//! (`harnessd/src/daemon.rs`; each root session has a thread of its own), and the
-//! operator's `!` line ran *on* it - `run_operator_shell` calls `invoke_operator`, which waited
-//! on the job - so for as long as the command ran, everything queued behind it waited.
-//!
-//! # Mechanism 1, refuted here
-//!
-//! *"`sudo`'s `SUDO_ASKPASS` asks the daemon for the password through the same queue, so the
-//! ask sits queued behind the run that is waiting for it."* It does not: `Askpass` is answered
-//! on the helper's own connection thread (`sessionlog/src/server.rs`), the head's `Secret`
-//! is answered on the head's, and neither goes near the command queue. The first test below is
-//! the measurement - the run is blocked inside its command on this thread while the password
-//! ask is raised and answered over the socket - and it is the half that decides the question.
-//!
-//! # Mechanism 2, which is the one, in its real shape
-//!
-//! The run's held input (`agent/bang-prompt`, protocol 33 - a pipe then, and the run's own
-//! terminal since `agent/quiet-shell`) made the operator's run wait where `/dev/null` used
-//! to give it EOF. The wait is the feature - it is what makes
-//! `Continue? [Y/n]` answerable - and the defect is that in the case the feature was built for
-//! the daemon cannot see the wait at all
+//! What the daemon cannot do is see the wait. The run holds its terminal so `Continue? [Y/n]` is
+//! answerable, but under `sudo` the process that is asking is root:
 //!
 //! ```text
 //!   ! sudo apt install mc
@@ -40,26 +17,17 @@
 //!         apt           ROOT - waiting at `Continue? [Y/n]` on the terminal the daemon holds
 //! ```
 //!
-//! `letibot_tools::exec::ask` reads `/proc/<pid>/fd/0` and `/proc/<pid>/wchan`, so the two
-//! processes it *can* read (the shell in `wait4`, the helper on a socket) say *not asking*
-//! and the one that is asking cannot be opened. On this box
-//! `readlink /proc/1/fd/0` is `PermissionDenied`; `wchan` for such a process reads `0`, the
-//! kernel's own *could not look*; and a process of this uid that has called
-//! `PR_SET_DUMPABLE 0` - the flag a setuid exec sets - is refused exactly the same way.
-//!
-//! So no card is raised (correctly: a card is a reading of the process, and this is not one)
-//! the run sits on its terminal, the `!` line's echo still says `queued` because no row has landed
-//! and the daemon's one worker is inside it. That is the report.
-//!
-//! # What these tests therefore assert
+//! `letibot_tools::exec::ask` reads `/proc/<pid>/fd/0` and `/proc/<pid>/wchan`, so the processes
+//! it can read say not asking and the one that is asking cannot be opened. A process of this uid
+//! that called `PR_SET_DUMPABLE 0` - the flag a setuid exec sets - is refused the same way, so no
+//! card is raised.
 //!
 //! 1. `the_password_ask_is_served_while_the_operators_run_is_blocked` - the ask is answered
-//!    while the run waits, and the run's *own* wait raises no card it did not earn. `sudo -A`'s
-//!    process shape (`pw=$(helper)`: a pipe on the child's stdout, blocked reading it, fd 0
-//!    left alone) must not read as a question. 2. `a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered` - the
-//!    operator's case, end to end, without a real `sudo`: a run whose process makes itself as
-//!    unreadable as a root `apt` is, waiting on the terminal the daemon holds. The daemon says so, names
-//!    the way in, and `!send` reaches it - which is the whole of what a person was owed.
+//!    while the run waits, and `sudo -A`'s process shape (`pw=$(helper)`: a pipe on the child's
+//!    stdout, fd 0 left alone) does not read as a question.
+//! 2. `a_run_this_daemon_may_not_read_is_said_out_loud_and_can_still_be_answered` - a run as
+//!    unreadable as a root `apt`, waiting on the terminal the daemon holds. The daemon says so,
+//!    names the way in, and `!send` reaches it.
 
 // `PR_SET_DUMPABLE` is how these tests make a process this uid may not inspect, and it is
 // `<linux/prctl.h>`: there is no macOS spelling of the same shape.
@@ -83,8 +51,7 @@ use letibot_transcript::TranscriptItem;
 const PATIENCE: Duration = Duration::from_secs(60);
 
 /// How long the head takes to type the password. Longer than `bash`'s wait loop needs to look
-/// at the run once (500 ms a beat, 250 ms of quiet), which is the window the operator's own
-/// report lives in - nobody types in under half a second.
+/// at the run once (500 ms a beat, 250 ms of quiet) - nobody types in under half a second.
 const TYPING: Duration = Duration::from_secs(3);
 
 /// `PR_SET_DUMPABLE`, from `<linux/prctl.h>`. Declared here rather than pulled in with a crate

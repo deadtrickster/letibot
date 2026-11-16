@@ -132,7 +132,7 @@ pub fn run(args: &[String]) -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    // The seat is the DAEMON's now (R118): `attach` asks the folder's daemon to hold the scope, and
+    // The seat is the DAEMON's: `attach` asks the folder's daemon to hold the scope, and
     // what the operator reads is the daemon's own snapshot. A daemon that is not listening is
     // refused by name: a scope nobody polls is the one thing this verb exists to prevent.
     let daemon = match daemon::resolve(&cwd) {

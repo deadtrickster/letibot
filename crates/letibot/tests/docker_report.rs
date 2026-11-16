@@ -1,9 +1,6 @@
-//! `letibot gc --docker-report` (`docs/lifecycle.md` d.7 and G6): other projects' images and
-//! volumes, grouped by compose project and age, and nothing removed.
-//!
-//! The verb is driven as a person runs it - the real binary, a clean environment, and a stub engine
-//! on a unix socket - because the claim is about what the PROCESS prints and does not do, and this
-//! box has no docker to point it at.
+//! `letibot gc --docker-report`: other projects' images and volumes, grouped by compose project
+//! and age, and nothing removed. Driven as a person runs it - the real binary, a clean environment
+//! and a stub engine on a unix socket - because the claim is about what the process does.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -75,7 +72,7 @@ fn labels(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
         .collect()
 }
 
-/// **Done when** `--docker-report` prints unowned images and volumes by compose project and age and
+/// `--docker-report` prints unowned images and volumes by compose project and age and
 /// removes nothing.
 #[test]
 fn the_report_names_debris_by_project_and_age_and_removes_nothing() {

@@ -707,8 +707,7 @@ fn a_host_without_provider_keys_is_refused_unless_the_keys_are_copied() {
     assert_eq!(mode, 0o600, "the keys land mode 600, not 644");
 }
 
-/// A step that gets no answer is killed at its bound - rule 1, measured on the second caller of
-/// an ssh call. The fake ssh sleeps for ever, so the whole run is one `STEP_BOUND`. The breaker is
+/// A step that gets no answer is killed at its bound, on the second caller of an ssh call. The fake ssh sleeps for ever, so the whole run is one `STEP_BOUND`. The breaker is
 /// NOT measured here: every invocation is its own process, and the breaker is per process.
 #[test]
 fn a_step_that_never_answers_is_killed_at_its_bound() {

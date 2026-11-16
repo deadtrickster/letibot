@@ -1,10 +1,9 @@
 //! `letibot holds` and `letibot gc` - what every owner holds, and what would be reaped
-//! (`docs/lifecycle.md` d.6 step 4 and d.9).
+//! (`docs/lifecycle.md`).
 //!
-//! Both are read-only and run without a daemon: the owner index is in the store's shared file and
+//! Both read-only verbs run without a daemon: the owner index is in the store's shared file and
 //! the proof of every holding is on the resource itself, so a person whose daemons are all dead can
-//! still see the disk they are holding. `gc` prints the plan and changes nothing - the hands are
-//! later packages (G2 compute, G3 work, G4 caches), and this verb is the answer they are judged by.
+//! still see the disk they are holding. Plain `gc` prints the plan and changes nothing.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -343,7 +342,7 @@ fn holds(args: &[String]) -> Result<(), String> {
     }
     if parsed.top {
         // Owners by memory, then the box's own `MemAvailable`: the one view where the question is
-        // "who is holding this box" rather than "what would be reaped" (G5).
+        // "who is holding this box" rather than "what would be reaped".
         print!(
             "{}",
             Plan {
@@ -526,7 +525,7 @@ fn gc(args: &[String]) -> Result<(), String> {
     }
     let mut plan = lifecycle::plan(&store, &places, parsed.owner.as_deref(), now)
         .map_err(|e| e.to_string())?;
-    // The user manager's table is G5's, and it is read HERE and not in `plan()`: `holds` builds
+    // The user manager's table is read HERE and not in `plan()`: `holds` builds
     // the same plan on every turn, and a plan a model reads must not shell out to `systemctl`.
     match lifecycle::Systemd.table() {
         Ok(t) => plan.systemd = Some(t),
@@ -570,10 +569,9 @@ fn gc_now(owner: Option<&str>, folder: Option<&Path>, json: bool) -> Result<(), 
     let (store, places) = open_for_acts(owner)?;
     let ops = lifecycle::Ops::here("letibot gc --now");
     let now = lifecycle::now_ms();
-    // The unit table belongs to the BOX, not to an owner, and `reset-failed` is this command's:
-    // the timer runs exactly this line, so a failed `letibot-*` unit is cleared with no daemon and
-    // no operator (G5, R191). A failed unit of another name is somebody else's and is left - it is
-    // the record of a crash this box did not cause.
+    // The unit table belongs to the box, not to an owner: the timer runs this line, so a failed
+    // `letibot-*` unit is cleared with no daemon. A failed unit of another name is somebody
+    // else's crash record and is left.
     let manager = lifecycle::Systemd;
     let reset = match manager.table() {
         Ok(t) if t.ours_failed.is_empty() => None,
@@ -806,7 +804,7 @@ fn gc_drop_archive(owner: Option<&str>, older: Option<i64>, act: bool) -> Result
 
 /// `letibot gc --adopt PATTERN`: worktrees of this folder's repository that nothing recorded, taken
 /// under an owner `legacy-<date>` whose state is `closed` - so the normal plan and `--now` apply to
-/// them, and nothing is removed until `--now` says so (d.4 rule 4).
+/// them, and nothing is removed until `--now` says so.
 fn gc_adopt(pattern: &str, folder: Option<&Path>, act: bool) -> Result<(), String> {
     let folder = match folder {
         Some(p) => p.to_path_buf(),
@@ -855,7 +853,7 @@ fn gc_adopt(pattern: &str, folder: Option<&Path>, act: bool) -> Result<(), Strin
         let branch = git_line(wt, &["symbolic-ref", "--short", "HEAD"])
             .map(|b| b.trim().to_string())
             .filter(|b| !b.is_empty());
-        // The stamp is what a settle step proves it by (d.4), and adoption writes it - that is the
+        // The stamp is what a settle step proves it by, and adoption writes it - that is the
         // whole difference between *looks like ours* and *ours*.
         if let Some(branch) = &branch {
             lifecycle::stamp_worktree(&repo, wt, branch, &owner)
@@ -917,7 +915,7 @@ fn gc_adopt(pattern: &str, folder: Option<&Path>, act: bool) -> Result<(), Strin
 
 /// `letibot gc --docker-report`: other people's images and volumes, grouped by compose project and
 /// age, with the commands that would remove them. It removes nothing and it never will - letibot
-/// cannot prove another project's objects are its own (`docs/lifecycle.md` d.7).
+/// cannot prove another project's objects are its own.
 fn docker_report(json: bool) -> Result<(), String> {
     let places = lifecycle::Places::here();
     let Some(engine) = places.docker_engine else {
@@ -1094,7 +1092,7 @@ fn open_for_acts(owner: Option<&str>) -> Result<(Store, Places), String> {
         .map(|repo| letibot_tokencore::migrate_split::project_key(&repo))
         .unwrap_or_else(|| "000000000000".to_string());
     // An EXISTING set: a verb that acts must not create a project file for a key nobody works in,
-    // which is the R129 rake in the other direction. A set opens without its project file.
+    // A set opens without its project file.
     let store = Store::open_set_existing(&target, &key)
         .map_err(|e| format!("{}: {e}", target.display()))?;
     Ok((store, Places::here()))
