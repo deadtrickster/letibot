@@ -1,8 +1,6 @@
-//! `session/cancel` stops a streaming turn, and the answer is `cancelled` - the one stop reason ACP
-//! says a client can rely on confirming.
-//!
-//! The provider writes its reply a piece at a time, so the cancel lands mid-stream: a body held
-//! until the last piece would make this test a race between two clocks.
+//! `session/cancel` stops a streaming turn and the answer is `cancelled`, the one stop reason ACP
+//! says a client can rely on. The provider streams in pieces so the cancel lands mid-stream instead
+//! of racing one body.
 
 mod support;
 

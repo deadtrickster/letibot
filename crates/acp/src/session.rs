@@ -1,14 +1,6 @@
-//! One letibot session held as an ACP session: the head's obligations, and the fold that turns the
-//! daemon's events into `session/update` notifications.
-//!
-//! A head owes three things (`crates/sessionlog/src/client.rs`): attach with a `since_seq` and take
-//! `Resync` as a normal answer, ack after handling a frame, and name an `expected_seq` on every
-//! mutating frame. This discharges all three while writing JSON-RPC, which is the shape the bridge
-//! has with a collector where a screen would be.
-//!
-//! One ACP session is one letibot session and one socket, so `session/new` makes a session on the
-//! folder's daemon (`letibot_bridge::head::create_session_in`) and attaches to it: the socket a
-//! head holds must be its session's from frame one.
+//! One letibot session held as an ACP session: the head's obligations and the fold of daemon events
+//! into `session/update`. One ACP session is one letibot session and one socket, so `session/new`
+//! creates a session on the folder's daemon and holds its socket from frame one.
 
 use std::collections::BTreeMap;
 use std::io::{BufRead, Read, Write};
@@ -261,11 +253,9 @@ impl<W: Write> Adapter<W> {
         }
     }
 
-    /// Make a session on the folder's daemon and attach to it.
-    ///
-    /// A daemon that is not up is refused and not started: which model, mode and placement a
-    /// folder's session runs on is the launcher's to choose (`docs/rano-integration.md` §3.3), and
-    /// an adapter that guessed would be a second launcher.
+    /// Make a session on the folder's daemon and attach to it. A daemon that is not up is refused,
+    /// not started: model, mode and placement are the launcher's choice, and an adapter that
+    /// guessed would be a second launcher.
     fn open(&mut self, cwd: &str) -> Result<String, String> {
         let daemon = daemon::resolve(Path::new(cwd))?;
         if !daemon::is_up(&daemon.socket) {
@@ -690,13 +680,9 @@ impl<W: Write> Adapter<W> {
     }
 }
 
-/// Make a session on a daemon and hand back its id.
-///
-/// `NewSession` does not switch, so this is a bare connection that creates and leaves: the socket
-/// this adapter goes on to hold must be its session's from frame one (the rule `bridge::head`
-/// states for the same dance). It attaches under [`IDENTITY`] and not the bridge's, because the
-/// daemon records the opening head as the session's origin - and a session a person opened from
-/// their editor is theirs, not a package's.
+/// Make a session on a daemon and hand back its id, over a bare connection since `NewSession` does
+/// not switch. Attaches under [`IDENTITY`], not the bridge's, because the opening head is recorded
+/// as the session's origin and a session opened from an editor is the person's.
 fn make_session(socket: &Path, workspace: &str) -> Result<String, String> {
     let (mut client, hello, reader) = HeadClient::attach(
         socket,

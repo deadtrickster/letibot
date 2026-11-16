@@ -4,15 +4,10 @@
 //! Zed / Neovim ──stdio JSON-RPC (ACP)── letibot-acp ──unix socket── harnessd
 //! ```
 //!
-//! The daemon's vocabulary was shaped so that "the adapter is a mapping when somebody writes it"
-//! (`crates/sessionlog/src/lib.rs`), and this is that mapping and nothing else. A session is held
-//! through the same head protocol the TUI and the bridge discharge ([`session`]), a ranged
-//! resource in a prompt becomes the editor context a rano head would have sent ([`context`]), and
-//! a call's changed lines become an ACP `diff` ([`marks`]).
-//!
-//! What is deliberately NOT here: a model, a store, a daemon's config, and the launcher's choice
-//! of mode or placement. ACP says the agent is a process the client launches; this one is a head,
-//! and the session it holds is the daemon's.
+//! The mapping the daemon's vocabulary was shaped for, and nothing else: the head protocol
+//! ([`session`]), ranged resources as editor context ([`context`]), and changed lines as ACP
+//! `diff`s ([`marks`]). No model, store, daemon config or launcher choice: this is a head, and the
+//! session is the daemon's.
 
 pub mod acp;
 pub mod context;

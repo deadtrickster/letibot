@@ -1,9 +1,5 @@
-//! `letibot-acp`: an ACP agent on stdio, holding a letibot session.
-//!
-//! A client launches this process and speaks JSON-RPC on its standard streams
-//! ([Transports](https://agentclientprotocol.com/protocol/v1/transports)); everything else - which
-//! daemon a folder has, which session, the model, the gate - stays where it is, on the other side
-//! of the socket. Nothing is printed to stdout that is not a message: logs go to stderr.
+//! `letibot-acp`: an ACP agent on stdio holding a letibot session. Daemon, session, model and gate
+//! stay on the other side of the socket. Nothing but messages goes to stdout; logs go to stderr.
 
 use std::io::Write;
 

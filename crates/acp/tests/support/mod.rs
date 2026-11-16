@@ -1,13 +1,6 @@
-//! The fixture both client scripts drive: a real daemon, a fake provider, a worktree, and the
-//! adapter as a child process.
-//!
-//! harnessd's `Daemon` over a real `Registry` and `Sessions::open_first`, as the bridge's own
-//! end-to-end test builds one; only the model is a loopback server. The daemon runs IN this
-//! process, so it is bound with `serve_rooted` and a tree no real process descends from - without
-//! that, the adapter as its child is judged a tool call and refused the seat.
-//
-//! Each client script compiles this module into its own binary, so a helper the other script uses
-//! is dead code in this one: the allow is the price of one fixture instead of three.
+//! The fixture both client scripts drive: a real daemon, a loopback provider, a worktree, and the
+//! adapter as a child. The daemon runs in-process, so it is bound with `serve_rooted` or its child
+//! would be judged a tool call. Each script compiles this alone, hence the allow.
 #![allow(dead_code)]
 
 use std::io::{BufRead, BufReader, Read, Write};

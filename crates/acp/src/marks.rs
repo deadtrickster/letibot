@@ -1,18 +1,6 @@
-//! What a reply's line-addressed marks become in ACP - the one place that mapping lives.
-//!
-//! The daemon already publishes them: `SessionEvent::Citations` carries `{label, path, start, end,
-//! lines}` per fence the model wrote as `path:start-end`, and `ToolFinished::edits` carries both
-//! sides of every region a call changed. `docs/rano-integration.md` §5.1 turns the first into three
-//! kinds (L7: a `cite`, a `note` and a `suggest`, the last two with a body). ACP has no editor mark
-//! at all, so a mark is not a construct of its own here: it rides something the client already
-//! draws, which is why this module is a mapping and not an event.
-//!
-//! **What L7 adds, and the one line it changes.** `Citation` gains `kind: CitationKind` and
-//! `body: String`. [`cited`] then grows two arms: a `Note` becomes an `agent_message_chunk` whose
-//! text is the body (ACP has no diagnostic line either), and a `Suggest` becomes
-//! [`crate::acp::ToolCallContent::Diff`] - the same construct [`edit`] builds, with `lines` as
-//! `oldText` and `body` as `newText`, inside a `tool_call_update` for a call this adapter invents.
-//! A `Cite` stays what it is below. Nothing in `session.rs` changes except passing the kind.
+//! What a reply's line-addressed marks (`SessionEvent::Citations`, `ToolFinished::edits`) become in
+//! ACP, the one place that mapping lives. ACP has no editor mark, so a mark rides something the
+//! client already draws.
 
 use letibot_transcript::ToolEditExcerpt;
 
@@ -30,11 +18,9 @@ pub struct Cited<'a> {
     pub end: u32,
 }
 
-/// The update a citation becomes: a link to the place it names, with the lines in the fragment.
-///
-/// A chunk rather than a tool call, because the reply is what pointed at the file and the links
-/// arrive where the prose did. A client that follows it lands on those lines; one that draws links
-/// as chips gets the model's label as the title.
+/// The update a citation becomes: a link to the place, with the lines in the fragment. A chunk
+/// rather than a tool call, because the reply pointed at the file and the links arrive with the
+/// prose.
 pub fn cited(citation: &Cited<'_>) -> Option<SessionUpdate> {
     if citation.path.is_empty() {
         return None;
@@ -54,11 +40,8 @@ pub fn cited(citation: &Cited<'_>) -> Option<SessionUpdate> {
     })
 }
 
-/// One changed region as ACP's `diff`.
-///
-/// The excerpt is the region that differs, not the whole file: `ToolEditExcerpt`'s `before` and
-/// `after` are what the call changed, bounded, and a client draws exactly that as the hunk. A file
-/// the call created has no `oldText` at all, which is the schema's spelling of "there was nothing
+/// One changed region as ACP's `diff`: the bounded `before` and `after` of what the call changed,
+/// not the whole file. A created file has no `oldText`, the schema's spelling of "nothing was
 /// here".
 pub fn edit(excerpt: &ToolEditExcerpt, workspace: &str) -> ToolCallContent {
     let path = absolute(workspace, &excerpt.path);

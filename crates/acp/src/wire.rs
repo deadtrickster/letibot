@@ -1,10 +1,6 @@
-//! JSON-RPC 2.0 over stdio, which is ACP's only transport
-//! ([Transports](https://agentclientprotocol.com/protocol/v1/transports)): one message per line,
-//! nothing on stdout that is not a message, and stderr for logging.
-//!
-//! Read tolerantly in the direction this adapter is a server: an unknown field is ignored, and a
-//! line that is not a message is answered with a parse error carrying `id: null` rather than
-//! ending the connection, because a client with a newer idea of the protocol is still a client.
+//! JSON-RPC 2.0 over stdio, ACP's only transport: one message per line, nothing on stdout but
+//! messages, stderr for logs. Read tolerantly: an unknown field is ignored and a non-message line
+//! gets a parse error with `id: null`, because a client with a newer protocol is still a client.
 
 use serde_json::{Map, Value, json};
 

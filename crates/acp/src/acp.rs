@@ -1,10 +1,6 @@
-//! The subset of ACP v1 this adapter speaks, typed so a renamed field is a compile error.
-//!
-//! Read from `zed-industries/agent-client-protocol` at `c392d7e`, schema `v1.31.0`
-//! (`schema/v1/schema.json`) and `docs/protocol/v1/*.mdx`. `PROTOCOL_VERSION` is that schema's
-//! integer version, which ACP bumps only for a breaking change (`schema/v1/ProtocolVersion`).
-//! Only what is used is here: an unknown field from a newer client is ignored, and an unknown
-//! content block becomes [`ContentBlock::Other`] rather than refusing the prompt.
+//! The subset of ACP v1 (schema `v1.31.0`) this adapter speaks, typed so a renamed field is a
+//! compile error. `PROTOCOL_VERSION` is bumped only for a breaking change. Unknown fields are
+//! ignored and an unknown block becomes [`ContentBlock::Other`].
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -62,7 +58,7 @@ pub struct PromptCapabilities {
     pub image: bool,
     pub audio: bool,
     /// ACP says `resource` blocks are the preferred way to include context, and this adapter
-    /// turns them into the editor context the daemon already renders (L4).
+    /// turns them into the editor context the daemon already renders.
     pub embedded_context: bool,
 }
 
@@ -308,7 +304,6 @@ pub struct Diff {
 
 /// A question the agent asks the client's person, and the one client-side method this adapter
 /// calls: a letibot decision is a tool permission, so it is asked where the person is looking.
-///
 /// [Requesting permission](https://agentclientprotocol.com/protocol/v1/tool-calls#requesting-permission)
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

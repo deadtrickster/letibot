@@ -1,9 +1,6 @@
-//! The adapter against a real daemon, driven the way a client drives it: the binary as a child
-//! process, JSON-RPC on its stdio, and a session on a socket this test bound.
-//!
-//! What is asserted is the row's own bar: an ACP client opens a session, prompts with a ranged
-//! resource, and gets a streamed reply - and the model was handed the ranged block, because a
-//! resource that never reached the turn would still produce a reply here.
+//! The adapter against a real daemon, driven as a client drives it: the binary as a child, JSON-RPC
+//! on stdio, a session on a socket this test bound. It asserts the reply streams and that the model
+//! was handed the ranged resource, since a dropped resource still produces a reply.
 
 mod support;
 

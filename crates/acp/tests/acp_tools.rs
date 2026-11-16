@@ -1,11 +1,6 @@
-//! A file-changing call, end to end: the daemon asks the adapter's client for permission, the
-//! client grants it, the call runs, and its changed lines come back as an ACP `diff`.
-//!
-//! This is the row's third clause ("edits to ACP `diff`") over the real wire: the excerpt the
-//! daemon publishes after a call changed a file, drawn as the two sides ACP clients show in their
-//! editor. It is also the one place the permission ladder is proved to survive the trip - and it
-//! uses `write` and not `bash` on purpose, because a command needs a cgroup of its own and a file
-//! tool is what a `leticode` seat has on every machine.
+//! A file-changing call end to end: the daemon asks the client for permission, the client grants
+//! it, and the changed lines come back as an ACP `diff`. Uses `write` rather than `bash` because a
+//! command needs a cgroup of its own and a file tool works on every machine.
 
 mod support;
 

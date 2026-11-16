@@ -1,28 +1,17 @@
-//! An ACP prompt as the two things a letibot prompt is: the operator's words, and the editor
-//! context the daemon renders after them.
-//!
-//! ACP carries context two ways (`docs/protocol/v1/content.mdx`): a `resource` block with the text
-//! embedded, which is what a client that has the buffer sends, and a `resource_link`, which is a
-//! reference the agent is expected to read itself. Both name their place by URI, and neither spec
-//! says a URI may carry lines - so the lines ride a fragment, `#L41-L47`, the spelling GitHub's
-//! permalinks and opencode's `@file:41-47` both settle on.
-//!
-//! The range is rano's `SendEvent` shape: a column-1 end is the start of the line AFTER the last
-//! line named, which is exactly how `harnessd::editor_context` reads it when it prints
-//! `article.md:41-47`.
+//! An ACP prompt as a letibot prompt: the operator's words, and the editor context the daemon
+//! renders after them. ACP URIs carry no lines, so lines ride a fragment, `#L41-L47`. A column-1
+//! end is the start of the line after the last one named, as `harnessd::editor_context` reads it.
 
 use letibot_sessionlog::protocol::{ContextPos, ContextRange, ContextRef, EditorContext};
 
 use crate::acp::ContentBlock;
 
-/// What `docs/rano-integration.md` §4.2 calls the origin: who captured it, said on the block's
+/// The origin: who captured it, said on the block's
 /// first line, so the model reads "from the editor (acp)".
 pub const ORIGIN: &str = "acp";
 
-/// Split a prompt into the words and what it pointed at.
-///
-/// `None` for the context when the prompt named no place, because an empty [`EditorContext`] is a
-/// block the daemon would render for nothing.
+/// Split a prompt into the words and what it pointed at. `None` for the context when the prompt
+/// named no place, because an empty [`EditorContext`] renders a block for nothing.
 pub fn split(prompt: &[ContentBlock]) -> (String, Option<EditorContext>) {
     let mut words: Vec<&str> = Vec::new();
     let mut refs: Vec<ContextRef> = Vec::new();
@@ -77,10 +66,8 @@ pub fn split(prompt: &[ContentBlock]) -> (String, Option<EditorContext>) {
     (words.join("\n\n"), context)
 }
 
-/// The file a URI names, and the lines its fragment names.
-///
-/// A `file:` URI becomes a path; anything else is kept whole, because [`ContextRef::file`] already
-/// holds a URL a browser captured and the daemon prints it relative to nothing.
+/// The file a URI names, and the lines its fragment names. A `file:` URI becomes a path; anything
+/// else is kept whole, since [`ContextRef::file`] already holds browser URLs.
 pub fn place(uri: &str) -> (String, Option<ContextRange>) {
     let (base, fragment) = match uri.split_once('#') {
         Some((base, fragment)) => (base, Some(fragment)),
