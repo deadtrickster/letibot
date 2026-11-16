@@ -1514,6 +1514,70 @@ fn git_subcommand(argv: &[Word]) -> (&str, Vec<&str>) {
     (sub, rest)
 }
 
+/// Whether this session's workspace is a checkout's MAIN tree - `.git` a directory - rather than a
+/// worktree somebody cut from it, whose `.git` is a FILE naming `…/.git/worktrees/<name>`. Read the
+/// same way `known_hosts` reads it, because the difference is what the live-checkout rule is about.
+fn in_the_live_checkout(env: &Surroundings) -> bool {
+    env.workspace
+        .as_deref()
+        .is_some_and(|ws| std::path::Path::new(ws).join(".git").is_dir())
+}
+
+/// The git verb in `n` that would throw away or move what the operator has not committed, and
+/// `None` for every other command: `stash` (but not `stash list`/`show`), a `checkout`/`switch` to
+/// another REF (not `-b`, which creates one, and not `--`, which names paths), `reset --hard`,
+/// `rebase` and `clean`. Read off the shell parse, so `git -C x stash` and `cd y && git clean -fd`
+/// are found the same way a bare one is.
+fn live_checkout_verb(n: &Normalised) -> Option<&'static str> {
+    const CREATES: &[&str] = &["-b", "-B", "-c", "-C", "--orphan"];
+    let mut found = None;
+    for stage in &n.stages {
+        let program = stage.program_name().unwrap_or_default();
+        if program != "git" {
+            continue;
+        }
+        // `git -C DIR stash`: the program is argv[0] only when no global option came first.
+        let at = stage
+            .argv
+            .iter()
+            .position(|w| w.text() == Some("git"))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+        let (sub, rest) = git_subcommand(&stage.argv[at.min(stage.argv.len())..]);
+        let word = |i: usize| rest.get(i).copied().unwrap_or("");
+        let verb = match sub {
+            // The reads: what is stashed, and the diff in it.
+            "stash" => match word(0) {
+                "list" | "show" => None,
+                _ => Some("git stash"),
+            },
+            "checkout" | "switch" => {
+                let creates = rest.iter().any(|w| CREATES.contains(w));
+                // A `--` separator means paths, which is the restore rule and not this one.
+                let paths = rest.iter().take_while(|w| **w != "--").count() != rest.len();
+                let names_a_ref = rest
+                    .iter()
+                    .take_while(|w| **w != "--")
+                    .any(|w| !w.starts_with('-') || *w == "-");
+                (names_a_ref && !creates && !paths).then_some(if sub == "switch" {
+                    "git switch"
+                } else {
+                    "git checkout"
+                })
+            }
+            "reset" => rest.contains(&"--hard").then_some("git reset --hard"),
+            "rebase" => Some("git rebase"),
+            "clean" => Some("git clean"),
+            _ => None,
+        };
+        if verb.is_some() {
+            found = verb;
+            break;
+        }
+    }
+    found
+}
+
 /// Programs that take a command as text, and where in argv that text is. A resolved literal there
 /// is re-normalised so the nested command is seen rather than treated as opaque: `trap 'rm -rf /'
 /// EXIT` arrives as a `raw_string`, correctly, and only a table knows it is shell text.
@@ -2490,6 +2554,14 @@ pub const ALWAYS_ASK: &[AlwaysAskRule] = &[
               included. Not a thing a session decides",
     },
     AlwaysAskRule {
+        name: "live_checkout",
+        why: "this is your live checkout; use a worktree. The verbs that discard uncommitted \
+              work, move the branch under the operator or rewrite its history are ordinary in a \
+              worktree letibot cut and a loss here: that checkout is where their own hands are, \
+              and nothing in this session tells an abandoned edit from the one they were about \
+              to commit",
+    },
+    AlwaysAskRule {
         name: "could_not_be_read",
         why: "layer A could not read the action at all — a parse error it could only \
               recover from, or a program nobody can name. Carried as `NotRun` rather than \
@@ -3077,6 +3149,19 @@ impl Baseline {
         if let Some(prog) = self.authenticating.clone() {
             let d = format!("`{prog}` authenticates as the operator");
             ask("credential_use", d, self);
+        }
+        // The operator's own checkout is judged by PLACE, as destruction is judged by scope: the
+        // verbs that throw away or move their uncommitted work are ordinary in a worktree letibot
+        // cut, and here they are the one loss nobody else can size.
+        if in_the_live_checkout(env)
+            && let Some(n) = &self.command
+            && let Some(verb) = live_checkout_verb(n)
+        {
+            let d = format!(
+                "`{verb}` in {} would discard or move work that is not committed",
+                env.workspace.as_deref().unwrap_or("the checkout")
+            );
+            ask("live_checkout", d, self);
         }
     }
 
