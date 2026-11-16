@@ -303,47 +303,10 @@ pub type Deliver = Arc<dyn Fn(&Value, bool) -> bool + Send + Sync>;
 /// What one chat frame goes to: the message and the coordinator's `names_you`.
 pub type Hook = Arc<dyn Fn(&Value, bool) + Send + Sync>;
 
-/// The host key, as the room crate and `scripts/letibot` derive it.
-pub fn host_key_of(raw: &str) -> String {
-    let mut safe: String = raw
-        .chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_lowercase()
-            } else {
-                '-'
-            }
-        })
-        .collect();
-    safe.truncate(24);
-    while safe.ends_with('-') {
-        safe.pop();
-    }
-    if safe.is_empty() {
-        safe.push_str("host");
-    }
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in raw.as_bytes() {
-        h ^= u64::from(*b);
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    format!("{safe}-{:08x}", h as u32)
-}
-
-/// This box's key, as the room crate derives it: the host's name made safe, with a hash of it.
-pub fn box_key() -> String {
-    let name = std::process::Command::new("uname")
-        .arg("-n")
-        .stdin(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .output()
-        .ok()
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-        .filter(|s| !s.is_empty())
-        .or_else(|| std::env::var("HOSTNAME").ok())
-        .unwrap_or_else(|| "localhost".to_string());
-    host_key_of(&name)
-}
+/// This box's key, as the room crate derives it. One spelling for the daemon, the bridge and
+/// `scripts/letibot`, so two of them cannot name two sockets.
+pub use letibot_room::host_key;
+pub use letibot_room::lease::host_key_of;
 
 /// The room this bridge's `Hello` names - `<box key>/<project key>`, exactly what a session's daemon
 /// sends, derived from the same repository root so both land in one room. Empty - the host room -
@@ -351,7 +314,7 @@ pub fn box_key() -> String {
 pub fn hello_room(cwd: &std::path::Path) -> String {
     match project_root(cwd) {
         Some(root) => letibot_room::room_name(
-            &box_key(),
+            &host_key(),
             &letibot_room::project_key(&root.display().to_string()),
         ),
         None => String::new(),
@@ -379,7 +342,7 @@ pub fn socket_path() -> PathBuf {
     if let Some(p) = std::env::var_os("LETIBOT_ROOM_SOCKET").filter(|v| !v.is_empty()) {
         return PathBuf::from(p);
     }
-    data_dir().join(format!("room-{}.sock", box_key()))
+    letibot_room::socket_path(&data_dir(), &host_key())
 }
 
 /// How much of the room a reader wants. Mirrors the coordinator's filter.
@@ -2244,6 +2207,59 @@ fn write_mark(path: &Path, instance: Option<u64>, seq: u64) {
 #[cfg(test)]
 mod tests {
 
+    /// One test here reads and writes the environment, because a socket's path is derived from it.
+    static ROOM_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// The socket is one path, and the daemon's is the room crate's function of the data directory.
+    /// The bridge had its own copy of the key and of the join; a copy agrees until one side is fixed,
+    /// and then a seat dials a socket nobody serves. Held together here, both ways round: the data
+    /// directory, and the override that moves both.
+    #[test]
+    fn bridge_and_daemon_dial_the_same_room_socket() {
+        let _held = ROOM_ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("letibot-room-socket-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let before: Vec<(&str, Option<std::ffi::OsString>)> =
+            ["XDG_DATA_HOME", "LETIBOT_ROOM_SOCKET", "HOME"]
+                .into_iter()
+                .map(|k| (k, std::env::var_os(k)))
+                .collect();
+        // SAFETY: the mutex above is this module's only door to the environment.
+        unsafe {
+            std::env::remove_var("LETIBOT_ROOM_SOCKET");
+            std::env::set_var("XDG_DATA_HOME", &dir);
+        }
+        let daemon = letibot_harnessd::room::socket_path().expect("the daemon's socket");
+        assert_eq!(
+            super::socket_path(),
+            daemon,
+            "the bridge and the daemon dial one socket"
+        );
+        assert_eq!(
+            daemon,
+            dir.join("letibot")
+                .join(format!("room-{}.sock", letibot_room::host_key())),
+            "and it is the room crate's spelling of this box's key"
+        );
+        // The override moves both, so a test box and a real one never share a coordinator.
+        let moved = dir.join("moved.sock");
+        // SAFETY: as above, under the same mutex.
+        unsafe { std::env::set_var("LETIBOT_ROOM_SOCKET", &moved) };
+        assert_eq!(super::socket_path(), moved);
+        assert_eq!(letibot_harnessd::room::socket_path(), Some(moved));
+        // SAFETY: restored before the directory goes, under the same mutex.
+        unsafe {
+            for (key, value) in before {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The `hello`'s room is the working folder's project under this box's key - the derivation a
     /// session's daemon sends - and the host room alone for a path that belongs to no folder.
     #[test]
@@ -2252,7 +2268,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let repo = dir.join("etcd");
         std::fs::create_dir_all(repo.join(".git")).unwrap();
-        let box_key = super::box_key();
+        let box_key = super::host_key();
         assert_eq!(
             super::hello_room(&repo),
             letibot_room::room_name(
