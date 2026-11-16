@@ -196,65 +196,46 @@ fn the_demand_is_read_off_the_head_of_a_step_and_nothing_else_is_touched() {
 /// The three answers a machine can give, and the step that follows from each - the whole of what a host
 /// gate does differently from the local one.
 #[test]
-fn a_step_is_met_dropped_or_wrapped_by_what_the_machine_has() {
+fn a_step_is_met_blocked_or_wrapped_by_what_the_machine_has() {
     let step = "LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace";
     let bare = "cargo build --release --bins";
     // Everything present, no scope needed: byte for byte the project's own step.
     let fine = apparatus_from("cgroup=here\nbwrap=yes\n");
     assert_eq!(plan_step(step, &fine).command, step);
-    assert!(!plan_step(step, &fine).dropped);
+    assert!(!plan_step(step, &fine).blocked);
     assert!(!plan_step(step, &fine).own_scope);
-    // No cgroup of its own, but a delegated scope gives one: the demand is MET, not dropped.
+    // No cgroup of its own, but a delegated scope gives one: the demand is MET.
     let scope = apparatus_from("cgroup=own-scope\nbwrap=yes\n");
     let p = plan_step(step, &scope);
     assert_eq!(p.command, step);
-    assert!(!p.dropped);
+    assert!(!p.blocked);
     assert!(p.own_scope);
-    // Neither: the demand comes off THIS step, and the row will say so.
+    // Neither: the step is blocked, never run with the demand taken off.
     let none = apparatus_from("cgroup=no\nbwrap=yes\n");
     let p = plan_step(step, &none);
-    assert_eq!(p.command, "cargo test --workspace");
-    assert!(p.dropped);
+    assert_eq!(p.command, step);
+    assert!(p.blocked);
     assert!(!p.own_scope);
     assert_eq!(none.missing, vec![CGROUP_APPARATUS.to_string()]);
-    // A machine with no boundary drops it whatever its cgroups do - and a step that demands nothing
-    // is never wrapped, because the scope exists for the apparatus and not as a new habit.
+    // A machine with no boundary blocks it whatever its cgroups do - and a step that demands
+    // nothing is never wrapped or blocked.
     let no_bwrap = apparatus_from("cgroup=own-scope\nbwrap=no\n");
     assert_eq!(no_bwrap.missing, vec![BWRAP_APPARATUS.to_string()]);
-    assert!(plan_step(step, &no_bwrap).dropped);
+    assert!(plan_step(step, &no_bwrap).blocked);
     assert!(!plan_step(step, &no_bwrap).own_scope);
     assert_eq!(plan_step(bare, &scope).command, bare);
     assert!(!plan_step(bare, &scope).own_scope);
-    // A probe that answered nothing at all is absent, not present: the safe reading, because a
-    // demand must never be silently dropped.
+    assert!(!plan_step(bare, &none).blocked);
+    // A probe that answered nothing at all is absent, not present: the safe reading.
     assert_eq!(apparatus_from("").missing.len(), 2);
 }
 
-/// The line a person reads on the row - it names the demand, what the machine has not got, and that a
-/// skipped apparatus test is not a pass. A gate that did nothing to the demand says nothing.
+/// Wrapping is said on the row, and only when it happened.
 #[test]
-fn the_row_says_the_demand_was_taken_off_and_that_this_is_not_a_pass() {
-    let none = apparatus_from("cgroup=no\nbwrap=yes\n");
-    assert_eq!(none.evidence("lab", 5, &[], false), None);
-    let line = none
-        .evidence(
-            "lab",
-            5,
-            &["LETIBOT_REQUIRE_APPARATUS=1 cargo test".to_string()],
-            false,
-        )
-        .expect("a line");
-    assert!(
-        line.starts_with("[gate on `lab`: `LETIBOT_REQUIRE_APPARATUS=1` was TAKEN OFF 1 of 5"),
-        "{line}"
-    );
-    assert!(line.contains(CGROUP_APPARATUS), "{line}");
-    assert!(line.contains("THIS IS NOT A PASS"), "{line}");
-    assert!(line.contains("SKIPPED"), "{line}");
-    // Wrapping is said too, and only when it happened.
+fn the_row_says_a_step_was_wrapped_and_nothing_otherwise() {
     let scope = apparatus_from("cgroup=own-scope\nbwrap=yes\n");
-    assert_eq!(scope.evidence("lab", 5, &[], false), None);
-    let line = scope.evidence("lab", 5, &[], true).expect("a line");
+    assert_eq!(scope.evidence("lab", false), None);
+    let line = scope.evidence("lab", true).expect("a line");
     assert!(line.contains("delegated scope of its own"), "{line}");
     assert!(
         line.contains("systemd-run --user --scope -p Delegate=yes"),
@@ -382,6 +363,7 @@ fn a_shell_status_of_128_plus_n_is_the_signal_and_not_a_red_branch() {
         StepMemory::Elsewhere("lab".into()),
         0,
         Duration::from_secs(30 * 60),
+        "",
     );
     assert_eq!(judged.outcome, MergeGateOutcome::Killed);
     assert!(
@@ -397,6 +379,7 @@ fn a_shell_status_of_128_plus_n_is_the_signal_and_not_a_red_branch() {
         StepMemory::Elsewhere("lab".into()),
         0,
         Duration::from_secs(30 * 60),
+        "",
     );
     assert_eq!(judged.outcome, MergeGateOutcome::Failed);
     assert!(matches!(judged.verdict, Some(GateVerdict::Failed(_))));
@@ -420,6 +403,7 @@ fn the_host_line_is_for_the_operator_and_not_the_model() {
         StepMemory::Elsewhere("lubuntu2".into()),
         0,
         Duration::from_secs(30 * 60),
+        "",
     );
     assert_eq!(judged.outcome, MergeGateOutcome::Passed);
     assert!(
