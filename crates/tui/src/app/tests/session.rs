@@ -2912,3 +2912,31 @@ fn the_header_marks_a_model_it_has_only_from_attach() {
     a.apply(model_settings("glm/glm-5.3", &["glm/glm-5.3"]));
     assert_eq!(a.header_view().model, "glm/glm-5.3");
 }
+
+/// Nothing pushes the session list, so the head re-asks it on its own clock once a minute after a
+/// first answer, and at most once per minute.
+#[test]
+fn the_session_list_is_asked_again_on_the_clock() {
+    const T: u64 = 1_794_000_000_000;
+    let lists = |a: &mut App| {
+        a.take_actions()
+            .into_iter()
+            .filter(|x| *x == Action::ListSessions)
+            .count()
+    };
+    let mut a = app();
+    a.clock(T);
+    a.apply(ServerFrame::Sessions {
+        sessions: vec![brief("s", "one", false)],
+        current: "s".into(),
+        created: None,
+        archived: vec![],
+    });
+    lists(&mut a);
+    a.clock(T + 30_000);
+    assert_eq!(lists(&mut a), 0, "a fresh list is not asked again");
+    a.clock(T + 61_000);
+    assert_eq!(lists(&mut a), 1, "a minute on, it is");
+    a.clock(T + 62_000);
+    assert_eq!(lists(&mut a), 0, "and not again while the ask is out");
+}
