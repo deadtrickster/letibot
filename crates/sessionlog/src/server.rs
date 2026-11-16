@@ -756,21 +756,22 @@ pub fn serve_conn_rooted(
     }
 
     // Any other differing version is accepted and said: `compat` sends an older head what it
-    // can decode, and a newer head judges the skew itself.
-    if protocol_version != PROTOCOL_VERSION {
+    // can decode, and a newer head judges the skew itself. Said in the conversation, once per
+    // head, because a log line is not a place an operator looks.
+    let skew = (protocol_version != PROTOCOL_VERSION).then(|| {
         let which = if protocol_version > PROTOCOL_VERSION {
             "newer"
         } else {
             "older"
         };
-        eprintln!(
-            "head {identity:?} (kind {kind:?}) attached speaking protocol \
-             {protocol_version}, {which} than this daemon's {PROTOCOL_VERSION}. Serving \
-             it rather than refusing: the skew is for the head to judge and say, and this \
-             daemon still answers a frame it cannot read with the loud `Bye` that names \
-             both builds."
-        );
-    }
+        format!(
+            "a head attached speaking protocol {protocol_version}, {which} than this daemon's \
+             {PROTOCOL_VERSION}, and was served rather than refused: the two builds are not the \
+             same install. Frames the other half cannot read are reported as they arrive and \
+             skipped, and the rest of the stream is unaffected. Restart both halves from one \
+             build (`letibot --stop`, then `letibot`) to make them agree."
+        )
+    });
 
     // A seat is a head's. An inside peer may take one only to reach `sudo`'s askpass door.
     if peer.inside && kind != crate::peer::ASKPASS_KIND {
@@ -811,6 +812,13 @@ pub fn serve_conn_rooted(
         &caps,
         &writer,
     )?;
+
+    // The skew, said where a person reads it: a warning beside the conversation, once per head.
+    if let Some(said) = skew
+        && registry.first_skew_for(&session_id, &identity)
+    {
+        seat.hub.warn("protocol_skew", said);
+    }
 
     // The connection's chat answers, handed to a worker on the first `RoomChat` frame: `None`
     // until a head chats, so a connection that never opens the rooms view pays no thread.

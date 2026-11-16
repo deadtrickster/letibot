@@ -189,6 +189,19 @@ fn where_prints_the_bridges_socket_and_ensure_starts_that_daemon() {
         Some(true),
         "the daemon was started:\n{out}\nstderr:\n{err}"
     );
+    // And the two numbers a caller compares to decide whether it can attach at all: this build's,
+    // and the daemon's own as it recorded it beside the socket. A daemon that wrote no record is
+    // null, which is *unknown* and never this build's number by default.
+    assert_eq!(
+        v["this_build"].as_u64(),
+        Some(u64::from(letibot_sessionlog::PROTOCOL_VERSION)),
+        "the answer names the build that asked:\n{out}"
+    );
+    assert_eq!(
+        v["protocol"],
+        serde_json::Value::Null,
+        "the stub daemon writes no placement record, so what it speaks is unknown:\n{out}"
+    );
     assert!(
         daemon::is_up(&d.socket),
         "nothing is accepting on {} after --ensure",
