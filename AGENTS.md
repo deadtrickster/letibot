@@ -150,6 +150,30 @@ sh scripts/install-gate-build.sh
   blocks. `scripts/same-code.py BASE [PATH...]` proves a comment-only change leaves the code tokens
   identical.
 
+## Rules from the 2026-11-16 review
+
+`docs/review/2026-11-16-letibot.md`, section 4. Fix-only phase until critical and high are closed
+(`docs/PLAN.md`).
+
+- A commit that tightens a rule lists the rule's callers in its message, and each caller gets a
+  test that crosses the seam (I104). A new variant of a wire enum lands with its `since` row, or a
+  bump test refuses it.
+- One mechanism per job (invariant I36). A change that adds a second mechanism for a job deletes
+  the old one in the same branch, or adds an equality test that holds the two together (the fence
+  against `secret_hit` is the model). Review asks "what else does this job" first.
+- Tests do not read live box state. Spawn letibot binaries through the shared env guard and spawn
+  helper, which clear `LETIBOT_*`, HOME and XDG unless the test opts in. A lint refuses a `tests/`
+  file that spawns a letibot binary without the helper (both are TODO R347, not built yet; until
+  then clear the env by hand). A test that needs the box declares it as
+  apparatus. A missing apparatus is Blocked, never a pass, never an early return.
+- An accepted flag or field applies or refuses. "Warn and continue" is not an outcome. A timeout
+  says "may have run", never "did not". A fan-out checks each child's actual model, mode and exit
+  against what it asked for before it uses the result.
+- A live regression's fix is built and installed at once, while its gate runs. The fix also goes on
+  the review's finding list.
+- Review results live in markdown under `docs/review/`, never only in a transcript. Findings are
+  filed in `TODO.md` in full.
+
 ## Patterns that recur
 
 A test asserts what it can prove on the machine it runs on. A panic because the box lacks a GGUF,

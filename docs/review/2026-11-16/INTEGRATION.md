@@ -1339,3 +1339,13 @@ The overall picture:
 - Per seat, Claude and Kimi are level, DeepSeek comes next, and GLM is last.
 - DeepSeek's supplementary runs, though mislabelled and all on one model, were the largest single source of findings no one else saw.
 - No family's findings could be dropped without losing at least one verified-high entry: I27 is Kimi only, I38 is DeepSeek only, I93 and I88 are GLM first, and I57 and I59 are opus first.
+
+## 10. Decisions taken, 2026-11-16
+
+Recorded after the integration. Section 8 keeps the options as they were put.
+
+1. Decision 1 (I4): bridge seats may answer permission cards only for sessions they started. The attribution change (`agent:<handle>`, `can_decide` from the connection role) lands regardless. Applied in B3 (TODO R323).
+2. Decision 2 (I29): a "once" grant means once. Drop the session rung and refuse AllowSession at a Once point. Applied in B4 (R324) for shapes and in R339 for the ladder.
+3. Decisions 3 and 4 were not answered directly. Instead: showing cards for reads (since H3 / R300) is in effect a breaking change, so automode is now the priority. The automode prerequisites (B3, B2, B4, the shadow as the real `AuthorisationOracle`) move to the front of the order, then R316 stage 1. The recommendations stand as the defaults used: `answer_reads` defaults off until stage 1 is promoted (3), and the breaker trip is persisted with an explicit re-arm, with a TTL or reviewer binding for queue grants (4). The order is in `docs/PLAN.md`.
+
+Decisions 5-23 are open, and their recommendations are the defaults the batches are built on.
