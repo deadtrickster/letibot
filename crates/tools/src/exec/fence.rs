@@ -29,6 +29,9 @@ pub struct FileFence {
     inside: Option<Vec<(PathBuf, bool)>>,
     /// This session's children's spills, readable and never writable.
     children: Option<ChildSpills>,
+    /// What the view binds read-only inside a writable root: a worktree's hooks, config and other
+    /// refs, the wide seat's git config. The operator's own git runs them later, unconfined.
+    protected: Vec<PathBuf>,
     /// Refuse a read of what the flow rule calls a secret. A command reading one is asked; a file
     /// tool is `Access::Read`, skips the gate, and so has only this check.
     secrets: bool,
@@ -63,6 +66,11 @@ impl FileFence {
             firecode_only: seat.firecode_only.clone(),
             inside,
             children: view.children.clone().filter(|_| !view.wide),
+            protected: view
+                .protected
+                .iter()
+                .map(|p| crate::view::key(&p.path))
+                .collect(),
             // A seat with no boundary has no list, and a refusal would claim one.
             secrets: !seat.masked.is_empty() || !view.wide,
             ..Default::default()
@@ -111,6 +119,15 @@ impl FileFence {
                 }
             }
             return Some(self.store_sentence(path));
+        }
+        if write && let Some(hit) = self.protected.iter().find(|p| path.starts_with(p)) {
+            return Some(format!(
+                "`{}` is inside this session's view and the view holds `{}` read-only: the \
+                 operator's own git or shell runs it later, outside the boundary, so nothing was \
+                 written. No `[boundary]` key makes it writable.",
+                path.display(),
+                hit.display()
+            ));
         }
         // The deepest denial wins: a `hide` inside a store is the narrower of the two answers.
         if let Some(hit) = self

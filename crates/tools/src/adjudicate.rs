@@ -3427,7 +3427,14 @@ impl Gate for AdjudicatedGate {
         // spelling, or a read of the repository's own HEAD is refused in every mode.
         // `never_hit` asks it of the spelling and [`ssh_resolution_hit`] of the resolved path.
         let refused = matches!(access, Access::Write | Access::Exec)
-            .then(|| never_hit(call.args))
+            .then(|| {
+                never_hit(call.args).or_else(|| {
+                    never_hit_resolved(
+                        call,
+                        self.surroundings.home.as_deref().map(std::path::Path::new),
+                    )
+                })
+            })
             .flatten()
             .map(|hit| {
                 format!(
@@ -4268,6 +4275,35 @@ fn never_hit(args: &Value) -> Option<String> {
                     return Some(never.to_string());
                 }
             }
+        }
+    }
+    None
+}
+
+/// [`never_hit`] asked of each path argument's real target: a link in the workspace to
+/// `.git/hooks` has no `.git` in its spelling.
+fn never_hit_resolved(call: &GateCall<'_>, home: Option<&std::path::Path>) -> Option<String> {
+    use std::path::Path;
+    let obj = call.args.as_object()?;
+    let workspace = Path::new(call.workspace);
+    for (key, v) in obj {
+        if !PATH_ARGUMENTS.contains(&key.as_str()) {
+            continue;
+        }
+        let Value::String(s) = v else { continue };
+        let p = match home {
+            Some(h) => crate::remote::expand(Path::new(s), h),
+            None => Path::new(s).to_path_buf(),
+        };
+        let p = if p.is_absolute() {
+            p
+        } else {
+            workspace.join(p)
+        };
+        let real = crate::view::key(&p);
+        let one = serde_json::json!({ "path": real.to_string_lossy() });
+        if let Some(hit) = never_hit(&one) {
+            return Some(hit);
         }
     }
     None
