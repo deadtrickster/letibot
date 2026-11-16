@@ -68,7 +68,8 @@ pub enum Capability {
     ReadPath(String),
     /// Run `<program>`, with arguments the plugin chooses, through the gate.
     Exec(String),
-    /// One `http` request to `<host>`, read for its answer and not kept.
+    /// One `http` request to `<host>`. Reserved: no look serves it, so [`Capability::parse`] refuses
+    /// the spelling and a layer cannot be pinned over reach that does not exist yet.
     Http(String),
     /// Name blobs the host already holds, by id, without ever seeing their bytes. One spelling per
     /// store, and `room` is the only store this build serves.
@@ -104,22 +105,27 @@ impl Capability {
                 )),
             };
         }
-        for (prefix, ctor) in [
-            ("exec:", Capability::Exec as fn(String) -> Capability),
-            ("http:", Capability::Http as fn(String) -> Capability),
-        ] {
-            if let Some(rest) = s.strip_prefix(prefix) {
-                let rest = rest.trim();
-                return if rest.is_empty() {
-                    Err(format!("capability `{s}` names nothing after `{prefix}`"))
-                } else {
-                    Ok(ctor(rest.to_string()))
-                };
-            }
+        // `http:` is a request no look serves: a manifest declaring it would ask for reach the host
+        // silently ignores, and a pin taken over it would be the grant a future look inherits with
+        // nobody asked again. Refused until a look exists, so the pin is always over a real power.
+        if let Some(rest) = s.strip_prefix("http:") {
+            return Err(format!(
+                "capability `http:{}` asks for a network look, and no look serves `http:` yet \
+                 — a capability nothing implements is reach nobody reviewed",
+                rest.trim()
+            ));
+        }
+        if let Some(rest) = s.strip_prefix("exec:") {
+            let rest = rest.trim();
+            return if rest.is_empty() {
+                Err(format!("capability `{s}` names nothing after `exec:`"))
+            } else {
+                Ok(Capability::Exec(rest.to_string()))
+            };
         }
         Err(format!(
-            "unknown capability `{s}` — the spellings are `read`, `read:<path>`, `exec:<program>`, \
-             `http:<host>` and `blobs:room`"
+            "unknown capability `{s}` — the spellings are `read`, `read:<path>`, `exec:<program>` \
+             and `blobs:room`"
         ))
     }
 }
@@ -766,7 +772,7 @@ mod tests {
 name = "plan-dashboard"
 purpose = "a project plan's tiers, stages, agents and hosts at a glance"
 hooks = ["pane_dashboard"]
-capabilities = ["read", "exec:gh", "http:api.github.com"]
+capabilities = ["read", "exec:gh", "blobs:room"]
 contract = 1
 "#;
 
@@ -784,11 +790,28 @@ contract = 1
             vec![
                 Capability::Read,
                 Capability::Exec("gh".to_string()),
-                Capability::Http("api.github.com".to_string()),
+                Capability::Blobs("room".to_string()),
             ]
         );
         assert_eq!(m.contract, 1);
         assert_eq!(m.capabilities[1].to_string(), "exec:gh");
+    }
+
+    /// `http:` is refused until a look serves it. Nothing implements it, so a manifest declaring it
+    /// asks for reach the host would ignore today - and a pin recorded over it would be the grant a
+    /// future look was waiting for, with nobody asked again.
+    #[test]
+    fn an_http_capability_is_refused_until_a_look_serves_it() {
+        let why = Capability::parse("http:api.github.com").expect_err("refused");
+        assert!(
+            why.contains("http:api.github.com") && why.contains("no look"),
+            "{why}"
+        );
+        let manifest = PLAN.replace("blobs:room", "http:api.github.com");
+        assert!(
+            Manifest::parse(&manifest).is_err(),
+            "a layering declaring it is not admitted"
+        );
     }
 
     #[test]

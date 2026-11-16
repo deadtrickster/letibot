@@ -22,7 +22,9 @@ Paths are this repository at `46729b94` unless prefixed `rano/` (`~/Projects/ran
 | `digest_`, `link_` | prefixes admitted (`crates/plugins/src/lib.rs:111-121`), no caller | | |
 
 Per call: `HOOK_FUEL` 50M, 64 MiB memory, 16 MiB each way (`rano/src/plugin.rs:11-17`).
-Capabilities: `read`, `read:<path>`, `exec:<prog>`, `http:<host>` (`crates/plugins/src/manifest.rs:62-73`).
+Capabilities: `read`, `read:<path>`, `exec:<prog>`, `blobs:room` (`crates/plugins/src/manifest.rs:62-76`).
+`http:<host>` is reserved and refused at admission: no look serves it, so a manifest declaring it is
+not admitted and no pin can be taken over reach that does not exist yet.
 
 ### The pane contract
 
