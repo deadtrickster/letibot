@@ -55,6 +55,9 @@ enum Out {
 pub struct Store {
     path: PathBuf,
     bytes: u64,
+    /// Whether the open read the file whole: every byte decodable and every line a record. A
+    /// compaction rewrites the file from the shadow, so it is refused once this is false.
+    whole: bool,
     items: BTreeMap<String, BTreeMap<u64, Item>>,
     questions: BTreeMap<String, BTreeMap<u64, Question>>,
     claims: BTreeMap<String, BTreeMap<u64, crate::own::Claim>>,
@@ -85,14 +88,31 @@ fn trim<T>(rows: &mut BTreeMap<u64, T>) -> Vec<T> {
 }
 
 impl Store {
-    /// Read `path` into the shadow. An unreadable line is skipped and said - a torn last line is
-    /// the ordinary wreckage of a crash - and a missing file is an empty store, not an error:
-    /// the first start has nothing to read.
+    /// Read `path` into the shadow. The bytes are decoded as far as they will go and an unreadable
+    /// line is skipped and said - a torn last line is the ordinary wreckage of a crash. What the
+    /// read could not use is kept, though, and it forbids the one operation that would drop it: a
+    /// compaction rewrites the file from this shadow, so a read that was not whole refuses to.
     pub fn open(path: &Path) -> Store {
-        let text = std::fs::read_to_string(path).unwrap_or_default();
+        let read = std::fs::read(path);
+        let (text, whole) = match &read {
+            Ok(bytes) => match std::str::from_utf8(bytes) {
+                Ok(text) => (text.to_string(), true),
+                Err(_) => (String::from_utf8_lossy(bytes).into_owned(), false),
+            },
+            // The first start has nothing to read, and an empty store compacts to an empty file.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => (String::new(), true),
+            Err(e) => {
+                eprintln!(
+                    "room: items store {} not read ({e}); nothing is compacted from it",
+                    path.display()
+                );
+                (String::new(), false)
+            }
+        };
         let mut store = Store {
             path: path.to_path_buf(),
             bytes: text.len() as u64,
+            whole,
             items: BTreeMap::new(),
             questions: BTreeMap::new(),
             claims: BTreeMap::new(),
@@ -120,11 +140,14 @@ impl Store {
                         .or_default()
                         .insert(question.id, question);
                 }
-                Err(e) => eprintln!(
-                    "room: items store {} line {} is not a record ({e}); skipped",
-                    path.display(),
-                    n + 1
-                ),
+                Err(e) => {
+                    store.whole = false;
+                    eprintln!(
+                        "room: items store {} line {} is not a record ({e}); skipped",
+                        path.display(),
+                        n + 1
+                    );
+                }
             }
         }
         for rows in store.items.values_mut() {
@@ -135,7 +158,54 @@ impl Store {
         for rows in store.questions.values_mut() {
             trim(rows);
         }
+        store.keep_the_wreckage(&read);
+        store.close_the_tear();
         store
+    }
+
+    /// Keep the bytes exactly as the open found them beside the file (`<file>.items-bad`) and say
+    /// the file is not whole: the file holds lines this shadow cannot, and the next compaction
+    /// would rewrite them away from what the read could not use.
+    fn keep_the_wreckage(&self, read: &std::io::Result<Vec<u8>>) {
+        if self.whole {
+            return;
+        }
+        if let Ok(bytes) = read {
+            let bad = self.path.with_extension("items-bad");
+            if let Err(e) = std::fs::write(&bad, bytes) {
+                eprintln!(
+                    "room: items store {} not kept as {} ({e})",
+                    self.path.display(),
+                    bad.display()
+                );
+            }
+        }
+        eprintln!(
+            "room: items store {} was not read whole; it is not compacted",
+            self.path.display()
+        );
+    }
+
+    /// A crash between a record's last byte and its newline leaves a line the next append lands on,
+    /// and both are then unreadable: the tear is closed here, once, before anything is appended.
+    fn close_the_tear(&mut self) {
+        let Ok(bytes) = std::fs::read(&self.path) else {
+            return;
+        };
+        if bytes.is_empty() || bytes.ends_with(b"\n") {
+            return;
+        }
+        let wrote = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&self.path)
+            .and_then(|mut f| f.write_all(b"\n").and_then(|()| f.sync_data()));
+        match wrote {
+            Ok(()) => self.bytes += 1,
+            Err(e) => eprintln!(
+                "room: items store {} not terminated ({e}); the next append may join its torn line",
+                self.path.display()
+            ),
+        }
     }
 
     /// The projects the file holds rows for, sorted - the rooms a restart must rebuild before
@@ -369,8 +439,12 @@ impl Store {
 
     /// Rewrite the file from the shadow once it holds several times the live rows, so superseded
     /// versions and trimmed history do not grow it without bound. The 512 bytes a row is a floor, not
-    /// a measure: it only keeps a small room from compacting on every beat.
+    /// a measure: it only keeps a small room from compacting on every beat. A file the open could not
+    /// read whole is never rewritten: the shadow is short of what the file holds.
     fn compact(&mut self) {
+        if !self.whole {
+            return;
+        }
         let rows = self.items.values().map(BTreeMap::len).sum::<usize>()
             + self.questions.values().map(BTreeMap::len).sum::<usize>()
             + self.claims.values().map(BTreeMap::len).sum::<usize>();
@@ -427,7 +501,7 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::item::Speaker;
+    use crate::item::{Speaker, State};
 
     fn path(what: &str) -> PathBuf {
         let p =
@@ -642,6 +716,113 @@ mod tests {
             Some(crate::own::Ended::Released { .. })
         ));
         assert!(store.claim("", total + 1).is_none());
+    }
+
+    /// An open row, `body` as long as a caller wants: a store test has to make the file outgrow the
+    /// 64 KiB floor before compaction is worth trying.
+    fn item(id: u64, body: &str) -> Item {
+        Item {
+            id,
+            tag: "ram".into(),
+            body: body.into(),
+            posted_by: "s-a".into(),
+            posted_ms: id,
+            state: State::Open,
+            abandonments: Vec::new(),
+            question: None,
+        }
+    }
+
+    /// One byte the file cannot decode erases the shadow, and compaction then rewrites the file from
+    /// that shadow: the whole board goes. The read is lossy and a partial one forbids compaction.
+    #[test]
+    fn an_invalid_byte_never_compacts_the_board_away() {
+        let p = path("invalid-byte");
+        let mut store = Store::open(&p);
+        store.put_item("", item(1, "8 GB"));
+        drop(store);
+        let mut bytes = std::fs::read(&p).expect("the store");
+        bytes.extend_from_slice(b"\xff\xfe a line the crash did not finish\n");
+        std::fs::write(&p, &bytes).expect("the wrecked store");
+
+        let body = "x".repeat(2_000);
+        let mut store = Store::open(&p);
+        for id in 2..=40u64 {
+            store.put_item("", item(id, &body));
+        }
+        drop(store);
+
+        let again = Store::open(&p);
+        assert_eq!(
+            again.item("", 1).map(|i| i.body),
+            Some("8 GB".into()),
+            "the row before the bad byte is still the file's"
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// A crash between a record's bytes and its newline leaves a line an append would land on, and
+    /// both are then unreadable. The tear is closed at open, so the next record is its own line.
+    #[test]
+    fn a_torn_line_does_not_swallow_the_next_record() {
+        let p = path("torn-glue");
+        let mut store = Store::open(&p);
+        store.put_item("", item(1, "8 GB"));
+        drop(store);
+        let bytes = std::fs::read(&p).expect("the store");
+        assert_eq!(
+            bytes.last(),
+            Some(&b'\n'),
+            "a whole record ends in a newline"
+        );
+        std::fs::write(&p, &bytes[..bytes.len() - 6]).expect("the torn store");
+
+        let mut store = Store::open(&p);
+        store.put_item("", item(2, "2 GB"));
+        drop(store);
+
+        let again = Store::open(&p);
+        assert_eq!(
+            again.item("", 2).map(|i| i.body),
+            Some("2 GB".into()),
+            "the record after the tear is on a line of its own"
+        );
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// A row leaves the memory only once the closed segment holds it: a filing that fails must not
+    /// take the row with it, or a full disk ends what the room did.
+    #[test]
+    fn a_trim_waits_until_the_closed_segment_holds_the_row() {
+        let p = path("trim-order");
+        let closed = p.with_extension("items-closed");
+        // A directory where the closed segment goes is a filing that cannot land, and one that the
+        // test can undo without a full disk.
+        std::fs::create_dir_all(&closed).expect("a directory in the closed segment's place");
+        let mut store = Store::open(&p);
+        for id in 1..=(RING as u64 + 1) {
+            store.put_item("", item(id, "8 GB"));
+        }
+        assert!(store.item("", 1).is_some(), "the row is still readable");
+        assert_eq!(
+            store.items_in("").unwrap_or_default().len(),
+            RING + 1,
+            "nothing left the memory while its filing failed"
+        );
+
+        std::fs::remove_dir(&closed).expect("the directory out of the way");
+        store.put_item("", item(RING as u64 + 2, "8 GB"));
+        assert_eq!(
+            store.items_in("").unwrap_or_default().len(),
+            RING,
+            "the backlog is filed once the segment takes it"
+        );
+        assert!(
+            store.item("", 1).is_some(),
+            "and read back from the closed segment"
+        );
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(&closed);
     }
 
     /// Nothing rewrites or removes the closed segment: the live file is compacted, and a closed row
