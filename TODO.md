@@ -61,7 +61,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R332 | B12 store carve: rows committed after the claim check are deleted uncopied | Code work | B12: I53; S; after - |
 | R333 | B13 rooms: gap replay drops rows below a live push and acks over them | Code work | built on `b13-rooms`: seen-set above `acked`, paged gap replay (`inbox.after`), no ack before the gap is replayed; left: a full gate, the redial race has no test, I101 (lead 13) is R349 |
 | R334 | B14 plugins and MCP: unpinned layers decide, MCP servers inherit the env, `.mcp.json` trusted by prefix | Code work | B14: I93, I94, I95; M; after - |
-| R335 | B15 header facts: header ctx survives a clear, a reseat and a re-ingest | Code work | B15: I72; M; after B1 (R320), B6 (R326) |
+| R335 | B15 header facts: header ctx survives a clear, a reseat and a re-ingest | Code work | built on branch `b15-facts`: I72 and leads 35, 36, 38, 41, 43, one commit each; left: gate and land, the residue in the row |
 | R336 | B16 workflow stability: the orchestration layer fails silently | Code work | built on branch `b16-workflow` (I28, I81, I100/L28, I61/L29, I71/L30, each with its proving test, failing on main); left: one full gate and the landing, lead 37, `restart_keeps_model_and_provider`, then the residue in the entry's Status |
 | R337 | the shadow as the real `AuthorisationOracle`: the view-read trail, `allow_once` on a view, hygiene, one grant model | Code work | built on `r337-oracle`, not landed; left: revoke reaching running commands (I16), I17 (f) replay numbers, queue seats' trails hold no operator words |
 | R338 | role per connection and the masked operator socket | Code work | I6; M; after B1 (R320) |
@@ -1053,7 +1053,24 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R335 - B15 header facts: header ctx survives a clear, a reseat and a re-ingest
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Batch B15 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I72. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built on branch `b15-facts`, 2026-11-16, on main `bf72aa1d9`, one commit per finding. Each proving test fails on main and passes on the branch: checked by putting the base's source files back under the new tests and running them (lead 35 against `usage_warn.rs` from before `89ad6311f`). No store schema change, no protocol bump: the new fields are defaulted. Filed from the review at `9e9312b06`. Batch B15 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I72, with leads 35, 36, 38, 41 and 43 of `LEADS-2026-11-16.md`. Record: `docs/review/2026-11-16/INTEGRATION.md`. left: the full gate and the landing; the residue below.
+
+**What was built.**
+- I72: `TranscriptForked` carries `context_after: Option<ContextAfter>` (`tokens` in the header's unit, `estimated`). `fork_onto` sets it for every fork (compact, clear, reseat, re-ingest): the stored pair it already carried, estimated unless a verbatim carry onto the same prefix, else the ledger through `shown_tokens`. `SessionView` keeps it as `Snapshot::context_after` until a `TurnFinished`, and rewrites the finished turn's usage so an older head draws it too. The head takes it in both arms (`App::fork_context`, cache unmeasured). `compaction_after`, the prose parse, is deleted.
+- Lead 35: checked. The jitter fix holds: an hour of polls at 100% with the reset seconds either side is one notice. The same test gives 33 notices on `usage_warn.rs` before `89ad6311f`.
+- Lead 36: while the turn is parked, its own line (local time) is the park's one line: the `limit_park` notice and the status row's `Waiting::Limit` words (both UTC) stand down (`App::turn_parked`).
+- Lead 38: the limit notice is the newest note of the episode, with no "N more in /notes" count. A park, a lift (`limit_resumed`, now "M's limit lifted - the turn goes on") or a return closes once a turn ends after it (`App::turn_ended_ts`, from `TurnEnded`, an ending `TurnFinished`, `TurnFailed`, `TurnInterrupted`). A move to a fallback stays until the return.
+- Lead 41: with the editor pane open and the composer holding the keys, the hint bar leads with `alt-i focus · ctrl-x close · alt-m zoom`, in the column case (the conversation's bar) and the zoomed case.
+- Lead 43: the skills pane already drew its keys on this build. It gains its typed door (`/skills NAME text hands it with a line`), and a test now reads every surface's drawn bar row rather than `hint_bar` alone.
+
+**Tests.** `a_snapshot_after_an_idle_compaction_shows_the_new_base_in_the_header`, `a_clear_moves_the_header_ctx`, `a_reingest_and_a_reseat_move_the_header_ctx` (tui `app/tests/header_ctx.rs`, events built from the wire's JSON so they compile on main); the fork's figure asserted in harnessd `tests/compact.rs` `a_fork_replaces_the_rows_the_hub_holds_rather_than_adding_to_them`; `a_window_held_at_full_for_an_hour_of_polls_is_said_once` (harnessd `harness/usage.rs`); `one_park_is_said_once_in_local_time`, `a_limit_episode_is_one_notice_updated_in_place`, `the_lift_notice_closes_once_the_stopped_turn_has_ended` (tui `app/tests/limit_notice.rs`); `an_open_pane_says_how_to_focus_close_and_zoom_it` (tui `app/tests/editor.rs`); `every_pane_draws_its_key_map` (tui `app/tests/bindings.rs`).
+
+**Residue.**
+- The header has no estimate mark: rano's `header::Context` has no field for it, so an estimated base shows as a size with no cache fraction. Needs a rano change through cc@rano.
+- A daemon restart, or a harness reopened in one daemon, says a held usage crossing once more: `UsageSaid` is in memory per harness.
+- A head that attaches after the stopped turn ended still shows a lift notice from the snapshot's warnings: the snapshot carries no turn-end time. The facts frame (I76) is where that belongs.
+- Lead 41's second half, `esc` from the composer offering to close the pane, is not built: esc there arms the interrupt, and changing it needs the operator's call.
+- `every_pane_draws_its_key_map` skips the session picker, whose list takes about 25s to build in a debug test.
 
 **Scope.** `sessionlog/src/view.rs` fork arm and the `event.rs` field, `tui/src/app/events/*`, `harnessd/src/harness/clear.rs`, `sessions.rs` reseat. A shown-unit `context_after` on every fork event, the prose parse deleted. The facts frame (I76) is after the phase (C16, decision 19).
 
