@@ -38,7 +38,7 @@ fn launcher_providers(dir: &Path, vars: &[(&str, &OsString)]) -> PathBuf {
     std::fs::copy(env!("CARGO_BIN_EXE_letibot-multi"), &multi).expect("the binary is copied");
     use std::os::unix::fs::PermissionsExt as _;
     std::fs::set_permissions(&multi, std::fs::Permissions::from_mode(0o755)).expect("executable");
-    let mut cmd = std::process::Command::new("bash");
+    let mut cmd = letibot_testenv::command("bash");
     cmd.arg(&script)
         .arg("--status")
         .current_dir(&ws)

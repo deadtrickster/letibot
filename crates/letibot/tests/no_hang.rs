@@ -224,7 +224,7 @@ fn one_shot(tag: &str, scope: &str, probe_hangs: bool) -> OneShot {
     for old in ["scope-probe-1", "scope-join-1-1"] {
         let p = rundir.join("letibot").join(old);
         std::fs::create_dir_all(&p).unwrap();
-        let _ = Command::new("touch")
+        let _ = std::process::Command::new("touch")
             .args(["-d", "2 hours ago"])
             .arg(&p)
             .status();
@@ -254,7 +254,7 @@ fn one_shot(tag: &str, scope: &str, probe_hangs: bool) -> OneShot {
         .canonicalize()
         .unwrap();
     let t = Instant::now();
-    let out = Command::new("bash")
+    let out = letibot_testenv::command("bash")
         .arg(&script)
         .arg("say hi")
         .current_dir(&wt)
@@ -407,7 +407,7 @@ time.sleep(10)
         .canonicalize()
         .unwrap();
     let t = Instant::now();
-    let out = Command::new("bash")
+    let out = letibot_testenv::command("bash")
         .arg(&script)
         .arg("--new")
         .current_dir(&wt)
