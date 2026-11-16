@@ -58,10 +58,26 @@ pub struct Attached {
 /// [`CommandKind::Interrupt`] and a relayed [`CommandKind::Message`], and for nothing else.
 pub const DAEMON_SUBMITTER: &str = "\0daemon";
 
-/// How many unread pane frames one head may hold before the oldest is dropped. The bytes come
-/// from a process painting a screen, so a head that has stopped reading must not grow without a
-/// bound.
+/// How many unread side frames one head may hold before a pane's oldest bytes are dropped. The
+/// bytes come from a process painting a screen, so a head that has stopped reading must not grow
+/// without a bound.
 const MAX_SIDE: usize = 256;
+
+/// Queue `frame` on a head's side channel. A `Settings` frame is a latest value: it replaces the
+/// one still queued. A full queue drops its oldest `TermOutput`, never a fact or a card.
+fn side_push(side: &mut VecDeque<ServerFrame>, frame: ServerFrame) {
+    if matches!(frame, ServerFrame::Settings { .. }) {
+        side.retain(|f| !matches!(f, ServerFrame::Settings { .. }));
+    }
+    if side.len() >= MAX_SIDE {
+        let at = side
+            .iter()
+            .position(|f| matches!(f, ServerFrame::TermOutput { .. }))
+            .unwrap_or(0);
+        side.remove(at);
+    }
+    side.push_back(frame);
+}
 
 /// How many handed-on commands a hub remembers to refuse a second hand-on of the same one.
 const HANDED_ON_KEPT: usize = 64;
@@ -1346,10 +1362,7 @@ impl Hub {
                 if !want(&h.id) {
                     continue;
                 }
-                if h.side.len() >= MAX_SIDE {
-                    h.side.pop_front();
-                }
-                h.side.push_back(frame.clone());
+                side_push(&mut h.side, frame.clone());
             }
         }
         self.cv.notify_all();
