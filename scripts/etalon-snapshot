@@ -1,18 +1,13 @@
 #!/usr/bin/env bash
-# Preserve the etalon: extract, prove the redaction, compress, checksum, and
-# write a manifest that says exactly what this snapshot is.
+# Preserve the etalon: extract, prove the redaction, compress, checksum, and write a
+# manifest that says exactly what this snapshot is.
 #
-# Plan: docs/guard-corpus-plan.md §7. The corpus is the operator's own
-# conversations — commands and utterances, redacted — so it is versioned and
-# kept OFF the git repo: under ~/.local/share/letibot/etalon/ here, and a copy
-# on one more box by rsync. The raw sources (which hold tool output, and so
-# live credentials) are never snapshotted; they stay 0700 on this box and their
-# origin hosts already hold them.
+# Plan: docs/guard-corpus-plan.md section 7. The corpus is the operator's redacted
+# conversations, so it is kept off the repo, under ~/.local/share/letibot/etalon/ plus one rsync
+# copy. The raw sources hold live credentials and are never snapshotted.
 #
-# A snapshot is named by date and the extractor's commit, so a number quoted
-# against it can be traced to the code that produced it. The manifest records
-# the redaction checks and their results: a snapshot whose checks were not
-# run is not a snapshot.
+# A snapshot is named by date and the extractor's commit. Its manifest records the redaction
+# checks and their results: a snapshot whose checks did not run is not a snapshot.
 #
 # Usage: scripts/etalon-snapshot [--dest DIR]
 set -euo pipefail
@@ -45,18 +40,9 @@ trap 'rm -f "$RAW"' EXIT
 echo "extracting…" >&2
 python3 "$HERE/scripts/etalon-extract.py" --out "$RAW" 2> >(tee "$DEST/$NAME.extract.log" >&2)
 
-# The checks. Every pattern here has a story: the key body is the host's ground
-# truth; the password literal was found in 950 commands; the rest are the
-# fleet's own credential shapes. A hit fails the snapshot.
-#
-# **Two parallel arrays and not `declare -A`.** This script is run by hand on the
-# operator's Mac, whose `/bin/bash` is 3.2.57: an associative array is bash 4's, and the
-# `declare` there answers `declare: -A: invalid option` and then dies on the SAME line —
-# 3.2 evaluates the rejected `[name]=` subscripts as arithmetic, so `set -u` makes the
-# first name an unbound variable (`openssh_key_body: unbound variable`, measured). No
-# check runs, and the snapshot fails for a reason that is not about the corpus. The names
-# are in the same order as the patterns, which also makes the manifest's list the written
-# order rather than a hash order.
+# The redaction checks: the host's key body, a known password literal, and the fleet's
+# credential shapes. A hit fails the snapshot. Two parallel arrays, not `declare -A`: the
+# Mac's /bin/bash is 3.2. The names keep the patterns' order, which the manifest lists.
 CHECK_NAMES=(
   openssh_key_body
   # The header alone is not a key — a test fixture printf's one next to a

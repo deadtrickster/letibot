@@ -3,108 +3,31 @@
 #
 #   scripts/make-dist.sh <target-triple> [outdir]
 #
-# The contract is `install.sh`'s, not this script's: it downloads
-# `letibot-<triple>.tar.gz` from the release and expects the binaries at the
-# archive root. That naming lives in ONE place — here — and both workflows call
-# this script, so a release asset cannot be built with a name the installer does
-# not ask for. `scripts/check-dist-names.sh` asserts the triples line up.
+# install.sh downloads `letibot-<triple>.tar.gz` and expects the binaries at the archive root.
+# `scripts/check-dist-names.sh` holds the names to install.sh.
 #
-# # What goes in, and why not the other three binaries
+# `letibot-askpass` is a link to `letibot-multi` that install.sh makes, and must sit beside
+# `harnessd`: `sudo::install()` looks for it there. `letibot-m1` and the `letibot-render*`
+# binaries are measurement and fidelity seams, not runtime, so they are left out.
 #
-#   harnessd          the daemon — the session, the gate, the model connection
-#   letibot-tui       the head — what a person actually looks at
-#   letibot-multi     every role of the Rust binary, picked by argv[0] or the first word;
-#                     `letibot-askpass` is a link to it that `install.sh` makes
-#   letibot           the launcher SCRIPT
-#   letibot-mcp       the Claude Code bridge — the MCP server the `leticode` plugin runs
-#
-# **`letibot-askpass` must sit BESIDE `harnessd`** — `crate::sudo::install()`
-# looks for it next to the running binary and installs a `sudo` shim that calls
-# it. A package that left it out would give a session with no way to answer a
-# password prompt, and `sudo` would fail with no explanation. It is not a second
-# binary: `argv[0]` is how `letibot-multi` knows which role it is playing.
-#
-# **The three left out are not runtime**: `letibot-m1` is M1's exit measurement,
-# and `letibot-render` / `letibot-render-qwen` are the seams between the Rust
-# renderers and the Python fidelity gate. All three are built by `cargo build
-# --release` and none is needed to run a session. Shipping six would be three more
-# things to version and a slower install for nothing.
-#
-# # And the FOUR llama libraries, which are NOT optional
-#
-# **FOUR, and this is the correction that matters most in this file.** The chain is
-# two levels deep, not one:
+# The four llama libraries are the transitive closure (taken with `ldd` on an `$ORIGIN`-only
+# build), two levels deep:
 #
 #     harnessd      -> libllama.so.0
 #     libllama.so.0 -> libggml.so.0, libggml-base.so.0
-#     libggml.so.0  -> libggml-cpu.so.0, libggml-base.so.0      <-- the second level
+#     libggml.so.0  -> libggml-cpu.so.0, libggml-base.so.0
 #     libggml-cpu.so.0 -> libggml-base.so.0
 #
-# An earlier version of this script shipped THREE (llama, ggml, ggml-base) because
-# the check stopped one level down: it read `harnessd`'s `DT_NEEDED`, then
-# `libllama.so.0`'s, and never asked what `libggml.so.0` needs. MEASURED, both ways,
-# in a bare directory with the llama.cpp tree made unreachable:
-#
-#     three libraries -> ./harnessd: error while loading shared libraries:
-#                        libggml-cpu.so.0: cannot open shared object file      (exit 127)
-#     four libraries  -> harnessd 0.1.1                                       (exit 0)
-#
-# **And the wrong version PASSED on the development box**, which is the part worth
-# remembering: that machine's `libggml.so.0` carries an absolute runpath into
-# `build-glm/bin`, so the loader found `libggml-cpu.so.0` there and the daemon
-# started. It would have failed on every machine without that directory — the
-# precise failure shape this script exists to keep off a user's disk, reproduced
-# inside the script that guards against it.
-#
-# The authoritative list is the transitive closure, taken with `ldd` on a library
-# built with `$ORIGIN` only (so nothing resolves by accident):
-#
-#     libllama.so.0  libggml.so.0  libggml-cpu.so.0  libggml-base.so.0
-#
-# Everything else `ldd` reports is system: `libc`, `libm`, `libstdc++`, `libgcc_s`
-# and `libgomp` (the OpenMP runtime, which ships with gcc on every normal distro).
-#
-# `libggml-cuda.so` is NOT in this set for the release build, because it is 68 MB,
-# CUDA is off, and ggml reaches its backends through the CPU one. It IS in this
-# box's own `libggml.so.0`'s `DT_NEEDED` — this box's llama.cpp is a CUDA build —
-# which is another reason the list above is taken from a `$ORIGIN`-only build
-# rather than from whatever happens to be installed here.
-#
-# They are packaged because `harnessd`'s build script bakes `$ORIGIN` into its
-# runpath: the daemon finds these next to itself, and a package missing any one of
-# them dies at exec with `cannot open shared object file` on every machine that has
-# no llama.cpp checkout.
-#
-# `LETIBOT_LLAMA_LIB` names the directory they are copied from — the same variable
-# the build script uses, so the libraries packaged are the libraries linked.
+# `libggml-cuda.so` is not in the set: CUDA is off in the release build. `harnessd`'s runpath
+# is `$ORIGIN`, so a package missing any of them dies at exec on a box without llama.cpp.
+# `LETIBOT_LLAMA_LIB` names the directory they are copied from, the one the build linked.
 
 set -eu
 
-# **THE ARCHIVE'S CONTENTS, IN ONE PLACE.**
-#
-# This list was written in six separate `for` loops and one `expected=` line, which
-# is the shape that drifts: five of them agree and the sixth is found by a user.
-# It is named here, the packager uses it, and **`install.sh` must agree with it** —
-# `scripts/check-dist-names.sh` asserts that, because the installer and the assets
-# do NOT come from the same ref (the script is served from `main`, the archive from
-# `releases/latest`) and this list is the only thing holding them together.
-#
-# ORDER IS NOT A CONTRACT — every reader sorts. The SET is.
-# **The launcher is IN the archive, and that is a decision rather than a detail.**
-#
-# `install.sh`'s last line tells the user to run `letibot`, so an archive without it
-# installs cleanly and then answers `command not found` to the one command the
-# installer named. MEASURED by the operator on the real one-liner: seven files
-# landed, `harnessd 0.1.1` and `letibot-tui 0.1.1` printed, and no launcher.
-#
-# Shipping it HERE rather than fetching it separately (which is what leticl does,
-# with `LETIBOT_LAUNCHER_REF`) keeps ONE delivery mechanism on ONE ref: the script
-# and the binaries come from the same tag, so a launcher cannot describe a build it
-# did not ship with. A third ref would be a third thing to keep in step, which is
-# the skew this repository just spent a commit closing.
-#
-# It is a REPOSITORY file, not a build artifact, so it is staged from `scripts/`
-# rather than from `target/release` — see the copy loop below.
+# The archive's contents, in one place. install.sh must agree (`check-dist-names.sh`), because
+# the installer and the archive come from different refs. The set is the contract, not the order.
+# The launcher is in the archive: install.sh tells the user to run `letibot`, and shipping it
+# here keeps the script and the binaries on one tag. It is staged from `scripts/`.
 ARCHIVE_BINARIES="harnessd letibot-tui letibot-multi letibot leticode letibot-mcp letibot-acp"
 ARCHIVE_LIBRARIES="libllama.so.0 libggml.so.0 libggml-cpu.so.0 libggml-base.so.0"
 # The same four for an `*-apple-darwin` triple, which install.sh's LIBRARIES_DARWIN
@@ -168,10 +91,8 @@ done
 mkdir -p "$outdir"
 name="letibot-$triple.tar.gz"
 
-# **A staging directory rather than `tar -C` twice.** The binaries come from the
-# target directory and the libraries from the llama tree, and an archive built from
-# two `-C` invocations is one whose contents depend on argument order. Staging makes
-# the archive a listing of one directory, which is also what the check below walks.
+# A staging directory rather than `tar -C` twice, so the archive is a listing of one
+# directory and does not depend on argument order. The checks below walk it.
 stage=$(mktemp -d)
 trap 'rm -rf "$stage"' EXIT INT TERM
 
@@ -203,42 +124,14 @@ for so in $ARCHIVE_LIBRARIES; do
 done
 chmod 755 "$stage"/*
 
-# **THE LIBRARIES MUST NOT DEPEND ON AN ABSOLUTE PATH, and this is the check for it.**
-#
-# MEASURED, 2026-10-01, and it is the defect that would have shipped: `harnessd`'s
-# own runpath is `[$ORIGIN, <llama build dir>]`, so it finds `libllama.so.0` beside
-# itself — but **`DT_RUNPATH` is NOT inherited by a library's own dependencies**.
-# `libllama.so.0` carries `RUNPATH=/home/dead/Projects/llama.cpp/build-glm/bin` and
-# looks for `libggml.so.0` THERE and nowhere else, so on a machine with no llama.cpp
-# at that path the loader gets as far as libllama and then dies with
-# `libggml.so.0: cannot open shared object file`.
-#
-# Proven with a three-line experiment rather than taken from the manual: a
-# `libparent.so` with `RUNPATH=/nonexistent-only`, a `libchild.so` beside it, and a
-# `prog` with `RUNPATH=$ORIGIN` — all three in one directory. Running it fails with
-# `libchild.so: cannot open shared object file`, which is the whole of the above.
-#
-# **So the fix is at BUILD time, in whoever builds llama.cpp**: it must be
-# configured with `-DCMAKE_INSTALL_RPATH='$ORIGIN'` (and
-# `-DCMAKE_BUILD_RPATH='$ORIGIN'`) so every library in the set finds its siblings
-# beside itself. `patchelf --set-rpath '$ORIGIN'` on the four libraries does the same
-# to an existing build. This script cannot fix it — it only assembles — so it
-# REFUSES rather than packaging something that installs cleanly and then dies on a
-# user's machine, which is the one failure shape a release must not have.
-#
-# It is applied to the STAGED COPIES and never to the operator's build tree: a
-# release script that rewrote somebody's llama.cpp checkout would be a worse bug
-# than the one it fixes, and `patchelf` is only needed when the libraries were built
-# without `$ORIGIN` in the first place.
-# **macOS: the same two guarantees, in Mach-O's terms**, and then the Linux checks below
-# are skipped as a block. A dylib finds its siblings through its own install name
-# (`@rpath/<name>`) and its own LC_RPATH, which — like DT_RUNPATH — is not inherited, so
-# each staged library must say `@loader_path` (dyld's `$ORIGIN`) and nothing absolute.
-# Unlike `patchelf`, `install_name_tool` is on every Mac, so the staged copy is fixed
-# rather than refused; the edit breaks a copy's ad-hoc signature, and Apple silicon will
-# not load an unsigned dylib, so it is re-signed (`codesign -s -`: no certificate). Then
-# the closure: every dependency of every staged file is either `@rpath/` and in the
-# stage, or part of the OS (`/usr/lib`, `/System/Library`).
+# The libraries must not depend on an absolute path. `DT_RUNPATH` is not inherited by a
+# library's dependencies, so a `libllama.so.0` with an absolute runpath finds its siblings only
+# on the build box. The fix is at llama.cpp build time (`-DCMAKE_INSTALL_RPATH='$ORIGIN'`), or
+# `patchelf --set-rpath '$ORIGIN'` on the staged copies. The operator's tree is never rewritten.
+# macOS: the same guarantees in Mach-O terms, and the Linux checks below are skipped. Each staged
+# dylib must use `@rpath/<name>` and `@loader_path`; `install_name_tool` fixes the copy and
+# `codesign -s -` re-signs it, since Apple silicon will not load an unsigned dylib. Then every
+# dependency is either `@rpath/` and staged, or the OS's (`/usr/lib`, `/System/Library`).
 if [ "$darwin" = 1 ]; then
   for so in $ARCHIVE_LIBRARIES; do
     f="$stage/$so"
@@ -293,22 +186,16 @@ else
 
   for so in $ARCHIVE_LIBRARIES; do
     [ -f "$stage/$so" ] || continue
-    # **Both spellings, and the empty case is NOT a pass.** `RPATH` is the older tag
-    # and a library may carry either; matching only `RUNPATH` would read an `RPATH`-only
-    # library as having no runpath at all. And a library with NO runpath is not fine:
-    # it cannot find its sibling any more than an absolute one can, so the empty case
-    # falls through to the refusal below rather than being accepted by a bare `''`.
+    # Both `RPATH` and `RUNPATH`. A library with no runpath cannot find its sibling either, so
+    # the empty case falls through to the refusal.
     rp=$(readelf -d "$stage/$so" 2>/dev/null |
       sed -n 's/.*\(RUNPATH\|RPATH\)[^[]*\[\(.*\)\].*/\2/p' | head -1)
     # shellcheck disable=SC2016 # `$ORIGIN` is the loader's token, matched literally
     case "$rp" in
       '$ORIGIN') ;; # exactly right: finds siblings, nothing else
       *'$ORIGIN'*)
-        # It will RUN — `$ORIGIN` is searched — but it also carries a path from
-        # wherever it was built, which is inside a published binary. MEASURED:
-        # this is what CMake produces without `CMAKE_BUILD_WITH_INSTALL_RPATH=ON`
-        # (`[$ORIGIN:/home/runner/.../llama.cpp/build/bin]`). Not fatal, so not a
-        # refusal, but it belongs on the record rather than in the archive quietly.
+        # It runs (`$ORIGIN` is searched) but carries a build path into a published binary, as CMake
+        # does without `CMAKE_BUILD_WITH_INSTALL_RPATH=ON`. Not fatal, so a warning.
         echo "make-dist: warning: $so's RUNPATH is \"$rp\"." >&2
         echo "  It will run, but it names a directory from the machine that built it," >&2
         echo "  and that path is now inside a published binary. Build llama.cpp with" >&2
@@ -353,28 +240,10 @@ else
 
   chmod 644 "$stage"/lib*.so.0
 
-  # **THE CLOSURE CHECK — the one whose absence shipped a broken package.**
-  #
-  # The check above names four libraries and asserts they exist. That is a list, and
-  # a list is only as good as the person who wrote it: the version that named three
-  # passed every test on the development box and would have died on a user's machine
-  # with `libggml-cpu.so.0: cannot open shared object file`.
-  #
-  # This asks the question the list cannot: **does every library the staged files
-  # need actually come from somewhere the user will have?** For each ELF in the
-  # stage, every `DT_NEEDED` must be either (a) already in the stage, or (b) a
-  # library the base system provides, per `ldconfig`. Anything else is a hole.
-  #
-  # It is deliberately a NAME check and not an `ldd` run. MEASURED, and this is the
-  # whole reason: `ldd` on the staged `harnessd` resolves through the binary's own
-  # runpath, which legitimately carries the absolute llama.cpp build directory after
-  # `$ORIGIN` — so the loader finds the missing library on the build machine and
-  # `ldd` reports a clean closure. That is precisely how the three-library package
-  # passed here. `ldconfig` consults no runpath, so it cannot be fooled the same way.
-  #
-  # `ldconfig` is glibc's; on a musl-only system it is absent and this check SKIPS
-  # with a line saying so, rather than passing silently. The package is glibc-linked
-  # in any case (it carries `libstdc++`), so the target is a glibc system.
+  # The closure check: every `DT_NEEDED` of every staged ELF is either staged or provided by the
+  # base system per `ldconfig`. Not an `ldd` run: `ldd` resolves through the binary's runpath,
+  # which carries the build directory, so it would find a missing library on the build box.
+  # No `ldconfig` (musl) skips with a line saying so; the package targets glibc anyway.
   system_libs=""
   if command -v ldconfig >/dev/null 2>&1; then
     system_libs=$(ldconfig -p 2>/dev/null | awk '{print $1}' | sort -u | tr '\n' ' ')
@@ -409,21 +278,9 @@ else
     done
     echo "make-dist: dependency closure complete for $stage (ldconfig consulted)"
 
-    # **AND THE OTHER HALF: the closure is not the same claim as "the user has
-    # what we assumed they have".**
-    #
-    # Everything above is checked against THIS BOX's `ldconfig`. That is the right
-    # question for "did we forget to copy a library", and it is the wrong question
-    # for "will this start on a minimal machine" — a build host has a toolchain, so
-    # `libstdc++`, `libgomp` and `libsqlite3` are all present and all silently
-    # assumed. MEASURED: the GitHub runner has them, so this passes there too.
-    #
-    # `install.sh` refuses by name when the user's machine lacks one of them, and it
-    # carries that list as `HOST_LIBS`. A hand-written list beside a computed one is
-    # the shape that has cost this tree repeatedly, so the two are held together
-    # here: every host library the closure actually FOUND must be either named in
-    # `HOST_LIBS` or on the short list of things every glibc system has by
-    # definition. A new dependency that nobody classified fails the release.
+    # The build host has `libstdc++`, `libgomp` and `libsqlite3`, so the closure check passes them.
+    # install.sh refuses by name over `HOST_LIBS`, so every host library the closure found must be in
+    # `HOST_LIBS` or on the short list every glibc system has. An unclassified dependency fails.
     always='libc.so.6 libm.so.6 libgcc_s.so.1'
     candidates=''
     for f in "$stage"/harnessd "$stage"/letibot-tui "$stage"/letibot-multi "$stage"/lib*.so.0; do
@@ -431,13 +288,8 @@ else
       for need in $(readelf -d "$f" 2>/dev/null | sed -n 's/.*(NEEDED).*\[\(.*\)\].*/\1/p'); do
         [ -f "$stage/$need" ] && continue
         case " $always " in *" $need "*) continue ;; esac
-        # **The glibc loader, matched by SHAPE rather than by name.**
-        # It is arch-named — `ld-linux-x86-64.so.2` on x86-64,
-        # `ld-linux-aarch64.so.1` on arm64 — so an exact-name list would pass
-        # one half of the matrix and fail the other. It is always present on a
-        # glibc system by definition, and it is the very thing `install.sh`'s
-        # `have_glibc` globs for, so the two agree by construction. Found by this
-        # guard failing on its first run, which is the point of having it.
+        # The glibc loader, matched by shape: it is arch-named (`ld-linux-x86-64.so.2`,
+        # `ld-linux-aarch64.so.1`), and install.sh's `have_glibc` globs for the same shape.
         case "$need" in ld-linux*.so.*) continue ;; esac
         case " $candidates " in *" $need "*) continue ;; esac
         candidates="$candidates $need"
@@ -458,14 +310,8 @@ else
         *) unlisted="$unlisted $need" ;;
       esac
     done
-    # **And the reverse: a name install.sh refuses over that nothing needs.**
-    #
-    # leticl landed this half on its side (`8491411`) and the reason is the same: one
-    # direction catches a library that was forgotten, the other catches a REFUSAL
-    # that outlived its library. A stale entry is worse than noise — it turns a user
-    # away from an install that would have worked, with a package name for something
-    # they already have. Refusing both ways is what makes the two lists impossible to
-    # drift apart rather than merely unlikely to.
+    # And the reverse: a name in `HOST_LIBS` that nothing needs would turn a user away from an
+    # install that works.
     # shellcheck disable=SC2086 # the lists are split into words on purpose
     echo "make-dist: host-provided libraries: $(printf '%s ' $candidates)"
     # shellcheck disable=SC2086 # the same

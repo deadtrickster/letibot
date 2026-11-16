@@ -1,14 +1,8 @@
 #!/bin/sh
-# Every #[test] attribute must sit on its own function.
+# Every #[test] attribute must sit on its own function. Two test attributes separated only by
+# comments and attributes attach to one function, and one test silently stops running.
 #
-# Two test attributes separated only by comments and other attributes attach
-# both to one function, and the test the first one was meant for silently stops
-# running while the suite stays green. Reject that shape before it lands.
-#
-#     sh scripts/check-test-attrs.sh [file ...]
-#
-# With no arguments every tracked .rs file is checked; the explicit form is for
-# trying a planted case by hand.
+#     sh scripts/check-test-attrs.sh [file ...]     (no arguments: every tracked .rs file)
 set -eu
 
 if [ "$#" -eq 0 ]; then
@@ -20,10 +14,8 @@ fi
   exit 1
 }
 
-# The report inside the first rule is the whole check: a test attribute arriving
-# while another is still waiting for its fn. Between a test attribute and its fn
-# only comments, blank lines and other attributes may appear; anything else ends
-# the run, and a fn ends it.
+# Between a test attribute and its fn only comments, blank lines and attributes may appear.
+# A second test attribute in that run is the report; anything else, or a fn, ends the run.
 if awk '
   FNR == 1 { armed = 0 }
   /^[[:space:]]*#\[[[:space:]]*(tokio::)?test[][:space:](]/ {
@@ -50,10 +42,8 @@ else
   exit 1
 fi
 
-# A test may not clear the gate's demand for the apparatus. `LETIBOT_REQUIRE_APPARATUS=1`
-# is what turns an absent fixture into a failure, and a file that unsets it from a
-# fixture's own environment makes every skip in that binary green again - the one thing
-# the gate step exists to prevent.
+# A test may not unset `LETIBOT_REQUIRE_APPARATUS` from a fixture's environment: that turns
+# every skip in the binary green again.
 if awk '
   /remove_var\("LETIBOT_REQUIRE_(APPARATUS|MODEL)"\)/ {
     printf "%s:%d: a fixture clears the gate demand for the apparatus, so its skips stay green\n", FILENAME, FNR > "/dev/stderr"

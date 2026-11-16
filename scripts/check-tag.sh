@@ -1,25 +1,13 @@
 #!/bin/sh
-# **Does the release tag agree with the version compiled into the binaries?**
+# Does the release tag agree with the version compiled into the binaries?
 #
 #     sh scripts/check-tag.sh v0.1.1
 #
-# Exists because the two numbers becoming different has NO SYMPTOM until it is an
-# update loop, and rano paid for that lesson: its `v0.1.1` was tagged with
-# `Cargo.toml` still at 0.1.0, so the assets published as 0.1.1 held a binary that
-# reported 0.1.0. An update check compares the release TAG against the version
-# compiled in — so every 0.1.0 install was offered 0.1.1, installed it, still
-# reported 0.1.0, and was offered it again. Forever. One line omitted.
+# A tag ahead of the compiled version makes an update check offer the same release forever.
+# The version is the workspace's (`[workspace.package] version`), which every crate inherits.
+# The tag is `$1` so the check runs by hand; CI passes `$GITHUB_REF_NAME`.
 #
-# The version here is the WORKSPACE's (`[workspace.package] version`), not any
-# crate's: all 19 crates inherit it through `version.workspace = true`, so there is
-# exactly one number to change and one to compare. Reading a crate's manifest would
-# be reading a copy.
-#
-# Takes the tag as `$1` rather than reading it from the environment, because it is
-# then runnable by hand — which is the whole point. CI passes `$GITHUB_REF_NAME`.
-#
-# Exit 0 when they agree, 1 when they do not, and 2 when the tag is not shaped like
-# a version at all (a `v` prefix and three dot-separated numbers).
+# Exit 0 when they agree, 1 when they do not, 2 when the tag is not `vN.N.N`.
 set -eu
 
 # `set -u` plus an explicit test rather than `${1:?}`: the shell's own message for

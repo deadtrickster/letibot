@@ -1,12 +1,9 @@
 #!/bin/sh
 # Clippy for a gate, on sources made stale on purpose.
 #
-# cargo's fingerprint for a unit does not include the arguments after `--`, so a
-# unit built by a plain `cargo clippy` or a `cargo check` in this target dir is
-# still fresh for `-- -D warnings`, and the step can exit green having linted
-# nothing. Touching every workspace member's own root first makes each member's
-# units stale, so the lints run every time. Dependencies are left alone: their
-# lints are capped by cargo and their fingerprints are not the hole.
+# cargo's fingerprint ignores the arguments after `--`, so a unit already built by plain clippy
+# or check is fresh for `-D warnings` and nothing is linted. Touching each member's root makes
+# its units stale. Dependencies are left alone: cargo caps their lints.
 #
 #     sh scripts/clippy-gate.sh <clippy arguments...>
 set -eu

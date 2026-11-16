@@ -1,17 +1,8 @@
 #!/usr/bin/env bash
-# **Read the two heads every second and keep every frame.**
-#
-# The operator's instrument: a job that samples the terminal rather than the logs, because what is
-# being investigated is what a HEAD DRAWS. A log can say a todo row exists; only the screen says
-# whether it is on the pane after a restart.
-#
-# Two panes, so the comparison is like-for-like at the same instant:
-#   letibot  tmux 1:2  — this session's own head
-#   leticl   tmux 1:4  — the other head, which is the reference for what persistent todos look like
-#
-# Each sample is one file, named by the second it was taken, so a restart can be located by looking
-# for the frame where the pane changes. `tmux capture-pane -p` gives the pane's TEXT without the
-# escapes — enough to see a todo pane, and cheap enough to run for an hour.
+# Capture the two heads' panes every second and keep every frame, to see what a head draws.
+#   letibot  tmux 1:2  - this session's head
+#   leticl   tmux 1:4  - the reference head
+# One file per sample, named by the second, so a restart shows as the frame where the pane changes.
 set -u
 
 OUT="${OUT:-/tmp/headwatch}"

@@ -1,22 +1,8 @@
 #!/bin/sh
 # shellcheck disable=SC2086 # the name lists are space-separated words, split on purpose
-# Every triple the release workflow builds must be one install.sh asks for.
-#
-# The failure this prevents is silent and expensive-ish: publishing
-# `letibot-aarch64-unknown-linux-musl.tar.gz` when the installer downloads
-# `letibot-aarch64-unknown-linux-gnu.tar.gz` means the asset exists, the download
-# 404s, and every install falls back to a source build. Nothing reports it — the
-# workflow is green and the release looks right.
-#
-# The reverse is reported but not fatal: a triple the installer knows and we do not
-# ship degrades to the source build, which is what install.sh is designed to do.
-# That is a gap worth seeing, not an error.
-#
-# `rano`'s script is the template and this is a port of it. What is different here
-# is the CONTENTS check: `rano` ships one binary and this ships three plus three
-# libraries, so the names it asks for are read out of `make-dist.sh` rather than
-# restated — a package missing `letibot-multi` is a session that cannot answer a
-# password prompt, and nothing else would notice.
+# Every triple the release workflow builds must be one install.sh asks for, and the archive
+# must hold the files install.sh copies. A mismatch 404s the download and every install
+# silently falls back to a source build.
 
 set -eu
 
@@ -34,11 +20,8 @@ case "${1:-}" in
     ;;
 esac
 
-# What install.sh derives from `uname`. Read from its `triple=<name>` assignments
-# rather than by pattern-matching what a triple looks like: the first version of
-# this script (in rano) required `-unknown-` in the middle, so it silently ignored
-# both `*-apple-darwin` targets and reported the real workflow as building assets
-# the installer never asks for. The assignment is the contract; the shape is not.
+# What install.sh derives from `uname`, read from its `triple=<name>` assignments: the
+# assignment is the contract, a triple's shape is not (`*-apple-darwin` has no `-unknown-`).
 known=$(grep -oE 'triple=[A-Za-z0-9_.-]+' "$repo/install.sh" | sed 's/^triple=//' | sort -u)
 if [ -z "$known" ]; then
   echo "check-dist-names: found no triples in install.sh — did the layout change?" >&2
@@ -83,32 +66,9 @@ if [ -n "$gap" ]; then
   echo "  Those installs fall back to a source build, which is by design." >&2
 fi
 
-# **THE INSTALLER AND THE ARCHIVE MUST NAME EXACTLY THE SAME FILES.**
-#
-# This is the contract that nothing was holding, and the skew it leaves is silent on
-# our side and total on the user's. The install script is served from `main`:
-#
-#     curl -fsSL https://raw.githubusercontent.com/.../main/install.sh | sh
-#
-# while the archive comes from `releases/latest`:
-#
-#     https://github.com/$REPO/releases/latest/download/$name
-#
-# **Two different refs.** MEASURED 2026-10-01: `releases/latest` was `v0.1.1`, SIX
-# commits behind `main`. It happened to work because the only thing that changed in
-# those six commits was `install.sh` itself — the moment it names a file the
-# published archive does not hold, every person running the one-liner gets a script
-# that wants a binary `releases/latest` has never contained, instantly and with no
-# cache in between. Not a regression CI would find: the release that breaks is one
-# already published and never rebuilt.
-#
-# So the two lists are read from their own files and compared as SETS, both ways:
-#
-#   install.sh    BINARIES + LIBRARIES   what the installer copies
-#   make-dist.sh  ARCHIVE                what the packager builds
-#
-# Read from the files rather than restated here, because a checker that carries its
-# own copy of the list is a third place to drift — which is what this replaces.
+# The installer is served from `main` and the archive from `releases/latest`, two refs. So
+# install.sh's BINARIES + LIBRARIES and make-dist.sh's ARCHIVE are read from their files and
+# compared as sets, both ways. A copy of either list here would be a third place to drift.
 install_files=""
 for var in BINARIES LIBRARIES; do
   v=$(sed -n "s/^$var=\"\(.*\)\"$/\1/p" "$repo/install.sh" | head -1)
@@ -209,15 +169,8 @@ fi
 
 echo "check-dist-names: $(printf '%s ' $built | wc -w) triple(s) built, all asked for by install.sh; install.sh and the archive agree on $(printf '%s ' $packaged | wc -w) file(s)"
 
-# **Every workflow that builds must pin the SAME llama.cpp.**
-#
-# Each job pins it in its own `env:`, and a pin that drifts means one job builds
-# against a library the release does not ship. Nothing else would notice: both runs
-# are green, the assets are built, and the difference is a tokenizer. It bit when two
-# workflows shared this tree; R62 deleted the CI one, so today the release is the only
-# job held to the pin and this stays for the next workflow somebody adds.
-#
-# Read as `LLAMA_REF:` values, so this does not have to understand YAML.
+# Every workflow that builds must pin the same llama.cpp, or one job links a library the
+# release does not ship. Read as `LLAMA_REF:` values, so this does not parse YAML.
 pins=$(grep -h '^[[:space:]]*LLAMA_REF:' "$repo"/.github/workflows/*.yml 2>/dev/null |
   sed 's/.*LLAMA_REF:[[:space:]]*//' |
   sed 's/[[:space:]]*$//' |

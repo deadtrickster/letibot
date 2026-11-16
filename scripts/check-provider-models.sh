@@ -1,51 +1,20 @@
 #!/bin/sh
-# Does each preset's `fallback_model` name a model its provider actually OFFERS?
+# Does each preset's `fallback_model` name a model its provider offers?
 #
-# # Why this exists
+# `fallback_model` is used when the models.dev catalogue is unreadable. APIs silently alias
+# retired names onto live ones, so a stale fallback keeps working until the alias is dropped.
+# This asks each provider's `/models` and requires every fallback in the answer: accepted is
+# not offered, so it never POSTs a completion.
 #
-# `Preset::fallback_model` is a frozen string used when the models.dev catalogue is
-# not readable. Its doc comment has said, since the first time it went stale:
-#
-#   "Kept so a box without opencode still has a name to try rather than refusing,
-#    and updated to a model that exists today — but it will go stale again"
-#
-# *Updated to a model that exists today* is a claim with a lifetime, and nothing
-# measured it. MEASURED 2026-10-02, it had gone stale in a way that could not fail:
-#
-#   GET  /models                -> deepseek-flash, deepseek-v4-pro        (offered)
-#   POST /chat/completions      -> also accepts deepseek-v4-flash and
-#                                  deepseek-chat, answering `model: deepseek-flash`
-#                                  for both                              (tolerated)
-#
-# so the frozen value had drifted to `deepseek-v4-flash` — a name the account does not
-# offer — and NOTHING failed, because the API silently aliases it onto the model that
-# does. An alias is a deprecation path: a fallback that works only because of one has
-# a deadline nobody wrote down, on the path taken when something has already gone
-# wrong. That is the failure this checks for.
-#
-# # What it checks, and what it deliberately does not
-#
-# It asks each provider's own `/models` and requires every preset's `fallback_model`
-# to appear in the answer. It does NOT POST a completion: **accepted is not offered**,
-# and it is the difference between the two that this exists to see.
-#
-# # A provider with no key is SKIPPED, loudly
-#
-# A key is a fact about the box, not a defect in the tree, so a missing one is not a
-# failure — but it is printed, because a check that quietly passes when it did nothing
-# is the thing this whole tree refuses. `LETIBOT_REQUIRE_PROVIDERS=1` turns those skips
-# into failures, for a caller that knows keys are present (the same shape as
-# `LETIBOT_REQUIRE_APPARATUS`).
+# A provider with no key is skipped, loudly. `LETIBOT_REQUIRE_PROVIDERS=1` makes skips failures.
 #
 # Usage:  sh scripts/check-provider-models.sh
 set -eu
 
 REQUIRE="${LETIBOT_REQUIRE_PROVIDERS:-}"
 
-# The script's own directory, computed HERE rather than inside the heredoc: under `sh`
-# the Python reads its program from stdin, so `__file__` is `<stdin>` and any path
-# derived from it lands on the CALLER's directory — which made this look for
-# `presets.rs` beside the cwd instead of beside the script.
+# The script's directory is computed here: under `sh` the Python reads stdin, so `__file__`
+# would be `<stdin>` and paths would land on the caller's directory.
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 
 python3 - "$REQUIRE" "$here" <<'PY'

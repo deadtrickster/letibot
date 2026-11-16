@@ -1,19 +1,12 @@
 #!/bin/sh
 # Refresh the vendored model snapshot from models.dev, and say what to change.
 #
-# The snapshot is the FLOOR of the catalogue chain (crates/provider/src/catalogue.rs):
+# The snapshot is the floor of the catalogue chain (crates/provider/src/catalogue.rs):
 #   LETIBOT_MODELS_JSON -> ~/.cache/letibot/models.json -> opencode's -> the snapshot.
-# It carries every provider a preset can switch to, and nothing else — it is not a
-# browsing catalogue, it is the answer to "a box with nothing else still plans against
-# the right window".
+# It carries every provider a preset can switch to, and nothing else.
 #
-# After running this, set SNAPSHOT_FETCHED in crates/provider/src/catalogue.rs to the
-# date the script prints. The two are one fact in two places, and this script is what
-# keeps them honest with each other.
-#
-# With --cache, the same trimmed file is ALSO written to ~/.cache/letibot/models.json,
-# which is the first place the loader looks after $LETIBOT_MODELS_JSON — so the box's
-# own cache is refreshed rather than only the committed floor.
+# Afterwards set SNAPSHOT_FETCHED in crates/provider/src/catalogue.rs to the date printed.
+# With --cache the trimmed file is also written to ~/.cache/letibot/models.json.
 set -eu
 dir=$(cd "$(dirname "$0")/.." && pwd)
 out="$dir/crates/provider/data/models-snapshot.json"

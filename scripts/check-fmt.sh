@@ -1,37 +1,10 @@
 #!/bin/sh
-# Format-check the Rust files a change TOUCHES, and nothing else.
+# Format-check the Rust files a change touches, and nothing else.
 #
 #     sh scripts/check-fmt.sh <base-rev>      e.g. origin/main, or a push's `before`
 #
-# # Why not `cargo fmt --all -- --check`
-#
-# MEASURED on 2026-10-01, and it is the whole reason this script exists: the tree is
-# not rustfmt-clean and never has been. `cargo fmt --all -- --check` reports **26 files
-# and 154 hunks**, none of them related to any one change — `crates/tui/src/app.rs`
-# alone accounts for 94.
-#
-# So the whole-tree check cannot be the gate yet, for two separate reasons:
-#
-#   * It fails on arrival for somebody else's reason. A gate step that is red the moment
-#     it is added, before anyone has changed anything, is a step that gets deleted - and
-#     the person who deletes it takes the clippy step with it.
-#   * Reformatting 26 files inside the push that adds the release machinery would bury
-#     that machinery under 154 hunks of unrelated whitespace, which is the opposite of
-#     what a reviewer needs.
-#
-# Holding the files a change touches is a real gate — new code cannot arrive
-# unformatted — and it passes today. Formatting the rest is a deliberate act, in its
-# own commit, and when it lands `cargo fmt --all -- --check` should replace this call.
-#
-# # The base
-#
-# `git diff` against the base the change is measured from: the gate passes `main`, and a
-# by-hand run names the revision the branch started from. That is the base the landing is
-# judged against, and a check against anything else is checking a different change.
-# If the revision cannot be resolved this FAILS rather than passing, because a check
-# that cannot find its own input is not a check — and a silent pass here would be
-# indistinguishable from a formatted tree, which is the exact confusion this repository
-# keeps closing elsewhere.
+# The tree is not rustfmt-clean, so `cargo fmt --all -- --check` would fail for reasons
+# unrelated to the change. An unresolvable base fails rather than passes.
 set -eu
 
 base=${1:-}
@@ -64,19 +37,9 @@ if ! shfmt -i 2 -ci -d scripts/*.sh scripts/letibot scripts/leticode scripts/rru
 fi
 echo "check-fmt: shell scripts formatted"
 
-# Added, Copied, Modified or Renamed, never Deleted — rustfmt cannot read a file that
-# is gone, and `--diff-filter` is what makes a deletion not a crash.
-# **Committed changes, PLUS the working tree.**
-#
-# MEASURED, and it made this script's local run useless: `git diff base HEAD` sees only
-# COMMITTED files, so running it before a commit reported "this change touches no Rust
-# files" while a brand-new, unformatted `launcher.rs` sat in the working tree. The gate is
-# unaffected - it runs on what is committed - but the run that is supposed to
-# catch a mistake before it leaves the machine saw nothing at all.
-#
-# `git status --porcelain` covers both modified-tracked (` M`) and untracked (`??`),
-# and the two lists are unioned. A path that appears twice does no harm: rustfmt on the
-# same file twice reports the same thing once per file.
+# ACMR, never Deleted: rustfmt cannot read a file that is gone.
+# Committed changes plus the working tree (`git status --porcelain`), so a local run before a
+# commit sees new files too. A path listed twice does no harm.
 files=$({
   git diff --name-only --diff-filter=ACMR "$base" HEAD -- '*.rs'
   git status --porcelain -- '*.rs' | sed 's/^...//'
@@ -89,33 +52,17 @@ fi
 
 echo "check-fmt: checking $(printf '%s\n' "$files" | wc -l) Rust file(s) this change touches"
 
-# **Absolute, because rustfmt reports absolute paths and `git diff` gives relative
-# ones.** A comparison that mixed the two would silently match nothing, so every file
-# rustfmt complained about would look like "not ours" and this check would pass
-# everything — the can-only-pass shape, arrived at by a path-prefix mistake.
+# Absolute, because rustfmt reports absolute paths and `git diff` relative ones. A mixed
+# comparison would match nothing and pass everything.
 repo_root=$(git rev-parse --show-toplevel)
 ours=""
 for f in $files; do
   ours="$ours $repo_root/$f"
 done
 
-# `--edition 2024` is the workspace's, and it is stated rather than inferred: rustfmt
-# parses a file according to the edition it is TOLD, and edition 2024 accepts code
-# that 2021 does not.
-#
-# # Why this judges rustfmt's OUTPUT instead of its exit code
-#
-# **rustfmt follows `mod` declarations**, so handing it `lib.rs` also formats that
-# crate's children — MEASURED: `rustfmt --check crates/dialect-qwen/src/lib.rs`
-# reports a hunk in `src/render.rs`, a file it was never given. That made this script
-# fail on PRE-EXISTING debt in files a change did not touch, which is exactly the
-# failure mode it exists to avoid: the gate went red on a commit whose own five files were
-# all clean, because one of them was a `lib.rs`.
-#
-# `--skip-children` would fix it and is NOT available on stable (`Unrecognized
-# option`), so the widening is filtered: only diffs naming a file this change touches
-# are fatal. What rustfmt says about other files is a NOTE — visible, not fatal, the
-# same posture the tree takes for the 26 files of pre-existing whole-tree debt.
+# `--edition 2024` is the workspace's: rustfmt parses by the edition it is told.
+# rustfmt follows `mod` declarations and `--skip-children` is not on stable, so its output is
+# judged instead of its exit code: only diffs in touched files are fatal, others are a note.
 # shellcheck disable=SC2086 # a space-separated path list that must split
 report=$(rustfmt --check --edition 2024 $files 2>&1) && {
   echo "check-fmt: all formatted"
@@ -148,11 +95,7 @@ fi
 if [ -n "$mine" ]; then
   echo "check-fmt: these files this change touches are not formatted:" >&2
   for f in $mine; do echo "    ${f#"$repo_root"/}" >&2; done
-  # **Only OUR diffs are printed.** rustfmt's report also carries every file it
-  # walked into, and on this crate that is tens of kilobytes of pre-existing debt in
-  # files nobody touched — which buries the one file the reader needs, at the TOP
-  # where they would have found it, under a wall they have to scroll past. The note
-  # above already names the others.
+  # Only diffs in touched files are printed; the note above names the others.
   printf '%s\n' "$report" | awk -v ours="$ours" '
         /^Diff in / {
             file = $0
