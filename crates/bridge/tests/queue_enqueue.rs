@@ -167,14 +167,14 @@ fn the_queue_verbs_move_a_row_as_the_bridge() {
         ReviewState::Waiting
     );
 
-    let said = verb(&bridge, json!({"verb": "approve", "id": id})).expect("approved");
-    assert!(
-        said["said"].as_str().unwrap().contains("merge queue"),
-        "{said}"
-    );
+    // The bridge enqueued it, so the operator approves it.
+    operator_approves(&store, &id);
     let landing = store.merge_rows(None).unwrap();
     assert_eq!(landing.len(), 1, "{landing:?}");
-    assert!(landing[0].approved_by.starts_with("bridge:"), "{landing:?}");
+    assert!(
+        landing[0].approved_by.starts_with("operator:"),
+        "{landing:?}"
+    );
 
     verb(&bridge, json!({"verb": "rm", "id": landing[0].id})).expect("withdrawn");
     assert_eq!(
@@ -186,6 +186,26 @@ fn the_queue_verbs_move_a_row_as_the_bridge() {
         said["said"].as_str().unwrap().starts_with("0 parked"),
         "{said}"
     );
+}
+
+/// The operator's approval of a row the bridge enqueued: the bridge may not give it.
+fn operator_approves(store: &Store, id: &str) {
+    letibot_harnessd::mergequeue::verbs::approve(store, id, "s-op", &|_| {}).expect("approved");
+}
+
+/// The seat that enqueued a branch cannot approve it over the reviewer, nor can another bridge
+/// seat: a row the bridge enqueued is the operator's to approve.
+#[test]
+fn bridge_cannot_approve_own_enqueue() {
+    let (_dir, store_at, bridge, id) = enqueued("self-approve");
+    let e = verb(&bridge, json!({"verb": "approve", "id": id})).expect_err("its own branch");
+    assert!(e.contains("approved by the operator"), "{e}");
+    let store = Store::open(&store_at).unwrap();
+    assert_eq!(
+        store.review_row(&id).unwrap().unwrap().state,
+        ReviewState::Waiting
+    );
+    assert!(store.merge_rows(None).unwrap().is_empty());
 }
 
 #[test]
@@ -246,8 +266,8 @@ fn wait_queue_exits_10_on_a_veto_with_the_words() {
 #[test]
 fn wait_queue_follows_an_approval_to_its_landing() {
     let (_dir, store_at, bridge, id) = enqueued("wait-land");
-    verb(&bridge, json!({"verb": "approve", "id": id})).expect("approved");
     let store = Store::open(&store_at).unwrap();
+    operator_approves(&store, &id);
     let m = store.merge_rows(None).unwrap().remove(0);
     let (code, state) = wait(&bridge, &m.id, Duration::from_millis(100));
     assert_eq!(
@@ -276,8 +296,8 @@ fn wait_queue_follows_an_approval_to_its_landing() {
 #[test]
 fn wait_queue_exits_20_on_a_red_gate() {
     let (_dir, store_at, bridge, id) = enqueued("wait-red");
-    verb(&bridge, json!({"verb": "approve", "id": id})).expect("approved");
     let store = Store::open(&store_at).unwrap();
+    operator_approves(&store, &id);
     let m = store.merge_rows(None).unwrap().remove(0);
     assert!(
         store

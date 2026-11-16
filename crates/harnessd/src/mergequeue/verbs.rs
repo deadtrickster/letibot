@@ -139,6 +139,38 @@ fn actor(who: &str) -> &str {
     who.split(':').next().unwrap_or("operator")
 }
 
+/// A verb the table rules on. The others only take rows out of line, which any mover may do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Verb {
+    Approve,
+}
+
+/// What the table reads about a row: who wrote it.
+pub(crate) struct Facts<'a> {
+    /// The session that enqueued it: `bridge:<handle>` for the bridge, a session id for an agent.
+    pub author: &'a str,
+}
+
+/// The one verb x actor x state rule. The operator may do anything; a bridge may not approve
+/// what a bridge enqueued.
+pub(crate) fn may(verb: Verb, who: &str, row: &Facts) -> Result<(), String> {
+    let (kind, _) = who.split_once(':').unwrap_or((who, ""));
+    if kind == "operator" {
+        return Ok(());
+    }
+    match verb {
+        Verb::Approve if kind == "bridge" && row.author.starts_with("bridge:") => Err(format!(
+            "a row the bridge enqueued (`{}`) is approved by the operator, not by `{who}`: \
+             `/queue approve ID` in a session",
+            row.author
+        )),
+        Verb::Approve if kind == "bridge" => Ok(()),
+        Verb::Approve => Err(format!(
+            "only the operator approves over a reviewer, not `{who}`"
+        )),
+    }
+}
+
 /// Approve over the reviewer: a review row that is waiting, under review, rejected, undecided or
 /// blocked becomes `approved` at the head its branch has NOW, and a merge row is born for it; the
 /// merge gate still runs.
@@ -186,6 +218,13 @@ pub fn approve_by(
             r.state.as_str()
         ));
     }
+    may(
+        Verb::Approve,
+        who,
+        &Facts {
+            author: &r.session_id,
+        },
+    )?;
     let head = git::branch_head(Path::new(&r.repository), &r.branch).ok_or_else(|| {
         format!(
             "`{}` cannot be read in {}, so there is no head to approve",
@@ -865,5 +904,20 @@ mod tests {
             scope_repository(&org, &QueueScope::Here).is_err(),
             "no single one"
         );
+    }
+
+    /// Every verb x actor pair the table rules on.
+    #[test]
+    fn the_verb_actor_state_table_is_exhaustive() {
+        let agents = Facts { author: "s-x" };
+        let bridges = Facts {
+            author: "bridge:cc",
+        };
+        assert!(may(Verb::Approve, "operator:s", &agents).is_ok());
+        assert!(may(Verb::Approve, "operator:s", &bridges).is_ok());
+        assert!(may(Verb::Approve, "bridge:cc", &agents).is_ok());
+        assert!(may(Verb::Approve, "bridge:cc", &bridges).is_err());
+        assert!(may(Verb::Approve, "bridge:other", &bridges).is_err());
+        assert!(may(Verb::Approve, "agent:s-x", &agents).is_err());
     }
 }
