@@ -402,6 +402,8 @@ pub struct Config {
     /// the config because the store row is written from it and read back at open. Never
     /// inherited: the open overwrites it from the child's OWN row.
     pub nags_paused: Option<letibot_sessionlog::NagPause>,
+    /// Who made [`Self::nags_paused`], and when. `None` with it.
+    pub nags_paused_by: Option<crate::nag_pause::PausedBy>,
     /// The GGUF the vocabulary is read from - the first shard for a split model. `None` is a
     /// daemon for a cloud provider, whose ledger uses the byte vocabulary
     /// (`letibot_tokencore::Vocab::bytes`).
@@ -1805,6 +1807,7 @@ impl Config {
             auto_compact: true,
             wall: crate::wall::WallControl::default(),
             nags_paused: None,
+            nags_paused_by: None,
             placement: letibot_tools::builtins::task::Placement::Host,
             place_bound: None,
             vm_args: Vec::new(),
@@ -2443,19 +2446,24 @@ impl Config {
         ));
         // The idle plan-check, and whether the operator has paused it - `on`, or `paused until
         // 14:30`. A row because a pause must be findable where every other runtime switch is: a
-        // silent board is otherwise indistinguishable from a broken clock. See `nag_pause`.
-        out.push(row(
-            "nags",
-            crate::nag_pause::setting_value(
-                self.nags_paused,
-                letibot_sessionlog::registry::now_ms(),
+        // silent board is otherwise indistinguishable from a broken clock. See `nag_pause`. An
+        // on/off choice, so the config pane can flip it.
+        out.push(choices(
+            row(
+                "nags",
+                crate::nag_pause::setting_value(
+                    self.nags_paused,
+                    self.nags_paused_by.as_ref(),
+                    letibot_sessionlog::registry::now_ms(),
+                ),
+                if self.nags_paused.is_some() {
+                    "/nag pause, this session"
+                } else {
+                    ""
+                },
+                "/nag pause [30m|2h] · /nag resume",
             ),
-            if self.nags_paused.is_some() {
-                "/nag pause, this session"
-            } else {
-                ""
-            },
-            "/nag pause [30m|2h] · /nag resume",
+            &["on", "off"],
         ));
         // A folder project's repositories, each a checkbox: muted ones are not told the gate's news.
         // A mute from leticode.toml is locked (no verb), the rest toggle through `/listen`.

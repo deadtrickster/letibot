@@ -193,20 +193,6 @@ impl App {
             // A plugin's own keys, read from the view on the screen: a panel's key, `f`, `l`, or
             // an action letter of the selected stop.
             Act::PluginKey => self.plugin_key(k),
-            // The pane the silence is seen from is where it is switched: the same verb typed, so
-            // the key and `/nag` cannot drift, and the daemon's `nags_paused` / `nags_resumed`
-            // row is what moves this head's resident line.
-            Act::NagToggle => {
-                if self.session_id.is_empty() {
-                    return ControlFlow::Continue(());
-                }
-                let line = if self.nags_paused.is_some() {
-                    "nag resume"
-                } else {
-                    "nag pause"
-                };
-                ControlFlow::Break(Some(Action::Slash { line: line.into() }))
-            }
             // `d` folds the done group away, or opens it: the switch is this head's
             // ([`App::toggle_todos_fold_done`]), so nothing goes to the daemon and the pane draws
             // the answer on the next frame.

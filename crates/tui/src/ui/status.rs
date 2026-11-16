@@ -321,9 +321,9 @@ impl App {
                 } else {
                     format!("PAUSED {until}")
                 },
-                "The operator paused this session's idle plan-check (`/nag pause`): nothing \
-                 is armed or sent while it holds, and the board still takes edits. `/nag \
-                 resume` ends it.",
+                "This session's idle plan-check is paused (`/nag pause`): nothing is armed \
+                 or sent while it holds, and the board still takes edits. `/nag resume` ends \
+                 it, and a daemon restart ends it too.",
             );
         }
         let unread = self.rooms.unread_total();

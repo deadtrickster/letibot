@@ -639,6 +639,16 @@ impl App {
                         self.say(&format!("mode → {next} (asking the daemon)"));
                         self.mode_action(next)
                     }
+                    // `on` is the one value of a running clock; anything else is a pause.
+                    "nags" => {
+                        let line = if row.value.trim() == "on" {
+                            "nag pause"
+                        } else {
+                            "nag resume"
+                        };
+                        self.say(&format!("/{line} (asking the daemon)"));
+                        Some(Action::Slash { line: line.into() })
+                    }
                     "supervise" => {
                         let on = row.value.starts_with("on");
                         let line = format!("supervise {}", if on { "off" } else { "on" });

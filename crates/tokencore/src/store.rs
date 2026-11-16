@@ -204,7 +204,16 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 50;
+pub const SCHEMA_VERSION: i64 = 51;
+
+/// A session's plan-check pause as its row holds it: `until` is `0` for until resumed, else the
+/// unix ms it ends at. `at_ms` and `by` are `None` on a row written before v51.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredNagPause {
+    pub until: i64,
+    pub at_ms: Option<i64>,
+    pub by: Option<String>,
+}
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -316,8 +325,11 @@ CREATE TABLE IF NOT EXISTS session (
     archived_ms    INTEGER,          -- v45; when this session was put out of sight. NULL = it
                                      -- is in the list. NOT a delete: its rows stay, and
                                      -- `--session ID` still opens it (and takes it back).
-    archived_reason TEXT             -- v45; why, in the archiver's own words. A short line,
+    archived_reason TEXT,            -- v45; why, in the archiver's own words. A short line,
                                      -- and empty is an archive nobody gave a reason for.
+    nags_paused_at INTEGER,          -- v51; unix ms the pause in `nags_paused_until` was made.
+                                     -- NULL with it, or a pause written before v51.
+    nags_paused_by TEXT              -- v51; who made it (`operator`, `model`, `bridge`, ...).
 );
 
 CREATE TABLE IF NOT EXISTS transcript (
@@ -900,7 +912,7 @@ pub struct StoredSession {
     pub auto_compact_stood_down: Option<(u64, u64)>,
     /// The operator's pause of this session's idle plan-check: `None` for no pause or a resumed
     /// one, `Some(0)` for a pause until they resume it, `Some(ms)` for one that ends by itself.
-    /// On the row so a restart does not bring back the nags they turned off.
+    /// On the row so a reopen in the same daemon keeps it; the next daemon drops it.
     pub nags_paused_until: Option<i64>,
     /// Where this session's live copy is, when it is not in this store's box: `None` means the
     /// copy in front of you is the live one. A migration marks the rows it leaves behind rather
@@ -2607,6 +2619,30 @@ impl Store {
             // Additive: a new table, empty, which is true - nothing was ever kept.
             self.conn().execute_batch(grants::GRANTS_SQL)?;
         }
+        if from < 51 {
+            // v51: when a plan-check pause was made, and by whom. NULL everywhere, which reads as
+            // a pause of unknown origin.
+            let has = |sql: &str| -> bool {
+                self.conn()
+                    .prepare(sql)
+                    .and_then(|mut st| st.exists([]))
+                    .unwrap_or(false)
+            };
+            let table =
+                has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'");
+            if table
+                && !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'nags_paused_at'")
+            {
+                self.conn()
+                    .execute_batch("ALTER TABLE session ADD COLUMN nags_paused_at INTEGER")?;
+            }
+            if table
+                && !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'nags_paused_by'")
+            {
+                self.conn()
+                    .execute_batch("ALTER TABLE session ADD COLUMN nags_paused_by TEXT")?;
+            }
+        }
         Ok(())
     }
 
@@ -3682,17 +3718,39 @@ impl Store {
         Ok(())
     }
 
-    /// Pause this session's idle plan-check, or end the pause: `None` clears it, `Some(0)` is until
-    /// the operator resumes, `Some(ms)` ends at that unix millisecond.
-    pub fn set_nags_paused_until(&self, id: &str, until: Option<i64>) -> Result<()> {
+    /// Pause this session's idle plan-check, or end the pause: `None` clears all three columns.
+    pub fn set_nag_pause(&self, id: &str, pause: Option<&StoredNagPause>) -> Result<()> {
         let n = self.exec(
-            "UPDATE session SET nags_paused_until = ?2 WHERE id = ?1",
-            params![id, until],
+            "UPDATE session SET nags_paused_until = ?2, nags_paused_at = ?3, nags_paused_by = ?4
+              WHERE id = ?1",
+            params![
+                id,
+                pause.map(|p| p.until),
+                pause.and_then(|p| p.at_ms),
+                pause.and_then(|p| p.by.clone())
+            ],
         )?;
         if n == 0 {
             return Err(StoreError::NotFound(format!("session {id}")));
         }
         Ok(())
+    }
+
+    /// The stored plan-check pause, or `None` for none or an id this store does not hold.
+    pub fn nag_pause(&self, id: &str) -> Result<Option<StoredNagPause>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT nags_paused_until, nags_paused_at, nags_paused_by FROM session
+                  WHERE id = ?1",
+                params![id],
+                |r| {
+                    let (until, at_ms, by) = (r.get::<_, Option<i64>>(0)?, r.get(1)?, r.get(2)?);
+                    Ok(until.map(|until| StoredNagPause { until, at_ms, by }))
+                },
+            )
+            .optional()?
+            .flatten())
     }
 
     /// The provider this session was switched to, or `None` for one that never

@@ -1101,18 +1101,31 @@ impl<'a> Sessions<'a> {
         cond
     }
 
-    /// One slash verb from a head, against this session.
+    /// One slash verb from the operator, against this session.
     pub fn slash(&mut self, session_id: &str, line: &str) -> crate::slash::SlashReply {
+        self.slash_as(session_id, line, crate::nag_pause::NagBy::Operator)
+    }
+
+    /// One slash verb, with who sent it - the author a `/nag` row names.
+    pub fn slash_as(
+        &mut self,
+        session_id: &str,
+        line: &str,
+        by: crate::nag_pause::NagBy,
+    ) -> crate::slash::SlashReply {
         // A verb a session's own thread must answer is asked of it - the harness it acts on is
         // there, and so is the clock `/nag` moves. `cli.rs`'s `--slash` steps are the caller here.
         if let Some(court) = self.court_serving(session_id) {
             let id = session_id.to_string();
             let line = line.to_string();
-            if let Some(reply) = court.ask(move |s: &mut Sessions<'static>| s.slash(&id, &line)) {
+            let who = by.clone();
+            if let Some(reply) =
+                court.ask(move |s: &mut Sessions<'static>| s.slash_as(&id, &line, who))
+            {
                 return reply;
             }
         }
-        self.slash_parsed(session_id, crate::slash::Slash::parse(line))
+        self.slash_parsed(session_id, crate::slash::Slash::parse(line), by)
     }
 
     /// The project root and the user config dir command files are read from.
@@ -1223,6 +1236,7 @@ impl<'a> Sessions<'a> {
         &mut self,
         session_id: &str,
         parsed: crate::slash::Slash,
+        by: crate::nag_pause::NagBy,
     ) -> crate::slash::SlashReply {
         use crate::slash::{Slash, SlashReply};
         match parsed {
@@ -1521,7 +1535,7 @@ impl<'a> Sessions<'a> {
                         ok: false,
                     };
                 };
-                let reply = h.nag_verb(verb);
+                let reply = h.nag_verb(verb, by);
                 self.rearm_todo_nag(session_id);
                 reply
             }
@@ -4774,7 +4788,8 @@ impl<'a> Sessions<'a> {
                 {
                     return outcome;
                 }
-                let reply = self.slash(session_id, &line);
+                let by = crate::nag_pause::NagBy::from_identity(&cmd.identity, session_id);
+                let reply = self.slash_as(session_id, &line, by);
                 if let Some(hub) = &hub {
                     let (code, detail) = reply.warning(&line);
                     hub.warn(code, detail);

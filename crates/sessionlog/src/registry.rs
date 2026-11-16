@@ -283,8 +283,8 @@ pub struct SessionBrief {
     /// with no rows: the one fact a head cannot get from the live view.
     #[serde(default)]
     pub stored_end: Option<StoredEnd>,
-    /// The operator has paused this session's idle plan-check, and until when. Read off the
-    /// session's own row, so a stored session says it too.
+    /// This session's idle plan-check is paused, and until when. Live sessions only: a pause
+    /// never outlives the daemon holding it.
     #[serde(default)]
     pub nags_paused: Option<NagPause>,
     /// How many questions this session's board is waiting on the OPERATOR for: rows with an open
@@ -329,7 +329,8 @@ fn unheld(d: StoredBrief) -> SessionBrief {
         context_tokens: d.context_tokens,
         context_cached: d.context_cached,
         stored_end: d.stored_end,
-        nags_paused: d.nags_paused,
+        // A pause ends with the daemon that held it: this row opens with nags on.
+        nags_paused: None,
         waits_on_operator: d.waits_on_operator,
         pending: d.pending,
         slug: d.slug,
@@ -339,8 +340,8 @@ fn unheld(d: StoredBrief) -> SessionBrief {
     }
 }
 
-/// How long the operator has paused a session's idle plan-check. Wall-clock and not a duration,
-/// because it has to survive the restart it was typed to outlast.
+/// How long a session's idle plan-check is paused. Wall-clock and not a duration, because the
+/// session can be closed and opened again within one daemon's life.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum NagPause {

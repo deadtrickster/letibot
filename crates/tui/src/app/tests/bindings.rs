@@ -336,7 +336,7 @@ fn a_rebound_key_is_honoured_and_a_global_chord_is_not_rebindable() {
         ("nowhere.d", "f", "names no surface"),
         ("todos.z", "f", "is not a key of the todos"),
         ("todos.d", "zz", "is not a key this head spells"),
-        ("todos.d", "c", "already taken on the todos"),
+        ("todos.d", "w", "already taken on the todos"),
         ("todos.d", "tab", "is a shared key on every list pane"),
     ] {
         let (_, said) = KeyOverrides::resolve(&leticode_config::KeyKeys {

@@ -1154,7 +1154,7 @@ pub(crate) fn serve_child_with(
         }
         // Anything else is activity, and the park clock starts over from it.
         park_at = park_after.map(|d| std::time::Instant::now() + d);
-        let kind = match work {
+        let (kind, identity) = match work {
             // The hub closed: the daemon is going away, or this session was reaped.
             OwnWork::Closed => return ChildExit::Closed,
             // A wake has no command behind it and needs none: its content is *something this session owns
@@ -1200,7 +1200,7 @@ pub(crate) fn serve_child_with(
                 }
                 continue;
             }
-            OwnWork::Command(cmd) => cmd.kind,
+            OwnWork::Command(cmd) => (cmd.kind, cmd.identity),
         };
         match child_command(&kind) {
             // The same door the first prompt took: a child is a session, and a prompt to it is a turn
@@ -1313,7 +1313,10 @@ pub(crate) fn serve_child_with(
                     _ => unreachable!("`child_command` answers `/nag` and nothing else"),
                 };
                 let reply = match crate::slash::Slash::parse(&line) {
-                    crate::slash::Slash::Nag(verb) => sub.nag_verb(verb),
+                    crate::slash::Slash::Nag(verb) => sub.nag_verb(
+                        verb,
+                        crate::nag_pause::NagBy::from_identity(&identity, sub_id),
+                    ),
                     _ => unreachable!("`child_command` matched this line as `/nag`"),
                 };
                 let (code, detail) = reply.warning(&line);

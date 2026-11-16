@@ -117,9 +117,6 @@ pub(crate) enum Act {
     View,
     /// One of the person's queue verbs on the entry under the cursor.
     Verb(Verb),
-    /// The todos pane's `c`: pause this session's plan-checks, or resume them - `/nag pause` or
-    /// `/nag resume`, by which one holds now.
-    NagToggle,
     /// The todos pane's `w`: open the job or the child the selected row waits on - the keyboard's
     /// half of a click on the row's `waits on …` link.
     WaitsOn,
@@ -316,15 +313,9 @@ const TODOS: &[Binding] = &[
     b(&[On::Enter], Empty, Act::Open, Row),
     b(&[On::Char('x')], Empty, Act::Alt, Row),
     b(&[On::Char('w')], Empty, Act::WaitsOn, Row),
-    b(
-        &[On::Char('c')],
-        Empty,
-        Act::NagToggle,
-        Text("pauses or resumes the plan-checks"),
-    ),
-    // `d` folds the done group away, a plain letter like the pane's other two toggles (`x`,
-    // `c`). Its words are the switch's own, so the bar never offers `fold` over a group that is
-    // already shut.
+    // No letter pauses the plan-checks: a pause is typed (`/nag pause`), so a stray key never
+    // silences them. `d` folds the done group away; its words are the switch's own, so the bar
+    // never offers `fold` over a group that is already shut.
     b(
         &[On::Char('d')],
         Empty,

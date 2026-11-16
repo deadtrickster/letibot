@@ -1830,31 +1830,80 @@ fn the_picker_marks_a_paused_session() {
     );
 }
 
-/// The todos pane's `c` is `/nag pause`, and `/nag resume` while paused - declared in the
-/// binding table, so the hint bar names it.
+/// No letter in the todos pane pauses the plan-checks: `c` sends nothing, paused or not, and the
+/// bar offers no pause. A pause is only ever the typed `/nag pause`.
 #[test]
-fn c_in_the_todos_pane_pauses_and_resumes_the_plan_checks() {
+fn c_in_the_todos_pane_sends_nothing() {
     let mut a = app();
     a.session_id = "s1".into();
     a.push_surface(Surface::Todos);
+    a.queued.clear();
+    assert_eq!(a.key(Key::Char('c')), None);
+    a.nags_paused = Some("until 14:30".into());
+    assert_eq!(a.key(Key::Char('c')), None);
+    assert!(
+        !a.queued.iter().any(|q| matches!(q, Action::Slash { .. })),
+        "a stray `c` queued a verb: {:?}",
+        a.queued
+    );
+    let bar = a.surface_hint(Surface::Todos);
+    assert!(
+        !bar.contains("plan-check"),
+        "the bar still offers a pause key: {bar}"
+    );
+}
+
+/// The config pane's `nags` row is an on/off choice: Enter on `on` sends `/nag pause`, on a
+/// pause sends `/nag resume`, and the row follows the daemon's next settings frame.
+#[test]
+fn the_config_pane_toggles_the_nags_row() {
+    use letibot_sessionlog::protocol::SettingRow;
+    let nags_row = |value: &str| SettingRow {
+        key: "nags".into(),
+        value: value.into(),
+        source: String::new(),
+        editable: "/nag pause [30m|2h] · /nag resume".into(),
+        choices: vec!["on".into(), "off".into()],
+        tools: Vec::new(),
+    };
+    let select = |a: &mut App| {
+        a.config_sel = a
+            .config_rows()
+            .iter()
+            .position(|r| r.key == "nags")
+            .expect("the nags row");
+    };
+    let mut a = app();
+    a.apply(ServerFrame::Settings {
+        rows: vec![nags_row("on")],
+    });
+    select(&mut a);
     assert_eq!(
-        a.key(Key::Char('c')),
+        a.config_change(),
         Some(Action::Slash {
             line: "nag pause".into()
         })
     );
-    a.nags_paused = Some("until 14:30".into());
+    a.apply(ServerFrame::Settings {
+        rows: vec![nags_row(
+            "paused until you resume them (by the operator, since 23:38)",
+        )],
+    });
     assert_eq!(
-        a.key(Key::Char('c')),
+        a.nags_paused.as_deref(),
+        Some("until you resume them (by the operator, since 23:38)")
+    );
+    select(&mut a);
+    assert_eq!(
+        a.config_change(),
         Some(Action::Slash {
             line: "nag resume".into()
         })
     );
-    let bar = a.surface_hint(Surface::Todos);
-    assert!(
-        bar.contains("pauses or resumes the plan-checks"),
-        "the bar names the key: {bar}"
-    );
+    a.apply(ServerFrame::Settings {
+        rows: vec![nags_row("on")],
+    });
+    assert!(a.nags_paused.is_none());
 }
 
 /// The todos pane's `d` is a row here too - every switch this head keeps is on `/config`, and

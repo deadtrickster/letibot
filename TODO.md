@@ -2043,6 +2043,19 @@ Cause: the row could keep an old figure and look current. A failed request (`fet
 **Tests:** `usage_poll::tests::a_failed_round_tells_the_kept_reading_with_its_time`, `a_reading_older_than_the_period_says_its_age`, `harness::usage::tests::each_reading_redraws_the_row_without_a_crossing`.
 
 **Left:** Kimi's body carries the 5h window twice, `usages.limit_5h.used_ratio` and `limits[].detail.used/limit`, and `windows()` reads `limits[]` only when `usages` is absent. CodexBar's Kimi notes say the two can disagree and take the more exhausted one when duration and reset match within 2 s. Not seen here. To decide it, compare `usages.limit_5h.used_ratio` with `limits[0].detail.used`, `.limit` and `.remaining` from one live body against the console.
+## R311 - Nags are on by default and a pause never survives a restart
+
+**Status:** built, 2026-11-16.
+
+Seen live: the operator pressed `c` in the todos pane by accident. It sent `/nag pause`, stored as until-resumed (`nags_paused_until = 0`). Because of the R308 hand-back loop it only took effect at daemon shutdown, and the session came back paused with nothing saying why. Separately, `/config`'s `nags` row offered no way back: its editable text was a help string, and Enter only printed it. Before the R308 hotfix any `/nag` from a head looped, so a pane attempt would have done nothing either.
+
+**Change:**
+- The todos pane has no pause key. `Act::NagToggle` is gone. Pausing is the typed `/nag pause` / `/nag resume`.
+- A pause lasts one daemon's life. `restore_nag_pause` keeps a pause this daemon made (a session closed and opened again) and drops one an earlier daemon wrote: nags on, the columns cleared, one `nags_resumed` row - `plan-checks were paused before the restart (since T, by X); they are on again - `/nag pause` to pause`. The life boundary is `nag_pause::daemon_life_started_ms`, read before any pause is written. `UntilResumed` is kept as is and is now in effect in-memory only.
+- Store v51: `session.nags_paused_at` and `nags_paused_by`. `Store::set_nag_pause` / `nag_pause` replace `set_nags_paused_until`.
+- Who paused: `NagBy`, read off the queued command's identity - the operator, the model (`agent:<self>`, its `nag_pause_self`), another session, the bridge, the board. `nags_paused` / `nags_resumed` rows and the `nags` settings value (`paused until 14:30 (by the model, since 23:38)`) name it, so the resident line does too.
+- The `nags` settings row is an on/off choice. The config pane sends `/nag pause` on `on`, `/nag resume` otherwise.
+- The picker no longer shows a stored pause on a session this daemon does not hold.
 
 ## R301 - A row waiting on a job that ended is freed and noted
 

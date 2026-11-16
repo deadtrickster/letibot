@@ -223,7 +223,12 @@ fn a_paused_session_is_neither_armed_nor_checked() {
         "the verb answers on the log: {:?}",
         rows(&hub, "slash")
     );
-    assert_eq!(nags_row(&registry, &id), "paused until you resume them");
+    assert!(
+        nags_row(&registry, &id)
+            .starts_with("paused until you resume them (by the operator, since "),
+        "{}",
+        nags_row(&registry, &id)
+    );
 
     // And `/nag resume` puts the clock back.
     slash(&mut sessions, &id, "nag resume");
@@ -313,15 +318,15 @@ fn a_pause_with_an_end_lifts_itself_and_re_arms() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The pause survives a restart and a resume - it is on the session's row, so the daemon that opens
-/// the session next comes back paused, with nothing armed and the settings row saying so; and a
-/// pause whose end passed while nobody held the session comes back OVER, and says it.
+/// A pause lasts one daemon's life. Reopened by the same daemon it holds, with the settings row
+/// naming who paused it. One a earlier daemon wrote is dropped at open: nags on, the column
+/// cleared, and one row saying since when and by whom.
 #[test]
-fn a_pause_survives_a_resume_and_one_that_ran_out_while_closed_is_said() {
+fn a_pause_holds_across_a_reopen_and_never_across_a_restart() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {
         return;
     };
-    let (dir, path, id) = seeded("resume");
+    let (dir, path, id) = seeded("restart");
     let parts = load_parts(&path, &id);
     {
         let (mut sessions, registry) = opened(&parts, &path, &id);
@@ -330,16 +335,13 @@ fn a_pause_survives_a_resume_and_one_that_ran_out_while_closed_is_said() {
     }
     let stored = Store::open(&path)
         .expect("the store")
-        .session(&id)
+        .nag_pause(&id)
         .expect("read")
-        .expect("the row")
-        .nags_paused_until;
-    assert!(
-        matches!(stored, Some(ms) if ms > 0),
-        "the pause is on the session's row: {stored:?}"
-    );
+        .expect("the pause is on the row");
+    assert!(stored.until > 0, "{stored:?}");
+    assert_eq!(stored.by.as_deref(), Some("operator"));
 
-    // The next daemon.
+    // The same daemon, the session opened again.
     {
         let (sessions, registry) = opened(&parts, &path, &id);
         assert!(
@@ -347,42 +349,36 @@ fn a_pause_survives_a_resume_and_one_that_ran_out_while_closed_is_said() {
                 sessions.harness_of(&id).expect("open").nag_pause(),
                 Some(NagPause::Until { .. })
             ),
-            "the resumed session is still paused"
+            "a reopen in the same daemon keeps the pause"
         );
         let end = sessions
             .next_nag_at()
             .expect("the pause's end is armed")
             .saturating_duration_since(std::time::Instant::now());
+        assert!(end > Duration::from_secs(3600), "{end:?}");
+        let row = nags_row(&registry, &id);
         assert!(
-            end > Duration::from_secs(3600),
-            "**and nothing sooner** — the open's own arming is the pause's end, not the plan's \
-             minute: {end:?}"
+            row.starts_with("paused until ") && row.contains("(by the operator, since "),
+            "the settings row names the end and the author: {row}"
         );
-        assert!(
-            nags_row(&registry, &id).starts_with("paused until "),
-            "the settings row says it: {}",
-            nags_row(&registry, &id)
-        );
-        // The picker's row, off the store, says it too - through the store source the daemon
-        // installs at startup (`cli.rs`), which this fixture installs the same way.
-        registry.set_source(
-            letibot_harnessd::sessions::StoreSessions::open(&config(&path, &id))
-                .expect("a store source"),
-        );
-        let brief = registry
-            .list()
-            .into_iter()
-            .find(|b| b.session_id == id)
-            .expect("listed");
-        assert!(matches!(brief.nags_paused, Some(NagPause::Until { .. })));
+        let hub = registry.get(&id).expect("the session's hub");
+        assert!(rows(&hub, "nags_resumed").is_empty(), "nothing was dropped");
         registry.close();
     }
 
-    // A pause that ran out while nobody held the session.
+    // A pause an earlier daemon wrote, by the model, an hour ago.
+    let now = letibot_sessionlog::registry::now_ms() as i64;
     Store::open(&path)
         .expect("the store")
-        .set_nags_paused_until(&id, Some(1_000))
-        .expect("an end long past");
+        .set_nag_pause(
+            &id,
+            Some(&letibot_tokencore::store::StoredNagPause {
+                until: 0,
+                at_ms: Some(now - 3_600_000),
+                by: Some("model".into()),
+            }),
+        )
+        .expect("an earlier daemon's pause");
     {
         let (sessions, registry) = opened(&parts, &path, &id);
         assert!(
@@ -391,15 +387,27 @@ fn a_pause_survives_a_resume_and_one_that_ran_out_while_closed_is_said() {
                 .expect("open")
                 .nag_pause()
                 .is_none(),
-            "a pause whose end has passed is over, not restored"
+            "a pause never survives a restart"
         );
         let hub = registry.get(&id).expect("the session's hub");
         let said = rows(&hub, "nags_resumed");
+        assert_eq!(said.len(), 1, "one row: {said:?}");
         assert!(
-            said.len() == 1 && said[0].contains("while the session was closed"),
-            "and the open says so: {said:?}"
+            said[0].starts_with("plan-checks were paused before the restart (since ")
+                && said[0].contains(", by the model); they are on again - `/nag pause` to pause"),
+            "{}",
+            said[0]
         );
+        assert_eq!(nags_row(&registry, &id), "on");
         assert!(sessions.next_nag_at().is_some(), "the check is armed again");
+        assert_eq!(
+            Store::open(&path)
+                .expect("the store")
+                .nag_pause(&id)
+                .expect("read"),
+            None,
+            "the column is cleared"
+        );
         registry.close();
     }
     let _ = std::fs::remove_dir_all(&dir);
@@ -468,4 +476,59 @@ fn a_slash_on_its_own_thread_runs_once_and_is_not_handed_on() {
     registry.close();
     drop(sessions);
     let _ = std::fs::remove_dir_all(dir);
+}
+
+/// The `nags_paused` / `nags_resumed` rows name who did it: the model's own `nag_pause_self`
+/// queues `/nag` as `agent:<session>`, the operator's head as their name. The settings row is
+/// an on/off choice, so the config pane can flip it, and the state follows the verbs it sends.
+#[test]
+fn the_pause_rows_name_their_author_and_the_row_toggles() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let (dir, path, id) = seeded("author");
+    let parts = load_parts(&path, &id);
+    let (mut sessions, registry) = opened(&parts, &path, &id);
+    let row = registry
+        .settings(&id)
+        .into_iter()
+        .find(|r| r.key == "nags")
+        .expect("a nags row");
+    assert_eq!(row.choices, vec!["on".to_string(), "off".to_string()]);
+    assert_eq!(row.value, "on");
+
+    let mut by_model = command(CommandKind::Slash {
+        line: "nag pause".into(),
+    });
+    by_model.identity = format!("agent:{id}");
+    assert!(matches!(
+        sessions.dispatch(&id, &by_model),
+        Outcome::Ignored
+    ));
+    let hub = registry.get(&id).expect("the session's hub");
+    let said = rows(&hub, "nags_paused");
+    assert!(said[0].starts_with("nags PAUSED by the model "), "{said:?}");
+    assert!(
+        nags_row(&registry, &id).contains("(by the model, since "),
+        "{}",
+        nags_row(&registry, &id)
+    );
+
+    slash(&mut sessions, &id, "nag resume");
+    let said = rows(&hub, "nags_resumed");
+    assert!(
+        said[0].starts_with("nags RESUMED by the operator"),
+        "{said:?}"
+    );
+    assert_eq!(nags_row(&registry, &id), "on");
+
+    slash(&mut sessions, &id, "nag pause");
+    let said = rows(&hub, "nags_paused");
+    assert!(
+        said[1].starts_with("nags PAUSED by the operator "),
+        "{said:?}"
+    );
+    assert!(nags_row(&registry, &id).starts_with("paused until you resume them (by the operator"));
+    registry.close();
+    let _ = std::fs::remove_dir_all(&dir);
 }

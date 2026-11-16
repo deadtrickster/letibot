@@ -510,8 +510,12 @@ impl Harness {
 
     /// `/nag`, on this session: the report, the pause or the resume, as the verb's reply. The clock
     /// is its owner's to re-arm afterwards (`Sessions`' arm, `serve_child`'s); this half moves the
-    /// session's fact and says it.
-    pub fn nag_verb(&mut self, verb: crate::nag_pause::NagVerb) -> crate::slash::SlashReply {
+    /// session's fact and says it. `by` is who sent the verb.
+    pub fn nag_verb(
+        &mut self,
+        verb: crate::nag_pause::NagVerb,
+        by: crate::nag_pause::NagBy,
+    ) -> crate::slash::SlashReply {
         use crate::nag_pause::{self as np, NagVerb};
         let now = letibot_sessionlog::registry::now_ms();
         let lines = match verb {
@@ -524,7 +528,7 @@ impl Harness {
                     },
                 };
                 let mut lines = vec![np::paused_reply(p, now)];
-                if let Err(why) = self.pause_nags(p) {
+                if let Err(why) = self.pause_nags(p, by) {
                     lines.push(why);
                 }
                 lines
@@ -536,7 +540,7 @@ impl Harness {
                         "nags RESUMED for this session: the plan-check is armed again from now"
                             .into(),
                     ];
-                    if let Err(why) = self.resume_nags(np::Resumed::ByVerb) {
+                    if let Err(why) = self.resume_nags(np::Resumed::ByVerb(by)) {
                         lines.push(why);
                     }
                     lines
@@ -549,17 +553,29 @@ impl Harness {
     /// Pause this session's plan-check: the config, the row and the hub together, since a reader who finds one without
     /// the others has been lied to. The `nags_paused` row is the loud half and the settings row is what a head attaching
     /// later reads. A row the store refused is SAID, and the pause still holds in memory.
-    pub fn pause_nags(&mut self, p: letibot_sessionlog::NagPause) -> Result<(), String> {
+    pub fn pause_nags(
+        &mut self,
+        p: letibot_sessionlog::NagPause,
+        by: crate::nag_pause::NagBy,
+    ) -> Result<(), String> {
+        // Read before `now`, so this pause is never older than the life it belongs to.
+        crate::nag_pause::daemon_life_started_ms();
         let now = letibot_sessionlog::registry::now_ms();
-        self.cfg.nags_paused = Some(p);
-        let stored = self.store_nag_pause(Some(p));
+        let who = crate::nag_pause::PausedBy {
+            by,
+            at_ms: Some(now),
+        };
+        let stored = self.store_nag_pause(Some((p, &who)));
         let mut detail = format!(
-            "nags PAUSED by the operator {}: this session's plan-check is not armed or sent while it holds",
+            "nags PAUSED by {} {}: this session's plan-check is not armed or sent while it holds",
+            who.by.words(),
             crate::nag_pause::until_words(p, now)
         );
         if let Err(why) = &stored {
             detail.push_str(&format!(". {why}"));
         }
+        self.cfg.nags_paused = Some(p);
+        self.cfg.nags_paused_by = Some(who);
         self.hub.warn("nags_paused", detail);
         self.publish_settings();
         stored
@@ -571,6 +587,7 @@ impl Harness {
         let Some(was) = self.cfg.nags_paused.take() else {
             return Ok(());
         };
+        self.cfg.nags_paused_by = None;
         let stored = self.store_nag_pause(None);
         let mut detail =
             crate::nag_pause::resumed_words(why, was, letibot_sessionlog::registry::now_ms());
@@ -584,12 +601,20 @@ impl Harness {
 
     /// The row half of [`Self::pause_nags`] and [`Self::resume_nags`]. No store is no row and no
     /// error: a bare harness has nothing to outlast.
-    fn store_nag_pause(&self, p: Option<letibot_sessionlog::NagPause>) -> Result<(), String> {
+    fn store_nag_pause(
+        &self,
+        p: Option<(letibot_sessionlog::NagPause, &crate::nag_pause::PausedBy)>,
+    ) -> Result<(), String> {
         let Some(store) = &self.store else {
             return Ok(());
         };
+        let row = p.map(|(p, who)| letibot_tokencore::store::StoredNagPause {
+            until: p.to_stored(),
+            at_ms: who.at_ms.map(|ms| ms as i64),
+            by: Some(who.by.to_stored()),
+        });
         store
-            .set_nags_paused_until(&self.cfg.session_id, p.map(|p| p.to_stored()))
+            .set_nag_pause(&self.cfg.session_id, row.as_ref())
             .map_err(|e| {
                 format!(
                     "Writing it to the session row FAILED ({e}), so it holds only until this daemon stops"
@@ -597,22 +622,45 @@ impl Harness {
             })
     }
 
-    /// A resume comes back with the operator's pause, from the session's own row, for every session that opens. The
-    /// row is the answer even when it says nothing, since a child's config is a clone of its parent's and a parent's
-    /// pause must not ride into it. A pause whose end passed while nobody held the session is ended here and said.
+    /// The pause at open, from the session's own row. A pause made by this daemon (a session closed
+    /// and opened again) is kept. One from an earlier daemon is dropped, the row cleared and said:
+    /// a pause never survives a restart. The row is read even when empty, since a child's config
+    /// is a clone of its parent's and a parent's pause must not ride into it.
     pub fn restore_nag_pause(&mut self) {
-        let stored = self
+        use crate::nag_pause::{NagBy, PausedBy};
+        self.cfg.nags_paused = None;
+        self.cfg.nags_paused_by = None;
+        let Some(row) = self
             .store
             .as_ref()
-            .and_then(|s| s.session(&self.cfg.session_id).ok())
+            .and_then(|s| s.nag_pause(&self.cfg.session_id).ok())
             .flatten()
-            .and_then(|s| s.nags_paused_until)
-            .map(letibot_sessionlog::NagPause::from_stored);
-        self.cfg.nags_paused = stored;
-        if let Some(p) = stored
-            && p.over_at(letibot_sessionlog::registry::now_ms())
-        {
-            let _ = self.resume_nags(crate::nag_pause::Resumed::WhileClosed);
+        else {
+            return;
+        };
+        let started = crate::nag_pause::daemon_life_started_ms();
+        let now = letibot_sessionlog::registry::now_ms();
+        let p = letibot_sessionlog::NagPause::from_stored(row.until);
+        let who = PausedBy {
+            by: row
+                .by
+                .as_deref()
+                .map(NagBy::from_stored)
+                .unwrap_or(NagBy::Unknown),
+            at_ms: row.at_ms.and_then(|ms| u64::try_from(ms).ok()),
+        };
+        if who.at_ms.is_some_and(|at| at >= started) {
+            self.cfg.nags_paused = Some(p);
+            self.cfg.nags_paused_by = Some(who);
+            if p.over_at(now) {
+                let _ = self.resume_nags(crate::nag_pause::Resumed::WhileClosed);
+            }
+            return;
         }
+        let mut detail = crate::nag_pause::restart_words(&who, now);
+        if let Err(why) = self.store_nag_pause(None) {
+            detail.push_str(&format!(". {why}"));
+        }
+        self.hub.warn("nags_resumed", detail);
     }
 }
