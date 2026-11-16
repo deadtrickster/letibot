@@ -708,6 +708,47 @@ fn a_store_wait_is_said_while_it_waits() {
     assert!(said[0].contains("so far"), "{}", said[0]);
 }
 
+/// Esc during a busy-store wait leaves the turn's rows unwritten, so the batch the turn opened with
+/// is not delivered: marking it would ack job results a restart then never tells again.
+#[test]
+fn esc_during_busy_store_wait_does_not_mark_batch_stored() {
+    let dir = Scratch::new("b7-esc-busy");
+    let Some((mut h, path)) = harness_on_a_store(&dir, "b7-esc-busy") else {
+        return;
+    };
+    let watch = h.job_watch.clone().expect("a session's watcher set");
+    watch.hold(vec![held_job("b7-esc-busy")]);
+    let (release, holder) = hold_the_write_lock(&path);
+    let head = h.hub.attach("tui", "dead", Default::default(), 0);
+    let stopper = {
+        let hub = h.hub.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            hub.submit(
+                &head.head_id,
+                "stop-1",
+                0,
+                letibot_sessionlog::hub::CommandKind::Interrupt {
+                    reason: "esc".into(),
+                },
+            );
+        })
+    };
+    let out = h.submit_operator("carry on");
+    stopper.join().unwrap();
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    assert!(
+        out.is_err(),
+        "a turn whose rows were never written did not open"
+    );
+    assert_eq!(
+        watch.held_count(),
+        1,
+        "the batch was marked delivered by rows that are only in memory"
+    );
+}
+
 /// A steer a refused round handed back is still journaled: the session can park on a limit for
 /// hours, and a restart must find the steer in the queue rather than in a buffer that died.
 #[test]

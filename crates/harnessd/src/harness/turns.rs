@@ -50,7 +50,7 @@ pub(crate) enum Waited {
 }
 
 /// What a wait on a busy store leaves the write: take it again, leave it for the next store write
-/// (a person stopped the turn, and the rows are in memory), or fail it - the session is going away.
+/// (a person stopped the turn; the write is not made), or fail it - the session is going away.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum BusyWait {
     Again,
@@ -4547,10 +4547,18 @@ impl Harness {
                     }
                     match busy_after(self.sleep_unless_closed(std::time::Duration::from_secs(5))) {
                         BusyWait::Again => {}
-                        // A person's stop does not wait the store out: the rows are in
-                        // the ledger, `persisted` is where to resume, and the next store write takes
-                        // them - so the turn is not held here for another half hour.
-                        BusyWait::Leave => return Ok(carried),
+                        // A person's stop does not wait the store out, and it is not a write: the
+                        // rows stay in the ledger from `persisted` for the next persist, and nothing
+                        // that acks on a stored row may run. The stop is spent here.
+                        BusyWait::Leave => {
+                            let reason = self.hub.take_queued_interrupt().unwrap_or_default();
+                            self.stopped.store(true, Ordering::SeqCst);
+                            return Err(HarnessError::Store(format!(
+                                "row {at}: {e} — stopped while waiting for the store ({reason}); \
+                                 rows from {at} on are kept in memory and written by the next \
+                                 store write"
+                            )));
+                        }
                         BusyWait::Gone => {
                             return Err(HarnessError::Store(format!(
                                 "row {at}: {e} — the session closed while waiting for the store"
