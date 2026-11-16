@@ -1003,6 +1003,10 @@ pub mod said {
         format!("job `{handle}`: had ended, its result not yet delivered — said now")
     }
 
+    pub fn jobs_backlog(n: usize) -> String {
+        format!("{n} older job result(s) never delivered: listed once as a record")
+    }
+
     pub fn job(handle: &str, waiting: usize) -> String {
         if waiting == 0 {
             format!("job `{handle}`: reminded (not re-run)")
@@ -1096,6 +1100,37 @@ pub fn job_line(
              reads as ended, so they are no longer blocked on it; if they still need its result, \
              run it again and set `wait_on` on the row to the new handle with `todo_write`.",
             waiting.join("; ")
+        ));
+    }
+    line
+}
+
+/// Ended jobs the session ran a whole turn past without being told, said as one row: a record
+/// of what happened, not news to act on. Each entry names how it ended, how long ago, and where
+/// its output is.
+pub fn backlog_jobs_line(jobs: &[(&JobRecord, u64)], now_ms: u64) -> String {
+    let mut line = format!(
+        "- job results never delivered, {} of them. Each ended before your last finished turn, \
+         so this is a record, not news - act on one only if it still matters:",
+        jobs.len()
+    );
+    for (job, ended_ms) in jobs {
+        let ago = span(Duration::from_millis(now_ms.saturating_sub(*ended_ms)));
+        let mut files: Vec<String> = job.redirect.iter().cloned().collect();
+        for f in letibot_tools::builtins::output_redirect_paths(&job.command) {
+            if !files.contains(&f) {
+                files.push(f);
+            }
+        }
+        let output = if files.is_empty() {
+            "output gone with the old daemon".to_string()
+        } else {
+            let named: Vec<String> = files.iter().map(|f| format!("`{f}`")).collect();
+            format!("output: read {}", named.join(", "))
+        };
+        line.push_str(&format!(
+            "\n  - `{}` {}, ended {ago} ago, {output}",
+            job.handle, job.state
         ));
     }
     line

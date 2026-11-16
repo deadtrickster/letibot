@@ -2894,6 +2894,106 @@ fn a_job_that_ended_untold_before_the_stop_is_said_after_it_once() {
     d.stop(None);
 }
 
+/// Endings older than the session's last finished turn are one compact row, not a settlement
+/// each. An ending after that turn is still said in full.
+#[test]
+fn a_backlog_of_old_job_endings_is_said_as_one_compact_row() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
+    let dir = Scratch::new("restart-job-backlog");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    // One finished turn, so the backlog has a turn to be older than.
+    {
+        let mut d = a_daemon(&parts, &cfg);
+        d.parent.submit_operator("carry on").expect("the turn runs");
+        d.stop(None);
+    }
+    let now = letibot_sessionlog::registry::now_ms();
+    {
+        let store = Store::open(&dir.store()).unwrap();
+        old_daemon_stopped(&store, Duration::from_secs(5));
+        let old = [
+            ("j61", "exited 0", "cargo test > /tmp/j61.log 2>&1", 15),
+            ("j62", "exited 1", "make", 9),
+            ("j63", "exited 0", "cargo build", 6),
+        ];
+        for (h, state, cmd, hours) in old {
+            store.put_job(PARENT, &a_job(h, "running", "")).unwrap();
+            let ctx = JobContext {
+                handle: h.into(),
+                slug: None,
+                cwd: "/somewhere".into(),
+                instance: OLD.into(),
+                started_ms: now - hours * 3_600_000,
+            };
+            store.put_job_context(PARENT, &ctx).unwrap();
+            store.put_job(PARENT, &a_job(h, state, cmd)).unwrap();
+        }
+        // Started after the turn: its ending is news.
+        store.put_job(PARENT, &a_job("j64", "running", "")).unwrap();
+        store
+            .put_job_context(
+                PARENT,
+                &JobContext {
+                    handle: "j64".into(),
+                    slug: None,
+                    cwd: "/somewhere".into(),
+                    instance: OLD.into(),
+                    started_ms: now,
+                },
+            )
+            .unwrap();
+        store
+            .put_job(PARENT, &a_job("j64", "exited 0", "make check"))
+            .unwrap();
+    }
+    let mut d = a_daemon(&parts, &cfg);
+    let notice = d
+        .parent
+        .restore_after_restart()
+        .expect("the endings are said");
+    eprintln!("--- what the parent's model is told ---\n{notice}");
+    for h in ["j61", "j62", "j63"] {
+        assert!(
+            !notice.contains(&format!("- job `{h}` had ENDED")),
+            "an old ending said as news: {notice}"
+        );
+    }
+    assert_eq!(
+        notice
+            .matches("job results never delivered, 3 of them")
+            .count(),
+        1,
+        "{notice}"
+    );
+    assert!(
+        notice.contains("`j61` exited 0, ended 14h58m ago, output: read `/tmp/j61.log`"),
+        "{notice}"
+    );
+    assert!(
+        notice.contains("`j62` exited 1, ended 8h58m ago, output gone with the old daemon"),
+        "{notice}"
+    );
+    assert!(notice.contains("- job `j64` had ENDED"), "{notice}");
+    let _ = d.parent.wake();
+    let store = Store::open(&dir.store()).unwrap();
+    for h in ["j61", "j62", "j63", "j64"] {
+        assert!(delivered(&store, h), "{h} still owed");
+    }
+    d.stop(None);
+}
+
 /// A job handle minted after a restart is above every one the store holds. The counter started at
 /// `j1` in every daemon life, so a session's first job after a restart could be its own pre-restart
 /// `j7` to every reader that matches by handle, and its row inherited the old job's command.

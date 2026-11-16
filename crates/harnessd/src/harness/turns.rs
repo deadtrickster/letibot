@@ -1287,11 +1287,27 @@ impl Harness {
         // Jobs that ended untold: their ending, said now - whatever the down time, the way a
         // settled child's result is delivered past the threshold too: a result is not work to
         // redo, and nothing is re-run. Marked delivered when the notice's row is stored.
-        for (job, ctx) in settled {
+        // An ending older than the last finished turn was owed to that turn and missed it. A
+        // backlog of those is one compact row, so old results do not read as fresh settlements.
+        let since = self.last_finished_turn_began_ms(&store);
+        let ended = |job: &JobRecord, ctx: &letibot_tokencore::store::JobContext| {
+            ctx.started_ms.saturating_add(job.elapsed_ms)
+        };
+        let (backlog, fresh): (Vec<_>, Vec<_>) = settled
+            .into_iter()
+            .partition(|(job, ctx)| since.is_some_and(|t| ended(job, ctx) < t));
+        for (job, ctx) in fresh {
             restored_any |= restore;
             lines.push(crate::restart::settled_job_line(&job, ctx.slug.as_deref()));
             said.push(crate::restart::said::job_settled(&job.handle));
             self.restart_owed.push(job.handle.clone());
+        }
+        if !backlog.is_empty() {
+            let rows: Vec<_> = backlog.iter().map(|(j, c)| (j, ended(j, c))).collect();
+            lines.push(crate::restart::backlog_jobs_line(&rows, opened_ms));
+            said.push(crate::restart::said::jobs_backlog(backlog.len()));
+            self.restart_owed
+                .extend(backlog.iter().map(|(j, _)| j.handle.clone()));
         }
 
         for t in &kept {
@@ -1328,6 +1344,22 @@ impl Harness {
             .warn(outcome.code(), crate::restart::warning_detail(&text, &said));
         self.restart_notices.push(text.clone());
         Some(text)
+    }
+
+    /// When the session's last finished turn began: the newest `User` row with an `Assistant` row
+    /// after it. `None` for a session that never finished a turn.
+    fn last_finished_turn_began_ms(&self, store: &Store) -> Option<u64> {
+        let items = self.items();
+        let answered = items
+            .iter()
+            .rposition(|i| matches!(i, TranscriptItem::Assistant { .. }))?;
+        let began = items[..answered]
+            .iter()
+            .rposition(|i| matches!(i, TranscriptItem::User { .. }))?;
+        let at = store
+            .item_created_at(&self.session.transcript_id, began as u64)
+            .ok()??;
+        Some(at.max(0) as u64)
     }
 
     /// One row saying restart restore cannot run, for a session that already has a history. A new
