@@ -627,6 +627,8 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 - I24: following is per daemon. A parent open in another daemon is read from its rows at the child's open and not followed after; a closed parent's ceiling is the last point seen, and a row another daemon writes later is not re-read.
 - I26: a refused `/mode` no longer sets the point for later sessions in the project. `mode_set_next_session_only` is no longer raised; its entry in `sessionlog/src/warning.rs` is left.
 - I26: the open fallback applies to stored rows of a root. A child already clamps at open.
+- R339/I34: a narrowing reaches a child through the narrowing pass, not by `set_mode_consented` fanning out from the registry, and a background job keeps the point it was started at. The per-batch bound is the promise, and `docs/review/2026-11-16/invariants.md` I6 now says so.
+- R339/I35: the child-mode fixtures still `return` when `crate::vocab_gguf()` is `None` (`child_at`, `daemon_at`). Making that a panic, or building the child without a vocabulary, is a suite-wide decision; until then a green child-mode run means the tests ran only where a model is installed.
 
 **Scope.** `harnessd/src/harness.rs` mode doors, `sessions.rs` mode arms, `harness/open.rs` child ceiling, `tools/src/mode.rs` `no_wider_than`. One `Harness::move_mode`: check, move, write the session row always, the project row only for a root after success (C4). One `open_with` that requires the parent ceiling. Carries R306's remainder (I24).
 
@@ -768,6 +770,7 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 - The v51 `nags_paused_by` comment lost its commas: sqlite's `DROP COLUMN` of a last column cuts at the last comma before it, and a comma inside that comment left an unparsable table.
 
 **Scope.** `harnessd/src/harness/limit.rs`, `restart.rs` `mid_turn`, `open.rs` restore. One persisted `LimitState` (C17).
+Carried from R339/I36: a `new_session` fork does not take the original session's queued prompts or `handed_back` with it, and the hook is not yet idempotent per episode - `sessionlog::Hub` has no seam to drain a queue, so this needs a new door there, not a fix in the hook.
 
 **Proving tests.** `a_restart_after_a_refused_probe_still_owes_the_turn`. Each fails on the snapshot.
 
@@ -1344,7 +1347,23 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R339 - gate ladder after "once means once"
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I29, I30, I31, I32, I33, I34, I35, I36. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built on branch `remote/75725776`, 2026-11-17, one commit per finding (I29 `a point whose grants are once offers no session rung and records none`, I30 `a boundary admits the always-ask list only for an access the point admits`, I31 `a reviewer's probe is a reading, and the shared /tmp is not its scratch`, I32 `the unasked ladder admits a look by the operator's rules and by a read`, I33 `one predicate per question, three asks on the record, and a doc that numbers its arms`, I34 `a narrowing that cannot be applied holds the child at read-only`, I36 `a fork is what it was forked from, parent, origin and point`, I35 `the child-mode suite seats a gate, so its doors actually move a point`). Each proving test was watched red before the fix. No schema change (main stays at 55), no wire bump. Filed 2026-11-16 from the review at `9e9312b06`. Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I29, I30, I31, I32, I33, I34, I35, I36. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+
+**What was built.**
+- I29: one builder `tools/src/adjudicate.rs options(offer, scope)`; the point's `grants` decides the session rung, and the recording site reads the same field, so `allow_session` at a once point is an option the request did not offer and is refused. `exec_options` and `once_only_options` are gone. Tests `a_once_point_records_no_session_grant`, `at_always_ask_an_allow_session_answer_settles_only_that_call`. The card's `Offer` table in `docs/boundary-and-adjudication.md` 4l was corrected in the same pass.
+- I30: `Mode::admits_unasked`'s `AlwaysAsk` arm also requires `disposition(access) == Admit`. Tests `a_boundary_admits_the_always_ask_list_only_for_an_access_the_point_admits`, `an_always_ask_is_not_admitted_by_a_boundary_at_a_point_that_asks_for_that_access`.
+- I31: `a_reviewers_probe` admits no `Intent::Unknown`, and a `Region::Temp` only for a call that writes nothing; `rclone` and `lftp` are in the program table as network read/write. Tests `a_reviewers_probe_asks_for_an_unknown_program`, `rclone_and_lftp_are_named_transfers`.
+- I32: `admit_unasked` reaches the ladder's rules and a read, and no further - the mode arm, the reviewer probe, an approved shape and a session grant are all off. Test `an_unpinned_layer_tool_is_not_admitted_by_the_mode_arm`.
+- I33: (a) 4l rewritten from the code and the arms renumbered 0-11 in both; (b) `grant_memory`, `grant_perimeter` and `ask_to_see` file a row and count the answer (`a_memory_ask_is_a_row`, `a_perimeter_widening_is_a_row`); (c) `is_allow` removed for `admits`, with `every_option_kind_says_whether_it_admits_and_has_its_own_word` and `every_option_kind_and_timeout_has_its_own_wire_twin` for the two hand-written wire maps; (d) the eighteen dead `gh` seed rows are gone and `a_gh_call_is_always_ask_whatever_a_rule_says` pins why they were dead; (e) a session answer that could cover nothing now says so in the row, and `a_session_rung_is_offered_only_where_a_grant_could_be_kept` asserts the rung and the recording site read one function. (f) was already closed by B4.
+- I34: the per-batch guarantee is documented in `docs/review/2026-11-16/invariants.md` I6, and a narrowing that cannot be applied holds the child at `read-only` (`hold_at_floor`) instead of leaving it wide with a warning. Tests `a_failed_narrowing_refuses_the_next_call`, `a_point_that_does_not_seat_an_access_refuses_it`.
+- I35: `child_at`/`child_with` now open with `open_with` and a `NoAdjudicator`, because `Harness::open` seats `NoBoundary`, whose gate has no mode to move: four of the eight child-mode tests were red on main and the rest never reached the door they are named for. All ten pass, `every_mode_door_writes_the_session_row` among them.
+- I36: `Store::fork_session` carries the source's `parent_session_id` and origin (`Store::session_origin`, new), and a fork of a child records its own point as a session row. Test `a_fork_of_a_child_keeps_its_parent_and_ceiling`.
+
+**Residue.**
+- I34's fan-out is not done: a narrowing still reaches a child through the narrowing pass, not by `set_mode_consented` fanning out from the registry, and a background job keeps the point it started at. Moved to R326 (B6 modes owns the mode doors `harness.rs`); the per-batch bound is what is promised and is now written down.
+- I35's silent skip is not done: every fixture in `child_mode.rs` (and `daemon_at`) still `return`s when `crate::vocab_gguf()` is `None`. Making that a panic is a suite-wide policy on a box with no model, not a change to one file. Moved to R326, whose tests are the ones that skip.
+- I36's queue half is not done: a `new_session` fork does not take the original session's queued prompts or `handed_back` with it, and the hook is not yet idempotent per episode. `sessionlog::Hub` has no seam to drain a queue (`take_queued_interrupt` takes one prompt), so this needs a new Hub door rather than a fix. Moved to R328 (B8 limit state owns the limit hook and the owed turn).
+- Box facts met here, none of them this change: `tools` `lifecycle::tests_disks::a_copy_out_is_in_the_archive_namespace_before_it_is_removed` is red on main in this seat; `harnessd`'s `reviewer_mode::a_reviewer_at_the_operators_allow_all...` (no usable bwrap namespace) and the two `mergequeue::review::claude_tests` are red on main in this seat too.
 
 **Scope.** Decision 2 is taken: a `GrantScope::Once` point means once, drop the session rung and refuse AllowSession. I33 (f) lands in B4 (R324). I36's parentless fork carries the I36 equality-test rule's own instance.
 
