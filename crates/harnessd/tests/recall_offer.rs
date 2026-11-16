@@ -1,8 +1,6 @@
-//! The recall offer against a real store with a real fork chain: the Done-when's own session, where
-//! the turn that discussed "etcd reference-format archives" is in a transcript the compaction left
-//! behind, and the person then asks "remember how we built the etcd archives?".
-//!
-//! No model and no network: the point is the index and the line, and neither of them needs one.
+//! The recall offer against a real store and fork chain: a turn about "etcd reference-format
+//! archives" left behind by compaction, then "remember how we built the etcd archives?". No model
+//! and no network: the point is the index and the line.
 
 use std::path::{Path, PathBuf};
 
@@ -216,10 +214,9 @@ fn text_of(item: &TranscriptItem) -> String {
     }
 }
 
-/// The Done-when: an evicted turn about "etcd reference-format archives", and the operator's
-/// "remember how we built the etcd archives?" gets a tail hint naming `transcript`, a match on
-/// those words, and the session the turn is in. Without a back-reference and with nothing over the
-/// floor it says nothing.
+/// An evicted turn about "etcd reference-format archives", and "remember how we built the etcd
+/// archives?" gets a tail hint naming `transcript`, a match on those words and the turn's session.
+/// Without a back-reference and with nothing over the floor it says nothing.
 #[test]
 fn an_evicted_turn_is_offered_when_the_operator_refers_back() {
     let d = Dir::new("done-when");

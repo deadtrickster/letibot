@@ -1,7 +1,5 @@
-//! **A session records itself before anything it creates** (`docs/lifecycle.md` G1's first
-//! done-when, the half a harness can prove): opening a package session writes one owner row and its
-//! root with the stamp in it, and reopening the same session updates that row instead of adding a
-//! second.
+//! A session records itself before anything it creates: opening a package session writes one
+//! owner row and its root with the stamp in it, and reopening the session updates that row.
 //!
 //! One test, because `XDG_*` and `LETIBOT_GC_ROOT` are process-global: a sibling test would decide
 //! where this one's owner root lands.

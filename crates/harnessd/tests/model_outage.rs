@@ -392,10 +392,9 @@ fn one_outage_is_one_row_with_a_counter() {
     // The operator's per-project mode is not this test's business (`wired.rs`'s rule).
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
 
-    // A. A ladder that runs out: three failed attempts, then the single row it is worth.
-    //
-    // The line moves while the ladder tries (2 attempts, then 3) and is then WITHDRAWN, and the only
-    // row this session is left with is the failure that says what happened.
+    // A. A ladder that runs out: three failed attempts, then the single row it is worth. The line
+    // moves while the ladder tries (2 attempts, then 3) and is then withdrawn, leaving only the
+    // failure row.
     endpoint.refuse(100);
     let before = endpoint.seen();
     let cfg = config(&scratch, "givesup", 2);
@@ -451,10 +450,8 @@ fn one_outage_is_one_row_with_a_counter() {
     );
 
     // ── B. The endpoint comes back on the fourth attempt ────────────────────────────────
-    //
-    // The operator's question is this scenario: three failures, then an answer, and NOTHING is left on
-    // the screen. The count is not lost - it is in `metrics.db` and on the turn's own record, which is
-    // what the last third of this scenario reads.
+    // Three failures, then an answer, and nothing left on the screen. The count is kept in
+    // `metrics.db` and on the turn's own record, which the last third of this scenario reads.
     endpoint.refuse(3);
     let before = endpoint.seen();
     let cfg = config(&scratch, "comesback", 3);
@@ -505,9 +502,8 @@ fn one_outage_is_one_row_with_a_counter() {
     );
 
     // ── C. A spent ladder the session moves away from leaves ONE row ─────────────────────
-    //
-    // `[fallback]` names a second model, so the ladder's end is a move rather than a failure: one row,
-    // whose sentence says where the session went, and no failure row beside it.
+    // `[fallback]` names a second model, so the ladder ends in a move: one row saying where the
+    // session went, and no failure row beside it.
     endpoint.refuse(3);
     let mut cfg = config(&scratch, "moves", 2);
     cfg.fallback = vec!["glm/glm-4.6".to_string()];
@@ -540,8 +536,8 @@ fn one_outage_is_one_row_with_a_counter() {
     );
 }
 
-/// The failed attempts `metrics.db` recorded for one session's outages, in the order they ended - the
-/// count the live line used to hold, and half the reason a recovered retry can leave no row behind.
+/// The failed attempts `metrics.db` recorded for one session's outages, in the order they ended. The
+/// count is kept here, which is half the reason a recovered retry can leave no row behind.
 fn retried(scratch: &std::path::Path, session: &str, outcome: &str) -> Vec<u64> {
     use letibot_metrics::store::rusqlite::params;
     let db = scratch.join("metrics.db");

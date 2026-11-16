@@ -992,7 +992,7 @@ fn a_switch_clears_the_token_ratio_and_a_local_round_can_set_it() {
         None,
         "the switch carried a measurement made on another model"
     );
-    // And the fact is SAYABLE, which is the ruling's other half: a reader of an estimated number
+    // And the fact is SAYABLE, the other half of the rule: a reader of an estimated number
     // must be able to tell it from a calibrated one. The carried scale stands in, NAMED, until a
     // round on the new model measures - an estimate that says whose it is.
     assert!(

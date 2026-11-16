@@ -100,7 +100,7 @@ fn the_default_session_is_read_only_and_seats_exactly_what_it_did() {
     assert_eq!(w.role, "orchestrator");
     // `todo_write` is the session's own list and `flowy` the door to the room (without a seat it says so and names `/flowy login`).
     // `recall` arrived with the compacted base's map: it is a re-prefill for every stored session and a capability change, so it is asserted here.
-    // The three self verbs (K10) are the session's own door to what it used to type into a pane.
+    // The three self verbs are the session's own door to what it would otherwise type into a pane.
     assert_eq!(
         w.seated,
         vec![

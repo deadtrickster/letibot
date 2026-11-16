@@ -1,5 +1,4 @@
-//! A plugin pane, end to end, through the REAL wasm - W4 of `docs/plugins-slice1.md`. Every
-//! step is the real one
+//! A plugin pane, end to end, through the REAL wasm. Every step is the real one.
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -13,7 +12,7 @@ use letibot_sessionlog::client::HeadClient;
 use letibot_sessionlog::protocol::{Caps, ServerFrame};
 use letibot_sessionlog::registry::Registry;
 
-/// The pane the layer exports: `<manifest name>/<hook name>` (C4).
+/// The pane the layer exports: `<manifest name>/<hook name>`.
 const PANE: &str = "plan-dashboard/dashboard";
 
 /// The release `status.example.json` names - the second frame's title is built from it.
@@ -134,7 +133,7 @@ fn pane_opened(socket: &Path, session: &str) -> Vec<serde_json::Value> {
         };
         if let SessionEvent::PluginPane { pane, view } = event {
             // The binary's own panes are announced at the same door - `irc`, `github`, `queue`,
-            // `room`, `sessions` - so the frames this test reads are `PANE`'s alone (R151).
+            // `room`, `sessions` - so the frames this test reads are `PANE`'s alone.
             if pane != PANE {
                 continue;
             }

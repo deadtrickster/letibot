@@ -1,10 +1,6 @@
-//! A usage limit with a known reset never fails a session: the operator's ruling, on fake
-//! providers and a clock the test moves by hand.
-//!
-//! Two answers, one file: `wait` parks the session until the instant the provider named and
-//! resumes the same turn there; `switch` moves the turn to a model that is not limited and moves
-//! back after the reset. A rate limit that named no instant keeps the ladder, then waits the long
-//! beat - and after a few of those it fails as the tree always failed it.
+//! A usage limit with a known reset never fails a session (fake providers, a hand-moved clock).
+//! `wait` parks until the provider's instant and resumes the turn; `switch` moves to an unlimited
+//! model and back after the reset. No instant: the ladder, then long beats, then a failure.
 
 use std::io::{Read, Write};
 use std::net::TcpListener;
@@ -1279,12 +1275,8 @@ fn a_prompt_after_a_switch_while_parked_is_sent_and_lifts_the_park() {
 }
 
 // ---------------------------------------------------------------------------- GLM's own codes
-//
 // The bodies are z.ai's templates (https://docs.z.ai/api-reference/api-code) as the door returns
-// them: `{"error":{"code":"NNNN","message":...}}`. The incident they reproduce is 2026-11-15: a
-// 429 at 18:08 UTC parked a glm-coding session until 23:08:20 UTC. Its window opened at 13:11:08
-// UTC and lifted at 18:11:08; the next window, opened by the first request after the restart at
-// 18:15:27, is the one the console showed resetting at 07:15 UTC+8.
+// them: `{"error":{"code":"NNNN","message":...}}`.
 
 /// `1302`: z.ai's rate or concurrency limit. Not a window.
 const GLM_1302: &str =
@@ -1451,7 +1443,7 @@ fn a_park_re_tries_on_its_steps_and_the_first_answer_lifts_it() {
 /// A `limit_decide` rule over the hook's input: its answer, or a trap.
 type Rule = Arc<dyn Fn(&serde_json::Value) -> Result<serde_json::Value, String> + Send + Sync>;
 
-/// A `limit_decide` layer for the R233 scenarios: a rule over the input, and every input it saw.
+/// A `limit_decide` layer for the hook scenarios: a rule over the input, and every input it saw.
 struct LimitRule {
     rule: Rule,
     seen: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -1556,7 +1548,7 @@ fn with_limit_hook(
     seen
 }
 
-/// R233's done-when: a hook keeping a counter in its state answers `wait`, then `ask_user`, then
+/// A hook keeping a counter in its state answers `wait`, then `ask_user`, then
 /// `switch` with the answer, across three refusals; the state is carried between the calls and
 /// destroyed after the first success.
 #[test]
@@ -1713,7 +1705,7 @@ fn a_limit_hook_out_of_fuel_falls_back_to_the_fixed_rules() {
     );
 }
 
-/// R233's ruling on `new_session` mid-turn: the conversation is forked into a new session, the
+/// `new_session` mid-turn: the conversation is forked into a new session, the
 /// turn continues there on the hook's target, and the old session's row names the fork.
 #[test]
 fn a_limit_hooks_new_session_forks_the_conversation_and_continues_the_turn_there() {

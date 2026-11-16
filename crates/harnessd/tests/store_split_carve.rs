@@ -1,10 +1,8 @@
-//! Carving one project at a time out of `sessions.db` (`docs/store-split.md` § Carving one
-//! project): one key's file is written and verified, the key is recorded, and only then are its
-//! rows deleted - so every other project's daemon keeps running. Then `--finish` renames what is
-//! left, once nothing but the shared tables is in it.
+//! Carving one project at a time out of `sessions.db`: one key's file is written and verified,
+//! the key recorded, and only then its rows deleted, so other projects' daemons keep running.
+//! `--finish` renames what is left once only the shared tables remain.
 //!
-//! Every path here is under `$TMPDIR`: the carve deletes rows, and it is only ever pointed at a
-//! store a test built.
+//! Every path is under `$TMPDIR`: the carve deletes rows, so it only ever sees a test's store.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -451,10 +449,9 @@ fn a_refused_check_leaves_no_file_and_no_carved_row() {
         0,
         "and no lease was taken or left behind"
     );
-    // The store is still a whole store, in the shape it had before the carve began: a daemon handed
-    // the FILE opens the one store and reads its own history. A DIRECTORY is still the refusal P3
-    // gives, because nothing has been carved out of it - which is the discriminator `store_at`
-    // reads, so both halves are asserted rather than the one the test happens to want.
+    // The store is still whole, in its pre-carve shape: a daemon handed the file opens it and reads
+    // its own history, and a directory is still refused, since nothing was carved. That is the
+    // discriminator `store_at` reads, so both halves are asserted.
     let refused = fixture
         .config(ROOT_A)
         .store_at()
@@ -483,7 +480,7 @@ fn a_refused_check_leaves_no_file_and_no_carved_row() {
 }
 
 /// `--finish` is the last step and says so: it refuses while a key is uncarved, and once every key
-/// is out it produces exactly the layout P3 opens - `shared.db` and the project files, no project
+/// is out it produces exactly the split store's layout - `shared.db` and the project files, no project
 /// table in the shared one.
 #[test]
 fn finish_refuses_until_every_key_is_carved_and_then_makes_the_split_layout() {
@@ -515,7 +512,7 @@ fn finish_refuses_until_every_key_is_carved_and_then_makes_the_split_layout() {
         "both keys, in order"
     );
 
-    // Exactly P3's layout: no project table in the shared file at all, and no transition record.
+    // Exactly the split layout: no project table in the shared file at all, and no transition record.
     for table in [
         "transcript",
         "transcript_item",
@@ -536,7 +533,7 @@ fn finish_refuses_until_every_key_is_carved_and_then_makes_the_split_layout() {
     assert_eq!(count(&fixture.project(ROOT_B), "transcript"), 1);
     assert_eq!(count(&fixture.project(ROOT_A), "adjudication"), 1);
 
-    // And a daemon opens it the way P3 always has, the file now being called shared.db.
+    // And a daemon opens it as a split store, the file now being called shared.db.
     let store = fixture
         .config(ROOT_A)
         .store_at()

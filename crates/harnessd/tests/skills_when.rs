@@ -1,7 +1,6 @@
-//! A skill that says what it needs of a seat: `requires`/`unless` in its own frontmatter, and
-//! `[skills.when.<name>]` in the project's `leticode.toml` over it. One session, the byte
-//! vocabulary and no model: the four doors - the pane's listing, `list`, `find` and `load` - are
-//! walked over a real open and must give one answer.
+//! A skill that says what it needs of a seat: `requires`/`unless` in its frontmatter, and
+//! `[skills.when.<name>]` in `leticode.toml` over it. One session, the byte vocabulary, no model:
+//! the pane's listing, `list`, `find` and `load` are walked over a real open and must agree.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

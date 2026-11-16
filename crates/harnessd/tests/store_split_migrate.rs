@@ -1,9 +1,7 @@
-//! P2's done-test (`docs/store-split.md` § Build plan): the offline migration to the split store,
-//! run on a fixture store with two projects that hold rows, a child working in its parent's
-//! worktree, and a project whose session wrote nothing.
+//! The offline migration to the split store, on a fixture store with two projects that hold rows,
+//! a child working in its parent's worktree, and a project whose session wrote nothing.
 //!
-//! Every path here is under `$TMPDIR`: the pass renames the file it splits, and it is only ever
-//! pointed at a store a test built.
+//! Every path is under `$TMPDIR`: the pass renames the file it splits, so it only sees a test's.
 
 use std::path::{Path, PathBuf};
 

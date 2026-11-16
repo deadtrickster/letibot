@@ -1,6 +1,5 @@
-//! between turns: nothing stays held once a turn has ended. The operator's ruling, on a
-//! result that reached an idle model only when they next spoke: jobs were run for a reason
-//! and held for a reason, so once a turn ends there is no reason to hold.
+//! Results are said between turns: nothing stays held once a turn has ended. Jobs were run
+//! and held for a reason, and once a turn ends there is no reason left to hold.
 
 use std::sync::Arc;
 use std::time::{Instant, SystemTime};
@@ -312,7 +311,7 @@ fn a_prompt_before_the_turn_end_wake_carries_the_batch_and_the_wake_runs_nothing
 
 /// A completion the plan `needs` is a turn of its own, and the batch held during the last turn rides
 /// in with it - under the turn-end heading, in the order the two arrived: the held one first, since
-/// it happened first (R187 - a trigger is never said ahead of a line that arrived before it).
+/// it happened first (a trigger is never said ahead of a line that arrived before it).
 #[test]
 fn a_needed_completion_wakes_a_root_and_the_held_batch_rides_along() {
     let Some(_) = letibot_harnessd::vocab_gguf() else {

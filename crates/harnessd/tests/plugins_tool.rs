@@ -1,6 +1,6 @@
 //! The `plugin` tool, from the model's side - every action, through the real desk, the real
-//! plugin host and the real stack. The `Loader`/`Builder` seams (`docs/plugins-slice1.md`
-//! C2) are what most of this file replaces
+//! plugin host and the real stack rather than
+//! the `Loader`/`Builder` seams.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -431,7 +431,7 @@ fn building_a_plugin_this_session_does_not_have_names_the_ones_it_does() {
 
 /// A good plugin is applied hot and its pane is published - the end of the loop, and the only
 /// thing an operator sees. The pane arrives on the hub without anybody opening it, which is how a
-/// head learns its title (C4).
+/// head learns its title.
 #[test]
 fn load_applies_a_good_plugin_and_publishes_its_pane() {
     let rig = Rig::new("load-good");
@@ -509,7 +509,7 @@ fn load_reports_a_failed_build_with_the_compiler_output() {
 }
 
 /// A reload is `load` again, and the pane changes - a layer's second version takes effect on
-/// the next call, with no restart (`docs/plugins-plan.md`).
+/// the next call, with no restart.
 #[test]
 fn loading_a_rebuilt_layer_replaces_what_the_pane_says() {
     let rig = Rig::new("load-reload");

@@ -157,7 +157,7 @@ fn a_host_placement_seats_a_session_whose_tools_run_there() {
     // built from.
     let described = harness.wiring().backend.clone();
     assert!(described.contains("ssh host `fake`"), "{described}");
-    // Confined or not is MEASURED on the machine behind the fake: a Linux host with a working
+    // Confined or not is measured on the machine behind the fake: a Linux host with a working
     // `bwrap` says `CONFINED, and measured`, a Mac says `NOT CONFINED - <why>`. Either is right.
     assert!(
         described.contains("CONFINED, and measured") || described.contains("NOT CONFINED"),

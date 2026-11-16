@@ -1,4 +1,4 @@
-//! The four hook kinds, through rano's real engine - `docs/plugins-plan.md`.
+//! The four hook kinds, through rano's real engine.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -26,10 +26,9 @@ fn host(tmp: &Path) -> Arc<PluginHost> {
     for file in ["plugin.toml", "plugin.wasm"] {
         std::fs::copy(layer().join(file), dest.join(file)).expect("the fixture");
     }
-    // The builder is never reached: `discover` loads the module that is already there, and the
-    // gate's step 1 - the only caller of a `Builder` - needs `plugin build` or `plugin load`.
-    // Pinned, because an `answer` stands in for a tool's result without the gate seeing the call:
-    // that is a layer the operator vouched for, and this fixture is about the ABI, not the policy.
+    // The builder is never reached: `discover` loads the module already there, and only `plugin
+    // build` or `plugin load` reach a `Builder`. Pinned because an `answer` stands in for a tool's
+    // result unseen by the gate; this fixture is about the ABI, not the policy.
     let trust = letibot_plugins::Trust::in_memory();
     trust.pin("engine", &dest).expect("a pin on the fixture");
     Arc::new(

@@ -1,4 +1,4 @@
-//! The layers this binary carries - `docs/plugins-plan.md`: the `builtin` scope
+//! The layers this binary carries: the `builtin` scope
 //! is a table of modules compiled into the executable, not a directory beside it. Four
 //! things are asserted, each a way the mechanism can be silently wrong.
 

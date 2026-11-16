@@ -1,5 +1,5 @@
-//! A Claude Code seat's board, read out of the daemon's store for the head's pane (R144,
-//! `docs/seat-todo.md`). The seat writes `seat_todo` in another process; this is the daemon's half:
+//! A Claude Code seat's board, read out of the daemon's store for the head's pane.
+//! The seat writes `seat_todo` in another process; this is the daemon's half:
 //! the same store, the same conversion a session's rows take, on the frame the pane already reads.
 
 use letibot_harnessd::config::Config;
@@ -31,7 +31,7 @@ fn row(content: &str, needs: Vec<letibot_tokencore::store::TodoNeed>) -> TodoIte
     }
 }
 
-/// **The daemon's source hands a seat's rows to the head**, with the wait on a package intact: the
+/// The daemon's source hands a seat's rows to the head, with the wait on a package intact: the
 /// `Child` edge is what the pane draws, and a store read that dropped it would leave a seat's row
 /// reading as one waiting on nothing.
 #[test]

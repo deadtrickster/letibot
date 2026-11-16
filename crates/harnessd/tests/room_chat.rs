@@ -177,10 +177,9 @@ fn sessions_the_operator_and_the_daemons_facts_share_the_rooms() {
     server.stop();
 }
 
-/// An `fyi` is a note to the room it is said in and an ADDRESS to the one it names: the named
-/// reader is woken by it, nobody else is, and an `fyi` that names nobody rings nothing at all.
-/// The live case this comes from: a dm was answered in the host room as `@x ...` with kind `fyi`,
-/// and the one session it was for was never woken.
+/// An `fyi` is a note to the room it is said in and an address to the one it names: the named
+/// reader is woken, nobody else is, and an `fyi` naming nobody rings nothing. Covers a dm answered
+/// in the host room as `@x ...` with kind `fyi`.
 #[test]
 fn an_fyi_rings_only_the_session_it_names() {
     let dir = std::env::temp_dir().join(format!("letibot-chat-fyi-{}", std::process::id()));

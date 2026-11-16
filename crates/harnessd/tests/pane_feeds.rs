@@ -1,6 +1,5 @@
-//! A pane is handed the feeds it declared - `docs/plugins-plan.md`, from the daemon's
-//! side. The head has built the `sessions` feed for its own in-process session list since
-//! feeds landed. The daemon did not.
+//! A pane is handed the feeds it declared, from the daemon's side: the head builds the
+//! `sessions` feed for its own session list, and the daemon must too.
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};

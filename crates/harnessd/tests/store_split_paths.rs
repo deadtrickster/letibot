@@ -1,7 +1,6 @@
-//! The daemon opens two paths (`docs/store-split.md` § Build plan, P3). `--store` is a data
-//! directory: a daemon writes a session to `shared.db` and its transcript to
-//! `projects/<key>.db`; a listing still answers with the project file renamed away; and a data
-//! directory that still holds the single `sessions.db` is refused with the migration's name.
+//! The daemon opens two paths. `--store` is a data directory: a session goes to `shared.db` and
+//! its transcript to `projects/<key>.db`; a listing answers with the project file renamed away;
+//! a directory still holding a single `sessions.db` is refused with the migration's name.
 
 use std::path::PathBuf;
 use std::process::Command;

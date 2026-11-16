@@ -1,8 +1,6 @@
-//! The model card's rows on a box that holds a DeepSeek key: the models that account answers with
-//! all reach the card, each with the window and the price the catalogue carries.
-//!
-//! One test, because `XDG_CONFIG_HOME` is process-global: a sibling writing its own
-//! `providers.toml` would decide this file's answer.
+//! The model card's rows on a box with a DeepSeek key: every model that account answers with
+//! reaches the card with the catalogue's window and price. One test, because `XDG_CONFIG_HOME` is
+//! process-global and a sibling's `providers.toml` would decide this file's answer.
 
 use letibot_sessionlog::protocol::{MODEL_FACTS_KEY, MODEL_KEYS_KEY};
 

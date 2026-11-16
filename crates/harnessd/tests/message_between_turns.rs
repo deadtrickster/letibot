@@ -1513,10 +1513,9 @@ fn a_message_the_turn_never_read_is_a_row_anyway() {
         "one row, not two: {:#?}",
         heard(&child, MESSAGE)
     );
-    // Which door wrote it, said on the log - `message_carried` is the sentence
-    // `keep_the_words_it_never_read` publishes and nothing else does; without it the assertions
-    // above would also pass on a build where a step boundary appended the item.
-    // Waited for, not read once: the drain publishes the row, persists it, and only then says so.
+    // Which door wrote it, said on the log: only `keep_the_words_it_never_read` publishes
+    // `message_carried`, so a build where a step boundary appended the item fails here. Waited for,
+    // not read once: the drain publishes, persists, and only then says so.
     wait_for(&child, |hub| {
         warnings(hub)
             .into_iter()

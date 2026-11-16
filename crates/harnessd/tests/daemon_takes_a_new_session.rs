@@ -1,8 +1,6 @@
-//! R178, over the real daemon: a folder whose package session closed still takes the next one.
-//! Live, the daemon stayed up holding 0 sessions and every later `leticode_start` on that folder
-//! was refused with "no such session" and a list of ids from every project in the store. Here the
+//! A folder whose package session closed still takes the next one, over the real daemon. The
 //! only session is closed, a bare attach is served as the control connection that makes one, and
-//! the session it makes runs a turn - which is what says it opened.
+//! the session it makes runs a turn, which is what says it opened.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;

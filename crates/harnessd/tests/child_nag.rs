@@ -534,7 +534,7 @@ fn a_childs_check_names_the_operators_row_first() {
         )),
         "the child's first check names the operator's row first, and says they added it: {first}"
     );
-    // The parent's row is free too, so it is named after the operator's (R127).
+    // The parent's row is free too, so it is named after the operator's.
     assert!(
         first.contains(&format!("\n  - {PARENTS_ROW} — Parent {parent}")),
         "the parent's row is the second line: {first}"

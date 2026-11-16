@@ -1,9 +1,8 @@
-//! A child placed `where: firecode` may not end its turn over a job still running in its VM, and a
-//! job the teardown kills is recorded and reported as killed - never as the exit its client came
-//! back with.
+//! A child placed `where: firecode` may not end its turn over a job still running in its VM, and
+//! a job the teardown kills is recorded and reported as killed, never as its client's exit.
 //!
-//! Driven against a fake `firecode` and a scripted model: no VM is booted, the "guest" command runs
-//! here, and the fake's own log is what says whether the VM is still up.
+//! A fake `firecode` and a scripted model: no VM boots, the "guest" command runs here, and the
+//! fake's log says whether the VM is still up.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -708,7 +707,7 @@ fn a_vm_call_turn(
 }
 
 // ---------------------------------------------------------------------------
-// THE HOLD (R173 item 1)
+// THE HOLD
 // ---------------------------------------------------------------------------
 
 /// A VM child that backgrounds a sleep and ends its turn: the VM stays up, the child is woken
@@ -826,7 +825,7 @@ fn a_vm_childs_turn_does_not_end_its_vm_while_its_job_runs() {
 }
 
 // ---------------------------------------------------------------------------
-// THE KILL (R173 item 2)
+// THE KILL
 // ---------------------------------------------------------------------------
 
 /// The same child, stopped while its job is running: the VM closes under the job, so the job is

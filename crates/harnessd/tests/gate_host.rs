@@ -374,11 +374,9 @@ fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
     let run = within(
         "the gate never returned from a step that only its deadline could end: the step is still \
          running and its own end is 120 s away, so the gate is waiting for the far side",
-        // **Ninety seconds, and the deadline covers the TRANSFER too.** At 15 s the gate gave up
-        // getting the tree onto the host - `NotRun` and `Infra`, "the gate's deadline passed before
-        // the tree was on the host" - measured on the merge gate, which is a loaded box. The step
-        // still runs its own 120 s, so a step killed at 90 is still killed at the GATE's clock and
-        // not at the far side's, which is the whole of what this asserts.
+        // Ninety seconds, and the deadline covers the transfer too: a short one gives up before the
+        // tree is on a loaded host. The step still runs its own 120 s, so a step killed at 90 is killed
+        // at the gate's clock and not the far side's, which is what this asserts.
         || rig.gate(&[step], 90),
     );
     assert!(matches!(run.verdict, GateVerdict::TimedOut(_)), "{run:#?}");
@@ -410,10 +408,9 @@ fn a_step_that_outlives_the_deadline_is_killed_on_the_host() {
         .filter_map(|n| n.trim().parse::<u32>().ok())
         .max()
         .unwrap_or(0);
-    // **The number that made this pass at a 2 s deadline was `< 20`, and at ninety it would fail
-    // for the wrong reason:** the step lives as long as the deadline allows and prints one `beat N` a
-    // second, so a healthy run prints about ninety of them. What the count proves is that the step
-    // did NOT reach its own 120 s - which is the distinction this test exists for.
+    // The step lives as long as the deadline allows and prints one `beat N` a second, so a healthy
+    // run prints about ninety. The count proves the step did not reach its own 120 s, which is the
+    // distinction this test exists for.
     assert!(
         beats < 110,
         "the step ran {beats} of its own seconds before the gate ended it, and the step's own end is \

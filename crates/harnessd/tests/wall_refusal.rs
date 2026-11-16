@@ -214,7 +214,7 @@ fn seed_a_stood_down_session(path: &std::path::Path, session_id: &str, before: u
         parent_session_id: None,
     })
     .expect("the session row");
-    // The pair the controller wrote when its ladder ran out: what was folded, and the MEASURED count
+    // The pair the controller wrote when its ladder ran out: what was folded, and the measured count
     // after it - inside this fixture's window, because a provider's count cannot exceed its window.
     s.set_auto_compact_stood_down(session_id, Some((before, measured)))
         .expect("the stood-down pair");
@@ -990,10 +990,9 @@ fn a_manual_compact_reports_the_count_it_compacted_from() {
     );
 }
 
-/// rano's compaction, end to end on a fake provider: the model calls `compact_self` mid-turn, the
-/// head is told it is pending until the turn ends, the compaction is the next thing the session
-/// runs - before a prompt queued after it - and the summary turn is the progress line, never a
-/// turn of the conversation. The request after it carries a smaller context than the one before.
+/// rano's compaction end to end on a fake provider: `compact_self` mid-turn, the head told it is
+/// pending until the turn ends, then it runs before a prompt queued after it, its summary turn a
+/// progress line and not a conversation turn. The next request carries a smaller context.
 #[test]
 fn compact_self_is_pending_then_runs_first_and_the_next_request_is_smaller() {
     use letibot_sessionlog::hub::CommandKind;

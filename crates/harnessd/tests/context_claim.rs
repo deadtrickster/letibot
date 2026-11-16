@@ -265,7 +265,7 @@ fn an_excuse_at_low_fill_is_answered_with_the_measured_fill_and_the_turn_continu
         Speaker::Agent,
         "the harness speaking, never the operator"
     );
-    // The operator's ruling: stop giving the real numbers, and tell it to stop sizing and do the
+    // Stop giving the real numbers, and tell it to stop sizing and do the
     // work. No quote of the model's own sentence either.
     assert_eq!(
         line,

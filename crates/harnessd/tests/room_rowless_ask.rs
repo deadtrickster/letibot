@@ -1,7 +1,6 @@
-//! An ask made with the `room` tool and no board row behind it, end to end: two sessions with
-//! their own boards and links against one coordinator, and the shipped pass between the ask and
-//! the answer. The pass must not take the ask back, and the answer must wake the asker saying the
-//! ask is settled.
+//! An ask made with the `room` tool and no board row, end to end: two sessions with their own
+//! boards and links against one coordinator, and the shipped pass between ask and answer. The pass
+//! must not take the ask back, and the answer must wake the asker saying the ask is settled.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::Parts;

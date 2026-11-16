@@ -1,51 +1,17 @@
-//! A model switch takes effect when the turn ends, never inside one.
+//! A model switch takes effect when the turn ends, never inside one: a round re-issued on a new
+//! model would carry the old model's tool-call rounds of the current turn, which deepseek's
+//! thinking mode rightly refuses.
 //!
-//! # The report, and the screen it was measured on
+//! Sessions against two loopback stubs through the daemon's socket, nothing mocked above it:
+//! * A - a switch during a running turn: the turn stays on the old model and ends FAILED, and the
+//!   new model's first request ends in a user message with no tool-call round after it.
+//! * B - a switch during a failing round's retries: every attempt still goes to the old model,
+//!   and the new one is sent nothing until the next prompt.
+//! * C - `[fallback]` follows the same rule for the daemon's own switch.
+//! * D - an interrupted turn still applies the pending switch.
 //!
-//! 2026-10-26 14:36, the operator's Stroppy session, `glm-coding/glm-5.3` → `deepseek/deepseek-flash`
-//!
-//! ```text
-//! slash · /models deepseek/deepseek-flash   turns go to deepseek/deepseek-flash from the next one on…
-//! model_endpoint_retry · the model changed to deepseek/deepseek-flash (metered) while this round was
-//!   failing at glm-coding/glm-5.3 (metered)…
-//! ! model_switch_refused · the first round on deepseek/deepseek-flash was refused by the provider (http 400)
-//! FAILED - http 400: The `reasoning_content` in the thinking mode must be passed back to the API.
-//! ```
-//!
-//! The daemon's request dump (`harnessd-2000f08acfaa.log`, request `9f2a5669…`) shows why: the round
-//! was re-issued on deepseek carrying the rest of GLM's turn - a run of assistant tool-call rounds
-//! since the last user message, most with no `reasoning_content`. Deepseek's thinking mode requires
-//! reasoning to be passed back for the tool-call rounds of the CURRENT turn, and is right to: those
-//! rounds are another model's. Their words for the rule: "we can switch after turn ends".
-//!
-//! # What is measured here, and against a real daemon
-//!
-//! Sessions against two loopback stubs, through the daemon's own socket. Nothing is mocked above the
-//! socket and nothing is injected into the retry policy: the point is what happens to a turn that is
-//! already running when the switch arrives, and the only honest way to measure that is to let one
-//! run and fail.
-//!
-//! * A - a switch during a running turn. The prompt goes to the OLD model, which answers its
-//!   first round with a tool call and refuses the second; `/models glm/glm-4.6` goes in while that
-//!   second round is failing. The turn stays on the old model and ends FAILED; the switch is said
-//!   as *"turns go to glm/glm-4.6 when this turn ends"*, then applied. The next prompt's request
-//!   is the FIRST thing the new model ever sees, and what it carries is the assertion that
-//!   matters: the old turn's tool-call rounds are in the history, the last message is a USER
-//!   message, and there is no assistant tool-call round after it. * B - a switch during a failing round's retries. `http_retries = 1`, so the ladder takes the
-//!   round again: every attempt is still sent to the old model, and the new one is sent nothing at
-//!   all until the next prompt. This is the *"the model changed … while this round was failing"*
-//!   line being unmade. * C - `[fallback]` is the same rule for the daemon's own switch. No `/models` at all: the
-//!   model is out, `[fallback] models` names where this session goes, and it goes there when the
-//!   turn ends rather than being re-issued there. * D - an interrupted turn applies the pending switch. A switch recorded during a failing
-//!   turn's ladder survives the operator's own interrupt: the turn ends the other way, and the
-//!   switch still lands.
-//!
-//! # One test, four sessions, and why not four tests
-//!
-//! `XDG_CONFIG_HOME` is process-global and libtest runs the tests in a binary in parallel -
-//! `apparatus::present`'s own tests carry the measurement of what that costs. So the scratch config
-//! dir is pointed at once, by the single test that owns this process, and the four scenarios run in
-//! sequence inside it. `slash.rs` is the same shape for the same reason.
+//! One test, four sessions in sequence: `XDG_CONFIG_HOME` is process-global and libtest runs a
+//! binary's tests in parallel. `slash.rs` has the same shape for the same reason.
 
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -82,7 +48,7 @@ const TOOL_FILE: &str = "notes.txt";
 const REFUSAL_HOLD_MS: u64 = 900;
 
 /// The provider's own words, as they arrived. No reset time on purpose: a 429 that names one parks
-/// the session until then (R148), and this file measures a turn that FAILS while a switch waits.
+/// the session until then, and this file measures a turn that FAILS while a switch waits.
 const REFUSAL_BODY: &str = "{\"error\":{\"message\":\"Weekly/Monthly Limit Exhausted.\"}}";
 
 // ---------------------------------------------------------------------------
@@ -552,7 +518,7 @@ fn config(
     // No ladder unless a scenario asks for one. A 429 that names a reset time is not something
     // to wait out: the turn ends, which is what these scenarios need to see.
     cfg.http_retries = 0;
-    // A limit with no reset is retried later rather than failed (R148); this file's turns fail.
+    // A limit with no reset is retried later rather than failed; this file's turns fail.
     cfg.limit_retry_rounds = 0;
     cfg
 }

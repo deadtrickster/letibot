@@ -1,11 +1,10 @@
-//! A row that waits on another session's answer, end to end: two sessions with their own boards and
-//! their own room links against one coordinator, the shipped `todo_write` and `room` tools, and the
-//! shipped pass. A asks, B answers, and A's row is released. Then B's connection goes away: after
-//! the grace the operator is asked to restart B and A's row stays blocked. B comes back and answers,
-//! the card goes, and the row is released. Then B's session is deleted and a second ask ends `DOWN`.
+//! A row that waits on another session's answer, end to end: two sessions with their own boards
+//! and room links against one coordinator, the shipped `todo_write` and `room` tools and pass.
+//! A asks, B answers, and A's row is released.
 //!
-//! The grace is [`letibot_harnessd::room::ASK_GRACE_ENV`], so the run is seconds rather than five
-//! minutes, and nothing here sleeps for a timeout to expire.
+//! Then B's connection goes away: past the grace the operator is asked to restart B and the row
+//! stays blocked. B comes back and answers, the card goes, the row is released. Then B's session
+//! is deleted and a second ask ends `DOWN`. [`letibot_harnessd::room::ASK_GRACE_ENV`] keeps it short.
 
 use letibot_harnessd::config::Config;
 use letibot_harnessd::harness::Parts;
@@ -179,8 +178,7 @@ fn an_ask_releases_a_row_escalates_when_its_target_stops_and_ends_when_the_targe
     );
 
     // ---------------------------------------------------------------------------------------
-    // B's connection goes away. That is a fault to repair, never an answer: the ask stays open,
-    // and past the grace the operator is asked to restart B.
+    // B's connection goes away: a fault to repair, never an answer, so the ask stays open.
     // ---------------------------------------------------------------------------------------
     let second = {
         a.write(serde_json::json!({
@@ -244,8 +242,7 @@ fn an_ask_releases_a_row_escalates_when_its_target_stops_and_ends_when_the_targe
     assert!(card.contains("restart"), "{card}");
 
     // ---------------------------------------------------------------------------------------
-    // B comes back: the card is withdrawn the moment it is connected, and the ask is still the
-    // same ask - so the answer that arrives settles the row that was waiting all along.
+    // B comes back: the card is withdrawn and its answer settles the row that was waiting.
     // ---------------------------------------------------------------------------------------
     let mut b = Seat::open(&workspace, "s-b");
     a.h.fill_room_board();
@@ -276,8 +273,7 @@ fn an_ask_releases_a_row_escalates_when_its_target_stops_and_ends_when_the_targe
     );
 
     // ---------------------------------------------------------------------------------------
-    // B's session is DELETED - the one `DOWN`. A third ask ends with no answer, and the row says
-    // why rather than waiting for a board that no longer exists.
+    // B's session is DELETED: a third ask ends `DOWN`, and the row says why.
     // ---------------------------------------------------------------------------------------
     a.write(serde_json::json!({
         "todos": [{"content": "pick the schema", "status": "in_progress"}]

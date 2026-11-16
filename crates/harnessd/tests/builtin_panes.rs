@@ -1,10 +1,8 @@
 //! Every built-in pane, asked through the real engine with the inputs a head sends.
 //!
-//! `PluginHost::ensure_builtin_panes` (`crates/harnessd/src/plugins.rs`) puts each built-in at a
-//! session's door and asks every `pane_` hook its first frame, so a pane that cannot answer is a
-//! pane nobody opened and a sentence nobody wrote. Two defects came out of that door (R157): a pane
-//! that passed on a frame with no feed, and two panes that exhausted a call's fuel - which the
-//! engine reports as a trap with a symbol-less backtrace - on a daemon's own session list.
+//! `PluginHost::ensure_builtin_panes` asks every `pane_` hook its first frame at a session's door,
+//! so a pane that cannot answer is never opened. Covered: a frame with no feed, and a call's fuel
+//! running out on a daemon's own session list (a trap with a symbol-less backtrace).
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -50,10 +48,9 @@ fn panes() -> Vec<(String, String, Vec<String>)> {
     out
 }
 
-/// One session's row, as the head's own `App::sessions_feed` spells one: the daemon's fields plus
-/// the three only a head can decide - the project a workspace belongs to, the top-level group the
-/// project is in, and the `system` branch a harness-run session sits under. The panes draw their
-/// tree from those three, so a list with no project is a list with no rows.
+/// One session's row as the head's `App::sessions_feed` spells it: the daemon's fields plus the
+/// project, its top-level group and the `system` branch a harness-run session sits under. The
+/// panes draw their tree from those three, so a list with no project has no rows.
 fn row(i: usize) -> Value {
     json!({
         "id": format!("s-{i}"),
@@ -98,11 +95,9 @@ fn feed_named(name: &str, shape: &str) -> Option<Value> {
         // An empty list is a fact, not an absence: the pane must still answer, and say so.
         ("sessions", "empty") => Some(sessions_feed(Vec::new())),
         ("sessions", "rows") => Some(sessions_feed((0..3).map(row).collect())),
-        // Every other feed is asked for with none, which is the first-frame case, deliberately:
-        // the daemon builds `room`, `queue` and `github` too, but a pane must answer when nobody
-        // has attached a scope, joined a room or opened the queue cluster. See
-        // `crate::github::tests::the_daemon_answers_the_github_feed_for_an_attached_scope` for the
-        // same pane with the daemon's seat behind it.
+        // Every other feed is given as none, deliberately the first-frame case: a pane must answer before
+        // anybody attached a scope, joined a room or opened the queue cluster. The github pane with a seat
+        // behind it is `crate::github::tests::the_daemon_answers_the_github_feed_for_an_attached_scope`.
         _ => None,
     }
 }
@@ -147,7 +142,7 @@ fn no_failure(stack: &Stack) -> bool {
     stack.failures().is_empty()
 }
 
-/// **Every built-in pane answers the frames a head sends it**: the synthetic first frame with no
+/// Every built-in pane answers the frames a head sends it: the synthetic first frame with no
 /// feed at all, an empty feed, a frame at 20x5, and its own `state` handed back.
 #[test]
 fn every_builtin_pane_answers_the_frames_a_head_sends() {
@@ -193,14 +188,9 @@ fn every_builtin_pane_answers_the_frames_a_head_sends() {
     assert!(asked >= 8, "the binary's panes were asked: {asked} frames");
 }
 
-/// **A daemon's own session list answers instead of trapping.** Every pane that declares
-/// `feeds = ["sessions"]` is handed the WHOLE list, and a call has a fixed fuel budget:
-/// `pane_sessions` drew a row for each session through a `Value` tree, `pane_nicks` sorted its
-/// roster with a scan and an allocation per comparison, and both read the feed out of the SDK's
-/// `Value` envelope and then parsed it again. Past a few hundred sessions the fuel ran out and the
-/// engine answered a trap - 17 and 18 frames of wasm backtrace against no symbols, which is what
-/// room #1029 saw. Six hundred rows is where that was reproduced and where this now passes; the
-/// fuel is asserted and not only the answer, because the answer is the budget.
+/// A daemon's own session list answers instead of trapping. Every `feeds = ["sessions"]` pane is
+/// handed the whole list against a fixed fuel budget, which per-row work can run out past a few
+/// hundred sessions. Six hundred rows, and the fuel is asserted too: the answer is the budget.
 #[test]
 fn a_daemon_session_list_answers_instead_of_trapping() {
     let tmp = tempdir("rows");

@@ -1,7 +1,6 @@
-//! The corpus sweep (`docs/store-split.md` § Build plan, P4). The decisions live in one file per
-//! project: a scoped read resolves through the shared index to ONE project file, `session=any`,
-//! `counts` and `/gate` sweep every file read-only, and a file the sweep cannot read is named in
-//! the answer while the rest is still returned. The start-up count stays the daemon's own file.
+//! The corpus sweep. Decisions live in one file per project: a scoped read resolves through the
+//! shared index to one project file, `session=any`, `counts` and `/gate` sweep every file
+//! read-only, and an unreadable file is named while the rest returns. Start-up counts its own file.
 
 use std::path::PathBuf;
 

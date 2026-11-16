@@ -972,10 +972,9 @@ fn a_refusing_verdict_goes_back_to_the_child_that_did_the_work() {
     };
     let dir = TempDir::new("harnessd-session-channel-refusal");
     let path = dir.path().join("sessions.db");
-    // The review queue's own session hosts the reviewers (`Harness::serve_reviews` serves only
-    // there) - the id `gatekeeper::session` derives from this fixture's workspace. The queue starts
-    // no worker of its own (its role has no `task`), so the child that did the work is a project
-    // session's, as in production, and the refusal reaches it from the queue as a peer's message.
+    // The review queue's own session hosts the reviewers (`Harness::serve_reviews`), its id derived
+    // by `gatekeeper::session` from this workspace. The queue starts no worker (its role has no
+    // `task`), so the worker is a project session's child and the refusal reaches it as a peer's.
     let main_id = letibot_harnessd::sessions::gatekeeper::session(std::path::Path::new("/tmp"));
 
     let parts = parts_for(&config(&main_id, Endpoint::new("127.0.0.1", 1), &path));

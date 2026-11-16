@@ -812,7 +812,7 @@ fn a_daemon_with_no_idle_window_never_exits_on_its_own() {
 
 /// A package daemon's review pass runs whether or not its queue moves, and the gatekeeper's own
 /// board is not the daemon's activity: with nothing else on the box it still leaves after its
-/// window - `harnessd-c58394f21491.log`'s `grew s-gatekeeper-<key> events +4`, up for days.
+/// window.
 #[test]
 fn a_package_daemon_with_only_its_gatekeeper_idles_out() {
     let _one = serial();
@@ -915,7 +915,7 @@ fn a_turn_whose_tool_call_outlasts_the_idle_ttl_is_not_reaped() {
     d.registry.close();
 }
 
-/// R276: a package whose work landed is archived by the daemon's own pass once nothing holds it -
+/// A package whose work landed is archived by the daemon's own pass once nothing holds it -
 /// not while a head is attached - with its reason and its rows kept.
 #[test]
 fn a_settled_package_is_archived_by_the_daemon_once_its_head_goes() {
@@ -963,14 +963,12 @@ fn a_settled_package_is_archived_by_the_daemon_once_its_head_goes() {
     d.registry.close();
 }
 
-/// **Done when** a package session is held live while a bridge head is attached, is `closed` after
-/// its idle TTL once the head goes, its notice was written first, its daemon has let go of it, and
-/// sending to it reopens it with its transcript intact (`docs/lifecycle.md` G2, R241).
+/// A package session is held live while a bridge head is attached, is `closed` after its idle
+/// TTL once the head goes (notice first, daemon let go), and sending to it reopens it with its
+/// transcript intact.
 ///
-/// The notice is NOT a conversation row, and that is the choice the package made: this pass runs
-/// where no ledger is held, so a row written here would be one whose tokens nobody computed. It
-/// goes to the status line (`idle_closing`) and to the journal, and the conversation keeps exactly
-/// the rows the model was sent - which the last assertion measures.
+/// The notice is not a conversation row: this pass holds no ledger, so it goes to the status line
+/// (`idle_closing`) and the journal, and the conversation keeps exactly the rows the model was sent.
 #[test]
 fn an_attached_head_holds_a_package_and_it_closes_once_the_head_goes() {
     let _one = serial();

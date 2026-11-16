@@ -1,17 +1,9 @@
-//! K3: the built-in `todo` layer's `nag_todo` says exactly what the harness's own plan-check says
-//! (`docs/plugin-extension-points-wide.md` X13). The bottom of the stack is today's daemon, so
-//! arriving at this hook moves no sentence - an operator's layer above it is the one that changes
-//! the answer (R127's every-free-head is such a layer).
+//! The built-in `todo` layer's `nag_todo` says exactly what the harness's own plan-check says, so
+//! the bottom of the stack moves no sentence; only an operator's layer above it changes the answer.
 //!
-//! Every expected line here is read off the harness's own function, `unfinished_plan_for`, and the
-//! input is the one `the_nag_input` builds for the daemon: there is no copy of a sentence in this
-//! file, which is what makes it a proof rather than a fixture agreeing with itself.
-//!
-//! The agreement is asked of a PLACED copy of the layer's own bytes, because the built-in itself is
-//! not called any more: `nag_todo` is declared `native_copy` (R175 item 5), so a stack whose only
-//! answerer is the binary's layer takes the daemon's path instead of spending a wasm call on the
-//! sentence it is about to write. Both halves are below, and the second is the reason the first is
-//! still worth having.
+//! Every expected line is read off `unfinished_plan_for` with the input `the_nag_input` builds, so
+//! no sentence is copied here. The check runs on a placed copy of the layer's bytes: `nag_todo` is
+//! `native_copy`, so a stack whose only answerer is the built-in takes the daemon's path instead.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -105,10 +97,9 @@ fn plans() -> Vec<Vec<TodoItem>> {
     ]
 }
 
-/// What the store keeps for a delivered check is `nag_turn`'s sentence, and `nag_turn` says
-/// `unfinished_plan_for`'s words: so the module's answer and the recorded line are the same string,
-/// for every shape a plan comes in. Asked of a placed copy of the layer's bytes, because the
-/// built-in itself is not called (see [`the_builtins_nag_is_not_called`]).
+/// What the store keeps for a delivered check is `nag_turn`'s sentence, which is
+/// `unfinished_plan_for`'s words, so the module's answer and the recorded line are one string for
+/// every plan shape. Asked of a placed copy (see [`the_builtins_nag_is_not_called`]).
 #[test]
 fn the_builtin_nag_says_what_the_native_nag_said() {
     let tmp = tempdir("nag");
