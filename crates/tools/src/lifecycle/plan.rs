@@ -5,11 +5,13 @@
 //! owner's state, and says so. The hands are G2 (compute), G3 (work) and G4 (caches and records).
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use letibot_tokencore::store::{
     HoldingClass, HoldingState, OwnerKind, OwnerRow, OwnerState, Result as StoreResult, Store,
 };
 
+use super::autoarchive::Here;
 use super::{Found, Places, discover_all, human_bytes, human_millis, unowned};
 use crate::exec::scope::ScopeUse;
 
@@ -563,6 +565,12 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
     };
     let known: std::collections::BTreeSet<String> =
         store.owners()?.into_iter().map(|o| o.id).collect();
+    let here = Here {
+        host: places.box_id.clone(),
+        pid: std::process::id(),
+        proc_root: places.proc_root.clone(),
+    };
+    let in_use = InUse { store, here: &here };
     let mut out = Plan {
         owners: Vec::new(),
         looks_like_ours: Vec::new(),
@@ -655,7 +663,7 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
             });
         }
         for h in &mut holds {
-            h.verdict = judge(owner, h, places, now_ms);
+            h.verdict = judge(owner, h, places, now_ms, Some(&in_use));
         }
         let view = OwnerView {
             id: owner.id.clone(),
@@ -685,10 +693,42 @@ pub fn plan(store: &Store, places: &Places, only: Option<&str>, now_ms: i64) -> 
     Ok(out)
 }
 
-/// Whether one holding would be reaped, and why. Pure, so every case is asserted without a disk:
-/// the owner's state and the holding's own are the only inputs that decide, which is what makes
-/// "a live owner loses nothing" a property rather than a hope.
-pub fn judge(owner: &OwnerRow, h: &HoldingView, places: &Places, now_ms: i64) -> Verdict {
+/// The one in-use predicate, handed to [`judge`] read-only: the same witness the executor asks
+/// before a destructive step (`in_use::why_kept`), so the plan cannot promise a removal the
+/// settle step refuses. `None` is the pure verdict of the owner's state alone.
+pub struct InUse<'a> {
+    pub store: &'a Store,
+    pub here: &'a Here,
+}
+
+impl InUse<'_> {
+    /// Why this holding's tree is in use, when it is: work on this box, whose handle is a path
+    /// that exists. Everything else the executor never asks about.
+    fn keeps(&self, h: &HoldingView) -> Option<String> {
+        if h.class != HoldingClass::Work || h.host.as_deref().is_some_and(|h| !h.is_empty()) {
+            return None;
+        }
+        let path = Path::new(&h.handle);
+        if !path.exists() {
+            return None;
+        }
+        super::in_use::why_kept(path, Some(self.store), self.here)
+    }
+}
+
+/// Whether one holding would be reaped, and why. Pure in its owner-state half, so every case is
+/// asserted without a disk; the `in_use` witness, when one is handed in, is the executor's own
+/// keep, checked first so the two can never disagree (I62).
+pub fn judge(
+    owner: &OwnerRow,
+    h: &HoldingView,
+    places: &Places,
+    now_ms: i64,
+    in_use: Option<&InUse<'_>>,
+) -> Verdict {
+    if let Some(why) = in_use.and_then(|u| u.keeps(h)) {
+        return Verdict::Keep(format!("in use - {why}"));
+    }
     if matches!(h.state, HoldingState::Gone) {
         return Verdict::Keep(
             "its row is here and the resource is not on this box: nothing to remove".into(),
@@ -945,7 +985,7 @@ mod tests {
             HoldingClass::Cache,
             HoldingClass::Record,
         ] {
-            let v = judge(&o, &holding(class, "scope"), &p, 2_000_000);
+            let v = judge(&o, &holding(class, "scope"), &p, 2_000_000, None);
             assert!(!v.reaps(), "{class:?} was reaped under a live owner");
             assert!(v.said().contains("live"), "{v:?}");
         }
@@ -957,14 +997,32 @@ mod tests {
         let o = owner(OwnerState::Closed);
         let p = places();
         assert!(matches!(
-            judge(&o, &holding(HoldingClass::Compute, "scope"), &p, 2_000_000),
+            judge(
+                &o,
+                &holding(HoldingClass::Compute, "scope"),
+                &p,
+                2_000_000,
+                None
+            ),
             Verdict::Now(_)
         ));
         assert!(matches!(
-            judge(&o, &holding(HoldingClass::Cache, "target"), &p, 2_000_000),
+            judge(
+                &o,
+                &holding(HoldingClass::Cache, "target"),
+                &p,
+                2_000_000,
+                None
+            ),
             Verdict::Now(_)
         ));
-        let work = judge(&o, &holding(HoldingClass::Work, "worktree"), &p, 2_000_000);
+        let work = judge(
+            &o,
+            &holding(HoldingClass::Work, "worktree"),
+            &p,
+            2_000_000,
+            None,
+        );
         match &work {
             Verdict::At(at, why) => {
                 assert_eq!(*at, 1_000_000 + UNLANDED_GRACE_MS);
@@ -972,7 +1030,13 @@ mod tests {
             }
             other => panic!("a closed owner's unlanded work should wait its grace: {other:?}"),
         }
-        let record = judge(&o, &holding(HoldingClass::Record, "run"), &p, 2_000_000);
+        let record = judge(
+            &o,
+            &holding(HoldingClass::Record, "run"),
+            &p,
+            2_000_000,
+            None,
+        );
         assert!(!record.reaps(), "a record was reaped: {record:?}");
     }
 
@@ -983,7 +1047,7 @@ mod tests {
         let mut o = owner(OwnerState::Closed);
         o.landed_sha = Some("0123456789abcdef".into());
         let work = holding(HoldingClass::Work, "worktree");
-        let at = match judge(&o, &work, &p, 1_000_000) {
+        let at = match judge(&o, &work, &p, 1_000_000, None) {
             Verdict::At(at, why) => {
                 assert!(why.contains("01234567"), "{why}");
                 at
@@ -991,7 +1055,90 @@ mod tests {
             other => panic!("{other:?}"),
         };
         assert_eq!(at, 1_000_000 + LANDED_GRACE_MS);
-        assert!(matches!(judge(&o, &work, &p, at + 1), Verdict::Now(_)));
+        assert!(matches!(
+            judge(&o, &work, &p, at + 1, None),
+            Verdict::Now(_)
+        ));
+    }
+
+    /// The plan and the executor answer the same question about a tree a session still uses:
+    /// `letibot gc --plan` says `keep — in use`, not `reap now`, for work the settle step keeps (I62).
+    #[test]
+    fn plan_and_executor_agree_on_a_tree_in_use() {
+        let dir = crate::backend::tempdir::TempDir::new();
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(wt.join("src")).unwrap();
+        let store = Store::open_in_memory().unwrap();
+        store
+            .put_session(&letibot_tokencore::store::SessionRecord {
+                id: "s-in-use".into(),
+                title: None,
+                model_id: "m".into(),
+                dialect_sha: "sha".into(),
+                workspace_root: wt.join("src").display().to_string(),
+                owner: "dead".into(),
+                role: None,
+                approvers: vec![],
+                parent_session_id: None,
+            })
+            .unwrap();
+        let mut daemon = std::process::Command::new("sleep")
+            .arg("120")
+            .spawn()
+            .unwrap();
+        store
+            .claim_session_writer("s-in-use", "o/1/1", daemon.id(), "lab2x1", 1, 0)
+            .unwrap();
+        let mut owner = OwnerRow::live("s-plan", OwnerKind::Package, None, 0);
+        owner.state = OwnerState::Closed;
+        owner.closed_ms = Some(0);
+        store.put_owner(&owner).unwrap();
+        store
+            .put_holding(&letibot_tokencore::store::HoldingRow::new(
+                "s-plan",
+                "worktree",
+                HoldingClass::Work,
+                wt.display().to_string(),
+                "",
+                0,
+            ))
+            .unwrap();
+        let places = Places {
+            gc_root: dir.path().join("gc"),
+            box_id: "lab2x1".into(),
+            settings: Settings::default(),
+            data_dir: dir.path().join("data"),
+            rundir: dir.path().join("run"),
+            daemon_logs: dir.path().join("logs"),
+            firecode_runs: None,
+            firecode_cache: None,
+            proc_root: "/proc".into(),
+            cgroup_fs: "/nonexistent/cgroup".into(),
+            docker_engine: None,
+        };
+        let now = 10 * UNLANDED_GRACE_MS;
+        // The executor's own keep, taken while the session's daemon is still alive: the one
+        // predicate the settle step asks before it archives.
+        let here = crate::lifecycle::autoarchive::Here {
+            host: "lab2x1".into(),
+            pid: std::process::id(),
+            proc_root: "/proc".into(),
+        };
+        let executor = crate::lifecycle::in_use::why_kept(&wt, Some(&store), &here);
+        let plan = plan(&store, &places, Some("s-plan"), now).unwrap();
+        let _ = daemon.kill();
+        let _ = daemon.wait();
+        let row = plan
+            .owners
+            .iter()
+            .flat_map(|o| o.holds.iter())
+            .find(|h| h.kind == "worktree")
+            .expect("the worktree row");
+        assert!(executor.is_some(), "the executor keeps this tree");
+        match &row.verdict {
+            Verdict::Keep(why) => assert!(why.contains("in use"), "the plan said: {why}"),
+            other => panic!("the plan said {other:?} while the executor kept the tree"),
+        }
     }
 
     /// Being unable to see a resource is a reason to keep it, and a host this box cannot reach is
@@ -1004,12 +1151,12 @@ mod tests {
             state: HoldingState::Gone,
             ..holding(HoldingClass::Cache, "target")
         };
-        assert!(!judge(&o, &gone, &p, 2_000_000).reaps());
+        assert!(!judge(&o, &gone, &p, 2_000_000, None).reaps());
         let elsewhere = HoldingView {
             host: Some("lubuntu2".into()),
             ..holding(HoldingClass::Work, "home")
         };
-        let v = judge(&o, &elsewhere, &p, 2_000_000);
+        let v = judge(&o, &elsewhere, &p, 2_000_000, None);
         assert!(!v.reaps());
         assert!(v.said().contains("lubuntu2"), "{v:?}");
     }
@@ -1020,14 +1167,36 @@ mod tests {
         let p = places();
         let mut o = owner(OwnerState::Closed);
         o.held_until_ms = Some(0);
-        assert!(!judge(&o, &holding(HoldingClass::Compute, "scope"), &p, 2_000_000).reaps());
+        assert!(
+            !judge(
+                &o,
+                &holding(HoldingClass::Compute, "scope"),
+                &p,
+                2_000_000,
+                None
+            )
+            .reaps()
+        );
         o.held_until_ms = Some(3_000_000);
         assert!(
-            !judge(&o, &holding(HoldingClass::Compute, "scope"), &p, 2_000_000).reaps(),
+            !judge(
+                &o,
+                &holding(HoldingClass::Compute, "scope"),
+                &p,
+                2_000_000,
+                None
+            )
+            .reaps(),
             "a hold that has not run out keeps everything"
         );
         o.held_until_ms = Some(1_500_000);
-        let v = judge(&o, &holding(HoldingClass::Compute, "scope"), &p, 2_000_000);
+        let v = judge(
+            &o,
+            &holding(HoldingClass::Compute, "scope"),
+            &p,
+            2_000_000,
+            None,
+        );
         assert!(v.reaps(), "an expired hold no longer keeps it");
     }
 
@@ -1041,6 +1210,7 @@ mod tests {
             &holding(HoldingClass::Compute, "scope"),
             &places(),
             2_000_000,
+            None,
         );
         assert!(!v.reaps());
         assert!(v.said().contains("letibot gc --log"), "{v:?}");

@@ -148,7 +148,9 @@ pub fn live_hold(registry: &Registry, id: &str) -> Option<Option<String>> {
 
 /// Renew the lease of every owner this daemon serves that a head, a turn or a job still holds:
 /// the lease is in `shared.db`, so every reaper on the box reads it. A landed package's head
-/// does not count, so a finished package still idles out with its seat attached.
+/// does not count, so a finished package still idles out with its seat attached. The job half
+/// goes through [`lifecycle::busy`], the closer's own witness, so the lease renews on everything
+/// a close would refuse to fire on - and never less.
 fn renew_held(store: &Store, registry: &Registry, now: i64) {
     for id in registry.ids() {
         let Some(hub) = registry.get(&id) else {
@@ -161,10 +163,7 @@ fn renew_held(store: &Store, registry: &Registry, now: i64) {
             continue;
         }
         let head = hub.attached_heads() > 0 && owner.landed_sha.is_none();
-        let job = store
-            .processes_of(&id)
-            .is_ok_and(|v| v.iter().any(|p| p.state.is_open()));
-        if head || hub.turn_in_flight() || job {
+        if head || hub.turn_in_flight() || lifecycle::busy(store, &owner) {
             let _ = store.touch_owner(&id, now);
         }
     }

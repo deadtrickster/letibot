@@ -241,10 +241,46 @@ fn a_second_close_restarts_work_grace() {
         memory: None,
         verdict: crate::lifecycle::plan::Verdict::Keep(String::new()),
     };
-    match crate::lifecycle::plan::judge(&row, &holding, &b.places(), day + 120_000) {
+    match crate::lifecycle::plan::judge(&row, &holding, &b.places(), day + 120_000, None) {
         crate::lifecycle::plan::Verdict::At(at, _) => assert_eq!(at, day + 60_000 + grace),
         other => panic!("the judge must wait the second grace: {other:?}"),
     }
+}
+
+/// `busy` is the one witness both the close and the lease renewer read (I62): an open job row of
+/// the owner's makes it true, and nothing else in the store does.
+#[test]
+fn busy_reads_the_owners_open_job_rows() {
+    let b = Box_::new("busy");
+    let store = b.store();
+    let owner = crate::lifecycle::owner_for_open(&store, "s-1", OwnerKind::Package, None, 0)
+        .expect("the open");
+    store.put_owner(&owner).expect("live");
+    assert!(!busy(&store, &owner), "nothing is running");
+    let mut job = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .unwrap();
+    let start = crate::exec::procs::read(job.id())
+        .expect("the job's start time")
+        .start;
+    let mut rec = ProcessRecord::starting("s-1", "j1", None, job.id());
+    rec.identity = format!("start:{start}");
+    rec.state = ProcState::Running;
+    store.put_process(&rec).expect("the job row");
+    assert!(busy(&store, &owner), "an open job row with a live pid");
+    let _ = job.kill();
+    let _ = job.wait();
+    let still_open = store
+        .processes_of("s-1")
+        .unwrap()
+        .iter()
+        .any(|p| p.state.is_open());
+    assert_eq!(
+        busy(&store, &owner),
+        still_open,
+        "the row the supervisor has not closed yet keeps it true, and nothing else does"
+    );
 }
 
 /// The operator's hold stops every automatic trigger; an expired one does not.
