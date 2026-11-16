@@ -249,6 +249,34 @@ fn the_frames_edges_say_which_side_has_the_keys() {
     );
 }
 
+/// An open pane says how to reach it, close it and zoom it while the composer has the keys: rano's
+/// operator opened a skill by accident and found no way out of the split.
+#[test]
+fn an_open_pane_says_how_to_focus_close_and_zoom_it() {
+    const PANE_KEYS: &str = "alt-i focus · ctrl-x close · alt-m zoom";
+    let (_ws, mut a) = idle_pane("bar-keys");
+    a.key(Key::AltI);
+    assert!(!a.editor_focused());
+    // The whole rectangle at 100 columns, a column beside the conversation at 220.
+    for w in [100, 220] {
+        a.screen(w, 30);
+        let bar = a.hint_bar(w);
+        assert!(bar.contains(PANE_KEYS), "{w}: {bar}");
+    }
+    assert!(a.editor_col > 0, "a column at 220");
+    // Each key does what the bar says.
+    a.key(Key::AltM);
+    a.screen(220, 30);
+    assert_eq!(a.editor_col, 0, "alt-m zooms");
+    assert!(a.hint_bar(220).contains(PANE_KEYS));
+    a.key(Key::AltI);
+    assert!(a.editor_focused(), "alt-i focuses");
+    a.route(vec![ctrl('x')]);
+    settle(&mut a);
+    assert!(!a.editor_up(), "ctrl-x closes the pane");
+    assert!(!a.hint_bar(220).contains(PANE_KEYS));
+}
+
 /// The pane spells its keys the way the rest of the frame does: rano's third notation, `words`, is
 /// set on the embedded editor, so its own key edge cannot come back as `C-o` beside a `ctrl-s`.
 #[test]

@@ -37,6 +37,10 @@ pub(crate) const CONVERSATION: &[Chord] = &[
     Chord::Says("/help", ""),
 ];
 
+/// The editor pane's own keys while the composer has the keyboard: the pane is on the screen and
+/// nothing else says how to reach, close or zoom it. `ctrl-x` is rano's `exit` once `alt-i` crossed.
+pub(crate) const PANE_KEYS: &str = "alt-i focus · ctrl-x close · alt-m zoom";
+
 impl App {
     /// The conversation's half of the bar, from [`CONVERSATION`].
     pub(crate) fn conversation_hint(&self) -> String {
@@ -189,7 +193,10 @@ impl App {
         } else if self.editor_drawn() {
             // The composer's keys with the pane still on the screen: the composer's own key first,
             // since the bar keeps its head, and then the same table.
-            let tail = format!("enter sends · {}", crate::app::shared_keys::bar_tail());
+            let tail = format!(
+                "enter sends · {PANE_KEYS} · {}",
+                crate::app::shared_keys::bar_tail()
+            );
             return crate::ui::render::row(
                 &HintBar {
                     editor,
@@ -229,6 +236,10 @@ impl App {
         // pointer is over, and the selected stop's own action letters. Both before the key hints,
         // which fall off a narrow bar's right - a reader pointing at a word wants the word explained.
         let mut lead: Vec<String> = Vec::new();
+        // The pane in its column beside the conversation: the bar is the conversation's.
+        if self.editor_up() && !self.editor_focused() {
+            lead.push(PANE_KEYS.to_string());
+        }
         if self.drawn() == Drawn::Surface(Surface::PluginPane) {
             lead.extend(self.plugin_hover_legend().map(str::to_string));
             lead.extend(self.plugin_actions_hint());
