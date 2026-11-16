@@ -145,12 +145,13 @@ impl Slot {
 
 /// The shadow for a session with `cfg`, on `watched_model`. `NotYet` while its row or transcript is
 /// still to be written; `Off` for a session no job watches, which is every session by default.
-/// Whether this session gets a shadow: a job on, a top-level session that is not a gatekeeper or
-/// a shadow itself, and a store to record in.
+/// Whether this session gets a shadow: a job on, a top-level session that is not a package, a
+/// gatekeeper or a shadow itself, and a store to record in.
 pub fn watches(cfg: &crate::config::Config) -> bool {
     cfg.shadow.any_on()
         && cfg.parent_session_id.is_none()
         && cfg.parent_seat.is_none()
+        && cfg.session_origin != letibot_sessionlog::origin::SessionOrigin::Package
         && !letibot_sessionlog::is_gatekeeper_session(&cfg.session_id)
         && cfg.seat != crate::config::Seat::Shadow
         && cfg.store_at().is_some()

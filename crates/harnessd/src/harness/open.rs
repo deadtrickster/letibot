@@ -714,6 +714,9 @@ impl Harness {
             cfg.parent_session_id.clone(),
             stored.as_ref().and_then(|s| s.parent_session_id.as_deref()),
         );
+        // Frozen here: a head attaching later may rewrite the registry's origin, and the shadow
+        // must not appear or vanish with it.
+        cfg.session_origin = session_registry.origin_of(&cfg.session_id);
         let mut parent_point = None;
         // The mode is a session property, resolved after the workspace is final: the per-project
         // point is looked up now (longest ancestor wins), so a project with no row keeps the

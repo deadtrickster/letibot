@@ -1222,7 +1222,36 @@ impl Registry {
         wiring: SessionWiring,
         parent: Option<String>,
     ) -> Result<Arc<Hub>, CreateError> {
-        let id = session_id.into();
+        self.create_inner(session_id.into(), title.into(), wiring, parent, None)
+    }
+
+    /// As [`Registry::create_under`], with who the session is for written before the worker is
+    /// rung: the open reads the origin, and a write after the ring would race it.
+    pub fn create_as(
+        &self,
+        session_id: impl Into<String>,
+        title: impl Into<String>,
+        wiring: SessionWiring,
+        parent: Option<String>,
+        origin: SessionOrigin,
+    ) -> Result<Arc<Hub>, CreateError> {
+        self.create_inner(
+            session_id.into(),
+            title.into(),
+            wiring,
+            parent,
+            Some(origin),
+        )
+    }
+
+    fn create_inner(
+        &self,
+        id: String,
+        title: String,
+        wiring: SessionWiring,
+        parent: Option<String>,
+        origin: Option<SessionOrigin>,
+    ) -> Result<Arc<Hub>, CreateError> {
         let mut g = self.lock();
         if self.bell.is_closed() {
             return Err(CreateError::Closed);
@@ -1242,7 +1271,7 @@ impl Registry {
                 jobs: Vec::new(),
                 monitors: Vec::new(),
                 hub: hub.clone(),
-                title: title.into(),
+                title,
                 created_ms: now_ms(),
                 wiring,
                 parent_session_id: parent,
@@ -1255,6 +1284,9 @@ impl Registry {
             },
         );
         drop(g);
+        if let Some(origin) = origin {
+            self.record_origin(&id, origin);
+        }
         // Wake the worker so it opens this session *now* rather than on the first prompt into
         // it. On the bell's own `opens` queue, so a caller that reads only the command stream
         // sees what it always did, unpolluted by creations.
