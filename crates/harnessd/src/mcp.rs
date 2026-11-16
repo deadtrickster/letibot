@@ -613,7 +613,7 @@ mod tests {
         let pid = pid_of(&live, "lsup");
         let src = file.display().to_string();
         assert!(
-            text.contains(&format!("lsup · running · 9 tools · pid {pid} · {src}")),
+            text.contains(&format!("lsup · running · 10 tools · pid {pid} · {src}")),
             "{text}"
         );
         assert!(
