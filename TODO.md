@@ -74,8 +74,8 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R345 | facts with no read time: status lag, todo waits, undated polls, repeated usage rows, the triple park line | Code work | I73, I74, I75; M; after B15 (R335) |
 | R346 | launcher twins: unbounded scope join, socket hash, binary locations, dist checks | Code work | I82, I83; M; after B11 (R331) |
 | R347 | gate-at, queue doors, queue structure, tests reading live state | Code work | I89, I90, I91, I92; L; after B10 (R330) |
-| R348 | plugin looks, runtime bounds, the bridge as an untyped room client | Code work | I96, I97, I99; M; after B13 (R333), B14 (R334) |
-| R349 | extensions and policy remainder: queue briefing, flowy cleartext, provider error classes, rano heredoc edits | Code work | I101, I102, I103, I105; M; after - |
+| R348 | plugin looks, runtime bounds, the bridge as an untyped room client | Code work | I96, I97, I99; A8-F11/F13/F14 closed on `r349-leftovers`; M; after B13 (R333), B14 (R334) |
+| R349 | extensions and policy remainder: queue briefing, flowy cleartext, provider error classes, rano heredoc edits | Code work | I101, I102, I103, I105; A1-F10 closed on `r349-leftovers`; M; after - |
 | R350 | design follow-ups after the stability phase: the facts frame, TUI structure | Code work | I76, I77; L; after the stability bar |
 | R351 | process rules from the review | Code work | I104; S; after - |
 | R353 | B15 theme: the status bar's queue counter is this session's tree, not the project's | Code work | built on branch `queue-own`: the edge counts reviews and landings whose `session_id` (a landing's through its review) is this session, a descendant on the list, or a `<id>-sub-` subagent; `done` for 1h or until `/queue` opens; the `N stuck` click lists only those rows; left: gate and land |
@@ -1832,7 +1832,7 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R348 - plugin looks, runtime bounds, the bridge as an untyped room client
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I96, I97, I99. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I96, I97, I99. Lead 46 (recall offers spamming a session with keyword noise) is closed on `r349-leftovers` and recorded in `LEADS-2026-11-16.md`. Record: `docs/review/2026-11-16/INTEGRATION.md`.
 
 **Scope.** I99: patch now with real-server tests and a typed decode of recorded frames; the rebuild on `letibot_room::Client` is a follow-up (C14).
 
@@ -1875,20 +1875,17 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 - Claim:
   - Its private `reach` maps every fyi to `passing`, breaking the plugin contract (A8-F5).
   - `delivered()` recomputes `names_you`, the bug `wake.rs` already fixed (A8-F10).
-  - `suffixed` truncation breaks `family_of` for handles over 28 chars (A8-F6), and its recursion can be unbounded at that fixed point (A8-F7).
-  - The waiter uses the base name (A8-F11).
-  - A pid-derived suffix loses the cursor on restart (A8-F14, HYP).
-  - The waiting slot has no generation guard (A8-F13).
+  - `suffixed` truncation breaks `family_of` for handles over 28 chars (A8-F6).
   - Host key, socket path and data dir are copies, with a `.` fallback (A8-F9).
   - Ack and replay tests run only against a fake coordinator (A8-F4).
   - It speaks `serde_json::Value` instead of `letibot_room::Request` (A8-F15).
-- Change: patch now (decision on C14). Use `letibot_room::Message::reach` and the frame's `names_you`. Suffix the name part. Retry at most 3 times with a fresh salt. The waiter uses the settled handle. Call `letibot_room::{host_key, socket_path}`. Port the ack, pending, redial and replay tests to `Server::serve`. Add a test that deserialises the fake's recorded frames as `Request`. Follow-up: rebuild `RoomLink` on `Client`.
+- Change: patch now (decision on C14). Use `letibot_room::Message::reach` and the frame's `names_you`. Suffix the name part. Call `letibot_room::{host_key, socket_path}`. Port the ack, pending, redial and replay tests to `Server::serve`. Add a test that deserialises the fake's recorded frames as `Request`. Follow-up: rebuild `RoomLink` on `Client`.
 - Sources: A8 as listed. A8 r1 GLM, A8 r1 fable, A8 r1 Kimi, A8 r2 opus, A8 r2 DeepSeek, A8 r2 sonnet, DeepSeek (supplementary).
 - Test: `a_named_fyi_reaches_a_push_layer_as_addressed`, `a_long_folder_twin_keeps_its_family`, and `bridge_and_daemon_dial_the_same_room_socket`.
 
 ## R349 - extensions and policy remainder: queue briefing, flowy cleartext, provider error classes, rano heredoc edits
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I101, I102, I103, I105. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I101, I102, I103, I105. Lead 47 (a provider whose account cannot serve is refused at start) is closed on `r349-leftovers` and recorded in `LEADS-2026-11-16.md`. Record: `docs/review/2026-11-16/INTEGRATION.md`.
 
 **Scope.** Decision 21 (I101): a `brief` kind the queue seat files as data, recommended, not yet taken.
 
@@ -1925,10 +1922,9 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
   - Two Retry-After readers disagree on HTTP-dates (A1-F12).
   - 408 is treated as a rate limit (A1-F13).
   - The Again arm rebuilds the ladder with no offline budget (A1-F9).
-  - Park jitter is a constant (A1-F10).
   - `pre_emptive_compact` ignores `carried_scale` (A1-F14).
   - The episode file is shared with no logs root (A1-F15).
-- Change: money words only on 402 and 429 or a structured code, and zai parsing keyed by provider. Cap a named instant at `reset::LONGEST`. One Retry-After reader. 408 to retry. Use the `turns.rs:2949` constructor. Use `Ladder::spread` for jitter. Admit `carried_scale`. Key the episode file by session.
+- Change: money words only on 402 and 429 or a structured code, and zai parsing keyed by provider. Cap a named instant at `reset::LONGEST`. One Retry-After reader. 408 to retry. Use the `turns.rs:2949` constructor. Admit `carried_scale`. Key the episode file by session.
 - Sources: A1 as listed.
 - Test: one per provider body, starting with `a_429_linking_billing_is_not_quota`.
 
