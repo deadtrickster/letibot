@@ -425,6 +425,9 @@ pub struct Config {
     /// The Claude Code seat (`cc@<project>`) whose package this daemon serves. Its sessions are
     /// that seat's children, not top-level services, so they stay out of the room.
     pub parent_seat: Option<String>,
+    /// Who this session is for, as the registry knew it at open. A package created in a daemon
+    /// that is not its own has no `parent_seat`, and this is how it is still known for one.
+    pub session_origin: letibot_sessionlog::origin::SessionOrigin,
     /// How deep in a subagent tree this session sits - zero for a root. A config fact, not a
     /// seat fact, because the seat table can express two depths and the ruling wants a configured
     /// number between. Incremented once, at spawn, and read where `task` is seated.
@@ -1710,6 +1713,7 @@ impl Config {
             session_id: format!("s-{}", now_ns()),
             parent_session_id: None,
             parent_seat: None,
+            session_origin: Default::default(),
             depth: 0,
             http: None,
             ledger_scale: None,

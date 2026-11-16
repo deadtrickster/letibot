@@ -54,6 +54,7 @@ mod note_accept;
 mod notice_door;
 mod offer_row;
 mod operator_ask;
+mod package_shadow;
 mod parentage;
 mod prefix_on_open;
 mod prompt_lanes;

@@ -191,6 +191,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R354 | A skill handed to a session names no folder, so its scripts are not found | Code work | built on `skill-shadow`; lead #42's journal and "queued: NAME" row built on `b7-followup` (R327); left: the shadow's offers carry no body, so they reach the folder through the `skill` load |
 | R355 | The shadow session is invisible to the operator | Code work | built on `skill-shadow`; left: the brief is republished at each tend, so a breaker that trips between turns shows at the next one - a shadow whose harness is not open yet is drawn from its stored title as `not running` - the unboxed (short-screen) composer has no marker |
 | R356 | A credential belongs to its program, not to the session: the credential broker | Parked | design only, a feature - after the stability phase, beside automode (both need the gate judging subcommands); order: `gh` broker, egress proxy, known-value redaction |
+| R356 | A package session got a shadow when its daemon was not its own | Code work | built on `pkg-noshadow`; left: `Config::is_child` and `owner_kind` still read only `parent_seat`, so such a session is still offered skills and owned as a `Session` |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | `trees/<key>` landed (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | firecode's package image: the wasm32 target, a cargo cache warmed from the workspace's locks, shfmt and shellcheck - the guest's memory said in the brief (the overlay half is done, 99166493d) |
 | R201 | Nothing letibot starts is ever torn down | Code work | G6 unjoined (`docker::seat_env` has no caller, so no socket or `DOCKER_HOST` at open) - G5 (memory) not built - compute reservations not built - G3's `--adopt` run is the operator's - `--restore --worktree` makes one tree. Lifecycle findings are R329, R343 |
@@ -3476,6 +3477,18 @@ Seen live in rano (`s-1794057745451974498`): `/skills pane-screenshot` handed ov
 Lead #42 (part): a second `LoadSkill` of a name still queued, with the same words after it or none, is collapsed into the first at the hub and its note says so (`Hub::submit`). Different words after the name still queue, because they are the operator's own prompt.
 
 Tests. `crates/tools/tests/confine.rs`: `a_loaded_skills_own_scripts_run_from_its_folder_with_no_view_ask` - a skill with `scripts/x.sh` in a folder outside the view, loaded through `skill`, names the base dir, and a confined `bash` reads `SKILL.md` and runs the script (fails with the bind removed). `crates/harnessd/src/standing_notes/tests.rs`: `a_skill_handed_over_names_its_base_directory` (the operator's message and a policy delivery). `crates/sessionlog/src/hub/tests.rs`: `a_second_load_of_a_queued_skill_is_collapsed`.
+
+## R356 - A package session got a shadow when its daemon was not its own
+
+**Status:** built, 2026-11-16, on `pkg-noshadow`. left: `Config::is_child` and `Harness::owner_kind` still read only `parent_seat`.
+
+Operator decision: a package (`leticode_start`, origin `package`) is a normal child and gets no shadow. `shadow::watches` excluded `parent_seat`, which covers a daemon the bridge starts (`daemon_args` passes `--parent-seat`). It did not cover a package session the bridge creates in a daemon that is already up: that daemon has no `parent_seat`, and the session's only mark is its origin, `SessionOrigin::of_opener` on `MCP_IDENTITY`.
+
+**Built.** `Config::session_origin` is read from the registry in `resolve_the_point` at open and frozen there, so a later attach that rewrites the registry's origin cannot add or remove a shadow. `watches` refuses `Package`. The socket's create and resume paths (`crates/sessionlog/src/server.rs`) now use `Registry::create_as`, which records the origin before `ring_open`: with the old create-then-record order the worker could open the session before its origin was written.
+
+Merge queue: a package never enqueues itself. The only automatic enqueue is `HarnessTaskRunner::enqueue_finished` for a `task_start` child placed in a worktree (`harness/children.rs`). The bridge only reads queue rows, and a package's daemon runs with `--no-queue`. A package's model can still call the `queue` tool's `enqueue` explicitly when its seat holds it.
+
+Tests. `crates/harnessd/src/harness/tests/package_shadow.rs`: `a_session_leticode_start_opens_has_no_shadow` (created over the socket path as `letibot-mcp`, one turn, `watches` false and no `<id>-shadow` row; fails without the `watches` change), `an_operator_top_level_session_still_has_its_shadow`.
 
 ## R355 - The shadow session is invisible to the operator
 

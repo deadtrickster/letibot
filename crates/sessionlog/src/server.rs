@@ -340,17 +340,20 @@ fn control_seat(
                     workspace,
                     ..SessionWiring::default()
                 };
-                match registry.create(&id, title, wiring) {
-                    Ok(_) => {
-                        // WHO ASKED, as on a seated connection: a session's own row cannot say.
-                        registry.record_origin(&id, SessionOrigin::of_opener(&kind, &identity));
-                        ServerFrame::Sessions {
-                            sessions: registry.list(),
-                            current: String::new(),
-                            created: Some(id),
-                            archived: registry.list_archived(),
-                        }
-                    }
+                // WHO ASKED, as on a seated connection: a session's own row cannot say.
+                match registry.create_as(
+                    &id,
+                    title,
+                    wiring,
+                    None,
+                    SessionOrigin::of_opener(&kind, &identity),
+                ) {
+                    Ok(_) => ServerFrame::Sessions {
+                        sessions: registry.list(),
+                        current: String::new(),
+                        created: Some(id),
+                        archived: registry.list_archived(),
+                    },
                     Err(e) => ServerFrame::Rejected {
                         client_request_id,
                         reason: e.to_string(),
@@ -1162,18 +1165,21 @@ pub fn serve_conn_rooted(
                 if !workspace.is_empty() {
                     wiring.workspace = workspace;
                 }
-                let f = match registry.create(&id, title, wiring) {
-                    Ok(_) => {
-                        // WHO ASKED, which a session's row cannot otherwise say: a terminal and a package
-                        // make the same shape of row.
-                        registry.record_origin(&id, SessionOrigin::of_opener(&kind, &identity));
-                        ServerFrame::Sessions {
-                            sessions: registry.list(),
-                            current: seat.hub.session_id(),
-                            created: Some(id),
-                            archived: registry.list_archived(),
-                        }
-                    }
+                // WHO ASKED, which a session's row cannot otherwise say: a terminal and a package
+                // make the same shape of row.
+                let f = match registry.create_as(
+                    &id,
+                    title,
+                    wiring,
+                    None,
+                    SessionOrigin::of_opener(&kind, &identity),
+                ) {
+                    Ok(_) => ServerFrame::Sessions {
+                        sessions: registry.list(),
+                        current: seat.hub.session_id(),
+                        created: Some(id),
+                        archived: registry.list_archived(),
+                    },
                     Err(e) => ServerFrame::Rejected {
                         client_request_id,
                         reason: e.to_string(),
@@ -1230,16 +1236,16 @@ pub fn serve_conn_rooted(
                                 None,
                                 brief.parent_session_id.as_deref(),
                             );
-                            match registry.create_under(
+                            // Who it is for, from its own row: a session resumed after a restart comes back
+                            // knowing whether a package or a one-shot made it.
+                            match registry.create_as(
                                 &session_id,
                                 &brief.title,
                                 brief.wiring,
                                 parent,
+                                brief.origin,
                             ) {
                                 Ok(hub) => {
-                                    // Who it is for, from its own row: a session resumed after a restart comes back
-                                    // knowing whether a package or a one-shot made it.
-                                    registry.record_origin(&session_id, brief.origin);
                                     // THE RESTORE IS ANNOUNCED HERE, BEFORE IT CAN START: a session is registered
                                     // when a head asks for it and opened later, so the wait has to be visible.
                                     if brief.items > 0 {
