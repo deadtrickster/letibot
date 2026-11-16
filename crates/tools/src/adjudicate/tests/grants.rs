@@ -9,9 +9,21 @@ use super::*;
 fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placeholder() {
     // The sentinel is a key and must never reach a label.
     for (program, offered) in [
-        (NO_PROGRAM, exec_options(&offered(None, NO_PROGRAM))),
-        ("cargo", exec_options(&offered(None, "cargo"))),
-        ("cargo", exec_options(&offered(Some("cargo test"), "cargo"))),
+        (
+            NO_PROGRAM,
+            options(&offered(None, NO_PROGRAM), crate::mode::GrantScope::Session),
+        ),
+        (
+            "cargo",
+            options(&offered(None, "cargo"), crate::mode::GrantScope::Session),
+        ),
+        (
+            "cargo",
+            options(
+                &offered(Some("cargo test"), "cargo"),
+                crate::mode::GrantScope::Session,
+            ),
+        ),
     ] {
         for o in &offered {
             assert!(
@@ -29,7 +41,7 @@ fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placehol
 
     // The two cases still say different things: naming the program is the point when there is
     // one.
-    let named = exec_options(&offered(None, "cargo"));
+    let named = options(&offered(None, "cargo"), crate::mode::GrantScope::Session);
     let session = named
         .iter()
         .find(|o| o.id == "allow_session")
@@ -37,7 +49,7 @@ fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placehol
     assert!(session.label.contains("cargo"), "{:?}", session.label);
     assert!(session.label.contains("this class"), "{:?}", session.label);
 
-    let class_only = exec_options(&offered(None, NO_PROGRAM));
+    let class_only = options(&offered(None, NO_PROGRAM), crate::mode::GrantScope::Session);
     let session = class_only
         .iter()
         .find(|o| o.id == "allow_session")
@@ -49,7 +61,10 @@ fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placehol
 
     // The ladder is otherwise unchanged: same ids, same order, and the durable rung only where
     // the matcher would honour it.
-    let with_durable = exec_options(&offered(Some("cargo test"), "cargo"));
+    let with_durable = options(
+        &offered(Some("cargo test"), "cargo"),
+        crate::mode::GrantScope::Session,
+    );
     let ids: Vec<&str> = with_durable.iter().map(|o| o.id.as_str()).collect();
     assert_eq!(
         ids,
@@ -62,7 +77,7 @@ fn the_session_option_names_a_program_or_says_it_is_a_class_and_never_a_placehol
         ],
         "the ladder's shape moved"
     );
-    let without_durable = exec_options(&offered(None, "cargo"));
+    let without_durable = options(&offered(None, "cargo"), crate::mode::GrantScope::Session);
     let no_durable: Vec<&str> = without_durable.iter().map(|o| o.id.as_str()).collect();
     assert_eq!(
         no_durable,
@@ -416,6 +431,12 @@ fn a_gate_moves_to_a_new_point_and_leaves_its_grants_behind() {
         scripts: &[],
         preview: &[],
     };
+    // A point whose grants are `Once` records nothing (decision 2), so the second move is to one
+    // that grants for the session: what stands afterwards is that point's answer, and not the
+    // answer taken at the point the gate has left.
+    let mut session = Mode::ALWAYS_ASK;
+    session.grants = crate::mode::GrantScope::Session;
+    g.set_mode(session).expect("the gate moves");
     let _ = g.admit(&write);
     assert_eq!(
         g.grants().len(),

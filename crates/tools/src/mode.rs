@@ -291,9 +291,8 @@ impl Mode {
         boundary: Boundary::Operator,
         requires: &[Prereq::WritableBackend, Prereq::ReachableAdjudicator],
         summary: "write and exec are seated and every one of them asks you, every time. \
-                  An answer settles that call by default; `allow_session` in the ask \
-                  lets the whole session through for that class, and `allow_always` \
-                  writes a durable rule.",
+                  An answer settles the one call it was given for; `allow_always` writes a \
+                  durable rule that outlives it, and no answer here grants for the session.",
     };
 
     /// Writes go through. Exec still asks, and so does the always-ask list, except
