@@ -466,8 +466,12 @@ pub struct LeticodeConfig {
     /// The `[mcp.NAME]` tables: MCP servers a session reaches through `mcp_search` and
     /// `mcp_call`. Read at both levels; only the user file's start. See [`McpServerKeys`].
     pub mcp: BTreeMap<String, McpServerKeys>,
-    /// `[mcp_projects] trusted`: checkouts whose `.mcp.json` servers may start. User file only.
+    /// `[mcp_projects] trusted`: directories whose checkouts' `.mcp.json` the warning offers to
+    /// pin. Starts nothing on its own. User file only.
     pub mcp_trusted: Vec<PathBuf>,
+    /// `[mcp_projects] pinned`: a `.mcp.json` path and the sha256 its servers start at. User
+    /// file only. See [`mcp_pin`].
+    pub mcp_pinned: BTreeMap<PathBuf, String>,
     /// The `[provider]` table: what a session does when its provider says the model is limited.
     /// See [`ProviderKeys`] and [`LeticodeConfig::limit_policy`].
     pub provider: ProviderKeys,
@@ -1175,6 +1179,15 @@ fn mcp_name_ok(name: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
 }
 
+/// A checkout's `.mcp.json`, read once: its path, the sha256 of the bytes parsed, and each
+/// server or why it cannot be one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct McpJson {
+    pub path: PathBuf,
+    pub sha256: String,
+    pub servers: BTreeMap<String, Result<McpServerKeys, String>>,
+}
+
 /// `<workspace>/.mcp.json`'s `mcpServers`, each a server or why it cannot be one. Keys other
 /// clients define are ignored, since the file is shared with them. `Ok(None)` is no file.
 ///
@@ -1182,28 +1195,71 @@ fn mcp_name_ok(name: &str) -> bool {
 /// {"mcpServers": {"fs": {"command": "npx", "args": ["-y", "server-fs", "."]},
 ///                 "docs": {"type": "http", "url": "https://example.com/mcp"}}}
 /// ```
-#[allow(clippy::type_complexity)]
-pub fn mcp_json(
-    workspace: &Path,
-) -> Result<Option<BTreeMap<String, Result<McpServerKeys, String>>>, String> {
+pub fn mcp_json(workspace: &Path) -> Result<Option<McpJson>, String> {
     let path = workspace.join(MCP_JSON);
     if !path.is_file() {
         return Ok(None);
     }
-    let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let sha256 = sha256_hex(&bytes);
+    let text = String::from_utf8(bytes).map_err(|e| format!("{}: {e}", path.display()))?;
     let v: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| format!("{}: {e}", path.display()))?;
-    let Some(servers) = v.get("mcpServers") else {
-        return Ok(Some(BTreeMap::new()));
-    };
-    let servers = servers
-        .as_object()
-        .ok_or_else(|| format!("{}: `mcpServers` is an object", path.display()))?;
     let mut out = BTreeMap::new();
-    for (name, s) in servers {
-        out.insert(name.clone(), mcp_json_server(name, s, workspace));
+    if let Some(servers) = v.get("mcpServers") {
+        let servers = servers
+            .as_object()
+            .ok_or_else(|| format!("{}: `mcpServers` is an object", path.display()))?;
+        for (name, s) in servers {
+            out.insert(name.clone(), mcp_json_server(name, s, workspace));
+        }
     }
-    Ok(Some(out))
+    Ok(Some(McpJson {
+        path,
+        sha256,
+        servers: out,
+    }))
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    sha2::Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
+}
+
+/// What `[mcp_projects] pinned` says about one `.mcp.json`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpPin {
+    /// Pinned at these bytes: its servers start.
+    Held,
+    /// Pinned at other bytes: the file changed since the operator read it.
+    Moved { pinned: String },
+    /// Never pinned.
+    Unpinned,
+}
+
+/// The pin for `file` at `sha256`, matched by exact path, so a pin covers one file and no
+/// worktree beside or under it.
+pub fn mcp_pin(pinned: &BTreeMap<PathBuf, String>, file: &Path, sha256: &str) -> McpPin {
+    let Ok(file) = file.canonicalize() else {
+        return McpPin::Unpinned;
+    };
+    let Some(want) = pinned
+        .iter()
+        .find(|(p, _)| p.canonicalize().is_ok_and(|p| p == file))
+        .map(|(_, sha)| sha)
+    else {
+        return McpPin::Unpinned;
+    };
+    if want.eq_ignore_ascii_case(sha256) {
+        McpPin::Held
+    } else {
+        McpPin::Moved {
+            pinned: want.clone(),
+        }
+    }
 }
 
 fn mcp_json_server(
@@ -1280,44 +1336,79 @@ pub fn mcp_trusts(trusted: &[PathBuf], workspace: &Path) -> bool {
         .any(|t| ws.starts_with(t))
 }
 
-/// `[mcp_projects]`: the checkouts whose `.mcp.json` the user lets start processes.
+/// `[mcp_projects]` as read: the `trusted` directories and the `pinned` files.
+type McpProjects = (Vec<PathBuf>, BTreeMap<PathBuf, String>);
+
+/// An absolute path from the user file, `~/` allowed.
+fn mcp_user_path(from: &impl std::fmt::Display, key: &str, raw: &str) -> Result<PathBuf, String> {
+    let p = match raw.strip_prefix("~/") {
+        Some(rest) => std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default()
+            .join(rest),
+        None => PathBuf::from(raw),
+    };
+    if !p.is_absolute() {
+        return Err(format!(
+            "{from}: [mcp_projects] `{key}` entry `{raw}` is not an absolute path"
+        ));
+    }
+    Ok(p)
+}
+
+/// `[mcp_projects]`: the `.mcp.json` files, by path and bytes, the user lets start processes.
 fn mcp_projects(
     value: &toml::Value,
     path: &Path,
     text: &str,
     user: bool,
-) -> Result<Vec<PathBuf>, String> {
-    let keys = "the one key is `trusted`, a list of directories";
+) -> Result<McpProjects, String> {
+    let keys = "the keys are `pinned`, a table of .mcp.json path to sha256, and `trusted`, a \
+                list of directories";
     let t = table_at(value, path, text, "mcp_projects", keys)?;
     let from = at(path, text, "[mcp_projects]", user);
-    let mut out = Vec::new();
+    let (mut trusted, mut pinned) = (Vec::new(), BTreeMap::new());
     for (key, v) in t {
-        if key != "trusted" {
-            return Err(format!(
-                "{from}: [mcp_projects] `{key}` is not a key; {keys}"
-            ));
-        }
-        let list = v
-            .as_array()
-            .and_then(|a| a.iter().map(|x| x.as_str()).collect::<Option<Vec<_>>>())
-            .ok_or_else(|| format!("{from}: [mcp_projects] `trusted` is a list of strings"))?;
-        for dir in list {
-            let p = match dir.strip_prefix("~/") {
-                Some(rest) => std::env::var_os("HOME")
-                    .map(PathBuf::from)
-                    .unwrap_or_default()
-                    .join(rest),
-                None => PathBuf::from(dir),
-            };
-            if !p.is_absolute() {
+        match key.as_str() {
+            "trusted" => {
+                let list = v
+                    .as_array()
+                    .and_then(|a| a.iter().map(|x| x.as_str()).collect::<Option<Vec<_>>>())
+                    .ok_or_else(|| {
+                        format!("{from}: [mcp_projects] `trusted` is a list of strings")
+                    })?;
+                for dir in list {
+                    trusted.push(mcp_user_path(&from, "trusted", dir)?);
+                }
+            }
+            "pinned" => {
+                let table = v.as_table().ok_or_else(|| {
+                    format!("{from}: [mcp_projects] `pinned` is a table of path to sha256")
+                })?;
+                for (file, sha) in table {
+                    let sha = sha
+                        .as_str()
+                        .filter(|h| h.len() == 64 && h.bytes().all(|b| b.is_ascii_hexdigit()))
+                        .ok_or_else(|| {
+                            format!(
+                                "{from}: [mcp_projects] `pinned` entry `{file}` is not a sha256 \
+                                 in hex"
+                            )
+                        })?;
+                    pinned.insert(
+                        mcp_user_path(&from, "pinned", file)?,
+                        sha.to_ascii_lowercase(),
+                    );
+                }
+            }
+            _ => {
                 return Err(format!(
-                    "{from}: [mcp_projects] `trusted` entry `{dir}` is not an absolute path"
+                    "{from}: [mcp_projects] `{key}` is not a key; {keys}"
                 ));
             }
-            out.push(p);
         }
     }
-    Ok(out)
+    Ok((trusted, pinned))
 }
 
 const MCP_KEYS: &str = "the keys are `command`, `args`, `env` (stdio), `url`, `headers` (http), \
@@ -2806,6 +2897,10 @@ impl LeticodeConfig {
         }
 
         workspace::validate(file.project.as_ref(), path, &text, level == Level::User)?;
+        let mcp_projects_read = match &file.mcp_projects {
+            Some(v) => mcp_projects(v, path, &text, level == Level::User)?,
+            None => Default::default(),
+        };
         let mut config = LeticodeConfig {
             main_model: file.main_model.as_deref().and_then(non_empty),
             subagent_model: file.subagent_model.as_deref().and_then(non_empty),
@@ -2862,10 +2957,8 @@ impl LeticodeConfig {
                 Some(v) => mcp_tables(v, path, &text, level == Level::User)?,
                 None => BTreeMap::new(),
             },
-            mcp_trusted: match &file.mcp_projects {
-                Some(v) => mcp_projects(v, path, &text, level == Level::User)?,
-                None => Vec::new(),
-            },
+            mcp_trusted: mcp_projects_read.0,
+            mcp_pinned: mcp_projects_read.1,
             provider: match &file.provider {
                 Some(v) => provider_keys(v, path, &text, level == Level::User)?,
                 None => ProviderKeys::default(),
@@ -3051,6 +3144,7 @@ impl LeticodeConfig {
             // cloned repository names.
             mcp: self.mcp.clone(),
             mcp_trusted: self.mcp_trusted.clone(),
+            mcp_pinned: self.mcp_pinned.clone(),
             output: OutputKeys {
                 inline_bytes: other.output.inline_bytes.or(self.output.inline_bytes),
                 inline_lines: other.output.inline_lines.or(self.output.inline_lines),

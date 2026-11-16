@@ -2110,7 +2110,7 @@ fn a_projects_mcp_json_is_read_in_the_shared_shape() {
         }}"#,
     )
     .unwrap();
-    let servers = mcp_json(&dir).unwrap().unwrap();
+    let servers = mcp_json(&dir).unwrap().unwrap().servers;
     let fs = servers["fs"].as_ref().unwrap();
     assert_eq!(fs.command.as_deref(), Some("npx"));
     assert_eq!(fs.args, ["-y", "srv"]);
@@ -2130,6 +2130,59 @@ fn a_projects_mcp_json_is_read_in_the_shared_shape() {
 
     std::fs::write(dir.join(MCP_JSON), "{not json").unwrap();
     assert!(mcp_json(&dir).unwrap_err().contains(MCP_JSON));
+}
+
+#[test]
+fn an_mcp_json_pin_holds_for_its_exact_path_and_bytes_only() {
+    let dir = project_dir("mcp_pin");
+    let repo = sub(&dir, "repo");
+    let wt = sub(&repo, "wt-x");
+    std::fs::write(repo.join(MCP_JSON), r#"{"mcpServers": {}}"#).unwrap();
+    std::fs::write(wt.join(MCP_JSON), r#"{"mcpServers": {}}"#).unwrap();
+    let read = mcp_json(&repo).unwrap().unwrap();
+    let path = write_file(
+        &dir,
+        &format!(
+            "[mcp_projects.pinned]\n\"{}\" = \"{}\"\n",
+            read.path.display(),
+            read.sha256.to_uppercase()
+        ),
+    );
+    let user = LeticodeConfig::load_as(&path, Level::User).unwrap();
+    assert_eq!(
+        mcp_pin(&user.mcp_pinned, &read.path, &read.sha256),
+        McpPin::Held
+    );
+    let beside = mcp_json(&wt).unwrap().unwrap();
+    assert_eq!(
+        mcp_pin(&user.mcp_pinned, &beside.path, &beside.sha256),
+        McpPin::Unpinned,
+        "the same bytes in a worktree under it are another file"
+    );
+    std::fs::write(
+        repo.join(MCP_JSON),
+        r#"{"mcpServers": {"x": {"command": "x"}}}"#,
+    )
+    .unwrap();
+    let edited = mcp_json(&repo).unwrap().unwrap();
+    assert_eq!(
+        mcp_pin(&user.mcp_pinned, &edited.path, &edited.sha256),
+        McpPin::Moved {
+            pinned: read.sha256.clone()
+        }
+    );
+    let project = LeticodeConfig::load(&path).unwrap();
+    assert!(
+        LeticodeConfig::default()
+            .overridden_by(&project)
+            .mcp_pinned
+            .is_empty(),
+        "a repository cannot pin itself"
+    );
+
+    let bad = write_file(&dir, "[mcp_projects.pinned]\n\"/a/.mcp.json\" = \"abc\"\n");
+    let e = LeticodeConfig::load(&bad).unwrap_err();
+    assert!(e.contains("not a sha256"), "{e}");
 }
 
 #[test]

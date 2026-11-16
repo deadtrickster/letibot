@@ -152,10 +152,11 @@ pub const LETICODE: File = File {
         },
         Table {
             path: "mcp_projects",
-            note: "A checkout's `.mcp.json` (`{\"mcpServers\": {NAME: {command, args, env} or {type: \"http\", url, headers}}}`, the file pi, Claude Code and Cursor read) starts its servers only when the workspace is at or under a directory listed here, because a cloned repository would otherwise start processes. Its stdio servers run in the workspace. A name the user's [mcp] also has is the user's. Untrusted, the file's servers are named in one `mcp_server` warning per open and not started.",
+            note: "A checkout's `.mcp.json` (`{\"mcpServers\": {NAME: {command, args, env} or {type: \"http\", url, headers}}}`, the file pi, Claude Code and Cursor read) starts its servers only when `pinned` holds that file's exact path at the sha256 of its bytes, because a cloned repository or an edit inside a trusted tree would otherwise start processes. Its stdio servers run in the workspace with a cleared environment. A name the user's [mcp] also has is the user's. Unpinned or changed, the file's servers are named in one `mcp_server` warning per open, with the line that pins the bytes on disk, and not started.",
             needs: "",
             keys: &[
-                k("trusted", "list of paths", "[]", U, "absolute directories (`~/` allowed) whose checkouts' .mcp.json servers may start", "[\"~/Projects/mine\"]"),
+                k("pinned", "table of path to sha256", "{}", U, "absolute .mcp.json paths (`~/` allowed) and the sha256 their servers start at", "{ \"~/Projects/mine/.mcp.json\" = \"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\" }"),
+                k("trusted", "list of paths", "[]", U, "absolute directories; starts nothing alone, the warning names the pin for a checkout under one", "[\"~/Projects/mine\"]"),
             ],
         },
         Table {

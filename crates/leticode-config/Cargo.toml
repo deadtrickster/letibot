@@ -28,6 +28,8 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 # The one TOML the tree parses with a real parser, for the reason the workspace
 # manifest gives: a file that will not parse is reported with its own line.
 toml.workspace = true
+# A checkout's `.mcp.json` is trusted by its bytes; already in the tree through `letibot-tools`.
+sha2 = "0.10"
 
 [dev-dependencies]
 letibot-config-ref.workspace = true

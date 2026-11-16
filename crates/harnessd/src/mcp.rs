@@ -11,8 +11,8 @@ use crate::leticode_config::McpServerKeys;
 /// Each server a session may start, or why it cannot, by name.
 pub type Tables = BTreeMap<String, Result<McpServerKeys, String>>;
 
-/// The user's `[mcp]` tables, joined by the workspace's `.mcp.json` when `[mcp_projects]` trusts
-/// it, and a warning for each project server left unstarted. The user's table wins a name.
+/// The user's `[mcp]` tables, joined by the workspace's `.mcp.json` when `[mcp_projects] pinned`
+/// holds its path and bytes, and a warning for each project server left unstarted. The user's table wins a name.
 pub fn servers(cfg: &Config) -> (Tables, Vec<String>) {
     let mut tables: Tables = cfg
         .leticode_user
@@ -24,32 +24,54 @@ pub fn servers(cfg: &Config) -> (Tables, Vec<String>) {
     if !cfg.read_project_config {
         return (tables, warnings);
     }
-    let file = cfg.workspace.join(crate::leticode_config::MCP_JSON);
-    let project = match crate::leticode_config::mcp_json(&cfg.workspace) {
-        Ok(Some(p)) if !p.is_empty() => p,
+    let read = match crate::leticode_config::mcp_json(&cfg.workspace) {
+        Ok(Some(r)) if !r.servers.is_empty() => r,
         Ok(_) => return (tables, warnings),
         Err(why) => {
             warnings.push(format!("{why}. Its MCP servers are not started."));
             return (tables, warnings);
         }
     };
-    if !crate::leticode_config::mcp_trusts(&cfg.leticode_user.mcp_trusted, &cfg.workspace) {
-        let names: Vec<&str> = project.keys().map(String::as_str).collect();
-        warnings.push(format!(
-            "{} declares MCP server(s) {} and a checkout starts no process until the user \
-             leticode.toml trusts it: [mcp_projects] trusted = [\"{}\"].",
-            file.display(),
-            names.join(", "),
-            cfg.workspace.display()
-        ));
-        return (tables, warnings);
+    let file = read.path.display().to_string();
+    let names = read.servers.keys().cloned().collect::<Vec<_>>().join(", ");
+    let pin_line = format!("[mcp_projects.pinned] \"{file}\" = \"{}\"", read.sha256);
+    // Trusted by these bytes at this path: an edit, or the same file in another worktree, is
+    // a file nobody read yet.
+    use crate::leticode_config::McpPin;
+    match crate::leticode_config::mcp_pin(&cfg.leticode_user.mcp_pinned, &read.path, &read.sha256) {
+        McpPin::Held => {}
+        McpPin::Moved { pinned } => {
+            warnings.push(format!(
+                "{file} changed since it was pinned (sha256 {pinned}, now {}), so its MCP \
+                 server(s) {names} are not started. Read it, then pin it again in the user \
+                 leticode.toml: {pin_line}.",
+                read.sha256
+            ));
+            return (tables, warnings);
+        }
+        McpPin::Unpinned => {
+            let under = if crate::leticode_config::mcp_trusts(
+                &cfg.leticode_user.mcp_trusted,
+                &cfg.workspace,
+            ) {
+                " [mcp_projects] trusted names its directory, and a directory is not a pin."
+            } else {
+                ""
+            };
+            warnings.push(format!(
+                "{file} declares MCP server(s) {names} and a checkout starts no process until \
+                 the user leticode.toml pins the file's bytes.{under} After reading it: \
+                 {pin_line}."
+            ));
+            return (tables, warnings);
+        }
     }
+    let project = read.servers;
     for (name, k) in project {
         if tables.contains_key(&name) {
             warnings.push(format!(
-                "{} declares MCP server `{name}`, and the user leticode.toml's [mcp.{name}] is \
-                 the one started.",
-                file.display()
+                "{file} declares MCP server `{name}`, and the user leticode.toml's [mcp.{name}] \
+                 is the one started."
             ));
             continue;
         }
@@ -205,17 +227,23 @@ mod tests {
         assert_eq!(warnings.len(), 1, "{warnings:?}");
         assert!(warnings[0].contains("fs, local"), "{}", warnings[0]);
         assert!(
-            warnings[0].contains("[mcp_projects] trusted"),
+            warnings[0].contains("[mcp_projects.pinned]"),
             "{}",
             warnings[0]
         );
+    }
+
+    /// A user config pinning `ws`'s `.mcp.json` at the bytes on disk now.
+    fn pin(cfg: &mut Config, ws: &std::path::Path) {
+        let read = crate::leticode_config::mcp_json(ws).unwrap().unwrap();
+        cfg.leticode_user.mcp_pinned.insert(read.path, read.sha256);
     }
 
     #[test]
     fn a_trusted_checkouts_servers_run_in_it_and_the_user_table_wins_a_name() {
         let ws = checkout("trusted");
         let mut cfg = cfg_at(&ws);
-        cfg.leticode_user.mcp_trusted = vec![ws.clone()];
+        pin(&mut cfg, &ws);
         cfg.leticode_user.mcp.insert(
             "fs".into(),
             McpServerKeys {
@@ -243,11 +271,37 @@ mod tests {
     }
 
     #[test]
+    fn an_edited_mcp_json_under_a_trusted_dir_is_not_started() {
+        let ws = checkout("edited");
+        let mut cfg = cfg_at(&ws);
+        cfg.leticode_user.mcp_trusted = vec![ws.parent().unwrap().to_path_buf()];
+        pin(&mut cfg, &ws);
+        assert!(configured(&servers(&cfg).0), "the pinned bytes start");
+        std::fs::write(
+            ws.join(".mcp.json"),
+            r#"{"mcpServers": {"evil": {"command": "sh", "args": ["-c", "id"]}}}"#,
+        )
+        .unwrap();
+        let (tables, warnings) = servers(&cfg);
+        assert!(
+            tables.is_empty(),
+            "an edit under a trusted dir started: {tables:?}"
+        );
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].contains("changed since it was pinned"),
+            "{}",
+            warnings[0]
+        );
+        assert!(warnings[0].contains("evil"), "{}", warnings[0]);
+    }
+
+    #[test]
     fn no_project_config_reads_no_mcp_json() {
         let ws = checkout("noproject");
         let mut cfg = cfg_at(&ws);
         cfg.read_project_config = false;
-        cfg.leticode_user.mcp_trusted = vec![ws.clone()];
+        pin(&mut cfg, &ws);
         let (tables, warnings) = servers(&cfg);
         assert!(tables.is_empty() && warnings.is_empty());
     }
