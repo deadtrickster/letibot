@@ -1770,8 +1770,9 @@ fn boundary_keys(
     text: &str,
     user: bool,
 ) -> Result<BoundaryConfig, String> {
-    let keys = "the keys are `grants_ro`, `grants_rw`, `hide` (lists of paths), `firecode_only` (a \
-                list of program names) and `env` (a table of constants)";
+    let keys = "the keys are `grants_ro`, `grants_rw`, `hide` (lists of paths), `network` (reasons \
+                this seat may reach the net), `firecode_only` (a list of program names) and `env` \
+                (a table of constants)";
     let Some(table) = value.as_table() else {
         return Err(format!(
             "{}:{}: [boundary] is a table; {keys}",
@@ -1810,6 +1811,9 @@ fn boundary_keys(
             "grants_ro" => out.grants_ro = list("grants_ro")?,
             "grants_rw" => out.grants_rw = list("grants_rw")?,
             "hide" => out.hide = list("hide")?,
+            // Reasons, not a switch: an entry is the sentence a disclosure and an audit row
+            // repeat, so a seat never reaches the network without one.
+            "network" => out.network = list("network")?,
             "firecode_only" => {
                 out.firecode_only = list("firecode_only")?;
                 if let Some(bad) = out
@@ -1878,9 +1882,9 @@ fn perimeter_tables(
     text: &str,
     user: bool,
 ) -> Result<BTreeMap<String, PerimeterTable>, String> {
-    let keys = "the keys are `grants_ro`, `grants_rw`, `hide` (lists of paths), `docker` (true or \
-                false), `secrets` (a list of names) and `env` (constants, or `{ file = ... }` / \
-                `{ command = ... }`)";
+    let keys = "the keys are `grants_ro`, `grants_rw`, `hide` (lists of paths), `network` (reasons \
+                this seat may reach the net), `docker` (true or false), `secrets` (a list of \
+                names) and `env` (constants, or `{ file = ... }` / `{ command = ... }`)";
     let Some(names) = value.as_table() else {
         return Err(format!(
             "{}:{}: [perimeter] is a table of named perimeters; {keys}",
@@ -1938,6 +1942,9 @@ fn perimeter_tables(
                 "grants_ro" => t.grants_ro = list("grants_ro")?,
                 "grants_rw" => t.grants_rw = list("grants_rw")?,
                 "hide" => t.hide = list("hide")?,
+                // Reasons, not a switch: an entry is the sentence a disclosure and an audit row
+                // repeat, so a seat never reaches the network without one.
+                "network" => t.network = list("network")?,
                 "docker" => {
                     // A capability, not a path: the seat gets a socket under its owner root and
                     // the engine's own socket stays out of its view.

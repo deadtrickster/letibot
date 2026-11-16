@@ -110,6 +110,8 @@ pub struct PerimeterTable {
     /// `docker = true`: the one capability that is not a path. A granted seat gets a socket under
     /// its owner root, served by the labelling proxy (`docs/lifecycle.md` d.7 and G6).
     pub docker: Option<Entry<bool>>,
+    /// Reasons this seat may reach the network: empty is the whole machine's network denied.
+    pub network: Vec<Entry<String>>,
 }
 
 impl PerimeterTable {
@@ -120,6 +122,7 @@ impl PerimeterTable {
             && self.env.is_empty()
             && self.secrets.is_empty()
             && self.docker.is_none()
+            && self.network.is_empty()
     }
 
     /// The project's table over the user's for the same name: both add, `hide` wins where they
@@ -142,6 +145,7 @@ impl PerimeterTable {
             env: union(&self.env, &other.env),
             secrets: union(&self.secrets, &other.secrets),
             docker: self.docker.clone().or_else(|| other.docker.clone()),
+            network: union(&self.network, &other.network),
         }
     }
 }
@@ -184,6 +188,13 @@ fn widening_refusal(table: &PerimeterTable) -> Result<(), String> {
             e.value.name()
         ));
     }
+    if let Some(e) = table.network.iter().find(|e| !e.from.user) {
+        return Err(format!(
+            "{}: [perimeter.{}] network = \"{}\": a project file may not grant the network. \
+             Widening is the operator's call, so write it in the user file",
+            e.from, table.name, e.value
+        ));
+    }
     Ok(())
 }
 
@@ -209,6 +220,8 @@ pub struct Perimeter {
     pub secrets: Vec<Secret>,
     /// `docker = true`: this seat may reach a socket under its owner root, and never the engine's.
     pub docker: bool,
+    /// Reasons this seat may reach the network. Empty is denied, and a mode does not answer it.
+    pub network: Vec<Entry<String>>,
     /// What a spawn had to be GRANTED for this perimeter, and the reason it gave: the operator's
     /// answer, recorded on this session only.
     pub widened: Vec<WidenItem>,
@@ -238,6 +251,7 @@ impl Perimeter {
             widened: Vec::new(),
             widened_because: None,
             docker: false,
+            network: Vec::new(),
         }
     }
 
@@ -256,6 +270,7 @@ impl Perimeter {
         if t.docker.as_ref().is_some_and(|e| e.value) {
             p.docker = true;
         }
+        p.network.extend(t.network.iter().cloned());
         for e in &t.secrets {
             if !p.secrets.contains(&e.value) {
                 p.secrets.push(e.value);
@@ -309,6 +324,17 @@ impl Perimeter {
                 boundary::checked_path(&key, &e.value, &e.from, home, false)?,
                 e.from.clone(),
             ));
+        }
+        for e in &self.network {
+            if !e.from.user {
+                return Err(widening_refusal(&PerimeterTable {
+                    name: self.name.clone(),
+                    network: vec![e.clone()],
+                    ..PerimeterTable::default()
+                })
+                .unwrap_err());
+            }
+            r.network.push((e.value.clone(), e.from.clone()));
         }
         for e in &self.env {
             let (k, v) = &e.value;
@@ -555,6 +581,9 @@ impl Perimeter {
             // Nor its docker: a capability is a widening like any other, so a child gets it only
             // from the table that names it - and that table's grant is the user file's to write.
             docker: false,
+            // Nor its egress: a child reaches nothing of the machine's, and only the table that
+            // names it - the user file's - can say otherwise.
+            network: Vec::new(),
             widened: Vec::new(),
             widened_because: None,
         };
@@ -574,6 +603,7 @@ impl Perimeter {
                     child.secrets.push(s.value);
                 }
             }
+            child.network.extend(t.network.iter().cloned());
         }
         for item in granted {
             match item {

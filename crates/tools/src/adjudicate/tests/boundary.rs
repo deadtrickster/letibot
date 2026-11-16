@@ -364,6 +364,33 @@ fn a_boundary_with_egress_to_the_host_still_asks() {
     assert_eq!(asked.count(), 1);
 }
 
+/// The free admit is a PRODUCTION rule, not a fixture's. `encloses()` needs `Egress::Denied`, so
+/// while a tight seat carried the host's network the only boundary that could ever enclose was one
+/// a test built by hand. Reading the egress out of the seat builder makes a regression turn this
+/// red rather than make it pass the way the fixtures do.
+#[test]
+fn the_free_admit_fires_on_a_production_tight_boundary() {
+    let seat = crate::exec::seat::seat_view(
+        &crate::mode::Mode::WRITES_ALLOWED,
+        "this machine",
+        &[] as &[&str],
+        std::path::Path::new("/h"),
+    );
+    let mut g = gate_at(
+        Box::new(Nobody),
+        crate::mode::Mode::WRITES_ALLOWED,
+        Some(measured(seat.egress)),
+    );
+    assert_eq!(
+        g.admit(&bash(
+            &json!({ "command": "cargo test --offline -p letibot-tools" })
+        )),
+        GateDecision::Admit,
+        "a tight seat's own egress has to leave a command inside it unasked"
+    );
+    assert_eq!(last_by(&g), "gate:boundary");
+}
+
 /// The admit is `writes-allowed` only, and both directions are asserted because either alone is a
 /// test a wrong implementation passes: `always-ask` still asks, and `allow-all` admits through its
 /// own `gate:mode` rule, so a reader can tell the two apart.
