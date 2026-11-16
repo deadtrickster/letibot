@@ -1,7 +1,6 @@
-//! `on_tool_call` - the tool call before the gate: a layer may narrow, rewrite, refuse or answer it.
-//! A rewrite is gated like the model's own call. An `answer` stands in for the result and skips the
-//! gate, so it is taken only from a layer the operator vouched for (built-in or pinned); a session's
-//! own or an unpinned layer's answer is refused and the call goes on to the gate.
+//! `on_tool_call`: the call before the gate, which a layer may narrow, rewrite, refuse or answer. A
+//! rewrite is gated like the model's own call. An `answer` skips the gate, so it is taken only from
+//! a built-in or pinned layer; any other answer is refused and the call goes to the gate.
 
 use serde::Deserialize;
 use serde_json::Value;

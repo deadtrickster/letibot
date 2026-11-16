@@ -1,14 +1,6 @@
-//! R196: two worktrees sharing one `CARGO_TARGET_DIR` each build their own built-in guests.
-//!
-//! Cargo keys a package's build directory by name and version, not by path, so the second tree to
-//! build reads the first tree's `OUT_DIR` — and the guests' bytes, their nested cargo's target dir
-//! and the build script's watch list all live there. Each step below is one way that shows up.
-//!
-//! The fixture is this repository in miniature: a host crate whose `build.rs` is the real one
-//! (`include_str!`), and one guest under `plugins/builtin`, so the layout the script derives from
-//! `CARGO_MANIFEST_DIR` is the layout it finds here. The guest's marker rides in the module's data
-//! section, and the host prints the module it embedded, so the assertion is on the bytes the build
-//! put in the binary rather than on the script's output.
+//! Two worktrees sharing one `CARGO_TARGET_DIR` each build their own built-in guests: cargo keys a
+//! build dir by name and version, not path. The fixture is the repo in miniature with the real
+//! `build.rs`, asserting on the bytes the host embedded.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;

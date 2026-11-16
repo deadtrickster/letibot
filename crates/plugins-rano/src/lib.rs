@@ -1,15 +1,6 @@
 //! The production door for plugin modules: one `Loader`, and one compiled module per distinct
-//! module in the process.
-//!
-//! Every host that runs a layer - the daemon, the head, the bridge - asks rano to compile a wasm
-//! module, and a compile costs seconds of CPU. Each host had its own copy of that loader and only
-//! the daemon kept a compiled module, so the head and the bridge compiled all thirteen built-ins
-//! again on every host build - in the head on the UI thread. Here it is once, keyed by the SHA-256
-//! of the bytes, which is the identity a pin and the gate already use: a second host build in the
-//! same process compiles nothing at all.
-//!
-//! `letibot_plugins` stays free of a wasm engine and this crate is why it can: the engine is one
-//! implementation of its `Loader` seam, and a test's table of answers is another.
+//! module in the process, keyed by the SHA-256 of its bytes. This crate is the wasm engine behind
+//! `letibot_plugins`' `Loader` seam, so that crate stays free of one.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -118,8 +109,8 @@ enum From<'a> {
 }
 
 impl From<'_> {
-    /// The path rano keeps on the module: a built-in has none, so it gets the placeholder the
-    /// daemon and the head used to spell - one spelling now, in one place.
+    /// The path rano keeps on the module: a built-in has none, so it gets one placeholder,
+    /// spelled here for the daemon and the head.
     fn display(&self) -> PathBuf {
         match self {
             From::Path(path) => (*path).to_path_buf(),
@@ -155,10 +146,9 @@ fn cached(sha: &[u8; 32]) -> Option<Arc<dyn Module>> {
         .cloned()
 }
 
-/// Keep a compiled module, unless another thread compiled these bytes first - that one wins, so
-/// two hosts opening at once wait for one compile rather than serialising every other module
-/// behind it. A `BTreeMap` and not a queue because the keys are hashes and there is no order worth
-/// keeping: the cap is over the count of distinct modules, and the eviction picks by hash.
+/// Keep a compiled module unless another thread compiled these bytes first, so two hosts opening at
+/// once wait for one compile without serialising other modules behind it. A `BTreeMap` because hash
+/// keys have no order worth keeping: the cap counts distinct modules and eviction picks by hash.
 fn remember(sha: [u8; 32], module: Arc<dyn Module>) -> Arc<dyn Module> {
     let mut held = cache().lock().unwrap_or_else(|e| e.into_inner());
     let mine = held.entry(sha).or_insert_with(|| module.clone()).clone();

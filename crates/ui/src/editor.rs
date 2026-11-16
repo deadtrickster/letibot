@@ -946,9 +946,7 @@ mod tests {
         assert_eq!(e.hint(1_000, Palette::None), "", "an idle composer");
         type_str(&mut e, "writing something");
         assert_eq!(e.hint(1_000, Palette::None), "", "a composer with text");
-        // A running turn is the other state the old hint distinguished, and it no longer reaches
-        // the hint at all - the parameter is gone - so the only way it could shift the line is by
-        // being named here.
+        // A running turn does not reach the hint at all, so the line must never name it.
         assert!(!e.hint(1_000, Palette::None).contains("interrupt"));
 
         // The double-taps still speak, which is the part that must not be lost.

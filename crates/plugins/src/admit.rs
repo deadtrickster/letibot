@@ -1,9 +1,6 @@
 //! The one admission path: discover a folder's layers, decide them against the trust book, and
-//! answer the news a person is owed.
-//!
-//! The daemon, the head and the bridge each had these three steps spelled out by hand, which is how
-//! they came to disagree about a directory and about *how* a moved pin is said. A host supplies
-//! the scopes and the engine; everything else is here.
+//! answer the news a person is owed. Shared by the daemon, the head and the bridge so they agree on
+//! directories and on how a moved pin is said; a host supplies the scopes and the engine.
 
 use std::path::Path;
 use std::sync::Arc;

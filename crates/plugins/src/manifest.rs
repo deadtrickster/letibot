@@ -223,10 +223,9 @@ pub struct Manifest {
     /// line the prompt carries, and the JSON Schema of its arguments. A declaration is the prompt
     /// bytes, so it is reviewed as prompt bytes.
     pub tools: Vec<ToolDecl>,
-    /// The exports that only restate what this host does without any layer - `native_copy`. A
-    /// built-in that names a hook here is not called for it: the round trip through wasm would
-    /// produce the answer the host is about to produce anyway. Honoured for the `built-in` scope
-    /// alone; a placed layer declaring it is refused at [`Manifest::admit_for`].
+    /// Exports that only restate what the host does without any layer (`native_copy`): a built-in
+    /// naming a hook here is not called for it. Honoured for the `built-in` scope only; a placed
+    /// layer declaring it is refused at [`Manifest::admit_for`].
     pub native_copy: Vec<String>,
 }
 

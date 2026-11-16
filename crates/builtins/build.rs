@@ -14,9 +14,9 @@ fn main() {
         .to_path_buf();
     let root = repo.join("plugins").join("builtin");
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
-    // **One `OUT_DIR`, and worktrees sharing a `CARGO_TARGET_DIR` all get this one.** Cargo names a
+    // One `OUT_DIR`, and worktrees sharing a `CARGO_TARGET_DIR` all get this one. Cargo names a
     // package's build directory without the path it was built from, so a guest or a module read back
-    // from here can be the other checkout's — `trees/<key>` is the whole of what keeps them apart.
+    // from here can be the other checkout's - `trees/<key>` is the whole of what keeps them apart.
     let mine = out.join("trees").join(tree_key(&here));
 
     // The target, before anything is built. A box without it can build the host and not the
@@ -154,10 +154,9 @@ fn tree_key(here: &Path) -> String {
     format!("{hash:016x}")
 }
 
-/// Build one guest and answer where the module is. The child's environment loses
-/// the four things that would make it the host's build, and its target directory is
-/// the guest's own under this tree's `OUT_DIR`, so no host build waits on it and no
-/// other tree's build answers for it.
+/// Build one guest and answer where the module is. The child loses the env that would make it the
+/// host's build and targets this tree's own `OUT_DIR`, so no host build waits on it and no other
+/// tree's build answers for it.
 fn build(name: &str, dir: &Path, mine: &Path) -> PathBuf {
     let target = mine.join("target").join(name);
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());

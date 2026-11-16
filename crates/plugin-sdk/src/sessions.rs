@@ -1,9 +1,6 @@
-//! What a session list says, once: the sentences the head's pane draws and the built-in
-//! `sessions` layer answers with, and the two rules both must spell the same way.
-//!
-//! The head draws the list through a pane, so a sentence one half says and the other half does not
-//! is two pictures of one list - which is what this module exists to end. It is compiled into the
-//! daemon, the head and every guest, so it may depend on nothing.
+//! What a session list says, once: the sentences the head's pane draws and the built-in `sessions`
+//! layer answers with, and the two rules both must spell alike. Compiled into the daemon, the head
+//! and every guest, so it depends on nothing.
 
 /// The list's title. The pane's title and the frame around the list are one line, so *which layer
 /// drew this* is never a guess a reader has to make.
@@ -83,11 +80,9 @@ pub fn clean(text: &str) -> String {
         .collect()
 }
 
-/// How long ago a session moved, in one word - the right-hand column of a row, and what a feed
-/// carries instead of a clock, so a frame that changed nothing asks a guest for nothing.
-///
-/// Coarse on purpose: the bucket is the cache key's own unit, so a value that moved every
-/// millisecond would be a guest run every frame.
+/// How long ago a session moved, in one word: a row's right-hand column, and what a feed carries
+/// instead of a clock. Coarse on purpose: the bucket is the cache key's unit, so a finer value
+/// would run the guest every frame.
 pub fn age_word(age_ms: u64) -> String {
     let s = age_ms / 1000;
     match s {

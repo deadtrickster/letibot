@@ -123,13 +123,9 @@ pub fn line(line: &str) -> rano::render::Line {
     Line::new(spans)
 }
 
-/// The role a pen is drawn as, or `None` for the block's own style. It is a function of the PEN
-/// rather than of the parameters, because `letibot_vt::attr` has already applied whatever the
-/// program wrote. `Attr::reverse` is not read here - see the module header.
-///
-/// A program's colour is a HUE and never a severity: red in a `cargo` log is the program's choice,
-/// not this head saying the line failed. Bold is kept only where a hue has a bold form - borrowing
-/// the severity that has one is how a foreign `[1;33m` came to mean "needs a person".
+/// The role a pen is drawn as, or `None` for the block's own style; a function of the pen because
+/// `letibot_vt::attr` already applied the program's parameters. A program's colour is a hue, never
+/// a severity, and bold is kept only where the hue has a bold form.
 fn role(a: Attr) -> Option<Role> {
     match (a.bold, a.hue()) {
         (_, Some(Hue::Red)) => Some(Role::DiagError),
