@@ -311,6 +311,33 @@ mod tests {
         assert_eq!(level(0.96).choices[1], "2");
     }
 
+    /// rano's 10:03-11:08: a window held at 100% for an hour of polls, its reset reported a few
+    /// seconds either side of the same instant each time, is one notice.
+    #[test]
+    fn a_window_held_at_full_for_an_hour_of_polls_is_said_once() {
+        let th = letibot_provider::usage_warn::Thresholds::default();
+        let mut s = UsageSaid::default();
+        let start = 1_794_834_180_000;
+        let reset = start + 4 * 3_600_000;
+        let mut said = Vec::new();
+        for poll in 0..33u64 {
+            let jitter = (poll % 7) * 900;
+            let at = if poll % 2 == 0 {
+                reset + jitter
+            } else {
+                reset - jitter
+            };
+            s.hear(
+                "kimi-code-global",
+                &five_h(1.0, at),
+                &th,
+                start + poll * 120_000,
+            );
+            said.append(&mut s.pending);
+        }
+        assert_eq!(said.len(), 1, "{said:?}");
+    }
+
     /// Every reading replaces the head's row, with no threshold crossed; one the poll could not
     /// refresh carries its age.
     #[test]
