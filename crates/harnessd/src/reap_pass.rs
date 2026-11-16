@@ -379,14 +379,14 @@ mod tests {
                     .expect("someone holds the turn");
                 daemons[holder] = None;
                 // A fork elsewhere in this binary can hold a copy of the lock's fd until its exec,
-                // for seconds under a loaded gate; wait for the release, since an hour of minutes
-                // here passes in microseconds.
+                // for seconds under a loaded gate, and an hour of minutes here passes in
+                // microseconds. So the clock stops until a live daemon holds the lock: one that
+                // holds it keeps it, and no later copy can take it away.
                 let until = std::time::Instant::now() + Duration::from_secs(60);
-                loop {
-                    if let Some(probe) = take_lock(&path) {
-                        drop(probe);
-                        break;
-                    }
+                while !daemons.iter_mut().flatten().any(|d| {
+                    let _ = d.due(now);
+                    d.holds()
+                }) {
                     assert!(
                         std::time::Instant::now() < until,
                         "the dead holder's lock was not released within 60 s"
