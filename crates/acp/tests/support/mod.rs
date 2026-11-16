@@ -59,11 +59,12 @@ impl World {
             std::env::set_var("XDG_CONFIG_HOME", root.join("config"));
             std::env::set_var("XDG_CACHE_HOME", root.join("cache"));
             std::env::set_var("XDG_DATA_HOME", root.join("data"));
-            std::env::set_var("LETIBOT_STORE", root.join("sessions.db"));
             std::env::remove_var("DEEPSEEK_API_KEY");
             std::env::remove_var("GLM_API_KEY");
-            std::env::remove_var("LETIBOT_MODE");
-            std::env::remove_var("LETIBOT_SOCKET");
+            for door in letibot_testenv::doors() {
+                std::env::remove_var(door);
+            }
+            std::env::set_var("LETIBOT_STORE", root.join("sessions.db"));
         }
 
         let worktree = root.join("worktree");
@@ -221,6 +222,8 @@ impl Client {
         let binary = std::env::var_os("CARGO_BIN_EXE_letibot-acp")
             .map(PathBuf::from)
             .unwrap_or_else(|| cwd.join("letibot-acp"));
+        // The process's own doors were cleared in `World::new`, and the ones set since are this
+        // test's: its daemon's socket and store.
         let mut child = Command::new(&binary)
             .current_dir(cwd)
             .stdin(Stdio::piped())

@@ -180,7 +180,7 @@ impl Daemon {
             args.push(w.to_string());
         }
         let script = format!("ulimit -v {cap}; exec \"$0\" \"$@\"");
-        let child = std::process::Command::new("sh")
+        let child = letibot_testenv::command("sh")
             .arg("-c")
             .arg(script)
             .arg(env!("CARGO_BIN_EXE_harnessd"))

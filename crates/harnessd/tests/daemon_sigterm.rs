@@ -3,7 +3,7 @@
 
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 /// How long the daemon may take to bind its socket.
@@ -44,7 +44,7 @@ fn start(dir: &Path) -> (Daemon, PathBuf) {
         .parent()
         .and_then(Path::parent)
         .expect("the workspace root");
-    let child = Command::new(env!("CARGO_BIN_EXE_harnessd"))
+    let child = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
         .arg("--socket")
         .arg(&socket)
         .arg("--store")

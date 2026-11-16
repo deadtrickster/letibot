@@ -48,7 +48,7 @@ fn bin() -> PathBuf {
 
 fn run(store: &Path, args: &[&str]) -> (i32, String, String) {
     let home = store.parent().unwrap().join("home");
-    let out = std::process::Command::new(bin())
+    let out = letibot_testenv::command(bin())
         .args(args)
         .arg("--store")
         .arg(store)

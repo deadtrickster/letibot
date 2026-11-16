@@ -8,7 +8,7 @@
 //! box, which `su -c true` cannot promise, since `su` blocks only where it asks for a password.
 
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Stdio};
 use std::time::{Duration, Instant};
 
 use letibot_sessionlog::client::{HeadClient, Inbound, pump};
@@ -36,7 +36,7 @@ fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &s
         .expect("the workspace root");
     let home = dir.join("home");
     std::fs::create_dir_all(&home).expect("a home with no config in it");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_harnessd"));
+    let mut cmd = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"));
     cmd.arg("--socket")
         .arg(socket)
         .arg("--store")

@@ -78,6 +78,7 @@ toml.workspace = true
 letibot-embeddings.workspace = true
 
 [dev-dependencies]
+letibot-testenv.workspace = true
 # `tests/migrate.rs` hashes a session id the way the launcher's socket key does. Nothing in the
 # binary uses this any more: the socket's key is `letibot_bridge::daemon::key`'s.
 sha2 = "0.10"

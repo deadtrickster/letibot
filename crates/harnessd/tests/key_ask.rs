@@ -162,7 +162,7 @@ fn a_daemon_with_no_key_asks_saves_and_asks_again_when_the_key_is_refused() {
     std::fs::write(&file, format!("[deepseek]\nurl = \"{url}\"\n")).unwrap();
     let socket = home.join("d.sock");
 
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_harnessd"))
+    let child = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
         .args([
             "--provider",
             "deepseek",
@@ -290,7 +290,7 @@ fn a_daemon_with_no_key_asks_saves_and_asks_again_when_the_key_is_refused() {
 #[test]
 fn with_no_head_to_ask_the_refusal_names_where_a_key_goes() {
     let home = scratch();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_harnessd"))
+    let out = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
         .args([
             "--provider",
             "deepseek",

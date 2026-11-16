@@ -60,7 +60,7 @@ fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &s
         .expect("the workspace root is two levels above this crate");
     let home = dir.join("home");
     std::fs::create_dir_all(&home).expect("a home with no config in it");
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_harnessd"));
+    let mut cmd = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"));
     cmd.arg("--socket")
         .arg(socket)
         .arg("--store")
@@ -96,6 +96,11 @@ fn start_daemon(dir: &Path, log: &Path, socket: &Path, store: &Path, session: &s
         // of the run.
         .current_dir(repo)
         .env("HOME", &home)
+        // An inherited XDG dir would reach the operator's providers.toml and store past `HOME`.
+        .env("XDG_CONFIG_HOME", home.join(".config"))
+        .env("XDG_DATA_HOME", home.join(".local/share"))
+        .env("XDG_STATE_HOME", home.join(".local/state"))
+        .env("XDG_CACHE_HOME", home.join(".cache"))
         // `XDG_RUNTIME_DIR` is this temp directory, and that is not tidiness: `sudo::install`
         // writes its shim under the runtime dir the operator's LIVE daemon uses, so inheriting it
         // would write into a running box's shim path. The shim is the same file either way.

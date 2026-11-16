@@ -3,7 +3,7 @@
 //! build, a head attached through the forward.
 
 use std::path::{Path, PathBuf};
-use std::process::{Command, Output};
+use std::process::Output;
 
 use letibot_sessionlog::SessionEvent;
 use letibot_sessionlog::activity::{Activity, Waiting};
@@ -302,7 +302,7 @@ impl Fixture {
     }
 
     fn migrate(&self, args: &[&str]) -> Output {
-        let mut cmd = Command::new(env!("CARGO_BIN_EXE_letibot-multi"));
+        let mut cmd = letibot_testenv::command(env!("CARGO_BIN_EXE_letibot-multi"));
         cmd.arg("--migrate").args(args);
         for (k, v) in self.env() {
             cmd.env(k, v);

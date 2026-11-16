@@ -28,6 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+letibot-testenv.workspace = true
 # **A real daemon, in this process**, so the client scripts under `tests/` drive the binary against
 # a socket a test bound and not a stub. `default-features = false` keeps llama.cpp - and every
 # model file on the box - out of the build: the turn goes to a loopback provider.

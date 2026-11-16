@@ -3,7 +3,6 @@
 
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::{Duration, Instant};
 
 fn scratch(tag: &str) -> PathBuf {
@@ -24,7 +23,7 @@ fn letibot_multi(bin: &Path) -> PathBuf {
 
 fn is_on(bin: &Path, home: &Path, socket: &Path) -> (bool, Duration, String) {
     let t = Instant::now();
-    let out = Command::new(bin.join("letibot-multi"))
+    let out = letibot_testenv::command(bin.join("letibot-multi"))
         .args(["rooms", "is-on"])
         .env_clear()
         .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
@@ -140,7 +139,7 @@ time.sleep(30)
         .canonicalize()
         .unwrap();
     let t = Instant::now();
-    let out = Command::new("bash")
+    let out = letibot_testenv::command("bash")
         .arg(&script)
         .arg("--new")
         .current_dir(&wt)

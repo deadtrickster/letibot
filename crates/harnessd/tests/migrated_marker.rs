@@ -2,7 +2,6 @@
 //! `letibot --migrate SESSION --to HOST` moves a session's whole daemon to a host and marks
 //! the copy it leaves behind (`session.lives_on`).
 
-use std::process::Command;
 
 use letibot_harnessd::Parts;
 use letibot_harnessd::config::{Config, ProviderConfig, Seat};
@@ -61,7 +60,7 @@ fn the_listing_names_the_host_a_moved_session_lives_on() {
     let path = dir.join("sessions.db");
     store_with_a_moved_session(&path);
 
-    let out = Command::new(env!("CARGO_BIN_EXE_harnessd"))
+    let out = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
         .arg("--store")
         .arg(&path)
         .arg("--list-sessions")

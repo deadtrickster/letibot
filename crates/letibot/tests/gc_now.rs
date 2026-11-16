@@ -164,7 +164,7 @@ impl Fixture {
     /// The verb, run the way a person's shell runs it: an environment that names only this
     /// fixture, so nothing here can reach the operator's own store, cache or runtime directory.
     fn run(&self, args: &[&str]) -> (bool, String, String) {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_letibot-multi"))
+        let out = letibot_testenv::command(env!("CARGO_BIN_EXE_letibot-multi"))
             .args(args)
             .current_dir(&self.root)
             .env_clear()
