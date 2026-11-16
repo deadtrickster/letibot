@@ -31,6 +31,7 @@ macro_rules! eprintln {
 #[cfg(test)]
 pub(crate) static HOME_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+pub mod account;
 pub mod activity;
 pub mod answers;
 pub mod attachments;

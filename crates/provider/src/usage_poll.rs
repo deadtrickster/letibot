@@ -245,6 +245,12 @@ pub fn fetch(url: &str, creds: &Credentials) -> Option<Vec<Window>> {
     (!w.is_empty()).then_some(w)
 }
 
+/// The endpoint's answer whole, for a caller that reads more than a window - an account with no
+/// balance says so here too. One request, the same door and key as [`fetch`].
+pub fn body(url: &str, creds: &Credentials) -> Option<Value> {
+    fetch_body(url, creds)
+}
+
 fn fetch_body(url: &str, creds: &Credentials) -> Option<Value> {
     let agent = ureq::Agent::new_with_config(
         ureq::Agent::config_builder()
