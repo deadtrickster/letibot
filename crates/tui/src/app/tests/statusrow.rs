@@ -821,8 +821,17 @@ fn a_compaction_is_pending_then_running_then_one_folded_row() {
             "tail": {"turns": [], "carried": 0, "because": "", "dropped": 0},
         }))
         .expect("a report");
+    // The daemon's order: the fork, which sizes the new base, then the sentence.
+    let fork = serde_json::from_value(serde_json::json!({
+        "event": "transcript_forked",
+        "transcript_id": "s#t2",
+        "parent_id": "s#t1",
+        "context_after": {"tokens": 300, "estimated": true},
+    }))
+    .expect("a fork");
+    a.apply(ServerFrame::Event(env(seq + 3, fork)));
     a.apply(ServerFrame::Event(env(
-        seq + 3,
+        seq + 4,
         SessionEvent::Warning {
             code: "compacted".into(),
             detail: "compacted: 1000 → ≈ 300 tokens, kept a 40-character summary, nothing \

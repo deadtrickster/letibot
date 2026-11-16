@@ -1406,6 +1406,7 @@ mod diffcard;
 mod editor;
 mod feedback;
 mod ghlinks;
+mod header_ctx;
 mod hits;
 mod host_build;
 mod jobcard;

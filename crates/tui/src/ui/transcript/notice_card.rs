@@ -219,18 +219,6 @@ struct Compaction {
     cut_off: bool,
 }
 
-/// The size after a compaction, in the daemon's shown unit, read from its sentence: what the
-/// header's context is once the fork lands. `None` when the text is not a compaction's.
-pub(crate) fn compaction_after(detail: &str) -> Option<u64> {
-    let body = detail.trim();
-    let body = body
-        .strip_prefix("compacted")
-        .or_else(|| body.strip_prefix("reseated"))
-        .and_then(|r| r.strip_prefix(": "))
-        .unwrap_or(body);
-    compaction_of(body.split("\n\n").next().unwrap_or(body)).map(|c| c.after)
-}
-
 /// The facts in a compaction's sentence, or `None` when the text is not that shape.
 fn compaction_of(body: &str) -> Option<Compaction> {
     let (before, rest) = body.split_once(" → ")?;

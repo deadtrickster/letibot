@@ -1458,6 +1458,7 @@ fn the_frame_before_the_attach_claims_nothing_about_the_session() {
             heads: Vec::new(),
             subagents: Vec::new(),
             activity: letibot_sessionlog::activity::Activity::Quiet,
+            context_after: None,
         },
     ));
     let frame = a.screen(80, 24);
@@ -2577,6 +2578,7 @@ fn a_resume_keeps_the_cat_until_the_asked_for_session_arrives() {
             heads: Vec::new(),
             subagents: Vec::new(),
             activity: letibot_sessionlog::activity::Activity::Quiet,
+            context_after: None,
         }
     }
     let waiting = |a: &mut App, when: &str| {

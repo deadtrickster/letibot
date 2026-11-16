@@ -254,6 +254,7 @@ pub fn forked(transcript_id: &str, parent_id: &str) -> SessionEvent {
     SessionEvent::TranscriptForked {
         transcript_id: transcript_id.into(),
         parent_id: parent_id.into(),
+        context_after: None,
     }
 }
 

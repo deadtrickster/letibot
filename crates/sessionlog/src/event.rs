@@ -886,6 +886,15 @@ impl CompactionTail {
     }
 }
 
+/// A conversation's size right after a fork, in the provider's unit where one was measured.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ContextAfter {
+    pub tokens: u64,
+    /// Scaled from an older measurement, not counted by the provider on this base.
+    #[serde(default)]
+    pub estimated: bool,
+}
+
 /// A compaction's account of itself, beside its sentence rather than inside it: the `Warning`
 /// that announces a compaction stays one line, and this carries the numbers.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1338,6 +1347,10 @@ pub enum SessionEvent {
         /// the log, which is the durable record of where a session's conversation went, rather than
         /// for a reader that acts on it.
         parent_id: String,
+        /// The new base's size in the unit the header shows. A head takes it as its context, since
+        /// the last round's prompt measured the conversation this fork replaced.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        context_after: Option<ContextAfter>,
     },
     HeadAttached {
         head_id: String,

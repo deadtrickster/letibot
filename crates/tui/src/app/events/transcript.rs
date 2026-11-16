@@ -104,8 +104,12 @@ impl App {
             SessionEvent::TranscriptForked {
                 transcript_id,
                 parent_id,
+                context_after,
             } => {
                 self.rows_replaced(&transcript_id, &parent_id);
+                if let Some(after) = context_after {
+                    self.fork_context(after);
+                }
                 Disposition::Rendered
             }
             _ => unreachable!("on_transcript_event was handed an event it does not handle"),

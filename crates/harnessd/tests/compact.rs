@@ -1341,12 +1341,22 @@ fn a_fork_replaces_the_rows_the_hub_holds_rather_than_adding_to_them() {
         letibot_sessionlog::SessionEvent::TranscriptForked {
             transcript_id,
             parent_id,
+            context_after,
         } => {
             assert_eq!(
                 transcript_id, &first.transcript_id,
                 "the transcript it opened"
             );
             assert_eq!(parent_id, &first.parent_id, "and the one it replaced");
+            // A local session: the ledger is the count, so the new base is exact.
+            assert_eq!(
+                *context_after,
+                Some(letibot_sessionlog::event::ContextAfter {
+                    tokens: first.base_tokens as u64,
+                    estimated: false,
+                }),
+                "the fork sizes its new base for the header"
+            );
         }
         other => panic!("the statement is not a fork: {other:?}"),
     }

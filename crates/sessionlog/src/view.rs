@@ -294,6 +294,10 @@ pub struct Snapshot {
     /// attaches late needs and cannot derive.
     #[serde(default)]
     pub activity: crate::activity::Activity,
+    /// The base the last fork opened, until a round measures it: a head's context while `turn`
+    /// still holds the round before the fork.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_after: Option<crate::event::ContextAfter>,
 }
 
 /// One child of this session, as the `Subagent` event last reported it. Every field is the
@@ -373,6 +377,8 @@ pub struct SessionView {
     /// See [`Snapshot::activity`]. Folded rather than asked for: the daemon publishes the value when
     /// it changes, so a view holding the last one has the current one at every seq.
     activity: crate::activity::Activity,
+    /// See [`Snapshot::context_after`].
+    context_after: Option<crate::event::ContextAfter>,
 }
 
 /// How much one session's view holds, by part - for the daemon's memory census. Counts, not
@@ -415,6 +421,7 @@ impl SessionView {
             heads: Vec::new(),
             subagents: Vec::new(),
             activity: crate::activity::Activity::Quiet,
+            context_after: None,
         }
     }
 
@@ -633,6 +640,8 @@ impl SessionView {
                 prefix_check: _,
                 dialect_template_sha: _,
             } => {
+                // A round measured the conversation, so the fork's figure is history.
+                self.context_after = None;
                 if let Some(t) = self.turn.as_mut()
                     && &t.turn_id == turn_id
                 {
@@ -731,7 +740,19 @@ impl SessionView {
             SessionEvent::TranscriptForked {
                 transcript_id,
                 parent_id,
+                context_after,
             } => {
+                // The last round's usage measured the replaced conversation. Rewritten as well as
+                // carried, so a head that reads only the turn draws the new base.
+                if let Some(after) = context_after {
+                    self.context_after = Some(*after);
+                    if let Some(TurnState::Finished { usage, .. }) =
+                        self.turn.as_mut().map(|t| &mut t.state)
+                    {
+                        usage.prompt_tokens = after.tokens;
+                        usage.cached_tokens = 0;
+                    }
+                }
                 let gone = format!("{parent_id}.");
                 self.items.retain(|r| !r.item_id.starts_with(gone.as_str()));
                 self.transcript = transcript_id.clone();
@@ -980,6 +1001,7 @@ impl SessionView {
             heads: self.heads.clone(),
             subagents: self.subagents.clone(),
             activity: self.activity.clone(),
+            context_after: self.context_after,
         }
     }
 

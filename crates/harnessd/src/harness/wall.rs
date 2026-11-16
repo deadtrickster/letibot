@@ -1908,6 +1908,35 @@ impl Harness {
             self.session_registry.bell().ring_wake(&self.cfg.session_id);
         }
         self.reconcile(&mut sink, &body);
+        // The stored context size describes the old conversation, which this fork replaced.
+        // A verbatim fork keeps its count and moves its ledger anchor; any other fork has nothing measured on its new base. The ratio is not about the old conversation, so it rides the fork.
+        let prefix_delta = self.session.ledger.prefix_tokens().len() as i64 - prefix_before;
+        let kept = self.store.as_ref().and_then(|store| {
+            if verbatim {
+                store
+                    .session(&self.cfg.session_id)
+                    .ok()
+                    .flatten()
+                    .and_then(|row| {
+                        let ledger = (row.context_ledger? as i64 + prefix_delta).max(1) as u64;
+                        Some((row.context_tokens?, row.context_cached, ledger))
+                    })
+            } else {
+                self.carried_pair()
+                    .map(|(tokens, ledger)| (tokens, None, ledger))
+            }
+        });
+        // In the header's unit. Only a verbatim carry onto the same prompt is still the provider's count.
+        let context_after = match kept {
+            Some((tokens, _, _)) => letibot_sessionlog::event::ContextAfter {
+                tokens,
+                estimated: !verbatim || prefix_delta != 0,
+            },
+            None => letibot_sessionlog::event::ContextAfter {
+                tokens: self.cfg.shown_tokens(self.session.ledger.len() as u64),
+                estimated: self.provider.is_some(),
+            },
+        };
         // AND EVERY ROW JUST PUBLISHED REPLACED THE ONES EVERY READER HOLDS: `append_items` publishes under
         // `new_id`, so a reader folding what it is told draws both conversations. The event names the transcript it
         // replaces, not a count, and goes AFTER the rows, so a fork that failed has not already emptied every reader.
@@ -1915,6 +1944,7 @@ impl Harness {
             .publish(letibot_sessionlog::SessionEvent::TranscriptForked {
                 transcript_id: new_id.clone(),
                 parent_id: old_id.clone(),
+                context_after: Some(context_after),
             });
         // The write, ticking per committed chunk - see "a carry the head can watch" above.
         let what = filling_what;
@@ -1947,24 +1977,7 @@ impl Harness {
                 ),
             );
         }
-        // The stored context size describes the old conversation, which this fork replaced.
-        // A verbatim fork keeps its count and moves its ledger anchor; any other fork has nothing measured on its new base. The ratio is not about the old conversation, so it rides the fork.
         if let Some(store) = &self.store {
-            let kept = if verbatim {
-                store
-                    .session(&self.cfg.session_id)
-                    .ok()
-                    .flatten()
-                    .and_then(|row| {
-                        let delta =
-                            self.session.ledger.prefix_tokens().len() as i64 - prefix_before;
-                        let ledger = (row.context_ledger? as i64 + delta).max(1) as u64;
-                        Some((row.context_tokens?, row.context_cached, ledger))
-                    })
-            } else {
-                self.carried_pair()
-                    .map(|(tokens, ledger)| (tokens, None, ledger))
-            };
             let _ = match kept {
                 Some((tokens, cached, ledger)) => {
                     store.set_context(&self.cfg.session_id, Some(tokens), cached, Some(ledger))

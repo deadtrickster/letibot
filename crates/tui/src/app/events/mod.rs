@@ -248,6 +248,9 @@ impl App {
             self.usage_cache_measured = true;
             self.last_timings = Some(*timings);
         }
+        if let Some(after) = s.context_after {
+            self.fork_context(after);
+        }
         // The reader's place, taken before the rows go: the ids are per transcript, so what survives is the
         // row's own words and the line, both taken while the rows are still here. See [`App::repair_anchor`].
         self.carry = same_session.then(|| Carry {
@@ -626,6 +629,15 @@ impl App {
         // And a placeholder goes with the row that drew it: a body arriving for a row the window let
         // go leaves its entry with nothing on the screen to say it for.
         self.pending_rows.retain(|id, _| held.contains(id.as_str()));
+    }
+
+    /// The header's context after a fork: the new base, sized by the daemon. No round has run on it, so
+    /// its cache fraction is unmeasured.
+    pub(crate) fn fork_context(&mut self, after: letibot_sessionlog::event::ContextAfter) {
+        let u = self.usage.get_or_insert_with(Usage::default);
+        u.prompt_tokens = after.tokens;
+        u.cached_tokens = 0;
+        self.usage_cache_measured = false;
     }
 
     /// The rows this head holds that are numbered in a transcript the session has left: the head's half of

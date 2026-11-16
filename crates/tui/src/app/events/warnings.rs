@@ -114,16 +114,6 @@ impl App {
                         self.spent_micros += c;
                         self.spent_seen = true;
                     }
-                    // The new base is what the header's context now is: the last round's prompt
-                    // was the history this fork replaced.
-                    if let Some(after) =
-                        crate::ui::transcript::notice_card::compaction_after(&detail)
-                        && let Some(u) = self.usage.as_mut()
-                    {
-                        u.prompt_tokens = after;
-                        u.cached_tokens = 0;
-                        self.usage_cache_measured = false;
-                    }
                     // The progress event is ephemeral - it carries no "done" - so the
                     // durable warning that the fork landed is what ends the walking line.
                     // A fold that failed ends it too, below: not a fold still running.

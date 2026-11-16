@@ -288,6 +288,7 @@ mod tests {
             heads: Vec::new(),
             subagents: Vec::new(),
             activity: Default::default(),
+            context_after: None,
         }
     }
 
