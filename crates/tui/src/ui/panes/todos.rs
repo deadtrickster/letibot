@@ -377,9 +377,7 @@ impl App {
         // Only a `Todos` reply refreshes these, so a board read a while ago says so.
         let read = self
             .seat_boards_at_ms
-            .and_then(|at| {
-                crate::app::model_card::ago(at, crate::app::model_card::now_ms(), 60_000)
-            })
+            .and_then(|at| crate::app::model_card::ago(at, self.now_ms, 60_000))
             .map(|a| format!(", read {a}"))
             .unwrap_or_default();
         for (i, board) in self.seat_boards.iter().enumerate() {
