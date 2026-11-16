@@ -1928,7 +1928,41 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R348 - plugin looks, runtime bounds, the bridge as an untyped room client
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I96, I97, I99. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built 2026-11-16 on branch `r348-plugins`, waiting for the lead's gate. Filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I96, I97, I99. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+
+**Built.** One commit per change, no store schema change (main is at 55 and this branch takes no number).
+- I96, `only_smaller`: a rewrite may drop an argument and never change one. Recursive over objects and arrays, with the refusing path named (`env.EXTRA`, `argv`). Only caller: `CallHooks::on_tool_call`. `a_layer_rewrites_a_call` was the one test that broke - it re-aimed `until` from `coderabbit` to `checks` - so it drops an argument now.
+- I96, looks: `look::run` takes a `Reach` (trees, capabilities, the session's view, whether the layer is pinned). Reads go through `Decides::read`, the backend the model's file tools use, so a pane in a VM or on another host is read where the session stands; a `read:<path>` tree is honoured only for a pinned layer, and the refusal for an unpinned one names the pin. `PluginHost::with_view` is handed `Harness::look_view()` at `open_plugins`.
+- I96, exec looks: a built-in keeps its exemption (its bytes are the binary's); a placed layer's pin no longer stands in for the gate, so its `exec` look meets `Unasked` like every other command.
+- I96, `http:`: refused at admission. Nothing serves it, so a manifest declaring it is not admitted and no pin can be taken over reach that does not exist yet; `docs/plugin-extension-points.md` names the four spellings.
+- I96, MCP descriptions: a mounted tool's description arrives verbatim under one line saying it is the server's words and instructs nobody - the same statement a quarantined result makes.
+- I97, MCP timeout: the client sends `notifications/cancelled` for the request it gave up on and answers `McpError::MayHaveRun`, which `call_through` renders as "may have run" with the next step being to look rather than repeat.
+- I97, `prompt_once`: the prompt carries an id minted from session, speaker and words, recorded before anything is sent; a second submit inside ten minutes is refused, a daemon's refusal forgets the id, and the timeout says the prompt may have been taken.
+- I99, `reach`/`delivered`: both read the room crate's rule - `Message::reach`, and the frame's `names_you` rather than a second reading of it. The private `say_kind` and its copies are gone.
+- I99, twins: `suffixed` cuts the name part and not the folder, the salt is a fixed width, `family_for` is the prefix the twin declares, and the rename is bounded at three with a fresh salt each time.
+- I99, the socket: `host_key`, `host_key_of` and `socket_path` are `letibot_room`'s functions; every frame the bridge writes decodes as `letibot_room::Request`.
+
+**Tests.** Each named one was run against the base's behaviour and seen red first.
+- `only_smaller_refuses_a_changed_value` - base: `Ok(())` on `{"command":"ls"}` -> `{"command":"rm -rf ~"}`.
+- `an_unpinned_pane_look_cannot_read_outside_the_view` - base: with the pin check removed it read the file (`{"exit":0,"stdout":"PRIVATE"}`); with the view removed it read it again.
+- `a_pinned_layers_exec_look_still_asks_the_gate` - base: the look ran (`Look::Running`).
+- `an_http_capability_is_refused_until_a_look_serves_it` - base: `refused: Http("api.github.com")`.
+- `a_servers_description_is_marked_as_data` - base: the description arrived with no marker.
+- `a_timed_out_mcp_call_is_cancelled_not_retried_blind` - base: `Err(Transport("no answer within 0s"))` and no cancellation reached the server. `a_timed_out_call_reaches_the_model_as_may_have_run` is the model's sentence.
+- `prompt_once_timeout_does_not_double_submit` - base: "the daemon did not take the prompt in 1s", and the repeated prompt reached the fake daemon's wire.
+- `a_named_fyi_reaches_a_push_layer_as_addressed` - base: `left: "passing", right: "addressed"`, through the real built-in push layer.
+- `a_long_folder_twin_keeps_its_family` - base: `a_handle(&family)` on the whole 59-character handle.
+- `bridge_and_daemon_dial_the_same_room_socket` holds the two spellings together; it is an equality test, not a failing one, because the copies agreed at the snapshot.
+- `every_frame_the_bridge_sends_is_a_room_request` was proved able to fail: renaming the `say` frame's `text` to `words` turns it red with "missing field `text`".
+
+**Residue.**
+- I97's wall-clock deadline for plugin calls is not built: a wasm call's bound is fuel, and an epoch deadline needs an `Engine` knob rano does not expose (`rano/src/plugin.rs` builds its own with `consume_fuel(true)` and `from_bytes_hooks` takes no config). A rano change is `cc@rano`'s tree and no rev bump happens here, so it moves to R349.
+- I97's missing tests for the `card_item`/`card_call` paths and the exec sandbox boundary move to R350 with the rest of I77: mounting has coverage now (`crates/tools/tests/external.rs`, `crates/mcp/tests/fake_server.rs`), the card paths do not.
+- I99's A8-F11 (the waiter uses the base name), A8-F13 (no generation guard on the waiting slot) and A8-F14 (a pid-derived salt loses the cursor on restart, HYP) are open. The salt is still the pid, so a restart still renames the twin.
+- I99's A8-F4: the gap and replay tests already run against a real `Server` (`bridge/tests/room_gap.rs`, R333); the ack, pending and redial ones still run against the fake coordinator only.
+- The rebuild of `RoomLink` on `letibot_room::Client` (C14) is R350.
+
+**Box facts met.** `~/.cargo` is read-only and does not hold this tree's rano rev, so the work ran on a copy of it under `$HOME` with network (the rev fetches by sha). `bridge`'s `mcp::tests::initialize_answers_the_revision_and_names_the_server` fails on this checkout (612 bytes: the instructions count the folder name) and does so with this branch's changes stashed. `fleet::tests::a_renamed_operator_session_of_another_folder_is_listed_as_theirs` fails under a full parallel lib run about one time in three and passes alone.
 
 **Scope.** I99: patch now with real-server tests and a typed decode of recorded frames; the rebuild on `letibot_room::Client` is a follow-up (C14).
 
