@@ -23,7 +23,19 @@ impl App {
             _ => None,
         });
         let newest = up.next_back()?;
+        // The parked turn's own line says it, in local time.
+        if newest.code == "limit_park" && self.turn_parked() {
+            return None;
+        }
         Some((limit_words(&newest.code, &newest.detail), up.count()))
+    }
+
+    /// The turn in view is parked on a limit, and its own line says so.
+    pub(crate) fn turn_parked(&self) -> bool {
+        matches!(
+            self.turn.as_ref().and_then(|t| t.state.as_ref()),
+            Some(letibot_sessionlog::view::TurnState::Parked { .. })
+        )
     }
 
     /// The limit notice as resident lines, in the warning register.

@@ -86,6 +86,70 @@ fn the_newest_limit_notice_counts_the_older_ones() {
     );
 }
 
+const PARK: &str = "kimi-code/k2 said `429 usage limit`, so this session is paused until \
+                    13:07:09 UTC. Nothing is lost - the daemon opens the turn by itself and a \
+                    prompt sent meanwhile waits with it.";
+/// One event at `ts` on the daemon's clock, in the order the log gives it.
+fn at(a: &mut App, ts: u64, event: SessionEvent) {
+    let seq = a.seq + 1;
+    a.apply(ServerFrame::Event(env_at(seq, ts, event)));
+}
+
+fn said(code: &str, detail: &str) -> SessionEvent {
+    SessionEvent::Warning {
+        code: code.into(),
+        detail: detail.into(),
+        compaction: None,
+    }
+}
+
+fn parked_turn(a: &mut App) {
+    at(a, 10, testing::turn_started("t1"));
+    at(
+        a,
+        20,
+        SessionEvent::ActivityChanged {
+            activity: letibot_sessionlog::activity::Activity::of(vec![
+                letibot_sessionlog::activity::Waiting::Limit(
+                    "parked on kimi-code/k2's limit until 13:07:09 UTC - esc ends the turn, \
+                     /models switches"
+                        .into(),
+                ),
+            ]),
+        },
+    );
+    at(a, 30, said("limit_park", PARK));
+    at(
+        a,
+        30,
+        SessionEvent::TurnInterrupted {
+            turn_id: "t1".into(),
+            reason: "paused until 13:07:09 UTC".into(),
+            partial_kept: true,
+            park: Some(letibot_sessionlog::event::TurnPark {
+                model: "kimi-code/k2".into(),
+                until_ms: letibot_sessionlog::event::now_ms() + 3_600_000,
+                retry_at_ms: None,
+            }),
+        },
+    );
+}
+
+/// rano showed one park three times, in two zones. The parked turn's line is the one.
+#[test]
+fn one_park_is_said_once_in_local_time() {
+    let (mut a, _hub) = attached();
+    parked_turn(&mut a);
+    let s = a.screen(160, 30);
+    let said: Vec<&String> = s
+        .iter()
+        .filter(|l| l.contains("kimi-code/k2") || l.contains("paused until"))
+        .collect();
+    assert_eq!(said.len(), 1, "{}", s.join("\n"));
+    assert!(said[0].contains("(local time)"), "{}", s.join("\n"));
+    assert!(!s.join("\n").contains("UTC"), "{}", s.join("\n"));
+}
+
 #[test]
 fn a_park_on_a_limit_reads_as_one_line() {
     let detail = "glm-coding/glm-5.3 said `429 usage limit, resets at 2026-11-15 07:15:00`, so \

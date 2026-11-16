@@ -115,8 +115,11 @@ impl App {
     fn waiting_words(&self) -> String {
         // While a card is up it says its own ask, and the delivery behind it, better than this line.
         let card_up = !self.open.is_empty();
+        // A parked turn's own line says the park, in local time; the daemon's words are UTC.
+        let parked = self.turn_parked();
         let shown = |w: &&Waiting| match w {
             Waiting::Delivery => !card_up,
+            Waiting::Limit(_) => !parked,
             Waiting::Ask(id) => !self.open.iter().any(|d| &d.req_id == id),
             _ => true,
         };
