@@ -95,6 +95,7 @@ impl App {
         // The act, not its outcome: nothing has been asked yet, so the daemon's acceptance
         // (or its refusal) is what says the skill was handed over.
         self.say(&format!("handing `{name}` to the session..."));
+        self.echo_skill_load(&name, "");
         ControlFlow::Break(Some(Action::LoadSkill {
             name,
             then: String::new(),

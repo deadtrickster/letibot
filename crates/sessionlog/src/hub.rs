@@ -481,6 +481,8 @@ pub struct JournaledPrompt {
     pub from: Option<String>,
     /// Its lane, so a Tab-queued prompt is not restored as a steer.
     pub delivery: crate::protocol::PromptDelivery,
+    /// A queued `/skills NAME`: the skill, with `text` the words after it. `None` is a prompt.
+    pub skill: Option<String>,
 }
 
 /// Where queued prompts are kept across a daemon kill. The daemon implements it over its store, so
@@ -508,7 +510,12 @@ impl CommandQueue {
         c
     }
     fn keep_taken(&mut self, c: Option<&QueuedCommand>) {
-        if let Some(c) = c.filter(|c| matches!(c.kind, CommandKind::Prompt { .. })) {
+        if let Some(c) = c.filter(|c| {
+            matches!(
+                c.kind,
+                CommandKind::Prompt { .. } | CommandKind::LoadSkill { .. }
+            )
+        }) {
             self.taken.push(c.clone());
         }
     }
@@ -552,6 +559,21 @@ impl CommandQueue {
                     context: context.clone(),
                     from: from.clone(),
                     delivery: *delivery,
+                    skill: None,
+                }),
+                // A skill load waits for the turn to end, so it is as exposed to a restart as a
+                // prompt is.
+                CommandKind::LoadSkill { name, then } => Some(JournaledPrompt {
+                    enqueued_ms: c.enqueued_ms,
+                    head_id: c.head_id.clone(),
+                    identity: c.identity.clone(),
+                    client_request_id: c.client_request_id.clone(),
+                    text: then.clone(),
+                    attachments: Vec::new(),
+                    context: None,
+                    from: None,
+                    delivery: crate::protocol::PromptDelivery::Queue,
+                    skill: Some(name.clone()),
                 }),
                 _ => None,
             })
@@ -813,12 +835,18 @@ impl Hub {
                 client_request_id: p.client_request_id.clone(),
                 at_seq,
                 enqueued_ms: p.enqueued_ms,
-                kind: CommandKind::Prompt {
-                    text: p.text.clone(),
-                    attachments: p.attachments.clone(),
-                    context: p.context.clone(),
-                    from: p.from.clone(),
-                    delivery: p.delivery,
+                kind: match &p.skill {
+                    Some(name) => CommandKind::LoadSkill {
+                        name: name.clone(),
+                        then: p.text.clone(),
+                    },
+                    None => CommandKind::Prompt {
+                        text: p.text.clone(),
+                        attachments: p.attachments.clone(),
+                        context: p.context.clone(),
+                        from: p.from.clone(),
+                        delivery: p.delivery,
+                    },
                 },
             });
         }

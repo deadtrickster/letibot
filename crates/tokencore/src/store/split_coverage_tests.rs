@@ -476,6 +476,7 @@ fn every_project_method_runs_on_a_split_set() {
             context_json: String::new(),
             from_who: String::new(),
             delivery: String::new(),
+            skill: String::new(),
         }],
     )
     .unwrap();

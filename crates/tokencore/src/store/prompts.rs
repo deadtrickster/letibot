@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS queued_prompt (
     from_who           TEXT NOT NULL DEFAULT '',
     -- `steer` or `queue`, empty on a row written before the column
     delivery           TEXT NOT NULL DEFAULT '',
+    -- the skill a queued `/skills NAME` hands over, `text` being the words after it; empty for a prompt
+    skill              TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (session_id, seq)
 );
 "#;
@@ -42,6 +44,8 @@ pub struct QueuedPrompt {
     pub from_who: String,
     /// `steer` or `queue`. Empty is a row written before the column.
     pub delivery: String,
+    /// The skill a queued skill load hands over. Empty is a prompt.
+    pub skill: String,
 }
 
 impl Store {
@@ -55,8 +59,8 @@ impl Store {
             for (seq, p) in prompts.iter().enumerate() {
                 tx.execute(
                     "INSERT INTO queued_prompt (session_id, seq, enqueued_ms, head_id, identity, \
-                     client_request_id, text, attachments_json, context_json, from_who, delivery) \
-                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                     client_request_id, text, attachments_json, context_json, from_who, delivery, skill) \
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
                     params![
                         session_id,
                         seq as i64,
@@ -68,7 +72,8 @@ impl Store {
                         p.attachments_json,
                         p.context_json,
                         p.from_who,
-                        p.delivery
+                        p.delivery,
+                        p.skill
                     ],
                 )?;
             }
@@ -81,7 +86,7 @@ impl Store {
         let conn = self.at("queued_prompt");
         let mut st = conn.prepare(
             "SELECT enqueued_ms, head_id, identity, client_request_id, text, attachments_json, \
-             context_json, from_who, delivery FROM queued_prompt WHERE session_id = ?1 ORDER BY seq",
+             context_json, from_who, delivery, skill FROM queued_prompt WHERE session_id = ?1 ORDER BY seq",
         )?;
         let rows = st.query_map(params![session_id], |r| {
             Ok(QueuedPrompt {
@@ -94,6 +99,7 @@ impl Store {
                 context_json: r.get(6)?,
                 from_who: r.get(7)?,
                 delivery: r.get(8)?,
+                skill: r.get(9)?,
             })
         })?;
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)

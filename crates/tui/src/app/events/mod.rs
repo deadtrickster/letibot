@@ -200,6 +200,7 @@ impl App {
             // words from a conversation no longer on the screen is the same lie a carried model name is.
             self.pending_prompts.clear();
             self.after_turn.clear();
+            self.skill_echoes.clear();
             self.unconfirmed.clear();
             // And the viewport's place, which is a place in the rows that just went
             //. Carrying it across a switch would hold the reader on a row of another
@@ -764,6 +765,46 @@ impl App {
             self.pending_prompts.iter().cloned().collect();
         self.unconfirmed.retain(|u| queue.contains(u));
         self.after_turn.retain(|u| queue.contains(u));
+        self.skill_echoes.retain(|(_, w)| queue.contains(w));
+    }
+
+    /// A skill load is held by the hub until the running turn ends, so it is drawn at the tail
+    /// like a queued prompt. The words are the ones its row will carry, which retire it.
+    pub(crate) fn echo_skill_load(&mut self, name: &str, then: &str) {
+        let words = match then.trim() {
+            "" => format!("/skills {name}"),
+            then => then.to_string(),
+        };
+        if self.turn_busy() {
+            self.after_turn.push(words.clone());
+        }
+        self.pending_prompts.push(words.clone());
+        self.skill_echoes.push((name.to_string(), words));
+    }
+
+    /// The skill a pending entry loads, when it is one.
+    pub(crate) fn skill_echo_of(&self, words: &str) -> Option<&str> {
+        self.skill_echoes
+            .iter()
+            .find(|(_, w)| w == words)
+            .map(|(n, _)| n.as_str())
+    }
+
+    /// The daemon refused a skill load: its echo stands down, as no row will come.
+    pub(crate) fn skill_load_refused(&mut self, detail: &str) {
+        let refused: Vec<String> = self
+            .skill_echoes
+            .iter()
+            .filter(|(n, _)| detail.contains(&format!("`{n}`")))
+            .map(|(_, w)| w.clone())
+            .collect();
+        for w in refused {
+            if let Some(i) = self.pending_prompts.iter().position(|p| *p == w) {
+                self.pending_prompts.remove(i);
+            }
+            self.after_turn.retain(|u| *u != w);
+            self.skill_echoes.retain(|(_, e)| *e != w);
+        }
     }
 
     /// Bind the oldest unbound echo to a row that has just been announced. A body-less `user` row is this

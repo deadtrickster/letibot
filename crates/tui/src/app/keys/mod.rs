@@ -322,12 +322,16 @@ impl App {
         // alt-↑ with an empty composer takes the queued line back for editing: the echo is the
         // operator's own words, and withdrawing them is a separate act from browsing history.
         if matches!(k, Key::AltUp) {
-            if self.editor.text().is_empty() && self.scroll == 0 && !self.pending_prompts.is_empty()
-            {
-                let text = self.pending_prompts.join("\n");
-                self.pending_prompts.clear();
-                self.after_turn.clear();
-                self.set_composer(&text);
+            // A skill load stays queued: the hub's take-back does not withdraw one.
+            let (skills, words): (Vec<String>, Vec<String>) = self
+                .pending_prompts
+                .iter()
+                .cloned()
+                .partition(|p| self.skill_echo_of(p).is_some());
+            if self.editor.text().is_empty() && self.scroll == 0 && !words.is_empty() {
+                self.after_turn.retain(|u| skills.contains(u));
+                self.pending_prompts = skills;
+                self.set_composer(&words.join("\n"));
                 return Some(Action::WithdrawPrompts);
             }
             return None;

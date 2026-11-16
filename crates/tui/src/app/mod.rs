@@ -319,6 +319,9 @@ pub struct App {
     /// The entries of `pending_prompts` sent on the queue lane (Tab mid-turn): drawn as waiting
     /// for the turn's end, and never merged with a steer typed after them.
     pub(crate) after_turn: Vec<String>,
+    /// The entries of `pending_prompts` that are skill loads, as `(name, words)`: drawn as
+    /// `queued: NAME`, and kept out of alt-up, since the hub does not withdraw a skill load.
+    pub(crate) skill_echoes: Vec<(String, String)>,
     /// Set by Tab for the one `submit` it makes, so the prompt goes out on the queue lane.
     pub(crate) queue_lane: bool,
     /// The chips in the composer: the pictures and files the person pasted, each with the text
@@ -1384,6 +1387,7 @@ impl App {
             queued: Vec::new(),
             pending_prompts: Vec::new(),
             after_turn: Vec::new(),
+            skill_echoes: Vec::new(),
             queue_lane: false,
             chips: Vec::new(),
             contexts: Vec::new(),

@@ -401,3 +401,46 @@ fn offer_rows_appended_live_are_drawn_without_a_snapshot() {
         "{drawn}"
     );
 }
+
+/// A skill loaded mid-turn waits for the turn's end, so it is drawn at the tail as
+/// `queued: NAME` until its row lands. alt-up leaves it queued, and a refusal retires it.
+#[test]
+fn a_skill_loaded_mid_turn_shows_as_queued_until_its_row_lands() {
+    use letibot_sessionlog::event::SessionEvent;
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    assert!(matches!(
+        a.command("skills pane-screenshot"),
+        Some(Action::LoadSkill { .. })
+    ));
+    let s = a.screen(100, 30).join("\n");
+    assert!(s.contains("queued: pane-screenshot"), "{s}");
+    assert_eq!(a.key(Key::AltUp), None, "a skill load is not taken back");
+    assert!(a.input().is_empty());
+
+    assert!(matches!(
+        a.command("skills nope"),
+        Some(Action::LoadSkill { .. })
+    ));
+    a.apply(ServerFrame::Event(env(
+        2,
+        SessionEvent::warning("slash_refused", "no skill named `nope` on disk"),
+    )));
+    let s = a.screen(100, 30).join("\n");
+    assert!(!s.contains("queued: nope"), "{s}");
+    assert!(s.contains("queued: pane-screenshot"), "{s}");
+
+    a.apply(ServerFrame::Event(env(3, testing::appended("i1", "user"))));
+    a.apply(ServerFrame::Event(env(
+        4,
+        testing::content("i1", "/skills pane-screenshot"),
+    )));
+    let s = a.screen(100, 30).join("\n");
+    assert!(!s.contains("queued: pane-screenshot"), "{s}");
+    assert!(a.pending_prompts.is_empty());
+}

@@ -388,6 +388,11 @@ impl App {
                     // A prompt typed while the daemon boots runs once it has started
                     //: nothing takes it before the worker runs.
                     None if booting && mark == QUEUED => QUEUED_UNTIL_STARTED.to_string(),
+                    None if let Some((name, _)) =
+                        self.skill_echoes.iter().find(|(_, w)| w == key) =>
+                    {
+                        format!("queued: {name}")
+                    }
                     None if mark == QUEUED && self.after_turn.iter().any(|q| q == key) => {
                         crate::app::AFTER_TURN.to_string()
                     }

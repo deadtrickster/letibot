@@ -80,6 +80,7 @@ impl StoreJournal {
                     "queue" => letibot_sessionlog::protocol::PromptDelivery::Queue,
                     _ => letibot_sessionlog::protocol::PromptDelivery::Steer,
                 },
+                skill: (!p.skill.is_empty()).then_some(p.skill),
             })
             .collect();
         let journal = StoreJournal {
@@ -116,6 +117,7 @@ impl letibot_sessionlog::PromptJournal for StoreJournal {
                     letibot_sessionlog::protocol::PromptDelivery::Queue => "queue".into(),
                     letibot_sessionlog::protocol::PromptDelivery::Steer => "steer".into(),
                 },
+                skill: p.skill.clone().unwrap_or_default(),
             })
             .collect();
         self.store
@@ -2225,6 +2227,58 @@ mod journal_tests {
                 (Some("cc@rano".to_string()), PromptDelivery::Queue),
             ],
             "the lane and the sender are restored"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A skill load queued behind a running turn survives a daemon kill, with the words after it,
+    /// and a repeat load of it still collapses into the restored one.
+    #[test]
+    fn a_queued_skill_load_survives_a_killed_daemon() {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-journal-skill-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        let first = Hub::new("s-skill");
+        assert_eq!(StoreJournal::attach(&first, &path), 0);
+        let head = first.attach("tui", "dead", Default::default(), 0);
+        first.submit(
+            &head.head_id,
+            "c1",
+            0,
+            CommandKind::LoadSkill {
+                name: "pane-screenshot".into(),
+                then: "look at the pane".into(),
+            },
+        );
+        assert!(first.journal_settled(std::time::Duration::from_secs(30)));
+        drop(first);
+        let second = Hub::new("s-skill");
+        assert_eq!(StoreJournal::attach(&second, &path), 1);
+        let head = second.attach("tui", "dead", Default::default(), 0);
+        second.submit(
+            &head.head_id,
+            "c2",
+            0,
+            CommandKind::LoadSkill {
+                name: "pane-screenshot".into(),
+                then: String::new(),
+            },
+        );
+        let OwnWork::Command(c) = second.take_own_work() else {
+            panic!("the skill load was not put back");
+        };
+        assert_eq!(
+            c.kind,
+            CommandKind::LoadSkill {
+                name: "pane-screenshot".into(),
+                then: "look at the pane".into(),
+            }
+        );
+        assert!(
+            second.try_command_for_running_turn(|_| true).is_none(),
+            "the repeat load was queued beside the restored one"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

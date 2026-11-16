@@ -710,6 +710,7 @@ impl App {
                     self.say("not attached to a session yet");
                     return None;
                 }
+                self.echo_skill_load(&name, &then);
                 Some(Action::LoadSkill { name, then })
             }
             // The panes and the promote, reachable as verbs: each had a chord and no word, so a head driven over a

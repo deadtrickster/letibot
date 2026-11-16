@@ -68,6 +68,9 @@ impl App {
                 // A state rather than a row: it must sit where the Responding text is
                 // drawn, and it needs no clearing because only a restart ends it. The
                 // daemon re-says it on every attach, so a late head gets it too.
+                if code == "slash_refused" {
+                    self.skill_load_refused(&detail);
+                }
                 if code == STORE_NEWER {
                     self.store_newer = Some(detail.to_string());
                     return Disposition::Filtered;
