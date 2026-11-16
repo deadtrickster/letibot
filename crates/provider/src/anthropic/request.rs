@@ -266,6 +266,7 @@ pub(super) fn messages(
                 push(open(&mut out, Role::User), block, true);
             }
             // Display-only rows: every renderer skips them, so they are not prompt text.
+            item if !item.reaches_model() => {}
             TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {}
         }
     }

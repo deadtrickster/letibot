@@ -235,6 +235,25 @@ pub enum TranscriptItem {
 }
 
 impl TranscriptItem {
+    /// Whether this row is sent to the model as a conversation item. The one decision, made on
+    /// the type: an `Offer` is the operator's card and a `SegmentMark` a zero-width marker, and
+    /// neither reaches a request, so no renderer can drift from the store's own classification.
+    /// Every arm is spelled, so a new kind must answer here before it compiles anywhere.
+    pub fn reaches_model(&self) -> bool {
+        match self {
+            // The operator's record of what a round offered, drawn in place by a head.
+            TranscriptItem::Offer { .. } => false,
+            // Renders to nothing in every dialect: structure for compaction, not words.
+            TranscriptItem::SegmentMark { .. } => false,
+            TranscriptItem::System { .. }
+            | TranscriptItem::User { .. }
+            | TranscriptItem::Reasoning { .. }
+            | TranscriptItem::Assistant { .. }
+            | TranscriptItem::ToolResult { .. }
+            | TranscriptItem::Notice { .. } => true,
+        }
+    }
+
     /// Roughly how many bytes of text this row carries: a size bound's input, not a
     /// serialisation, so it counts the strings a reader would see and ignores structure.
     /// One definition, because two copies of "what counts as size" would drift.
@@ -935,5 +954,68 @@ mod tests {
             }],
         };
         assert_eq!(referenced.bytes(), 32);
+    }
+
+    /// The one decision, pinned: every kind answers, and exactly the operator's card and the
+    /// zero-width marker never reach a request. A new kind that forgets to answer breaks the
+    /// match in `reaches_model` first, and this test holds the list it must be added to.
+    #[test]
+    fn every_transcript_item_kind_declares_whether_it_reaches_the_model() {
+        let all = vec![
+            TranscriptItem::System {
+                text: "s".into(),
+                origin: SystemOrigin::Bootstrap,
+            },
+            TranscriptItem::User {
+                speaker: Speaker::Operator,
+                parts: vec![UserPart::Text { text: "u".into() }],
+            },
+            TranscriptItem::Reasoning {
+                text: "r".into(),
+                field: ReasoningField::Inline,
+                truncated: false,
+            },
+            TranscriptItem::Assistant {
+                text: "a".into(),
+                tool_calls: Vec::new(),
+                truncated: false,
+            },
+            TranscriptItem::ToolResult {
+                call_id: "c".into(),
+                name: "read".into(),
+                outcome: ToolOutcome::Ok,
+                payload: "p".into(),
+                edits: Vec::new(),
+                origin: None,
+                media: None,
+                ran_ms: None,
+                decision: None,
+            },
+            TranscriptItem::Notice {
+                kind: NoticeKind::Monitor,
+                text: "n".into(),
+                facts: None,
+            },
+            TranscriptItem::Offer {
+                kind: OfferKind::Note,
+                title: "o".into(),
+                body: "b".into(),
+            },
+            TranscriptItem::SegmentMark {
+                segment_id: "1".into(),
+                label: "m".into(),
+                kind: "cut".into(),
+                edge: SegmentEdge::Open,
+            },
+        ];
+        assert_eq!(all.len(), 8, "a new kind must join this list");
+        for item in &all {
+            let reaches = item.reaches_model();
+            let expected = !matches!(
+                item,
+                TranscriptItem::Offer { .. } | TranscriptItem::SegmentMark { .. }
+            );
+            assert_eq!(reaches, expected, "{item:?}");
+        }
     }
 }

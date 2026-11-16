@@ -355,6 +355,7 @@ fn input_items(
             }
             // Display-only: a segment mark delimits a run and an offer is what the operator
             // was shown. Neither is a token.
+            item if !item.reaches_model() => {}
             TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {}
             TranscriptItem::Assistant {
                 text, tool_calls, ..

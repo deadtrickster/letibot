@@ -131,7 +131,11 @@ pub fn write_handover(items: &[(u64, TranscriptItem)], meta: &Meta, dir: &Path) 
     md.push_str(&handover_markdown_header(meta));
     for (ts, item) in items {
         let Some(line) = line_for(item, meta, &mut parent, *ts, &mut skipped) else {
-            md.push_str(&markdown_for(item));
+            // A row the model never saw is not part of the conversation being handed
+            // over, so it reaches neither record: not the lines, not the summary.
+            if item.reaches_model() {
+                md.push_str(&markdown_for(item));
+            }
             continue;
         };
         out.push_str(&line.to_string());
@@ -275,7 +279,13 @@ fn line_for(
             Value::Array(vec![json!({"type": "text", "text": text})]),
             true,
         ),
-        TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {
+        item if !item.reaches_model() => {
+            skipped.marks += 1;
+            return None;
+        }
+        // Totality for the guard above: these are the kinds it takes, spelled so the
+        // match stays honest if a new one arrives.
+        TranscriptItem::Offer { .. } | TranscriptItem::SegmentMark { .. } => {
             skipped.marks += 1;
             return None;
         }
@@ -385,8 +395,9 @@ fn markdown_for(item: &TranscriptItem) -> String {
         TranscriptItem::Notice { text, .. } => {
             format!("**letibot (the session's own voice, not the operator's)**\n\n{text}\n\n")
         }
-        TranscriptItem::SegmentMark { label, .. } => format!("> *{label}*\n\n"),
-        TranscriptItem::Offer { title, .. } => format!("> *{title}*\n\n"),
+        // Reached only when called directly: the writer's loop gates these rows out, and
+        // an operator-only row is not part of the conversation either way.
+        TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => String::new(),
     }
 }
 

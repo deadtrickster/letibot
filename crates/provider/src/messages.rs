@@ -374,6 +374,7 @@ pub fn convert_with_tail(
                     }
                 }
             }
+            item if !item.reaches_model() => {}
             TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {}
             TranscriptItem::Assistant {
                 text, tool_calls, ..

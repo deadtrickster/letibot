@@ -537,3 +537,43 @@ fn the_real_live_check_answers_and_does_not_claim_a_claude_in_an_empty_directory
     }
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// A handover carries only the conversation: an offer is the operator's card, drawn in place by
+/// a head, and it must not land in the foreign session's record.
+#[test]
+fn handover_drops_offers() {
+    let dir = tmp("offers");
+    let meta = Meta::fresh(Path::new("/w"), None);
+    let items = vec![
+        (
+            1_791_376_114_023,
+            TranscriptItem::User {
+                parts: vec![UserPart::Text {
+                    text: "the branch is ready".into(),
+                }],
+                speaker: Speaker::Operator,
+            },
+        ),
+        (
+            1_791_376_114_500,
+            TranscriptItem::Offer {
+                kind: letibot_transcript::OfferKind::Note,
+                title: "a note offer for the operator".into(),
+                body: "the card's body".into(),
+            },
+        ),
+    ];
+    let written = write_handover(&items, &meta, &dir).unwrap();
+    let md = std::fs::read_to_string(&written.markdown).unwrap();
+    let jsonl = std::fs::read_to_string(&written.jsonl).unwrap();
+    assert!(md.contains("the branch is ready"), "{md}");
+    assert!(
+        !md.contains("a note offer for the operator"),
+        "the offer was rendered into the foreign conversation: {md}"
+    );
+    assert!(
+        !jsonl.contains("a note offer for the operator"),
+        "the offer was exported as a conversation line: {jsonl}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
