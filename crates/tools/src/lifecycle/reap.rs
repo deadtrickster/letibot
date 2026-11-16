@@ -430,7 +430,8 @@ pub fn open_job_elsewhere(store: &Store, o: &OwnerRow) -> bool {
 /// Is a turn in flight or a job running? The cgroup answers it, because the seat's own `ps` cannot
 /// see host pids and the daemon may not be there to be asked. A store row that says `running` for
 /// a process whose cgroup is empty is a row the supervisor has not caught up with, not work.
-pub(super) fn busy(store: &Store, o: &OwnerRow) -> bool {
+/// The lease renewer asks the same question, so a close never fires on work a renew kept.
+pub fn busy(store: &Store, o: &OwnerRow) -> bool {
     let mut populated = false;
     for row in store.holdings_of(&o.id).unwrap_or_default() {
         if row.kind != SCOPE || row.state == HoldingState::Gone {
@@ -1026,8 +1027,15 @@ fn docker_work(
             memory: None,
         };
         // Only `reap now` acts: `reap at` is the plan's sentence for a grace that has not
-        // elapsed, and a pass that acted on it would be the reap the grace exists to stop.
-        let verdict = super::plan::judge(owner, &view, places, at_ms);
+        // elapsed, and a pass that acted on it would be the reap the grace exists to stop. The
+        // in-use witness is handed in so this act and the plan answer one question.
+        let here = super::autoarchive::Here {
+            host: places.box_id.clone(),
+            pid: std::process::id(),
+            proc_root: places.proc_root.clone(),
+        };
+        let in_use = super::plan::InUse { store, here: &here };
+        let verdict = super::plan::judge(owner, &view, places, at_ms, Some(&in_use));
         if !matches!(verdict, Verdict::Now(_)) {
             out.kept.push(format!(
                 "{} volume {}: {} — {}",

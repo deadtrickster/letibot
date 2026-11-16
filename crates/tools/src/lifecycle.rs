@@ -48,7 +48,7 @@ pub use plan::{
     stamp_of,
 };
 pub use reap::{
-    Act, Activity, BoxHands, COPY_OUT_DEADLINE_MS, Ended, Hands, NOTICE_LEAD_MS, Ops, Pass,
+    Act, Activity, BoxHands, COPY_OUT_DEADLINE_MS, Ended, Hands, NOTICE_LEAD_MS, Ops, Pass, busy,
     close_due, notice_at, pass, pass_halves,
 };
 pub use remote::{

@@ -160,6 +160,22 @@ impl Store {
         Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
 
+    /// Every session whose workspace is `root` or a directory inside it - [`writers_under`]'s
+    /// reach without the writer join, for the questions that do not need one: whose jobs may be
+    /// running in a tree, whatever daemon opened them.
+    pub fn session_ids_under(&self, root: &str) -> Result<Vec<String>> {
+        let root = root.trim_end_matches('/');
+        // The session table is in the shared file of a split set.
+        let conn = self.connection_of("session");
+        let mut stmt = conn.prepare(
+            "SELECT id FROM session
+             WHERE workspace_root = ?1 OR substr(workspace_root, 1, length(?1) + 1) = ?1 || '/'
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map(params![root], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
     /// Give the session back - on the harness's way out, and only when the row is still
     /// this owner's. Guarded on the owner because a claim taken over (its holder having been
     /// judged gone) must not be deleted by the zombie that comes back.
