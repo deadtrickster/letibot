@@ -155,17 +155,12 @@ pub(crate) struct DiffRows<'a> {
     pub(crate) fold: Fold,
     /// The edit verb already drew the first file (see the function's note).
     pub(crate) under_a_panel: bool,
-    /// The sentence under a folded diff: how the change was obtained, in one clause.
-    pub(crate) provenance: &'a str,
 }
 
-/// The sentence under a change a command changed, where it is folded.
-pub(crate) const DETECTED_PROVENANCE: &str =
-    "  detected afterwards — the command changed {these}; not made by `edit`";
-
 /// The rows a change detected after a command draws: rano draws an [`EditDiff`] only for an edit
-/// verb. Drawn even while folded. The first file is drawn in full and the rest one line each while
-/// folded; `under_a_panel` is the edit verb's case, where rano drew the first file.
+/// verb. Folded, each file is one line naming what `/t` opens; open, each is drawn whole.
+/// `under_a_panel` is the edit verb's case, where rano drew the first file. How the change was
+/// obtained is the row's own text to say: a command's first note, a job's notice.
 pub(crate) fn detected_diff_rows(
     edits: &[letibot_transcript::ToolEditExcerpt],
     d: DiffRows<'_>,
@@ -177,21 +172,17 @@ pub(crate) fn detected_diff_rows(
         diff_split,
         fold,
         under_a_panel,
-        provenance,
     } = d;
     let mut out: Vec<String> = Vec::new();
     if edits.is_empty() {
         return out;
     }
-    if edits.len() > 1 {
-        out.extend(row_strings(
-            &[rano::agent::text::one(
-                format!("  {} files changed", edits.len()),
-                rano::style::Role::Faint,
-            )],
+    let faint = |text: String| {
+        row_strings(
+            &[rano::agent::text::one(text, rano::style::Role::Faint)],
             cfg.palette(),
-        ));
-    }
+        )
+    };
     for (i, e) in edits.iter().enumerate() {
         // The panel already carries the first file when an edit verb drew it.
         if under_a_panel && i == 0 {
@@ -199,56 +190,20 @@ pub(crate) fn detected_diff_rows(
         }
         let d = edit_diff(e, width, cfg, diff_split);
         let rows = d.rows_under(if i == 0 { target } else { "" });
-        // The first file under a detected verb, and every file with the fold open.
-        if !fold.is_open() && (under_a_panel || i > 0) {
-            out.extend(row_strings(
-                &[rano::agent::text::one(
-                    format!("  {} · +{} diff rows · /t unfolds it", d.path, rows.len()),
-                    rano::style::Role::Faint,
-                )],
-                cfg.palette(),
-            ));
+        if !fold.is_open() {
+            out.extend(faint(format!(
+                "  {} · +{} diff rows · /t unfolds it",
+                d.path,
+                rows.len()
+            )));
             continue;
         }
-        // Every file but the first is all-or-nothing: a line folded, every row open.
-        let keep = if fold.is_open() || i > 0 {
-            rows.len()
-        } else {
-            8.min(rows.len())
-        };
-        let hidden = rows.len() - keep;
         out.extend(
-            row_strings(&rows[..keep], cfg.palette())
+            row_strings(&rows, cfg.palette())
                 .into_iter()
                 // The two columns rano's own `indent(l, 2)` puts in front of a real edit's rows.
                 .map(|l| format!("  {l}")),
         );
-        if hidden > 0 {
-            out.extend(row_strings(
-                &[rano::agent::text::one(
-                    format!("  … +{hidden} diff rows · /t unfolds it"),
-                    rano::style::Role::Faint,
-                )],
-                cfg.palette(),
-            ));
-        }
-    }
-    // Folded, a row shows only the payload's first line, so the row says itself how the diff was
-    // obtained; a `[note]` ahead of it would hide that. Nothing is said for an edit verb's single
-    // file, which is rano's panel and not a diff drawn here.
-    if !fold.is_open() && (!under_a_panel || edits.len() > 1) {
-        let these = if edits.len() > 1 {
-            "these files"
-        } else {
-            "this file"
-        };
-        out.extend(row_strings(
-            &[rano::agent::text::one(
-                provenance.replace("{these}", these),
-                rano::style::Role::Faint,
-            )],
-            cfg.palette(),
-        ));
     }
     out
 }
@@ -378,7 +333,6 @@ pub(crate) fn call_card(
                 diff_split,
                 fold,
                 under_a_panel: verb.is_an_edit(),
-                provenance: DETECTED_PROVENANCE,
             },
         ));
     }
