@@ -155,7 +155,7 @@ fn uid_of(pid: u32) -> Option<u32> {
         .and_then(|s| s.parse().ok())
 }
 
-fn clock_ticks() -> u64 {
+pub(crate) fn clock_ticks() -> u64 {
     // SAFETY: sysconf reads a constant.
     let hz = unsafe { libc_sysconf_clk_tck() };
     if hz <= 0 { 100 } else { hz as u64 }
