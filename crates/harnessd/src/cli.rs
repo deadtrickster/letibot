@@ -106,6 +106,7 @@ fn open_seat(f: &crate::config::FlowyConfig) -> Result<letibot_flowy::Seat, Stri
         token_file: f.token_file.clone(),
         config_dir: None,
         read_env: true,
+        allow_clear_addr: f.allow_clear_addr,
     };
     let creds = letibot_flowy::creds::discover(&onboarding).map_err(|e| e.to_string())?;
     let seat = letibot_flowy::Seat::open(creds, None, None).map_err(|e| e.to_string())?;
@@ -795,6 +796,11 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             "--flowy-seat" => cfg.flowy.get_or_insert_with(Default::default).seat = Some(next()?),
             "--flowy-new-reader" => {
                 cfg.flowy.get_or_insert_with(Default::default).new_reader = true;
+            }
+            "--flowy-allow-clear" => {
+                cfg.flowy
+                    .get_or_insert_with(Default::default)
+                    .allow_clear_addr = true;
             }
             // Where THIS session's tools run. `firecode` boots a VM on a copy of
             // the workspace, the VM is the boundary and the mode inside is

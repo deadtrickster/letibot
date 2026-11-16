@@ -807,6 +807,9 @@ pub fn flowy_login_credentials(
         token_file: token_file.cloned(),
         config_dir: None,
         read_env: true,
+        // A host the operator just typed at this verb is spelled-out consent to dial
+        // it; one read from an env file behind the verb is not.
+        allow_clear_addr: addr.is_some(),
     };
     match discover(&onboarding) {
         Ok(c) => Ok((c, notes)),
@@ -1226,6 +1229,24 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// `/flowy login SEAT --addr …` with a host the operator just typed: the typed host is
+    /// the opt-in that lets a non-loopback node be dialled, so the login succeeds. The
+    /// refusal side - an env-file address behind the verb - is the creds-crate test.
+    #[test]
+    fn flowy_login_takes_a_typed_lan_node_as_the_opt_in() {
+        let d = Scratch::new("flowy-lan");
+        let token = d.0.join("token");
+        std::fs::write(&token, "seat-token\n").expect("token");
+        let (creds, _) = flowy_login_credentials(
+            Some("seat-a"),
+            Some("http://192.168.1.55:8787"),
+            None,
+            Some(&token),
+        )
+        .expect("a typed host is spelled-out consent");
+        assert_eq!(creds.endpoint.host, "192.168.1.55");
     }
 
     fn tmp_file(tag: &str, body: &str) -> std::path::PathBuf {

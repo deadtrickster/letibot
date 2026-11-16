@@ -337,6 +337,12 @@ pub(super) const FLAGS: &[Flag] = &[
         "declare the seat's inbox reader at the head of the log, once",
         None,
     ),
+    flag(
+        &["--flowy-allow-clear"],
+        None,
+        "dial a non-loopback flowy node (no TLS; the token is clear)",
+        None,
+    ),
     // --- results, rounds and retries -----------------------------------------------------
     flag(
         &["--spill-inline"],

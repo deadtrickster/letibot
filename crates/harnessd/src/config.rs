@@ -200,6 +200,10 @@ pub struct FlowyConfig {
     /// never implied: a reader that silently appears is a typo producing a permanently empty
     /// inbox - see `letibot_flowy::client::NodeError`.
     pub new_reader: bool,
+    /// The explicit word that the seat may dial a non-loopback node: the client has no
+    /// TLS, so the bearer token crosses the network in the clear (`creds::parse_addr`
+    /// refuses the host without this).
+    pub allow_clear_addr: bool,
 }
 
 /// A cloud provider for the turns - mode 3. `None` is the local server, the default.

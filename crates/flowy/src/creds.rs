@@ -52,6 +52,9 @@ pub struct Onboarding {
     /// Read the process environment. Off in tests, so a developer's own
     /// `$FLOWY_TOKEN` cannot leak into an assertion.
     pub read_env: bool,
+    /// The caller's explicit word that the bearer token may cross the network in the
+    /// clear: the http crate has no TLS, so a non-loopback node is refused without it.
+    pub allow_clear_addr: bool,
 }
 
 impl Onboarding {
@@ -225,7 +228,7 @@ pub fn discover(o: &Onboarding) -> Result<Credentials, CredError> {
     } else {
         (DEFAULT_ADDR.to_string(), Source::Default)
     };
-    let endpoint = parse_addr(&addr)?;
+    let endpoint = parse_addr_with(&addr, o.allow_clear_addr)?;
 
     // --- the token -------------------------------------------------------
     let mut looked = Vec::new();
@@ -376,10 +379,29 @@ pub fn read_token(p: &Path, config_dir: Option<&Path>) -> Result<String, CredErr
     Ok(t)
 }
 
+/// Is this host one the token never leaves the machine for: `localhost`, `::1`
+/// (bracketed or not) or any `127.x.x.x`. Names that resolve elsewhere are not
+/// guessed at - a host that is not spelled loopback is not loopback.
+fn is_loopback(host: &str) -> bool {
+    let h = host.trim_start_matches('[').trim_end_matches(']');
+    h == "localhost"
+        || h == "::1"
+        || h.parse::<std::net::Ipv4Addr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
 /// `http://host:port` (a trailing slash tolerated) → an [`Endpoint`]. `https` is
 /// refused by name: the client has no TLS, and a silent downgrade would send a
-/// bearer token in the clear to a node that expected otherwise.
+/// bearer token in the clear to a node that expected otherwise. A host that is not
+/// loopback is refused the same way unless the caller opted in - the token crosses
+/// whatever network the host sits on, in the clear.
 pub fn parse_addr(addr: &str) -> Result<Endpoint, CredError> {
+    parse_addr_with(addr, false)
+}
+
+/// [`parse_addr`] with the caller's explicit word that a non-loopback node may be
+/// dialled anyway: the token is still clear on the wire, and the caller owns that.
+pub fn parse_addr_with(addr: &str, allow_clear_addr: bool) -> Result<Endpoint, CredError> {
     let bad = |why: &str| CredError::BadAddr {
         addr: addr.to_string(),
         why: why.to_string(),
@@ -408,6 +430,13 @@ pub fn parse_addr(addr: &str) -> Result<Endpoint, CredError> {
     };
     if host.is_empty() {
         return Err(bad("empty host"));
+    }
+    if !allow_clear_addr && !is_loopback(host) {
+        return Err(bad(
+            "the host is not loopback, and the client has no TLS: the bearer token would \
+             cross the network in the clear. Pass --flowy-allow-clear when the node really \
+             is off-box",
+        ));
     }
     let mut ep = Endpoint::new(host, port);
     // The node's long poll blocks for at most 25 s and heartbeats a stream every
@@ -442,6 +471,7 @@ mod tests {
         Onboarding {
             config_dir: Some(dir.to_path_buf()),
             read_env: false,
+            allow_clear_addr: true,
             ..Default::default()
         }
     }
@@ -508,6 +538,7 @@ mod tests {
             config_dir: Some(d.clone()),
             read_env: false,
             token_file: None,
+            allow_clear_addr: true,
         };
         let c = discover(&o).unwrap();
         assert_eq!(c.token, "given");
@@ -519,6 +550,46 @@ mod tests {
     #[test]
     fn https_is_refused_by_name() {
         let s = parse_addr("https://node:8787").unwrap_err().to_string();
+        assert!(s.contains("https"), "{s}");
+    }
+
+    #[test]
+    fn a_non_loopback_flowy_addr_is_refused_without_opt_in() {
+        let d = tmp();
+        std::fs::write(d.join("agents/lubuntu3-glm"), "tok-1\n").unwrap();
+        std::fs::write(
+            d.join("env-lubuntu3-glm"),
+            "export FLOWY_ADDR=http://192.168.1.55:8787\nexport FLOWY_AGENT=lubuntu3-glm\n",
+        )
+        .unwrap();
+        // No opt-in: the bearer token would cross the LAN in the clear.
+        let mut strict = usual_with(&d);
+        strict.allow_clear_addr = false;
+        let s = discover(&strict).unwrap_err().to_string();
+        assert!(s.contains("not loopback"), "{s}");
+        assert!(s.contains("--flowy-allow-clear"), "{s}");
+        // The opt-in is the caller's own explicit word, and then it is honoured.
+        let mut o = usual_with(&d);
+        o.allow_clear_addr = true;
+        let c = discover(&o).unwrap();
+        assert_eq!(c.endpoint.host, "192.168.1.55");
+        // The spelled-out default and a named loopback host need no opt-in.
+        for a in [
+            "http://127.0.0.1:8787",
+            "http://localhost:8787",
+            "http://[::1]:8787",
+        ] {
+            parse_addr(a).unwrap_or_else(|e| panic!("{a}: {e}"));
+        }
+        // The refusal is about the host, so the opt-in does not loosen anything else.
+        let mut o = usual_with(&d);
+        o.allow_clear_addr = true;
+        std::fs::write(
+            d.join("env-lubuntu3-glm"),
+            "export FLOWY_ADDR=https://192.168.1.55:8787\nexport FLOWY_AGENT=lubuntu3-glm\n",
+        )
+        .unwrap();
+        let s = discover(&o).unwrap_err().to_string();
         assert!(s.contains("https"), "{s}");
     }
 }

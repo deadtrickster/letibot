@@ -40,12 +40,14 @@ default. The env file's `FLOWY_TOKEN=$(cat …)` line is read as the path it nam
 
     harnessd --role leticode --bash --flowy                   # the usual path
     harnessd --role leticode --bash --flowy-seat lubuntu3-glm # which seat, when several
-    harnessd … --flowy-addr http://192.168.1.55:8787 --flowy-token-file /path   # manual
+    harnessd … --flowy --flowy-allow-clear                    # a node that is off-box (see below)
     harnessd … --flowy --flowy-new-reader                     # a seat that has never listened
 
-Three refusals: no seat named and two on the box (*"A seat is an identity, so it is not guessed"*);
-`~/.config/flowy/token`, never read, because it is the operator's own credential; and `https://`,
-because the client has no TLS.
+Four refusals: no seat named and two on the box (*"A seat is an identity, so it is not guessed"*);
+`~/.config/flowy/token`, never read, because it is the operator's own credential; `https://`,
+because the client has no TLS; and a non-loopback host without `--flowy-allow-clear`, because
+the bearer token would cross the network in the clear - the opt-in is the operator's own word
+that the node is worth that.
 
 `--flowy` that cannot be honoured is a startup error; a node merely away is not - the seat opens
 (claim + spool), the loop starts stalled, and the banner says so.
