@@ -32,7 +32,7 @@ that needs the provenance, shadow and gate-rule fixes underneath it.
    B14, B15, B16.
 5. Mediums and lows by theme (R338-R349), then the design follow-ups (R350) after the stability bar
    is met.
-6. After the bar: the credential broker (R356), beside lead 32.
+6. After the bar: the credential broker (R358), beside lead 32.
 
 Steps 2-3 run beside step 4. A stage waits on its replay evidence, not on code, so batches land
 while it collects. Stage 2 also needs B6 (I25 lets a child move to a model decider), so B6 is the
@@ -304,7 +304,7 @@ In this order, each row naming its tests:
 Older open rows in `TODO.md` follow the phase rule: a row that is a fix is taken when its area's
 batch lands. A row that is a feature waits for the end of the phase.
 
-### 6. After the phase: the credential broker (R356)
+### 6. After the phase: the credential broker (R358)
 
 A credential file exists for its own software to use. That is its only purpose. So that software uses it, and nothing else in a session can read it, print it or send it.
 
@@ -343,7 +343,7 @@ The stability bar, measured in this order. None of its four conditions is met at
    a hook or move to `AGENTS.md`.
 
 The phase ends when all four hold. Then the design follow-ups (R350) and the first post-stability
-features start: the orchestration primitive (lead 32) and the credential broker (R356).
+features start: the orchestration primitive (lead 32) and the credential broker (R358).
 
 ## Process rules
 
