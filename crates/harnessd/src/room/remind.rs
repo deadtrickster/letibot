@@ -1,6 +1,5 @@
-//! The room's reminders, as rows on the session's own board - the pass that closes
-//! `docs/room.md` item 3: *"just like with todo top level session get reminds (with
-//! ability to mark waits_on) so they dont occupy it for ever"*.
+//! The room's reminders, as rows on the session's own board, so a reminder can be marked
+//! `waits_on` like any row and does not occupy the session for ever.
 
 use letibot_room::Reminder;
 use letibot_tokencore::store::{TodoBy, TodoItem, TodoNeed, TodoStatus};

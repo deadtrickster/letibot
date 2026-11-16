@@ -205,8 +205,7 @@ fn digest(entry: &Queue) -> Option<RoomLine> {
 
 /// Has this session held room lines for a whole quiet window? The idle digest's clock: `true` says
 /// ring it now, and records the ring so one window rings once however often the pass runs. A line
-/// nothing rang for would otherwise wait for a turn that may never come, which is the black hole
-/// this closes.
+/// nothing rang for would otherwise wait for a turn that may never come.
 pub fn due_digest(session: &str, quiet: Duration, now: SystemTime) -> bool {
     let mut q = queues().lock().unwrap_or_else(|e| e.into_inner());
     let Some(entry) = q.map.get_mut(session) else {

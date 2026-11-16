@@ -153,9 +153,8 @@ fn links() -> &'static Mutex<std::collections::BTreeMap<String, Weak<SessionRoom
 }
 
 /// Put a project's room out of sight, on `session`'s own connection - the daemon's act, reported
-/// through the link of the session it is archiving. A room is never put away WHILE a session of it
-/// is still in the list, and the caller has already asked the store that. Off the caller's thread,
-/// from a link it may be about to close: the archive row is what has to land, not this sentence.
+/// through the link of the session it is archiving. The caller has checked that no session of the
+/// room is still listed. Off the caller's thread, from a link it may be about to close.
 pub(crate) fn archive_project_room(session: &str, room: &str) {
     let Some(link) = links()
         .lock()
@@ -313,10 +312,8 @@ impl SessionRoom {
                 // wake only the session they are addressed to; a session woke on its own rows.
                 let wakes = m.kind != letibot_room::Seat::System || names;
                 // A peer's passing line rings only a seat whose work it touches (an owned scope, an
-                // edited file, its branch); the rest take it as a note on their next turn. A seat
-                // with nothing to judge by is rung as before. An `fyi` is the one kind that is
-                // its own rule: it rings exactly whom it NAMES and nobody else - not the room it
-                // sits in, not the seat whose work it brushes. A `blocker` always rings.
+                // edited file, its branch), or a seat with nothing to judge by; the rest take it as a
+                // note. An `fyi` rings exactly whom it NAMES. A `blocker` always rings.
                 if plain && wakes && m.wakes(&me, names, &sits_in) {
                     let reach = wake::reach(m, names);
                     let fyi = m.say_kind() == letibot_room::SayKind::Fyi;

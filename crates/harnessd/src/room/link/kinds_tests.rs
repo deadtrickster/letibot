@@ -76,8 +76,7 @@ fn an_fyi_rings_only_the_reader_it_names_and_a_blocker_is_a_full_turn() {
         .expect("the peer connects");
 
     // An `fyi` that NAMES this session is an address: the bell rings for it and the note is a full
-    // turn. The live case: a dm was answered in the host room as `@x ...` with kind `fyi`, and the
-    // one session it was for was never woken.
+    // turn, even when said in another room.
     other
         .call(
             "say",

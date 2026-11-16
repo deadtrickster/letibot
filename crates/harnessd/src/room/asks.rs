@@ -13,12 +13,9 @@ use letibot_room::{AskState, AskView};
 use letibot_tokencore::store::{TodoBy, TodoItem, TodoNeed, TodoStatus};
 use letibot_tools::builtins::todo::AskSettle;
 
-/// The rows this session owes an answer to: one per OPEN ask of it, keyed by the ask's id - the
-/// pass's own edge (`Owed`), the way `Room { item }` keys a reminder row. A settled ask has no row:
-/// answering is what takes the nag away, and a row that outlived its ask would nag for nothing.
-///
-/// The row is ready, so the idle check's own nag speaks it on the existing `TodoNagClock`: one nag
-/// mechanism, already rate limited, and no second clock.
+/// The rows this session owes an answer to: one per OPEN ask of it, keyed by the ask's id (`Owed`),
+/// the way `Room { item }` keys a reminder row. A settled ask has no row, so answering takes the nag
+/// away. The row is ready, so the idle check nags for it on the existing `TodoNagClock`.
 pub fn owed_rows(me: &str, of_me: &[AskView]) -> Vec<(u64, TodoItem)> {
     let mut rows: Vec<(u64, TodoItem)> = of_me
         .iter()
@@ -127,8 +124,7 @@ pub fn settle_class(settle: &AskSettle) -> &'static str {
 /// The operator's question about an ask nobody can move - and the key the card is withdrawn by, so
 /// the words may not carry a clock or a duration: the same state must spell the same sentence.
 ///
-/// The two halves say different things because they are different situations: the asker is told its
-/// target stopped, and the target is told the session waiting on it is not running.
+/// The asker is told its target stopped; the target is told the session waiting on it is not running.
 pub fn escalation_question(ask: &AskView, me: &str) -> String {
     if ask.asker == me && !ask.cannot.is_empty() {
         return cannot_question(ask, &ask.cannot, me);

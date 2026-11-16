@@ -72,12 +72,9 @@ pub fn configure(cfg: &mut Config) -> Result<(), String> {
     // it from the store; a coordinator has no session store, so an idle exit would be a room that
     // silently emptied overnight and every session's `room` tool would find no socket.
     cfg.idle_exit_after = None;
-    // The model: `--model`, else `providers.toml`, else `[room] tie_breaker` in `leticode.toml`,
-    // else deepseek - the operator's *"a tie breaker agent (model configurable with deepseek as
-    // default)"*. The arg loop already applied `--provider`/`--model`, so this only fills an
-    // absence. The file is read here rather than from `cfg.leticode` because a coordinator is
-    // configured before the levels load - and the workspace below becomes the ROOM's, so the
-    // project level has nothing to say to this daemon: the box's answer is the answer.
+    // The model: `--model`, else `providers.toml`, else `[room] tie_breaker`, else deepseek.
+    // Read here, not from `cfg.leticode`: a coordinator is configured before the levels load,
+    // and its workspace is the room's, so only the user's file has a say.
     if cfg.provider.is_none() && cfg.model.is_empty() {
         let model = tie_breaker(&cfg.workspace);
         crate::cli::apply_main_model(cfg, &model, None);
@@ -113,10 +110,9 @@ pub fn configure(cfg: &mut Config) -> Result<(), String> {
 /// `[room] tie_breaker` in `~/.config/letibot/leticode.toml` gets.
 pub const DEEPSEEK: &str = "deepseek/deepseek-flash";
 
-/// The model the room's arbiter answers on: `[room] tie_breaker` from the user's `leticode.toml`
-/// and, when the daemon was started in a project, that project's file over it - else [`DEEPSEEK`].
-/// A file that will not parse is said here and the default stands: a coordinator that refused to
-/// start over a typo would be a room frozen by a config, and the line is the operator's to fix.
+/// The model the room's arbiter answers on: `[room] tie_breaker` from the user's `leticode.toml`,
+/// a project's file over it when started in one, else [`DEEPSEEK`]. A file that will not parse is
+/// said and the default stands: refusing to start over a typo would freeze the room.
 fn tie_breaker(workspace: &std::path::Path) -> String {
     let levels = crate::leticode_config::load_user().and_then(|user| {
         match crate::leticode_config::LeticodeConfig::discover(workspace) {
