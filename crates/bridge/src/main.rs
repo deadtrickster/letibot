@@ -137,6 +137,8 @@ fn main() {
 
 /// Serve MCP on stdin/stdout until the client closes it.
 fn serve() -> i32 {
+    // Before any thread exists, so every thread inherits the mask and only the waiter takes them.
+    let stops = block_stop_signals();
     // The folder's plugin layers: a `tool_` layer becomes a tool this client can call, and
     // `push_channel` decides what wakes it. The server's door is the only one that reads them.
     let mut bridge = Bridge::new().streaming_rooms().with_layers_from_disk();
@@ -144,6 +146,18 @@ fn serve() -> i32 {
     // calls in somebody's session, which is not a thing to find switched on.
     if letibot_bridge::settings::BridgeSettings::load_user().permission_relay {
         bridge = bridge.relaying();
+    }
+    let bridge = std::sync::Arc::new(bridge);
+    if let Some(set) = stops {
+        let b = bridge.clone();
+        std::thread::spawn(move || {
+            let mut sig: libc::c_int = 0;
+            // SAFETY: `set` was filled by `sigaddset` and `sig` outlives the call.
+            if unsafe { libc::sigwait(&set, &mut sig) } == 0 {
+                b.release_leases();
+                std::process::exit(128 + sig);
+            }
+        });
     }
     let stdin = std::io::stdin();
     let stdout = std::io::stdout();
@@ -155,6 +169,19 @@ fn serve() -> i32 {
             eprintln!("letibot-mcp: {e}");
             1
         }
+    }
+}
+
+/// SIGTERM and SIGHUP are the client stopping this server, so they are blocked and waited for,
+/// and the sessions it started close first. SIGINT keeps its default: a Ctrl-C is not a stop.
+fn block_stop_signals() -> Option<libc::sigset_t> {
+    // SAFETY: `sigset_t` is plain data, initialised by `sigemptyset` before use.
+    unsafe {
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGTERM);
+        libc::sigaddset(&mut set, libc::SIGHUP);
+        (libc::pthread_sigmask(libc::SIG_BLOCK, &set, std::ptr::null_mut()) == 0).then_some(set)
     }
 }
 

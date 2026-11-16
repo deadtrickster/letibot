@@ -45,6 +45,8 @@ pub fn serve<R: BufRead, W: Write + Send>(
         let result = read_loop(&mut input, &out, bridge, &push_tx);
         done.store(true, Ordering::SeqCst);
         let _ = writer.join();
+        // The input ending is the client going away, and the sessions it started go with it.
+        bridge.release_leases();
         result
     })
 }

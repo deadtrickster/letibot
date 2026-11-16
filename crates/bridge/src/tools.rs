@@ -78,6 +78,8 @@ pub struct Bridge {
     plugins: Mutex<crate::plugins::Layers>,
     /// The push rule, built once from those layers and shared by every watcher and the room stream.
     rules: Mutex<Option<Arc<crate::push::Rules>>>,
+    /// The sessions `start` opened: their caller is this bridge's client, so they close with it.
+    leased: Mutex<std::collections::HashSet<String>>,
 }
 
 /// A session dropped because its daemon ended it, with what a reopen needs.
@@ -109,6 +111,7 @@ impl Default for Bridge {
             watching: Mutex::new(false),
             plugins: Mutex::new(crate::plugins::Layers::default()),
             rules: Mutex::new(None),
+            leased: Mutex::default(),
         }
     }
 }
@@ -431,6 +434,10 @@ impl Bridge {
             ));
         }
         let h = Arc::new(Head::attach(&d, &session)?);
+        self.leased
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session.clone());
         if let Err(why) = placed_as_asked(&placement, h.placement.as_ref()) {
             // Held and briefless: a VM session whose tools would run here must not start work.
             self.hold(&h);
@@ -526,6 +533,29 @@ impl Bridge {
             });
         }
         Ok(answer)
+    }
+
+    /// The caller is gone: close every session `start` opened that this bridge still holds.
+    /// Closed, not deleted, so `leticode_attach` can reopen one. Returns the ids closed.
+    pub fn release_leases(&self) -> Vec<String> {
+        let leased: Vec<String> =
+            std::mem::take(&mut *self.leased.lock().unwrap_or_else(|e| e.into_inner()))
+                .into_iter()
+                .collect();
+        let mut closed = Vec::new();
+        for session in leased {
+            let held = self
+                .heads
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&session);
+            let Some(h) = held else { continue };
+            match h.stop() {
+                Ok(()) => closed.push(session),
+                Err(why) => eprintln!("letibot-mcp: `{session}` outlives its caller: {why}"),
+            }
+        }
+        closed
     }
 
     /// A package's own worktree, row first: the owner row and root, then branch `pk/<sid8>/<name>`
@@ -1194,6 +1224,10 @@ impl Bridge {
     pub fn stop(&self, session: &str) -> Result<Value, String> {
         let h = self.head(session)?;
         h.stop()?;
+        self.leased
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session);
         let mut g = self.heads.lock().unwrap_or_else(|e| e.into_inner());
         g.remove(session);
         drop(g);
