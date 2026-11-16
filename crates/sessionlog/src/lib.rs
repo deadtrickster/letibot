@@ -94,8 +94,8 @@ pub use event::{
 };
 pub use fleet::{Fleet, FleetReader, FleetRow, FleetState};
 pub use hub::{
-    Attached, CommandKind, Delivery, Hub, JournaledPrompt, PromptJournal, QueuedCommand, Reply,
-    SessionStatus,
+    Attached, CommandKind, Delivery, DisclosureJournal, Hub, JournaledPrompt, PromptJournal,
+    QueuedCommand, Reply, SessionStatus,
 };
 pub use log::{LogBounds, SessionLog};
 pub use origin::{

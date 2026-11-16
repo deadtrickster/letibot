@@ -501,6 +501,47 @@ pub struct JournaledPrompt {
     pub skill: Option<String>,
 }
 
+/// Where a session's durable warnings are kept across a daemon restart (`warning::is_durable`).
+/// The daemon implements it over its store, so this crate links no database.
+pub trait DisclosureJournal: Send {
+    /// Append one warning to the session's record.
+    fn append(&mut self, w: &crate::view::Warned) -> Result<(), String>;
+}
+
+/// The hub's side of the disclosure journal: appends go to the journal's own thread, for the
+/// reason the prompt journal's do.
+struct Disclosures {
+    tx: std::sync::mpsc::Sender<crate::view::Warned>,
+    sent: u64,
+    saved: Arc<(Mutex<u64>, Condvar)>,
+}
+
+/// Append each disclosure in order, retrying a failed one a few times before saying it was lost.
+/// Ends when the hub is gone, after the last one handed to it.
+fn run_disclosures(
+    mut sink: Box<dyn DisclosureJournal>,
+    rx: std::sync::mpsc::Receiver<crate::view::Warned>,
+    saved: Arc<(Mutex<u64>, Condvar)>,
+    session_id: String,
+) {
+    let mut done = 0u64;
+    while let Ok(w) = rx.recv() {
+        for attempt in 1..=3 {
+            match sink.append(&w) {
+                Ok(()) => break,
+                Err(e) if attempt == 3 => {
+                    eprintln!("  {session_id} · warning `{}` not kept: {e}", w.code);
+                }
+                Err(_) => std::thread::sleep(std::time::Duration::from_secs(1)),
+            }
+        }
+        done += 1;
+        let (n, cv) = &*saved;
+        *n.lock().unwrap_or_else(|e| e.into_inner()) = done;
+        cv.notify_all();
+    }
+}
+
 /// Where queued prompts are kept across a daemon kill. The daemon implements it over its store, so
 /// this crate links no database.
 pub trait PromptJournal: Send {
@@ -633,6 +674,8 @@ struct Head {
 struct Inner {
     log: SessionLog,
     view: SessionView,
+    /// The durable copy of the warnings that say how to recover, once the daemon set one.
+    disclosures: Option<Disclosures>,
     heads: Vec<Head>,
     /// Admitted operator calls their head has not reported yet, keyed by the head's own
     /// `call_id` -> `(owning head, name, who)`. See [`Hub::detach`].
@@ -793,6 +836,7 @@ impl Hub {
             inner: Mutex::new(Inner {
                 log: SessionLog::new(id.clone(), log),
                 view: SessionView::new(id, view),
+                disclosures: None,
                 heads: Vec::new(),
                 operator_calls: std::collections::HashMap::new(),
                 next_head: 0,
@@ -889,6 +933,48 @@ impl Hub {
             self.cv.notify_all();
         }
         n
+    }
+
+    /// Keep this session's durable warnings in `sink`, after replaying `stored` - the ones a dead
+    /// daemon kept, oldest first - into the view, so a head's snapshot holds them. Idempotent.
+    pub fn journal_disclosures(
+        &self,
+        sink: Box<dyn DisclosureJournal>,
+        stored: Vec<crate::view::Warned>,
+    ) {
+        let mut g = self.lock();
+        if g.disclosures.is_some() {
+            return;
+        }
+        g.view.restore_warnings(stored);
+        let session_id = g.log.session_id().to_string();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let saved = Arc::new((Mutex::new(0u64), Condvar::new()));
+        let for_thread = saved.clone();
+        let spawned = std::thread::Builder::new()
+            .name("disclosures".into())
+            .spawn(move || run_disclosures(sink, rx, for_thread, session_id));
+        if spawned.is_ok() {
+            g.disclosures = Some(Disclosures { tx, sent: 0, saved });
+        }
+    }
+
+    /// Wait until every durable warning handed over is written, up to `within`. True when it is,
+    /// or when there is no journal.
+    pub fn disclosures_settled(&self, within: std::time::Duration) -> bool {
+        let (want, saved) = {
+            let g = self.lock();
+            match &g.disclosures {
+                Some(d) => (d.sent, d.saved.clone()),
+                None => return true,
+            }
+        };
+        let (n, cv) = &*saved;
+        let g = n.lock().unwrap_or_else(|e| e.into_inner());
+        let (g, _) = cv
+            .wait_timeout_while(g, within, |done| *done < want)
+            .unwrap_or_else(|e| e.into_inner());
+        *g >= want
     }
 
     /// Wait until the journal has written every change handed to it, up to `within`. True when it
@@ -2602,6 +2688,17 @@ impl Inner {
             None => self.log.append(event),
         };
         self.view.apply(&env);
+        if let Some(d) = &mut self.disclosures
+            && let Some((code, detail)) = crate::warning::warned_of(&env.event)
+            && crate::warning::is_durable(&code)
+        {
+            d.sent += 1;
+            let _ = d.tx.send(crate::view::Warned {
+                code,
+                detail,
+                ts: env.ts,
+            });
+        }
         for h in &mut self.heads {
             if h.needs_resync.is_some() {
                 // Already demoted; its queue is going to be thrown away.

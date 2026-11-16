@@ -128,6 +128,61 @@ impl letibot_sessionlog::PromptJournal for StoreJournal {
     }
 }
 
+/// A hub's durable warnings (`warning::is_durable`), kept in the session store.
+pub struct StoreDisclosures {
+    at: crate::config::StoreAt,
+    session_id: String,
+    store: Option<Store>,
+}
+
+impl StoreDisclosures {
+    /// Attach `hub` to the store at `at`: replay the warnings a dead daemon kept into its view, and
+    /// keep each durable one said from here on.
+    pub fn attach(hub: &letibot_sessionlog::Hub, at: impl Into<crate::config::StoreAt>) {
+        let at = at.into();
+        let session_id = hub.session_id();
+        let store = at.open_existing().ok();
+        let last = letibot_sessionlog::ViewBounds::default().warnings;
+        let stored = store
+            .as_ref()
+            .and_then(|s| s.disclosures(&session_id, last).ok())
+            .unwrap_or_default()
+            .into_iter()
+            .map(|d| letibot_sessionlog::view::Warned {
+                code: d.code,
+                detail: d.detail,
+                ts: d.ts_ms,
+            })
+            .collect();
+        let journal = StoreDisclosures {
+            at,
+            session_id,
+            store,
+        };
+        hub.journal_disclosures(Box::new(journal), stored);
+    }
+}
+
+impl letibot_sessionlog::DisclosureJournal for StoreDisclosures {
+    fn append(&mut self, w: &letibot_sessionlog::view::Warned) -> Result<(), String> {
+        if self.store.is_none() {
+            self.store = Some(self.at.open_existing().map_err(|e| e.to_string())?);
+        }
+        self.store
+            .as_ref()
+            .ok_or_else(|| "no store".to_string())?
+            .append_disclosure(
+                &self.session_id,
+                &letibot_tokencore::store::Disclosure {
+                    ts_ms: w.ts,
+                    code: w.code.clone(),
+                    detail: w.detail.clone(),
+                },
+            )
+            .map_err(|e| e.to_string())
+    }
+}
+
 /// This daemon's life, written down - the start, a heartbeat every [`BEAT`], and the stop.
 /// The stop goes through a connection opened at the START, never a fresh one
 pub struct Lifeline {
@@ -2176,6 +2231,40 @@ mod journal_tests {
             StoreJournal::attach(&third, &path),
             0,
             "taken and stored, so not put back again"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A failure that says how to recover is still in `/notes` after a restart: the new daemon's
+    /// snapshot holds it with its own detail and clock, and a routine note is not kept.
+    #[test]
+    fn a_warning_detail_survives_restart() {
+        let dir = std::env::temp_dir().join(format!("letibot-disclosure-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        letibot_tokencore::store::Store::open(&path).unwrap();
+        let first = Hub::new("s-warned");
+        StoreDisclosures::attach(&first, &path);
+        let said = first.warn(
+            "operator_shell_failed",
+            "`cargo build` ran and its 3 rows were not recorded: database is locked",
+        );
+        first.warn("compacted", "routine, and not kept");
+        assert!(first.disclosures_settled(std::time::Duration::from_secs(30)));
+        drop(first);
+        let second = Hub::new("s-warned");
+        StoreDisclosures::attach(&second, &path);
+        let kept: Vec<_> = second.snapshot().warnings;
+        assert_eq!(
+            kept,
+            vec![letibot_sessionlog::view::Warned {
+                code: "operator_shell_failed".into(),
+                detail: "`cargo build` ran and its 3 rows were not recorded: database is locked"
+                    .into(),
+                ts: said.ts,
+            }],
+            "the detail did not survive the restart"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

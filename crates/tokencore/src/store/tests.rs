@@ -4214,6 +4214,7 @@ mod migrated_schema {
     fn module(name: &str) -> Option<&'static str> {
         Some(match name {
             "citations" => include_str!("citations.rs"),
+            "disclosures" => include_str!("disclosures.rs"),
             "grants" => include_str!("grants.rs"),
             "leases" => include_str!("leases.rs"),
             "marks" => include_str!("marks.rs"),

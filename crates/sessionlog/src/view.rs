@@ -425,6 +425,16 @@ impl SessionView {
         }
     }
 
+    /// Put back warnings a dead daemon kept, oldest first, ahead of any said since this view
+    /// began, under the same bound.
+    pub fn restore_warnings(&mut self, older: Vec<Warned>) {
+        let mut all = older;
+        all.append(&mut self.warnings);
+        let over = all.len().saturating_sub(self.bounds.warnings);
+        all.drain(..over);
+        self.warnings = all;
+    }
+
     /// Fold one appended event into the view. The exhaustive match is the scrub's other half: a
     /// new event variant must decide here what a snapshot carries.
     pub fn apply(&mut self, env: &Envelope) {

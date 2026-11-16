@@ -13,6 +13,7 @@ use crate::ledger::{TokenLedger, hash_tokens};
 const SOURCES: &[(&str, &str)] = &[
     ("store.rs", include_str!("../store.rs")),
     ("citations.rs", include_str!("citations.rs")),
+    ("disclosures.rs", include_str!("disclosures.rs")),
     ("floor.rs", include_str!("floor.rs")),
     ("grants.rs", include_str!("grants.rs")),
     ("leases.rs", include_str!("leases.rs")),
@@ -240,6 +241,8 @@ const EXERCISED: &[&str] = &[
     "set_process_log_read",
     "replace_queued_prompts",
     "queued_prompts",
+    "append_disclosure",
+    "disclosures",
     "put_recall_units",
     "recall_units",
     "recall_pending",
@@ -530,6 +533,17 @@ fn every_project_method_runs_on_a_split_set() {
     )
     .unwrap();
     assert_eq!(s.queued_prompts("s1").unwrap().len(), 1);
+
+    s.append_disclosure(
+        "s1",
+        &Disclosure {
+            ts_ms: 1,
+            code: "operator_shell_failed".into(),
+            detail: "lost".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.disclosures("s1", 8).unwrap().len(), 1);
 
     s.put_recall_units(&[RecallUnit {
         unit: "u1".into(),
