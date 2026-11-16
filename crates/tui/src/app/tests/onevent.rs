@@ -180,15 +180,7 @@ fn no_warning_is_a_row_of_the_conversation() {
             vec![brief("s", "one", false)],
             Hub::new("s").snapshot(),
         ));
-        a.apply(ServerFrame::Event(env_at(
-            1,
-            11,
-            SessionEvent::Warning {
-                code: (*code).into(),
-                detail: format!("the sentence `{code}` is raised with"),
-                compaction: None,
-            },
-        )));
+        a.apply(ServerFrame::Event(env_at(1, 11, real_event(code))));
         let _ = screen(&mut a);
         // A code whose arm took it as STATE (a fold's announcement, a turn's own failure, the
         // model's switch) files nothing: those return before the head reaches the table.
@@ -248,6 +240,74 @@ fn no_warning_is_a_row_of_the_conversation() {
     assert_eq!(model, letibot_sessionlog::warning::TWIN.len());
     assert!(notes > 100, "{notes} codes go to `/notes`");
     assert!(status > 10, "{status} are live state");
+}
+
+/// The event the daemon raises a code with. A code a typed event carries is driven through that
+/// event, so the guard sees the head's real door and not the `Warning` arm's.
+fn real_event(code: &str) -> SessionEvent {
+    match code {
+        "provider_quota" => quota_trouble(),
+        _ => SessionEvent::Warning {
+            code: code.into(),
+            detail: format!("the sentence `{code}` is raised with"),
+            compaction: None,
+        },
+    }
+}
+
+/// A spent account, as the daemon publishes it (`turns::publish_trouble`).
+fn quota_trouble() -> SessionEvent {
+    SessionEvent::ProviderTrouble {
+        kind: "quota".into(),
+        model: "deepseek/deepseek-chat".into(),
+        detail: "http 402: insufficient balance (`provider_quota`)".into(),
+        reset_ms: None,
+        count: 1,
+        switched_to: None,
+    }
+}
+
+/// A spent account is a Failure the model never got: filed beside the conversation, counted on
+/// the edge, and carried by the snapshot so a late head holds it too - once, live or replayed.
+#[test]
+fn provider_quota_is_never_a_conversation_row() {
+    let hub = Hub::new("s");
+    let mut a = app();
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    a.apply(ServerFrame::Event(hub.publish(quota_trouble())));
+    let _ = screen(&mut a);
+    let quota = |a: &App| {
+        a.notes
+            .iter()
+            .filter(|(_, n)| matches!(n, Note::Warned(w) if w.code == "provider_quota"))
+            .count()
+    };
+    assert!(
+        !a.notes.iter().any(|(p, _)| matches!(p, Placed::Seam(_))),
+        "a spent account drew a conversation row: {:?}",
+        a.notes
+    );
+    assert!(
+        !a.hist_lines.join("\n").contains("insufficient balance"),
+        "the sentence is on the conversation: {:?}",
+        a.hist_lines
+    );
+    assert_eq!(quota(&a), 1, "the sentence is not held: {:?}", a.notes);
+    assert_eq!(a.failed, 1, "the edge does not count it");
+
+    let mut late = app();
+    late.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    let _ = screen(&mut late);
+    assert_eq!(quota(&late), 1, "a late head is not told: {:?}", late.notes);
+    assert!(!late.notes.iter().any(|(p, _)| matches!(p, Placed::Seam(_))));
+
+    a.apply(hello("s", vec![brief("s", "one", false)], hub.snapshot()));
+    assert_eq!(
+        quota(&a),
+        1,
+        "live and replayed are two notes: {:?}",
+        a.notes
+    );
 }
 
 /// A daemon fact the model was not told is held and counted on the edge - and still not a row.
