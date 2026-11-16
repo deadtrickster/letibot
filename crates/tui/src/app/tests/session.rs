@@ -2888,3 +2888,27 @@ fn a_picker_opened_before_this_session_is_listed_seats_on_it_when_it_is() {
         "the cursor is on the session this head is in"
     );
 }
+
+/// Before the `model` row or a turn names the model, the header has only the attach wiring, which is
+/// what the session was created on. It says so with a `?`, and the mark goes once the row arrives.
+#[test]
+fn the_header_marks_a_model_it_has_only_from_attach() {
+    let mut a = app();
+    a.apply(ServerFrame::Hello {
+        protocol_version: letibot_sessionlog::protocol::PROTOCOL_VERSION,
+        session_id: "s".into(),
+        head_id: "h1".into(),
+        dropped: 0,
+        snapshot: Some(Box::new(Hub::new("s").snapshot())),
+        resumed_from: None,
+        scrubbed: Default::default(),
+        wiring: SessionWiring {
+            model: "glm-5.3".into(),
+            ..SessionWiring::default()
+        },
+        sessions: vec![],
+    });
+    assert_eq!(a.header_view().model, "glm-5.3?");
+    a.apply(model_settings("glm/glm-5.3", &["glm/glm-5.3"]));
+    assert_eq!(a.header_view().model, "glm/glm-5.3");
+}

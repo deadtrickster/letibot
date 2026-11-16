@@ -69,9 +69,9 @@ impl App {
             .map(|i| i + 1)
             .unwrap_or(0);
         let position = (at, roots.len());
-        // What this session is talking to: whichever the head was told more recently. `wiring.model`
-        // arrives once at attach and the `model` settings row only as the ANSWER to a request, so a
-        // switch is heard only from a `TurnStarted`; the two are compared by the `seq` each arrived at.
+        // What this session is talking to: whichever the head was told more recently, the `model`
+        // settings row or a `TurnStarted`, compared by the `seq` each arrived at. `wiring.model` is the
+        // daemon's word at the session's creation, so a header with only that marks it unconfirmed.
         let from_settings = self
             .settings
             .iter()
@@ -87,7 +87,7 @@ impl App {
                 if !self.model.is_empty() {
                     self.model.clone()
                 } else if !self.wiring.model.is_empty() {
-                    self.wiring.model.clone()
+                    format!("{}?", self.wiring.model)
                 } else {
                     self.model.clone()
                 }
