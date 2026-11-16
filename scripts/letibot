@@ -2988,9 +2988,45 @@ mkdir -p "$STORE_DIR" "$(dirname "$LOG")" "$(dirname "$SHARED_LOG")"
 # prints the coordinator's sentence and the run goes on.
 room_ensure
 
+# A provider of providers.toml: a `[NAME]` table that is not one of the file's own sections.
+provider_section() { # provider_section NAME
+  [ -f "$PROVIDERS" ] || return 1
+  case "$1" in default | model.* | brave | gatekeeper | host.*) return 1 ;; esac
+  awk -v want="[$1]" '{ sub(/[[:space:]]+$/, "") } $0 == want { found = 1; exit } END { exit !found }' \
+    "$PROVIDERS" 2>/dev/null
+}
+
+# A one-shot's `--model` applies or refuses. harnessd reads a bare `--model` as the local
+# binding, so a provider's model would be dropped for the file's default provider.
+oneshot_model() {
+  [ -n "$MODEL_OVERRIDE" ] && [ -z "$PROVIDER_SET" ] || return 0
+  local p m
+  case "$MODEL_OVERRIDE" in
+    */*)
+      p="${MODEL_OVERRIDE%%/*}"
+      m="${MODEL_OVERRIDE#*/}"
+      [ -n "$p" ] && [ -n "$m" ] || die "--model $MODEL_OVERRIDE: PROVIDER/MODEL wants both halves"
+      MODEL_ARGS=(--provider "$p" --model "$m")
+      ;;
+    *)
+      if provider_section "$MODEL_OVERRIDE"; then
+        MODEL_ARGS=(--provider "$MODEL_OVERRIDE")
+        return 0
+      fi
+      p="$(default_provider provider)"
+      [ -n "$p" ] || return 0
+      if [ -n "$(model_home "$MODEL_OVERRIDE")" ]; then
+        die "--model $MODEL_OVERRIDE is a local model, and \`[default] provider = \"$p\"\` in $PROVIDERS answers this run's turns. Nothing was run. Pass --model $p/NAME for that provider's model, or clear \`[default] provider\` to run $MODEL_OVERRIDE here"
+      fi
+      MODEL_ARGS=(--provider "$p" --model "$MODEL_OVERRIDE")
+      ;;
+  esac
+}
+
 # One-shot: no daemon, no TUI. Its socket is its own, so two one-shots side by side do not
 # fight over the folder's.
 if [ $# -gt 0 ]; then
+  oneshot_model
   rundir
   ONESHOT_SOCK="$RUNDIR/oneshot-$$.sock"
   # In a scope of its own too, for `detach`'s reason: its tool calls are as able to eat the

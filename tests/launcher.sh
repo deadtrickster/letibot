@@ -269,6 +269,29 @@ refuse "a [default] provider with no local model block is not refused" "$out" "n
 expect "  ...and the daemon is started" "$out" "^harnessd "
 refuse "  ...with no local endpoint invented for it" "$out" "--endpoint"
 
+# a_one_shot_with_model_runs_that_model_or_refuses: harnessd reads a bare `--model` as the
+# local binding, so a provider's model used to be dropped for the file's default provider.
+ONESHOT_MODELS='[deepseek]
+
+[glm]
+
+[model."local-x"]
+url = "http://127.0.0.1:9/v1"
+
+[default]
+provider = "deepseek"
+'
+out="$(run "$ONESHOT_MODELS" --model glm/glm-5.1 "one question")"
+expect "a_one_shot_with_model_runs_that_model_or_refuses: provider/model names both" "$out" "^harnessd .*--provider glm --model glm-5\.1( |$)"
+out="$(run "$ONESHOT_MODELS" --model glm "one question")"
+expect "  ...a provider's name is that provider" "$out" "^harnessd .*--provider glm( |$)"
+refuse "  ...and not a local binding" "$out" "--model glm( |$)"
+out="$(run "$ONESHOT_MODELS" --model deepseek-chat "one question")"
+expect "  ...a bare model is the default provider's" "$out" "^harnessd .*--provider deepseek --model deepseek-chat( |$)"
+out="$(run "$ONESHOT_MODELS" --model local-x "one question")"
+expect "  ...a local model under a default provider refuses with the key" "$out" "local-x is a local model.*\[default\] provider"
+refuse "  ...and nothing runs" "$out" "^harnessd "
+
 out="$(run "$DEFAULT_ONLY" --status)"
 expect "--status says there is no local home rather than refusing" "$out" "^local +none"
 
