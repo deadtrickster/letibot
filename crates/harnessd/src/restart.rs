@@ -2086,12 +2086,56 @@ mod journal_tests {
             matches!(&c.kind, CommandKind::Prompt { text, .. } if text == "carry on after the restart"),
             "{c:?}"
         );
+        second.prompts_stored();
         assert!(second.journal_settled(std::time::Duration::from_secs(30)));
         let third = Hub::new("s-killed");
         assert_eq!(
             StoreJournal::attach(&third, &path),
             0,
-            "taken, so not put back again"
+            "taken and stored, so not put back again"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A prompt the worker took is still journaled until its row is stored: a daemon killed
+    /// between the take and the persist (a busy store holds the persist for up to half an hour)
+    /// must find the prompt again.
+    #[test]
+    fn a_taken_prompt_survives_a_kill_before_persist() {
+        let dir =
+            std::env::temp_dir().join(format!("letibot-journal-taken-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        let first = Hub::new("s-taken");
+        assert_eq!(StoreJournal::attach(&first, &path), 0);
+        let head = first.attach("tui", "dead", Default::default(), 0);
+        first.submit(
+            &head.head_id,
+            "c1",
+            0,
+            CommandKind::Prompt {
+                text: "taken, never stored".into(),
+                attachments: Vec::new(),
+                context: None,
+                from: None,
+                delivery: Default::default(),
+            },
+        );
+        let OwnWork::Command(_) = first.take_own_work() else {
+            panic!("the worker takes the prompt");
+        };
+        assert!(first.journal_settled(std::time::Duration::from_secs(30)));
+        // kill -9 before the turn's persist.
+        drop(first);
+        let kept = letibot_tokencore::store::Store::open(&path)
+            .unwrap()
+            .queued_prompts("s-taken")
+            .unwrap();
+        assert_eq!(
+            kept.iter().map(|p| p.text.as_str()).collect::<Vec<_>>(),
+            vec!["taken, never stored"],
+            "the prompt is in neither the journal nor the transcript"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

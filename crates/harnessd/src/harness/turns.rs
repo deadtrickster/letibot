@@ -4470,6 +4470,7 @@ impl Harness {
     ) -> Result<bool, HarnessError> {
         let Some(store) = &self.store else {
             self.persisted = self.session.ledger.rows().len();
+            self.hub.prompts_stored();
             return Ok(false);
         };
         let rows = self.session.ledger.rows();
@@ -4569,6 +4570,8 @@ impl Harness {
             }
         }
         self.seal_fork();
+        // Every row is stored, so the prompts the turn took are in the transcript.
+        self.hub.prompts_stored();
         Ok(carried)
     }
 

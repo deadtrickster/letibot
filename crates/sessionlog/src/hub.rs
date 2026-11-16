@@ -403,6 +403,9 @@ impl Footprint {
 #[derive(Default)]
 struct CommandQueue {
     q: VecDeque<QueuedCommand>,
+    /// Prompts taken off the queue whose rows are not stored yet. Journaled ahead of the queue,
+    /// so a daemon killed between the take and the persist puts them back.
+    taken: Vec<QueuedCommand>,
     journal: Option<Journal>,
 }
 
@@ -487,13 +490,25 @@ impl CommandQueue {
     }
     fn pop_front(&mut self) -> Option<QueuedCommand> {
         let c = self.q.pop_front();
+        self.keep_taken(c.as_ref());
         self.sync();
         c
     }
     fn remove(&mut self, i: usize) -> Option<QueuedCommand> {
         let c = self.q.remove(i);
+        self.keep_taken(c.as_ref());
         self.sync();
         c
+    }
+    fn keep_taken(&mut self, c: Option<&QueuedCommand>) {
+        if let Some(c) = c.filter(|c| matches!(c.kind, CommandKind::Prompt { .. })) {
+            self.taken.push(c.clone());
+        }
+    }
+    /// The taken prompts' rows are stored, so the journal lets them go.
+    fn stored(&mut self) {
+        self.taken.clear();
+        self.sync();
     }
     fn len(&self) -> usize {
         self.q.len()
@@ -509,8 +524,9 @@ impl CommandQueue {
         self.sync();
     }
     fn prompts(&self) -> Vec<JournaledPrompt> {
-        self.q
+        self.taken
             .iter()
+            .chain(self.q.iter())
             .filter_map(|c| match &c.kind {
                 CommandKind::Prompt {
                     text,
@@ -775,6 +791,12 @@ impl Hub {
             return 0;
         }
         let at_seq = g.log.head_seq();
+        // A prompt taken twice before a kill (taken, handed back, taken again) is saved once.
+        let mut seen = std::collections::HashSet::new();
+        let stored: Vec<JournaledPrompt> = stored
+            .into_iter()
+            .filter(|p| p.client_request_id.is_empty() || seen.insert(p.client_request_id.clone()))
+            .collect();
         let n = stored.len();
         for p in &stored {
             g.commands.q.push_back(QueuedCommand {
@@ -808,6 +830,8 @@ impl Hub {
             sent: 0,
             saved,
         });
+        // A prompt taken before the journal was set is saved now.
+        g.commands.sync();
         drop(g);
         if n > 0 {
             self.cv.notify_all();
@@ -831,6 +855,12 @@ impl Hub {
             .wait_timeout_while(g, within, |done| *done < want)
             .unwrap_or_else(|e| e.into_inner());
         *g >= want
+    }
+
+    /// Every row this session holds is stored, so the prompts taken before now are in the
+    /// transcript and leave the journal. Called by the harness after a full persist.
+    pub fn prompts_stored(&self) {
+        self.lock().commands.stored();
     }
 
     /// Mark this session as served by the thread that is opening it, not by the worker. See
@@ -2579,10 +2609,16 @@ mod mode_steering_tests {
             ),
             other => panic!("{other:?}"),
         }
-        // Taking it empties the saved queue on the first hub too.
+        // Taking it keeps it saved until its row is stored, then the saved queue is empty.
         assert!(matches!(hub.take_own_work(), OwnWork::Command(_)));
         assert!(hub.journal_settled(std::time::Duration::from_secs(5)));
-        assert!(kept.lock().unwrap().is_empty(), "taken, so no longer saved");
+        assert_eq!(kept.lock().unwrap().len(), 1, "taken, not yet stored");
+        hub.prompts_stored();
+        assert!(hub.journal_settled(std::time::Duration::from_secs(5)));
+        assert!(
+            kept.lock().unwrap().is_empty(),
+            "stored, so no longer saved"
+        );
     }
 
     /// A journal whose store is locked by another process must not hold the session up: the
