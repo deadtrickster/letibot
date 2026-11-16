@@ -138,6 +138,58 @@ pub fn request_of(frame: &ClientFrame) -> (String, u64) {
     (id, seq)
 }
 
+/// What a connection is, fixed when it attaches and never read off a frame: a peer that says it is
+/// the operator is still a peer. A person's own seat is the terminal's head and the bridge's remote
+/// head; every other kind - the askpass helper, an editor's ACP seat, an unknown one - is a
+/// program's.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    Operator,
+    Peer,
+}
+
+impl Role {
+    /// The kind a head attached as is the one thing asked. A frame's `from` names which peer is
+    /// speaking; it never makes a connection a person's.
+    pub fn of(kind: &str) -> Role {
+        match kind.trim() {
+            "tui" | "remote" => Role::Operator,
+            _ => Role::Peer,
+        }
+    }
+
+    pub fn is_operator(self) -> bool {
+        matches!(self, Role::Operator)
+    }
+}
+
+/// Who a prompt's words belong to, decided by the connection and never by the frame. A person's own
+/// seat may type with no sender at all; every other connection speaks as its own seat, and a `from`
+/// that reads as the person is refused that signature and spoken as the connection that sent it.
+pub fn resolve_from(role: Role, identity: &str, from: Option<String>) -> Option<String> {
+    let claimed = from.map(|f| f.trim().to_string()).filter(|f| !f.is_empty());
+    match (role, claimed) {
+        // The one place the operator is still the default: this connection is the person's.
+        (Role::Operator, None) => None,
+        (Role::Operator, Some(handle)) => Some(signed_as(identity, &handle)),
+        (Role::Peer, handle) => Some(signed_as(identity, handle.as_deref().unwrap_or_default())),
+    }
+}
+
+/// The handle a peer's words are filed under: what it claimed, unless that reads as the person.
+fn signed_as(identity: &str, claimed: &str) -> String {
+    if claimed.is_empty() || reads_as_operator(claimed) {
+        identity.trim().to_string()
+    } else {
+        claimed.to_string()
+    }
+}
+
+/// The handles that would let a frame sign as the person. Every other word is a handle.
+fn reads_as_operator(handle: &str) -> bool {
+    matches!(handle, "operator" | "human" | "me" | "user") || handle.starts_with("human:")
+}
+
 /// The pid the kernel recorded for this connection at `connect`. `None` when it will not say.
 #[cfg(target_os = "macos")]
 pub fn peer_pid(stream: &UnixStream) -> Option<i32> {

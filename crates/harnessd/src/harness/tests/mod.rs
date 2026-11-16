@@ -26,7 +26,9 @@ use letibot_tools::authorise::TrailProvenance;
 
 fn user(text: &str) -> TranscriptItem {
     TranscriptItem::User {
-        speaker: Default::default(),
+        // Named, not defaulted: this fixture is the person typing, and the default is no longer
+        // theirs now that a row nobody labelled reads as the session's own.
+        speaker: letibot_transcript::Speaker::Operator,
         parts: vec![UserPart::Text { text: text.into() }],
     }
 }

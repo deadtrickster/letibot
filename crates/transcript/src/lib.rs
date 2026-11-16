@@ -47,13 +47,14 @@ pub enum CallOrigin {
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Speaker {
-    /// The person at the keyboard. Every row written before this field existed reads as
-    /// this, which is what a head already drew for them.
-    #[default]
+    /// The person at the keyboard. Never the default: a row that did not say so may be anybody's,
+    /// and reading a missing label as the operator's is what makes an agent's words authority.
     Operator,
     /// This session appended it - a job completion, a salvage notice, a steering line,
     /// the intent check. Never an authorisation, and never to be drawn as the operator's
-    /// words.
+    /// words. Every row written before the field existed reads as this: nothing said who it
+    /// was, so nothing may read it as the person's.
+    #[default]
     Agent,
     /// Another agent or program sent it into this session, e.g. a Claude Code seat through the
     /// bridge. It drives a turn like a prompt, but it is never the operator's words: nothing may
@@ -829,11 +830,11 @@ mod tests {
         assert!(operator.contains("deadtrickster"), "{operator}");
     }
 
-    /// A `User` row with no `speaker` reads as the operator, and an `agent` row does not. The
-    /// absent case is the honest reading, and a third unknown value would put a new word on
-    /// every old row for no gain.
+    /// A `User` row with no `speaker` reads as the session's own, never as the person's: nothing
+    /// said who it was, and a missing label is not consent. A third unknown word would put a new
+    /// word on every old row for no gain.
     #[test]
-    fn a_user_row_says_who_spoke_and_an_old_row_reads_as_the_operator() {
+    fn a_user_row_says_who_spoke_and_an_old_row_is_not_the_operator() {
         let wire = r#"{"type":"user","parts":[{"kind":"text","text":"hi"}]}"#;
         let item: TranscriptItem = serde_json::from_str(wire).unwrap();
         let TranscriptItem::User { speaker, .. } = item else {
@@ -841,10 +842,10 @@ mod tests {
         };
         assert_eq!(
             speaker,
-            Speaker::Operator,
-            "an absent speaker is the operator"
+            Speaker::Agent,
+            "an absent speaker is not the operator's words"
         );
-        assert_eq!(speaker.as_str(), "operator");
+        assert_eq!(speaker.as_str(), "agent");
 
         let wire = r#"{"type":"user","speaker":"agent","parts":[{"kind":"text","text":"hi"}]}"#;
         let item: TranscriptItem = serde_json::from_str(wire).unwrap();

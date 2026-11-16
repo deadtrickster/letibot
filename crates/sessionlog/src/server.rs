@@ -738,6 +738,10 @@ pub fn serve_conn_rooted(
         return Ok(());
     };
 
+    // What this connection is, decided once here and never by a frame: the kind is the only claim
+    // read, and the door it arrived on may narrow it further.
+    let role = crate::peer::Role::of(&kind);
+
     // Below the oldest head `compat` translates for, the Hello itself would fail the head's
     // decoder, so the refusal is said instead, naming both builds.
     if protocol_version < crate::compat::OLDEST_HEAD {
@@ -810,6 +814,7 @@ pub fn serve_conn_rooted(
         &kind,
         &identity,
         &caps,
+        role,
         &writer,
     )?;
 
@@ -1409,6 +1414,7 @@ pub fn serve_conn_rooted(
                             &kind,
                             &identity,
                             &caps,
+                            role,
                             &writer,
                         )?;
                     }
@@ -1793,7 +1799,7 @@ pub fn serve_conn_rooted(
                         text,
                         attachments,
                         context,
-                        from,
+                        from: crate::peer::resolve_from(role, &identity, from),
                         delivery,
                     },
                 );
@@ -2236,6 +2242,7 @@ fn seat_in(
     kind: &str,
     identity: &str,
     caps: &crate::protocol::Caps,
+    role: crate::peer::Role,
     writer: &Arc<Mutex<FrameWriter<UnixStream>>>,
 ) -> Result<Seat, WireError> {
     // A tool call's command attaches only to reach `sudo`'s askpass door, and a seat is the way
@@ -2248,7 +2255,7 @@ fn seat_in(
     }
     // The asks no other head could answer go on the main session first, so its snapshot has them.
     registry.pending_asks().deliver(&hub);
-    let a = hub.attach(kind, identity, held, since_seq);
+    let a = hub.attach_as(kind, identity, held, since_seq, role);
     let head_id = a.head_id.clone();
     let mut older = crate::compat::OlderHead::new(head_protocol, a.snapshot.as_ref());
     let session_id = hub.session_id();
