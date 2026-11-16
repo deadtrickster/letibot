@@ -335,7 +335,7 @@ mod tests {
         };
         let live = ctx.render(&Source::Live, both);
         // No clock in a live block: the read happened now, and a time here changed the whole
-        // system prompt at every open (R93 item 8).
+        // system prompt at every open.
         assert!(live.contains("Read from the node just now."), "{live}");
         assert!(!live.contains("2026-09-14T11:00:00Z"), "{live}");
         assert!(live.contains("- 01S [shared] cookbook — what to type"));
