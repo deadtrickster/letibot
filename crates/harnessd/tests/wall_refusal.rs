@@ -1067,6 +1067,7 @@ fn compact_self_is_pending_then_runs_first_and_the_next_request_is_smaller() {
             attachments: Vec::new(),
             context: None,
             from: None,
+            delivery: Default::default(),
         },
     );
     let first = hub.try_command().expect("the compaction is queued");

@@ -371,6 +371,7 @@ impl Harness {
                 attachments: Vec::new(),
                 context: None,
                 from: Some(me.clone()),
+                delivery: Default::default(),
             },
         );
         if !queued {

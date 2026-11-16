@@ -1034,6 +1034,8 @@ mod tests {
             edits: Vec::new(),
             origin: None,
             media: None,
+            ran_ms: None,
+            decision: None,
         };
         assert!(accepted_compaction(&[result(
             "compact_self",

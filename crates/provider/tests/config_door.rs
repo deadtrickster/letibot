@@ -119,6 +119,8 @@ fn turn(p: &OpenAiProvider) {
         edits: Vec::new(),
         origin: None,
         media: None,
+        ran_ms: None,
+        decision: None,
     });
     let answered = p
         .complete(&req(&tools, &items), &mut |_| StreamFlow::Continue)

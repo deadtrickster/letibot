@@ -360,6 +360,7 @@ fn the_queue_sessions_are_named_by_role_and_work() {
                 "workspace: /tmp/letibot-review-clones/review-agent-p2-followups-34db3e56-92726-0"
                     .into(),
             advice: None,
+            shadow: None,
             deadline: None,
             on_timeout: OnTimeout::Deny,
         },
