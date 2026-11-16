@@ -244,6 +244,7 @@ const EXERCISED: &[&str] = &[
     "recall_transcripts",
     "recall_rows",
     "item_created_at",
+    "item_times",
     "export_session",
     "import_session",
 ];
@@ -352,6 +353,7 @@ fn every_project_method_runs_on_a_split_set() {
     assert!(s.row_json_at("t1", 0).unwrap().is_some());
     assert_eq!(s.rows_json_from("t1", 0, 3).unwrap().len(), 3);
     assert!(s.item_created_at("t1", 0).unwrap().is_some());
+    assert_eq!(s.item_times("t1").unwrap().len(), 3);
     assert_eq!(s.recall_transcripts("s1", 5).unwrap().len(), 1);
     s.recall_rows("t1", 5).unwrap();
 
