@@ -911,6 +911,96 @@ fn entries_of_one_cause_are_one_notice_and_a_group_that_grew_says_only_the_new_o
     assert!(project.handover_notices().is_empty());
 }
 
+/// A landing of this tree that stopped is told to its root session once, as one row: the row, its
+/// state, the queue's evidence and the next step.
+#[test]
+fn a_stuck_landing_is_told_to_its_root_session_once_with_the_next_step() {
+    let Some(f) = Fixture::new("stuck-told") else {
+        return;
+    };
+    let s = f.store();
+    s.enqueue_review(
+        &NewReview {
+            id: "r-poll".into(),
+            repository: "/the/repository".into(),
+            target: "main".into(),
+            kind: ReviewKind::Branch,
+            session_id: "s-parent".into(),
+            branch: "agent/poll-pty".into(),
+            worktree: None,
+            base_sha: "base".into(),
+            head_sha: "head".into(),
+            brief: "the ask".into(),
+            priority: MergePriority::Subagent,
+            fixes: None,
+            evidence: String::new(),
+        },
+        "test",
+        1,
+    )
+    .unwrap();
+    assert!(
+        s.move_review(
+            "r-poll",
+            ReviewState::Waiting,
+            ReviewState::Reviewing,
+            &Move::new("test", "claimed"),
+            2,
+        )
+        .unwrap()
+    );
+    assert!(
+        s.approve_review(
+            "r-poll",
+            &Approval {
+                expect: ReviewState::Reviewing,
+                expect_owner: None,
+                reviewed_sha: "head".into(),
+                by: "reviewer:sub-1".into(),
+                reasons: vec!["fine".into()],
+                files: vec![],
+                commands: vec![],
+                why: "accepted".into(),
+                merge_id: "m-poll".into(),
+            },
+            3,
+        )
+        .unwrap()
+    );
+    for (from, to) in [
+        (MergeState::Queued, MergeState::Gating),
+        (MergeState::Gating, MergeState::LandedLocal),
+    ] {
+        assert!(
+            s.move_merge(
+                "m-poll",
+                from,
+                to,
+                &Move::new("queue", "the push FAILED: remote: Permission denied"),
+                4,
+            )
+            .unwrap()
+        );
+    }
+    let mut sessions = Sessions::open_first(&f.parts, f.cfg.clone(), f.registry.clone())
+        .expect("the session opens");
+    let project = sessions
+        .held("s-parent")
+        .expect("the project's own session");
+    let said = project.queue_emergency_notices();
+    assert_eq!(said.len(), 1, "one row: {said:#?}");
+    for part in [
+        "m-poll",
+        "agent/poll-pty",
+        "landed_local",
+        "Permission denied",
+        "Next: ",
+    ] {
+        assert!(said[0].contains(part), "`{part}`: {}", said[0]);
+    }
+    assert!(project.queue_emergency_notices().is_empty(), "told ONCE");
+}
+
 /// A red target is told to the project's root session's model once, the failing step and the end of
 /// its output first. The review of the red tip, blocked, is told the same way; a subagent and the
 /// review queue's own session are told nothing.

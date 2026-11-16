@@ -3,7 +3,8 @@
 //! tip or parked row. The failing step and the end of its output come FIRST
 
 use letibot_tokencore::store::{
-    MergeGateOutcome, MergeGateStep, MergeRow, ReviewKind, ReviewRow, ReviewState, TargetHealth,
+    MergeGateOutcome, MergeGateStep, MergeRow, MergeState, ReviewKind, ReviewRow, ReviewState,
+    TargetHealth,
 };
 
 use super::setup::GATE_SETUP_FAILED;
@@ -191,6 +192,61 @@ pub fn merge_gate_killed(m: &MergeRow, words: &str) -> String {
          Raise `[memory] gate` in providers.toml, then `/queue restart {}` gates it again.",
         m.branch,
         first_line(words),
+        m.id
+    )
+}
+
+/// The landing states nobody moves out of without the row's own session or a person: entering one
+/// wakes the root of the tree that enqueued the branch, once per entry.
+pub fn wakes_owner(m: MergeState) -> bool {
+    matches!(
+        m,
+        MergeState::LandedLocal
+            | MergeState::Conflict
+            | MergeState::Failed
+            | MergeState::TimedOut
+            | MergeState::Blocked
+    )
+}
+
+/// One row for a landing that stopped: which row, its state, the queue's evidence and the next step.
+pub fn landing_stuck(m: &MergeRow) -> String {
+    let next = match m.state {
+        MergeState::LandedLocal => format!(
+            "it is on `{}` here and not on origin - fix what the evidence names, then push `{}` \
+             to origin",
+            m.target, m.target
+        ),
+        MergeState::Conflict => format!(
+            "rebase `{}` onto `{}` and commit - the new head goes back to review",
+            m.branch, m.target
+        ),
+        MergeState::Failed => "fix the branch and commit - the new head goes back to review".into(),
+        _ => format!(
+            "fix the cause the evidence names, then `/queue restart {}`",
+            m.id
+        ),
+    };
+    let evidence = super::gate::for_the_model(&m.evidence);
+    let evidence = evidence
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>()
+        .join(" / ");
+    format!(
+        "[queue stuck] landing `{}` of `{}` onto `{}` is {}. Evidence: {}. Next: {}. `/queue rm {}` \
+         withdraws it.",
+        m.id,
+        m.branch,
+        m.target,
+        m.state.as_str(),
+        if evidence.is_empty() {
+            "(none recorded)"
+        } else {
+            evidence.as_str()
+        },
+        next,
         m.id
     )
 }
