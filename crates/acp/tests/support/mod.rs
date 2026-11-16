@@ -218,9 +218,7 @@ pub struct Client {
 impl Client {
     /// The real binary, as a client launches it: no arguments, stdio and nothing else.
     pub fn launch(cwd: &Path) -> Client {
-        let binary = std::env::var_os("CARGO_BIN_EXE_letibot-acp")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| cwd.join("letibot-acp"));
+        let binary = PathBuf::from(env!("CARGO_BIN_EXE_letibot-acp"));
         let mut child = Command::new(&binary)
             .current_dir(cwd)
             .stdin(Stdio::piped())
