@@ -1415,6 +1415,68 @@ fn a_job_the_orderly_stop_ended_is_reminded() {
     d.stop(None);
 }
 
+/// A job lost at a restart is told after a second restart: the first pass marks the row lost,
+/// but its ending is owed until the notice's row is stored, and a daemon that stops again before
+/// any turn runs still owes the model the telling.
+#[test]
+fn a_job_lost_at_restart_is_told_after_a_second_restart() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    // Eighteen daemons and their children in parallel want more than a shell's 256 open files.
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
+    let dir = Scratch::new("restart-lost-told-twice");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    {
+        let store = Store::open(&dir.store()).unwrap();
+        old_daemon_stopped(&store, Duration::from_secs(5));
+        store
+            .put_job(
+                PARENT,
+                &a_job(
+                    "j77341",
+                    "running",
+                    "cd /data && ./run.sh > run/out.txt 2>&1",
+                ),
+            )
+            .unwrap();
+        the_old_daemons(&store, "j77341");
+    }
+
+    let mut first = a_daemon(&parts, &cfg);
+    let notice = first
+        .parent
+        .restore_after_restart()
+        .expect("the first pass reminds of the job");
+    assert!(notice.contains("j77341"), "{notice}");
+    // No turn runs on the notice: it is memory-only, so the ending it carries is still owed.
+    assert!(
+        !delivered(&Store::open(&dir.store()).unwrap(), "j77341"),
+        "the first pass marked the ending delivered with no row stored"
+    );
+    first.stop(None);
+
+    let mut second = a_daemon(&parts, &cfg);
+    let notice = second
+        .parent
+        .restore_after_restart()
+        .expect("the second pass still owes the telling");
+    assert!(
+        notice.contains("j77341"),
+        "a job lost at the first restart was never told to the model: {notice}"
+    );
+    second.stop(None);
+}
+
 /// A job row as a build before `job_context` left it: a command, ended by that daemon's stop (or
 /// left `running` by its crash), and no context naming any daemon.
 fn a_relic(store: &Store, handle: &str) {

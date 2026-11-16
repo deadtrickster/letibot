@@ -1078,7 +1078,9 @@ impl Harness {
             let mut lost = job.clone();
             lost.state = "lost at restart".into();
             let _ = store.put_job(&sid, &lost);
-            let _ = store.deliver_job(&sid, &job.handle);
+            // Owed, not delivered: the ending is told when the notice's row is stored, and a
+            // daemon that stops again before that still owes the telling.
+            self.restart_owed.push(job.handle.clone());
         }
         // A restart is SAID, whatever the store holds: the model's sense of time went through a stop and a
         // start, and only this daemon knows when. A session older than this daemon is not by itself a restart,
@@ -1279,7 +1281,9 @@ impl Harness {
             let mut lost = job.clone();
             lost.state = "lost at restart".into();
             let _ = store.put_job(&sid, &lost);
-            let _ = store.deliver_job(&sid, &job.handle);
+            // Owed, not delivered: the ending is told when the notice's row is stored, and a
+            // daemon that stops again before that still owes the telling.
+            self.restart_owed.push(job.handle.clone());
         }
 
         // Jobs that ended untold: their ending, said now - whatever the down time, the way a
