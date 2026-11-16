@@ -169,9 +169,13 @@ fn cwd_inside(real: &Path, proc_root: &Path, known: &[u32]) -> Option<String> {
             // would keep every tree. A process on its way out (its fs released, not yet a
             // zombie) also has no cwd link: re-read it once, and only a process still there and
             // still alive is believed.
+            // A non-dumpable process of ours (systemd --user, ssh-agent) that started before the
+            // tree existed is not a keep: every box has them, and they would keep every tree.
             Err(_)
                 if !is_zombie(&entry.path())
-                    && (owned_by_us(&entry.path()) || known.contains(&pid)) =>
+                    && (known.contains(&pid)
+                        || (owned_by_us(&entry.path())
+                            && !predates(&entry.path(), proc_root, real))) =>
             {
                 std::thread::sleep(std::time::Duration::from_millis(10));
                 if !entry.path().exists() || is_zombie(&entry.path()) {
@@ -204,6 +208,41 @@ fn owned_by_us(entry: &Path) -> bool {
         (Ok(a), Ok(b)) => a.uid() == b.uid(),
         _ => false,
     }
+}
+
+/// Did the process behind this entry start before `tree` was created? `false` whenever either
+/// time cannot be read, so an unknown stays a keep.
+fn predates(entry: &Path, proc_root: &Path, tree: &Path) -> bool {
+    let Ok(born) = std::fs::metadata(tree).and_then(|m| m.created()) else {
+        return false;
+    };
+    let Ok(stat) = std::fs::read_to_string(entry.join("stat")) else {
+        return false;
+    };
+    // Field 22, `starttime`, in clock ticks since boot; the 20th after the `)` that ends comm.
+    let Some(ticks) = stat
+        .rfind(')')
+        .and_then(|close| stat[close + 1..].split_whitespace().nth(19))
+        .and_then(|t| t.parse::<u64>().ok())
+    else {
+        return false;
+    };
+    let Some(boot) = std::fs::read_to_string(proc_root.join("stat"))
+        .ok()
+        .and_then(|s| {
+            s.lines()
+                .find_map(|l| l.strip_prefix("btime "))
+                .and_then(|b| b.trim().parse::<u64>().ok())
+        })
+    else {
+        return false;
+    };
+    let hz = crate::exec::procs::clock_ticks().max(1);
+    let started = std::time::UNIX_EPOCH
+        + std::time::Duration::from_secs(boot)
+        + std::time::Duration::from_millis(ticks * 1000 / hz);
+    // A second of slack: `btime` is whole seconds.
+    started + std::time::Duration::from_secs(1) < born
 }
 
 /// Is the process behind this entry dead and unreaped? A zombie's cwd link is unreadable because
@@ -345,6 +384,35 @@ mod tests {
             why.contains("4242") && why.to_lowercase().contains("cannot"),
             "{why}"
         );
+    }
+
+    /// An own-uid process whose cwd cannot be read and that started before the tree existed is
+    /// not a keep: systemd --user and the agents are on every box, and would keep every tree.
+    #[test]
+    fn an_unreadable_cwd_older_than_the_tree_does_not_keep_it() {
+        let dir = crate::backend::tempdir::TempDir::new();
+        let wt = dir.path().join("wt");
+        std::fs::create_dir_all(&wt).unwrap();
+        if std::fs::metadata(&wt).and_then(|m| m.created()).is_err() {
+            return; // no birth time on this filesystem: the keep stands, as above
+        }
+        let proc = dir.path().join("proc");
+        std::fs::create_dir_all(proc.join("4242")).unwrap();
+        std::fs::write(proc.join("4242/cwd"), "not a link").unwrap();
+        // Booted at the epoch and started 100 ticks later: long before the tree.
+        let fields = ["S"; 18].join(" ");
+        std::fs::write(
+            proc.join("4242/stat"),
+            format!("4242 (ssh-agent) {fields} 0 100 0"),
+        )
+        .unwrap();
+        std::fs::write(proc.join("stat"), "cpu 0 0 0 0\nbtime 1\n").unwrap();
+        let here = Here {
+            host: crate::lifecycle::box_id(),
+            pid: std::process::id(),
+            proc_root: proc,
+        };
+        assert_eq!(why_kept(&wt, None, &here), None);
     }
 
     /// A running job of a session whose workspace is the tree keeps it, on the store's own
