@@ -523,6 +523,10 @@ pub struct EditorContext {
     /// What became of the marks an earlier reply suggested.
     #[serde(default)]
     pub outcomes: Vec<MarkOutcome>,
+    /// Text the head captured and fenced itself, said as sent in the context row: a browser page.
+    /// Never the operator's words, which is why it is not in the prompt's `text`.
+    #[serde(default)]
+    pub captured: String,
 }
 
 /// One place: a file with a range, a whole file, or a page.

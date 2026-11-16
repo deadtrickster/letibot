@@ -1,4 +1,5 @@
-//! What an editor's context becomes in the transcript: ONE user part, after the operator's words.
+//! What an editor's context becomes in the transcript: ONE context row of the harness's, before the
+//! operator's words. Captured text is never stored as the words of whoever sent it.
 //!
 //! The head sends what the operator pointed at and the DAEMON writes the block, so two heads cannot
 //! spell the same selection two ways and a stored session replays what the model actually read. Every
@@ -15,7 +16,16 @@ pub const MAX_OPEN: usize = 32;
 /// What the context adds to a prompt, or `None` when it holds nothing worth saying. Pure with
 /// respect to the session: the text came with the frame, so no file is read here.
 pub fn part(context: &EditorContext, workspace: &str) -> Option<UserPart> {
+    text(context, workspace).map(|text| UserPart::Text { text })
+}
+
+/// The block [`part`] holds, as text.
+pub fn text(context: &EditorContext, workspace: &str) -> Option<String> {
     let mut said: Vec<String> = Vec::new();
+    // Already fenced by the head that captured it (a browser page), so it is said as sent.
+    if !context.captured.trim().is_empty() {
+        said.push(context.captured.trim_end().to_string());
+    }
     let origin = if context.origin.is_empty() {
         "an editor"
     } else {
@@ -82,9 +92,7 @@ pub fn part(context: &EditorContext, workspace: &str) -> Option<UserPart> {
             listed.join(", ")
         ));
     }
-    (!said.is_empty()).then(|| UserPart::Text {
-        text: said.join("\n\n"),
-    })
+    (!said.is_empty()).then(|| said.join("\n\n"))
 }
 
 /// One reference: a header naming the place, and the selection numbered as `read` numbers it, in a
@@ -384,10 +392,10 @@ mod tests {
     }
 
     /// The whole door, end to end and with no model: a prompt with an unsaved `ContextRef` goes into
-    /// the hub, and the user item the daemon builds holds the words first, then one numbered,
-    /// quarantined block, rendered through the same `part` the between-turns door uses.
+    /// the hub, and the daemon makes two rows of it - the numbered, quarantined block as its own
+    /// context row first, then the words alone as the operator's. Captured text is never theirs.
     #[test]
-    fn a_prompt_with_an_unsaved_ref_becomes_a_user_item_holding_the_block() {
+    fn a_prompt_with_an_unsaved_ref_becomes_a_context_row_and_the_words() {
         use letibot_sessionlog::hub::Hub;
         use letibot_sessionlog::protocol::{Caps, ServerFrame};
         use letibot_turn::SteeringSource;
@@ -432,19 +440,32 @@ mod tests {
             "the hub refused the prompt: {frame:?}"
         );
         let mut steering = crate::harness::HubSteering::new(hub.clone());
-        let said = steering.try_next().expect("the prompt is steering");
-        let item = said.to_item();
-        let letibot_transcript::TranscriptItem::User { speaker, parts } = &item else {
-            panic!("a prompt is a user row: {item:?}")
+        let context = steering
+            .try_next()
+            .expect("the context row is steering")
+            .to_item();
+        let words = steering.try_next().expect("and so are the words").to_item();
+        let letibot_transcript::TranscriptItem::User { speaker, parts } = &words else {
+            panic!("a prompt is a user row: {words:?}")
         };
         assert_eq!(speaker.clone(), letibot_transcript::Speaker::Operator);
-        let letibot_transcript::UserPart::Text { text } = &parts[0] else {
-            panic!("the words must be the FIRST part: {parts:?}")
+        assert_eq!(
+            parts,
+            &vec![letibot_transcript::UserPart::Text {
+                text: "why does this need a lock?".into()
+            }],
+            "the operator's row is their words alone"
+        );
+        let letibot_transcript::TranscriptItem::User { speaker, parts } = &context else {
+            panic!("the context is a user row: {context:?}")
         };
-        assert_eq!(text, "why does this need a lock?");
-        assert_eq!(parts.len(), 2, "the words and one context part: {parts:?}");
-        let letibot_transcript::UserPart::Text { text: block } = &parts[1] else {
-            panic!("the context is a text part: {parts:?}")
+        assert_eq!(
+            speaker.clone(),
+            letibot_transcript::Speaker::Agent,
+            "captured text is the harness's row, never the operator's"
+        );
+        let [letibot_transcript::UserPart::Text { text: block }] = parts.as_slice() else {
+            panic!("the context is one text part: {parts:?}")
         };
         assert!(block.contains("<<<UNTRUSTED_TEXT "), "{block}");
         assert!(block.contains("unsaved edits"), "{block}");

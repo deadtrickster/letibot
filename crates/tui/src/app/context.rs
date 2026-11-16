@@ -91,6 +91,7 @@ impl App {
             open: self.open_buffers(),
             ask: None,
             outcomes: self.outcomes.clone(),
+            ..Default::default()
         })
     }
 

@@ -398,11 +398,10 @@ fn ask_route(stream: &mut TcpStream, server: &Server, cache: &Mutex<Option<Listi
     let _look = body
         .tab
         .map(|t| Look::open(&server.tabs, &row.id, &id, t, &body));
-    let text = ask::prompt(&id, &body, &server.limits);
-    // The selection goes beside the words, not inside them: the daemon renders every editor's
-    // context into one block, so a page's selection and rano's read the same way.
-    let context = ask::context(&body);
-    if let Err(why) = head.prompt_with_context(&text, attachments, context) {
+    // The question is the prompt's words and the page rides beside it: the daemon stores what was
+    // captured as a context row of its own, so nothing the page wrote is the operator's words.
+    let (text, context) = ask::prompt(&id, &body, &server.limits);
+    if let Err(why) = head.prompt_with_context(&text, attachments, Some(context)) {
         return http::error(stream, 409, allow, &why);
     }
     if http::sse_head(stream, &server.origin).is_err() {

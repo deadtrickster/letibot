@@ -36,6 +36,7 @@ impl App {
                 answer: answer_mode(e.answer),
             }),
             outcomes: std::mem::take(&mut self.outcomes),
+            ..Default::default()
         };
         self.scroll = 0;
         // The words are held on the screen until the transcript owns them, exactly as a typed

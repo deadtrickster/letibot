@@ -231,17 +231,17 @@ impl Harness {
 
     /// A prompt through a head, with the chips and the editor's context beside it, from whoever
     /// `voice` names. The files are read HERE, since the daemon writes the transcript and the row
-    /// carries the `data:` URI. `beside` are context rows of the harness's own, so they are never
-    /// stored as the speaker's words.
+    /// carries the `data:` URI. `beside` and what an editor or a page captured are context rows of
+    /// their own, so neither is ever stored as the speaker's words.
     pub fn submit_with_context_from(
         &mut self,
         text: &str,
         attachments: &[letibot_sessionlog::protocol::Attachment],
         context: Option<&letibot_sessionlog::protocol::EditorContext>,
         voice: &Voice,
-        beside: Vec<String>,
+        mut beside: Vec<String>,
     ) -> Result<Reply, HarnessError> {
-        let (mut extra, refused) = crate::attachments::parts(attachments);
+        let (extra, refused) = crate::attachments::parts(attachments);
         let workspace = self.cfg.workspace.to_string_lossy().into_owned();
         if let Some(c) = context {
             // The unsaved captures are this turn's anchor for a mark the reply makes: the file on
@@ -254,9 +254,7 @@ impl Harness {
                     .extend(held);
             }
         }
-        if let Some(part) = context.and_then(|c| crate::editor_context::part(c, &workspace)) {
-            extra.push(part);
-        }
+        beside.extend(context.and_then(|c| crate::editor_context::text(c, &workspace)));
         for said in &refused {
             self.warn("attachment_refused", said.clone());
         }

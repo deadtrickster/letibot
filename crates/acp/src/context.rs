@@ -62,6 +62,7 @@ pub fn split(prompt: &[ContentBlock]) -> (String, Option<EditorContext>) {
         open: Vec::new(),
         ask: None,
         outcomes: Vec::new(),
+        ..Default::default()
     });
     (words.join("\n\n"), context)
 }

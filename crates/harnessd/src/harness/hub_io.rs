@@ -226,7 +226,8 @@ impl SteeringSource for HubSteering {
                         };
                         t.say(who, &text, Some(Instant::now()));
                     }
-                    let (mut extra, refused) = crate::attachments::parts(&attachments);
+                    let (extra, refused) = crate::attachments::parts(&attachments);
+                    let mut beside = None;
                     for said in &refused {
                         self.hub.warn("attachment_refused", said.clone());
                     }
@@ -242,18 +243,31 @@ impl SteeringSource for HubSteering {
                                 .unwrap_or_else(|e| e.into_inner())
                                 .extend(held);
                         }
-                        if let Some(part) = crate::editor_context::part(c, "") {
-                            extra.push(part);
-                        }
+                        beside = crate::editor_context::text(c, "");
                     }
-                    Some(match peer {
+                    let words = match peer {
                         Some(from) => SteeringMessage::from_a_peer(
                             letibot_transcript::Speaker::signed(&from, &text),
                             extra,
                             from,
                         ),
                         None => SteeringMessage::operator_with(text, extra),
-                    })
+                    };
+                    // What was captured is the harness's row, read first, and the words come out of
+                    // the next poll: the between-turns door's order, and never the speaker's words.
+                    match beside {
+                        Some(said) => {
+                            if let Some(t) = &self.trail {
+                                t.say(Speaker::Agent, &said, Some(Instant::now()));
+                            }
+                            self.held
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .push_front(words);
+                            Some(SteeringMessage::normal(said))
+                        }
+                        None => Some(words),
+                    }
                 }
                 CommandKind::Interrupt { reason } => {
                     // The children first, then this session: the one door an interrupt reaches a turn in
