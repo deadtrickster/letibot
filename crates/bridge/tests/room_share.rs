@@ -36,7 +36,7 @@ fn the_waiter_joins_its_bridge_and_a_second_bridge_is_suffixed() {
                 &waiter,
                 Attention::ToMe,
                 Instant::now() + Duration::from_secs(20),
-                &dir.join("wait-mark"),
+                Some(&dir.join("wait-mark")),
             )
         });
         let until = Instant::now() + Duration::from_secs(10);
