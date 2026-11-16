@@ -371,6 +371,7 @@ impl Message {
             crate::SayKind::Blocker => out.push_str(", blocker"),
             crate::SayKind::Decision => out.push_str(", decision"),
             crate::SayKind::Fyi => out.push_str(", fyi"),
+            crate::SayKind::Brief => out.push_str(", brief"),
             _ => {}
         }
         if self.impersonates() {
@@ -394,6 +395,9 @@ impl Message {
         }
         match self.say_kind() {
             crate::SayKind::Fyi if !names_you => Reach::Passing,
+            // A brief is filed context, never a call to act: even the seat it names takes
+            // it as a note, so no reader runs a turn for it.
+            crate::SayKind::Brief => Reach::Passing,
             crate::SayKind::Blocker => Reach::Addressed,
             _ if names_you => Reach::Addressed,
             _ => Reach::Passing,

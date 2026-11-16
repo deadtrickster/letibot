@@ -1731,12 +1731,16 @@ impl Server {
     }
 
     /// A queue seat hears no broadcast and no `@` mention, only the one-to-one doors: a dm or an
-    /// ask. From another project only what [`Server::queue_seat_gate`] let through.
+    /// ask. From another project only what [`Server::queue_seat_gate`] let through, and a
+    /// `brief`, which is filed rather than acted on.
     fn queue_seat_hears(&self, name: &str, m: &chat::Message) -> bool {
         if m.to.as_deref() != Some(name) {
             return false;
         }
         if m.kind == Seat::Operator {
+            return true;
+        }
+        if m.say_kind() == crate::SayKind::Brief {
             return true;
         }
         let asked = m.refs.iter().any(|r| r.kind == "ask");
@@ -1751,8 +1755,8 @@ impl Server {
     }
 
     /// The refs a dm to `to` is stored with, or the refusal when `to` is a queue seat that takes no
-    /// such line from `name`. Another project may send a `decision` or an `ask`, or relay an
-    /// operator's message it names by `thread`; plain chatter stays out.
+    /// such line from `name`. Another project may send a `decision`, an `ask` or a `brief`, or
+    /// relay an operator's message it names by `thread`; plain chatter stays out.
     #[allow(clippy::too_many_arguments)]
     fn queue_seat_gate(
         &self,
@@ -1768,7 +1772,10 @@ impl Server {
         if queue_seat_project(to).is_none()
             || seat == Seat::Operator
             || self.queue_seat_kin(to, name)
-            || matches!(kind, crate::SayKind::Decision | crate::SayKind::Ask)
+            || matches!(
+                kind,
+                crate::SayKind::Decision | crate::SayKind::Ask | crate::SayKind::Brief
+            )
         {
             return Ok(refs);
         }

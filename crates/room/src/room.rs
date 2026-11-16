@@ -708,9 +708,9 @@ impl fmt::Display for Refused {
             Refused::QueueSeatOwnProject { session } => write!(
                 f,
                 "`{session}` is a merge-queue seat and takes no chatter from another project. It \
-                 accepts a dm with `kind: decision`, an `ask`, or a dm whose `thread` is an \
-                 operator's message you are acting on; its own project's sessions and the \
-                 operator may dm it freely"
+                 accepts a dm with `kind: decision`, an `ask`, a `kind: brief` it files as a row, \
+                 or a dm whose `thread` is an operator's message you are acting on; its own \
+                 project's sessions and the operator may dm it freely"
             ),
             Refused::PromptNeedsOperator { session } => write!(
                 f,

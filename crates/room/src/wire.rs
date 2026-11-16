@@ -80,6 +80,10 @@ pub enum SayKind {
     Blocker,
     /// A conclusion the room keeps: the digest ranks it above the talk it settles.
     Decision,
+    /// Context for a seat that takes no chatter - a queue seat briefed from outside its
+    /// project. Filed as a row, never authority: it reaches every reader, the seat it names
+    /// included, as a passing note, so no turn is run for it (review decision 21).
+    Brief,
     /// A word this build does not know: an ordinary line, because a frame from a newer client (or
     /// a careless one) should say something rather than fail to parse.
     #[serde(other)]
@@ -89,13 +93,14 @@ pub enum SayKind {
 impl SayKind {
     /// The kinds a sender may name, in the order a reader needs them - the schema's list and the
     /// one this crate answers to.
-    pub const NAMED: [SayKind; 6] = [
+    pub const NAMED: [SayKind; 7] = [
         SayKind::Post,
         SayKind::Fyi,
         SayKind::Ask,
         SayKind::Blocker,
         SayKind::Decision,
         SayKind::Announce,
+        SayKind::Brief,
     ];
 
     /// The kind a word names; anything unknown is an ordinary line, so an old client and a
@@ -107,6 +112,7 @@ impl SayKind {
             "ask" => SayKind::Ask,
             "blocker" => SayKind::Blocker,
             "decision" => SayKind::Decision,
+            "brief" => SayKind::Brief,
             _ => SayKind::Post,
         }
     }
@@ -121,6 +127,7 @@ impl SayKind {
             SayKind::Ask => "ask",
             SayKind::Blocker => "blocker",
             SayKind::Decision => "decision",
+            SayKind::Brief => "brief",
         }
     }
 
@@ -135,7 +142,7 @@ impl SayKind {
     pub fn recorded(self) -> bool {
         matches!(
             self,
-            SayKind::Fyi | SayKind::Ask | SayKind::Blocker | SayKind::Decision
+            SayKind::Fyi | SayKind::Ask | SayKind::Blocker | SayKind::Decision | SayKind::Brief
         )
     }
 }

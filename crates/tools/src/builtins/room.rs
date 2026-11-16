@@ -51,7 +51,9 @@ impl RoomLink for NoRoom {
 }
 
 /// The kinds a `say` may name: the room's own list, in the order a reader needs them.
-pub const SAY_KINDS: [&str; 6] = ["post", "fyi", "ask", "blocker", "decision", "announce"];
+pub const SAY_KINDS: [&str; 7] = [
+    "post", "fyi", "ask", "blocker", "decision", "announce", "brief",
+];
 
 /// The `room` tool.
 pub struct RoomTool {
@@ -95,7 +97,7 @@ impl Tool for RoomTool {
                             "own", "hand", "accept", "release", "status", "rooms", "roster",
                             "archive", "unarchive"
                         ],
-                        "description": "`post` tag+body; `claim`/`queue` tag; `item` reads a row; an item verb an item; `rule` question+decision; `say`/`ask` text; `answer`/`decline` ask+text; `own`/`hand`/`accept`/`release` scope."
+                        "description": "`post` tag+body; `claim`/`queue` tag; `item` reads a row; item verbs an item; `rule` question+decision; `say`/`ask` text; `answer`/`decline` ask+text; `own`/`hand`/`accept`/`release` scope."
                     },
                     "tag": {
                         "type": "string",
@@ -135,7 +137,7 @@ impl Tool for RoomTool {
                     },
                     "to": {
                         "type": "string",
-                        "description": "`say`: a handle or title (`roster`). `ask`: a session or `path`/`topic`. `rule`/`hand`: the holder."
+                        "description": "`say`: a handle or title. `ask`: a session or `path`/`topic`. `rule`/`hand`: the holder."
                     },
                     "path": {
                         "type": "string",
@@ -192,12 +194,14 @@ impl Tool for RoomTool {
                     "attachments": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "`say`: up to 4 files, 8 MiB each."
+                        "description": "`say`: 4 files, 8 MiB each."
                     },
                     "kind": {
                         "type": "string",
-                        "enum": ["post", "fyi", "ask", "blocker", "decision", "announce"],
-                        "description": "`say`: `ask` needs `to`, `blocker` flags operator, `decision` ranks"
+                        "enum": [
+                            "post", "fyi", "ask", "blocker", "decision", "announce", "brief"
+                        ],
+                        "description": "`say`: `ask` needs `to`; `blocker` flags operator; `decision` ranks; `brief` files"
                     }
                 },
                 "required": ["verb"]

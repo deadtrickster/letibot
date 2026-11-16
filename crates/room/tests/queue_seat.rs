@@ -133,6 +133,53 @@ fn a_host_broadcast_and_a_mention_do_not_reach_a_gatekeeper_but_a_project_dm_doe
     assert_eq!(got.room, letibot_room::DM_ROOM);
 }
 
+/// Decision 21: another project's session may brief a queue seat. The `brief` kind is
+/// filed - delivered to the seat, kept on the row - and never authority: it reaches its
+/// reader as a passing note (`Passing`), so nothing rings and no turn is run for it.
+#[test]
+fn a_brief_from_another_project_is_filed_and_is_never_authority() {
+    let dir = Scratch::new();
+    let server = Server::serve(&dir.0.join("room.sock"), Room::new()).expect("a coordinator");
+    let gk = seat(&server, GK, A, Seat::Session);
+    let other = seat(&server, "s-other", B, Seat::Session);
+
+    // The plain line from another project stays refused.
+    assert!(matches!(
+        refused(other.say(letibot_room::HOST_ROOM, "psst", Some(GK))),
+        Refused::QueueSeatOwnProject { .. }
+    ));
+    // The brief is posted, and the seat hears it: the row is filed, not dropped.
+    let brief = other.call(Request::Say {
+        id: "brief-1".into(),
+        room: letibot_room::HOST_ROOM.into(),
+        text: "context for the queue: the rano pin is off by one until friday".into(),
+        to: Some(GK.into()),
+        thread: None,
+        refs: Vec::new(),
+        attachments: Vec::new(),
+        kind: SayKind::Brief,
+    });
+    assert!(
+        matches!(brief, Response::Said { .. }),
+        "a brief is filed, not refused: {brief:?}"
+    );
+    let got = gk.next();
+    assert_eq!(got.say_kind(), SayKind::Brief, "{got:?}");
+    // The room resolved the seat to its speaking handle; that the seat's own connection
+    // received the message is the proof the row was filed.
+    assert!(
+        got.to.as_deref().is_some_and(|t| t.contains("gatekeeper")),
+        "{got:?}"
+    );
+    // Filed, never authority: it reaches the seat as a passing note even though it names
+    // it, so the seat's link holds the line instead of ringing a turn for it.
+    assert_eq!(
+        got.reach(true),
+        letibot_room::chat::Reach::Passing,
+        "{got:?}"
+    );
+}
+
 #[test]
 fn another_projects_session_is_refused_a_dm_or_ask_and_the_operator_and_kin_may_ask() {
     let dir = Scratch::new();
