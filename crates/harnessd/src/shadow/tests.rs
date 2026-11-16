@@ -1457,7 +1457,7 @@ fn a_read_the_shadow_grants_never_reaches_a_secret_or_a_directory_above_one() {
 }
 
 #[test]
-fn answer_reads_is_on_with_the_permission_job_unless_turned_off() {
+fn answer_reads_is_off_until_turned_on() {
     let lines = |enabled: &[&str], answer_reads| letibot_provider::keys::ShadowLines {
         enabled: enabled.iter().map(|j| j.to_string()).collect(),
         answer_reads,
@@ -1468,8 +1468,12 @@ fn answer_reads_is_on_with_the_permission_job_unless_turned_off() {
             .unwrap()
             .answers_reads()
     };
-    assert!(on(lines(&["permission"], None)));
+    assert!(
+        !on(lines(&["permission"], None)),
+        "the job observes until answering is turned on"
+    );
     assert!(!on(lines(&["permission"], Some(false))));
+    assert!(on(lines(&["permission"], Some(true))));
     assert!(
         !on(lines(&["turn_end"], Some(true))),
         "no permission job, nothing answers"

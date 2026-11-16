@@ -485,22 +485,34 @@ fn with_shadow(w: &World, judge: Slow) -> Arc<Rows> {
     with_shadow_rules(w, judge, &["bash clippy-driver *"]).0
 }
 
-/// [`with_shadow`] with `rules` preapproved, and the answering state it was given.
+/// [`with_shadow`] with `rules` preapproved and answering turned on, and the answering state.
 fn with_shadow_rules(
     w: &World,
     judge: impl crate::shadow::judge::Judge + 'static,
     rules: &[&str],
 ) -> (Arc<Rows>, Arc<crate::shadow::permission::Answering>) {
-    use crate::shadow::runner::{Shadow, Timing};
-    let rows = Arc::new(Rows::default());
-    let cfg = crate::shadow::config::ShadowConfig::from_lines(
+    with_shadow_lines(
+        w,
+        judge,
+        rules,
         letibot_provider::keys::ShadowLines {
             enabled: vec!["permission".into()],
+            answer_reads: Some(true),
             ..Default::default()
         },
-        "local".into(),
     )
-    .unwrap();
+}
+
+/// The shadow as the operator's `[shadow]` lines configure it, answering as they say.
+fn with_shadow_lines(
+    w: &World,
+    judge: impl crate::shadow::judge::Judge + 'static,
+    rules: &[&str],
+    lines: letibot_provider::keys::ShadowLines,
+) -> (Arc<Rows>, Arc<crate::shadow::permission::Answering>) {
+    use crate::shadow::runner::{Shadow, Timing};
+    let rows = Arc::new(Rows::default());
+    let cfg = crate::shadow::config::ShadowConfig::from_lines(lines, "local".into()).unwrap();
     let judge: Arc<dyn crate::shadow::judge::Judge> = Arc::new(judge);
     let shadow = Shadow::start(
         &cfg,
@@ -524,7 +536,7 @@ fn with_shadow_rules(
         Arc::new(shadow),
         rows.clone() as Arc<dyn crate::shadow::record::Recorder>,
     ));
-    let answering = crate::shadow::permission::Answering::new(true);
+    let answering = crate::shadow::permission::Answering::new(cfg.answers_reads());
     *w.rules.lock().unwrap() = rules.iter().map(|r| r.to_string()).collect();
     w.set
         .set_annotator(Some(Arc::new(crate::shadow::permission::Relay {
@@ -1241,6 +1253,39 @@ fn acting_rule_must_cover_the_requested_path() {
     );
     let (card, d) = ask_watching(&w, &req, "deny", Duration::from_millis(50));
     assert!(card.is_some(), "a bash rule never covers a read: {d:?}");
+    assert!(d.by.starts_with("human:"), "{}", d.by);
+    assert!(answering.take_rows().is_empty());
+}
+
+/// Turning the permission job on only observes: a relayed read still reaches the operator.
+#[test]
+fn the_permission_job_alone_never_answers_a_read() {
+    let w = world();
+    name_reviewer(&w.set);
+    let (_, answering) = with_shadow_lines(
+        &w,
+        Slow {
+            reply: ALLOW_READ,
+            sleep: Duration::from_millis(20),
+        },
+        &[READ_RULE],
+        letibot_provider::keys::ShadowLines {
+            enabled: vec!["permission".into()],
+            ..Default::default()
+        },
+    );
+    let req = view_request(
+        "adj-view-0500",
+        "/build/letibot-r1",
+        letibot_tools::Access::Read,
+    );
+    let (card, d) = ask_watching(&w, &req, "grant_ro", Duration::from_millis(250));
+    let card = card.expect("the operator was asked");
+    assert_eq!(
+        card.shadow.as_deref(),
+        Some("shadow (deepseek): allow - matches rule \"read /build/**\""),
+        "the verdict is still a line on the card"
+    );
     assert!(d.by.starts_with("human:"), "{}", d.by);
     assert!(answering.take_rows().is_empty());
 }

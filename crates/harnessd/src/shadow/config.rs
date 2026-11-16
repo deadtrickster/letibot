@@ -19,8 +19,9 @@ pub struct ShadowConfig {
     stateless: bool,
     /// Every Nth persistent question is also asked statelessly; 0 is never.
     fresh_every: u32,
-    /// `answer_reads = false` turns it off; unset is on.
-    answer_reads_off: bool,
+    /// `answer_reads = true` turns it on; unset is off. Turning it on promotes the job from
+    /// observing to acting, so it is the operator's act, never a side effect of `enabled`.
+    answer_reads_on: bool,
 }
 
 /// How often a persistent question is checked against a fresh call when the file does not say.
@@ -51,7 +52,7 @@ impl ShadowConfig {
             default,
             stateless: lines.mode.as_deref() == Some("stateless"),
             fresh_every: lines.fresh_every.unwrap_or(FRESH_EVERY),
-            answer_reads_off: lines.answer_reads == Some(false),
+            answer_reads_on: lines.answer_reads == Some(true),
             ..ShadowConfig::default()
         };
         if let Some(m) = lines.mode.as_deref()
@@ -80,14 +81,14 @@ impl ShadowConfig {
     }
 
     /// Whether the permission job answers a relayed read-only view ask for the operator.
-    /// On whenever the permission job is, unless `answer_reads = false`.
+    /// Only with the permission job on and `answer_reads = true`.
     pub fn answers_reads(&self) -> bool {
-        self.is_on(Job::Permission) && !self.answer_reads_off
+        self.is_on(Job::Permission) && self.answer_reads_on
     }
 
     /// For a test or a caller that sets the switch in code.
     pub fn with_answer_reads(mut self, on: bool) -> ShadowConfig {
-        self.answer_reads_off = !on;
+        self.answer_reads_on = on;
         self
     }
 
