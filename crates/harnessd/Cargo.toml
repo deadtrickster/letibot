@@ -110,6 +110,8 @@ required-features = ["local"]
 
 [dev-dependencies]
 letibot-config-ref.workspace = true
+# The fake MCP server, served from this crate's test binary.
+letibot-mcp-client = { workspace = true, features = ["fake"] }
 letibot-tools = { workspace = true, features = ["testing"] }
 # The fixture tier: a caller's test says which texts mean the same thing, with no model.
 letibot-embeddings = { workspace = true, features = ["testing"] }

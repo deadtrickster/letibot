@@ -1,9 +1,11 @@
-//! The daemon's MCP servers: started once per distinct `[mcp]` config and shared by every
-//! session that opens under it, so a failure is reported by the open that started the pool.
+//! The daemon's MCP servers: one process per distinct server spec, shared by every session that
+//! names it, so a failure is reported by the open that started it. `/mcp reload` and a changed
+//! file at turn start reconcile a session's set without a daemon restart.
 
-use std::collections::{BTreeMap, HashMap};
-use std::sync::{Arc, Mutex, OnceLock};
-use std::time::Duration;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, OnceLock};
+use std::time::{Duration, SystemTime};
 
 use crate::config::Config;
 use crate::leticode_config::McpServerKeys;
@@ -154,41 +156,281 @@ pub fn specs(
     (specs, bad)
 }
 
-type Pools = Mutex<HashMap<String, Arc<letibot_mcp_client::Catalog>>>;
-
-/// The catalogue for `specs`, and whether this call started it. Keyed by the specs themselves,
-/// so two daemons in one test process with different files never share servers.
-pub fn pool(
-    specs: &[letibot_mcp_client::ServerSpec],
-    bad: Vec<letibot_mcp_client::Failure>,
-) -> (Arc<letibot_mcp_client::Catalog>, bool) {
-    static POOLS: OnceLock<Pools> = OnceLock::new();
-    let key = format!("{specs:?}{bad:?}");
-    let mut pools = POOLS
-        .get_or_init(Default::default)
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    if let Some(c) = pools.get(&key) {
-        return (c.clone(), false);
-    }
-    let c = Arc::new(letibot_mcp_client::Catalog::start(specs).with_failures(bad));
-    pools.insert(key, c.clone());
-    (c, true)
+/// The daemon's servers: one process per distinct spec, shared by every session naming it.
+fn pool() -> &'static Arc<letibot_mcp_client::Pool> {
+    static POOL: OnceLock<Arc<letibot_mcp_client::Pool>> = OnceLock::new();
+    POOL.get_or_init(letibot_mcp_client::Pool::new)
 }
 
 /// The warning for each server that did not start.
-pub fn failure_lines(catalog: &letibot_mcp_client::Catalog) -> Vec<String> {
-    catalog
-        .failures()
+pub fn failure_lines(failures: &[letibot_mcp_client::Failure]) -> Vec<String> {
+    failures
         .iter()
         .map(|f| {
             format!(
-                "MCP server `{}` did not start: {}. The other servers serve; its tools are \
-                 not offered until the daemon restarts.",
-                f.server, f.why
+                "MCP server `{}` did not start: {}. The other servers serve; `/mcp restart {}` \
+                 tries it again.",
+                f.server, f.why, f.server
             )
         })
         .collect()
+}
+
+/// A file the servers were read from, as last seen.
+#[derive(Debug, Clone, PartialEq)]
+struct Mark {
+    path: PathBuf,
+    mtime: Option<SystemTime>,
+    sha256: Option<String>,
+}
+
+impl Mark {
+    fn read(path: &Path) -> Mark {
+        use sha2::Digest;
+        Mark {
+            path: path.to_path_buf(),
+            mtime: std::fs::metadata(path).and_then(|m| m.modified()).ok(),
+            sha256: std::fs::read(path)
+                .ok()
+                .map(|b| format!("{:x}", sha2::Sha256::digest(&b))),
+        }
+    }
+
+    /// Whether the bytes changed. The mtime is checked first; a touch with the same bytes is no change.
+    fn moved(&mut self) -> bool {
+        let mtime = std::fs::metadata(&self.path)
+            .and_then(|m| m.modified())
+            .ok();
+        if mtime == self.mtime {
+            return false;
+        }
+        let now = Mark::read(&self.path);
+        let moved = now.sha256 != self.sha256;
+        *self = now;
+        moved
+    }
+}
+
+/// A reload's change lines and warnings, or why the config did not read.
+pub type Read = Result<(Vec<String>, Vec<String>), String>;
+
+/// What `/mcp` acts on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verb {
+    List,
+    Reload,
+    Restart(String),
+}
+
+/// One session's MCP servers and the files they were read from. Reconciled by `/mcp reload`,
+/// and at turn start or on `/mcp` when a file's bytes or a stdio binary changed.
+pub struct Live {
+    catalog: Arc<letibot_mcp_client::Catalog>,
+    tables: Tables,
+    /// Names the user file declares; the others are the checkout's `.mcp.json`.
+    user_names: BTreeSet<String>,
+    /// `None` for a config that names no box, as in a test that never read one.
+    user_file: Option<PathBuf>,
+    project_file: PathBuf,
+    marks: Vec<Mark>,
+    /// The last read's warnings, such as an unpinned `.mcp.json`.
+    warnings: Vec<String>,
+}
+
+impl Live {
+    fn user_source(&self) -> String {
+        self.user_file
+            .as_ref()
+            .map_or("the user leticode.toml".into(), |f| f.display().to_string())
+    }
+
+    /// Start what `cfg` names, sharing processes the daemon already runs. The warnings are the
+    /// read's and the start failures of servers this open started.
+    pub fn open(cfg: &Config) -> (Live, Vec<String>) {
+        let (tables, warnings) = servers(cfg);
+        let (specs, bad) = specs(&tables);
+        let (catalog, failed) = pool().catalog(&specs, bad);
+        let mut said = warnings.clone();
+        said.extend(failure_lines(&failed));
+        let live = Live {
+            catalog: Arc::new(catalog),
+            tables,
+            user_names: cfg.leticode_user.mcp.keys().cloned().collect(),
+            user_file: user_file(cfg),
+            project_file: cfg.workspace.join(crate::leticode_config::MCP_JSON),
+            marks: marks(cfg),
+            warnings,
+        };
+        (live, said)
+    }
+
+    pub fn catalog(&self) -> Arc<letibot_mcp_client::Catalog> {
+        self.catalog.clone()
+    }
+
+    /// Re-read the user file and the pinned `.mcp.json`, then reconcile: one line per change,
+    /// and the read's warnings. A file that does not parse changes nothing.
+    pub fn reload(&mut self, cfg: &mut Config) -> Read {
+        self.marks = marks_at(self.user_file.as_deref(), cfg);
+        if let Some(file) = &self.user_file {
+            let user = crate::leticode_config::LeticodeConfig::load(file)?;
+            cfg.leticode_user.mcp = user.mcp;
+            cfg.leticode_user.mcp_pinned = user.mcp_pinned;
+            cfg.leticode_user.mcp_trusted = user.mcp_trusted;
+        }
+        let (tables, warnings) = servers(cfg);
+        let (specs, bad) = specs(&tables);
+        let mut changes = self.catalog.reconcile(&specs, bad);
+        for name in self.catalog.stale() {
+            if !changes.iter().any(|c| c.name == name)
+                && let Some(c) = self.catalog.restart(&name, "binary updated")
+            {
+                changes.push(c);
+            }
+        }
+        self.tables = tables;
+        self.user_names = cfg.leticode_user.mcp.keys().cloned().collect();
+        self.warnings = warnings.clone();
+        Ok((changes.iter().map(ToString::to_string).collect(), warnings))
+    }
+
+    /// A reload when a file's bytes or a stdio binary changed since the last look; `None`
+    /// when nothing did. Checked at turn start and on `/mcp`, never on a timer.
+    pub fn check(&mut self, cfg: &mut Config) -> Option<Read> {
+        let mut moved = false;
+        for m in &mut self.marks {
+            moved |= m.moved();
+        }
+        if !moved && self.catalog.stale().is_empty() {
+            return None;
+        }
+        Some(self.reload(cfg))
+    }
+
+    /// The one row a turn-start reload is said in, for the model and the operator, and the
+    /// warnings for the hub.
+    pub fn turn_start(&mut self, cfg: &mut Config) -> (Option<String>, Vec<String>) {
+        let Some(read) = self.check(cfg) else {
+            return (None, Vec::new());
+        };
+        match read {
+            Ok((changes, warnings)) if changes.is_empty() => (None, warnings),
+            Ok((changes, warnings)) => (Some(format!("mcp: {}", changes.join(", "))), warnings),
+            Err(why) => (
+                Some(format!(
+                    "mcp: the config changed and did not read, so the servers are as they were: {why}"
+                )),
+                Vec::new(),
+            ),
+        }
+    }
+
+    /// `/mcp`, `/mcp reload`, `/mcp restart NAME`.
+    pub fn verb(&mut self, cfg: &mut Config, verb: &Verb) -> crate::slash::SlashReply {
+        use crate::slash::SlashReply;
+        match verb {
+            Verb::List => {
+                let mut lines = match self.check(cfg) {
+                    None => Vec::new(),
+                    Some(Ok((changes, _))) if changes.is_empty() => Vec::new(),
+                    Some(Ok((changes, _))) => vec![format!("reloaded: {}", changes.join(", "))],
+                    Some(Err(why)) => vec![format!("the config changed and did not read: {why}")],
+                };
+                lines.extend(self.status_lines());
+                SlashReply::listing(lines)
+            }
+            Verb::Reload => match self.reload(cfg) {
+                Ok((changes, warnings)) => {
+                    let mut lines = if changes.is_empty() {
+                        vec!["mcp: no changes".to_string()]
+                    } else {
+                        changes.iter().map(|c| format!("mcp: {c}")).collect()
+                    };
+                    lines.extend(warnings);
+                    SlashReply::listing(lines)
+                }
+                Err(why) => {
+                    SlashReply::refused(vec![format!("mcp: {why}; the servers are as they were")])
+                }
+            },
+            Verb::Restart(name) => match self.catalog.restart(name, "by hand") {
+                Some(c) if c.failed.is_none() => SlashReply::listing(vec![format!("mcp: {c}")]),
+                Some(c) => SlashReply::refused(vec![format!("mcp: {c}")]),
+                None => SlashReply::refused(vec![format!(
+                    "mcp: no running server `{name}`; /mcp lists them"
+                )]),
+            },
+        }
+    }
+
+    /// One line per configured server: name, state, tools, pid or url, and where it was read.
+    pub fn status_lines(&self) -> Vec<String> {
+        if self.tables.is_empty() {
+            let mut lines = vec![format!(
+                "no MCP servers configured - [mcp.NAME] in {}",
+                self.user_source()
+            )];
+            lines.extend(self.warnings.iter().cloned());
+            return lines;
+        }
+        let status = self.catalog.status();
+        let mut lines = vec![format!(
+            "MCP servers ({}) - /mcp reload re-reads the config, /mcp restart NAME restarts one",
+            self.tables.len()
+        )];
+        for (name, table) in &self.tables {
+            let source = if self.user_names.contains(name) {
+                self.user_source()
+            } else {
+                self.project_file.display().to_string()
+            };
+            let disabled = matches!(table, Ok(k) if !k.enabled);
+            let line = match status.iter().find(|s| &s.name == name) {
+                _ if disabled => format!("{name} · stopped (enabled = false) · {source}"),
+                None => format!("{name} · stopped · {source}"),
+                Some(s) => {
+                    use letibot_mcp_client::State;
+                    let state = match &s.state {
+                        State::Running => "running".to_string(),
+                        State::Down(why) => format!("stopped: {why}; restarts on its next call"),
+                        State::Failed(why) => format!("failed: {why}"),
+                    };
+                    let at = match (&s.pid, &s.url) {
+                        (Some(pid), _) => format!(" · pid {pid}"),
+                        // The query can carry a key; the headers are never shown.
+                        (_, Some(url)) => format!(" · {}", url.split('?').next().unwrap_or(url)),
+                        _ => String::new(),
+                    };
+                    format!("{name} · {state} · {} tools{at} · {source}", s.tools)
+                }
+            };
+            lines.push(line);
+        }
+        lines.extend(self.warnings.iter().cloned());
+        lines
+    }
+}
+
+/// The user leticode.toml this session's servers are read from: the one loaded, else the box's.
+fn user_file(cfg: &Config) -> Option<PathBuf> {
+    cfg.leticode_user.path.clone().or_else(|| {
+        (!cfg.box_dirs.config.as_os_str().is_empty())
+            .then(|| cfg.box_dirs.config.join(crate::leticode_config::FILE_NAME))
+    })
+}
+
+fn marks(cfg: &Config) -> Vec<Mark> {
+    marks_at(user_file(cfg).as_deref(), cfg)
+}
+
+fn marks_at(user: Option<&Path>, cfg: &Config) -> Vec<Mark> {
+    let mut v: Vec<Mark> = user.into_iter().map(Mark::read).collect();
+    if cfg.read_project_config {
+        v.push(Mark::read(
+            &cfg.workspace.join(crate::leticode_config::MCP_JSON),
+        ));
+    }
+    v
 }
 
 #[cfg(test)]
@@ -304,5 +546,181 @@ mod tests {
         pin(&mut cfg, &ws);
         let (tables, warnings) = servers(&cfg);
         assert!(tables.is_empty() && warnings.is_empty());
+    }
+
+    /// The fake MCP server, when this test binary is started as one; a no-op test otherwise.
+    #[test]
+    fn fake_mcp_server() {
+        if std::env::var_os("LETIBOT_FAKE_MCP").is_some() {
+            letibot_mcp_client::fake::serve(&[]);
+        }
+    }
+
+    /// A `[mcp.NAME]` table that runs this test binary as the fake server.
+    fn fake_table(name: &str, tag: &str) -> String {
+        let exe = std::env::current_exe().unwrap();
+        format!(
+            "[mcp.{name}]\ncommand = {:?}\nargs = [\"mcp::tests::fake_mcp_server\", \"--exact\", \
+             \"--nocapture\", \"--test-threads=1\"]\nenv = {{ LETIBOT_FAKE_MCP = \"1\", TAG = \"{tag}\" }}\n",
+            exe.display().to_string()
+        )
+    }
+
+    /// A session config whose user file is `file` under a fresh directory.
+    fn live_cfg(test: &str, body: &str) -> (Config, PathBuf) {
+        let d =
+            std::env::temp_dir().join(format!("letibot-mcp-live-{}-{test}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let file = d.join("leticode.toml");
+        std::fs::write(&file, body).unwrap();
+        let mut cfg = cfg_at(&d);
+        cfg.read_project_config = false;
+        cfg.leticode_user = crate::leticode_config::LeticodeConfig::load(&file).unwrap();
+        (cfg, file)
+    }
+
+    /// Rewrite the file so its mtime moves even within the filesystem's timestamp granularity.
+    fn rewrite(file: &Path, body: &str) {
+        std::fs::write(file, body).unwrap();
+        let later = SystemTime::now() + Duration::from_secs(2);
+        std::fs::File::options()
+            .write(true)
+            .open(file)
+            .unwrap()
+            .set_modified(later)
+            .unwrap();
+    }
+
+    fn pid_of(live: &Live, name: &str) -> u32 {
+        let s = live.catalog().status();
+        let s = s.iter().find(|s| s.name == name).unwrap();
+        assert_eq!(s.state, letibot_mcp_client::State::Running, "{s:?}");
+        s.pid.unwrap()
+    }
+
+    #[test]
+    fn mcp_lists_each_server_with_its_state_and_source() {
+        let body = format!(
+            "{}[mcp.lsoff]\ncommand = \"x\"\nenabled = false\n\n[mcp.lsbad]\nargs = [\"x\"]\n",
+            fake_table("lsup", "ls")
+        );
+        let (mut cfg, file) = live_cfg("list", &body);
+        let (mut live, _) = Live::open(&cfg);
+        let reply = live.verb(&mut cfg, &Verb::List);
+        assert!(reply.ok);
+        let text = reply.lines.join("\n");
+        let pid = pid_of(&live, "lsup");
+        let src = file.display().to_string();
+        assert!(
+            text.contains(&format!("lsup · running · 9 tools · pid {pid} · {src}")),
+            "{text}"
+        );
+        assert!(
+            text.contains(&format!("lsoff · stopped (enabled = false) · {src}")),
+            "{text}"
+        );
+        assert!(
+            text.contains("lsbad · failed: its table sets neither"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_reload_restarts_only_the_changed_server_and_adds_and_removes() {
+        let (mut cfg, file) = live_cfg(
+            "reload",
+            &format!(
+                "{}{}{}",
+                fake_table("rla", "1"),
+                fake_table("rlb", "1"),
+                fake_table("rlc", "1")
+            ),
+        );
+        let (mut live, _) = Live::open(&cfg);
+        let (a, b) = (pid_of(&live, "rla"), pid_of(&live, "rlb"));
+        rewrite(
+            &file,
+            &format!(
+                "{}{}{}",
+                fake_table("rla", "2"),
+                fake_table("rlb", "1"),
+                fake_table("rlc", "1")
+            ),
+        );
+        let reply = live.verb(&mut cfg, &Verb::Reload);
+        assert_eq!(reply.lines, ["mcp: rla restarted (config changed)"]);
+        assert_ne!(pid_of(&live, "rla"), a);
+        assert_eq!(
+            pid_of(&live, "rlb"),
+            b,
+            "the unchanged server kept its process"
+        );
+
+        rewrite(
+            &file,
+            &format!(
+                "{}{}{}",
+                fake_table("rla", "2"),
+                fake_table("rlb", "1"),
+                fake_table("rld", "1")
+            ),
+        );
+        let reply = live.verb(&mut cfg, &Verb::Reload);
+        assert_eq!(
+            reply.lines,
+            ["mcp: rlc stopped (removed)", "mcp: rld added"]
+        );
+        pid_of(&live, "rld");
+        assert!(live.catalog().status().iter().all(|s| s.name != "rlc"));
+        assert_eq!(
+            live.verb(&mut cfg, &Verb::Reload).lines,
+            ["mcp: no changes"]
+        );
+    }
+
+    #[test]
+    fn a_changed_file_reloads_once_at_turn_start() {
+        let (mut cfg, file) = live_cfg("auto", &fake_table("auto", "1"));
+        let (mut live, _) = Live::open(&cfg);
+        assert_eq!(live.turn_start(&mut cfg), (None, Vec::new()));
+        // Touched with the same bytes: the mtime moved and the hash did not.
+        rewrite(&file, &fake_table("auto", "1"));
+        assert_eq!(live.turn_start(&mut cfg), (None, Vec::new()));
+        rewrite(
+            &file,
+            &format!("{}{}", fake_table("auto", "2"), fake_table("auto2", "1")),
+        );
+        assert_eq!(
+            live.turn_start(&mut cfg).0.as_deref(),
+            Some("mcp: auto restarted (config changed), auto2 added")
+        );
+        assert_eq!(
+            live.turn_start(&mut cfg),
+            (None, Vec::new()),
+            "once per change"
+        );
+        rewrite(&file, "[mcp.broken\n");
+        let (row, _) = live.turn_start(&mut cfg);
+        assert!(row.unwrap().contains("did not read"));
+        assert_eq!(live.turn_start(&mut cfg), (None, Vec::new()));
+        pid_of(&live, "auto2");
+    }
+
+    #[test]
+    fn mcp_restart_names_one_server() {
+        let (mut cfg, _) = live_cfg(
+            "restart",
+            &format!("{}{}", fake_table("rsa", "1"), fake_table("rsb", "1")),
+        );
+        let (mut live, _) = Live::open(&cfg);
+        let (a, b) = (pid_of(&live, "rsa"), pid_of(&live, "rsb"));
+        let reply = live.verb(&mut cfg, &Verb::Restart("rsa".into()));
+        assert!(reply.ok);
+        assert_eq!(reply.lines, ["mcp: rsa restarted (by hand)"]);
+        assert_ne!(pid_of(&live, "rsa"), a);
+        assert_eq!(pid_of(&live, "rsb"), b);
+        let reply = live.verb(&mut cfg, &Verb::Restart("nobody".into()));
+        assert!(!reply.ok);
     }
 }

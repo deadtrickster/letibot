@@ -358,6 +358,18 @@ impl Harness {
                 parts: vec![UserPart::Text { text: said }],
             });
         }
+        // A server set reconciled because its config or binary changed: one row both read.
+        let (mcp_row, mcp_warnings) = self.mcp.turn_start(&mut self.cfg);
+        for line in mcp_warnings {
+            self.hub.warn("mcp_server", line);
+        }
+        if let Some(said) = mcp_row {
+            self.trail.say(Speaker::Agent, &said, Some(Instant::now()));
+            items.push(TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Agent,
+                parts: vec![UserPart::Text { text: said }],
+            });
+        }
         // Captured or composed text the words came with: an Agent row, so it can be read and cited
         // as context and never as the speaker's consent. Before the words, which stay last.
         for said in beside.into_iter().filter(|b| !b.trim().is_empty()) {

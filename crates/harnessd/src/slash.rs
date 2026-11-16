@@ -61,6 +61,7 @@ pub const VERBS: &[&str] = &[
     "job",
     "listen",
     "login",
+    "mcp",
     "models",
     "monitor",
     "nag",
@@ -179,6 +180,9 @@ pub enum Slash {
     AutoCompact {
         on: bool,
     },
+    /// `/mcp` lists this session's MCP servers; `/mcp reload` re-reads the config and
+    /// reconciles; `/mcp restart NAME` restarts one. See [`crate::mcp::Live`].
+    Mcp(crate::mcp::Verb),
     Help(String),
     /// A verb this daemon has not got: `command_<verb>` in the session's own stack is offered the line
     /// before the sentence that has always answered one. `line` is the rest of the line as
@@ -267,6 +271,7 @@ impl Slash {
                 | Slash::Boundary
                 | Slash::Permissions { revoke: None }
                 | Slash::Models
+                | Slash::Mcp(_)
                 | Slash::Job { .. }
                 | Slash::Gate(GateVerb::Recent { .. } | GateVerb::Counts)
         )
@@ -603,6 +608,19 @@ impl Slash {
                     )),
                 }
             }
+            Some("mcp") => match (words.get(1).copied(), words.get(2)) {
+                (None | Some("list"), _) => Slash::Mcp(crate::mcp::Verb::List),
+                (Some("reload"), _) => Slash::Mcp(crate::mcp::Verb::Reload),
+                (Some("restart"), Some(name)) => {
+                    Slash::Mcp(crate::mcp::Verb::Restart((*name).to_string()))
+                }
+                (Some("restart"), None) => {
+                    Slash::Help("/mcp restart NAME - one of the names /mcp lists".into())
+                }
+                (Some(other), _) => Slash::Help(format!(
+                    "/mcp {other}: the verbs are /mcp, /mcp reload and /mcp restart NAME"
+                )),
+            },
             Some(other) => Slash::Unknown {
                 verb: (*other).to_string(),
                 line: line
@@ -1338,6 +1356,26 @@ mod tests {
         }
         assert!(matches!(Slash::parse("models"), Slash::Models));
         assert!(matches!(Slash::parse("flowy dance"), Slash::Help(_)));
+    }
+
+    #[test]
+    fn mcp_parses_its_three_verbs_and_unknowns_answer() {
+        use crate::mcp::Verb;
+        assert_eq!(Slash::parse("mcp"), Slash::Mcp(Verb::List));
+        assert_eq!(Slash::parse("mcp reload"), Slash::Mcp(Verb::Reload));
+        assert_eq!(
+            Slash::parse("mcp restart github"),
+            Slash::Mcp(Verb::Restart("github".into()))
+        );
+        assert!(matches!(Slash::parse("mcp restart"), Slash::Help(_)));
+        assert!(matches!(Slash::parse("mcp dance"), Slash::Help(_)));
+        assert!(Slash::parse("mcp").lists());
+        let reply = unknown_verb(None, None, "s", "nonesuch", "");
+        assert!(!reply.ok);
+        assert_eq!(
+            reply.lines,
+            ["unknown command `/nonesuch` - /help lists them"]
+        );
     }
 
     /// `/job` with no argument is the listing, not a refusal, and `--offset` is not mistaken for
