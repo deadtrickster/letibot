@@ -766,6 +766,10 @@ pub struct App {
     /// When this head received `queues`, by its own clock: an age the pane draws is the
     /// snapshot's own plus how long ago it arrived. `0` until one has arrived.
     pub(crate) queues_got_ms: u64,
+    /// When the session list was last answered and last asked for, on the head's clock. Nothing
+    /// pushes the list, so the clock re-asks it: see `refresh_sessions_on_the_clock`.
+    pub(crate) sessions_got_ms: u64,
+    pub(crate) sessions_asked_ms: u64,
     /// When the pane last asked for a snapshot, so an open pane re-reads the heartbeats every
     /// few seconds and not on every frame.
     pub(crate) queues_asked_ms: u64,
@@ -1553,6 +1557,8 @@ impl App {
             queue_own_only: false,
             queue_seen_ms: 0,
             queues_got_ms: 0,
+            sessions_got_ms: 0,
+            sessions_asked_ms: 0,
             queues_asked_ms: 0,
             gate_tails: Default::default(),
             queue_sel: 0,
@@ -1722,10 +1728,24 @@ impl App {
         // The composer's edge draws the queues whether or not the pane was ever opened, and a
         // snapshot only ages: see `refresh_queues_on_the_clock`.
         self.refresh_queues_on_the_clock();
+        self.refresh_sessions_on_the_clock();
         // An open window over a running job follows what it writes. See `poll_job_out`.
         self.poll_job_out();
         // The chat view polls for news only while it is on the stack.
         self.rooms_poll();
+    }
+
+    /// The session list is pull-only, and the header's `2/5` and the picker are drawn from it, so a
+    /// session another head made would never be counted. Asked again once a minute after a first
+    /// answer.
+    fn refresh_sessions_on_the_clock(&mut self) {
+        const EVERY_MS: u64 = 60_000;
+        let last = self.sessions_got_ms.max(self.sessions_asked_ms);
+        if self.sessions_got_ms == 0 || self.now_ms.saturating_sub(last) < EVERY_MS {
+            return;
+        }
+        self.sessions_asked_ms = self.now_ms;
+        self.queued.push(Action::ListSessions);
     }
 
     /// Whether the head wants the terminal repainted from scratch, which only Ctrl-L asks for.

@@ -117,6 +117,7 @@ impl App {
             } => {
                 // Kept whole, like the `Hello` arm above - see it for why the filter is gone.
                 self.sessions = sessions;
+                self.sessions_got_ms = self.now_ms;
                 // The two halves are one answer: a row is in exactly one of them, so a frame that
                 // was applied half-way would draw a session twice or not at all.
                 self.archived = archived;
