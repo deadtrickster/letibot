@@ -474,6 +474,8 @@ fn every_project_method_runs_on_a_split_set() {
             text: "hi".into(),
             attachments_json: "[]".into(),
             context_json: String::new(),
+            from_who: String::new(),
+            delivery: String::new(),
         }],
     )
     .unwrap();

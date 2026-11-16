@@ -467,6 +467,10 @@ pub struct JournaledPrompt {
     /// The editor context the prompt carried, kept beside its attachments for the same reason:
     /// a daemon killed mid-queue puts the prompt back with what the operator was looking at.
     pub context: Option<crate::protocol::EditorContext>,
+    /// The peer that sent it, so a restored peer prompt is never the operator's.
+    pub from: Option<String>,
+    /// Its lane, so a Tab-queued prompt is not restored as a steer.
+    pub delivery: crate::protocol::PromptDelivery,
 }
 
 /// Where queued prompts are kept across a daemon kill. The daemon implements it over its store, so
@@ -512,7 +516,8 @@ impl CommandQueue {
                     text,
                     attachments,
                     context,
-                    ..
+                    from,
+                    delivery,
                 } => Some(JournaledPrompt {
                     enqueued_ms: c.enqueued_ms,
                     head_id: c.head_id.clone(),
@@ -521,6 +526,8 @@ impl CommandQueue {
                     text: text.clone(),
                     attachments: attachments.clone(),
                     context: context.clone(),
+                    from: from.clone(),
+                    delivery: *delivery,
                 }),
                 _ => None,
             })
@@ -776,14 +783,12 @@ impl Hub {
                 client_request_id: p.client_request_id.clone(),
                 at_seq,
                 enqueued_ms: p.enqueued_ms,
-                // The journal keeps the identity and not the sender, so a restored bridge prompt
-                // reads as a peer through `QueuedCommand::peer`.
                 kind: CommandKind::Prompt {
                     text: p.text.clone(),
                     attachments: p.attachments.clone(),
                     context: p.context.clone(),
-                    from: None,
-                    delivery: Default::default(),
+                    from: p.from.clone(),
+                    delivery: p.delivery,
                 },
             });
         }

@@ -1835,6 +1835,47 @@ fn a_v44_project_file_with_no_session_table_still_opens() {
     assert!(col, "the v46 arm still reached the project file's journal");
 }
 
+/// A journal written before v53 reads as the operator's steers, and the columns then round-trip.
+#[test]
+fn a_v51_store_gains_the_prompt_sender_and_lane_columns() {
+    let path = std::env::temp_dir().join(format!(
+        "letibot-migrate-v51-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_file(&path);
+    {
+        let s = Store::open(&path).unwrap();
+        s.connection()
+            .execute_batch(
+                "ALTER TABLE queued_prompt DROP COLUMN from_who;
+                 ALTER TABLE queued_prompt DROP COLUMN delivery;
+                 INSERT INTO queued_prompt (session_id, seq, enqueued_ms, head_id, identity,
+                     client_request_id, text, attachments_json)
+                     VALUES ('s-old', 0, 7, 'tui', 'dead', 'c1', 'carry on', '[]');
+                 UPDATE schema_version SET version = 51;",
+            )
+            .unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    let got = s.queued_prompts("s-old").unwrap();
+    assert_eq!(
+        (got[0].from_who.as_str(), got[0].delivery.as_str()),
+        ("", "")
+    );
+    let mut p = got[0].clone();
+    p.from_who = "cc@rano".into();
+    p.delivery = "queue".into();
+    s.replace_queued_prompts("s-old", std::slice::from_ref(&p))
+        .unwrap();
+    assert_eq!(s.queued_prompts("s-old").unwrap(), vec![p]);
+    drop(s);
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn a_v44_store_gains_the_prompt_context_column() {
     let path = std::env::temp_dir().join(format!(
@@ -1925,6 +1966,8 @@ fn a_v44_store_gains_the_prompt_context_column() {
             text: "and now this".into(),
             attachments_json: "[]".into(),
             context_json: wire.into(),
+            from_who: String::new(),
+            delivery: String::new(),
         }],
     )
     .unwrap();
@@ -3301,6 +3344,8 @@ fn queued_prompts_are_replaced_whole_in_order_per_session() {
         text: t.into(),
         attachments_json: "[]".into(),
         context_json: String::new(),
+        from_who: String::new(),
+        delivery: String::new(),
     };
     s.replace_queued_prompts("s-a", &[p("one"), p("two")])
         .unwrap();

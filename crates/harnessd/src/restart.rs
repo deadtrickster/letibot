@@ -74,6 +74,12 @@ impl StoreJournal {
                 context: (!p.context_json.is_empty())
                     .then(|| serde_json::from_str(&p.context_json).ok())
                     .flatten(),
+                from: (!p.from_who.is_empty()).then_some(p.from_who),
+                // Empty is a row written before the column: the steer every prompt then was.
+                delivery: match p.delivery.as_str() {
+                    "queue" => letibot_sessionlog::protocol::PromptDelivery::Queue,
+                    _ => letibot_sessionlog::protocol::PromptDelivery::Steer,
+                },
             })
             .collect();
         let journal = StoreJournal {
@@ -105,6 +111,11 @@ impl letibot_sessionlog::PromptJournal for StoreJournal {
                     .as_ref()
                     .and_then(|c| serde_json::to_string(c).ok())
                     .unwrap_or_default(),
+                from_who: p.from.clone().unwrap_or_default(),
+                delivery: match p.delivery {
+                    letibot_sessionlog::protocol::PromptDelivery::Queue => "queue".into(),
+                    letibot_sessionlog::protocol::PromptDelivery::Steer => "steer".into(),
+                },
             })
             .collect();
         self.store
@@ -2081,6 +2092,60 @@ mod journal_tests {
             StoreJournal::attach(&third, &path),
             0,
             "taken, so not put back again"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A Tab-queued prompt from a peer comes back queued and signed: restored as a steer, it would
+    /// be drained into the first turn that runs, and as the operator's, it would speak for them.
+    #[test]
+    fn a_queued_prompt_keeps_its_lane_and_sender_across_restart() {
+        use letibot_sessionlog::protocol::PromptDelivery;
+        let dir = std::env::temp_dir().join(format!("letibot-journal-lane-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("sessions.db");
+        let first = Hub::new("s-lane");
+        assert_eq!(StoreJournal::attach(&first, &path), 0);
+        let head = first.attach("tui", "dead", Default::default(), 0);
+        for (crid, text, from) in [
+            ("c1", "after this turn", None),
+            ("c2", "from a peer", Some("cc@rano")),
+        ] {
+            first.submit(
+                &head.head_id,
+                crid,
+                0,
+                CommandKind::Prompt {
+                    text: text.into(),
+                    attachments: Vec::new(),
+                    context: None,
+                    from: from.map(str::to_string),
+                    delivery: PromptDelivery::Queue,
+                },
+            );
+        }
+        assert!(first.journal_settled(std::time::Duration::from_secs(30)));
+        drop(first);
+        let second = Hub::new("s-lane");
+        assert_eq!(StoreJournal::attach(&second, &path), 2);
+        let mut got = Vec::new();
+        for _ in 0..2 {
+            let OwnWork::Command(c) = second.take_own_work() else {
+                panic!("the prompt was not put back");
+            };
+            let CommandKind::Prompt { from, delivery, .. } = c.kind else {
+                panic!("not a prompt: {c:?}");
+            };
+            got.push((from, delivery));
+        }
+        assert_eq!(
+            got,
+            vec![
+                (None, PromptDelivery::Queue),
+                (Some("cc@rano".to_string()), PromptDelivery::Queue),
+            ],
+            "the lane and the sender are restored"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -204,7 +204,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 52;
+pub const SCHEMA_VERSION: i64 = 53;
 
 /// A session's plan-check pause as its row holds it: `until` is `0` for until resumed, else the
 /// unix ms it ends at. `at_ms` and `by` are `None` on a row written before v51.
@@ -2662,6 +2662,27 @@ impl Store {
             // v52: the shadow's breaker, kept beside its grants. Additive: a new table, empty,
             // which reads as armed with no disagreement - what every earlier daemon started at.
             self.conn().execute_batch(grants::BREAKER_SQL)?;
+        }
+        if from < 53 {
+            // v53: a journaled prompt's sender and lane. Defaulted, so an older row reads as the
+            // operator's steer, which is what every prompt was restored as before.
+            let has = |sql: &str| -> bool {
+                self.conn()
+                    .prepare(sql)
+                    .and_then(|mut st| st.exists([]))
+                    .unwrap_or(false)
+            };
+            if has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'queued_prompt'") {
+                for col in ["from_who", "delivery"] {
+                    if !has(&format!(
+                        "SELECT 1 FROM pragma_table_info('queued_prompt') WHERE name = '{col}'"
+                    )) {
+                        self.conn().execute_batch(&format!(
+                            "ALTER TABLE queued_prompt ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"
+                        ))?;
+                    }
+                }
+            }
         }
         Ok(())
     }
