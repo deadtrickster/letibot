@@ -15,6 +15,7 @@ use serde_json::{Map, Value, json};
 
 use crate::keys::Credentials;
 use crate::messages::{self, Eyes, Withheld};
+use crate::now_ms;
 use crate::openai::{DEFAULT_ANSWER_TIMEOUT, DEFAULT_FIRST_BYTE, Notes};
 use crate::presets::Preset;
 
@@ -394,11 +395,13 @@ impl GeminiProvider {
             .send(payload.as_bytes())
             .map_err(|e| BackendError::unreachable(e.to_string(), io_kind(&e)))?;
         let status = resp.status().as_u16();
+        // The one reader the tree has - seconds or an HTTP-date - so a date Gemini may send
+        // is the same *when* a seconds count is.
         let header_retry = resp
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().parse::<u64>().ok());
+            .and_then(|v| letibot_http::reset::from_retry_after(v, now_ms()));
         if !(200..300).contains(&status) {
             let text = resp
                 .into_body()

@@ -267,12 +267,6 @@ impl Drop for Stopped {
     }
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
-}
-
 static POLLS: Mutex<BTreeMap<String, Poll>> = Mutex::new(BTreeMap::new());
 
 /// One request at a time per endpoint, so a caller arriving while one is out reads its answer.
@@ -353,7 +347,7 @@ fn read(url: &str, creds: &Credentials, fresh: Duration, spent: bool) -> Option<
         windows: windows(&body),
         spent_reset_ms: crate::usage::reset_of(&body),
         at: Instant::now(),
-        at_ms: now_ms(),
+        at_ms: crate::now_ms(),
     };
     if r.windows.is_empty() {
         return Some(r);

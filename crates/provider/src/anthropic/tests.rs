@@ -1025,6 +1025,31 @@ fn a_refusal_keeps_the_type_the_retry_after_and_the_request_id() {
     }
 }
 
+/// An HTTP-date `Retry-After` is the same fact as a seconds one, read by the one reader the
+/// tree has (`reset::from_retry_after`): RFC 9110 lets a provider send either spelling, and a
+/// date dropped on the floor turns a provider's own *when* into a bare rung.
+#[test]
+fn an_http_date_retry_after_is_read_not_dropped() {
+    // Weeks out, so the seconds survive clock drift in CI; the bounds stay roomy either way.
+    let f = fake_headers(
+        429,
+        r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}"#,
+        &[("retry-after", "Fri, 01 Jan 2027 00:00:00 GMT")],
+    );
+    let p = provider_at(&f.url);
+    let (_, done) = run(&p, &request("", &[user("hi")], &[]));
+    match done.expect_err("a 429 is a refusal") {
+        BackendError::Refused { retry_after, .. } => {
+            let secs = retry_after.expect("the date was dropped on the floor");
+            assert!(
+                (3_000_000..=4_500_000).contains(&secs),
+                "roughly the weeks until the named instant: {secs}"
+            );
+        }
+        other => panic!("{other:?}"),
+    }
+}
+
 /// A 200 whose stream carries an error is a refusal, not a half answer.
 #[test]
 fn a_mid_stream_error_is_a_refusal() {

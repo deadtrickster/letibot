@@ -19,6 +19,7 @@ use serde_json::{Value, json};
 use crate::catalogue::Catalogue;
 use crate::keys::Credentials;
 use crate::messages::{Eyes, Withheld};
+use crate::now_ms;
 use crate::openai::{DEFAULT_ANSWER_TIMEOUT, DEFAULT_FIRST_BYTE, Notes};
 use crate::presets::Preset;
 
@@ -311,12 +312,12 @@ impl AnthropicProvider {
         let status = resp.status().as_u16();
         // The provider's own `Retry-After`, the only form of *when may I come back* a caller may
         // sleep on (<https://platform.claude.com/docs/en/api/rate-limits>), read before the body
-        // consumes the response.
+        // consumes the response. The one reader the tree has: seconds or an HTTP-date.
         let retry_after = resp
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().parse::<u64>().ok());
+            .and_then(|v| letibot_http::reset::from_retry_after(v, now_ms()));
         // Every response carries one, and an error body is what support asks for by it
         // (<https://platform.claude.com/docs/en/api/errors>).
         let request_id = resp

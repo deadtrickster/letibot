@@ -11,6 +11,7 @@ use letibot_transcript::ToolCall;
 use serde_json::{Value, json};
 
 use crate::keys::Credentials;
+use crate::now_ms;
 use crate::presets::Preset;
 
 /// How long a provider may take to send its first byte: SSE headers go out with the first chunk,
@@ -564,13 +565,14 @@ impl OpenAiProvider {
             }
         };
         let status = resp.status().as_u16();
-        // The provider's own `Retry-After`, read before the body consumes the response: seconds, and
-        // the only form of *when may I come back* a caller may sleep on.
+        // The provider's own `Retry-After`, read before the body consumes the response: the one
+        // reader the tree has - seconds or an HTTP-date - and the only form of *when may I
+        // come back* a machine can act on.
         let retry_after = resp
             .headers()
             .get("retry-after")
             .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.trim().parse::<u64>().ok());
+            .and_then(|v| letibot_http::reset::from_retry_after(v, now_ms()));
         if !(200..300).contains(&status) {
             let text = resp
                 .into_body()
