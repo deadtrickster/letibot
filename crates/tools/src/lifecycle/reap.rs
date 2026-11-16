@@ -452,8 +452,13 @@ pub fn busy(store: &Store, o: &OwnerRow) -> bool {
 }
 
 /// What the runtime records say about the daemon serving this owner: `None` when no record names
-/// one, `Some(true)` while a process is at the recorded pid, `Some(false)` once it is not.
+/// one, `Some(true)` while a process is at the recorded pid, `Some(false)` once it is not. The
+/// owner row's own daemon (pid and start time) decides when it has one: a repo's records name
+/// every daemon of that repo, and two owners of one repo are not one daemon.
 fn daemon_state(o: &OwnerRow, places: &Places) -> Option<bool> {
+    if let (Some(pid), Some(start)) = (o.daemon_pid, o.daemon_start) {
+        return Some(crate::exec::procs::alive(pid, start));
+    }
     let recs = daemons_of(o, places);
     if recs.is_empty() {
         return None;

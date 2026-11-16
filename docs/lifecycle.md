@@ -585,7 +585,7 @@ Close triggers. Any one is enough, and none is an agent's action:
 | Parent closed | subagent, review | cascade, children first |
 | Idle: no turn in flight, no job running, no input from a head, for `idle_ttl` | package 30 min, subagent 30 min (today's `STALL_MS`), gate 10 min after its run, session never | reaper |
 | Hard TTL since creation or last reopen (`live_since_ms`) | package 24 h, gate 6 h, session never | reaper, and `RuntimeMaxSec=` on a package daemon's scope as the backstop |
-| Its daemon is gone: `stopped_ms` set, or beat stale and no `harnessd` at that pid | all but an interactive session with a live head elsewhere | box reaper, `vm_reap::daemon_of` reused |
+| Its daemon is gone: the owner row's own `daemon_pid`/`daemon_start` say no process is there, or (on a row with none) `stopped_ms` set, or beat stale and no `harnessd` at that pid | all but an interactive session with a live head elsewhere | box reaper, `vm_reap::daemon_of` reused |
 | Lease not renewed (remote host) | holdings on that host | not built: the home box's reaper, over ssh, while a daemon lives |
 
 What renews a lease: a turn starting or ending, a tool call returning, a message from the

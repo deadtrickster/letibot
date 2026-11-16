@@ -2046,6 +2046,10 @@ impl Harness {
             now,
         )?;
         owner.parent_id = cfg.parent_session_id.clone();
+        // This daemon is the owner's own: its pid and start time are what the daemon-gone trigger
+        // reads, so it never reads another daemon of the same repo as this one's.
+        owner.daemon_pid = Some(std::process::id());
+        owner.daemon_start = letibot_tools::exec::procs::read(std::process::id()).map(|p| p.start);
         let places = letibot_tools::lifecycle::Places::here();
         letibot_tools::lifecycle::register(store, &places, &owner)
     }

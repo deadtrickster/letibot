@@ -283,6 +283,52 @@ fn busy_reads_the_owners_open_job_rows() {
     );
 }
 
+/// The daemon-gone trigger reads the owner row's own daemon (pid and start time), not any daemon
+/// that happens to serve the same repository: two owners of one repo are not one daemon (A7-F12,
+/// R329's residue).
+#[test]
+fn a_recorded_daemon_decides_the_daemon_gone_trigger() {
+    let b = Box_::new("daemon-row");
+    let store = b.store();
+    let mut owner =
+        crate::lifecycle::owner_for_open(&store, "s-1", OwnerKind::Package, Some("/w".into()), 0)
+            .expect("the open");
+    // A repo record whose pid is already gone: on the row's absence it would read as "dead".
+    let mut dead = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .unwrap();
+    b.daemon_record("k1", Path::new("/w"), dead.id());
+    let _ = dead.kill();
+    let _ = dead.wait();
+    // The owner's own daemon, alive and recorded on the row.
+    let mut mine = std::process::Command::new("sleep")
+        .arg("120")
+        .spawn()
+        .unwrap();
+    owner.daemon_pid = Some(mine.id());
+    owner.daemon_start = crate::exec::procs::read(mine.id()).map(|p| p.start);
+    assert!(
+        owner.daemon_start.is_some(),
+        "the test's daemon has a start time"
+    );
+    store.put_owner(&owner).expect("the row");
+    let row = store.owner("s-1").unwrap().unwrap();
+    assert_eq!(
+        daemon_state(&row, &b.places()),
+        Some(true),
+        "the row's own daemon is alive, whatever the repo's records say"
+    );
+    let _ = mine.kill();
+    let _ = mine.wait();
+    let row = store.owner("s-1").unwrap().unwrap();
+    assert_eq!(
+        daemon_state(&row, &b.places()),
+        Some(false),
+        "and gone, the trigger fires even though the repo record names a pid too"
+    );
+}
+
 /// The operator's hold stops every automatic trigger; an expired one does not.
 #[test]
 fn a_hold_stops_the_close_and_an_expired_one_does_not() {
