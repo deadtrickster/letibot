@@ -769,6 +769,57 @@ fn a_refused_fetch_is_retried_and_the_branch_still_comes_back() {
     git(&repo, &["rev-parse", "--verify", b.back_branch()]);
 }
 
+/// A package commits where it thinks the work belongs - a fix on `main`, a branch of its own - and a
+/// collect that brought home only the session's branch left that work on the far machine with
+/// nothing said about it. Every local branch in the placement's checkout is asked once, and what is
+/// not reachable from the collected branch is named AND brought home under the collect's own name.
+#[test]
+fn work_on_another_branch_of_the_placement_is_named_and_brought_home() {
+    let fake = Fake::new("side-branch", "");
+    let (repo, paths) = repo_and_paths(&fake.dir.join("rig"));
+    let b = SshBackend::place(&spec_for(&fake, &repo, &paths, Duration::from_secs(30)))
+        .expect("placed");
+    // Two commits on a branch that is not the one the collect fetches, in the placement's checkout.
+    let worktree = PathBuf::from(b.worktree_path());
+    git(&worktree, &["checkout", "-q", "-b", "side"]);
+    for i in 1..=2 {
+        std::fs::write(worktree.join(format!("side-{i}.txt")), b"work\n").expect("a file");
+        git(&worktree, &["add", "."]);
+        git(
+            &worktree,
+            &[
+                "-c",
+                "user.name=a package",
+                "-c",
+                "user.email=pkg@letibot.local",
+                "commit",
+                "-qm",
+                &format!("side work {i}"),
+            ],
+        );
+    }
+
+    let said = b.close().expect("a close says where the work went");
+    assert!(
+        said.contains("were not on"),
+        "the commits on the other branch are named as collected: {said}"
+    );
+    assert!(
+        said.contains("2 commit(s) on `side`"),
+        "with their count: {said}"
+    );
+    // And they are here, on the branch the collect named, not only in the sentence. The stray is
+    // `<the collect's branch>-<its own name>`, because git has no room for a child of it.
+    let back = format!("refs/heads/{}-side", b.back_branch());
+    assert!(
+        said.contains(&format!("{}-side", b.back_branch())),
+        "{said}"
+    );
+    git(&repo, &["rev-parse", "--verify", &back]);
+    let subject = git(&repo, &["log", "-1", "--format=%s", &back]);
+    assert_eq!(subject.trim(), "side work 2");
+}
+
 /// A fetch waits for a git slot for as long as the CONNECTION was given, not for the transfer's five
 /// minutes: the gate's contract is never past the caller's own deadline, and a close that waits it
 /// out is the hang coming back through the door marked back-pressure.
