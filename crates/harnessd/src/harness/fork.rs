@@ -110,6 +110,23 @@ impl Harness {
         let transcript_id = store
             .fork_session(&self.cfg.session_id, &session_id, keep as u32)
             .map_err(|e| HarnessError::Store(e.to_string()))?;
+        // A fork of a child is a child, so its own point is a session row: a root's point is the
+        // project's row and already there, and writing one for a fork of a root would move every
+        // later session in the workspace. The ceiling comes from the parent the row now names.
+        if self.parent_point.is_some()
+            && let Err(e) =
+                crate::modes::record(&self.mode_store, None, &session_id, self.cfg.mode, false)
+        {
+            self.warn(
+                "fork_point_unpersisted",
+                format!(
+                    "the fork {session_id} holds this session's point `{}` now, but it could \
+                     not be recorded, so reopening it will re-derive the point from its \
+                     parent: {e}",
+                    self.cfg.mode.name
+                ),
+            );
+        }
         Ok((session_id, transcript_id))
     }
 }

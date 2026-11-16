@@ -315,6 +315,40 @@ fn a_failed_narrowing_refuses_the_next_call() {
     );
 }
 
+/// A fork of a child is a child of the same parent, and it keeps the point it was forked at: a
+/// continuation may not open wider than the session it continues, and a fork that opened as a
+/// root would sit at the project's row instead of under the ceiling.
+#[test]
+fn a_fork_of_a_child_keeps_its_parent_and_ceiling() {
+    let dir = Scratch::new("child-mode-fork");
+    let Some((mut h, _parent, path)) = child_at(&dir, "s-parent-sub-9", Mode::WRITES_ALLOWED)
+    else {
+        return;
+    };
+    let (id, _transcript) = h
+        .fork_into_new_session(0)
+        .expect("the fork is written to the store");
+
+    let store = letibot_tokencore::Store::open(&path).expect("the store opens");
+    let row = store.session(&id).expect("the row reads").expect("a row");
+    assert_eq!(
+        row.parent_session_id.as_deref(),
+        Some("s-parent"),
+        "the fork opened as a root, so it sits at the project's row and not under its parent"
+    );
+    assert_eq!(
+        store.session_origin(&id).unwrap().as_deref(),
+        Some("operator"),
+        "the origin travels with the conversation"
+    );
+    let modes = crate::modes::ModeStore::open(Some(&path));
+    assert_eq!(
+        modes.session(&id).map(|(m, _)| m),
+        Some(Mode::WRITES_ALLOWED),
+        "the fork reopens at the point it was forked at"
+    );
+}
+
 fn mode_command(name: &str, consented: bool) -> letibot_sessionlog::hub::QueuedCommand {
     letibot_sessionlog::hub::QueuedCommand {
         head_id: "head-1".into(),
