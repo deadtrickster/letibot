@@ -527,8 +527,13 @@ fn a_wide_seat_sees_and_writes_the_real_home_and_the_deny_list_is_the_fence() {
     );
     assert_ne!(rc, 0, "{out}");
     assert!(!out.contains("letibot-fixture-line"), "{out}");
-    let outside = f.root.join("outside/x");
+    // Not the fixture's own dir: that is under the per-user temp dir, which this seat writes.
+    let outside = PathBuf::from(format!(
+        "/private/var/tmp/letibot-wide-{}",
+        std::process::id()
+    ));
     let (rc, _) = run_in(&s, &cwd, &format!("echo x > {}", outside.display()));
+    let _ = std::fs::remove_file(&outside);
     assert_ne!(rc, 0, "a write outside home and checkout");
 }
 
@@ -1216,4 +1221,33 @@ fn a_wide_seat_writes_its_cache_tmp_finds_the_user_temp_dir_and_runs_top_and_log
     );
     assert_eq!(rc, 0, "log runs: {out}");
     assert!(!out.contains("Cannot run while sandboxed"), "{out}");
+}
+
+/// The toolchain compiles inside the top-level seat through its `/usr/bin` shims: inside a sandbox
+/// they point the compiler's `TMPDIR` at the per-user temp dir, the `xcrun` cache is written as
+/// `xcrun_db-XXXXXXXX` first, and swift builds modules into the per-user cache. letibot's own
+/// runtime directory inside that temp dir stays unwritable.
+#[test]
+fn a_wide_seat_compiles_swift_and_c_through_the_shims_and_cannot_write_the_rundir() {
+    let Some(_) = letibot_tokencore::apparatus::present(
+        "the Command Line Tools (swiftc and clang)",
+        std::path::Path::new("/Library/Developer/CommandLineTools/usr/bin/swiftc").exists(),
+    ) else {
+        return;
+    };
+    let f = Fixture::new("compile");
+    let (s, _op) = wide(&f);
+    let cwd = f.project();
+    std::fs::write(cwd.join("h.swift"), "print(41 + 1)\n").expect("a swift file");
+    std::fs::write(cwd.join("c.c"), "int main(void) { return 7; }\n").expect("a c file");
+    let (rc, out) = run_in(&s, &cwd, "/usr/bin/swiftc h.swift -o h && ./h");
+    assert_eq!(rc, 0, "swiftc builds and the binary runs: {out}");
+    assert!(out.contains("42"), "{out}");
+    let (rc, out) = run_in(&s, &cwd, "/usr/bin/clang c.c -o c; ./c");
+    assert_eq!(rc, 7, "clang builds and the binary runs: {out}");
+    let rundir = letibot_tools::lifecycle::rundir();
+    let probe = rundir.join(format!("seat-probe-{}", std::process::id()));
+    let (rc, out) = run_in(&s, &cwd, &format!("echo x > '{}'", probe.display()));
+    let _ = std::fs::remove_file(&probe);
+    assert_ne!(rc, 0, "the seat wrote letibot's runtime dir: {out}");
 }

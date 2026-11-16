@@ -478,6 +478,7 @@ mod tests {
     /// This test binary re-run as a process of this uid that `/proc` refuses: it sets
     /// `PR_SET_DUMPABLE 0`, the flag a setuid exec sets, says so, and blocks on stdin.
     #[test]
+    #[cfg(target_os = "linux")] // `prctl` is Linux's; every test that spawns this one is too
     fn undumpable_child() {
         if std::env::var("LETIBOT_ASK_UNDUMPABLE").as_deref() != Ok("1") {
             return;

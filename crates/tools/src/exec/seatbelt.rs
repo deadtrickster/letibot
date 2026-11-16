@@ -147,8 +147,14 @@ pub struct Layout {
     /// Denied for read and write after every allow: the operator's credentials and profiles,
     /// plus whatever a caller added (the probe's canary).
     pub deny: Vec<PathBuf>,
-    /// The per-user temporary directory, where the macOS toolchain's `xcrun` cache lives.
+    /// The per-user temporary directory, where the macOS toolchain's `xcrun` cache lives. Inside
+    /// a sandbox the `xcrun` shims also point a tool's `TMPDIR` here, whatever it was.
     pub user_temp: PathBuf,
+    /// The per-user cache directory beside it, where clang and swift keep their module cache.
+    pub user_cache: PathBuf,
+    /// letibot's own runtime directory: sockets, records and every session's scratch. Inside
+    /// `user_temp` on a Mac, and never writable from a seat even where `user_temp` is.
+    pub rundir: PathBuf,
     /// The view's `$HOME` is the operator's own: the filesystem is readable and the home
     /// writable, and [`DENY_UNDER_HOME`] is the only fence. No toolchain list and no redirected
     /// `*_HOME`, because the real home already makes them right.
@@ -225,6 +231,12 @@ impl Layout {
         if let Ok(real) = user_temp.canonicalize() {
             user_temp = real;
         }
+        let user_cache = user_temp
+            .parent()
+            .map(|p| p.join("C"))
+            .unwrap_or_else(|| user_temp.join("C"));
+        let rundir = crate::lifecycle::rundir();
+        let rundir = rundir.canonicalize().unwrap_or(rundir);
         let mut hidden: Vec<PathBuf> = view
             .hidden
             .iter()
@@ -246,6 +258,8 @@ impl Layout {
             git_config,
             deny,
             user_temp,
+            user_cache,
+            rundir,
             wide,
         }
     }
@@ -256,6 +270,24 @@ impl Layout {
     pub fn xcrun_cache(&self) -> String {
         format!("{}/xcrun_db", self.user_temp.display())
     }
+
+    /// The SBPL filter for that cache: a prefix, because `xcrun` writes `xcrun_db-XXXXXXXX` and
+    /// renames it over `xcrun_db`, so a literal path refuses the write that makes the file.
+    pub fn xcrun_filter(&self) -> String {
+        format!("(regex #\"^{}\")", regex_escape(&self.xcrun_cache()))
+    }
+}
+
+/// A path as an SBPL regex that matches only itself: every metacharacter escaped.
+fn regex_escape(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for c in path.chars() {
+        if ".^$*+?()[]{}|\\".contains(c) {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
 }
 
 /// The SBPL text for a view: the macOS rendering of the one policy. Deterministic, so no
@@ -312,7 +344,7 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     for p in [&l.project, &l.home, &l.tmp] {
         s.push_str(&format!("  (subpath \"{}\")\n", p.display()));
     }
-    s.push_str(&format!("  (subpath \"{}\"))\n", l.xcrun_cache()));
+    s.push_str(&format!("  {})\n", l.xcrun_filter()));
     // The store's data, for a view that is not the whole filesystem; the denies below keep
     // its secrets out and its writes refused.
     let store = l.operator_home.join(super::store::STORE_REL);
@@ -360,7 +392,7 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
     for p in [&l.project, &l.home, &l.tmp] {
         s.push_str(&format!("  (subpath \"{}\")\n", p.display()));
     }
-    s.push_str(&format!("  (subpath \"{}\")\n", l.xcrun_cache()));
+    s.push_str(&format!("  {}\n", l.xcrun_filter()));
     s.push_str("  (literal \"/dev/null\")\n");
     s.push_str("  (literal \"/dev/stdout\")\n");
     s.push_str("  (literal \"/dev/stderr\")\n");
@@ -376,6 +408,16 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
                 path.display()
             ));
         }
+    }
+    if l.wide {
+        // The toolchain's shims hand a compiler the per-user temp dir as `TMPDIR` inside any
+        // sandbox, and swift and clang build modules into the per-user cache. The top-level seat
+        // writes the whole home already; letibot's runtime dir inside it is denied below.
+        s.push_str(&format!(
+            "(allow file-write* (subpath \"{}\") (subpath \"{}\"))\n",
+            l.user_temp.display(),
+            l.user_cache.join("clang/ModuleCache").display()
+        ));
     }
 
     if l.wide {
@@ -429,6 +471,12 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
             store.display(),
             super::store::sbpl_data(&store),
             super::store::sbpl_secret(&store),
+        ));
+    }
+    if l.wide && l.rundir.starts_with(&l.user_temp) {
+        s.push_str(&format!(
+            "(deny file-write* file-issue-extension (subpath \"{}\"))\n",
+            l.rundir.display()
         ));
     }
     // Read-only inside a read-write grant, after it.
@@ -1061,7 +1109,9 @@ fn operator_home() -> PathBuf {
 /// the per-user temp directory, like `ProcessGroups::probe`'s scope root, so the operator can
 /// find the policy but it never sits inside the tree the command can write.
 fn profile_dir() -> Result<PathBuf, ExecError> {
-    let dir = std::env::temp_dir().join(format!("letibot-seatbelt-{}", std::process::id()));
+    // letibot's runtime dir, which no seat may write: the top-level seat writes the per-user temp
+    // dir, and a profile there would be one the wrapped command could edit.
+    let dir = crate::lifecycle::rundir().join(format!("seatbelt-{}", std::process::id()));
     {
         use std::os::unix::fs::DirBuilderExt;
         let mut b = std::fs::DirBuilder::new();
@@ -1139,6 +1189,8 @@ mod tests {
                 PathBuf::from("/Users/x/.zshrc"),
             ],
             user_temp: PathBuf::from("/private/var/folders/aa/bb/T"),
+            user_cache: PathBuf::from("/private/var/folders/aa/bb/C"),
+            rundir: PathBuf::from("/private/var/folders/aa/bb/T/letibot"),
             wide: false,
             hidden: Vec::new(),
         }
@@ -1231,14 +1283,14 @@ mod tests {
   (subpath \"/Users/x/proj\")
   (subpath \"/var/lib/lt/home\")
   (subpath \"/var/lib/lt/tmp\")
-  (subpath \"/private/var/folders/aa/bb/T/xcrun_db\"))
+  (regex #\"^/private/var/folders/aa/bb/T/xcrun_db\"))
 
 ; --- write: the checkout, the session's own directories, and nothing else ---
 (allow file-write*
   (subpath \"/Users/x/proj\")
   (subpath \"/var/lib/lt/home\")
   (subpath \"/var/lib/lt/tmp\")
-  (subpath \"/private/var/folders/aa/bb/T/xcrun_db\")
+  (regex #\"^/private/var/folders/aa/bb/T/xcrun_db\")
   (literal \"/dev/null\")
   (literal \"/dev/stdout\")
   (literal \"/dev/stderr\")
