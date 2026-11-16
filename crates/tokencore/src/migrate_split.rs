@@ -865,6 +865,9 @@ fn rows_of(table: &str) -> Option<Rows> {
         "todo" | "citation" | "session_marks" | "session_mode" | "session_monitor" | "job"
         | "job_context" | "process" | "queued_prompt" | "adjudication" | "session_grant"
         | "shadow_breaker" => Rows::Session("session_id"),
+        // a half-import marker names the session whose rows may be in one file of a set and not
+        // the other, so it goes with that session's rows
+        "import_pending" => Rows::Session("session_id"),
         // parent and child are always in one daemon, and a child that never got a session row of
         // its own still has a parent that did
         "subagent_run" => Rows::Session("parent_id"),
@@ -1286,4 +1289,20 @@ fn strings(conn: &Connection, sql: &str) -> Result<Vec<String>> {
     let mut st = conn.prepare(sql)?;
     let rows = st.query_map([], |r| r.get::<_, String>(0))?;
     Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A table the assignment gains is a refusal at carve time, so it is named here first.
+    #[test]
+    fn every_project_table_has_a_row_filter() {
+        let missing: Vec<&str> = split::PROJECT_TABLES
+            .iter()
+            .copied()
+            .filter(|table| rows_of(table).is_none())
+            .collect();
+        assert!(missing.is_empty(), "no row filter for {missing:?}");
+    }
 }
