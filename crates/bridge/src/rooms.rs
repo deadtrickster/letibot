@@ -195,12 +195,49 @@ fn letibot_room_parts(handle: &str) -> Option<(&str, &str)> {
     Some(rest.split_once(':').unwrap_or((rest, rest)))
 }
 
-/// `name` with a short suffix from `salt`, for a second bridge in a folder of the same name.
-pub fn suffixed(name: &str, salt: u32) -> String {
-    let tail = format!("-{:x}", salt & 0xfff);
-    let keep = 32 - tail.len();
-    format!("{}{tail}", name.chars().take(keep).collect::<String>())
+/// Where a suffix goes: the folder is kept whole and the cut falls on the name, because the folder is
+/// what makes the handle a bridge's at all and the name is the part a twin may lose.
+fn suffix_parts(name: &str) -> (String, String) {
+    match name.split_once(':') {
+        Some((folder, rest)) => (format!("{folder}:"), rest.to_string()),
+        None => (String::new(), name.to_string()),
+    }
 }
+
+/// The room's handle length, which is what [`suffixed`] fits into: one spelling, so the family below
+/// and the name agree about where the cut is.
+const HANDLE_MAX: usize = 32;
+
+/// How many characters of the name survive, for a tail of `tail` characters.
+fn keep_for(head: &str, tail: usize) -> usize {
+    HANDLE_MAX
+        .saturating_sub(head.chars().count() + tail)
+        .max(1)
+}
+
+/// `name` with a short suffix from `salt`, for a second bridge in a folder of the same name. A fixed
+/// width tail, so [`family_for`] can compute the same cut without the salt.
+pub fn suffixed(name: &str, salt: u32) -> String {
+    let (head, rest) = suffix_parts(name);
+    let tail = format!("-{:03x}", salt & 0xfff);
+    let keep = keep_for(&head, tail.chars().count());
+    format!(
+        "{head}{}{tail}",
+        rest.chars().take(keep).collect::<String>()
+    )
+}
+
+/// The family a suffixed twin declares: the part [`suffixed`] keeps, so the room's `family_of` reads
+/// the twin as this seat's. The whole handle would not be a prefix of a cut name.
+pub fn family_for(name: &str) -> String {
+    let (head, rest) = suffix_parts(name);
+    let keep = keep_for(&head, 4);
+    format!("{head}{}", rest.chars().take(keep).collect::<String>())
+}
+
+/// How many suffixed names one bridge tries before it says it has none. Three is a person's
+/// `-<salt>` twin and its neighbour; past that the folder has more bridges than names.
+const TWIN_TRIES: u8 = 3;
 
 fn name_cell() -> &'static Mutex<String> {
     static NAME: std::sync::OnceLock<Mutex<String>> = std::sync::OnceLock::new();
@@ -683,6 +720,9 @@ struct Inner {
     /// What the coordinator's welcome said it speaks, so a frame it cannot decode is refused here
     /// rather than written and answered with a close.
     protocol: Mutex<Option<u16>>,
+    /// How many times this connection has taken a suffixed name, so a coordinator holding every
+    /// name it offers ends the attempt instead of recursing forever.
+    twins: std::sync::atomic::AtomicU8,
     share: AtomicBool,
 }
 
@@ -729,6 +769,7 @@ impl RoomLink {
                 instance: Mutex::new(None),
                 named: Mutex::new(false),
                 protocol: Mutex::new(None),
+                twins: std::sync::atomic::AtomicU8::new(0),
                 share: AtomicBool::new(false),
             }),
         }
@@ -823,14 +864,28 @@ impl RoomLink {
         let first: Value = serde_json::from_str(first.trim())
             .map_err(|_| "the room closed the connection before saying hello".to_string())?;
         // Another bridge already holds this name (two folders of one name): take a suffixed one
-        // for good, so the name does not change under a reader mid-session.
+        // for good, so the name does not change under a reader mid-session. Bounded, because a
+        // coordinator that holds every name offered would otherwise be asked forever - each
+        // rename shortens the name, and the salt is fresh so two attempts are two names.
         if first["why"]["refused"] == "name_in_use"
             && !*self.inner.named.lock().unwrap_or_else(|e| e.into_inner())
         {
-            if family().is_none() {
-                set_family(Some(handle()));
+            let tried = self
+                .inner
+                .twins
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if tried >= TWIN_TRIES {
+                return Err(format!(
+                    "the room already holds `{}` and {TWIN_TRIES} suffixed names beside it, so this \
+                     bridge has no name left to take: an operator can free one with \
+                     `letibot room` or the nick this folder keeps",
+                    handle()
+                ));
             }
-            set_handle(suffixed(&handle(), std::process::id()));
+            if family().is_none() {
+                set_family(Some(family_for(&handle())));
+            }
+            set_handle(suffixed(&handle(), std::process::id() ^ (tried as u32 + 1)));
             return self.open();
         }
         match first["type"].as_str() {
@@ -2451,7 +2506,35 @@ mod tests {
         assert!(a_handle(&name));
         let long = suffixed(&"a".repeat(32), 7);
         assert_eq!(long.len(), 32);
-        assert!(long.ends_with("-7"));
+        assert!(long.ends_with("-007"));
+    }
+
+    /// The twin of a long handle is the room's to place, and the room places a twin by its family:
+    /// `family_of` wants the name to be `family + "-" + alnum`. Cutting the handle from the left put
+    /// the cut inside the FOLDER, so the family stopped being a prefix and the twin lost the mail
+    /// it had a race for. The cut falls on the name now, and the family is that same cut.
+    #[test]
+    fn a_long_folder_twin_keeps_its_family() {
+        let folder = "letibot-remote-r348";
+        let name = format!("cc@{folder}:{folder}");
+        for salt in [0u32, 7, 0x1234_5abc] {
+            let twin = suffixed(&name, salt);
+            assert!(a_handle(&twin), "{twin}");
+            assert!(twin.len() <= 32, "{twin}");
+            assert!(twin.starts_with(&format!("cc@{folder}:")), "{twin}");
+            // Exactly what the room's `family_of` asks: the declared family is a prefix and what
+            // follows it is one dash and nothing but alphanumerics.
+            let family = family_for(&name);
+            assert!(a_handle(&family), "{family}");
+            let tail = twin
+                .strip_prefix(&family)
+                .and_then(|rest| rest.strip_prefix('-'))
+                .unwrap_or_else(|| panic!("`{twin}` is not `{family}` plus a suffix"));
+            assert!(!tail.is_empty(), "{twin}");
+            assert!(tail.bytes().all(|b| b.is_ascii_alphanumeric()), "{twin}");
+        }
+        // A handle short enough to keep whole keeps the family the old code spelled.
+        assert_eq!(family_for("cc@letibot"), "cc@letibot");
     }
 
     #[test]
