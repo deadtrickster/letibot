@@ -2258,7 +2258,8 @@ fn standing() -> letibot_tools::runtime::Standing {
     }
 }
 
-/// A layer rewrites a call's arguments, and the answer says what it wants.
+/// A layer rewrites a call's arguments, and the answer says what it wants. The rewrite drops an
+/// argument: a layer narrows the call it was given and never re-aims it.
 #[test]
 fn a_layer_rewrites_a_call() {
     let root = tempdir("call-rewrite");
@@ -2268,7 +2269,7 @@ fn a_layer_rewrites_a_call() {
         "one-watch",
         &[(
             "on_tool_call",
-            says(json!({"arguments": {"name": "pr-24", "until": "checks"}})),
+            says(json!({"arguments": {"name": "pr-24-coderabbit"}})),
         )],
     );
     let host = table_host(&root, &table);
@@ -2403,6 +2404,12 @@ fn a_guard_that_answers_badly_or_widens_a_call_refuses_it() {
             json!({"arguments": {"name": "x", "extra": true}}),
             "adds the argument `extra`",
         ),
+        // The same key told differently: a layer that can rewrite a value can rewrite a command.
+        (
+            "change",
+            json!({"arguments": {"name": "y"}}),
+            "changes the value of `name`",
+        ),
     ] {
         let root = tempdir(&format!("call-{tag}"));
         let table = Table::new();
@@ -2418,6 +2425,74 @@ fn a_guard_that_answers_badly_or_widens_a_call_refuses_it() {
             panic!("{tag}: {out:?}");
         };
         assert!(why.contains("`p1`") && why.contains(want), "{tag}: {why}");
+    }
+}
+
+/// A rewrite shrinks a call and never edits one. A key the model did not send is refused, and so
+/// is a value it did send told differently: `{"command":"ls"}` and `{"command":"rm -rf ~"}` are
+/// the same key and a different call, which a top-level-only check let through.
+#[test]
+fn only_smaller_refuses_a_changed_value() {
+    use crate::plugins::hook::only_smaller;
+    for (tag, was, now, smaller) in [
+        (
+            "same",
+            json!({"command": "ls"}),
+            json!({"command": "ls"}),
+            true,
+        ),
+        (
+            "dropped",
+            json!({"command": "ls", "timeout": 5}),
+            json!({"command": "ls"}),
+            true,
+        ),
+        (
+            "nul",
+            json!({"command": "ls", "timeout": 5}),
+            json!({"command": "ls", "timeout": null}),
+            true,
+        ),
+        (
+            "shrunk list",
+            json!({"paths": ["a", "b"]}),
+            json!({"paths": ["a"]}),
+            true,
+        ),
+        (
+            "changed value",
+            json!({"command": "ls"}),
+            json!({"command": "rm -rf ~"}),
+            false,
+        ),
+        (
+            "changed nested value",
+            json!({"env": {"PATH": "/usr/bin"}}),
+            json!({"env": {"PATH": "/tmp"}}),
+            false,
+        ),
+        (
+            "added nested key",
+            json!({"env": {"PATH": "/usr/bin"}}),
+            json!({"env": {"PATH": "/usr/bin", "EXTRA": "1"}}),
+            false,
+        ),
+        (
+            "grown list",
+            json!({"paths": ["a"]}),
+            json!({"paths": ["a", "/"]}),
+            false,
+        ),
+        (
+            "changed list element",
+            json!({"argv": ["ls", "-l"]}),
+            json!({"argv": ["rm", "-rf"]}),
+            false,
+        ),
+        ("shape", json!({"a": 1}), json!([1]), false),
+    ] {
+        let got = only_smaller(&was, &now);
+        assert_eq!(got.is_ok(), smaller, "{tag}: {got:?} on {was} -> {now}");
     }
 }
 
