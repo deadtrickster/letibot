@@ -4218,7 +4218,64 @@ impl Home {
             }
         }
         said.push_str(&format!(". The checkout is still at {}", self.worktree));
+        said.push_str(&self.strays(ssh));
         ssh.exit_master();
+        said
+    }
+
+    /// The commits the placement made on a branch that is NOT the one it was collected from, named
+    /// and brought home as `<back branch>/<branch>`. A package commits where it thinks the work
+    /// belongs - a fix on `main`, a side experiment - and a collect that fetched only its own branch
+    /// left that work on the far machine with nothing said about it.
+    fn strays(&self, ssh: &Ssh) -> String {
+        let listing = format!(
+            "cd {} && for b in $(git for-each-ref --format='%(refname:short)' refs/heads); do \
+             [ \"$b\" = {ours} ] && continue; \
+             n=$(git rev-list --count \"$b\" --not {ours} 2>/dev/null || echo 0); \
+             [ \"$n\" -gt 0 ] && printf '%s %s\\n' \"$b\" \"$n\"; \
+             done; true",
+            quote(&self.worktree),
+            ours = quote(&self.branch)
+        );
+        let Ok((out, _, 0)) = ssh.sh_step("listing the branches that did not come home", &listing)
+        else {
+            return String::new();
+        };
+        let mut said = String::new();
+        for line in out.lines().filter(|l| !l.trim().is_empty()) {
+            let Some((name, count)) = line.trim().rsplit_once(' ') else {
+                continue;
+            };
+            // Not `{back}/{name}`: the collect's own branch IS `{back}`, and a ref cannot have a
+            // child of its own name - git keeps refs as files, so `a` and `a/b` are a
+            // directory/file conflict it refuses. `-` is the nearest spelling that exists.
+            let back = format!("{}-{name}", self.back_branch);
+            let refspec = format!("+refs/heads/{name}:refs/heads/{back}");
+            let refused = match ssh.fetch_back(&self.local_repo, &self.url, &refspec) {
+                Ok(FetchEnded::Ran(o)) if o.status.success() => {
+                    said.push_str(&format!(
+                        ". **{count} commit(s) on `{name}` were not on `{}`**: they came back as \
+                         `{back}` - the package committed there and not on the branch it was \
+                         collected from",
+                        self.branch
+                    ));
+                    continue;
+                }
+                Ok(FetchEnded::Ran(o)) => format!(
+                    "`git fetch` said \"{}\"",
+                    String::from_utf8_lossy(&o.stderr).trim()
+                ),
+                Ok(FetchEnded::Killed(spent)) => {
+                    format!("`git fetch` got no answer within {} s", spent.as_secs())
+                }
+                Err(why) => why,
+            };
+            said.push_str(&format!(
+                ". **{count} commit(s) on `{name}` are NOT collected**: {refused}. They are still \
+                 in {} on that machine (branch `{name}`) - fetch them with `git fetch {} {refspec}`",
+                self.worktree, self.url
+            ));
+        }
         said
     }
 }
