@@ -14,6 +14,7 @@ const SOURCES: &[(&str, &str)] = &[
     ("store.rs", include_str!("../store.rs")),
     ("citations.rs", include_str!("citations.rs")),
     ("floor.rs", include_str!("floor.rs")),
+    ("grants.rs", include_str!("grants.rs")),
     ("leases.rs", include_str!("leases.rs")),
     ("marks.rs", include_str!("marks.rs")),
     ("modes.rs", include_str!("modes.rs")),
@@ -142,7 +143,10 @@ fn scanned() -> BTreeSet<String> {
             .filter(|(n, _, body)| {
                 !touch.contains(n)
                     && touch.iter().any(|h| {
-                        ["self.", "Self::", "store."]
+                        // `tx.method(` and `conn.method(` are how a write reached through a
+                        // transaction or a held connection called the next one; only `self.` was
+                        // followed, so a read one hop away was invisible to this scan.
+                        ["self.", "Self::", "store.", "tx.", "conn."]
                             .iter()
                             .any(|p| body.contains(&format!("{p}{h}(")))
                     })
@@ -241,6 +245,16 @@ const EXERCISED: &[&str] = &[
     "recall_pending",
     "put_recall_vectors",
     "recall_vectors",
+    "put_grant",
+    "grants",
+    "grants_by",
+    "revoke_grant",
+    "clear_grants",
+    "expire_grants",
+    "forget_session_grants",
+    "grant_generation",
+    "breaker",
+    "put_breaker",
     "recall_transcripts",
     "recall_rows",
     "item_created_at",
@@ -264,6 +278,38 @@ fn every_public_method_on_a_project_table_is_exercised_on_a_split_set() {
         missing.is_empty(),
         "public Store methods that touch a project table and are not run on a split set in \
          `every_project_method_runs_on_a_split_set`: {missing:?}"
+    );
+}
+
+/// Every module the store's own declaration names is scanned. A list is spelled out because
+/// `include_str!` wants a literal path, so this is what keeps it from falling behind: a new
+/// module's reads are invisible to the scan above until somebody adds its file here.
+#[test]
+fn every_module_the_store_has_is_scanned() {
+    /// Declared by the store and holding no SQL of its own: the busy handler, the single-file test
+    /// tool, and the test modules.
+    const NOT_SCANNED: &[&str] = &["busy.rs", "live_view.rs", "tests.rs"];
+
+    let src = include_str!("../store.rs");
+    let mut unscanned: Vec<String> = Vec::new();
+    for (at, _) in src.match_indices("mod ") {
+        let rest = &src[at + 4..];
+        let name: String = rest.chars().take_while(|c| ident(*c)).collect();
+        if name.is_empty() || !rest[name.len()..].trim_start().starts_with(';') {
+            continue;
+        }
+        let file = format!("{name}.rs");
+        let test_module = name.ends_with("_tests") || name == "tests";
+        if SOURCES.iter().any(|(listed, _)| *listed == file) || test_module {
+            continue;
+        }
+        if !NOT_SCANNED.contains(&file.as_str()) {
+            unscanned.push(file);
+        }
+    }
+    assert!(
+        unscanned.is_empty(),
+        "modules of the store whose files the scan does not read: {unscanned:?}"
     );
 }
 
@@ -495,6 +541,53 @@ fn every_project_method_runs_on_a_split_set() {
     s.put_recall_vectors("m", &[("u1".into(), vec![1.0])], 2)
         .unwrap();
     assert_eq!(s.recall_vectors("m").unwrap().len(), 1);
+
+    // The grants a restart re-applies, and the breaker beside them: both are the project file's.
+    s.put_grant(&NewGrant {
+        session_id: "s1",
+        scope: "session",
+        kind: "allow",
+        key: "cargo test",
+        body: "{}",
+        why: "asked once",
+        by: "human:operator",
+    })
+    .unwrap();
+    assert_eq!(s.grants("s1", "session").unwrap().len(), 1);
+    assert_eq!(s.grants_by("human").unwrap().len(), 1);
+    assert!(!s.grant_generation().unwrap().is_empty());
+    let id = s.grants("s1", "session").unwrap()[0].id;
+    assert!(s.revoke_grant(id).unwrap());
+    s.put_grant(&NewGrant {
+        session_id: "s1",
+        scope: "session",
+        kind: "view",
+        key: "/w",
+        body: "{}",
+        why: "asked once",
+        by: "human:operator",
+    })
+    .unwrap();
+    s.clear_grants("s1", "session", "view").unwrap();
+    s.expire_grants("s1", "session", 9_999_999_999).unwrap();
+    s.forget_session_grants("s1").unwrap();
+    assert!(s.breaker("s1", "permission").unwrap().is_none());
+    s.put_breaker(
+        "s1",
+        "permission",
+        &BreakerRow {
+            disagreements: 2,
+            tripped_ms: Some(5),
+            why: "two".into(),
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        s.breaker("s1", "permission")
+            .unwrap()
+            .map(|b| b.disagreements),
+        Some(2)
+    );
 
     // Out of this set and into another, which takes the rows into its own two files.
     let transfer = s.export_session("s1").unwrap();
