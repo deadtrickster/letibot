@@ -537,6 +537,8 @@ impl Harness {
             probing: Probing {
                 refused: self.limit_probing.refused,
                 asked: self.limit_probing.asked.clone(),
+                rng: self.limit_probing.rng,
+                jitter: self.limit_probing.jitter,
             },
             way_back: self.limit_return.clone(),
             limited: self.limited.clone(),
