@@ -465,11 +465,8 @@ impl Paths {
             .map(PathBuf::from)
             .filter(|h| !h.as_os_str().is_empty())
             .unwrap_or_else(|| PathBuf::from("/"));
-        let config = std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute() && !p.as_os_str().is_empty())
-            .map(|x| x.join("letibot"))
-            .unwrap_or_else(|| home.join(".config").join("letibot"));
+        let config =
+            letibot_paths::config_dir().unwrap_or_else(|| home.join(".config").join("letibot"));
         Paths { home, config }
     }
 

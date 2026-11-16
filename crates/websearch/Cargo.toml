@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+letibot-paths.workspace = true
 # The `SearchProvider` seam this crate fills. The trait lives in `tools`; the
 # implementation lives here, so a TLS stack never enters the crate that is
 # otherwise a function of a call and a filesystem.

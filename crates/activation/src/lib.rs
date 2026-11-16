@@ -124,9 +124,7 @@ impl Spec {
 
 /// `$XDG_CONFIG_HOME/systemd/user`, else `~/.config/systemd/user`.
 pub fn unit_dir(home: &Path) -> PathBuf {
-    match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(d) if !d.is_empty() => PathBuf::from(d),
-        _ => home.join(".config"),
-    }
-    .join("systemd/user")
+    letibot_paths::absolute(std::env::var_os("XDG_CONFIG_HOME").as_ref())
+        .unwrap_or_else(|| home.join(".config"))
+        .join("systemd/user")
 }

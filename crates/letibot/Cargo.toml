@@ -92,3 +92,5 @@ letibot-transcript.workspace = true
 # tree that closes the `ETXTBSY` window a written-then-exec'd file has (`crates/tools/src/testing.rs`):
 # the migration test writes a fake ssh and a fake cargo and then runs them.
 letibot-tools = { workspace = true, features = ["testing"] }
+# The config-dir rule the launcher's providers path is checked against.
+letibot-paths.workspace = true

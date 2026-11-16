@@ -7,6 +7,7 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+letibot-paths.workspace = true
 letibot-transcript.workspace = true
 # **The `on_tool_call` contract, in the crate that owns the path through the gate.** The hook
 # itself is a trait here ([`runtime::CallHook`]) and the plugin stack that answers it lives in the

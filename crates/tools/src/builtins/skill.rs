@@ -377,13 +377,10 @@ impl SkillDirs {
         if let Some(ws) = workspace {
             dirs.project = project_roots(ws);
         }
-        if let Ok(config) = std::env::var("XDG_CONFIG_HOME") {
-            dirs.operator
-                .push(PathBuf::from(config).join("letibot/skills"));
+        if let Some(config) = letibot_paths::config_dir() {
+            dirs.operator.push(config.join("skills"));
         }
         if let Ok(home) = std::env::var("HOME") {
-            dirs.operator
-                .push(PathBuf::from(&home).join(".config/letibot/skills"));
             dirs.installed
                 .push(PathBuf::from(&home).join(".claude/skills"));
         }

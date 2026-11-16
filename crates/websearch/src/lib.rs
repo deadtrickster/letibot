@@ -35,12 +35,7 @@ impl std::fmt::Display for KeySource {
 
 /// `~/.config/letibot/providers.toml` - the file the model keys already live in.
 fn providers_file() -> Option<std::path::PathBuf> {
-    let base = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config"))
-        })?;
-    Some(base.join("letibot").join("providers.toml"))
+    letibot_paths::config_dir().map(|d| d.join("providers.toml"))
 }
 
 /// `[brave] key = "…"`, read without a TOML parser: the file is two-deep by

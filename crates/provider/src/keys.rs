@@ -191,12 +191,11 @@ pub fn gatekeeper(file: Option<&Path>) -> Gatekeeper {
     }
 }
 
+/// `letibot_paths::config_dir()`'s providers.toml. With no home at all the path is under `/`,
+/// never relative: a cwd-relative file is one the workspace chooses.
 pub fn config_file() -> PathBuf {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
-        .unwrap_or_default()
-        .join("letibot")
+    letibot_paths::config_dir()
+        .unwrap_or_else(|| PathBuf::from("/.config/letibot"))
         .join("providers.toml")
 }
 

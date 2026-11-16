@@ -939,7 +939,7 @@ VERBS
   `letibot <verb> --help` is that verb's own page; a verb with no page prints this list.
 
 Env overrides: LETIBOT_BIN LETIBOT_SOCKET LETIBOT_WORKSPACE LETIBOT_STORE
-LETIBOT_LOG LETIBOT_PROVIDERS LETIBOT_DIALECT LETIBOT_MODEL LETIBOT_VOCAB
+LETIBOT_LOG LETIBOT_DIALECT LETIBOT_MODEL LETIBOT_VOCAB
 LETIBOT_ROLE LETIBOT_ADJUDICATOR LETIBOT_MODE LETIBOT_BASH LETIBOT_WEB_FETCH
 LETIBOT_GRANTS_RO LETIBOT_ORACLE LETIBOT_ORACLE_BUDGET_MS LETIBOT_ENDPOINT
 
@@ -1094,86 +1094,88 @@ BASH_ON="${LETIBOT_BASH-1}"
 WEB_FETCH="${LETIBOT_WEB_FETCH-}"
 GRANTS_RO="${LETIBOT_GRANTS_RO:-$HOME/.cargo $HOME/.rustup}"
 
-# The providers file, read by the launcher too. The daemon reads
-# ~/.config/letibot/providers.toml for keys, sampling and [default]; the launcher asks it two
-# questions: where a named model lives (`model_home`) and what [default] sends turns to
-# (`default_provider`). Same reader shape as the daemon's. `LETIBOT_PROVIDERS` points both
-# readers at another file.
-PROVIDERS="${LETIBOT_PROVIDERS:-$HOME/.config/letibot/providers.toml}"
+# The providers file, read by the launcher too: where a named model lives (`model_home`) and
+# what [default] sends turns to (`default_provider`). The path is `letibot_paths::config_dir`'s
+# (XDG_CONFIG_HOME only when absolute), and the readers follow `keys::parse_file`.
+case "${XDG_CONFIG_HOME:-}" in
+  /*) CONFIG_HOME="$XDG_CONFIG_HOME" ;;
+  *) CONFIG_HOME="$HOME/.config" ;;
+esac
+PROVIDERS="$CONFIG_HOME/letibot/providers.toml"
 
-# The [default] block's KEY, or empty when the file or the key is absent (callers
-# test `-n`). Used by `answers_now`; it lives up here beside the file's other
-# reader so the two stay one shape.
-default_provider() { # default_provider [KEY]
+# providers.toml as `keys::parse_file` reads it, one `section<TAB>key<TAB>value` line per key:
+# `#` starts a comment anywhere, a repeated section merges into the first, and a repeated key
+# takes the last value. Sections keep their first-seen order.
+providers_kv() {
   [ -f "$PROVIDERS" ] || return 0
-  awk -v want="${1:-provider}" '
-    /^\[default\][[:space:]]*$/ { inblock = 1; next }
-    /^\[/                        { inblock = 0 }
-    inblock && $0 ~ "^[[:space:]]*" want "[[:space:]]*=" {
-      sub(/^[^=]*=[[:space:]]*/, "")
-      gsub(/^"|"[[:space:]]*$/, "")
-      print
-      exit
+  awk '
+    function trim(s) { gsub(/^[[:space:]]+|[[:space:]]+$/, "", s); return s }
+    {
+      line = $0
+      sub(/#.*/, "", line)
+      line = trim(line)
+      if (line == "") next
+      if (line ~ /^\[.*\]$/) {
+        sec = trim(substr(line, 2, length(line) - 2))
+        gsub(/^"+|"+$/, "", sec)
+        next
+      }
+      eq = index(line, "=")
+      if (eq == 0 || sec == "") next
+      key = trim(substr(line, 1, eq - 1))
+      val = trim(substr(line, eq + 1))
+      gsub(/^"+|"+$/, "", val)
+      if (!(sec in seen)) { seen[sec] = 1; order[++n] = sec }
+      if (!((sec, key) in kv)) keys[sec] = keys[sec] SUBSEP key
+      kv[sec, key] = val
+    }
+    END {
+      for (i = 1; i <= n; i++) {
+        sec = order[i]
+        k = split(substr(keys[sec], 2), ks, SUBSEP)
+        for (j = 1; j <= k; j++) printf "%s\t%s\t%s\n", sec, ks[j], kv[sec, ks[j]]
+      }
     }
   ' "$PROVIDERS" 2>/dev/null
 }
 
+# The [default] block's KEY, or empty when the file or the key is absent (callers test `-n`).
+default_provider() { # default_provider [KEY]
+  providers_kv | awk -F '\t' -v want="${1:-provider}" '$1 == "default" && $2 == want { print $3; exit }'
+}
+
 # Every `[model."..."]` block that serves one alias, one `name<TAB>host:port` line per block,
-# in file order. Mirrors `local_models` (crates/provider/src/keys.rs) rule for rule:
+# in file order. Mirrors `local_models` (crates/provider/src/keys.rs):
 #
-#   * a block header is `[model.<name>]`; the name may be quoted and dotted (`[model."local.qwe"]`);
 #   * `url` is the address, `endpoint` an accepted synonym (`url` wins when both are present);
 #   * the alias is the block's `model` value, else the block's name;
-#   * scheme and path are dropped (`http://h:p/v1` is `h:p`), as `parse_local_url` does;
-#   * `#` starts a comment anywhere on a line, as `parse_file` has it.
+#   * scheme and path are dropped (`http://h:p/v1` is `h:p`), as `parse_local_url` does.
 #
 # Blocks without an address are sampling profiles, not homes, and are not listed.
 model_home() { # model_home ALIAS — matching blocks, `name<TAB>host:port` each
-  [ -f "$PROVIDERS" ] || return 0
-  awk -v want="$1" '
-    function hp(s) {                    # http://h:p/v1 -> h:p, the daemon deal
+  providers_kv | awk -F '\t' -v want="$1" '
+    function hp(s) {
       sub(/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//, "", s)
       sub(/\/.*$/, "", s)
       return s
     }
-    function flush() {
-      if (sec != "" && (u != "" || e != "") && (m != "" ? m : sec) == want) {
-        addr = (u != "" ? u : e)        # url wins, endpoint fills
-        printf "%s\t%s\n", sec, hp(addr)
-      }
-    }
+    $1 !~ /^model\./ { next }
     {
-      line = $0
-      sub(/#.*/, "", line)              # a comment starts anywhere, as parse_file has it
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
-      if (line == "") next
-      if (substr(line, 1, 1) == "[") {  # any header ends the block; flush first
-        flush()
-        u = ""; e = ""; m = ""
-        if (line ~ /^\[model\./) {
-          sec = line
-          sub(/^\[model\./, "", sec)
-          sub(/\][[:space:]]*$/, "", sec)
-          gsub(/^"|"$/, "", sec)
-        } else {
-          sec = ""
-        }
-        next
-      }
-      if (sec == "") next
-      eq = index(line, "=")
-      if (eq == 0) next
-      key = substr(line, 1, eq - 1)
-      val = substr(line, eq + 1)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", key)
-      gsub(/^[[:space:]]+|[[:space:]]+$/, "", val)
-      gsub(/^"|"$/, "", val)
-      if      (key == "url")      u = val
-      else if (key == "endpoint") e = val
-      else if (key == "model")    m = val
+      sec = substr($1, 7)
+      gsub(/^"+|"+$/, "", sec)
+      if (!(sec in seen)) { seen[sec] = 1; order[++n] = sec }
+      if ($2 == "url") u[sec] = $3
+      else if ($2 == "endpoint") e[sec] = $3
+      else if ($2 == "model") m[sec] = $3
     }
-    END { flush() }
-  ' "$PROVIDERS" 2>/dev/null
+    END {
+      for (i = 1; i <= n; i++) {
+        sec = order[i]
+        addr = (u[sec] != "" ? u[sec] : e[sec])
+        if (addr != "" && (m[sec] != "" ? m[sec] : sec) == want) printf "%s\t%s\n", sec, hp(addr)
+      }
+    }
+  '
 }
 
 # Which model, and where it lives. Three units serve this fleet's models, systemd
@@ -2027,7 +2029,7 @@ room_activated() {
   if [ -z "$ROOM_ACTIVATED" ]; then
     ROOM_ACTIVATED=no
     if [ -f "$HOME/Library/LaunchAgents/io.letibot.rooms.plist" ] ||
-      [ -f "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/letibot-rooms.socket" ]; then
+      [ -f "$CONFIG_HOME/systemd/user/letibot-rooms.socket" ]; then
       if [ -x "$BIN/letibot-multi" ] && "$BIN/letibot-multi" rooms is-on >/dev/null 2>&1; then
         ROOM_ACTIVATED=yes
       fi
@@ -3003,8 +3005,16 @@ room_ensure
 provider_section() { # provider_section NAME
   [ -f "$PROVIDERS" ] || return 1
   case "$1" in default | model.* | brave | gatekeeper | host.*) return 1 ;; esac
-  awk -v want="[$1]" '{ sub(/[[:space:]]+$/, "") } $0 == want { found = 1; exit } END { exit !found }' \
-    "$PROVIDERS" 2>/dev/null
+  awk -v want="$1" '
+    { line = $0; sub(/#.*/, "", line); gsub(/^[[:space:]]+|[[:space:]]+$/, "", line) }
+    line ~ /^\[.*\]$/ {
+      sec = substr(line, 2, length(line) - 2)
+      gsub(/^[[:space:]]+|[[:space:]]+$/, "", sec)
+      gsub(/^"+|"+$/, "", sec)
+      if (sec == want) { found = 1; exit }
+    }
+    END { exit !found }
+  ' "$PROVIDERS" 2>/dev/null
 }
 
 # A one-shot's `--model` applies or refuses. harnessd reads a bare `--model` as the local

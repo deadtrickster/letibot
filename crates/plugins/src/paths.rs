@@ -11,36 +11,15 @@ const NAME: &str = "letibot";
 /// The trust book's file name, in the config directory.
 const TRUST: &str = "plugin-trust.json";
 
-/// The three variables a path here is derived from, so a host and a test can agree without reading
-/// the process's environment - which is global, and changes under a running test.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct Env {
-    /// `$XDG_CONFIG_HOME`: the user scope and the trust book.
-    pub xdg_config_home: Option<OsString>,
-    /// `$XDG_DATA_HOME`: the session scopes.
-    pub xdg_data_home: Option<OsString>,
-    /// `$HOME`: the base the two defaults are under.
-    pub home: Option<OsString>,
-}
+/// The three variables a path here is derived from: the box-wide resolver's own.
+pub use letibot_paths::Env;
 
-impl Env {
-    /// This process's environment, which is what a running host resolves against.
-    pub fn of_process() -> Env {
-        Env {
-            xdg_config_home: std::env::var_os("XDG_CONFIG_HOME"),
-            xdg_data_home: std::env::var_os("XDG_DATA_HOME"),
-            home: std::env::var_os("HOME"),
-        }
-    }
-
-    /// A variable's value as a path, or `None` for absent AND for empty: `XDG_CONFIG_HOME=` is a
-    /// person saying they have not set it, and every reader here treats it that way.
-    fn path(value: &Option<OsString>) -> Option<PathBuf> {
-        value
-            .as_deref()
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    }
+/// A variable's value as a path, or `None` for absent AND for empty.
+fn nonempty(value: &Option<OsString>) -> Option<PathBuf> {
+    value
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
 }
 
 /// `$XDG_CONFIG_HOME/letibot`, else `~/.config/letibot` - where the user scope and the trust book
@@ -51,9 +30,7 @@ pub fn config_dir() -> Option<PathBuf> {
 
 /// [`config_dir`] against an environment a caller names, so a test states one.
 pub fn config_dir_in(env: &Env) -> Option<PathBuf> {
-    let base = Env::path(&env.xdg_config_home)
-        .or_else(|| Env::path(&env.home).map(|h| h.join(".config")))?;
-    Some(base.join(NAME))
+    letibot_paths::config_dir_in(env)
 }
 
 /// The user scope's layers: `$XDG_CONFIG_HOME/letibot/plugins`, else `~/.config/letibot/plugins`.
@@ -75,8 +52,8 @@ pub fn data_dir() -> Option<PathBuf> {
 
 /// [`data_dir`] against an environment a caller names.
 pub fn data_dir_in(env: &Env) -> Option<PathBuf> {
-    let base = Env::path(&env.xdg_data_home)
-        .or_else(|| Env::path(&env.home).map(|h| h.join(".local/share")))?;
+    let base = nonempty(&env.xdg_data_home)
+        .or_else(|| nonempty(&env.home).map(|h| h.join(".local/share")))?;
     Some(base.join(NAME))
 }
 

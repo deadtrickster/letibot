@@ -162,11 +162,7 @@ impl Settings {
 
 /// The user's `~/.config/letibot/leticode.toml`, the file every other box-wide key is read from.
 pub fn config_file() -> Option<PathBuf> {
-    let base = match std::env::var_os("XDG_CONFIG_HOME") {
-        Some(d) if !d.is_empty() => PathBuf::from(d),
-        _ => PathBuf::from(std::env::var_os("HOME")?).join(".config"),
-    };
-    Some(base.join("letibot").join("leticode.toml"))
+    letibot_paths::config_dir().map(|d| d.join("leticode.toml"))
 }
 
 #[derive(Debug, Default, serde::Deserialize)]
