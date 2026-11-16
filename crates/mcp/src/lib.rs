@@ -1,13 +1,20 @@
 //! An MCP client for `letibot-tools`' catalogue seam: stdio and streamable-HTTP JSON-RPC, blocking,
 //! one lock per server. Servers start in parallel at [`Catalog::start`]; a failure is kept as a
 //! [`Failure`] while the rest serve, and a server that dies later is restarted with backoff.
+//! [`Catalog::reconcile`] moves a running catalogue to a new config without a daemon restart.
 
 mod wire;
 
-use std::collections::BTreeMap;
+/// The test server, for another crate's tests to run as a child.
+#[cfg(feature = "fake")]
+#[doc(hidden)]
+pub mod fake;
+
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::{Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{Duration, Instant, SystemTime};
 
 use letibot_tools::builtins::external::mcp::{
     McpCallResult, McpCatalog, McpError, McpServer, McpToolSpec,
@@ -23,7 +30,7 @@ pub const PROTOCOL_VERSION: &str = "2025-06-18";
 pub const DEFAULT_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How one server is reached.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Transport {
     /// A child process speaking newline-delimited JSON-RPC on stdin and stdout.
     Stdio {
@@ -41,7 +48,7 @@ pub enum Transport {
 }
 
 /// One `[mcp.NAME]` table, resolved.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ServerSpec {
     pub name: String,
     pub transport: Transport,
@@ -269,16 +276,113 @@ struct Link {
     down: Option<(String, u32, Instant)>,
 }
 
+/// A stdio server's resolved binary and its mtime when it was started.
+type Stamp = (PathBuf, Option<SystemTime>);
+
+/// What a status reports, apart from the link so a status never waits on a call in flight.
+#[derive(Default)]
+struct Info {
+    pid: Option<u32>,
+    binary: Option<Stamp>,
+    /// Why the last start failed. Such a server offers no tools until it is restarted.
+    failed: Option<String>,
+}
+
 struct Entry {
     spec: ServerSpec,
     /// Behind its own lock so a listing never waits on a call in flight.
     tools: RwLock<Vec<McpToolSpec>>,
     link: Mutex<Link>,
+    info: Mutex<Info>,
+    /// Catalogues holding this entry. A pool prune drops an entry none holds.
+    users: AtomicUsize,
 }
 
 impl Entry {
+    fn open(spec: &ServerSpec) -> Entry {
+        let e = Entry::refused(spec, None);
+        {
+            let mut link = lock(&e.link);
+            let _ = e.connect(&mut link);
+        }
+        e
+    }
+
+    fn refused(spec: &ServerSpec, why: Option<String>) -> Entry {
+        Entry {
+            spec: spec.clone(),
+            tools: RwLock::new(Vec::new()),
+            link: Mutex::new(Link {
+                client: None,
+                down: None,
+            }),
+            info: Mutex::new(Info {
+                failed: why,
+                ..Info::default()
+            }),
+            users: AtomicUsize::new(0),
+        }
+    }
+
     fn set_tools(&self, tools: Vec<McpToolSpec>) {
         *self.tools.write().unwrap_or_else(|e| e.into_inner()) = tools;
+    }
+
+    fn failed(&self) -> Option<String> {
+        lock(&self.info).failed.clone()
+    }
+
+    /// Start the server on `link`, which holds no client.
+    fn connect(&self, link: &mut Link) -> Result<(), String> {
+        let binary = binary_stamp(&self.spec);
+        match Client::connect(&self.spec) {
+            Ok((client, tools)) => {
+                self.adopt(link, client, tools, binary);
+                Ok(())
+            }
+            Err(why) => {
+                link.client = None;
+                link.down = None;
+                self.set_tools(Vec::new());
+                *lock(&self.info) = Info {
+                    pid: None,
+                    binary,
+                    failed: Some(why.clone()),
+                };
+                Err(why)
+            }
+        }
+    }
+
+    fn adopt(
+        &self,
+        link: &mut Link,
+        client: Client,
+        tools: Vec<McpToolSpec>,
+        binary: Option<Stamp>,
+    ) {
+        self.set_tools(tools);
+        *lock(&self.info) = Info {
+            pid: client.wire.pid(),
+            binary,
+            failed: None,
+        };
+        link.client = Some(client);
+        link.down = None;
+    }
+
+    /// A new process for this spec. Waits for a call in flight, which finishes on the old one.
+    fn restart(&self) -> Result<(), String> {
+        let mut link = lock(&self.link);
+        link.client = None;
+        link.down = None;
+        self.connect(&mut link)
+    }
+
+    /// Whether the stdio binary on disk is not the one this server was started from.
+    fn stale(&self) -> bool {
+        matches!(self.spec.transport, Transport::Stdio { .. })
+            && binary_stamp(&self.spec) != lock(&self.info).binary
     }
 
     /// List again if the server said its tools changed.
@@ -301,12 +405,9 @@ impl Entry {
                     (next - now).as_secs_f64()
                 )));
             }
+            let binary = binary_stamp(&self.spec);
             match Client::connect(&self.spec) {
-                Ok((client, tools)) => {
-                    self.set_tools(tools);
-                    link.client = Some(client);
-                    link.down = None;
-                }
+                Ok((client, tools)) => self.adopt(link, client, tools, binary),
                 Err(e) => {
                     let failed = failed + 1;
                     let wait = backoff(failed);
@@ -326,7 +427,13 @@ impl Entry {
     }
 
     fn call(&self, tool: &str, args: &Value) -> Result<McpCallResult, McpError> {
-        let mut link = self.link.lock().unwrap_or_else(|e| e.into_inner());
+        let mut link = lock(&self.link);
+        if let Some(why) = self.failed() {
+            return Err(McpError::Transport(format!(
+                "the server did not start ({why}); `/mcp restart {}` tries again",
+                self.spec.name
+            )));
+        }
         self.refresh(&mut link);
         let client = self.up(&mut link)?;
         let out = client.call(tool, args);
@@ -341,68 +448,385 @@ impl Entry {
         self.refresh(&mut link);
         out
     }
+
+    fn status(&self) -> Status {
+        let info = lock(&self.info);
+        let state = match (&info.failed, self.link.try_lock()) {
+            (Some(why), _) => State::Failed(why.clone()),
+            (None, Ok(link)) => match &link.down {
+                Some((why, _, _)) => State::Down(why.clone()),
+                None if link.client.is_none() => State::Down("not connected".into()),
+                None => State::Running,
+            },
+            // Busy with a call: it is up.
+            (None, Err(_)) => State::Running,
+        };
+        Status {
+            name: self.spec.name.clone(),
+            tools: self.tools.read().unwrap_or_else(|e| e.into_inner()).len(),
+            pid: info.pid.filter(|_| state == State::Running),
+            url: match &self.spec.transport {
+                Transport::Http { url, .. } => Some(url.clone()),
+                Transport::Stdio { .. } => None,
+            },
+            state,
+        }
+    }
 }
 
-/// Every configured server, connected or failed.
-pub struct Catalog {
-    entries: Vec<Entry>,
-    failures: Vec<Failure>,
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-impl Catalog {
-    /// Start every server at once and wait for each up to its own timeout.
-    pub fn start(specs: &[ServerSpec]) -> Catalog {
-        let outcomes: Vec<_> = std::thread::scope(|s| {
-            let handles: Vec<_> = specs
+/// The file a stdio command runs, found the way `Command` finds it, and its mtime.
+fn binary_stamp(spec: &ServerSpec) -> Option<Stamp> {
+    let Transport::Stdio {
+        command, env, cwd, ..
+    } = &spec.transport
+    else {
+        return None;
+    };
+    let path = if command.contains('/') {
+        let p = std::path::Path::new(command);
+        match cwd {
+            Some(d) if p.is_relative() => d.join(p),
+            _ => p.to_path_buf(),
+        }
+    } else {
+        let search = env
+            .get("PATH")
+            .cloned()
+            .or_else(|| std::env::var("PATH").ok())?;
+        std::env::split_paths(&search)
+            .map(|d| d.join(command))
+            .find(|c| c.is_file())?
+    };
+    let path = std::fs::canonicalize(&path).ok()?;
+    let mtime = std::fs::metadata(&path).and_then(|m| m.modified()).ok();
+    Some((path, mtime))
+}
+
+/// One server as `/mcp` lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Status {
+    pub name: String,
+    pub state: State,
+    pub tools: usize,
+    /// A running stdio server's process.
+    pub pid: Option<u32>,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum State {
+    Running,
+    /// Started, then went away. It is restarted on its next call.
+    Down(String),
+    /// Did not start, or its table was refused. Restarted only by a reload or a restart.
+    Failed(String),
+}
+
+/// What a reconcile or a restart did to one server.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change {
+    pub name: String,
+    pub did: Did,
+    /// Set when the new process did not start.
+    pub failed: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Did {
+    Added,
+    Removed,
+    /// Restarted, and why: `config changed`, `binary updated`, `retried`, `by hand`.
+    Restarted(&'static str),
+}
+
+impl std::fmt::Display for Change {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.did {
+            Did::Added => write!(f, "{} added", self.name)?,
+            Did::Removed => write!(f, "{} stopped (removed)", self.name)?,
+            Did::Restarted(why) => write!(f, "{} restarted ({why})", self.name)?,
+        }
+        if let Some(why) = &self.failed {
+            write!(f, " - failed: {why}")?;
+        }
+        Ok(())
+    }
+}
+
+/// The servers a daemon runs, shared by every catalogue whose spec names the same process.
+#[derive(Default)]
+pub struct Pool {
+    live: Mutex<HashMap<ServerSpec, Arc<Entry>>>,
+}
+
+impl Pool {
+    pub fn new() -> Arc<Pool> {
+        Arc::new(Pool::default())
+    }
+
+    /// The entry for each spec, held once more, and whether this call started it. Missing
+    /// ones start in parallel, each waited for up to its own timeout.
+    fn take(&self, specs: &[ServerSpec]) -> Vec<(Arc<Entry>, bool)> {
+        let mut live = lock(&self.live);
+        let missing: Vec<&ServerSpec> = specs.iter().filter(|s| !live.contains_key(*s)).collect();
+        let started: Vec<Entry> = std::thread::scope(|s| {
+            let handles: Vec<_> = missing
                 .iter()
-                .map(|spec| s.spawn(move || Client::connect(spec)))
+                .map(|spec| (*spec, s.spawn(move || Entry::open(spec))))
                 .collect();
             handles
                 .into_iter()
-                .map(|h| {
-                    h.join()
-                        .unwrap_or_else(|_| Err("the start thread panicked".into()))
+                .map(|(spec, h)| {
+                    h.join().unwrap_or_else(|_| {
+                        Entry::refused(spec, Some("the start thread panicked".into()))
+                    })
                 })
                 .collect()
         });
-        let mut entries = Vec::new();
-        let mut failures = Vec::new();
-        for (spec, outcome) in specs.iter().zip(outcomes) {
-            match outcome {
-                Ok((client, tools)) => entries.push(Entry {
-                    spec: spec.clone(),
-                    tools: RwLock::new(tools),
-                    link: Mutex::new(Link {
-                        client: Some(client),
-                        down: None,
-                    }),
-                }),
-                Err(why) => failures.push(Failure {
-                    server: spec.name.clone(),
-                    why,
-                }),
-            }
+        for e in started {
+            live.insert(e.spec.clone(), Arc::new(e));
         }
-        Catalog { entries, failures }
+        specs
+            .iter()
+            .map(|s| {
+                let e = live[s].clone();
+                e.users.fetch_add(1, Ordering::SeqCst);
+                (e, missing.contains(&s))
+            })
+            .collect()
+    }
+
+    /// Stop the servers no catalogue holds. A call in flight keeps its process until it ends.
+    fn prune(&self) {
+        lock(&self.live).retain(|_, e| e.users.load(Ordering::SeqCst) > 0);
+    }
+
+    /// A catalogue of `specs`, and the start failures of the servers this call started.
+    pub fn catalog(
+        self: &Arc<Self>,
+        specs: &[ServerSpec],
+        bad: Vec<Failure>,
+    ) -> (Catalog, Vec<Failure>) {
+        let taken = self.take(specs);
+        let failed = taken
+            .iter()
+            .filter(|(_, started)| *started)
+            .filter_map(|(e, _)| {
+                e.failed().map(|why| Failure {
+                    server: e.spec.name.clone(),
+                    why,
+                })
+            })
+            .collect();
+        let catalog = Catalog {
+            pool: self.clone(),
+            entries: RwLock::new(taken.into_iter().map(|(e, _)| e).collect()),
+            bad: RwLock::new(bad),
+        };
+        (catalog, failed)
+    }
+}
+
+/// One session's servers, connected or failed. Reconciled in place, so the tool doors that
+/// hold it see the new set.
+pub struct Catalog {
+    pool: Arc<Pool>,
+    entries: RwLock<Vec<Arc<Entry>>>,
+    /// Tables refused before any start, such as one naming no transport.
+    bad: RwLock<Vec<Failure>>,
+}
+
+impl Drop for Catalog {
+    fn drop(&mut self) {
+        for e in self
+            .entries
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+        {
+            e.users.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+}
+
+impl Catalog {
+    /// Start every server at once and wait for each up to its own timeout, in a pool of its own.
+    pub fn start(specs: &[ServerSpec]) -> Catalog {
+        Pool::new().catalog(specs, Vec::new()).0
     }
 
     /// Add servers refused before any start, such as a table naming no transport.
-    pub fn with_failures(mut self, mut failures: Vec<Failure>) -> Catalog {
-        failures.append(&mut self.failures);
-        self.failures = failures;
+    pub fn with_failures(self, failures: Vec<Failure>) -> Catalog {
+        *self.bad.write().unwrap_or_else(|e| e.into_inner()) = failures;
         self
     }
 
-    /// The servers that did not start, in config order.
-    pub fn failures(&self) -> &[Failure] {
-        &self.failures
+    fn entries(&self) -> Vec<Arc<Entry>> {
+        self.entries
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn entry(&self, name: &str) -> Option<Arc<Entry>> {
+        self.entries().into_iter().find(|e| e.spec.name == name)
+    }
+
+    /// The servers that did not start, refused tables first.
+    pub fn failures(&self) -> Vec<Failure> {
+        let mut out = self.bad.read().unwrap_or_else(|e| e.into_inner()).clone();
+        out.extend(self.entries().iter().filter_map(|e| {
+            e.failed().map(|why| Failure {
+                server: e.spec.name.clone(),
+                why,
+            })
+        }));
+        out
+    }
+
+    /// Every server, refused tables included, sorted by name.
+    pub fn status(&self) -> Vec<Status> {
+        let mut out: Vec<Status> = self.entries().iter().map(|e| e.status()).collect();
+        out.extend(
+            self.bad
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .map(|f| Status {
+                    name: f.server.clone(),
+                    state: State::Failed(f.why.clone()),
+                    tools: 0,
+                    pid: None,
+                    url: None,
+                }),
+        );
+        out.sort_by(|a, b| a.name.cmp(&b.name));
+        out
+    }
+
+    /// Make the running set `specs`: start new servers, stop removed ones, replace changed ones
+    /// and retry failed ones. An unchanged server keeps its process. A call in flight to a
+    /// replaced server finishes on the old process.
+    pub fn reconcile(&self, specs: &[ServerSpec], bad: Vec<Failure>) -> Vec<Change> {
+        let old = self.entries();
+        let by_name = |n: &str| old.iter().find(|e| e.spec.name == n);
+        let fresh: Vec<ServerSpec> = specs
+            .iter()
+            .filter(|s| by_name(&s.name).is_none_or(|e| e.spec != **s))
+            .cloned()
+            .collect();
+        let mut taken = self.pool.take(&fresh).into_iter();
+        let mut changes = Vec::new();
+        let mut next = Vec::new();
+        for spec in specs {
+            match by_name(&spec.name) {
+                Some(e) if e.spec == *spec => {
+                    if e.failed().is_some() {
+                        let failed = e.restart().err();
+                        changes.push(Change {
+                            name: spec.name.clone(),
+                            did: Did::Restarted("retried"),
+                            failed,
+                        });
+                    }
+                    next.push(e.clone());
+                }
+                was => {
+                    let (e, started) = taken.next().expect("one taken entry per fresh spec");
+                    // A pooled entry another session left failed is tried again.
+                    let mut failed = e.failed();
+                    if !started && failed.is_some() {
+                        failed = e.restart().err();
+                    }
+                    changes.push(Change {
+                        name: spec.name.clone(),
+                        did: if was.is_some() {
+                            Did::Restarted("config changed")
+                        } else {
+                            Did::Added
+                        },
+                        failed,
+                    });
+                    next.push(e);
+                }
+            }
+        }
+        let old_bad = self.bad.read().unwrap_or_else(|e| e.into_inner()).clone();
+        for e in &old {
+            if !next.iter().any(|n| Arc::ptr_eq(n, e)) {
+                e.users.fetch_sub(1, Ordering::SeqCst);
+                let now_bad = bad.iter().any(|f| f.server == e.spec.name);
+                if !specs.iter().any(|s| s.name == e.spec.name) && !now_bad {
+                    changes.push(Change {
+                        name: e.spec.name.clone(),
+                        did: Did::Removed,
+                        failed: None,
+                    });
+                }
+            }
+        }
+        for f in &bad {
+            if !old_bad.contains(f) {
+                changes.push(Change {
+                    name: f.server.clone(),
+                    did: if old.iter().any(|e| e.spec.name == f.server)
+                        || old_bad.iter().any(|o| o.server == f.server)
+                    {
+                        Did::Restarted("config changed")
+                    } else {
+                        Did::Added
+                    },
+                    failed: Some(f.why.clone()),
+                });
+            }
+        }
+        for f in &old_bad {
+            if !bad.iter().any(|b| b.server == f.server)
+                && !specs.iter().any(|s| s.name == f.server)
+            {
+                changes.push(Change {
+                    name: f.server.clone(),
+                    did: Did::Removed,
+                    failed: None,
+                });
+            }
+        }
+        *self.entries.write().unwrap_or_else(|e| e.into_inner()) = next;
+        *self.bad.write().unwrap_or_else(|e| e.into_inner()) = bad;
+        self.pool.prune();
+        changes.sort_by(|a, b| a.name.cmp(&b.name));
+        changes
+    }
+
+    /// Restart one server in place, for every session sharing it. `None` when none is named so.
+    pub fn restart(&self, name: &str, why: &'static str) -> Option<Change> {
+        let e = self.entry(name)?;
+        Some(Change {
+            name: name.to_string(),
+            did: Did::Restarted(why),
+            failed: e.restart().err(),
+        })
+    }
+
+    /// The stdio servers whose binary on disk changed since they started.
+    pub fn stale(&self) -> Vec<String> {
+        self.entries()
+            .iter()
+            .filter(|e| e.stale())
+            .map(|e| e.spec.name.clone())
+            .collect()
     }
 }
 
 impl McpCatalog for Catalog {
     fn servers(&self) -> Vec<McpServer> {
-        self.entries
+        self.entries()
             .iter()
+            .filter(|e| e.failed().is_none())
             .map(|e| {
                 // A server busy with a call keeps its last list; the call refreshes it after.
                 if let Ok(mut link) = e.link.try_lock() {
@@ -417,7 +841,8 @@ impl McpCatalog for Catalog {
     }
 
     fn call(&self, server: &str, tool: &str, args: &Value) -> Result<McpCallResult, McpError> {
-        let Some(entry) = self.entries.iter().find(|e| e.spec.name == server) else {
+        // Held by this call, so a reload that replaces it leaves this call its process.
+        let Some(entry) = self.entry(server) else {
             return Err(McpError::Transport(format!(
                 "no MCP server `{server}` is connected"
             )));
@@ -427,8 +852,9 @@ impl McpCatalog for Catalog {
 
     fn describe(&self) -> String {
         let up: Vec<String> = self
-            .entries
+            .entries()
             .iter()
+            .filter(|e| e.failed().is_none())
             .map(|e| {
                 let n = e.tools.read().unwrap_or_else(|e| e.into_inner()).len();
                 format!("{} ({n} tools)", e.spec.name)
@@ -439,8 +865,9 @@ impl McpCatalog for Catalog {
         } else {
             format!("MCP servers {}", up.join(", "))
         };
-        if !self.failures.is_empty() {
-            let down: Vec<&str> = self.failures.iter().map(|f| f.server.as_str()).collect();
+        let failures = self.failures();
+        if !failures.is_empty() {
+            let down: Vec<&str> = failures.iter().map(|f| f.server.as_str()).collect();
             s.push_str(&format!("; failed to start: {}", down.join(", ")));
         }
         s
