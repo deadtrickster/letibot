@@ -1610,6 +1610,108 @@ fn the_end_of_a_stream_that_names_nothing_is_within_the_cap() {
     );
 }
 
+/// The clean env hands a step the box's read-only apparatus by the variables the tests read, each
+/// only when it is there, and of the real runtime dir only the user manager's socket. Nothing else
+/// of the operator's HOME, LETIBOT_* or runtime dir is named.
+#[test]
+fn the_gate_env_passes_exactly_the_apparatus_and_nothing_else() {
+    use std::collections::BTreeMap;
+    let root = std::env::temp_dir().join(format!("letibot-gate-apparatus-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let home = root.join("box-home");
+    let file = |rel: &str| {
+        let p = home.join(rel);
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "x").unwrap();
+        p
+    };
+    let qwen = file("models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf");
+    let calibration = file(".local/share/letibot/calibration/context_claim_sentences.tsv");
+    let calibration = calibration.parent().unwrap().to_path_buf();
+    // Hidden whatever the allow-list says: keys, providers, grants and the operator's store.
+    for decoy in [
+        ".config/letibot/providers.toml",
+        ".config/letibot/permission.json",
+        ".config/letibot/keys/openai",
+        ".local/share/letibot/sessions.db",
+    ] {
+        file(decoy);
+    }
+    let real_run = root.join("real-run");
+    std::fs::create_dir_all(real_run.join("systemd")).unwrap();
+    std::fs::write(real_run.join("room-box.sock"), "").unwrap();
+    let manager = real_run.join("systemd/private");
+    let _listener = std::os::unix::net::UnixListener::bind(&manager).expect("a manager socket");
+    let scratch = root.join("scratch");
+    let out = Command::new("sh")
+        .arg("-c")
+        .arg(GATE_ENV_SCRIPT)
+        .arg("letibot-gate-env")
+        .arg(&scratch)
+        .arg("env")
+        .env_clear()
+        .env("PATH", std::env::var_os("PATH").unwrap_or_default())
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &real_run)
+        .env("DBUS_SESSION_BUS_ADDRESS", "unix:path=/operator/bus")
+        .env("LETIBOT_SOCKET", "/operator/live.sock")
+        .env(
+            "LETIBOT_PROVIDERS",
+            home.join(".config/letibot/providers.toml"),
+        )
+        .output()
+        .expect("the env script runs");
+    assert!(out.status.success(), "{out:?}");
+    let said = String::from_utf8_lossy(&out.stdout).to_string();
+    let env: BTreeMap<&str, &str> = said.lines().filter_map(|l| l.split_once('=')).collect();
+    let letibot: BTreeMap<&str, &str> = env
+        .iter()
+        .filter(|(k, _)| k.starts_with("LETIBOT_"))
+        .map(|(k, v)| (*k, *v))
+        .collect();
+    let want: BTreeMap<&str, &str> = [
+        ("LETIBOT_CALIBRATION", calibration.to_str().unwrap()),
+        ("LETIBOT_VOCAB_GGUF", qwen.to_str().unwrap()),
+    ]
+    .into_iter()
+    .collect();
+    // The GLM file is not on this fixture's box, so its variable is not named at all.
+    assert_eq!(letibot, want, "{said}");
+    for leak in ["/operator", "room-box.sock", "DBUS_SESSION_BUS_ADDRESS"] {
+        assert!(!said.contains(leak), "{leak} reached the step: {said}");
+    }
+    // Of the real HOME, only the apparatus and the toolchain cargo runs from.
+    let toolchain = [home.join(".cargo"), home.join(".rustup")];
+    for (name, value) in &env {
+        let value = Path::new(value);
+        if value.starts_with(&home) {
+            assert!(
+                want.values().any(|w| Path::new(w) == value)
+                    || toolchain.iter().any(|t| t == value),
+                "{name} names the real HOME: {said}"
+            );
+        }
+    }
+    let run = PathBuf::from(env.get("XDG_RUNTIME_DIR").expect("a runtime dir"));
+    assert!(run.starts_with(&scratch), "{said}");
+    let listed = |dir: &Path| -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(listed(&run), ["systemd"], "the step's runtime dir");
+    assert_eq!(listed(&run.join("systemd")), ["private"]);
+    assert_eq!(
+        std::fs::read_link(run.join("systemd/private")).unwrap(),
+        manager,
+        "the manager's socket and nothing beside it"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 /// A step sees the gate's HOME, not the daemon's, and none of its doors or keys. The parent's env
 /// is set on a re-run of this test binary, so no other test sees the fake HOME.
 #[test]

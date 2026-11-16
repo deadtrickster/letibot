@@ -28,11 +28,38 @@ if [ -f "$c/hosts.toml" ]; then
       done
     done
 fi
+# The step's runtime dir: the caller's XDG_RUNTIME_DIR= pair, else the scratch one.
+run=$S/run
+for a in "$@"; do
+  case $a in
+    XDG_RUNTIME_DIR=*) run=${a#XDG_RUNTIME_DIR=} ;;
+    *=*) ;;
+    *) break ;;
+  esac
+done
+# `systemd-run --user` dials the user manager at $XDG_RUNTIME_DIR/systemd/private. That one socket
+# is linked into the step's runtime dir, so letibot's sockets in the real one stay out of reach.
+# No session bus: it carries the keyring.
+m=${XDG_RUNTIME_DIR:-}/systemd/private
+if [ -S "$m" ]; then
+  mkdir -p "$run/systemd" && ln -sf "$m" "$run/systemd/private" || exit 2
+fi
 # The command line is rebuilt in front of the caller's NAME=VALUE pairs, so the caller's win.
 set -- HOME="$S/home" XDG_DATA_HOME="$S/data" XDG_STATE_HOME="$S/state" XDG_RUNTIME_DIR="$S/run" \
   CARGO_HOME="${CARGO_HOME:-$real/.cargo}" RUSTUP_HOME="${RUSTUP_HOME:-$real/.rustup}" "$@"
-# Kept from the caller by name: the gate's own refusals file and nothing else of LETIBOT_*.
-# No keys, sockets, XDG_CONFIG_HOME or XDG_CACHE_HOME.
+# The read-only apparatus the tests measure against, by the variables they read: the caller's
+# value, else the box's file under the real HOME, and only when it is there.
+for a in \
+  "LETIBOT_VOCAB_GGUF=$real/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL-00001-of-00006.gguf" \
+  "LETIBOT_GLM_GGUF=$real/models/glm-5.3-flash/GLM-5.3-Flash-UD-Q4_K_XL-00001-of-00006.gguf" \
+  "LETIBOT_CALIBRATION=$real/.local/share/letibot/calibration"; do
+  n=${a%%=*}
+  eval "v=\${$n:-}"
+  [ -n "$v" ] || v=${a#*=}
+  [ -e "$v" ] && set -- "$n=$v" "$@"
+done
+# Kept from the caller by name: the gate's own refusals file and, above, the apparatus paths, and
+# nothing else of LETIBOT_*. No keys, sockets, XDG_CONFIG_HOME or XDG_CACHE_HOME.
 for n in PATH USER LOGNAME LANG LC_ALL TZ TMPDIR CARGO_TARGET_DIR CARGO_BUILD_JOBS LETIBOT_APPARATUS_REFUSALS; do
   eval "has=\${$n+x}"
   # shellcheck disable=SC2154 # assigned by the eval above
