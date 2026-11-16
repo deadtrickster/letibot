@@ -133,10 +133,8 @@ pub fn review_of(said: &str) -> Result<Review, String> {
     })
 }
 
-/// One line of an answer as an inline comment: `path:LINE: what is wrong`, where the path has to
-/// look like one - a sentence that opens with a word and a colon is prose.
-/// The spelling may sit after a member's name (`reads the diff: src/x.rs:3: leaks`), so the scan is
-/// of the whole line and not of its first word.
+/// One answer line as an inline comment: `path:LINE: what is wrong`, where the path must look like
+/// one, not a word and a colon. The whole line is scanned, since the spelling may follow a name.
 pub fn inline_in(line: &str) -> Option<Inline> {
     let line = line.trim();
     for (at, _) in line.match_indices(':') {

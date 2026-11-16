@@ -1,7 +1,6 @@
-//! One mirror per repository: a pull request of an org's second repository is reviewed from ITS OWN
-//! tree, and never from the checkout the seat happens to have been started in.
-//! A bare mirror is cloned once and fetched after, and every pull request's tree is a detached
-//! worktree of its own repository's mirror - so a re-review lands where the last one was made.
+//! One mirror per repository, so a pull request is reviewed from its own repository's tree, never
+//! the seat's checkout. A bare mirror is cloned once and fetched after; each pull request gets a
+//! detached worktree of it, so a re-review lands where the last one was made.
 
 use std::path::{Path, PathBuf};
 

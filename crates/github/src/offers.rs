@@ -1,7 +1,6 @@
-//! R114's offers: a pull request whose words are like an open todo row, a running session's brief
-//! or a review this seat made before is pointed at it.
-//! The scoring is the tree's lexical one (`letibot_tools::similarity`), injected as [`Scorer`]: this
-//! crate keeps serde and nothing else, and a test says what is similar without a model.
+//! Offers: a pull request whose words are like an open todo row, a running session's brief or an
+//! earlier review is pointed at it. The scorer is injected as [`Scorer`] so this crate keeps serde
+//! alone and a test says what is similar without a model.
 
 /// What an offer is for: a row to watch, or a review to read before this one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,10 +36,8 @@ pub trait Candidates: Send + Sync {
     fn candidates(&self) -> Vec<Candidate>;
 }
 
-/// Two texts' likeness, in `0..=1`, for one subject against a whole list at a time. The list is one
-/// call because the tree's lexical score needs a corpus: `letibot_tools::similarity` weighs a word
-/// by how few of the candidates use it, so scoring pairs one at a time would weigh every shared word
-/// as if it were in every document.
+/// Two texts' likeness in `0..=1`, one subject against a whole list at once: the lexical score
+/// weighs a word by how few candidates use it, so pairwise scoring would weigh every word wrong.
 pub trait Scorer: Send + Sync {
     /// One score per text, in the order the texts were given.
     fn scores(&self, subject: &str, texts: &[&str]) -> Vec<f64>;

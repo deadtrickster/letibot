@@ -268,10 +268,9 @@ impl Seat {
         }
     }
 
-    /// Make R114's offers: a pull request whose words are like an open todo row or a running
-    /// session's brief is offered as one to watch ([`offers`]), and one like a review this seat
-    /// made before is offered as context. The candidates are recomputed per poll, so a todo closed
-    /// and a session ended stop being offered.
+    /// Make offers: a pull request like an open todo row or a running session's brief is offered
+    /// to watch ([`offers`]), one like an earlier review as context. Candidates are recomputed per
+    /// poll, so closed todos and ended sessions drop out.
     pub fn with_offers(mut self, candidates: Box<dyn Candidates>, scorer: Box<dyn Scorer>) -> Seat {
         self.candidates = Some(candidates);
         self.scorer = Some(scorer);
