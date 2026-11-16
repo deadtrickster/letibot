@@ -76,6 +76,12 @@ pub const MODEL_DOORS_KEY: &str = "models.doors";
 /// age as of the publish. Absent until a first reading.
 pub const MODEL_USAGE_KEY: &str = "models.usage";
 
+/// One `<door> <level> <words>` choice per door the daemon knows anything of: its newest usage
+/// reading, `limited until 21:00`, or `no balance (1113) - will refuse`, written in the daemon's
+/// local time with the reading's age when stale. `level` is thresholds reached, as for
+/// [`MODEL_USAGE_KEY`]. Built when the rows are read, so a picker's `Settings` gets it fresh.
+pub const MODEL_LIMITS_KEY: &str = "models.limits";
+
 /// The switch names the store's sessions were last moved to, newest activity first, comma-joined
 /// and at most five: what the card draws above the providers. Only the daemon can read it.
 pub const MODEL_RECENT_KEY: &str = "models.recent";

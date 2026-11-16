@@ -252,3 +252,27 @@ fn a_failed_round_tells_the_kept_reading_with_its_time() {
     );
     unwatch("s-stale");
 }
+
+/// A watched door's reading is listed under its name, and a watcher may list them while it is
+/// being told: the telling holds the poll's lock and the listing must not need it.
+#[test]
+fn a_door_reading_is_listed_and_readable_inside_a_tell() {
+    let (url, _) = fake(KIMI);
+    let p = Preset {
+        name: "listed-door",
+        ..preset_at(&url)
+    };
+    let seen = Arc::new(AtomicBool::new(false));
+    let s = seen.clone();
+    let w = Watcher {
+        still: Box::new(|| false),
+        tell: Box::new(move |_, _| {
+            let listed = door_readings()
+                .into_iter()
+                .any(|(d, w, _)| d == "listed-door" && w[0].name == "5h");
+            s.store(listed, Ordering::SeqCst);
+        }),
+    };
+    watch(&p, &creds(), "s-listed", Duration::from_millis(20), w);
+    until(|| seen.load(Ordering::SeqCst));
+}

@@ -179,6 +179,9 @@ impl Harness {
         let was_refused = std::mem::take(&mut self.limit_probing.refused) > 0;
         // The limit is over: the next one is a new episode and draws its own offset.
         self.limit_probing.jitter = None;
+        if let Some(pc) = &self.cfg.provider {
+            super::door_limits::answered(&pc.name);
+        }
         let Some((model, reset_ms)) = self.limit_probing.asked.take() else {
             if was_refused {
                 self.save_limit_state();
@@ -266,6 +269,7 @@ impl Harness {
         self.limited.retain(|_, at| *at > now);
         self.limited.insert(model.to_string(), until_ms);
         self.save_limit_state();
+        super::door_limits::note_limited(super::door_limits::door_of(model), until_ms);
     }
 
     /// What the policy says about one failure, asked once the ladder is spent. The reset is the

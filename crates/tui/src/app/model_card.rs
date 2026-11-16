@@ -52,6 +52,15 @@ pub(crate) struct ModelCard {
     pub(crate) recent: Vec<String>,
 }
 
+/// The status row's colours for a count of thresholds reached.
+fn level_role(level: usize) -> rano::render::Role {
+    match level {
+        0 => rano::render::Role::Faint,
+        1 => rano::render::Role::Warning,
+        _ => rano::render::Role::Failure,
+    }
+}
+
 /// The key of the one level-one row every provider this box holds no key for folds into. A door
 /// name never starts with a space, so no provider is spelled this way.
 pub(crate) const NOT_CONNECTED: &str = " not connected";
@@ -160,11 +169,26 @@ impl App {
             .and_then(|r| r.choices.get(1))
             .and_then(|l| l.parse::<usize>().ok())
             .unwrap_or(0);
-        match level {
-            0 => rano::render::Role::Faint,
-            1 => rano::render::Role::Warning,
-            _ => rano::render::Role::Failure,
-        }
+        level_role(level)
+    }
+
+    /// Each door's line from the daemon's `models.limits` row: `(door, level, words)`. Empty for a
+    /// daemon older than the row, or one that knows nothing of any door.
+    pub(crate) fn door_limits(&self) -> Vec<(String, usize, String)> {
+        self.settings
+            .iter()
+            .find(|r| r.key == letibot_sessionlog::protocol::MODEL_LIMITS_KEY)
+            .map(|r| {
+                r.choices
+                    .iter()
+                    .filter_map(|c| {
+                        let (door, rest) = c.split_once(' ')?;
+                        let (level, words) = rest.split_once(' ')?;
+                        Some((door.to_string(), level.parse().ok()?, words.to_string()))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The models the store's sessions were last moved to, newest first - the card's recent group.
@@ -244,12 +268,25 @@ impl App {
         let keyless = self.keyless_choices();
         let usage = self.plan_usage();
         let usage_role = self.plan_usage_role();
+        let limits = self.door_limits();
         for p in &mut providers {
             p.usage_role = usage_role;
             p.usage = usage
                 .as_ref()
                 .filter(|(d, _)| p.doors.iter().any(|x| x == d))
                 .map(|(_, u)| u.clone());
+            // The daemon's line for the door Enter would take, else for any door of it.
+            let at = self.model_door_at(p);
+            let door_line = p
+                .doors
+                .get(at)
+                .into_iter()
+                .chain(&p.doors)
+                .find_map(|d| limits.iter().find(|(x, _, _)| x == d));
+            if let Some((_, level, words)) = door_line {
+                p.usage = Some(words.clone());
+                p.usage_role = level_role(*level);
+            }
             p.keyless = p.doors.is_empty() && keyless.iter().any(|k| k == &p.label);
             p.ready = if p.doors.is_empty() {
                 self.choice_ready(&p.label)

@@ -858,3 +858,89 @@ fn the_usage_age_is_drawn_from_its_read_time() {
     );
     assert_eq!(shown("5h 83% · resets 23:15", now), "5h 83% · resets 23:15");
 }
+
+/// The card open on the default wire plus the daemon's `models.limits` row with `lines`.
+fn card_with_limits(lines: &[&str]) -> App {
+    let mut a = card(&Wire::default());
+    let ServerFrame::Settings { mut rows } = Wire::default().frame() else {
+        unreachable!()
+    };
+    rows.push(letibot_sessionlog::protocol::SettingRow {
+        key: letibot_sessionlog::protocol::MODEL_LIMITS_KEY.into(),
+        value: String::new(),
+        source: String::new(),
+        editable: String::new(),
+        choices: lines.iter().map(|l| (*l).to_string()).collect(),
+        tools: Vec::new(),
+    });
+    a.apply(ServerFrame::Settings { rows });
+    a
+}
+
+fn provider_line(a: &App, door: &str) -> String {
+    rows_of(a)
+        .into_iter()
+        .find(|l| l.contains(door) && l.contains("keyed"))
+        .unwrap_or_else(|| panic!("no {door} row: {:?}", rows_of(a)))
+}
+
+fn provider_role(a: &App, door: &str) -> rano::render::Role {
+    a.model_card()
+        .providers
+        .into_iter()
+        .find(|p| p.doors.iter().any(|d| d == door))
+        .map(|p| p.usage_role)
+        .expect("the provider")
+}
+
+/// Every door's reading is on its own row, coloured by its thresholds, and a limited one says until
+/// when, as a failure.
+#[test]
+fn the_picker_draws_each_doors_reading_and_a_limited_one() {
+    use rano::render::Role;
+    let a = card_with_limits(&[
+        "deepseek 1 5h 81% · resets 00:07 · week 40%",
+        "glm 2 limited until 21:00",
+    ]);
+    let deepseek = provider_line(&a, "deepseek");
+    assert!(
+        deepseek.contains("5h 81% · resets 00:07 · week 40%"),
+        "{deepseek}"
+    );
+    assert_eq!(provider_role(&a, "deepseek"), Role::Warning);
+    let glm = provider_line(&a, "glm");
+    assert!(glm.contains("limited until 21:00"), "{glm}");
+    assert!(!glm.contains("81%"), "another door's figure: {glm}");
+    assert_eq!(provider_role(&a, "glm"), Role::Failure);
+}
+
+#[test]
+fn a_billing_refusal_shows_no_balance() {
+    let a = card_with_limits(&["glm 2 no balance (1113) - will refuse"]);
+    let glm = provider_line(&a, "glm");
+    assert!(glm.contains("no balance (1113) - will refuse"), "{glm}");
+    assert_eq!(provider_role(&a, "glm"), rano::render::Role::Failure);
+}
+
+/// A door the daemon knows nothing of draws nothing: no figure, no limit, no guess.
+#[test]
+fn a_provider_with_no_reading_shows_nothing() {
+    let a = card_with_limits(&["glm 0 5h 10%"]);
+    let deepseek = provider_line(&a, "deepseek");
+    for word in ["%", "limited", "balance", "resets"] {
+        assert!(!deepseek.contains(word), "{word} in {deepseek}");
+    }
+    let bare = card(&Wire::default());
+    let line = provider_line(&bare, "glm");
+    assert!(!line.contains('%'), "{line}");
+}
+
+#[test]
+fn a_stale_reading_shows_its_age() {
+    let a = card_with_limits(&["deepseek 0 5h 20% · resets 07:07 (30m ago)"]);
+    let deepseek = provider_line(&a, "deepseek");
+    assert!(
+        deepseek.contains("5h 20% · resets 07:07 (30m ago)"),
+        "{deepseek}"
+    );
+}

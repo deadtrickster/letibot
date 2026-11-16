@@ -3571,6 +3571,15 @@ impl Harness {
     /// A limit's or a refusal's own words, kept where a later diagnosis can read them: the
     /// warning is a developer code, so it lands in the daemon log as well as on the session.
     fn record_refusal(&self, e: &letibot_turn::HttpError) {
+        if let Some(letibot_http::retry::Trouble::Quota) = letibot_http::retry::Policy::trouble(e)
+            && let Some(pc) = &self.cfg.provider
+        {
+            let code = match e {
+                letibot_turn::HttpError::Status { body, .. } => letibot_http::zai::code(body),
+                _ => None,
+            };
+            super::door_limits::note_refused(&pc.name, code, letibot_sessionlog::event::now_ms());
+        }
         let worth = letibot_http::retry::Policy::trouble(e).is_some()
             || !letibot_http::retry::Policy::standard().class(e).retryable();
         if !worth {

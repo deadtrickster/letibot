@@ -880,6 +880,10 @@ impl RoomChatSeat {
 /// See [`Registry::set_broadcast_observer`].
 pub type BroadcastObserver = Arc<dyn Fn(&crate::event::SessionEvent) + Send + Sync>;
 
+/// Rows a session's harness builds at read time rather than publishes: facts that change without
+/// the session doing anything, like another door's usage. Called with no registry lock held.
+pub type LiveRowsSource = Arc<dyn Fn() -> Vec<crate::protocol::SettingRow> + Send + Sync>;
+
 pub type JobOutputSource = Arc<dyn Fn(&str, u64) -> Option<crate::SessionEvent> + Send + Sync>;
 
 /// A session's job table read at the moment a head asks. The mailbox trails the job events, and a
@@ -916,6 +920,8 @@ pub struct Registry {
     /// One per session that has a process host, installed by its harness at open beside
     /// [`Registry::notes`] and removed with the session. See [`JobOutputSource`].
     job_output: Mutex<std::collections::HashMap<String, JobOutputSource>>,
+    /// Removed with the session, like `job_output`. See [`LiveRowsSource`].
+    live_rows: Mutex<std::collections::HashMap<String, LiveRowsSource>>,
     /// Removed with the session, like `job_output`. See [`JobListSource`].
     job_list: Mutex<std::collections::HashMap<String, JobListSource>>,
     room_chat: Mutex<Option<RoomChatSeat>>,
@@ -1109,6 +1115,7 @@ impl Registry {
             notes_dirs: Mutex::new(std::collections::HashMap::new()),
             skills: Mutex::new(std::collections::HashMap::new()),
             job_output: Mutex::new(std::collections::HashMap::new()),
+            live_rows: Mutex::new(std::collections::HashMap::new()),
             job_list: Mutex::new(std::collections::HashMap::new()),
             room_chat: Mutex::new(None),
             chatting: Mutex::new(std::collections::BTreeMap::new()),
@@ -1906,6 +1913,11 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(session_id);
+        let live_rows = self
+            .live_rows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
         // Dropped outside every lock: a closure's captures can run arbitrary `Drop`s (a
         // `HostProcesses` ends its deadline thread), and none of them may run under a registry
         // mutex another thread is waiting on.
@@ -1919,6 +1931,7 @@ impl Registry {
             job_output,
             pane_driver,
             job_list,
+            live_rows,
         ));
         Some(entry.hub)
     }
@@ -1953,6 +1966,7 @@ impl Registry {
         };
         // Only a CHANGE: a flush that republishes what a head already draws must not redraw it.
         if changed {
+            let rows = self.with_live_rows(session_id, rows);
             hub.push_frame(crate::protocol::ServerFrame::Settings { rows });
         }
         let Some(moved) = moved else {
@@ -2150,6 +2164,34 @@ impl Registry {
             .insert(session_id.to_string(), source);
     }
 
+    /// Install a session's read-time rows. See [`LiveRowsSource`].
+    pub fn set_live_rows_source(&self, session_id: &str, source: LiveRowsSource) {
+        self.live_rows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.to_string(), source);
+    }
+
+    /// `rows` with the session's read-time rows in place of any stored under the same keys.
+    fn with_live_rows(
+        &self,
+        session_id: &str,
+        mut rows: Vec<crate::protocol::SettingRow>,
+    ) -> Vec<crate::protocol::SettingRow> {
+        let source = self
+            .live_rows
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned();
+        if let Some(source) = source {
+            let live = source();
+            rows.retain(|r| !live.iter().any(|l| l.key == r.key));
+            rows.extend(live);
+        }
+        rows
+    }
+
     /// Install a session's live job-output read. Called by the session's own harness at open, when
     /// it has a process host. See [`JobOutputSource`].
     pub fn set_job_output_source(&self, session_id: &str, source: JobOutputSource) {
@@ -2194,6 +2236,7 @@ impl Registry {
             }
             (e.hub.clone(), e.settings.clone())
         };
+        let rows = self.with_live_rows(session_id, rows);
         hub.push_frame(crate::protocol::ServerFrame::Settings { rows });
         true
     }
@@ -2201,12 +2244,13 @@ impl Registry {
     /// What a session's harness last published. Empty for a session whose
     /// harness has not opened, which the head says rather than hides.
     pub fn settings(&self, session_id: &str) -> Vec<crate::protocol::SettingRow> {
-        let mut rows = {
+        let rows = {
             let g = self.lock();
             g.entry(session_id)
                 .map(|e| e.settings.clone())
                 .unwrap_or_default()
         };
+        let mut rows = self.with_live_rows(session_id, rows);
         if let Some(why) = self.idle_hold() {
             rows.push(crate::protocol::SettingRow {
                 key: IDLE_EXIT_KEY.into(),
