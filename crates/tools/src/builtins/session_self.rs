@@ -1,8 +1,6 @@
 //! The model's own verbs on its own session: `reseat_self`, `compact_self`, `nag_pause_self`.
-//!
-//! X24 of `docs/plugin-extension-points-wide.md`: three verbs, native, through the gate, and each one
-//! session deep - the calling session and no other. The operator's own verbs (`/queue approve|veto`,
-//! and the head's `/reseat`) stay theirs, and a model reaching for one is told what it has instead.
+//! Each reaches the calling session and no other. The operator's verbs (`/queue approve|veto`,
+//! `/reseat`) stay theirs, and a model reaching for one is told what it has instead.
 
 use serde_json::Value;
 
@@ -66,10 +64,9 @@ impl SessionSelf for NoSession {
     }
 }
 
-/// The one refusal every self verb shares: a session named that is not the caller's. X24's whole
-/// point is that a model's verb reaches its OWN session, so naming another is refused by name rather
-/// than silently narrowed - a model that asked for another session's prompt to move would otherwise
-/// believe it happened.
+/// The refusal every self verb shares: a session named that is not the caller's. Refused by name
+/// rather than silently narrowed, or a model that asked another session to move would believe it
+/// did.
 fn only_own(desk: &dyn SessionSelf, name: &str, args: &Value) -> Result<(), String> {
     let Some(named) = args.get("session").and_then(|s| s.as_str()) else {
         return Ok(());
@@ -273,7 +270,7 @@ impl NagPauseSelf {
 
 /// The operator's verb a model may reach for, and the self verb that stands where it would - or why
 /// there is none. The runtime reads this for an unknown tool, so a model that typed `/reseat`'s
-/// spelling as a tool gets the door it has instead of a list of its tools (X24).
+/// spelling as a tool gets the door it has instead of a list of its tools.
 pub fn operator_verb_note(name: &str) -> Option<String> {
     let name = name.trim().trim_start_matches('/');
     let verb = verb_of(name)?;
@@ -309,7 +306,7 @@ fn verb_of(name: &str) -> Option<&str> {
             .find(|(v, _)| *v == verb)
             .map(|(v, _)| *v);
     }
-    // `queue_reset` and `queue_approve`: the merge queue's own sub-verbs, which X24 names as the
+    // `queue_reset` and `queue_approve`: the merge queue's own sub-verbs, which are the
     // operator's (`/queue approve|veto|reset`).
     let sub = verb.strip_prefix("queue_")?;
     ["queue_approve", "queue_veto", "queue_reset", "queue_clean"]
@@ -441,7 +438,7 @@ mod tests {
     }
 
     /// An operator verb a model reaches for is refused, and the refusal names the self verb that does
-    /// exist - the second half of X24.
+    /// exist.
     #[test]
     fn an_operator_verb_from_a_model_is_refused_and_names_the_self_verb() {
         for (reached, exists) in [

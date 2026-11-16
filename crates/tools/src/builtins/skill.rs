@@ -610,10 +610,9 @@ impl SkillRegistry {
         live.as_ref().map(|(_, s)| s.clone()).unwrap_or_default()
     }
 
-    /// Read the folders again if a modification time moved since the last read, so a skill added
-    /// or edited mid-session is offered, found and loaded. `true` when the skills changed. Pins and
-    /// `when` are kept by name, so they apply to the new read as they did to the old. A check is
-    /// a stat per path, so every live read makes one.
+    /// Read the folders again if a modification time moved, so a skill added or edited
+    /// mid-session is offered and loaded. `true` when the skills changed. Pins and `when` are kept
+    /// by name. A check is a stat per path, cheap enough for every live read.
     pub fn refresh(&self) -> bool {
         let Some(dirs) = &self.dirs else {
             return false;
@@ -936,12 +935,9 @@ impl SkillRegistry {
         as_names(corpus.ranked_with(query, usize::MAX, tier), most)
     }
 
-    /// The skills a short prompt names, scored against their own `keywords` and nothing else: at the
-    /// tail of a session the person writes "add it as a pane", and one word the author listed as the
-    /// thing the skill answers to is all the evidence there is. Scored against the whole frontmatter
-    /// that prompt is a rounding error, because a description is hundreds of terms and the prompt is
-    /// three. Words only: the round's `Tier` already holds the subject's corpus, and a second fill
-    /// would key one name to two texts.
+    /// The skills a short prompt names, scored against their own `keywords` only: against the
+    /// whole frontmatter a three-word prompt is a rounding error. Words only, because the round's
+    /// `Tier` already holds the subject's corpus and a second fill would key one name to two texts.
     pub fn ranked_by_keywords(&self, query: &str, most: usize) -> Vec<(String, f64)> {
         let docs: Vec<(PathBuf, String)> = self
             .model_skills()
@@ -1533,7 +1529,7 @@ mod tests {
         }
         // The three sentences a session re-learns when they are missing: check the stack BEFORE
         // scaffolding, the source is a file tool's and not a command's, and a look has a second
-        // capability (findings 1, 5, 8).
+        // capability.
         for said in [
             "Do this first",
             "EXTEND it",
@@ -1616,9 +1612,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// The `plugin-hooks` skill teaches every hook kind the host asks, one example each - the wall
-    /// was a skill naming four kinds and leaving out `tool_`, `command_` and `pane_`, so agents
-    /// concluded in the room that a plugin cannot add a tool (R151).
+    /// The `plugin-hooks` skill teaches every hook kind the host asks, one example each: a kind it
+    /// leaves out, such as `tool_`, reads to an agent as one a plugin cannot add.
     #[test]
     fn the_plugin_hooks_skill_names_every_hook_kind_the_host_serves() {
         let built = SkillRegistry::built_in();
@@ -1744,11 +1739,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
-    /// A "pane" request reaches the pane skill and not an HTML one: db-fuzz's "add it as a pane"
-    /// had no offer, and the dashboard request that followed went to an instrument-dashboard skill
-    /// and became an HTTP server (findings 3 and 4). The words a session types are the frontmatter's
-    /// job; whether the ranking then wins a LONGER prose request is the scorer's, which is another
-    /// package's work — `build me a harness dashboard` is scored here and reported, not asserted.
+    /// A "pane" request reaches the pane skill and not an HTML one. Whether a longer prose request
+    /// also wins is the scorer's job: `build me a harness dashboard` is scored and reported, not
+    /// asserted.
     #[test]
     fn a_pane_request_reaches_the_pane_skill_and_not_an_html_one() {
         let root = std::env::temp_dir().join(format!("letibot-skill-html-{}", std::process::id()));
@@ -2066,9 +2059,8 @@ mod tests {
         assert!(e.contains("nothing on the shelf is called `nope`"), "{e}");
     }
 
-    /// A pin is spelled the way `skill list` prints it. A shelf row is listed by its id, and the
-    /// check compared the pin with the title: the operator's own spelling was reported as naming
-    /// nothing on this box and was not listed.
+    /// A pin is spelled the way `skill list` prints it: a shelf row is listed by its id, so the
+    /// pin is matched against the id and not the title.
     #[test]
     fn a_pin_spelled_the_way_skill_list_prints_it_is_known() {
         let r = registry().with_pins(["sk-42"]);

@@ -651,7 +651,7 @@ mod tests {
         assert_eq!(desk.open("s-nobody").len(), 0);
 
         // And a pass that hosts nothing closes nothing. The daemon's own session is this
-        // shape exactly, and an unscoped `keep` here is the defect that was measured.
+        // shape exactly, so an unscoped `keep` here would close every host's reviews.
         desk.keep("s-other", &[]);
         assert_eq!(
             desk.len(),

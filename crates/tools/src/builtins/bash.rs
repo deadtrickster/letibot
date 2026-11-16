@@ -194,7 +194,7 @@ fn run_dir(ctx: &InvokeCtx<'_>, cwd: &str) -> Option<std::path::PathBuf> {
 /// off rather than guessing at mtimes.
 type Sweep = crate::detect::Sweep;
 
-/// What the command changed, attached to its result as one excerpt per file (R161): up to
+/// What the command changed, attached to its result as one excerpt per file: up to
 /// [`MAX_DRAWN_DIFFS`] are drawn, the rest named with a count. `wrote` is the runtime's provenance
 /// sink, so bytes this session's own command wrote do not read as a second writer's later.
 fn attach_changes(
@@ -319,10 +319,9 @@ fn default_sentence(p: &MemoryPolicy) -> String {
     )
 }
 
-/// The note a model call's result carries about memory: nothing for a run that finished inside
-/// its cap, and one clause for a kill, a near-cap run or a cap that could not be set. A peak on
-/// every result was a number to size work by, which the model is not given. `said` is the
-/// session's last uncapped reason: the same reason again is not repeated.
+/// The memory note a model call's result carries: nothing for a run inside its cap, one clause
+/// for a kill, a near-cap run or a cap that could not be set. `said` is the session's last
+/// uncapped reason, so the same reason is not repeated.
 fn memory_note(job: &crate::exec::jobs::Job, said: &mut Option<String>) -> Option<String> {
     use crate::exec::MemoryCap;
     let used = job.memory_used();
@@ -458,11 +457,9 @@ fn deadline_killed(body: &str, label: &str, secs: f32) -> String {
     )
 }
 
-/// What deadline this call gets: the one place the choice is made, and pure on purpose, because a
-/// test that waited 120 s to watch a kill would not be a test. It exists for the model's foreground
-/// run and no other: `background: true` asked for none, and the operator's own `!` line has no clock.
-/// With `auto_background` on, an unasked deadline is none: promotion at the threshold takes the
-/// place of the default kill, so a long run is moved and never killed by a default.
+/// The deadline this call gets, kept pure so a test need not wait out a kill. Only the model's
+/// foreground run gets one: `background: true` asked for none, the operator's `!` line has no
+/// clock, and with `auto_background` on, promotion at the threshold replaces the default kill.
 fn deadline_for(
     asked_ms: Option<u64>,
     background: bool,
@@ -749,10 +746,9 @@ impl Tool for Bash {
             .get("background")
             .and_then(|v| v.as_bool())
             .unwrap_or(false);
-        // The tree the shell will write into, before anything starts: not simply the workspace, since
-        // a `cd <other-checkout>` writes a repository the workspace may only contain. A background
-        // job is swept from the same snapshot, but read at the settlement instead of here - only the
-        // daemon's watcher sees both ends of it (R161).
+        // The tree the shell will write into: not simply the workspace, since `cd <other-checkout>`
+        // writes a repository the workspace may only contain. A background job is swept from the
+        // same snapshot but read at settlement, since only the daemon's watcher sees both ends.
         let sweep = {
             let asked_cwd = args.get("cwd").and_then(|v| v.as_str()).unwrap_or(".");
             run_dir(ctx, asked_cwd)
@@ -944,7 +940,7 @@ impl Tool for Bash {
                 ctx.want_completion(&id.0, w);
             }
             // And the snapshot goes with the handle: the job's completion is where its writes can be
-            // read, because this call returns before the command has written anything (R161).
+            // read, because this call returns before the command has written anything.
             ctx.watch_changes(&id.0, sweep);
             // One delivery sentence, the handle, and the way to read it ([`super::DELIVERED`]);
             // the envelope adds "STILL RUNNING".
@@ -1029,7 +1025,7 @@ impl Tool for Bash {
             notes.push(n);
         }
         let outside = host.outside_paths(&full);
-        // The other half of the same finding: a path bound in READ-ONLY is absent from nowhere,
+        // The other half: a path bound in READ-ONLY is absent from nowhere,
         // and a write to it is refused instead. Both are questions for the operator.
         let refused_writes = host.refused_write_paths(&full);
         let launcher_failed = host.launcher_failure(&full);
@@ -1093,7 +1089,7 @@ impl Tool for Bash {
                 inv = inv.with_note(n);
             }
             // The run is still going, so its writes are the completion's to read: the snapshot taken
-            // before the spawn is what the settlement reads (R161).
+            // before the spawn is what the settlement reads.
             ctx.watch_changes(&id.0, sweep);
             return inv;
         }

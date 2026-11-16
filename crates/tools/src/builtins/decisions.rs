@@ -688,7 +688,7 @@ mod tests {
         // The field this was built for.
         assert!(out.contains("man page sweep"), "the oracle's reason: {out}");
         // The latency is the operator's number: it measures the oracle and says nothing the
-        // model can act on (R93.F45).
+        // model can act on.
         assert!(!out.contains("2100 ms"), "the latency: {out}");
         assert!(out.contains("0.940"), "the confidence: {out}");
         assert!(out.contains("ar t libfoo.a"), "the brief: {out}");

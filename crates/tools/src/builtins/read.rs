@@ -192,11 +192,9 @@ impl Tool for Read {
             None => (offset - 1 + ctx.limits.max_read_lines).min(total),
         };
 
-        // Two bounds beyond the line count: a line longer than the clip is shown clipped and
-        // counted, and the byte budget stops the call under the line cap. `ranges` is the batch,
-        // because three lookups would be three round trips and a round trip is a gate decision.
-        // A window the call bounded with its own `limit` clips a line at the byte budget rather
-        // than the character cap, so a long line can be read in full, marked shown and edited.
+        // Beyond the line count, a line longer than the clip is shown clipped and counted, and the
+        // byte budget stops the call early. `ranges` batches lookups into one round trip. A window
+        // bounded by its own `limit` clips at the byte budget, so a long line can be read whole.
         let windows: Vec<(usize, usize, bool)> = match args.get("ranges").and_then(|v| v.as_array())
         {
             Some(rs) if !rs.is_empty() => rs

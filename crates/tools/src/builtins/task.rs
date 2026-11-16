@@ -582,9 +582,9 @@ pub fn worktree_brief(path: &str, branch: &str) -> String {
     worktree_brief_with(path, branch, None)
 }
 
-/// [`worktree_brief`] with a `brief_` layer's added words (`docs/plugin-extension-points-wide.md`
-/// X19). The placement and the deliverable rule are the host's and cannot be moved by a layer: a
-/// brief that lost *the branch is the deliverable* is a child whose work nobody can land.
+/// [`worktree_brief`] with a `brief_` layer's added words. The placement and the deliverable rule
+/// are the host's and cannot be moved by a layer: a brief that lost "the branch is the
+/// deliverable" is a child whose work nobody can land.
 pub fn worktree_brief_with(path: &str, branch: &str, brief_add: Option<&str>) -> String {
     let mut said = format!(
         "[the deliverable] You work in the worktree `{path}` on branch `{branch}`, and the \
@@ -676,8 +676,7 @@ pub enum TaskStatus {
     Done {
         answer: String,
         /// The child's present, which the answer is not. `Some` with `working == false` is a
-        /// child that is still HERE and between turns - the state whose only door is a message, and
-        /// the one a parent could not see before this field.
+        /// child that is still HERE and between turns - the state whose only door is a message.
         child: Option<RunningChild>,
     },
     /// It did not finish, and this is why.
@@ -714,12 +713,10 @@ impl TaskStatus {
             }
         };
         let next = match doing {
-            // Nothing to do but let it work: this is the sentence that was printed about every
-            // child, and it is only true of this one.
+            // Nothing to do but let it work, which is true of a working child only.
             ChildDoing::Working => "it is alive and working, and its answer reaches you on its own",
-            // The idle fix. A parked child is not stuck and not working; the one door that
-            // reaches it is the parent's own message, and before this the parent had to guess that
-            // by sending one.
+            // A parked child is not stuck and not working; the one door that reaches it is the
+            // parent's own message.
             ChildDoing::BetweenTurns => {
                 "nothing is running in it, so `task_message` is what starts a turn for it — a \
                  message reaches a parked child, and it hears it as its parent's words"
@@ -913,7 +910,7 @@ pub trait TaskRunner: Send + Sync {
     }
 
     /// How many of this session's children have not answered yet - still on their task, as
-    /// opposed to answered and idle. A child with any is not done (the operator's ruling): its
+    /// opposed to answered and idle. A child with any is not done: its
     /// answer is held until they have. Zero for a runner that keeps no slots.
     fn unsettled_children(&self) -> usize {
         0
@@ -1062,10 +1059,9 @@ const WAKE_ARG: &str = "`later` says you do not need waking for it: the answer i
 
 impl Tool for TaskTool {
     fn schema(&self) -> ToolSchema {
-        // The roles are the SEAT's, and a list in the description is the difference between a
-        // model choosing one and a model finding out from a refusal (`pkg/kimi-code.md` §5.6).
-        // A description is prompt bytes, so nothing is written when the registry has no daemon
-        // behind it - a fixture's `task` then refuses every name, which is the truth there.
+        // The roles are the seat's; listing them lets a model choose one instead of learning from
+        // a refusal. A description is prompt bytes, so nothing is written with no daemon behind
+        // the registry, and a fixture's `task` then refuses every name, which is true there.
         let roles = if self.roles.is_empty() {
             String::new()
         } else {
@@ -1915,10 +1911,9 @@ impl Tool for TaskStartTool {
     }
 }
 
-/// What a seat may reach through the `task` family: the children `task_result` and `task_message`
-/// address, and the roles `task` may start. The daemon's runner addresses any live
-/// session by id, which is right for a seat a person is in and wrong for the review queue's: it was
-/// handed its reviewers and holds nothing else in the daemon.
+/// What a seat may reach through the `task` family: the children `task_result` and
+/// `task_message` address, and the roles `task` may start. The daemon's runner reaches any live
+/// session, right for a person's seat and wrong for the review queue's, which holds its reviewers.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TaskReach {
     pub scope: Reach,
@@ -2477,8 +2472,8 @@ impl Tool for TaskMessageTool {
         match self.runner.send(handle, text) {
             Ok(said) => Invocation::ok(said),
             // A refusal comes back unchanged, like `job_kill`'s: the runner is the only thing
-            // that knows whether the child heard it, and a tool that reformatted its refusal
-            // into a success is the defect this tree already paid for once.
+            // that knows whether the child heard it, and a refusal reformatted into a success
+            // would report a state change nothing made.
             Err(why) => Invocation::failed(format!("subagent `{handle}` was not messaged"), why),
         }
     }

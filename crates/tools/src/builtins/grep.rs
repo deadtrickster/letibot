@@ -108,10 +108,9 @@ impl Tool for Grep {
             return Invocation::failed(why, String::new());
         }
 
-        // A `path` naming a file would otherwise search nothing: `walk` lists its root, `list` on a
-        // file errors, and zero entries come back, which the ladder reports as "matched nothing"
-        // about a file that is there. The stat that says so seeds the listing below, and the
-        // `scope != "."` test comes first: a round trip to learn the root exists is one to skip.
+        // A `path` naming a file would otherwise search nothing and report "matched nothing" about
+        // a file that is there. The stat seeds the listing below, and `scope != "."` is tested
+        // first to skip a round trip for the root.
         let at = if scope == "." {
             None
         } else {
@@ -849,9 +848,9 @@ mod tests {
         assert!(r.payload.contains("src/lib.rs:"), "{}", r.payload);
     }
 
-    /// The defect: `grep` was asked for `#\[cfg\(test\)\]` with `glob: "*.rs"` under `src` and
-    /// answered "does not occur in the searched tree" about a tree holding nine of them. A call that
-    /// opened no files must not abstain, because an abstention is a claim about content.
+    /// `#\[cfg\(test\)\]` with `glob: "*.rs"` under `src` must not answer "does not occur in the
+    /// searched tree" about a tree holding nine. A call that opened no files must not abstain,
+    /// because an abstention is a claim about content.
     #[test]
     fn zero_files_searched_is_never_a_claim_about_the_tree() {
         let mut h = harness();

@@ -35,7 +35,7 @@ pub enum Verification {
 }
 
 impl Verification {
-    /// Only the first one. F5: a component's "I did not do this" is never reported
+    /// Only the first one. A component's "I did not do this" is never reported
     /// upward as success, and neither is "nobody looked".
     pub fn is_complete(&self) -> bool {
         matches!(self, Verification::ByEffect { .. })
@@ -879,10 +879,9 @@ fn progressive_promise(sentence: &str) -> bool {
         }
 }
 
-/// Future-tense first-person sentences in the assistant's own text, as a heuristic that
-/// every caller labels as one: a wrong steer costs a few tokens and a silent gap costs more.
-/// Fenced code is skipped, the openers are first-person only, and the result is capped. Text
-/// that ends on a question is waiting for the reader, so it yields nothing.
+/// Future-tense first-person sentences in the assistant's text, a heuristic every caller labels
+/// as one. Fenced code is skipped, openers are first-person only, the result is capped, and text
+/// ending on a question yields nothing, since it waits for the reader.
 pub fn commitments(text: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut fenced = false;

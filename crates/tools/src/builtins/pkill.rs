@@ -1,7 +1,6 @@
-//! `pkill`: find processes by a pattern, and kill them by pid, never by the pattern.
-//! A pattern also matches the shell that ran the command, so listing and killing are two steps,
-//! and a kill re-checks each pid. A job of this session is never refused: a session may always stop
-//! what it started.
+//! `pkill`: find processes by a pattern, and kill them by pid, never by the pattern. A pattern
+//! also matches the shell that ran the command, so listing and killing are two steps and a kill
+//! re-checks each pid. A job of this session is never refused: a session may stop what it started.
 
 use std::time::Duration;
 

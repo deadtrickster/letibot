@@ -191,8 +191,8 @@ mod tests {
                 .unwrap()
                 .access
         };
-        // Session state, not the operator's tree, and not `Read` - which is the
-        // hole `docs/tool-survey.md` found in grok-build.
+        // Session state, not the operator's tree, and not `Read`, which a tool
+        // that changes state must not claim.
         assert_eq!(by("todo"), Access::Session);
         assert_eq!(by("goal"), Access::Session);
         assert_eq!(by("enter_plan_mode"), Access::Session);

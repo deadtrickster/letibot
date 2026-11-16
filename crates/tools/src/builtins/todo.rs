@@ -17,7 +17,7 @@ use crate::runtime::{Invocation, InvokeCtx, Tool};
 use crate::schema::{Access, ToolSchema};
 
 /// The idle plan check's schedule, beside the board it reads: a harnessd session and a bridge seat
-/// serve the same rule, so neither keeps a copy (`docs/seat-todo.md`).
+/// serve the same rule, so neither keeps a copy.
 pub mod nag;
 pub use nag::{
     NAG_REPEAT_CAP, NagHold, NagTimings, OPERATOR_ADD_NAG_AFTER, QueueNews, STUCK_REPEAT,
@@ -286,10 +286,9 @@ impl TodoBoard {
                         true
                     }
                 }
-                // And the operator's question comes off with them - the door the check names
-                // for a model that worked the answer out itself. An ANSWER stays: it is the
-                // operator's word on the row, not a wait. An ASK comes off, and A's own pass then
-                // withdraws the question in the room, so the peer stops being nagged about it.
+                // Detach also drops the operator's question, for a model that worked the answer
+                // out itself. An ANSWER stays: it is the operator's word on the row, not a wait. An
+                // ASK goes, and A's own pass withdraws it in the room so the peer is not nagged.
                 Wait::Detach => {
                     let before = row.needs.len();
                     row.needs.retain(|n| {
@@ -420,10 +419,9 @@ impl TodoBoard {
         n
     }
 
-    /// Replace the asks this session OWES an answer to: one row per open ask of it, keyed by the
-    /// ask's id on the row (`Owed`). The counterpart of [`TodoBoard::set_room_rows`], and retired by
-    /// its own key: a row the pass wrote for an ask that has ended goes with it, so a board rebuilt
-    /// from the store still finds them - the edge is on the row.
+    /// Replace the asks this session owes an answer to: one row per open ask, keyed by the ask's
+    /// id on the row (`Owed`). The counterpart of [`TodoBoard::set_room_rows`]: the key is on the
+    /// row, so a board rebuilt from the store still retires a row whose ask has ended.
     pub fn set_ask_rows(&self, rows: Vec<(u64, TodoItem)>) -> usize {
         let n = rows.len();
         let mut half = self.todos.lock().unwrap_or_else(|e| e.into_inner());
@@ -817,11 +815,9 @@ impl AskSettle {
 }
 
 impl TodoBoard {
-    /// Apply a settled ask to every row that carries it: the `Ask` edge becomes
-    /// [`TodoNeed::Answered`] with the settle's words and the ask's id, in place, so the row is
-    /// released with what it waited for still on it. Every half is read, because the pass does not
-    /// know which author's row asked. Returns how many rows moved - zero on a second call, which is
-    /// what makes the daemon's room pass idempotent over a restart.
+    /// Apply a settled ask to every row carrying it: the `Ask` edge becomes [`TodoNeed::Answered`]
+    /// in place, with the settle's words and the ask's id. Every half is read, since the pass does
+    /// not know who asked. Returns rows moved; zero on a repeat makes the room pass idempotent.
     pub fn settle_ask(&self, ask: u64, settle: &AskSettle) -> usize {
         let mut moved = 0usize;
         for half in [&self.todos, &self.operator, &self.parent, &self.queue] {
@@ -867,10 +863,9 @@ fn answered_reply<'a>(row: &'a TodoItem, question: &str) -> Option<&'a str> {
     })
 }
 
-/// A restated row's edges, with the operator's answers and the room's asks kept: an answer is the
-/// operator's word, and an ask is a question a peer is already being nagged about, so a restatement
-/// that leaves either out does not take it off. A question already answered on this row is dropped
-/// rather than asked again.
+/// A restated row's edges, keeping the operator's answers and the room's asks: a restatement
+/// that leaves either out does not take it off. A question already answered on this row is
+/// dropped rather than asked again.
 fn keep_answers(had: &[TodoNeed], sent: &[TodoNeed]) -> Vec<TodoNeed> {
     let kept: Vec<&TodoNeed> = had
         .iter()
@@ -1926,8 +1921,8 @@ fn one_free_head(
     )
 }
 
-/// The recommendation for several free rows. The operator's ruling (2026-11-15): free rows are
-/// independent in the DAG, so the check recommends subagents for them.
+/// The recommendation for several free rows: they are independent in the DAG, so the check
+/// recommends subagents for them.
 const SUBAGENTS: &str = "These do not depend on each other: start each as a subagent with `task` \
                          (or a background job for a long command) and collect them.";
 
@@ -1988,7 +1983,7 @@ fn several_free_heads(
 
 /// The `wait_on` the check offers a row that is only waiting, from what is running: the job or
 /// subagent itself, and - for a job a PACKAGE runs - that package's turn, which is the only wait a
-/// board like a seat's can make on it (`docs/seat-todo.md`). `None` when there is nothing to offer.
+/// board like a seat's can make on it. `None` when there is nothing to offer.
 fn the_wait_to_offer(
     row: &TodoItem,
     candidates: &[(&'static str, &str, &str, f64)],
@@ -2208,10 +2203,9 @@ pub enum NeedFate {
     /// The operator was asked a question and has not answered it; the name beside it is the
     /// question. Blocked, and the rest of the plan keeps going.
     OperatorAsked,
-    /// Another session was asked a question and has not answered it; the name beside it is that
-    /// session and the question. [`NeedFate::OperatorAsked`]'s sibling: a peer is outside the
-    /// plan's hands too, so the row is a root of the check's silence and the settlement is the
-    /// room's to deliver.
+    /// Another session was asked a question and has not answered; the name is that session and
+    /// the question. Like [`NeedFate::OperatorAsked`], the row is a root of the check's silence and
+    /// the settlement is the room's to deliver.
     PeerAsked,
     /// Something outside this machine's bookkeeping, in the row's own words, inside its quiet
     /// window. Not met, and not this plan's to move: nothing here can tell when it ended.
@@ -2673,9 +2667,8 @@ fn nothing_can_start(blocked: &[(&TodoItem, Vec<(String, NeedFate)>)]) -> String
     )
 }
 
-// The check names every free head (R127), capped by `FREE_HEADS_NAMED`, and recommends subagents
-// for them. Operator's ruling 2026-11-15, reversing the 11-07 one-todo ruling: free heads are
-// independent in the DAG, so models are encouraged to run them as subagents.
+// The check names every free head, capped by `FREE_HEADS_NAMED`, and recommends subagents for
+// them: free heads are independent in the DAG.
 
 /// The daemon-side half of `todo_write`'s `target`: reaching a child session's board. Built per
 /// session with the caller already bound, so it decides everything the safety turns on - that the
@@ -2716,10 +2709,9 @@ pub struct AskMade {
     pub note: Option<String>,
 }
 
-/// The room, as `todo_write`'s `ask` needs it: one question put to another session, synchronously,
-/// so every refusal reaches the model in the same call. The room decides who may be asked - a
-/// subagent, the operator, an unknown or ambiguous handle and this session itself are its refusals -
-/// because it is the one process that knows the handles on this host.
+/// The room, as `todo_write`'s `ask` needs it: one question to another session, synchronously,
+/// so every refusal reaches the model in the same call. The room refuses a subagent, the operator,
+/// an unknown or ambiguous handle and this session, since only it knows the handles on this host.
 pub trait AskLink: Send + Sync {
     /// Ask `of` `question`, in `room` or in the room `say` would default to. `Err` is the refusal,
     /// written to be shown to the model as it stands.

@@ -1,7 +1,6 @@
-//! `screen web` and `screen dom`: a page rendered by headless Chrome or Chromium inside the seat.
-//! One process per call, a throwaway profile under the session's tmp, deleted after. The PNG
-//! comes back on stdout as base64, so no file crosses the boundary. Clicking and typing would
-//! take a DevTools session (`--remote-debugging-pipe`); this is look-only.
+//! `screen web` and `screen dom`: a page rendered by headless Chrome or Chromium inside the seat,
+//! one process and throwaway profile per call. The PNG comes back as base64 on stdout, so no file
+//! crosses the boundary. Look-only: clicking would need a DevTools session.
 
 use std::time::Duration;
 

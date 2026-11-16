@@ -1,7 +1,6 @@
-//! The idle plan check: when a board is asked about, and what it is told. Two runtimes serve it -
-//! a harnessd session from its turns and its child journals, and the bridge's Claude Code seat from
-//! its tool calls and its packages (`docs/seat-todo.md`) - so the schedule lives beside the board it
-//! reads, and neither owner keeps a second copy of the rule.
+//! The idle plan check: when a board is asked about, and what it is told. A harnessd session and
+//! the bridge's Claude Code seat both serve it, so the schedule lives beside the board it reads
+//! and neither keeps a second copy of the rule.
 use std::time::{Duration, Instant};
 
 use letibot_tokencore::store::TodoItem;
@@ -32,10 +31,9 @@ pub const NAG_REPEAT_CAP: Duration = Duration::from_secs(30 * 60);
 /// queue is not a stalled plan, and the rate is chosen against the queue's own units.
 pub const STUCK_REPEAT: Duration = Duration::from_secs(2 * 60 * 60);
 
-/// The four numbers the clock's two schedules are made of, as one value: the idle window before the
-/// plan-check, the shortest re-arm an operator add earns, the ceiling a repeated check retreats to,
-/// and how often the queue's census is said again. `[nag]` and `[queue]` in `leticode.toml` set
-/// them; [`Default`] is the four constants above - today's daemon, and the one home for them.
+/// The clock's four numbers: the idle window before the plan check, the shortest re-arm an
+/// operator add earns, the ceiling a repeated check retreats to, and the census interval. `[nag]`
+/// and `[queue]` in `leticode.toml` set them; [`Default`] is the constants above.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NagTimings {
     pub window: Duration,
@@ -84,10 +82,9 @@ pub fn the_check_may_ask_about(
         && !waits_on_something_external(row, jobs)
 }
 
-/// What a plan IS, for a once-per-change rule that may not read the sentence: every row's words,
-/// its status and its waits. A seat's notice also names what is running beside the plan - its
-/// packages' jobs, by handle - and a package starting or ending one is not the seat's plan moving
-/// (`docs/seat-todo.md`).
+/// What a plan is, for a once-per-change rule that may not read the sentence: every row's words,
+/// status and waits. A seat's notice also names its packages' jobs, but a package starting or
+/// ending one is not the seat's plan moving.
 pub fn the_plan_as_a_key(rows: &[TodoItem]) -> String {
     let mut key = String::new();
     for row in rows {
@@ -275,10 +272,9 @@ pub struct TodoNagClock {
     /// has: a session woken every few minutes by a monitor re-armed it from each turn's end,
     /// so a thirty-minute floor never arrived and the check went silent for hours.
     armed_for: Option<String>,
-    /// The plan notice this session was last nagged with - the identity the backoff counts
-    /// repeats of. A different notice is a new thing to say at the base window; the same one is a
-    /// repeat at [`Self::interval`]. A session's identity is the sentence itself; a seat's is
-    /// [`the_plan_as_a_key`] of the rows, which is [`Self::keyed_by_plan`].
+    /// The plan notice last nagged with, whose repeats the backoff counts: a new notice starts at
+    /// the base window, the same one repeats at [`Self::interval`]. A session keys it by sentence,
+    /// a seat by [`the_plan_as_a_key`] of the rows ([`Self::keyed_by_plan`]).
     nagged: Option<String>,
     /// When `nagged` was sent - the anchor the repeat's interval is measured from. Written and
     /// cleared with `nagged`, so the two cannot disagree about whether a notice is outstanding.
@@ -327,10 +323,9 @@ pub enum NagHold {
 }
 
 impl TodoNagClock {
-    /// The production clock: the numbers every session gets, whoever serves it - today's four,
-    /// because a daemon with no `[nag]` in `leticode.toml` is the daemon that shipped.
-    /// `pub` for `serve_child_under`'s signature, which a test drives - the constructor a caller
-    /// should reach for is [`Self::with_timings`], and `with_window` is the tests' door.
+    /// The production clock, with the default four numbers when `leticode.toml` has no `[nag]`.
+    /// `pub` for `serve_child_under`'s signature, which a test drives. Callers want
+    /// [`Self::with_timings`]; `with_window` is for tests.
     pub fn new() -> Self {
         Self::with_timings(NagTimings::default())
     }
@@ -357,7 +352,7 @@ impl TodoNagClock {
     }
 
     /// Key this clock by its PLAN rather than its sentence - the bridge's seat, whose notice names
-    /// its packages' jobs (`docs/seat-todo.md`). A session keeps its sentence: its own jobs are its
+    /// its packages' jobs. A session keeps its sentence: its own jobs are its
     /// own work, and a notice that gains a job is a notice it has not read.
     pub fn keyed_by_plan(mut self) -> Self {
         self.keyed_by_plan = true;
@@ -443,12 +438,9 @@ impl TodoNagClock {
             self.census_due = None;
             return;
         }
-        // A row the model has already moved to in progress is not asked about again until the
-        // session has been idle for the longest interval the ladder reaches: the check that
-        // restated *in progress* one window after the model wrote it got a restatement back.
-        // One window for every free head, in progress or not: a row whose work is in flight says so
-        // with a wait, which takes it off the check until the wait ends, and a row in progress with
-        // none at a turn's end is a row the model forgot.
+        // One window for every free head, in progress or not: a row whose work is in flight says
+        // so with a wait, which takes it off the check until the wait ends, and a row in progress
+        // with none at a turn's end is a row the model forgot.
         let floor = self.window;
         let askable = the_plan_as_checked(todos, children, jobs);
         let text = unfinished_plan(&askable, todos, children, jobs);
@@ -471,10 +463,9 @@ impl TodoNagClock {
         )
         .is_some()
         {
-            // `nagged_at` is written with `nagged` and cleared with it, and this arm is reached only
-            // with a notice outstanding - so the anchor is there, and a missing one would be a
-            // clock that armed nothing rather than one that fired at the wrong moment. An external
-            // wait lapsing sooner changes the plan, so it is due then.
+            // `nagged_at` is written and cleared with `nagged`, and this arm runs only with a
+            // notice outstanding, so the anchor is there. An external wait lapsing sooner changes
+            // the plan, so it is due then.
             let ladder = self.nagged_at.map(|at| at + self.interval().max(floor));
             let lapse = when_an_external_wait_lapses(todos, jobs).map(|left| now + left);
             ladder.into_iter().chain(lapse).min()
@@ -493,10 +484,9 @@ impl TodoNagClock {
         self.arm_census(now);
     }
 
-    /// Re-arm as if the owner had just gone quiet at `now` - a Claude Code seat's rule, where every
-    /// tool call is a turn: a deadline for a notice that has not been delivered moves to the new
-    /// `now`, because a seat still calling tools is working and has not stalled. What does NOT move
-    /// is a notice already delivered: it waits out the ladder, so an unchanged board is said once.
+    /// Re-arm as if the owner had just gone quiet at `now`, for a seat where every tool call is a
+    /// turn: an undelivered notice moves to `now`, since a seat calling tools has not stalled. A
+    /// delivered notice waits out the ladder, so an unchanged board is said once.
     pub fn rearm_from(
         &mut self,
         todos: &[TodoItem],
@@ -637,10 +627,8 @@ impl TodoNagClock {
         self.armed_for = None;
     }
 
-    /// The deadline for whoever waits on this clock - the worker's blocking wait for
-    /// a session it holds, a child's serving thread for its own, a seat's watcher for its next
-    /// pass. `None` when nothing is armed, so nothing spins on behalf of a board with no check
-    /// pending.
+    /// The deadline for whoever waits on this clock: the worker for a session it holds, a child's
+    /// serving thread, or a seat's watcher. `None` when nothing is armed, so nothing spins.
     pub fn due_at(&self) -> Option<Instant> {
         self.due
     }

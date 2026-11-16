@@ -1,17 +1,12 @@
-//! Reading the candidate files a search walked: one backend call per page where the substrate can
-//! do it, and a BOUNDED fallback when that call fails.
-//!
-//! The fallback is where a turn went to die: a page whose batch call failed was retried one file
-//! at a time, and on a channel that answers every call in ten seconds, 1 500 files is four hours
-//! with no result and nothing to kill (R194). So a run of failed reads ends the fallback, the
-//! call's wall clock ends it too, and what came back says which of the two stopped it.
+//! Reading the candidate files a search walked: one backend call per page where the substrate
+//! can, and a bounded fallback when that call fails. Per-file retries on a slow channel run for
+//! hours, so a run of failed reads or the call's wall clock ends it, and the result says which.
 
 use crate::backend::BackendError;
 use crate::runtime::InvokeCtx;
 
 /// How many single-file reads may fail before the scan gives up on the channel. Small on purpose:
-/// a substrate that cannot answer a page and then fails four reads in a row is broken, and asking
-/// it another 1 500 times is the defect this bounds.
+/// a substrate that cannot answer a page and then fails four reads in a row is broken.
 pub const FALLBACK_FAILED_READS: usize = 4;
 
 /// Why a scan stopped before its tree ran out. Both are reported as a result of their own: a

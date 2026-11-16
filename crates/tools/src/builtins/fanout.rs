@@ -237,9 +237,8 @@ impl Fanout {
     /// The plan: one leg per host, in the order the caller wrote them, with the reasons a
     /// malformed call is refused before anything is started.
     fn plan(&self, args: &Value) -> Result<Vec<Leg>, Refusal> {
-        // A background fanout is a JOB, and a job has no default wall-clock deadline: ten minutes
-        // is nothing next to what these run (a fuzz campaign is hours, a convergence slice a day).
-        // The blocking form keeps its default, because a turn is waiting on it, and an asked
+        // A background fanout is a job, and a job has no default wall-clock deadline: its work runs
+        // for hours. The blocking form keeps its default because a turn waits on it, and an asked
         // `deadline_s` is a hard limit either way.
         let background = args.get("background").and_then(Value::as_bool) == Some(true);
         let deadline: Option<Duration> = match args.get("deadline_s") {
@@ -577,10 +576,9 @@ mod tests {
         Fanout::new().plan(&args).map_err(|r| (r.reason, r.body))
     }
 
-    /// A `background: true` fanout is a JOB, and a job has no default wall-clock deadline: ten
-    /// minutes is nothing next to a fuzz campaign or a cold build, and the report that filed this
-    /// was five jobs ended at 600 s with their work half done. A blocking call keeps its default,
-    /// because a turn is waiting on it, and an asked number is a hard limit either way.
+    /// A `background: true` fanout is a job, and a job has no default wall-clock deadline: ten
+    /// minutes is nothing next to a fuzz campaign or a cold build. A blocking call keeps its
+    /// default because a turn waits on it, and an asked number is a hard limit either way.
     #[test]
     fn a_background_fanout_has_no_default_deadline_and_a_blocking_one_keeps_its() {
         let bounded = |args: Value| -> Vec<bool> {

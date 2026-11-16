@@ -154,10 +154,9 @@ pub enum JobLookup {
     Several(usize),
 }
 
-/// A job table a board's `job` waits are resolved against. Two runtimes write a board - the daemon,
-/// whose table is its process host's listing, and a Claude Code seat, whose jobs belong to the
-/// sessions it holds - and the refusals are built from these questions so the words a caller reads
-/// are the same whoever answers.
+/// A job table a board's `job` waits are resolved against. Both the daemon and a Claude Code
+/// seat write boards, and the refusals are built from these questions so the words read the same
+/// whoever answers.
 pub trait JobTable {
     /// The one job `asked` names, by the id the daemon mints or the name it was started under.
     fn look(&self, asked: &str) -> Result<Found, JobLookup>;
@@ -1440,10 +1439,8 @@ impl Tool for JobKill {
             Err(e) => return Invocation::failed(e.to_string(), String::new()),
         };
 
-        // The record, verbatim, in the result. Not a "killed" boolean: the reader
-        // has to be able to tell an empty scope from a reaper that did nothing.
-        // The scope, then each field once: the listing's one-line summary would say the count,
-        // the mechanism and the survivors again above the lines that spell them out.
+        // The record, verbatim. Not a "killed" boolean: the reader must tell an empty scope from a
+        // reaper that did nothing. Each field once, with no summary line repeating them.
         let mut body = format!("scope: {}\n", r.scope);
         if let Some(job) = &killed {
             body.push_str(&format!("the job was: {job}\n"));
@@ -2273,10 +2270,9 @@ mod tests {
         );
     }
 
-    /// A fake cgroup and a fake `/proc`: 75 pids, one of them the leader, a cap the job is living
-    /// at, and the two totals (`cpu.stat`, `memory.events`) a second reading can subtract. The
-    /// pids are not real processes, which is why [`Holding::read_in`] takes the process table's
-    /// root - the whole point of the reading is that a shell inside the sandbox cannot do it.
+    /// A fake cgroup and a fake `/proc`: 75 pids, one the leader, a cap the job lives at, and the
+    /// two totals a second reading can subtract. [`Holding::read_in`] takes the process table's
+    /// root because a shell inside the sandbox cannot read the real one.
     struct FakeCgroup {
         root: std::path::PathBuf,
         cgroup: std::path::PathBuf,
@@ -2336,11 +2332,9 @@ mod tests {
         }
     }
 
-    /// The row a listing shows for a running job: the processes in its cgroup and what they are,
-    /// what it holds now against its cap, the kills at that cap and how recently they moved - and
-    /// never the word KILLED, which belongs to a job that ended. This is the row whose absence
-    /// cost the etcd seat an hour: it read `KILLED at the cap` over a job with 75 live processes
-    /// and 591 kills, and offered to retire a job that was working.
+    /// The row a listing shows for a running job: its cgroup's processes, what it holds against
+    /// its cap, and the kills at that cap and how recently they moved. Never the word KILLED, which
+    /// belongs to a job that ended, or a working job reads as one to retire.
     #[test]
     fn a_running_jobs_row_counts_its_processes_its_memory_and_its_kills_and_never_says_killed() {
         use crate::exec::{Holding, JobState, MemoryCap, MemoryUse};

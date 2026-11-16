@@ -218,10 +218,9 @@ impl Tool for RoomTool {
     }
 }
 
-/// The mime the room takes for a file, by its name: one table, because the daemon that reads the
-/// bytes and the bridge that uploads them both ask this question, and two answers would drift.
-/// These are the five of `letibot_room::blob::MIMES`; the room still refuses anything else.
-/// `None` is a kind the room does not take, so the caller refuses before uploading.
+/// The mime the room takes for a file, by name: one table, because the daemon and the bridge
+/// both ask and two answers would drift. The five of `letibot_room::blob::MIMES`; `None` is a kind
+/// the room does not take, so the caller refuses before uploading.
 pub fn mime_of(path: &str) -> Option<&'static str> {
     let name = path.rsplit('/').next().unwrap_or(path);
     let ext = name.rsplit_once('.')?.1.to_ascii_lowercase();

@@ -651,8 +651,8 @@ mod tests {
         assert!(rendered.contains("no plugin host"), "{rendered}");
     }
 
-    /// A pane is the dashboard the OPERATOR sees, and the schema has to say so: a model asked for
-    /// "a dashboard" reached `screen` and built a view only it could see (db-fuzz, rows 38835-38851).
+    /// A pane is the dashboard the OPERATOR sees, and the schema has to say so, or a model asked
+    /// for "a dashboard" reaches `screen` and builds a view only it can see.
     #[test]
     fn the_description_says_a_pane_is_what_the_operator_sees() {
         let s = Tool::schema(&PluginTool::new(Arc::new(Recorder::default())));
