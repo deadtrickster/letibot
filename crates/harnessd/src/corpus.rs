@@ -342,7 +342,7 @@ mod shape_cache_tests {
     use letibot_tools::runtime::{Gate, GateCall, GateDecision};
     use letibot_tools::schema::Access;
 
-    /// The whole loop, end to end: approve once, restart, do not be asked again. Every
+    /// The whole loop, end to end: approve for the session, restart, do not be asked again. Every
     /// piece of this was unit-tested separately and the operator still had a session that asked
     /// them about the same `grep` after a restart - because the pieces were never joined up.
     #[test]
@@ -382,20 +382,20 @@ mod shape_cache_tests {
                     a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     Some(AdjudicationDecision::selected(
                         req,
-                        "allow_once",
+                        "allow_session",
                         "human:dead",
                         "yes",
                     ))
                 },
             )))
             .with_identity(session, "dead")
+            .with_mode(letibot_tools::mode::Mode::WRITES_ALLOWED)
             .with_surroundings(surroundings(workspace))
             .with_corpus_sink(std::sync::Arc::clone(&sink) as std::sync::Arc<dyn CorpusSink>);
 
-            // Exec, so that asking is what this measures : a `grep` over the
-            // workspace is a read, clause 4 settles it with nobody asked, and a run
-            // through this test would then be green about a prompt that never happened.
-            let args = serde_json::json!({"command": "sed -n 1p /w/a.rs"});
+            // Outside the workspace, so that asking is what this measures: a read inside it is
+            // settled by clause 4 with nobody asked.
+            let args = serde_json::json!({"command": "sort -u /etc/hosts"});
             assert!(matches!(
                 g.admit(&call(&args, workspace)),
                 GateDecision::Admit
@@ -432,10 +432,11 @@ mod shape_cache_tests {
                 },
             )))
             .with_identity("s-shape-2", "dead")
+            .with_mode(letibot_tools::mode::Mode::WRITES_ALLOWED)
             .with_surroundings(surroundings(workspace));
             assert_eq!(g.seed_shapes(warm), 1);
 
-            let args = serde_json::json!({"command": "sed -n 2p /w/b.rs"});
+            let args = serde_json::json!({"command": "sort -u /etc/hostname"});
             assert!(matches!(
                 g.admit(&call(&args, workspace)),
                 GateDecision::Admit
@@ -447,6 +448,59 @@ mod shape_cache_tests {
             "the operator was asked again about a shape they approved before the restart"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// "Allow this one" covers that call: its row carries no class, so a restart never reads it
+    /// back as a standing approval.
+    #[test]
+    fn a_once_answer_is_not_warm_started() {
+        let dir = std::env::temp_dir().join(format!("letibot-shape-once-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("tmp dir");
+        let path = dir.join("sessions.db");
+        let session = "s-shape-once";
+        let workspace = "/w";
+        Store::open(&path)
+            .expect("store")
+            .put_session(&letibot_tokencore::store::SessionRecord {
+                id: session.into(),
+                title: None,
+                model_id: "m".into(),
+                dialect_sha: "d".into(),
+                workspace_root: workspace.into(),
+                owner: "dead".into(),
+                approvers: vec![],
+                role: None,
+                parent_session_id: None,
+            })
+            .expect("session");
+        let sink = std::sync::Arc::new(StoreCorpus::open(path.clone()).expect("corpus"));
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human:dead",
+            |req: &AdjudicationRequest| {
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "allow_once",
+                    "human:dead",
+                    "yes",
+                ))
+            },
+        )))
+        .with_identity(session, "dead")
+        .with_mode(letibot_tools::mode::Mode::WRITES_ALLOWED)
+        .with_surroundings(surroundings(workspace))
+        .with_corpus_sink(std::sync::Arc::clone(&sink) as std::sync::Arc<dyn CorpusSink>);
+        let args = serde_json::json!({"command": "sort -u /etc/hosts"});
+        assert!(matches!(
+            g.admit(&call(&args, workspace)),
+            GateDecision::Admit
+        ));
+        let warm = Store::open(&path)
+            .expect("reopen")
+            .approved_shapes(workspace)
+            .expect("shapes");
+        assert!(warm.is_empty(), "a once answer was warm-started: {warm:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

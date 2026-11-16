@@ -130,7 +130,8 @@ fn an_admitted_contact_makes_the_host_seen_and_a_refused_one_does_not() {
 }
 
 /// The shape is the parse with its literals holed, so a second call is a different command asking
-/// the same question.
+/// the same question. Only an answer "for the session" at a point whose grants are per session
+/// records one.
 #[test]
 fn a_shape_the_operator_approved_is_not_asked_twice() {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -142,24 +143,25 @@ fn a_shape_the_operator_approved_is_not_asked_twice() {
             a.fetch_add(1, Ordering::Relaxed);
             Some(AdjudicationDecision::selected(
                 req,
-                "allow_once",
+                "allow_session",
                 "human:test",
                 "yes",
             ))
         },
     )))
+    .with_mode(crate::mode::Mode::WRITES_ALLOWED)
     .with_surroundings(pinned());
 
-    // Exec, so asking is what is measured: a read is settled by clause 4 with nobody asked.
-    let one = json!({"command": "sed -n 1p /w/a.rs"});
+    // Outside the workspace, so the read asks rather than being settled by clause 4.
+    let one = json!({"command": "sort -u /etc/hosts"});
     assert!(matches!(
         g.admit(&bash_at(&one, "s#1")),
         GateDecision::Admit
     ));
     assert_eq!(asked.load(Ordering::Relaxed), 1);
 
-    // A different line, a different file: one shape.
-    let two = json!({"command": "sed -n 2p /w/b.rs"});
+    // A different file: one shape.
+    let two = json!({"command": "sort -u /etc/hostname"});
     assert!(matches!(
         g.admit(&bash_at(&two, "s#2")),
         GateDecision::Admit
@@ -169,13 +171,17 @@ fn a_shape_the_operator_approved_is_not_asked_twice() {
         1,
         "the same shape asked the operator a second time"
     );
+    assert_eq!(
+        g.log.last().map(|r| r.decision.by.as_str()),
+        Some("gate:shape")
+    );
 
     // A flag is where a command changes kind, so this is not that shape.
-    let write = json!({"command": "sed -i s/a/b/ /w/a.rs"});
+    let write = json!({"command": "sort -u -o /w/out /etc/hosts"});
     let _ = g.admit(&bash_at(&write, "s#3"));
-    assert_eq!(
-        asked.load(Ordering::Relaxed),
-        2,
+    assert_ne!(
+        g.log.last().map(|r| r.decision.by.as_str()),
+        Some("gate:shape"),
         "a write was admitted by a read's shape"
     );
 
@@ -183,13 +189,12 @@ fn a_shape_the_operator_approved_is_not_asked_twice() {
     // scope, so an approval over one directory must not stand in for another.
     let del = json!({"command": "rm -rf /w/target"});
     let _ = g.admit(&bash_at(&del, "s#4"));
-    let before = asked.load(Ordering::Relaxed);
     let del2 = json!({"command": "rm -rf /w/build"});
     let _ = g.admit(&bash_at(&del2, "s#5"));
-    assert_eq!(
-        asked.load(Ordering::Relaxed),
-        before + 1,
-        "a second deletion of the same shape was admitted without asking"
+    assert_ne!(
+        g.log.last().map(|r| r.decision.by.as_str()),
+        Some("gate:shape"),
+        "a second deletion of the same shape was admitted by its shape"
     );
 }
 
@@ -212,18 +217,19 @@ fn a_shape_approved_in_an_earlier_session_is_not_asked_again() {
             ))
         },
     )))
+    .with_mode(crate::mode::Mode::WRITES_ALLOWED)
     .with_surroundings(pinned());
 
     // What the previous session wrote down: the shape and the class, spelled the way the row
-    // holds it. Exec, because a read is admitted by clause 4 and never reaches the cache.
-    let first = json!({"command": "sed -n 1p /w/a.rs"});
+    // holds it. Outside the workspace, because a read inside it is clause 4's.
+    let first = json!({"command": "sort -u /etc/hosts"});
     let class = {
         let mut probe = AdjudicatedGate::closed().with_surroundings(pinned());
         let _ = probe.admit(&bash_at(&first, "s#0"));
         probe.log.last().expect("a row").request.class.to_string()
     };
     let shape = crate::adjudicate::shape_of(&crate::intent::Baseline::of_command(
-        "sed -n 1p /w/a.rs",
+        "sort -u /etc/hosts",
         &pinned(),
     ))
     .expect("a command has a shape");
@@ -231,7 +237,7 @@ fn a_shape_approved_in_an_earlier_session_is_not_asked_again() {
     assert_eq!(g.seed_shapes([(shape, class)]), 1);
 
     // A different line and file: one shape, and nobody is asked.
-    let now = json!({"command": "sed -n 2p /w/b.rs"});
+    let now = json!({"command": "sort -u /etc/hostname"});
     assert!(matches!(
         g.admit(&bash_at(&now, "s#1")),
         GateDecision::Admit
@@ -598,4 +604,95 @@ fn permission_allow_outlives_a_move_to_read_only() {
         g.log.last().map(|r| r.decision.by.as_str()),
         Some("gate:mode")
     );
+}
+
+fn counting(
+    option: &'static str,
+) -> (
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    AdjudicatedGate,
+) {
+    let asked = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let a = asked.clone();
+    let g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+        "human:test",
+        move |req: &AdjudicationRequest| {
+            a.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Some(AdjudicationDecision::selected(
+                req,
+                option,
+                "human:test",
+                "yes",
+            ))
+        },
+    )))
+    .with_surroundings(pinned());
+    (asked, g)
+}
+
+/// The shape holes a `-c` body, so remembering it would admit any later program. "Allow this
+/// one" covers the call answered, and "for the session" never stands in for a different body.
+#[test]
+fn an_inline_program_approval_admits_a_different_body() {
+    use std::sync::atomic::Ordering;
+    for (mode, option) in [
+        (crate::mode::Mode::WRITES_ALLOWED, "allow_once"),
+        (crate::mode::Mode::ALWAYS_ASK, "allow_once"),
+        (crate::mode::Mode::WRITES_ALLOWED, "allow_session"),
+    ] {
+        let (asked, g) = counting(option);
+        let mut g = g.with_mode(mode);
+        let first = json!({"command": "python3 -c 'print(1)'"});
+        let _ = g.admit(&bash_at(&first, "s#1"));
+        let other = json!({"command": "python3 -c 'import os;os.system(\"rm -rf /w/src\")'"});
+        let _ = g.admit(&bash_at(&other, "s#2"));
+        assert_eq!(
+            asked.load(Ordering::Relaxed),
+            2,
+            "{option} at {} admitted a different body",
+            mode.name
+        );
+        assert_ne!(
+            g.log.last().map(|r| r.decision.by.as_str()),
+            Some("gate:shape")
+        );
+    }
+}
+
+/// A shape is a session answer at a session point, so a move to a point whose grants are once
+/// forgets every shape, seeded ones included.
+#[test]
+fn set_mode_to_always_ask_forgets_approved_shapes() {
+    use crate::runtime::Gate;
+    use std::sync::atomic::Ordering;
+    let (asked, g) = counting("allow_once");
+    let mut g = g.with_mode(crate::mode::Mode::WRITES_ALLOWED);
+    let args = json!({"command": "mkdir -p /w/build/x"});
+    let seen = g.request_for(&bash_at(&args, "s#0"));
+    assert_eq!(
+        g.seed_shapes([(seen.shape.clone().expect("a shape"), seen.class.to_string())]),
+        1
+    );
+    let _ = g.admit(&bash_at(&args, "s#1"));
+    assert_eq!(
+        asked.load(Ordering::Relaxed),
+        0,
+        "the seeded shape must settle first"
+    );
+
+    g.set_mode(crate::mode::Mode::ALWAYS_ASK)
+        .expect("the gate moves");
+    let again = json!({"command": "mkdir -p /w/build/y"});
+    let _ = g.admit(&bash_at(&again, "s#2"));
+    assert_eq!(
+        asked.load(Ordering::Relaxed),
+        1,
+        "a shape outlived the move to always-ask"
+    );
+
+    // And moving back does not bring it back.
+    g.set_mode(crate::mode::Mode::WRITES_ALLOWED)
+        .expect("the gate moves");
+    let _ = g.admit(&bash_at(&again, "s#3"));
+    assert_eq!(asked.load(Ordering::Relaxed), 2);
 }

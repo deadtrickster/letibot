@@ -1239,6 +1239,8 @@ pub struct AdjudicationRow {
     /// from `operator`, which is what they said *afterwards* and is `None` until
     /// they do.
     pub asked: bool,
+    /// This answer put the call's shape in the gate's approved shapes.
+    pub remembered_shape: bool,
 }
 
 impl AdjudicationRow {
@@ -1253,10 +1255,12 @@ impl AdjudicationRow {
             shown: self.shown.clone(),
             reply: self.reply.clone(),
             shape: self.request.shape.clone(),
+            // Only a remembered shape carries its class: the warm start reads exactly these.
             shape_class: self
                 .request
                 .shape
                 .as_ref()
+                .filter(|_| self.remembered_shape)
                 .map(|_| self.request.class.to_string()),
             baseline: self.request.baseline.clone(),
             tier: self.request.tier.as_str(),
@@ -1382,10 +1386,13 @@ pub struct AdjudicatedGate {
     /// to that size, `Some(None)` uncapped, `None` nothing granted. Cleared with the other
     /// session grants when the mode changes.
     memory_session: Option<Option<u64>>,
-    /// Shapes the operator approved themselves, with the class they approved them at. Seeded
-    /// from their past approvals under this workspace and outliving the process on purpose: a
-    /// session restarted after a fault should not be asked about every shape again.
+    /// Shapes the operator approved for the session, with the class they approved them at.
+    /// Seeded from those approvals under this workspace, so a restart does not ask again, and
+    /// cleared by any mode change.
     approved_shapes: std::collections::HashMap<String, ActionClass>,
+    /// The call being recorded put its shape in `approved_shapes`, so its row carries the class
+    /// the warm start reads back.
+    shape_remembered: bool,
     /// What the agent says it is doing right now, supplied by the layer that has the
     /// transcript. A closure for the reason the trail source is one: this type must not learn
     /// to read a conversation.
@@ -1590,6 +1597,7 @@ impl AdjudicatedGate {
             grants: Vec::new(),
             memory_session: None,
             approved_shapes: std::collections::HashMap::new(),
+            shape_remembered: false,
             agent_claim: Box::new(|| None),
             permission: crate::permission::Ruleset::new(),
             permission_sink: None,
@@ -2560,6 +2568,7 @@ impl AdjudicatedGate {
             direction,
             mode,
             asked,
+            remembered_shape: std::mem::take(&mut self.shape_remembered),
         });
         // Write through immediately, not at shutdown: a daemon that is killed is the
         // ordinary end of a session, and a corpus flushed on a clean exit is a corpus
@@ -3106,6 +3115,7 @@ impl Gate for AdjudicatedGate {
     fn set_mode(&mut self, mode: crate::mode::Mode) -> Result<usize, String> {
         let dropped = self.grants.len();
         self.grants.clear();
+        self.approved_shapes.clear();
         self.memory_session = None;
         self.unkept.clear();
         self.unkept_memory = None;
@@ -3516,10 +3526,12 @@ impl Gate for AdjudicatedGate {
         //    `(program, ActionClass, intents)` and checked per call against the normalisation,
         //    never against text, so a vehicle flag falls out of a grant taken over `git status`.
         let program = grant_program(&baseline);
-        // A shape the operator already approved, this session. The key is the parse with its
-        // literals holed, so two greps are one approval and `sed -n` is not `sed -i`; flags
-        // stay. Bounded: a human approved it, the tier is re-checked here, and destruction asks.
+        // A shape the operator approved for the session, here or under this workspace before. The
+        // key holes literals, so a call that runs a holed body never matches, and only a point
+        // whose grants are per session honours it.
         if let Tier::MayApprove = req.tier
+            && self.mode.grants == crate::mode::GrantScope::Session
+            && shape_may_stand_in(call, &baseline)
             && unconfined_code.is_none()
             && let Some(shape) = &req.shape
             && let Some(seen) = self.approved_shapes.get(shape)
@@ -3617,16 +3629,19 @@ impl Gate for AdjudicatedGate {
                 let kind = req.option(option_id).map(|o| o.kind);
                 match kind {
                     Some(k) if k.admits() => {
-                        // The shape, remembered - but only from a person, and only where a shape
-                        // may stand in: `MayApprove` only, since a shape recorded on an always-ask
-                        // would be the standing grant three other mechanisms exist to refuse.
-                        if matches!(req.tier, Tier::MayApprove)
+                        // The shape, remembered only from a person's "for the session" at a point
+                        // whose grants are per session: "once" means once (decision 2), and an
+                        // always-ask shape would be the standing grant the tier exists to refuse.
+                        if k == OptionKind::AllowSession
+                            && self.mode.grants == crate::mode::GrantScope::Session
+                            && matches!(req.tier, Tier::MayApprove)
                             && decision.by.starts_with("human")
-                            && !baseline.intents.contains(&crate::intent::Intent::Destroy)
+                            && shape_may_stand_in(call, &baseline)
                             && unconfined_code.is_none()
                             && let Some(shape) = req.shape.clone()
                         {
                             self.approved_shapes.insert(shape, req.class);
+                            self.shape_remembered = true;
                         }
                         // An always-ask can be admitted by a human this turn, but never turned
                         // into a standing grant: no `Adjudicable`, no grant recorded here, and the
@@ -3971,6 +3986,20 @@ fn exact_path_rule(pattern: String) -> Option<String> {
         return None;
     }
     Some(pattern)
+}
+
+/// Whether a shape may stand in for this call. Not for destruction, whose operands are its
+/// scope, nor for code whose body the shape holes (`python3 -c <args>`, a sed script, a script
+/// path), nor for a command no rule can match (a heredoc, a substitution).
+fn shape_may_stand_in(call: &GateCall<'_>, baseline: &crate::intent::Baseline) -> bool {
+    use crate::intent::Intent;
+    !baseline.intents.contains(&Intent::Destroy)
+        && !baseline.intents.contains(&Intent::ExecuteCode)
+        && call
+            .args
+            .get("command")
+            .and_then(|v| v.as_str())
+            .is_some_and(crate::permission::a_durable_rule_can_apply)
 }
 
 /// A baseline's command as a shape, when it has one. One place, so the key a decision is

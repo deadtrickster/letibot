@@ -452,24 +452,20 @@ fn a_durable_shape_does_not_settle_a_test_runner_without_a_boundary() {
         "an approval of this shape does not answer the next run"
     );
 
-    // And the cache is not simply broken: `cargo fmt` is the same program at the same tier and
-    // runs nothing this project wrote, so its shape still settles.
+    // And the cache is not simply broken: a write at the same tier that runs no code still
+    // settles by its shape.
     let asked = Asked::default();
     let mut g = gate_at(
         Box::new(Asked(asked.0.clone())),
         crate::mode::Mode::WRITES_ALLOWED,
         None,
     );
-    let args = json!({ "command": "cargo fmt --all" });
+    let args = json!({ "command": "mkdir -p /w/build/x" });
     let seen = g.request_for(&bash(&args));
     g.seed_shapes([(seen.shape.clone().expect("a shape"), seen.class.to_string())]);
     let call = bash(&args);
     assert_eq!(g.admit(&call), GateDecision::Admit);
-    assert_eq!(
-        asked.count(),
-        0,
-        "`cargo fmt` is still settled by its shape"
-    );
+    assert_eq!(asked.count(), 0, "`mkdir` is still settled by its shape");
     assert_eq!(last_by(&g), "gate:shape");
 }
 

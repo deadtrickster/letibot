@@ -3103,7 +3103,7 @@ impl Harness {
                             let n = g.seed_shapes(rows);
                             if n > 0 {
                                 notes.push(format!(
-                                    "{n} command shape{} you approved in this project before are remembered — they will not be asked again",
+                                    "{n} command shape{} you approved for the session in this project are remembered — they will not be asked again at a point that keeps session grants",
                                     if n == 1 { "" } else { "s" }
                                 ));
                             }

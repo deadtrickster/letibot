@@ -185,23 +185,24 @@ fn a_shape_holds_across_a_different_number_of_operands() {
             a.fetch_add(1, Ordering::Relaxed);
             Some(AdjudicationDecision::selected(
                 req,
-                "allow_once",
+                "allow_session",
                 "human:test",
                 "yes",
             ))
         },
     )))
+    .with_mode(crate::mode::Mode::WRITES_ALLOWED)
     .with_surroundings(pinned());
 
-    let one = json!({"command": "sed -n 1p /w/a.rs"});
+    let one = json!({"command": "sort -u /etc/hosts"});
     assert!(matches!(
         g.admit(&bash_at(&one, "s#1")),
         GateDecision::Admit
     ));
     assert_eq!(asked.load(Ordering::Relaxed), 1);
 
-    // One more file and a second expression: the same run of operands, so the same shape.
-    let more = json!({"command": "sed -n 2p /w/b.rs /w/c.rs"});
+    // One more file: the same run of operands, so the same shape.
+    let more = json!({"command": "sort -u /etc/hosts /etc/hostname"});
     assert!(matches!(
         g.admit(&bash_at(&more, "s#2")),
         GateDecision::Admit
@@ -211,13 +212,17 @@ fn a_shape_holds_across_a_different_number_of_operands() {
         1,
         "a longer operand list asked the operator again"
     );
-
-    // The flag is still the flag: `sed -i` rewrites, so it is not that shape.
-    let write = json!({"command": "sed -i 1p /w/a.rs"});
-    let _ = g.admit(&bash_at(&write, "s#3"));
     assert_eq!(
-        asked.load(Ordering::Relaxed),
-        2,
+        g.log.last().map(|r| r.decision.by.as_str()),
+        Some("gate:shape")
+    );
+
+    // The flag is still the flag: `sort -o` writes, so it is not that shape.
+    let write = json!({"command": "sort -u -o /w/out /etc/hosts"});
+    let _ = g.admit(&bash_at(&write, "s#3"));
+    assert_ne!(
+        g.log.last().map(|r| r.decision.by.as_str()),
+        Some("gate:shape"),
         "a write was admitted by a read's shape"
     );
 }

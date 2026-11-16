@@ -1,9 +1,10 @@
-//! Recovering shapes for decisions the operator already made.
+//! Recovering shapes for decisions the operator already made. The shape only: a row from before
+//! the shape column cannot say whether the answer was "once" or "for the session", so it carries
+//! no class and the warm start never reads it.
 
 use letibot_tokencore::store::Store;
-use letibot_tools::adjudicate::{ActionClass, Tier};
+use letibot_tools::adjudicate::Tier;
 use letibot_tools::intent::{Baseline, Intent, ShellTrust, Surroundings};
-use letibot_tools::schema::Access;
 
 /// One row, after today's classifier has had its say.
 #[derive(Debug, Clone)]
@@ -12,7 +13,6 @@ pub struct Candidate {
     pub workspace: String,
     pub command: String,
     pub shape: String,
-    pub class: String,
 }
 
 /// A row that will not be filled, and the reason in words.
@@ -97,17 +97,11 @@ pub fn plan(path: &std::path::Path) -> Result<Report, String> {
             continue;
         };
 
-        // The class exactly as `request_from` derives it for a `bash` call: no `path` argument, so
-        // `path_is_inside` is true and nothing was stat'd. Constant for every command, which is
-        // why it is recoverable at all: it never depended on the surroundings of the day.
-        let class = ActionClass::host(Access::Exec, true, false);
-
         report.candidates.push(Candidate {
             request_id: row.request_id,
             workspace: row.workspace_root,
             command,
             shape,
-            class: class.to_string(),
         });
     }
 
@@ -120,7 +114,7 @@ pub fn apply(path: &std::path::Path, report: &mut Report) -> Result<(), String> 
     let mut filled = 0;
     for c in &report.candidates {
         if store
-            .backfill_shape(&c.request_id, &c.shape, &c.class)
+            .backfill_shape(&c.request_id, &c.shape)
             .map_err(|e| format!("filling {}: {e}", c.request_id))?
         {
             filled += 1;

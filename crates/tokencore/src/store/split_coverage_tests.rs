@@ -446,7 +446,7 @@ fn every_project_method_runs_on_a_split_set() {
     s.corpus_counts().unwrap();
     s.approved_shapes("/w").unwrap();
     s.shapeless_human_admits().unwrap();
-    s.backfill_shape("r1", "shape", "class").unwrap();
+    s.backfill_shape("r1", "shape").unwrap();
 
     s.put_citations("s1", "h", "[]", 1).unwrap();
     assert!(s.citations("s1", "h").unwrap().is_some());

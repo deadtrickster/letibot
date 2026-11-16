@@ -650,6 +650,10 @@ impl From<serde_json::Error> for StoreError {
 pub type Result<T> = std::result::Result<T, StoreError>;
 
 /// The store's stamps are `i64` columns; the wall clock itself is the tree's one.
+/// How far back the shape warm start reads, and how many shapes it takes.
+pub const WARM_SHAPES_DAYS: i64 = 14;
+pub const WARM_SHAPES_MAX: usize = 256;
+
 fn now_ms() -> i64 {
     letibot_metrics::now_ms() as i64
 }
@@ -4196,9 +4200,11 @@ impl Store {
         Ok(rows)
     }
 
-    /// Shapes this operator approved by hand, under this workspace: the warm start for the shape
-    /// cache, so a restart does not lose them.
+    /// Shapes this operator approved for the session, under this workspace: the warm start for
+    /// the shape cache. Bounded to the newest [`WARM_SHAPES_MAX`] within [`WARM_SHAPES_DAYS`], so
+    /// an approval does not stand forever.
     pub fn approved_shapes(&self, workspace_root: &str) -> Result<Vec<(String, String)>> {
+        let since = now_ms().saturating_sub(WARM_SHAPES_DAYS * 24 * 3600 * 1000);
         // The rows are the corpus's file and the workspace they belong to is the index's, so a
         // split set needs two reads instead of a JOIN: the sessions first, the rows after.
         let mine: std::collections::HashSet<String> = {
@@ -4217,9 +4223,10 @@ impl Store {
                 AND effect = 'admit'
                 AND verdict_by LIKE 'human%'
                 AND baseline NOT LIKE '%destroy%'
+                AND decided_ms >= ?1
               ORDER BY decided_ms DESC",
         )?;
-        let rows = stmt.query_map([], |r| {
+        let rows = stmt.query_map([since], |r| {
             Ok((
                 r.get::<_, String>(0)?,
                 r.get::<_, String>(1)?,
@@ -4231,6 +4238,9 @@ impl Store {
             let (shape, class, session) = row?;
             if mine.contains(&session) {
                 out.push((shape, class));
+                if out.len() == WARM_SHAPES_MAX {
+                    break;
+                }
             }
         }
         Ok(out)
@@ -4287,14 +4297,14 @@ impl Store {
         Ok(out)
     }
 
-    /// Write a shape and its class onto a row that has neither. `WHERE shape IS NULL` is the whole
-    /// safety property: this fills a hole and never changes an answer, and a second run finds
-    /// nothing.
-    pub fn backfill_shape(&self, request_id: &str, shape: &str, class: &str) -> Result<bool> {
+    /// Write a shape onto a row that has none. `WHERE shape IS NULL` is the whole safety property:
+    /// this fills a hole and never changes an answer. No class: an old row cannot say whether its
+    /// answer was for the session, so the warm start must not read it.
+    pub fn backfill_shape(&self, request_id: &str, shape: &str) -> Result<bool> {
         let n = self.exec(
-            "UPDATE adjudication SET shape = ?2, shape_class = ?3
+            "UPDATE adjudication SET shape = ?2
               WHERE request_id = ?1 AND shape IS NULL",
-            rusqlite::params![request_id, shape, class],
+            rusqlite::params![request_id, shape],
         )?;
         Ok(n == 1)
     }
@@ -4848,6 +4858,31 @@ mod corpus_tests {
                 "read,host_project,reversible,free".to_string()
             )]
         );
+    }
+
+    /// The warm start is bounded: an approval older than the window is not read back.
+    #[test]
+    fn the_warm_start_reads_only_recent_shapes() {
+        let s = store();
+        let here = a_session(&s);
+        s.record_adjudication(&NewAdjudication {
+            tier: "may_approve".into(),
+            effect: "admit".into(),
+            verdict_by: Some("human:op".into()),
+            baseline: "ask — intents [inspect]".into(),
+            shape: Some("grep -n <arg> <arg>".into()),
+            shape_class: Some("read,host_project,reversible,free".into()),
+            ..a_decision("a-old", &here)
+        })
+        .expect("write");
+        assert_eq!(s.approved_shapes("/tmp").expect("read").len(), 1);
+        let old = now_ms() - (WARM_SHAPES_DAYS + 1) * 24 * 3600 * 1000;
+        s.exec(
+            "UPDATE adjudication SET decided_ms = ?1 WHERE request_id = 'a-old'",
+            rusqlite::params![old],
+        )
+        .expect("age the row");
+        assert!(s.approved_shapes("/tmp").expect("read").is_empty());
     }
 
     /// A row written before the class column existed is not a usable approval: the
