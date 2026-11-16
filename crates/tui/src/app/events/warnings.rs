@@ -265,7 +265,15 @@ impl App {
                 // conversation. A code that lands here unclassified goes to `/notes` and draws
                 // nothing.
                 match letibot_sessionlog::warning::destination(&code) {
-                    letibot_sessionlog::warning::Go::Status => self.say(&detail),
+                    // A slash reply leads with the typed line; the answer is what is said.
+                    letibot_sessionlog::warning::Go::Status => match detail.split_once('\n') {
+                        Some((echo, answer))
+                            if echo.starts_with('/') && code.starts_with("slash") =>
+                        {
+                            self.say(&answer.replace('\n', " · "))
+                        }
+                        _ => self.say(&detail),
+                    },
                     letibot_sessionlog::warning::Go::Model => {}
                     letibot_sessionlog::warning::Go::Notes => self.count_fault(&code),
                 }

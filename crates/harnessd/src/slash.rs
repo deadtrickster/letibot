@@ -628,9 +628,7 @@ pub fn unknown_verb(
     line: &str,
 ) -> SlashReply {
     layer_answer(host, hub, session, verb, line).unwrap_or_else(|| SlashReply {
-        lines: vec![format!(
-            "/{verb} is not a daemon verb; /help lists the head's"
-        )],
+        lines: vec![format!("unknown command `/{verb}` - /help lists them")],
         ok: false,
     })
 }

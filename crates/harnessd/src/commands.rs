@@ -479,8 +479,8 @@ pub fn not_found(verb: &str, workspace: &Path, user: &Path) -> String {
         .map(|(_, d)| d.join(format!("{verb}.md")).display().to_string())
         .collect();
     format!(
-        "/{verb} is not a daemon verb and no command file defines it (looked for {}); /help lists the commands",
-        places.join(", ")
+        "unknown command `/{verb}` - /help lists them (no command file at {})",
+        places.join(" or ")
     )
 }
 

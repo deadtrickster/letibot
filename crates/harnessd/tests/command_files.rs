@@ -183,9 +183,10 @@ fn a_project_command_is_sent_expanded_and_listed_and_a_missing_one_is_refused() 
     sessions.dispatch(&f.id, &command("nonesuch x"));
     let refused = warnings(&hub, "slash_refused");
     assert!(
-        refused
-            .iter()
-            .any(|w| w.contains("no command file defines it") && w.contains("nonesuch.md")),
+        refused.iter().any(
+            |w| w.contains("unknown command `/nonesuch` - /help lists them")
+                && w.contains("nonesuch.md")
+        ),
         "a missing file is refused naming where it was looked for: {refused:?}"
     );
 }
