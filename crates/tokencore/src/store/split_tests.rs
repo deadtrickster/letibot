@@ -573,3 +573,57 @@ fn a_project_tables_read_finds_what_its_write_put() {
         1
     );
 }
+
+/// A file holding tables and no version row is the state a kill between a schema and its stamp
+/// leaves - not a fresh store. Read as fresh, every opener wrote the whole schema into whichever
+/// file it happened to be on, so the last one's stamp hid that `shared.db` had gained project
+/// tables it must never hold.
+#[test]
+fn two_openers_racing_migrate_create_no_stray_tables() {
+    let dir = temp("half-stamped");
+    let set = StoreSet::open(&dir, KEY).expect("a set");
+    let shared = set.path(StoreFile::Shared);
+    drop(set);
+    Connection::open(&shared)
+        .expect("a connection to the shared file")
+        .execute("DELETE FROM schema_version", [])
+        .expect("an unstamped shared file");
+    assert!(
+        !tables_in_file(&shared).is_empty(),
+        "the fixture has no tables, so it is not the state this test is about"
+    );
+
+    // A connection of its own per opener, as two processes would have: `Store::open` answers this
+    // process's one connection per file, and the race is between processes.
+    let opens: Vec<_> = (0..2)
+        .map(|_| {
+            let path = shared.clone();
+            std::thread::spawn(move || Store::open_private(&path))
+        })
+        .collect();
+    let outcomes: Vec<_> = opens.into_iter().map(|h| h.join().unwrap()).collect();
+
+    let stray: Vec<String> = tables_in_file(&shared)
+        .into_iter()
+        .filter(|table| place_of(table) == Some(Place::Project))
+        .collect();
+    assert!(
+        stray.is_empty(),
+        "shared.db gained project tables from a file with no version: {stray:?}"
+    );
+    for outcome in &outcomes {
+        let why = outcome
+            .as_ref()
+            .err()
+            .map(|e| e.to_string())
+            .unwrap_or_else(|| "it opened".into());
+        assert!(
+            outcome.is_err(),
+            "a file with tables and no version was read as a fresh store: {why}"
+        );
+        assert!(
+            why.contains("no schema version"),
+            "the refusal does not say what is wrong with the file: {why}"
+        );
+    }
+}

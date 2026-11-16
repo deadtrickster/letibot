@@ -791,44 +791,54 @@ impl Store {
     /// Put a branch up for review. `false` when a row with this id is already there (the
     /// same child enqueued twice is one row), and nothing is written then.
     pub fn enqueue_review(&self, new: &NewReview, by: &str, now_ms: u64) -> Result<bool> {
-        self.write_tx(|tx| {
-            let n = tx.execute(
-                "INSERT OR IGNORE INTO review_queue
+        self.write_tx(|tx| self.enqueue_review_on(tx, new, by, now_ms))
+    }
+
+    /// [`Store::enqueue_review`] on a connection whose transaction the CALLER holds: a migration's
+    /// arm runs inside one, and SQLite refuses a `BEGIN` there, so this write has to join it.
+    pub(super) fn enqueue_review_on(
+        &self,
+        conn: &rusqlite::Connection,
+        new: &NewReview,
+        by: &str,
+        now_ms: u64,
+    ) -> Result<bool> {
+        let n = conn.execute(
+            "INSERT OR IGNORE INTO review_queue
                (id, repository, target, kind, session_id, branch, worktree, base_sha, head_sha,
                 brief, priority, fixes, state, owner, evidence, created_ms, state_ms, updated_ms)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, 'waiting', '', ?13, ?14, ?14, ?14)",
-                params![
-                    new.id,
-                    new.repository,
-                    new.target,
-                    new.kind.as_str(),
-                    new.session_id,
-                    new.branch,
-                    new.worktree,
-                    new.base_sha,
-                    new.head_sha,
-                    new.brief,
-                    new.priority.as_str(),
-                    new.fixes,
-                    new.evidence,
-                    now_ms as i64,
-                ],
+            params![
+                new.id,
+                new.repository,
+                new.target,
+                new.kind.as_str(),
+                new.session_id,
+                new.branch,
+                new.worktree,
+                new.base_sha,
+                new.head_sha,
+                new.brief,
+                new.priority.as_str(),
+                new.fixes,
+                new.evidence,
+                now_ms as i64,
+            ],
+        )?;
+        if n == 1 {
+            record(
+                conn,
+                "review",
+                &new.id,
+                &new.repository,
+                None,
+                ReviewState::Waiting.as_str(),
+                now_ms,
+                by,
+                &new.evidence,
             )?;
-            if n == 1 {
-                record(
-                    tx,
-                    "review",
-                    &new.id,
-                    &new.repository,
-                    None,
-                    ReviewState::Waiting.as_str(),
-                    now_ms,
-                    by,
-                    &new.evidence,
-                )?;
-            }
-            Ok(n == 1)
-        })
+        }
+        Ok(n == 1)
     }
 
     /// Every review row, every state - or one repository's. A row this build cannot read is an
@@ -1786,7 +1796,8 @@ impl Store {
                     evidence.as_str()
                 }
             );
-            self.enqueue_review(
+            self.enqueue_review_on(
+                &self.conn(),
                 &NewReview {
                     id,
                     repository: String::new(),
