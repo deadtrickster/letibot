@@ -129,26 +129,58 @@ fn inside(p: &Path, workspace: &Path) -> bool {
     p.starts_with(workspace)
 }
 
-/// Paths a read the shadow grants must not reach, beyond the secret stores: the daemon's own keys
-/// and configuration, which hold credentials and decide what runs unasked.
-const OWN_CONFIG: [&str; 2] = [".config/letibot", ".local/share/letibot/keys"];
+/// Paths a read the shadow grants must not reach, beyond the secret stores: the daemon's own keys,
+/// configuration and store, and the other agents' credentials and transcripts.
+const OWN_CONFIG: [&str; 6] = [
+    ".config/letibot",
+    ".local/share/letibot",
+    ".claude",
+    ".codex",
+    ".config/claude",
+    "bin/fleet",
+];
 
-/// `Ok` when the shadow may grant a read of `path`: absolute, not a secret store or credential
-/// file, and no such place below it. `Err` names the first thing that is.
+/// `Region::Device`: kernel and process state, never a file a review reads.
+const DEVICE: [&str; 3] = ["/proc", "/sys", "/dev"];
+
+/// `Ok` when the shadow may grant a read of `path`: absolute, not a secret store, credential
+/// file, agent store or device, and no such place below it. Judged at the lexical path and at its
+/// canonical key, since the grant binds the key and a symlink would carry the read elsewhere.
 pub fn read_passes(path: &str, home: &Path) -> Result<(), String> {
+    if !home.is_absolute() || home == Path::new("/") {
+        return Err("no home directory is known, so a secret below it cannot be ruled out".into());
+    }
     let p = Path::new(path.trim());
     if !p.is_absolute() {
         return Err(format!("`{path}` is not an absolute path"));
     }
-    let p = lexical(p);
-    let home_s = home.to_str();
+    let lexical = lexical(p);
+    let key = letibot_tools::view::key(&lexical);
+    passes_at(path, &lexical, home)?;
+    if key != lexical {
+        passes_at(path, &key, home)
+            .map_err(|e| format!("{e} (it resolves to `{}`)", key.display()))?;
+    }
+    Ok(())
+}
+
+fn passes_at(path: &str, p: &Path, home: &Path) -> Result<(), String> {
+    if let Some(d) = DEVICE.iter().find(|d| p.starts_with(d)) {
+        return Err(format!("`{path}` is under `{d}`, kernel and process state"));
+    }
     if let Some(store) =
-        letibot_tools::intent::Surroundings::secret_store_of(&p.to_string_lossy(), home_s)
+        letibot_tools::intent::Surroundings::secret_store_of(&p.to_string_lossy(), home.to_str())
     {
         return Err(format!("`{path}` is in the secret store `{store}`"));
     }
-    if p.components().any(|c| c.as_os_str() == "keys") {
-        return Err(format!("`{path}` names a keys directory"));
+    for c in p.components() {
+        let c = c.as_os_str().to_string_lossy();
+        if c == "keys" {
+            return Err(format!("`{path}` names a keys directory"));
+        }
+        if c.contains("credentials") {
+            return Err(format!("`{path}` names a credentials file"));
+        }
     }
     // A directory above a secret would put it in the view too: home itself, `/`, `/etc`.
     let mut below: Vec<PathBuf> = OWN_CONFIG.iter().map(|d| home.join(d)).collect();
@@ -158,10 +190,52 @@ pub fn read_passes(path: &str, home: &Path) -> Result<(), String> {
             None => below.push(home.join(d)),
         }
     }
-    if let Some(d) = below.iter().find(|d| d.starts_with(&p) || p.starts_with(d)) {
+    if let Some(d) = below.iter().find(|d| d.starts_with(p) || p.starts_with(d)) {
         return Err(format!("`{path}` reaches `{}`", d.display()));
     }
     Ok(())
+}
+
+/// The roots a shadow-granted read may land in: the asker's workspace and the worktrees of its
+/// repository, read at ask time. Nothing is configured, so a box path is never a root by default.
+pub fn read_roots(workspace: &Path) -> Vec<PathBuf> {
+    let mut out = vec![letibot_tools::view::key(workspace)];
+    let listed = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .args(["worktree", "list", "--porcelain"])
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output();
+    if let Ok(o) = listed
+        && o.status.success()
+    {
+        for l in String::from_utf8_lossy(&o.stdout).lines() {
+            if let Some(w) = l.strip_prefix("worktree ") {
+                let k = letibot_tools::view::key(Path::new(w));
+                if !out.contains(&k) {
+                    out.push(k);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// `Ok` when `path`'s canonical key is inside one of `roots`.
+pub fn within_roots(path: &str, roots: &[PathBuf]) -> Result<(), String> {
+    let key = letibot_tools::view::key(&lexical(Path::new(path.trim())));
+    if roots.iter().any(|r| key.starts_with(r)) {
+        return Ok(());
+    }
+    Err(format!(
+        "`{path}` is outside the asker's repository ({})",
+        roots
+            .iter()
+            .map(|r| r.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
 }
 
 fn lexical(p: &Path) -> PathBuf {

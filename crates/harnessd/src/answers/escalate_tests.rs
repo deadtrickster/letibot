@@ -53,7 +53,7 @@ fn reviewer_gate(w: &World) -> letibot_sessionlog::pending_asks::AskerGate {
             )
         })
         .collect();
-    crate::shadow::permission::asker_gate(&rules, std::path::Path::new(CLONE))
+    crate::shadow::permission::asker_gate(&rules, std::path::Path::new(REVIEW_WORKSPACE))
 }
 
 fn world() -> World {
@@ -267,6 +267,9 @@ fn with_no_main_session_a_queue_card_still_fails_closed() {
 }
 
 const CLONE: &str = "/tmp/letibot-review-clones/review-agent-p2-followups-34db3e56";
+
+/// The reviewer's workspace in these tests: the shadow's reads land under it.
+const REVIEW_WORKSPACE: &str = "/build";
 
 fn reviewer_ask() -> SubagentAsk {
     SubagentAsk {
@@ -1286,6 +1289,31 @@ fn the_permission_job_alone_never_answers_a_read() {
         Some("shadow (deepseek): allow - matches rule \"read /build/**\""),
         "the verdict is still a line on the card"
     );
+    assert!(d.by.starts_with("human:"), "{}", d.by);
+    assert!(answering.take_rows().is_empty());
+}
+
+/// A read the asker's rule covers is still the operator's when it lands outside the asker's
+/// repository: no configured box path is a root.
+#[test]
+fn a_read_outside_the_askers_repository_shows_the_card() {
+    let w = world();
+    name_reviewer(&w.set);
+    let (_, answering) = with_shadow_rules(
+        &w,
+        Slow {
+            reply: r#"{"verdict":"allow","rule":"read /**","evidence":""}"#,
+            sleep: Duration::from_millis(20),
+        },
+        &["read /**"],
+    );
+    let req = view_request(
+        "adj-view-0600",
+        "/data/target-x",
+        letibot_tools::Access::Read,
+    );
+    let (card, d) = ask_watching(&w, &req, "deny", Duration::from_millis(50));
+    assert!(card.is_some(), "{d:?}");
     assert!(d.by.starts_with("human:"), "{}", d.by);
     assert!(answering.take_rows().is_empty());
 }

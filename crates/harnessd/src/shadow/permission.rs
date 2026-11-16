@@ -262,11 +262,14 @@ fn queue_kind(role: Option<&str>) -> Option<&'static str> {
 }
 
 /// Whether `c` is a call the shadow may answer: a review-queue seat's read of one path outside
-/// its view, past the read denylist. `Ok` is the path and the seat kind.
+/// its view, past the read denylist and inside the asker's repository (C8). `Ok` is the path and
+/// the seat kind.
 pub fn scope(c: &RelayedCall, home: &std::path::Path) -> Result<(String, &'static str), String> {
     let path = c.view_read.clone().ok_or("not a read-only view widening")?;
     let kind = queue_kind(c.role.as_deref()).ok_or("not a review-queue seat")?;
+    let gate = c.gate.as_ref().ok_or("the asker's gate is not known")?;
     super::guard::read_passes(&path, home)?;
+    super::guard::within_roots(&path, &super::guard::read_roots(&gate.workspace))?;
     Ok((path, kind))
 }
 

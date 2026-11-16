@@ -1457,6 +1457,43 @@ fn a_read_the_shadow_grants_never_reaches_a_secret_or_a_directory_above_one() {
 }
 
 #[test]
+fn read_passes_resolves_symlinks_and_refuses_agent_stores() {
+    use super::guard::read_passes;
+    let root = std::env::temp_dir().join(format!("letibot-guard-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let home = root.join("home");
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    let work = root.join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    std::os::unix::fs::symlink(home.join(".ssh"), work.join("link")).unwrap();
+    let h = home.display();
+    for bad in [
+        work.join("link").display().to_string(),
+        work.join("link/id_ed25519").display().to_string(),
+        "/proc/1/environ".to_string(),
+        "/sys/kernel".to_string(),
+        "/dev/sda".to_string(),
+        format!("{h}/.claude/.credentials.json"),
+        format!("{h}/.codex/auth.json"),
+        format!("{h}/.local/share/letibot/sessions.db"),
+    ] {
+        assert!(read_passes(&bad, &home).is_err(), "{bad}");
+    }
+    assert_eq!(read_passes(&work.display().to_string(), &home), Ok(()));
+    let roots = super::guard::read_roots(&work);
+    assert_eq!(
+        super::guard::within_roots(&work.join("src").display().to_string(), &roots),
+        Ok(())
+    );
+    assert!(super::guard::within_roots("/build/x", &roots).is_err());
+    assert!(
+        read_passes("/build/x", std::path::Path::new("")).is_err(),
+        "no home, so nothing below it can be ruled out"
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
 fn answer_reads_is_off_until_turned_on() {
     let lines = |enabled: &[&str], answer_reads| letibot_provider::keys::ShadowLines {
         enabled: enabled.iter().map(|j| j.to_string()).collect(),
