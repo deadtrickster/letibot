@@ -14,8 +14,11 @@ main tree's artifacts and nothing it builds reaches the main tree's `target/rele
 install step.
 
 - The first step that fails parks the branch. The row names the step and carries its output.
-- One thirty-minute deadline covers the whole run, not each step. Past it the step in flight is
-  killed with its process group and the row is `timed_out`.
+- A gate on this machine first takes the box's gate lock, the one `scripts/gate-at.sh` takes
+  (`/build/gate.lock`, or `LETIBOT_GATE_LOCK`), and holds it to its last step.
+- One deadline covers the whole run, not each step, counted from when the lock is held: thirty
+  minutes, or `[queue] gate_deadline_minutes`. Past it the step in flight is killed with its
+  process group and the row is `timed_out`.
 - The same steps, without the install, gate the target's own tip whenever it moves.
 - A step named `install-gate-build` runs only after the landing was pushed.
 - With rows in line the queue fetches `origin`'s target (at most every 30 s) and fast-forwards the

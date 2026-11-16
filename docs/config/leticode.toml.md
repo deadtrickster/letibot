@@ -262,6 +262,7 @@ The merge queue reads the project file only, except the three census keys.
 | `reviewer_hosts` | list; ["*"] = all | ["local"] | project only | hosts a host reviewer may use |
 | `reviewers_run_suites` | bool | false | project only | reviewers may run whole test suites, not only named tests |
 | `grant_ttl_hours` | int >= 1 | 24 | project only | how long a session answer on a relayed reviewer card covers the queue |
+| `gate_deadline_minutes` | int >= 1 | 30 | project only | one gate run's deadline, counted from when the box's gate lock is held |
 
 ## `[queue.claude]`
 
