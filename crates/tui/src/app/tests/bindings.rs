@@ -133,6 +133,54 @@ fn every_binding_that_says_something_is_on_the_bar_and_in_the_help() {
     }
 }
 
+/// Every pane draws its key map on the screen, not only in the bar a test asks for: each binding's
+/// words, the typed path, and the way out. `/skills` listed its rows and none of its three doors.
+#[test]
+fn every_pane_draws_its_key_map() {
+    for s in Surface::ALL {
+        // The picker's list is the sessions layer's, which takes seconds to build in a debug test;
+        // its bar is the same `surface_hint` row.
+        if s == Surface::Picker {
+            continue;
+        }
+        let mut a = app();
+        a.session_id = "s1".into();
+        a.push_surface(s);
+        let screen = a.screen(600, 30);
+        let bar = screen
+            .iter()
+            .rev()
+            .find(|r| !r.trim().is_empty())
+            .cloned()
+            .unwrap_or_default();
+        let mut want: Vec<String> = s
+            .bindings()
+            .iter()
+            .filter_map(|b| match b.says {
+                Says::Text(t) => Some(t.to_string()),
+                Says::Switch(_) => a.switch_says(b),
+                Says::Row | Says::Nothing => None,
+            })
+            .collect();
+        want.extend(s.typed_says().map(str::to_string));
+        want.push(a.esc_hint(s));
+        for w in want {
+            assert!(bar.contains(&w), "{s:?} does not draw {w:?}: {bar}");
+        }
+    }
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.push_surface(Surface::Skills);
+    let screen = a.screen(600, 30).join("\n");
+    for says in [
+        "enter opens the skill's file in the editor",
+        "s hands the skill to the session",
+        "/skills NAME text hands it with a line",
+    ] {
+        assert!(screen.contains(says), "{says}: {screen}");
+    }
+}
+
 /// A chord the conversation's bar names is the chord the dispatch runs - `ctrl-s`, `ctrl-t`,
 /// `ctrl-g` and `ctrl-q` are read from `Surface::chord` by both. Pressing each opens the surface
 /// the bar names it for, and the bar names it.

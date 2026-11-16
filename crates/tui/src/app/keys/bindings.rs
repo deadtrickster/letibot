@@ -729,6 +729,7 @@ impl Surface {
             Surface::Picker => Some("type a number or a name to switch · /new [title]"),
             Surface::Todos => Some("/todo rm N removes one of yours"),
             Surface::Rooms => Some("type to post · >N text replies · /dm NAME text"),
+            Surface::Skills => Some("/skills NAME text hands it with a line"),
             _ => None,
         }
     }
