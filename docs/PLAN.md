@@ -32,6 +32,7 @@ that needs the provenance, shadow and gate-rule fixes underneath it.
    B14, B15, B16.
 5. Mediums and lows by theme (R338-R349), then the design follow-ups (R350) after the stability bar
    is met.
+6. After the bar: the credential broker (R356), beside lead 32.
 
 Steps 2-3 run beside step 4. A stage waits on its replay evidence, not on code, so batches land
 while it collects. Stage 2 also needs B6 (I25 lets a child move to a model decider), so B6 is the
@@ -303,6 +304,29 @@ In this order, each row naming its tests:
 Older open rows in `TODO.md` follow the phase rule: a row that is a fix is taken when its area's
 batch lands. A row that is a feature waits for the end of the phase.
 
+### 6. After the phase: the credential broker (R356)
+
+A credential file exists for its own software to use. That is its only purpose. So that software uses it, and nothing else in a session can read it, print it or send it.
+
+It sits beside automode: both rely on the gate judging the subcommand, not the program. B5 masks
+the operator's CLI stores (`gh`, rclone, vault, ...) in a child's view only, so a top-level seat
+still reads them. The broker closes that, in layers:
+- Brokered CLIs: in the sandbox `gh` (then vault, rclone, ...) is a shim to a host-side broker that
+  runs the real binary with the real credential. Reads pass, revealing commands (`gh auth token`,
+  `--show-token`, `vault read` of a value) are refused, destructive ones (`gh repo delete`) always
+  ask. The credential file never exists in the sandbox. Prior art: aws-vault exec, `op run`, git
+  credential helpers.
+- An egress proxy for HTTP tools: the sandbox holds a dummy, swapped for the real credential only
+  on that credential's allowed hosts.
+- Known-value redaction: every tool result and stored row is scrubbed of the loaded secret values,
+  and their base64 and URL-encoded forms, before the model or the store sees them.
+- Package installs: no secrets, limited egress, install steps judged as package changes.
+- Order: the `gh` broker, then the proxy, then redaction.
+- Tests: `an_agent_cannot_read_gh_token_but_gh_pr_view_works`,
+  `a_script_sending_the_dummy_elsewhere_sends_nothing_of_value`,
+  `a_secret_echoed_by_a_test_never_reaches_the_transcript`.
+- Size L. After the stability bar, and after B4's subcommand rules.
+
 ## The exit test
 
 The stability bar, measured in this order. None of its four conditions is met at the snapshot.
@@ -319,7 +343,7 @@ The stability bar, measured in this order. None of its four conditions is met at
    a hook or move to `AGENTS.md`.
 
 The phase ends when all four hold. Then the design follow-ups (R350) and the first post-stability
-feature, the orchestration primitive (lead 32), start.
+features start: the orchestration primitive (lead 32) and the credential broker (R356).
 
 ## Process rules
 
