@@ -449,3 +449,61 @@ fn an_oracle_allow_on_a_view_request_is_granted_read_only() {
         );
     }
 }
+
+/// Answers every view ask as `by` would, with the read-only rung.
+struct AnsweredBy(&'static str);
+
+impl Adjudicator for AnsweredBy {
+    fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+        AdjudicationDecision::selected(req, "grant_ro", self.0, "because")
+    }
+
+    fn describe(&self) -> String {
+        "asked at the head: a test".into()
+    }
+
+    fn last_advice(&self) -> Option<ModelAdvice> {
+        Some(ModelAdvice {
+            consulted: true,
+            would: "admit",
+            by: "shadow:deepseek".into(),
+            basis: "the operator asked".into(),
+            cites: Vec::new(),
+            latency_ms: 1,
+            unsure: None,
+        })
+    }
+}
+
+/// A view ask is a corpus row like any call. A row the shadow settled is not an operator's answer,
+/// so it is neither asked nor labelled: scored, it would agree with itself.
+#[test]
+fn view_asks_are_recorded_and_shadow_rows_excluded_from_agreement() {
+    let sink = Arc::new(crate::authorise::RecordingCorpusSink::default());
+    for by in ["shadow:deepseek", "human:op"] {
+        let mut g = AdjudicatedGate::new(Box::new(AnsweredBy(by)))
+            .with_identity("s-test", "agent")
+            .with_corpus_sink(sink.clone());
+        assert_eq!(
+            g.grant_view(Path::new("/build/letibot-r1"), "bash", ViewAccess::Read),
+            ViewGrant::Granted { writable: false }
+        );
+    }
+    let rows = sink.rows.lock().unwrap().clone();
+    assert_eq!(rows.len(), 2, "both view asks are rows: {rows:?}");
+    for r in &rows {
+        assert_eq!(r.tool, "bash");
+        assert_eq!(r.arguments["path"], "/build/letibot-r1");
+        assert_eq!(r.effect, "admit");
+        assert_eq!(r.tier, "may_approve");
+    }
+    let (shadow, human) = (&rows[0], &rows[1]);
+    assert_eq!(shadow.verdict_by.as_deref(), Some("shadow:deepseek"));
+    assert!(!shadow.asked, "a shadow's answer is not the operator's");
+    assert!(shadow.operator.is_none(), "{:?}", shadow.operator);
+    assert!(human.asked);
+    assert!(
+        human.operator.is_some(),
+        "the person's answer labels the advice"
+    );
+}

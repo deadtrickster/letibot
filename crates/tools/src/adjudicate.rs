@@ -2544,7 +2544,11 @@ impl AdjudicatedGate {
         // At `supervised` the label is already in hand, so it is written now: they just
         // answered this call with the model's verdict in front of them, and re-ruling it from a
         // list afterwards would ask the same question twice. No advice, no label.
+        // A row the shadow settled has no operator answer to label it, so it never counts as
+        // agreement with itself.
+        let shadow = decision.by.starts_with(crate::grant_ledger::SHADOW_BY);
         let operator = match (&advice, asked, &standing) {
+            _ if shadow => None,
             // No label without a verdict: `consulted` is false whenever a model adjudicator
             // answered without asking a model, and agreeing with a short-circuit is agreeing
             // with nothing.
@@ -2841,10 +2845,29 @@ impl AdjudicatedGate {
             baseline,
             trail: self.trail_for_view(tool, path),
         };
+        let direction =
+            crate::authorise::TaskDirection::of_parts(tool, &reading, req.class.scope).key();
+        self.advice = None;
+        self.standing = None;
         let d = self.adjudicator.decide(&req);
+        self.file_exchange();
+        self.advice = self.adjudicator.last_advice();
         self.view_relayed = self.adjudicator.last_relayed();
         self.view_by = (d.by.clone(), d.basis.clone());
         self.view_answered_by = Some(d.by.clone());
+        let answer = self.view_answer(&d);
+        // Recorded like any decision, so a view ask is a corpus row a replay can label.
+        let effect = match answer {
+            ViewGrant::Granted { .. } => "admit",
+            _ => "refuse",
+        };
+        self.record(req, d, effect, direction);
+        answer
+    }
+
+    /// A view ask's decision, as the grant it amounts to.
+    fn view_answer(&self, d: &AdjudicationDecision) -> crate::runtime::ViewGrant {
+        use crate::runtime::ViewGrant;
         match &d.outcome {
             // An oracle answers in the call vocabulary: its `allow_once` is the read-only rung,
             // never the write one, which only a person picks.
