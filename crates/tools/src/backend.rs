@@ -212,6 +212,12 @@ pub trait ExecBackend: Send + Sync {
         None
     }
 
+    /// The values this session holds as secrets, for the runtime to mask out of a result the
+    /// host never sees. Empty by default: a backend with no seat to ask redacts nothing.
+    fn secret_env(&self) -> crate::exec::seat::SecretEnv {
+        Default::default()
+    }
+
     /// The operator's home, as this backend expands a leading `~`. `None` by default, for the
     /// same reason [`Self::root_path`]'s is. The reader that pulls the script an interpreter was
     /// handed asks here rather than reading `$HOME` a second time.
@@ -335,6 +341,9 @@ pub struct HostBackend {
     /// The paths this session's boundary denies, applied to the file tools too.
     /// Empty where the session has no boundary: with no view there is nothing to refuse.
     fence: Option<crate::exec::fence::FileFence>,
+    /// The secrets this session's seat holds, for a backend with no process host to ask: one with
+    /// a host reads them off it, so the two cannot drift.
+    secrets: crate::exec::seat::SecretEnv,
 }
 
 impl HostBackend {
@@ -356,7 +365,15 @@ impl HostBackend {
             scratch: None,
             session_tmp: None,
             fence: None,
+            secrets: Default::default(),
         })
+    }
+
+    /// What this session's seat holds as secrets, for a backend that has no process host to ask:
+    /// one with a host reads them off it, so the two cannot drift.
+    pub fn with_secret_env(mut self, secrets: crate::exec::seat::SecretEnv) -> Self {
+        self.secrets = secrets;
+        self
     }
 
     /// Where relative paths start. Must lie under the root; a `cwd` outside it is
@@ -952,6 +969,13 @@ impl ExecBackend for HostBackend {
         self.scratch
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
+    }
+
+    fn secret_env(&self) -> crate::exec::seat::SecretEnv {
+        match &self.processes {
+            Some(p) => p.secret_env(),
+            None => self.secrets.clone(),
+        }
     }
 
     fn home_path(&self) -> Option<String> {

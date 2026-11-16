@@ -1733,6 +1733,15 @@ impl HostProcesses {
         *self.secret_env.lock().unwrap_or_else(|e| e.into_inner()) = secrets;
     }
 
+    /// What that environment holds, for a caller that has to mask bytes this host did not produce:
+    /// a tool's result on its way to the transcript, which the host never sees.
+    pub fn secret_env(&self) -> super::seat::SecretEnv {
+        self.secret_env
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
     pub fn set_standing_env(&self, pairs: Vec<(String, String)>) {
         *self.standing_env.lock().unwrap_or_else(|e| e.into_inner()) = pairs;
     }
