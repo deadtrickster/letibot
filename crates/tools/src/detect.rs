@@ -33,6 +33,13 @@ pub struct Before {
     /// these is not reported at all: diffing it against `HEAD` would show somebody else's earlier
     /// edits as this command's.
     pub skipped: usize,
+    /// The commit `HEAD` named, so a clean file's old bytes come from where the tree stood and not
+    /// from wherever a `git checkout` left `HEAD`.
+    pub head: Option<String>,
+    /// The `HEAD` reflog and its length, so the commits a command walked through can be read back.
+    pub reflog: Option<(PathBuf, usize)>,
+    /// The stash entries, so a `git stash` or a `stash pop` can say which files it moved.
+    pub stashes: std::collections::BTreeSet<String>,
 }
 
 /// The git work tree `dir` is in, walked up from `dir` itself, or `None` when it is in none.
@@ -155,8 +162,16 @@ pub fn before(root: &Path) -> Before {
     };
     let mut out = Before {
         in_repo: true,
+        head: head_of(root),
         ..Before::default()
     };
+    if let Some([logs, stash]) = log_paths(root) {
+        out.reflog = Some((logs.clone(), reflog_lines(&logs).len()));
+        out.stashes = reflog_lines(&stash)
+            .iter()
+            .filter_map(|l| new_of(l))
+            .collect();
+    }
     // The set of modified paths is recorded whatever happens: one `git status`, and it is what
     // tells "this command changed it" from "already like that". The content read in time IS the
     // hash, so a rewrite that left the same bytes is not a change.
@@ -185,9 +200,8 @@ pub fn before(root: &Path) -> Before {
     out
 }
 
-/// Which paths this command changed: one `git status` and a read of the files whose old bytes are
-/// already held, no diff, because the caller usually only wants the names. A path whose old bytes
-/// were never read is left out: [`Before::skipped`].
+/// Which paths this command changed: the net change, the files whose content now differs from what
+/// the tree held before. A path whose old bytes were never read is left out: [`Before::skipped`].
 pub fn changed_since(root: &Path, base: &Before) -> Vec<String> {
     if !base.in_repo {
         return Vec::new();
@@ -195,16 +209,130 @@ pub fn changed_since(root: &Path, base: &Before) -> Vec<String> {
     let Some(now) = dirty_paths(root) else {
         return Vec::new();
     };
-    now.into_iter()
-        .filter(|p| match base.dirty.get(p) {
-            // Already dirty, and its old bytes are in hand, so the answer is exactly whether the
-            // content moved: a rewrite that left the same bytes is not this command's change.
-            Some(was) => std::fs::read_to_string(root.join(p)).is_ok_and(|now| &now != was),
-            // Already dirty and over the budget: there is nothing to diff against, and the honest
-            // answer is silence rather than a diff against `HEAD` that would blame earlier edits.
-            None => !base.was_dirty.contains(p),
+    let moved_head = base.head.is_some() && head_of(root) != base.head;
+    let mut out: Vec<String> = if moved_head {
+        // `HEAD` moved, so `git status` answers against the wrong commit: the worktree is compared
+        // with the commit it started from instead.
+        let old = base.head.as_deref().unwrap_or_default();
+        let mut tracked = names(root, &["diff", "--name-only", "-z", old, "--"]);
+        tracked.extend(now.iter().filter(|p| !base.was_dirty.contains(*p)).cloned());
+        tracked.sort();
+        tracked.dedup();
+        tracked
+            .into_iter()
+            .filter(|p| !base.was_dirty.contains(p) && root.join(p).is_file())
+            .collect()
+    } else {
+        now.iter()
+            .filter(|p| !base.was_dirty.contains(*p))
+            .cloned()
+            .collect()
+    };
+    // A dirty file whose old bytes are in hand is decided on content, wherever it went: a rewrite
+    // that left the same bytes is no change, and one restored to `HEAD` is.
+    for (p, was) in &base.dirty {
+        if std::fs::read_to_string(root.join(p)).is_ok_and(|now| &now != was) {
+            out.push(p.clone());
+        }
+    }
+    let order: std::collections::HashMap<&str, usize> = now
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.as_str(), i))
+        .collect();
+    out.sort_by_key(|p| {
+        (
+            order.get(p.as_str()).copied().unwrap_or(usize::MAX),
+            p.clone(),
+        )
+    });
+    out.dedup();
+    out
+}
+
+/// Every file a command moved on its way, even when it put it back: the commits `HEAD` walked
+/// through, the stash entries made or dropped, and the net change. Only for a VCS command, since it
+/// costs a `git diff` per step.
+pub fn moved(root: &Path, base: &Before, net: &[String]) -> usize {
+    let mut all: std::collections::BTreeSet<String> = net.iter().cloned().collect();
+    if let Some((logs, len)) = &base.reflog {
+        let lines = reflog_lines(logs);
+        for l in lines.iter().skip(*len) {
+            let mut f = l.split(' ');
+            if let (Some(a), Some(b)) = (f.next(), f.next())
+                && !a.bytes().all(|c| c == b'0')
+                && a != b
+            {
+                all.extend(names(root, &["diff", "--name-only", "-z", a, b, "--"]));
+            }
+        }
+    }
+    let stashes: std::collections::BTreeSet<String> = log_paths(root)
+        .map(|[_, s]| reflog_lines(&s).iter().filter_map(|l| new_of(l)).collect())
+        .unwrap_or_default();
+    for s in stashes.symmetric_difference(&base.stashes) {
+        let parent = format!("{s}^1");
+        all.extend(names(
+            root,
+            &["diff", "--name-only", "-z", &parent, s, "--"],
+        ));
+    }
+    // A dirty file that is clean now was moved somewhere: stashed, reset or checked out.
+    if let Some(now) = dirty_paths(root) {
+        let now: std::collections::BTreeSet<&String> = now.iter().collect();
+        all.extend(base.was_dirty.iter().filter(|p| !now.contains(p)).cloned());
+    }
+    all.len()
+}
+
+fn head_of(root: &Path) -> Option<String> {
+    let out = git(root, &["rev-parse", "-q", "--verify", "HEAD"])?;
+    let h = String::from_utf8_lossy(&out).trim().to_string();
+    (!h.is_empty()).then_some(h)
+}
+
+/// `logs/HEAD` and `logs/refs/stash` of this tree's git dir, which a linked worktree keeps apart.
+fn log_paths(root: &Path) -> Option<[PathBuf; 2]> {
+    let out = git(
+        root,
+        &[
+            "rev-parse",
+            "--git-path",
+            "logs/HEAD",
+            "--git-path",
+            "logs/refs/stash",
+        ],
+    )?;
+    let text = String::from_utf8_lossy(&out).into_owned();
+    let mut it = text.lines().map(|l| {
+        let p = PathBuf::from(l);
+        if p.is_absolute() { p } else { root.join(p) }
+    });
+    Some([it.next()?, it.next()?])
+}
+
+fn reflog_lines(path: &Path) -> Vec<String> {
+    std::fs::read_to_string(path)
+        .map(|s| s.lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+/// The new value a reflog line records: `<old> <new> <who> <when>\t<why>`.
+fn new_of(line: &str) -> Option<String> {
+    line.split(' ').nth(1).map(str::to_string)
+}
+
+/// The NUL-separated paths a `git diff --name-only -z` prints, or none when git refused.
+fn names(root: &Path, args: &[&str]) -> Vec<String> {
+    git(root, args)
+        .map(|o| {
+            String::from_utf8_lossy(&o)
+                .split('\0')
+                .filter(|p| !p.is_empty())
+                .map(str::to_string)
+                .collect()
         })
-        .collect()
+        .unwrap_or_default()
 }
 
 /// One diff, materialised on demand. The expensive half: a read, and a `git show`
@@ -220,7 +348,7 @@ pub fn diff_of(root: &Path, base: &Before, path: &str) -> Option<Changed> {
             created: false,
         }),
         None => {
-            let head = show_head(root, path);
+            let head = show_at(root, base.head.as_deref().unwrap_or("HEAD"), path);
             Some(Changed {
                 path: path.to_string(),
                 created: head.is_none(),
@@ -289,8 +417,8 @@ fn git(dir: &Path, args: &[&str]) -> Option<Vec<u8>> {
     out.status.success().then_some(out.stdout)
 }
 
-fn show_head(root: &Path, path: &str) -> Option<String> {
-    let out = git(root, &["show", &format!("HEAD:{path}")])?;
+fn show_at(root: &Path, rev: &str, path: &str) -> Option<String> {
+    let out = git(root, &["show", &format!("{rev}:{path}")])?;
     Some(String::from_utf8_lossy(&out).into_owned())
 }
 

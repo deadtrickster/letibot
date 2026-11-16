@@ -1429,6 +1429,58 @@ fn rustc_print_only(words: &[&str]) -> bool {
     printed
 }
 
+/// The version-control verbs a command runs that move the work tree as a whole: `git checkout`,
+/// `stash pop`, `jj edit`. Read from the parsed stages, in source order, each with its tool name.
+/// A file such a command touches was moved by the VCS, not edited, and is reported as such.
+pub fn vcs_verbs(command: &str) -> Vec<(&'static str, String)> {
+    let n = shell::normalise(command);
+    let mut out = Vec::new();
+    for stage in &n.stages {
+        match stage.program_name() {
+            Some("git") => {
+                let (sub, rest) = git_subcommand(&stage.argv);
+                let verb = match sub {
+                    "checkout" | "switch" | "reset" | "rebase" | "merge" | "pull" | "restore"
+                    | "cherry-pick" | "revert" | "am" => sub.to_string(),
+                    "stash" => match rest.first().copied() {
+                        None => "stash".into(),
+                        Some(v @ ("push" | "pop" | "apply" | "save")) => format!("stash {v}"),
+                        Some(v) if v.starts_with('-') => "stash".into(),
+                        Some(_) => continue,
+                    },
+                    _ => continue,
+                };
+                out.push(("git", verb));
+            }
+            Some("jj") => {
+                let sub = stage
+                    .argv
+                    .iter()
+                    .filter_map(|w| w.text())
+                    .find(|t| !t.starts_with('-'))
+                    .unwrap_or("");
+                if matches!(
+                    sub,
+                    "edit"
+                        | "new"
+                        | "checkout"
+                        | "restore"
+                        | "rebase"
+                        | "undo"
+                        | "abandon"
+                        | "squash"
+                        | "next"
+                        | "prev"
+                ) {
+                    out.push(("jj", sub.to_string()));
+                }
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
 /// git's subcommand, past its global options, and whatever follows it. An unrecognised leading
 /// `-` is skipped as a flag rather than taken for the verb.
 fn git_subcommand(argv: &[Word]) -> (&str, Vec<&str>) {

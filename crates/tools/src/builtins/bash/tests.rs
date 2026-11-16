@@ -44,10 +44,20 @@ fn attached(
     sweep: &Sweep,
     files: &crate::files::FileLedger,
 ) -> (Invocation, Vec<(String, Vec<u8>)>) {
+    attached_after("python3 -c …", sweep, files)
+}
+
+/// The same, for a named command: the command decides whether a VCS line is said.
+fn attached_after(
+    command: &str,
+    sweep: &Sweep,
+    files: &crate::files::FileLedger,
+) -> (Invocation, Vec<(String, Vec<u8>)>) {
     let wrote: std::sync::Mutex<Vec<(String, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
     let mut inv = Invocation::ok("ran");
     attach_changes(
         &mut inv,
+        command,
         sweep,
         files,
         crate::runtime::WritesWith {
@@ -315,6 +325,7 @@ fn the_note_names_only_the_writing_tools_the_seat_has() {
     let files = crate::files::FileLedger::new();
     attach_changes(
         &mut inv,
+        "python3 -c …",
         &sweep,
         &files,
         crate::runtime::WritesWith {
@@ -954,4 +965,149 @@ fn a_failed_command_that_names_a_store_path_is_answered_with_the_file_tools() {
         store,
     );
     assert!(elsewhere.notes.is_empty(), "{:?}", elsewhere.notes);
+}
+
+/// A branch with `a.txt` and `fuzz/list.inc` both changed, and the tree back on the first branch.
+fn repo_with_branch(name: &str) -> std::path::PathBuf {
+    let root = repo(name);
+    git(&root, &["checkout", "-qb", "other"]);
+    std::fs::write(root.join("a.txt"), "one\nOTHER\n").expect("write");
+    std::fs::write(root.join("fuzz/list.inc"), "alpha\nOTHER\n").expect("write");
+    git(&root, &["commit", "-qam", "other"]);
+    git(&root, &["checkout", "-q", "-"]);
+    root
+}
+
+/// A checkout away and back moves files and leaves none changed: one line, and no diff.
+#[test]
+fn a_checkout_there_and_back_is_one_line_with_no_net_change() {
+    let root = repo_with_branch("there-and-back");
+    let sweep = sweep_of(&root);
+    git(&root, &["checkout", "-q", "other"]);
+    git(&root, &["checkout", "-q", "-"]);
+
+    let (inv, wrote) = attached_after(
+        "git checkout other && git checkout -",
+        &sweep,
+        &crate::files::FileLedger::new(),
+    );
+    assert!(
+        inv.edits.is_empty(),
+        "no diff for a restored tree: {:?}",
+        inv.edits
+    );
+    assert!(wrote.is_empty(), "{wrote:?}");
+    assert_eq!(
+        inv.notes,
+        vec!["git: checkout ×2 · 2 files moved · net change: none".to_string()]
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// `sed -i` on two files: one note that counts them, the paths on its second line, two diffs.
+#[test]
+fn a_sed_on_two_files_is_one_note_and_two_diffs() {
+    let root = repo("sed-two");
+    let sweep = sweep_of(&root);
+    let out = std::process::Command::new("sed")
+        .current_dir(&root)
+        .args(if cfg!(target_os = "macos") {
+            &["-i", "", "s/e/E/", "a.txt", "fuzz/list.inc"][..]
+        } else {
+            &["-i", "s/e/E/", "a.txt", "fuzz/list.inc"][..]
+        })
+        .output()
+        .expect("sed");
+    assert!(out.status.success(), "{out:?}");
+
+    let (inv, _wrote) = attached_after(
+        "sed -i s/e/E/ a.txt fuzz/list.inc",
+        &sweep,
+        &crate::files::FileLedger::new(),
+    );
+    assert_eq!(inv.edits.len(), 2, "{:?}", inv.notes);
+    assert_eq!(inv.notes.len(), 1, "said once: {:?}", inv.notes);
+    let mut lines = inv.notes[0].lines();
+    let head = lines.next().unwrap_or_default();
+    assert!(head.contains("changed 2 files"), "{head}");
+    assert!(head.contains("detected afterwards"), "{head}");
+    assert!(
+        !head.contains("a.txt"),
+        "the count line carries no list: {head}"
+    );
+    assert!(
+        lines
+            .next()
+            .is_some_and(|l| l.starts_with("a.txt, fuzz/list.inc")),
+        "{:?}",
+        inv.notes
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A `git stash` that leaves the tree changed: the git line, then the net change's diffs, which
+/// are the stashed edits undone.
+#[test]
+fn a_stash_that_leaves_the_tree_changed_says_the_git_line_and_draws_the_net_change() {
+    let root = repo("stash");
+    std::fs::write(root.join("a.txt"), "one\nedited\n").expect("write");
+    let sweep = sweep_of(&root);
+    git(&root, &["stash", "-q"]);
+
+    let (inv, _wrote) = attached_after("git stash", &sweep, &crate::files::FileLedger::new());
+    assert_eq!(inv.notes.len(), 1, "{:?}", inv.notes);
+    assert_eq!(
+        inv.notes[0],
+        "git: stash · 1 file moved · net change: 1 file\na.txt"
+    );
+    let edit = inv.edits.first().expect("the net change is drawn");
+    assert_eq!(edit.path, "a.txt");
+    assert_eq!(edit.before, "one\nedited\n");
+    assert_eq!(edit.after, "one\ntwo\n");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A checkout that stays on the other branch diffs against where the tree stood, not the new
+/// `HEAD`: the old bytes come from the commit the call started on.
+#[test]
+fn a_checkout_that_stays_diffs_against_the_commit_it_left() {
+    let root = repo_with_branch("stays");
+    let sweep = sweep_of(&root);
+    git(&root, &["checkout", "-q", "other"]);
+
+    let (inv, _wrote) = attached_after(
+        "git checkout other",
+        &sweep,
+        &crate::files::FileLedger::new(),
+    );
+    let paths: Vec<&str> = inv.edits.iter().map(|e| e.path.as_str()).collect();
+    assert_eq!(paths, vec!["a.txt", "fuzz/list.inc"], "{:?}", inv.notes);
+    assert_eq!(inv.edits[0].before, "one\ntwo\n");
+    assert_eq!(inv.edits[0].after, "one\nOTHER\n");
+    assert!(
+        inv.notes[0].starts_with("git: checkout · 2 files moved · net change: 2 files\n"),
+        "{:?}",
+        inv.notes
+    );
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Layer A names the VCS verbs from the parsed stages, not from the text.
+#[test]
+fn vcs_verbs_are_read_from_the_parse() {
+    let v = |c: &str| crate::intent::vcs_verbs(c);
+    assert_eq!(
+        v("git stash; git -C x checkout origin/devel && git apply --check p; git stash pop"),
+        vec![
+            ("git", "stash".to_string()),
+            ("git", "checkout".to_string()),
+            ("git", "stash pop".to_string())
+        ]
+    );
+    assert!(
+        v("echo git checkout").is_empty(),
+        "an argument is not a command"
+    );
+    assert!(v("git stash list; git status").is_empty());
+    assert_eq!(v("jj edit abc"), vec![("jj", "edit".to_string())]);
 }
