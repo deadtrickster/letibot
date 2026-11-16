@@ -8,10 +8,9 @@ fn settings() -> Settings {
     Settings::new(PathBuf::from("/usr/local/bin/claude"))
 }
 
-/// The schema is the queue's OWN verdict, field for field: the words [`Decision::ALL`] holds and
-/// the three evidence fields `review_verdict` takes. A second spelling of the answer would be a
-/// second answer, and a Claude verdict could then not be written onto a row a letibot reviewer
-/// judged with the same code.
+/// The schema is the queue's own verdict, field for field: [`Decision::ALL`] and the three
+/// evidence fields `review_verdict` takes. One spelling, so a Claude verdict and a letibot
+/// reviewer's are written onto a row by the same code.
 #[test]
 fn the_schema_is_the_queues_own_verdict_and_nothing_else() {
     let s = schema();

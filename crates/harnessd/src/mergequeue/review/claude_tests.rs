@@ -1,7 +1,6 @@
-//! A Claude reviewer, end to end: the REAL `serve`, store and desk against a stub executable that
-//! prints the JSON shapes the headless docs give. No `claude` binary is started anywhere - the stub
-//! is a shell script this file writes, and it records the argv it was called with so the run's own
-//! flags can be asserted rather than believed.
+//! A Claude reviewer, end to end: the real `serve`, store and desk against a stub shell script that
+//! prints the headless JSON shapes and records its argv, so the run's flags are asserted. No
+//! `claude` binary is started.
 
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -341,11 +340,9 @@ fn a_red_tips_review_is_a_claude_run_too() {
     );
 }
 
-/// The queue's upkeep asks the daemon's door whether a row's reviewer is still alive, and a Claude
-/// reviewer is a PROCESS with no session to be alive in - so without the runs table the row would be
-/// re-seated on the very next pass, which is the defect that would make the whole kind useless. The
-/// control is in the same test: a row under a child nobody holds IS re-seated in the same pass, so
-/// the difference is the runs table and not a door that was never asked.
+/// A Claude reviewer is a process with no session, so only the runs table keeps its row from being
+/// re-seated on the next pass. The control: a row under a child nobody holds is re-seated in the
+/// same pass, so the difference is the runs table.
 #[test]
 fn a_claude_reviewer_is_not_re_seated_by_the_upkeep() {
     use crate::mergequeue::gate::GreenGate;
@@ -830,10 +827,9 @@ fn the_runs_table_holds_a_process_until_it_is_dead() {
         claude::Polled::Running,
         "nothing has been judged while it works"
     );
-    // Nobody polls it any more: it is stopped with SIGINT, and stays in the table until it is gone.
-    // A real clock, because the grace is what the escalation to `SIGKILL` is measured against: the
-    // constants 2 and 3 that stood here could never reach it, so a `SIGINT` the stub's shell
-    // swallowed left the run alive for the whole of this loop and the test failed 30 s later.
+    // Nobody polls it now: it is stopped with SIGINT, and stays in the table until it is gone. A
+    // real clock, because the escalation to `SIGKILL` is measured against the grace, and a `SIGINT`
+    // the stub's shell swallowed must still be escalated within this loop.
     let stopped = now_ms();
     runs.keep(&[], stopped);
     assert!(runs.owns(&handle), "not forgotten before it is dead");

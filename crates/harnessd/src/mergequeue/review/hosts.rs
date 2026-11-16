@@ -1,5 +1,5 @@
 //! Where a `host` reviewer runs: this machine, or a declared host named by `[queue]
-//! reviewer_hosts` (opt-in, D18), chosen by spare cores. Facts come from a cache refreshed off the
+//! reviewer_hosts` (opt-in), chosen by spare cores. Facts come from a cache refreshed off the
 //! queue's thread. [`ReviewHosts::keep`] frees a place against the desk's live children.
 
 use std::collections::BTreeMap;
@@ -23,7 +23,7 @@ pub const HOST_BOUND: Duration = Duration::from_secs(8);
 /// heard from and leaves the rest as *not asked yet*, which is a wait, not a verdict.
 pub const PROBE_TOTAL: Duration = Duration::from_secs(10);
 
-/// **The name this machine answers to in a pool** - `[queue] reviewer_hosts = ["local"]`.
+/// The name this machine answers to in a pool - `[queue] reviewer_hosts = ["local"]`.
 pub const LOCAL: &str = "local";
 
 /// Hosts a reviewer is never placed on, even when `hosts.toml` declares them or the pool is `*`.
@@ -34,7 +34,7 @@ pub fn is_forbidden(name: &str) -> bool {
     FORBIDDEN.contains(&name)
 }
 
-/// **One machine, as this pass sees it.**
+/// One machine, as this pass sees it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Machine {
     /// `None` is this machine - the one the daemon is running on.
@@ -82,7 +82,7 @@ struct Inner {
     at: Option<Instant>,
     /// The reviewers this daemon has placed, by child handle. Pruned by [`ReviewHosts::keep`].
     placed: BTreeMap<String, String>,
-    /// **The machines that refused a placement in THIS pass** - skipped until the pass ends, so
+    /// The machines that refused a placement in THIS pass - skipped until the pass ends, so
     /// fourteen rows do not each pay the same timeout. Cleared by [`ReviewHosts::end_pass`].
     down: BTreeMap<String, String>,
 }
@@ -106,7 +106,7 @@ impl ReviewHosts {
         self.machines_locked(&inner, pool)
     }
 
-    /// **The names a project asked for that nobody declared** - the sentence a pass says, rather
+    /// The names a project asked for that nobody declared - the sentence a pass says, rather
     /// than a pool that is quietly smaller than the file says.
     pub fn unknown(&self, pool: Option<&[String]>) -> Vec<String> {
         let Some(list) = pool else {
@@ -120,12 +120,12 @@ impl ReviewHosts {
             .collect()
     }
 
-    /// **How many reviewers the pool can take this pass** - the sum of what each machine has room
+    /// How many reviewers the pool can take this pass - the sum of what each machine has room
     /// for, which is what the queue claims by. A machine that refused a placement this pass counts
     /// for nothing: claiming a row for it would leave that row `reviewing` with nobody on it.
     pub fn capacity(&self, pool: Option<&[String]>) -> usize {
         let inner = self.lock();
-        // This machine alone is the default (D18): the old fixed limit, not a spare-core budget.
+        // This machine alone is the default: the old fixed limit, not a spare-core budget.
         if self.machines_locked(&inner, pool).len() == 1 {
             return crate::mergequeue::serve::MAX_REVIEWING;
         }
@@ -163,7 +163,7 @@ impl ReviewHosts {
             let spare = m.spare.unwrap_or(0.0);
             let better = match &best {
                 None => true,
-                // **More spare wins; equal spare is this machine's.** `>` and not `>=` on the spare
+                // More spare wins; equal spare is this machine's. `>` and not `>=` on the spare
                 // alone, because the machines are walked local-first and a later machine with the
                 // same spare must not displace it.
                 Some(b) => spare > b.spare.unwrap_or(0.0),
@@ -182,7 +182,7 @@ impl ReviewHosts {
         (me.room(taken(&inner, None)) > 0).then_some(me)
     }
 
-    /// **Record that a reviewer went to a machine** - the per-host cap counts this daemon's own
+    /// Record that a reviewer went to a machine - the per-host cap counts this daemon's own
     /// work, and [`ReviewHosts::keep`] frees it when the reviewer is over.
     pub fn started(&self, child: &str, machine: &Machine) {
         let mut inner = self.lock();
@@ -199,7 +199,7 @@ impl ReviewHosts {
         inner.placed.retain(|child, _| live.contains(child));
     }
 
-    /// **Which machine a child of this daemon is on**, when this pool placed it. `Some(None)` is
+    /// Which machine a child of this daemon is on, when this pool placed it. `Some(None)` is
     /// *this machine*, and `None` is *this pool did not place it* (a reviewer from before a
     /// restart, or a VM one).
     pub fn where_is(&self, child: &str) -> Option<Option<String>> {
@@ -209,7 +209,7 @@ impl ReviewHosts {
             .map(|n| (!n.is_empty()).then(|| n.clone()))
     }
 
-    /// **This machine is having a bad day** - it refused a placement in this pass, so nothing else
+    /// This machine is having a bad day - it refused a placement in this pass, so nothing else
     /// is sent there until the pass ends. The sentence is the host's own.
     pub fn mark_down(&self, name: Option<&str>, why: String) {
         self.lock()
@@ -222,7 +222,7 @@ impl ReviewHosts {
         self.lock().down.get(name.unwrap_or_default()).cloned()
     }
 
-    /// **The pass is over** - a machine that failed a minute ago is tried again next time, because
+    /// The pass is over - a machine that failed a minute ago is tried again next time, because
     /// a reboot is minutes and a queue that never retried would run here for ever.
     pub fn end_pass(&self) {
         self.lock().down.clear();
@@ -275,7 +275,7 @@ impl ReviewHosts {
         }
     }
 
-    /// **Block until a refresh is done** - for a test, and for nothing in the queue.
+    /// Block until a refresh is done - for a test, and for nothing in the queue.
     pub fn wait(&self, handle: Option<std::thread::JoinHandle<()>>) {
         if let Some(h) = handle {
             let _ = h.join();
@@ -354,7 +354,7 @@ pub fn local_spare() -> Option<f64> {
     Some(cores.max(capacity::CORES_PER_REVIEWER))
 }
 
-/// **Ask every host at once**, each bounded, and the whole thing bounded - the shape
+/// Ask every host at once, each bounded, and the whole thing bounded - the shape
 /// `letibot_tools::builtins::hosts` already uses for the `hosts` tool's `probe: true`, one number
 /// over: the spare cores, or the refusal.
 fn probe_all(hosts: &[Host], total: Duration, per_host: Duration) -> BTreeMap<String, Fact> {

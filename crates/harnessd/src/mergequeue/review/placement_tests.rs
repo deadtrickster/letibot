@@ -46,7 +46,7 @@ impl Started {
     }
 }
 
-/// **A runner that records and answers a handle per start** - and, when `fail_first` is set, whose
+/// A runner that records and answers a handle per start - and, when `fail_first` is set, whose
 /// FIRST child dies at its open with the sentence a remote placement gives.
 struct Recorder {
     started: Arc<Started>,
@@ -76,7 +76,7 @@ impl TaskRunner for Recorder {
     }
 }
 
-/// **One claimed review of one branch**, in a repository of this test's own at a head that is not
+/// One claimed review of one branch, in a repository of this test's own at a head that is not
 /// `main`'s tip.
 fn claimed(dir: &TempDir) -> (Store, std::path::PathBuf, String) {
     let repo = repo(&dir.0.join("the-repository"));
@@ -305,7 +305,7 @@ fn the_per_host_cap_puts_the_second_reviewer_in_line_instead_of_on_the_same_box(
         two.failure
     );
     assert_eq!(two.attempts, 0, "nothing was tried and failed: {two:?}");
-    // **And the wait is held, not claimed every two seconds** - the queue's own gate on it.
+    // And the wait is held, not claimed every two seconds - the queue's own gate on it.
     assert!(
         capacity::held_until(&two.failure, two.deadline_ms, now_ms()),
         "a row waiting for a reviewer slot is not claimed again until its not-before time"
@@ -323,7 +323,7 @@ fn a_verdict_frees_the_place_the_reviewer_held() {
     let (store, _repo, _head) = claimed(&dir);
 
     let machines = ReviewHosts::new();
-    // **Four spare cores: exactly ONE place**, so *freed* and *not freed* are two different answers
+    // Four spare cores: exactly ONE place, so *freed* and *not freed* are two different answers
     // and not two ways of saying `PER_HOST_MAX`.
     machines.set_spare(Some("lab2x1"), Some(4.0), None);
     machines.set_spare(None, Some(0.0), None);
@@ -363,7 +363,7 @@ fn a_verdict_frees_the_place_the_reviewer_held() {
         "the one place is taken while the reviewer is running"
     );
 
-    // **The reviewer hands its verdict in** - the desk is the only door one goes through.
+    // The reviewer hands its verdict in - the desk is the only door one goes through.
     desk.submit(
         child,
         Submission {
@@ -485,7 +485,7 @@ fn a_host_that_refused_the_placement_is_left_out_and_the_review_runs_here() {
         head,
         "at the same head the verdict is bound to"
     );
-    // **And it was said**, both in the row's history and as a warning naming the machine.
+    // And it was said, both in the row's history and as a warning naming the machine.
     let why = store
         .transitions("review", "the-review")
         .expect("the history")
@@ -549,7 +549,7 @@ fn a_host_that_refused_the_placement_is_left_out_and_the_review_runs_here() {
 }
 
 /// Without `reviewer_hosts` the pool is this machine alone: a declared host with all the spare in
-/// the world is never used, and the reviewer works in the clone here (D18).
+/// the world is never used, and the reviewer works in the clone here.
 #[test]
 fn by_default_a_reviewer_stays_on_this_machine_whatever_hosts_are_declared() {
     let _hosts = HostsFile::with(&["lab2x1"]);

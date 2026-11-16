@@ -420,9 +420,8 @@ fn what_the_scoped_read_costs() {
     assert_eq!(census.total, 20, "and it counts only this project's rows");
 }
 
-/// K9's done-test: the queue's two census numbers come from `leticode.toml`'s `[queue]`, and with
-/// no key at all they are today's daemon, number for number - the phase's other half, *every key
-/// at its default is byte-identical to today*.
+/// The queue's two census numbers come from `leticode.toml`'s `[queue]`, and with no key at all
+/// they are the built-in defaults.
 #[test]
 fn queue_constants_come_from_config_with_todays_defaults() {
     // The daemon that shipped: fifteen minutes, and the same as the constant the doc names.

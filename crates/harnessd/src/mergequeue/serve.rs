@@ -26,11 +26,11 @@ use super::settings::{self, QueueSettings};
 pub const REVIEW_DEADLINE_MS: u64 = 60 * 60 * 1000;
 
 /// How long a claimed review may wait for its reviewer to START before the queue raises it as
-/// a reviewer that cannot start (decision 4) - the review queue's session never picked it up.
+/// a reviewer that cannot start - the review queue's session never picked it up.
 pub const REVIEWER_START_GRACE_MS: u64 = 5 * 60 * 1000;
 
-/// Attempts before a review is `blocked` and raised - three, and then a person (the v23
-/// queue's 3-in-5-minutes then handed the branch to a model to merge without the gate: defect 11).
+/// Attempts before a review is `blocked` and raised - three, and then a person, never a model
+/// merging without the gate.
 pub const MAX_REVIEW_ATTEMPTS: u32 = 3;
 
 /// Reviews a repository runs at once.
@@ -107,9 +107,8 @@ pub trait QueueDoor: Send + Sync {
             "this door rings no project session of {repository}"
         ))
     }
-    /// Put the words on a session, not only on its bell - the operator's *"those red states must
-    /// reach top session agent or a gatekeeper"* : a ring says *that* something happened
-    /// while this says *what*. A door that cannot deliver answers by name, not with a false promise.
+    /// Put the words on a session, not only on its bell: a ring says that something happened, this
+    /// says what. A door that cannot deliver answers by name, not with a false promise.
     fn deliver_repository(&self, repository: &str, text: &str) -> Result<String, String> {
         let _ = (repository, text);
         Err(format!("this door delivers to no session of {repository}"))
@@ -156,27 +155,26 @@ pub struct QueueEnv {
     pub gate_deadline: Duration,
     pub review_deadline_ms: u64,
     pub reviewer_start_grace_ms: u64,
-    /// **How long a worker sleeps after a pass with nothing to do.**
+    /// How long a worker sleeps after a pass with nothing to do.
     pub idle: Duration,
-    /// **`--reviewers-at-once`, when the daemon's command line named one** - the outermost of the
+    /// `--reviewers-at-once`, when the daemon's command line named one - the outermost of the
     /// three places the number comes from (flag, project file, the pool's own capacity).
     pub reviewers_at_once: Option<usize>,
-    /// **What the machines a `host` reviewer may use can take** - this daemon's pool
+    /// What the machines a `host` reviewer may use can take - this daemon's pool
     /// (`review::hosts::ReviewHosts`), shared with the review pool so the per-host cap counts every
     /// reviewer this daemon has running. Read from the last probe, never by waiting for one.
     pub hosts: Arc<crate::mergequeue::review::hosts::ReviewHosts>,
-    /// **Which machines that pool is** - [`crate::config::Config::reviewer_hosts`], where `None` is
+    /// Which machines that pool is - [`crate::config::Config::reviewer_hosts`], where `None` is
     /// *every host the operator declared, plus this machine*.
     pub reviewer_hosts: Option<Vec<String>>,
-    /// **The daemon's Claude Code reviewers** (`[queue.claude]`, R116) - the processes behind every
-    /// row whose reviewer is a `claude -p` run. `None` is a daemon that starts none of them, and
-    /// this is what tells a process reviewer from a session one when a row is checked for a
-    /// reviewer that is gone: a process has no entry in the session registry to be alive in.
+    /// The daemon's Claude Code reviewers (`[queue.claude]`) - the `claude -p` processes behind rows.
+    /// `None` starts none. This tells a process reviewer from a session one when a row is checked
+    /// for a gone reviewer: a process has no entry in the session registry.
     pub claude: Option<Arc<crate::mergequeue::review::claude::Runs>>,
 }
 
 impl QueueEnv {
-    /// **How many reviewers the pool can take right now** - the pool's own answer for the machines
+    /// How many reviewers the pool can take right now - the pool's own answer for the machines
     /// this daemon may use, and it never touches the network: a snapshot that is stale is refreshed
     /// on another thread.
     pub fn review_capacity(&self) -> usize {
@@ -336,7 +334,7 @@ impl Running {
 
 /// What a running gate judges - and so how its verdict is applied.
 enum GateFor {
-    /// The target's tip (decision 10): its health.
+    /// The target's tip: its health.
     Target {
         health: TargetHealth,
         wt: PathBuf,
@@ -346,7 +344,7 @@ enum GateFor {
     Land(Box<Landing>),
     /// Several branches rebased one onto the last, gated once (`[queue] gate_train`).
     Train(Box<Train>),
-    /// The install steps, after the landing was pushed (decision 7).
+    /// The install steps, after the landing was pushed.
     Install {
         landing: Box<Landing>,
         gate: GateRun,
@@ -606,7 +604,7 @@ impl RepoQueue {
             }
         };
         // The verdict of a gate that ended, applied once - before the upkeep, so the review of a
-        // tip that just went red is claimed in this pass (*"taken first, as soon as a reviewer is free"*).
+        // tip that just went red is claimed in this pass, first, as soon as a reviewer is free.
         let mut worked = self.reap_gate()?;
         worked |= self.adopt_orphans()?;
         worked |= self.review_upkeep(&settings)?;
@@ -956,14 +954,12 @@ impl RepoQueue {
         for r in &rows {
             match r.state {
                 // A reviewer past its deadline, or one that never started - the attempt is
-                // counted, and the third is a raise rather than a fourth (defect 10).
+                // counted, and the third is a raise rather than a fourth.
                 ReviewState::Reviewing if r.owner == me => {
                     let never_started = r.reviewer.is_none()
                         && now.saturating_sub(r.state_ms) > self.env.reviewer_start_grace_ms;
-                    // A reviewer child that is not alive in this daemon - the operator's *"after a restart two
-                    // rows stayed reviewing with reviewer children that no longer existed"*. A Claude
-                    // reviewer is a PROCESS and has no session to be alive in: the run in the table is
-                    // the whole of its liveness, so this question is not asked about one.
+                    // A reviewer child that is not alive in this daemon, as after a restart. A Claude
+                    // reviewer is a process with no session: its run in the table is its liveness.
                     let is_process = r
                         .reviewer
                         .as_deref()
@@ -1028,7 +1024,7 @@ impl RepoQueue {
                     }
                 }
                 // A verdict that answered a head the branch has since moved past is no verdict on
-                // the branch (decision 6, and defect 5's other half).
+                // the branch.
                 ReviewState::Rejected | ReviewState::CannotDecide
                     if r.kind == ReviewKind::Branch =>
                 {
@@ -1090,9 +1086,8 @@ impl RepoQueue {
             }
         }
 
-        // The claims - the target's red tip first (*"main itself goes to review … taken first as
-        // soon as a reviewer is free"*), then priority, then age. A red target halts its review
-        // queue
+        // The claims - the target's red tip first, then priority, then age. A red target halts its
+        // review queue.
         let red = self.red_targets()?;
         let target_of = |r: &ReviewRow| {
             if r.target.is_empty() {
@@ -1204,8 +1199,7 @@ impl RepoQueue {
     }
 
     /// A review nobody needs to run - the branch is gone, carries nothing, or is already on
-    /// the target (decision 13's *"checked and re-enqueued if its branch is unmerged"*, and a
-    /// project that landed a blocked branch by hand).
+    /// the target (a project that landed a blocked branch by hand).
     fn settle_if_needless(&self, r: &ReviewRow) -> Result<bool, StoreError> {
         let me = self.me().to_string();
         let Some(head) = git::branch_head(&self.repo, &r.branch) else {
@@ -1655,7 +1649,7 @@ impl RepoQueue {
         Ok(moved)
     }
 
-    /// Raise a review that cannot run (decision 4) - `blocked`, at high severity.
+    /// Raise a review that cannot run - `blocked`, at high severity.
     fn block(
         &self,
         r: &ReviewRow,
@@ -1683,7 +1677,7 @@ impl RepoQueue {
 
     // ===== The target's health =====
 
-    /// Gate the target's tip if it changed (decision 10) - coalesced: whatever the tip is NOW is
+    /// Gate the target's tip if it changed - coalesced: whatever the tip is NOW is
     /// what is gated, so a burst of commits is one run. Returns the health, or that a gate started.
     fn health(&self, target: &str) -> Result<Health, StoreError> {
         let me = self.me().to_string();
@@ -2182,7 +2176,7 @@ impl RepoQueue {
         let current = tip_now.as_deref() == Some(h.sha.as_str());
         let allowed = |m: &MergeRow| match h.state {
             HealthState::Green => current,
-            // *"while main is red the merge queue lands nothing"* - but the fix itself has to.
+            // While the target is red the queue lands nothing but the fix itself.
             HealthState::Red => m.fixes.is_some(),
             _ => false,
         };
@@ -3025,7 +3019,7 @@ impl RepoQueue {
                 ),
             );
         }
-        // Push, then install (decision 7).
+        // Push, then install.
         let pushed = git::push(&repo, &target, &rebased);
         let (pushed_text, may_install) = match &pushed {
             git::Pushed::Yes(s) => (s.clone(), true),
@@ -3215,7 +3209,7 @@ impl RepoQueue {
             self.train_back(&train.cars, &why, &run.steps)?;
             return Ok(());
         }
-        // Push, then install (decision 7) - once, on the last car's tip.
+        // Push, then install - once, on the last car's tip.
         let pushed = git::push(&self.repo, &target, &prev);
         let (pushed_text, may_install) = match &pushed {
             git::Pushed::Yes(s) => (s.clone(), true),
@@ -3263,7 +3257,7 @@ impl RepoQueue {
         Ok(())
     }
 
-    /// The verdict of a train's install, after its last car was pushed (decision 7) - the same
+    /// The verdict of a train's install, after its last car was pushed - the same
     /// arm as a lone landing's, written on every car's row.
     fn finish_install_train(
         &self,
@@ -3356,7 +3350,7 @@ impl RepoQueue {
         Ok(())
     }
 
-    /// The verdict of the install that followed a pushed landing (decision 7).
+    /// The verdict of the install that followed a pushed landing.
     fn finish_install(
         &self,
         landing: Box<Landing>,
@@ -3429,10 +3423,8 @@ impl RepoQueue {
             self.store
                 .tell_once(&half_green_key(&self.key, t), gate::now_ms())?;
         }
-        // And the OWNER of that branch: a landed branch means its work is on the target, which is
-        // the proof the lifecycle's landed grace rests on (`docs/lifecycle.md` d.2's `landed_sha`,
-        // G3's settle trigger). Only a recorded owner is written; a queue entry that names nobody
-        // is nobody's.
+        // And the owner of that branch: its work is on the target, the proof the lifecycle's
+        // landed grace rests on (`landed_sha`). Only a recorded owner is written.
         if let Err(e) = letibot_tools::lifecycle::set_landed(&self.store, &row.owner, rebased) {
             self.raise(
                 "queue_owner_landing",

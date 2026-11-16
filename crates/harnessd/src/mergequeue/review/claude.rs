@@ -1,17 +1,12 @@
-//! The queue's other reviewer: Claude Code, headless (`claude -p`, R116).
+//! The queue's other reviewer: Claude Code, headless (`claude -p`).
 //!
-//! A letibot reviewer is a session that hands its verdict to the review desk through the
-//! `review_verdict` tool. This one is a PROCESS: one prompt in, one JSON object out, and the verdict
-//! is the run's `structured_output` checked against the queue's own schema ([`schema`] is
-//! [`Decision::ALL`] and the three evidence fields `review_verdict` takes, and nothing else). The
-//! queue drives it the way it drives a child - start, poll, stop - so a panel of reviewers cannot
-//! tell which kind judged a branch.
+//! A letibot reviewer is a session that hands its verdict over through `review_verdict`. This one is
+//! a process: one prompt in, one JSON object out, the verdict the run's `structured_output` checked
+//! against the queue's own [`schema`]. The queue drives it like a child - start, poll, stop.
 //!
-//! Three facts of the headless mode shape this file. The run's output is drained by a thread while
-//! it works, because a reviewer that prints more than a pipe holds would otherwise block for ever.
-//! The time limit ends a run with `SIGINT` and not `SIGTERM`: a turn ended by `SIGINT` is ended
-//! cleanly, and `SIGTERM` exits 143, which reads as a crash. And `--resume <id>` continues the
-//! previous run's conversation, so a re-review of a new head keeps what the reviewer already read.
+//! The run's output is drained by a thread, or a reviewer that prints more than a pipe holds blocks
+//! for ever. The time limit sends `SIGINT`, not `SIGTERM` (exit 143 reads as a crash). `--resume
+//! <id>` continues the previous run, so a re-review of a new head keeps what was already read.
 
 use std::io::Read;
 use std::os::unix::process::CommandExt;
@@ -24,11 +19,9 @@ use std::time::Duration;
 use letibot_tools::gatekeeper::{Decision, Door, LookedAt, ReviewRequest, Submission};
 use serde_json::{Value, json};
 
-/// The tools a run may use unless the project names its own: what a review actually reads, and
-/// nothing that can write. The three git commands are the change and its history (`git diff`,
-/// `git log`, `git show`) and the revision a diff is named against; `Grep` is the search. A project
-/// that wants a command outside this list names it - `cargo test` builds in the tree, so it is not
-/// here by default.
+/// The tools a run may use unless the project names its own: what a review reads, nothing that can
+/// write - `git diff`, `git log`, `git show`, the revision a diff is named against, and `Grep`.
+/// `cargo test` builds in the tree, so a project that wants it names it.
 pub const DEFAULT_TOOLS: [&str; 7] = [
     "Read",
     "Grep",
@@ -256,10 +249,9 @@ struct Run {
 }
 
 impl Run {
-    /// `SIGINT`, which ends a Claude Code turn cleanly; `SIGTERM` would exit 143, which reads as a
-    /// crash rather than the queue's own act. Sent on every request while the run is alive, because
-    /// a shell's own handler consumes one that lands before its command starts (measured, 13 of
-    /// 400) and `stopped` keeps the FIRST request, which is the grace's clock.
+    /// `SIGINT`, which ends a Claude Code turn cleanly; `SIGTERM` exits 143, which reads as a crash.
+    /// Sent on every request while the run is alive, because a shell's handler can consume one that
+    /// lands before its command starts. `stopped` keeps the first request, the grace's clock.
     fn end(&mut self, now_ms: u64) {
         if self.stopped.is_none() {
             self.stopped = Some(now_ms);
@@ -380,10 +372,9 @@ impl Runs {
         };
         match inner[i].child.try_wait() {
             Ok(None) => {
-                // Already asked to end - by this deadline on an earlier poll, or by a pass that
-                // dropped the row. Ask AGAIN: one `SIGINT` that a shell's handler consumes is gone
-                // for good, and this poll is the only door left, so a run ended once and never
-                // repeated wedges the row here for as long as the process lives.
+                // Already asked to end, by an earlier poll or a pass that dropped the row. Ask
+                // again: a `SIGINT` a shell's handler consumed is gone, and a run never asked twice
+                // would wedge the row for as long as the process lives.
                 if inner[i].stopped.is_some() {
                     inner[i].end(now_ms);
                     return Polled::Running;

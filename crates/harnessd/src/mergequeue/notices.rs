@@ -724,8 +724,8 @@ pub fn capacity_wait(
 }
 
 /// `queue_waiting_for_vm` (Routine, once per wait): firecode had no free slot for the reviewer, and the
-/// review waits - not blocked, no attempt counted. `busy` is `VmCapacity::busy_line` (*"4 of 4 VM slots
-/// are busy"*).
+/// review waits - not blocked, no attempt counted. `busy` is `VmCapacity::busy_line` ("4 of 4 VM slots
+/// are busy").
 pub fn waiting_for_vm(r: &ReviewRow, busy: &str) -> String {
     format!(
         "the review of `{}` (`{}`) is waiting for a free VM slot: {busy}. It is not blocked and \

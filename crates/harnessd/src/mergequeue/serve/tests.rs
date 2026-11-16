@@ -445,7 +445,7 @@ fn a_host_queue_claims_its_own_number_of_reviews_and_a_vm_queue_keeps_the_vm_slo
         let (wt, base, head) = branch(&w.repo, &name, &format!("{name}.txt"));
         w.enqueue(&name, &wt, &base, &head);
     }
-    // **A function and not a closure**: a closure here captured the FIRST world, and the shadowed
+    // A function and not a closure: a closure here captured the FIRST world, and the shadowed
     // `w` below is a different binding - it counted another repository's rows and answered zero.
     fn reviewing(w: &World) -> usize {
         w.store()
@@ -456,7 +456,7 @@ fn a_host_queue_claims_its_own_number_of_reviews_and_a_vm_queue_keeps_the_vm_slo
             .count()
     }
 
-    // **A number the project named** - three, on a queue that would otherwise take four here.
+    // A number the project named - three, on a queue that would otherwise take four here.
     let q = w.worker_with(
         Arc::new(GreenGate),
         "at-once",
@@ -469,7 +469,7 @@ fn a_host_queue_claims_its_own_number_of_reviews_and_a_vm_queue_keeps_the_vm_slo
     run(&q, 1);
     assert_eq!(reviewing(&w), 3, "three claimed, and two still in line");
 
-    // **And `vm` ignores that number**, because a VM reviewer's limit is the box's firecode taps.
+    // And `vm` ignores that number, because a VM reviewer's limit is the box's firecode taps.
     let w = World::new("reviewers-at-once-vm");
     for i in 0..5 {
         let name = format!("b{i}");
@@ -763,7 +763,7 @@ fn a_landing_names_the_machine_its_gate_ran_on() {
 }
 
 /// The target moved during the gate → rebase and gate again, not fail (requirement 3). The
-/// v23 queue's `merge --ff-only` failed and parked the entry `failed` (defect 7).
+/// v23 queue's `merge --ff-only` failed and parked the entry `failed`.
 #[test]
 fn a_target_that_moves_during_the_gate_is_rebased_onto_and_gated_again() {
     /// A gate that, the first time it runs on a branch, lets somebody commit to main by hand.
@@ -826,7 +826,7 @@ fn a_target_that_moves_during_the_gate_is_rebased_onto_and_gated_again() {
     );
 }
 
-/// The verdict is bound to the head it judged (decision 6, defect 5): a branch that moved
+/// The verdict is bound to the head it judged: a branch that moved
 /// after approval goes back to review; a rebase onto a newer main is not a move.
 #[test]
 fn a_branch_that_moves_after_approval_goes_back_to_review_and_a_rebase_does_not() {
@@ -863,7 +863,7 @@ fn a_branch_that_moves_after_approval_goes_back_to_review_and_a_rebase_does_not(
 }
 
 /// Thirty minutes, then `timed out` - its own outcome, and the gate's whole process group is
-/// killed (decision 9, defect 6). Here the deadline is a second and the step sleeps a minute.
+/// killed. Here the deadline is a second and the step sleeps a minute.
 #[test]
 fn a_gate_past_its_deadline_is_killed_and_timed_out_is_its_own_outcome() {
     let w = World::new("deadline");
@@ -1087,7 +1087,7 @@ fn a_landing_that_finds_its_branch_on_the_target_moves_once() {
 }
 
 /// A daemon that stops kills its gate and puts the row back in line - never left `taken`
-/// for a restart to call `stale` while the orphan holds the build lock (defect 6).
+/// for a restart to call `stale` while the orphan holds the build lock.
 #[test]
 fn a_stopping_daemon_kills_the_gate_and_the_row_goes_back_in_line() {
     let w = World::new("stop");
@@ -1126,7 +1126,7 @@ fn a_stopping_daemon_kills_the_gate_and_the_row_goes_back_in_line() {
     assert_eq!(row.owner, "", "nobody's");
 }
 
-/// Push after the gate, install only after the push (decision 7).
+/// Push after the gate, install only after the push.
 #[test]
 fn the_landing_pushes_then_installs_and_a_failed_push_installs_nothing() {
     let w = World::new("push");
@@ -1243,7 +1243,7 @@ fn a_red_target_lands_nothing_but_its_fix_and_goes_first_in_review() {
     w.enqueue("two", &wt2, &base2, &head2);
     run(&q, 1);
     let m2 = w.accept("two", "test/a");
-    // …and before it lands, a hand merge breaks main (decision 10: gated on every change, hand
+    // …and before it lands, a hand merge breaks main (the target is gated on every change, hand
     // merges included).
     commit(
         &w.repo,
@@ -1480,7 +1480,7 @@ fn unreadable_queue_settings_are_said_once_per_error() {
     assert_eq!(said.len(), 2, "a changed error is said: {said:?}");
 }
 
-/// One repository's red target does not stop another's landings (decision 2) - two
+/// One repository's red target does not stop another's landings - two
 /// repositories, two leases, two workers.
 #[test]
 fn a_red_target_in_one_repository_does_not_stop_another() {
@@ -1511,8 +1511,7 @@ fn a_red_target_in_one_repository_does_not_stop_another() {
 }
 
 /// A re-gate of a red tip is not a verdict: until it says green, a branch is not claimed for a
-/// review whose approval the same red would spend at once. On 2026-11-15 one rano row got three
-/// reviewers in 16 minutes this way, each claimed in the window of an operator's re-gate.
+/// review whose approval the same red would spend at once.
 #[test]
 fn a_red_tip_being_gated_again_still_holds_its_branch_reviews() {
     for (halted, tag) in [(true, "regate-red"), (false, "regate-plain")] {
@@ -1643,8 +1642,8 @@ fn a_gate_whose_own_setup_fails_after_the_build_is_unjudged_not_red_and_lands_no
     assert_eq!(w.tip(), tip);
 }
 
-/// firecode's red - *"a git worktree doesn't carry gitignored files … every check that
-/// boots a VM fails"*. The red notice names what the checkout has and the landing tree lacks, and
+/// A git worktree does not carry gitignored files, so a gate that needs one is red. The red notice
+/// names what the checkout has and the landing tree lacks, and
 /// `[queue] gate_carry` brings it in so the same gate passes.
 #[test]
 fn a_gate_that_needs_an_ignored_input_is_told_its_name_and_passes_once_it_is_carried() {
@@ -1693,9 +1692,8 @@ fn a_gate_that_needs_an_ignored_input_is_told_its_name_and_passes_once_it_is_car
     );
 }
 
-/// An amended target supersedes the review of its old red tip. Before: the review of
-/// the amended-away tip stayed open, and once its commit was gone it was `blocked` on *"fatal: unable
-/// to read tree"*. After: withdrawn as `superseded by <the new tip>`, and the new tip is gated.
+/// An amended target supersedes the review of its old red tip: withdrawn as `superseded by <the
+/// new tip>`, never `blocked` on a commit that is gone, and the new tip is gated.
 #[test]
 fn an_amended_target_supersedes_the_review_of_its_old_red_tip_and_gates_the_new_one() {
     let w = World::new("amend");
@@ -1840,9 +1838,8 @@ fn a_judged_tip_is_gated_again_on_request_and_when_a_daemon_takes_the_queue() {
     assert_eq!(health().state, HealthState::Green);
 }
 
-/// A red target puts its sentence on a session, not only on a bell - the operator's report:
-/// *"those red states must reach top session agent or a gatekeeper"*. A ring
-/// wakes a project's roots and leaves what happened to the store.
+/// A red target puts its sentence on a session, not only on a bell. A ring wakes a project's roots
+/// and leaves what happened to the store.
 #[test]
 fn a_red_target_is_told_to_a_session_not_only_rung() {
     let w = World::new("redwords");
@@ -1905,8 +1902,7 @@ fn a_red_target_and_a_blocked_review_ring_the_project_once_each() {
 
 // ===== The review queue's upkeep =====
 
-/// A reviewer has a deadline; attempts are counted; the third is a raise, not a fourth
-/// (defect 10: 148 reviewer sessions for 21 rows, `Running` waited on for ever).
+/// A reviewer has a deadline; attempts are counted; the third is a raise, not a fourth.
 #[test]
 fn a_reviewer_past_its_deadline_is_counted_and_the_third_is_raised() {
     let w = World::new("review-deadline");
@@ -1952,7 +1948,7 @@ fn a_reviewer_past_its_deadline_is_counted_and_the_third_is_raised() {
     );
 }
 
-/// A claim nobody picks up is a reviewer that cannot start - raised (decision 4), and with
+/// A claim nobody picks up is a reviewer that cannot start - raised, and with
 /// a project's `merge_via_session` it is handed to the project's main session, once.
 #[test]
 fn a_review_nobody_starts_is_raised_and_handed_over_only_where_the_project_opted_in() {
@@ -1999,7 +1995,7 @@ fn a_review_nobody_starts_is_raised_and_handed_over_only_where_the_project_opted
     );
 }
 
-/// A refusal does not outlive the commits that answered it (defect 5's other half).
+/// A refusal does not outlive the commits that answered it.
 #[test]
 fn a_rejected_branch_that_moves_goes_back_to_review() {
     let w = World::new("rejected-moves");
@@ -2202,9 +2198,8 @@ fn a_reviewing_row_whose_reviewer_is_not_alive_is_re_seated_on_the_next_pass() {
     assert_eq!(r.state, ReviewState::Reviewing, "left under review: {r:?}");
     assert_eq!(r.attempts, 1, "a live child spends no attempt");
 
-    // And a child of the id every daemon shared before this change is the SAME case. A row an old
-    // build left `reviewing` names a reviewer `s-gatekeeper-sub-…`, which no daemon of this build
-    // holds - exactly the vanished child this rule re-seats, with nothing to migrate.
+    // And a row an older build left `reviewing`, naming a reviewer `s-gatekeeper-sub-…` that no
+    // daemon holds, is the same vanished child, re-seated with nothing to migrate.
     w.door.live.lock().unwrap().clear();
     assert!(
         s.move_review(
@@ -2379,9 +2374,8 @@ fn a_reviewer_has_judged(
     .expect("the reviewer's verdict is taken at the desk");
 }
 
-/// A reviewer whose verdict is waiting at the desk is not `gone` - the defect measured on
-/// the operator's daemon: a reviewer's last act is handing its verdict
-/// in and its turn ending, and a session whose turn has ended is not live.
+/// A reviewer whose verdict is waiting at the desk is not `gone`: its last act is handing the
+/// verdict in and ending its turn, and a session whose turn has ended is not live.
 #[test]
 fn a_verdict_waiting_at_the_desk_is_not_a_dead_reviewer() {
     let w = World::new("verdict-waiting");
@@ -2645,8 +2639,7 @@ impl Drop for HeldProps {
 }
 
 /// A reviewer that is still OPENING is alive; one that ends without a verdict still is not.
-/// The operator's report: every review was re-seated seconds after it started
-/// and BLOCKED at *attempt 3 of 3* - 2.0 s, one queue pass.
+/// Otherwise every review would be re-seated seconds after it started and blocked in one pass.
 #[test]
 fn a_reviewer_that_is_still_opening_is_not_re_seated_and_one_that_ends_is() {
     let dir = TempDir::new("reviewer-opening");
@@ -3193,8 +3186,8 @@ fn the_service_serves_the_queues_and_stops() {
 
 // ===== Who serves a repository, and who hears its alerts =====
 
-/// A gate whose step is killed at the gate's cap - the words the local gate says, with the
-/// numbers measured on letibot's `main` at 79c32c1.
+/// A gate whose step is killed at the gate's cap - the words the local gate says, with real
+/// numbers.
 struct KilledAtCapGate;
 
 impl GateRunner for KilledAtCapGate {
@@ -3849,9 +3842,8 @@ fn leases_seen_over(
     (store, out)
 }
 
-/// A repository whose target declares no `Merge gate` is not a queue target - the operator's
-/// report: *"red most of the time everywhere … something happens somewhere and result
-/// is ignored"*.
+/// A repository whose target declares no `Merge gate` is not a queue target, or it would be red
+/// everywhere with nobody acting on it.
 #[test]
 fn a_repository_with_no_merge_gate_is_not_a_queue_target() {
     let dir = TempDir::new("opt-in");
@@ -4366,8 +4358,8 @@ fn withdraw(w: &World, id: &str) {
 fn a_withdrawn_row_gives_back_its_tree_and_branch_and_keeps_its_record() {
     let w = World::new("release-withdrawn");
     let (wt, base, head) = branch(&w.repo, "gone", "gone.txt");
-    // A build cache inside the tree, which is what makes one of these weigh 32 GB on this box -
-    // excluded from git, so it is not the tree's work, and it goes with the tree.
+    // A build cache inside the tree - excluded from git, so it is not the tree's work, and it goes
+    // with the tree.
     std::fs::write(w.repo.join(".git/info/exclude"), "target/\n").unwrap();
     std::fs::create_dir_all(wt.join("target/debug")).unwrap();
     std::fs::write(wt.join("target/debug/blob"), vec![b'x'; 4096]).unwrap();
@@ -5083,7 +5075,7 @@ fn a_landed_row_releases_its_branch_and_its_tree() {
 
 /// An `approved` row whose landing was taken out keeps an unmerged branch - `approved` is the
 /// REVIEW queue's terminal and says nothing about the target, and a person's withdrawal of the
-/// landing (`d rm`, *"the branch and its worktree stay"*) is not permission either.
+/// landing (`d rm`, which keeps the branch and its worktree) is not permission either.
 #[test]
 fn an_approved_row_whose_landing_was_taken_out_keeps_an_unmerged_branch() {
     let w = World::new("invariant-approved");
@@ -5437,9 +5429,7 @@ impl GateRunner for Counting {
     }
 }
 
-/// One gate for three branches, and the target moves once per landing. The operator's
-/// decision - *"we can batch merges at this point"* - on the numbers that
-/// made it.
+/// One gate for three branches, and the target moves once per landing.
 #[test]
 fn a_train_of_three_green_branches_lands_three_commits_with_one_gate() {
     let w = World::new("train-green");

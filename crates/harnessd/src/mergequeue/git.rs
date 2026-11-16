@@ -2,9 +2,8 @@
 //! failure.
 //!
 //! The primitives a removal rests on - the three-valued [`Proof`], the worktree rail under
-//! `git worktree remove`, and the `git` door itself - live in `letibot_tools::git`, because the
-//! lifecycle reaper (`letibot gc`) removes the same trees from a crate below this one. They are
-//! re-exported here so every queue call site reads as it always did, and there is ONE check.
+//! `git worktree remove`, and the `git` door - live in `letibot_tools::git`, because `letibot gc`
+//! removes the same trees from a crate below this one. Re-exported here, so there is one check.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};

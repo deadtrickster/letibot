@@ -68,9 +68,8 @@ pub struct Pool<'a> {
     /// reviewer on one is refused by name rather than quietly given the other kind.
     pub claude: Option<&'a claude::Runs>,
     /// The queue session's `review_` layers, when the daemon has opened them: the words a reviewer
-    /// is started with and the rung its verdict must reach (`docs/plugin-extension-points-wide.md`
-    /// X18). `None` is a queue served with nothing in force, which composes and judges exactly as
-    /// it did before the hooks existed.
+    /// is started with and the rung its verdict must reach. `None` is a queue served with nothing in
+    /// force.
     pub layers: Option<&'a dyn ReviewLayers>,
 }
 
@@ -492,7 +491,7 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
                 out.moved = true;
             }
             Err(CouldNotStart::Full(why)) => {
-                // **The pool is full, which is a wait** - the row goes back in line with a
+                // The pool is full, which is a wait - the row goes back in line with a
                 // not-before time and nothing counted against it.
                 p.wait_for_room(r, why)?;
                 out.moved = true;
@@ -655,7 +654,7 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
             }
             // A reviewer whose own job was killed with its substrate finished its turn, but what
             // it was doing did not: no verdict came through the one door there is, so this is a
-            // failed attempt with the reason (R173).
+            // failed attempt with the reason.
             TaskStatus::Killed { why, .. } => {
                 out.moved = true;
                 p.attempt_failed(
@@ -673,7 +672,7 @@ pub fn serve(p: &Pool) -> Result<Served, StoreError> {
     if let Some(runs) = p.claude {
         runs.keep(&still, now);
     }
-    // **A host that failed this pass is asked again next one** - a reboot is minutes, and a queue
+    // A host that failed this pass is asked again next one - a reboot is minutes, and a queue
     // that never retried would run on this machine for ever.
     p.machines.end_pass();
     Ok(out)
@@ -785,7 +784,7 @@ fn start_or_reopen(
 ) -> Result<Started, CouldNotStart> {
     let repo = PathBuf::from(&r.repository);
     // The kind is the project's: a `[queue.claude]` table makes its reviewers headless `claude -p`
-    // runs (R116), and a project without one keeps the letibot child this queue has always started.
+    // runs, and a project without one keeps the letibot child this queue has always started.
     let settings = (p.settings)(&repo).map_err(|why| {
         CouldNotStart::Runner(format!(
             "the project's `[queue]` settings could not be read, so the queue cannot say which kind \
@@ -1170,10 +1169,9 @@ fn verdict(
     req_cwd: &str,
     said: letibot_tools::gatekeeper::Submission,
 ) -> Result<(), StoreError> {
-    // The queue's `review_verdict` floor, applied before anything reads the decision: merged
-    // through the strictest rung, so a layer can park a branch the reviewer would have landed and
-    // can never land one it refused. The reason is written on the row, because a verdict that
-    // moved without a sentence is one nobody can act on.
+    // The queue's `review_verdict` floor, applied before anything reads the decision, through the
+    // strictest rung: a layer can park a branch the reviewer would land, never land one it refused.
+    // The reason is written on the row, so a moved verdict has a sentence someone can act on.
     let mut said = said;
     if let Some(layers) = p.layers {
         let floored =

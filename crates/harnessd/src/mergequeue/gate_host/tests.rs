@@ -113,7 +113,7 @@ fn the_launcher_runs_the_step_in_a_subshell_with_the_hosts_own_cache() {
     let quoted = launcher_script("echo \"it's fine\"", "/t", "/c", "/p", "/o", "/e", false);
     assert!(quoted.contains("( echo \"it's fine\" )"), "{quoted}");
     // And the step keeps no core dump, whatever the host's own limit is: a step the gate kills for
-    // size is not a crash anybody is owed a report about (TODO.md R191).
+    // size is not a crash anybody is owed a report about.
     assert!(
         script.lines().any(|l| l.trim() == "ulimit -c 0"),
         "the launcher zeroes the core limit before the step runs: {script}"
@@ -225,8 +225,8 @@ fn a_step_is_met_dropped_or_wrapped_by_what_the_machine_has() {
     assert!(!plan_step(step, &no_bwrap).own_scope);
     assert_eq!(plan_step(bare, &scope).command, bare);
     assert!(!plan_step(bare, &scope).own_scope);
-    // A probe that answered nothing at all is *absent*, not *present*: the safe reading, because a
-    // demand silently dropped is the defect this whole module exists for.
+    // A probe that answered nothing at all is absent, not present: the safe reading, because a
+    // demand must never be silently dropped.
     assert_eq!(apparatus_from("").missing.len(), 2);
 }
 

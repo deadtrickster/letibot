@@ -1,6 +1,4 @@
-//! The gate on a declared host: *"i told you
-//! about other hosts so you actually use that capability for running gates and subagents
-//! fanouts"*.
+//! The gate on a declared host, so a gate can use the machines `hosts.toml` declares.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -1027,12 +1025,9 @@ fn ended(code: i32, tail: String) -> StepEnd {
 // The far side's scripts, as values
 // ---------------------------------------------------------------------------------------------
 
-/// The launcher - one file per step, so the step's own text needs no quoting: it is written
-/// into a file this box sends over the connection's stdin, never spliced into an argv. `( …
-/// )` is a subshell and not `{ … }`, which is 's measured trap
-///
-/// `ulimit -c 0` covers the step and everything it forks: a step the gate kills for size dumps
-/// no core (R191).
+/// The launcher - one file per step, sent over the connection's stdin and never spliced into an
+/// argv, so the step's text needs no quoting. `( … )` is a subshell, not `{ … }`. `ulimit -c 0`
+/// covers the step and everything it forks: a step the gate kills for size dumps no core.
 pub fn launcher_script(
     step: &str,
     tree: &str,

@@ -65,7 +65,7 @@ pub struct VmCapacity {
 }
 
 impl VmCapacity {
-    /// *"4 of 4 VM slots are busy"*, or as much of it as firecode said.
+    /// "4 of 4 VM slots are busy", or as much of it as firecode said.
     pub fn busy_line(&self) -> String {
         match (self.busy, self.slots) {
             (Some(b), Some(s)) => format!("{b} of {s} VM slots are busy"),
@@ -201,7 +201,7 @@ pub fn held_until(failure: &str, deadline_ms: Option<u64>, now_ms: u64) -> bool 
 }
 
 /// The one line of a failure a person reads - firecode's own `error:` sentence when it is there
-/// (its first line says *"starting a VM and leaving it up"*, which says nothing), else the first.
+/// (its first line says "starting a VM and leaving it up", which says nothing), else the first.
 pub fn gist(why: &str) -> String {
     let line = match why.find("[firecode] error:") {
         Some(i) => {
@@ -267,7 +267,7 @@ fn sentences(text: &str) -> Vec<String> {
 }
 
 /// The heads reviewers could not decide at, oldest first, read off the row's history (the
-/// verdict's move says *"… could not decide at SHA: …"*).
+/// verdict's move says "… could not decide at SHA: …").
 pub fn undecided_heads(history: &[QueueTransition]) -> Vec<String> {
     history
         .iter()

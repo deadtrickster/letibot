@@ -50,10 +50,9 @@ impl Stuck {
         now_ms.saturating_sub(self.oldest_ms)
     }
 
-    /// Whether the census is the idle pass's business: there are rows stuck, and the oldest has
-    /// been stuck longer than `after_ms` - [`STUCK_AFTER_MS`], or the project's
-    /// `[queue] stuck_after_seconds` ([`after_ms`]). One row that went bad a minute ago is the
-    /// transition's, and saying it again adds nothing.
+    /// Whether the census is the idle pass's business: rows are stuck and the oldest for longer than
+    /// `after_ms` ([`STUCK_AFTER_MS`], or `[queue] stuck_after_seconds` via [`after_ms`]). A row that
+    /// went bad a minute ago is the transition's to report.
     pub fn is_news(&self, now_ms: u64, after_ms: u64) -> bool {
         !self.is_empty() && self.oldest_age_ms(now_ms) >= after_ms
     }

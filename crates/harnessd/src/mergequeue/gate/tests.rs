@@ -236,7 +236,7 @@ fn an_evidence_line_counts_in_words_not_a_placeholder() {
     }
 }
 
-/// The measured case: letibot's `main` at 79c32c1, on lab2x1.
+/// A real workspace gate's memory profile.
 const GIB: u64 = 1 << 30;
 fn measured(oom_kills: u64) -> StepMemory {
     StepMemory::Used(MemoryUse {
@@ -283,7 +283,7 @@ fn the_measured_death_near_the_cap_is_killed_at_the_cap_not_red() {
             && words.contains("128 processes were still running")
             && words.contains("UNJUDGED, not red")
             // The cap is the operator's knob, and no config key is named to a model that
-            // cannot raise it (R93.F9).
+            // cannot raise it.
             && words.contains("the operator's call — tell them")
             && !words.contains("providers.toml"),
         "{words}"
@@ -427,9 +427,8 @@ fn a_child_the_box_killed_far_from_the_cap_is_unjudged_not_red() {
     assert_eq!(red_cause(failed, StepExit::Code(101), &far), RedCause::Code);
 }
 
-/// A step that refused to skip is the MACHINE's, not the branch's - the measured case from
-/// `lab2x1`: `LETIBOT_REQUIRE_APPARATUS=1 cargo test --no-fail-fast -p
-/// letibot-harnessd --lib`, sixteen refusals and one genuine failure.
+/// A step that refused to skip is the machine's, not the branch's: many apparatus refusals beside
+/// one genuine failure.
 #[test]
 fn a_step_that_refused_to_skip_is_the_machines_and_not_the_branches() {
     let refusal = |test: &str, what: &str| {
@@ -868,10 +867,9 @@ fn allow_cores() -> bool {
 }
 
 /// A step killed for the size of what it writes leaves no core dump, and neither does anything the
-/// step forks: the kill is the gate's own (`ulimit -f` in a test), and a dump from one wakes
-/// whatever crash reporter the box runs - 121k of them filled a user manager's unit table before
-/// this (TODO.md R191). The measurement is the limit a grandchild of the gate reports, with the box's
-/// own limit non-zero beside it, so a zero cannot be inherited from the box and read as the gate's.
+/// step forks, because a dump wakes whatever crash reporter the box runs. The limit is read in a
+/// grandchild of the gate, with the box's own limit non-zero beside it, so a zero cannot be
+/// inherited from the box.
 #[test]
 fn a_step_and_everything_it_forks_keep_no_core() {
     let Some(_) = letibot_tokencore::apparatus::present(
@@ -928,7 +926,7 @@ fn a_step_and_everything_it_forks_keep_no_core() {
 
 /// A failing workspace run, as `cargo test --workspace --no-fail-fast` writes one: the failing
 /// target's block, then sixty other targets each reporting `running 0 tests`. The end of the stream
-/// is the other targets and cargo's one-line summary, which is all the row kept before this.
+/// is the other targets and cargo's one-line summary.
 fn a_failing_workspace_run() -> String {
     let mut out = String::new();
     for i in 0..300 {
@@ -1166,8 +1164,7 @@ exit 101
     let _ = std::fs::remove_dir_all(&wt);
 }
 
-/// The row's cap covers the note the gate writes after the excerpt - the red `main` of
-/// 2026-10-30 in one fixture, and it is the test that would have caught it.
+/// The row's cap covers the note the gate writes after the excerpt.
 #[test]
 fn a_row_whose_end_is_as_big_as_the_cap_allows_still_fits_beside_the_gate_note() {
     let why = format!(
@@ -1209,9 +1206,8 @@ fn a_row_whose_end_is_as_big_as_the_cap_allows_still_fits_beside_the_gate_note()
     );
 }
 
-/// A panic in a test that PASSED is not evidence about the one that failed - the reviewer's
-/// case 2026-10-30: the row led with `crates/harnessd/src/httphead.rs:405:13: the turn blew
-/// up`, which is a lib unit test that panics on purpose and passes.
+/// A panic in a test that passed is not evidence about the one that failed: a unit test that
+/// panics on purpose and passes is never quoted as the red's cause.
 #[test]
 fn a_panic_in_a_test_that_passed_is_never_quoted_for_the_one_that_failed() {
     let mut text = String::from(

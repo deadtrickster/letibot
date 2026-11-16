@@ -3,11 +3,11 @@
 //!
 //! ```toml
 //! [queue]
-//! target = "feat/memory-engine"   # decision 12: the branch this project lands on
-//! merge_via_session = false       # decision 4: a review that cannot run is handed to the
+//! target = "feat/memory-engine"   # the branch this project lands on
+//! merge_via_session = false       # a review that cannot run is handed to the
 //!                                 #   project's main session to gate and merge (default: no -
 //!                                 #   raise only)
-//! red_target = "fix"              # decision 11: when the target goes red, the reviewer of the
+//! red_target = "fix"              # when the target goes red, the reviewer of the
 //!                                 #   red tip opens a fix branch through the queue ("fix",
 //!                                 #   the default) or the operator is only told ("raise")
 //! gate_carry = ["images", "vendor"] # gitignored inputs the gate needs, COPIED from the
@@ -17,7 +17,7 @@
 //!                                 #   on this machine, as the children that author the
 //!                                 #   branches do) or `vm` (each reviewer in a firecode
 //!                                 #   microVM)
-//! gate_host = "lab2x1"             # decision 9's machine, when it is not this one: the gate's
+//! gate_host = "lab2x1"             # the gate's machine, when it is not this one: the gate's
 //!                                 #   steps run on a host the operator declared in
 //!                                 #   `hosts.toml` (default: empty - this machine)
 //! gate_train = 3                  # how many approved branches one gate may judge together:
@@ -37,8 +37,8 @@
 //! reviewers_run_suites = true     # opt in: a reviewer's `bash` may run whole test suites.
 //!                                 #   Default: refused, a reviewer runs single named tests
 //! [queue.claude]                  # the reviewers are headless `claude -p` runs instead of
-//!                                 #   letibot children (R116). The table ABSENT is the letibot
-//!                                 #   reviewer, which is what every project had before.
+//!                                 #   letibot children. The table absent is the letibot
+//!                                 #   reviewer.
 //! binary = "/usr/local/bin/claude" # the executable; an absolute path
 //! allowed_tools = ["Read", "Grep"] # `--allowedTools`, default Read, Grep, Glob and the three
 //!                                 #   read-only git commands a diff needs
@@ -46,13 +46,11 @@
 //! timeout_seconds = 3600          # the row's own deadline, default the queue's hour
 //! ```
 //!
-//! The first three are the operator's own rulings, and each per PROJECT because
-//! the projects differ: pg-noop lands on `feat/memory-engine`, 91 commits ahead of its `main`
-//! and a queue that measured its branches against `main` saw every one 56–60 commits ahead.
+//! The first three are per project because projects differ: one may land on a feature branch far
+//! ahead of its `main`.
 //!
 //! `gate_carry` exists because the landing tree is a git worktree, and a worktree has nothing
-//! gitignored: firecode's gate booted no VM because its `images/` and `vendor/` were not there
-//! (`mergequeue::carry`). Each entry is a path relative to the repository's root and must stay
+//! gitignored (`mergequeue::carry`). Each entry is a path relative to the repository's root and must stay
 //! inside it - absolute, `..`, `.git` and the root itself are refused by name here; a symlink
 //! out, a missing path or a TRACKED path is refused when the gate runs. Each is copied (`rsync -a
 //! --delete` when rsync is there, else a fresh recursive copy), never symlinked, so a gate cannot
@@ -62,7 +60,7 @@ use std::path::{Path, PathBuf};
 
 use crate::leticode_config::LeticodeConfig;
 
-/// What a red target sets in motion (decision 11).
+/// What a red target sets in motion.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RedTarget {
     /// The reviewer of the red tip opens a fix branch, through the queue like any other, and
@@ -174,15 +172,13 @@ pub struct QueueSettings {
     /// ([`super::capacity::review_limit`]).
     pub reviewers_at_once: Option<usize>,
     /// `[queue] reviewer_hosts`, the opt-in to fan reviewers out. Absent is this machine alone
-    /// (`["local"]`, D18). `None` is every declared host (`["*"]`). A list is exactly those names.
+    /// (`["local"]`). `None` is every declared host (`["*"]`). A list is exactly those names.
     pub reviewer_hosts: Option<Vec<String>>,
     /// `[queue] reviewers_run_suites`: a reviewer's `bash` may run whole test suites. Off by
     /// default, because the gate runs the suite and a reviewer that repeats it dies at its limits.
     pub reviewers_run_suites: bool,
-    /// `[queue.claude]`, when this project's reviewers are Claude Code runs (`claude -p`, R116)
-    /// instead of letibot children. `None` - the table absent - is the letibot reviewer every
-    /// project had before there was a choice, so a Claude reviewer exists only where somebody
-    /// asked for one.
+    /// `[queue.claude]`, when this project's reviewers are Claude Code runs (`claude -p`) instead
+    /// of letibot children. `None`, the table absent, is the letibot reviewer.
     pub claude: Option<super::review::claude::Settings>,
     /// The file they were read from, for the pane; `None` when there was none.
     pub path: Option<PathBuf>,
@@ -243,10 +239,8 @@ struct QueueTable {
     /// `[queue.claude]`: present is *this project's reviewers are Claude Code runs*.
     #[serde(default)]
     claude: Option<ClaudeTable>,
-    /// The census's two numbers. Read by `leticode-config`'s `[queue]` parser, from the user's
-    /// file and the project's over it - `Config::leticode`, not this reader - and accepted here
-    /// only so that a project writing them does not make this reader refuse the table. Two
-    /// readers of one number would be two answers.
+    /// The census's two numbers, read by `leticode-config`'s `[queue]` parser (`Config::leticode`).
+    /// Accepted here only so a project writing them does not make this reader refuse the table.
     #[serde(default)]
     #[allow(dead_code)]
     stuck_after_seconds: Option<i64>,
@@ -341,7 +335,7 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
         let rel = super::carry::validate(entry).map_err(|e| format!("{}: {e}", path.display()))?;
         gate_carry.push(rel.to_string_lossy().into_owned());
     }
-    // **A number of reviewers, or nothing.** Zero is refused rather than read as "no reviewers":
+    // A number of reviewers, or nothing. Zero is refused rather than read as "no reviewers":
     // a queue that claims nothing is a queue nobody can tell from a broken one, and an operator
     // who wants none wants `reviewers` left alone and the target not red.
     let reviewers_at_once = match q.reviewers_at_once {
@@ -356,7 +350,7 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
             ));
         }
     };
-    // Absent is this machine (D18). `["*"]` becomes `None`, every declared host. An empty entry
+    // Absent is this machine. `["*"]` becomes `None`, every declared host. An empty entry
     // and a forbidden host are refused by name rather than dropped.
     let reviewer_hosts = match q.reviewer_hosts {
         None => Some(vec![super::review::hosts::LOCAL.to_string()]),
@@ -570,7 +564,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// K9: the census's two numbers are `leticode-config`'s - read from the user's file and the
+    /// The census's two numbers are `leticode-config`'s - read from the user's file and the
     /// project's over it - and this reader ACCEPTS them rather than refusing the whole table. A
     /// project that moves its census's threshold must not lose its target.
     #[test]
@@ -715,7 +709,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 
-    /// `[queue.claude]` is what makes a project's reviewers headless `claude -p` runs (R116), and the
+    /// `[queue.claude]` is what makes a project's reviewers headless `claude -p` runs, and the
     /// table absent is the letibot reviewer - so OFF is the default every project already had. The
     /// binary, the tools and the timeout are the project's; the rest is the module's own default.
     #[test]

@@ -1079,7 +1079,7 @@ fn needs_human_raises_for_the_operator_once_and_tells_no_session() {
     assert_eq!(r.verdict.as_deref(), Some("needs_human"));
 }
 
-// ===== The verdict's floor (`review_verdict`, X18) =====
+// ===== The verdict's floor (`review_verdict`) =====
 
 /// The queue's `review_` layers, as a test holds them: one floor and no brief. The daemon's own impl
 /// is `Layers`, over the queue session's live plugin host.

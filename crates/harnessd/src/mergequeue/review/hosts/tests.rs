@@ -65,7 +65,7 @@ fn pool(names: &[&str]) -> Vec<String> {
     names.iter().map(|n| n.to_string()).collect()
 }
 
-/// **The machine with the most spare takes the reviewer, and this machine is always in the pool.**
+/// The machine with the most spare takes the reviewer, and this machine is always in the pool.
 #[test]
 fn the_pool_offers_this_machine_and_every_declared_one_and_picks_the_most_spare() {
     let _file = HostsFile::with(&["lab2x1", "lubuntu2"]);
@@ -78,7 +78,7 @@ fn the_pool_offers_this_machine_and_every_declared_one_and_picks_the_most_spare(
     let names: Vec<String> = machines.iter().map(|m| m.label()).collect();
     assert_eq!(names, vec!["local", "lab2x1", "lubuntu2"]);
 
-    // **Four on the 32-core box, three on the twelve-core one, two here.** `spare / 4`, floored,
+    // Four on the 32-core box, three on the twelve-core one, two here. `spare / 4`, floored,
     // and never more than `PER_HOST_MAX`.
     assert_eq!(hosts.capacity(None), 4 + 3 + 2);
     let chosen = hosts.choose(None).expect("a machine with room");
@@ -98,7 +98,7 @@ fn the_pool_offers_this_machine_and_every_declared_one_and_picks_the_most_spare(
         Some("local".to_string()),
         "the box with the most spare is chosen even when it is this one"
     );
-    // **A tie is this machine's**, because a reviewer here costs no transport at all.
+    // A tie is this machine's, because a reviewer here costs no transport at all.
     let hosts = ReviewHosts::new();
     hosts.set_spare(None, Some(16.0), None);
     hosts.set_spare(Some("lab2x1"), Some(16.0), None);
@@ -109,13 +109,13 @@ fn the_pool_offers_this_machine_and_every_declared_one_and_picks_the_most_spare(
     );
 }
 
-/// **The per-host cap refuses a second reviewer past it** - the point of the cap: one reviewer's
+/// The per-host cap refuses a second reviewer past it - the point of the cap: one reviewer's
 /// build cannot eat a box another reviewer needs.
 #[test]
 fn a_machine_takes_at_most_its_room_and_then_the_next_goes_somewhere_else() {
     let _file = HostsFile::with(&["lab2x1", "lubuntu2"]);
     let hosts = ReviewHosts::new();
-    // **A machine with 64 spare cores still takes four** - `PER_HOST_MAX`, not the arithmetic.
+    // A machine with 64 spare cores still takes four - `PER_HOST_MAX`, not the arithmetic.
     hosts.set_spare(None, Some(0.0), None);
     hosts.set_spare(Some("lab2x1"), Some(64.0), None);
     hosts.set_spare(Some("lubuntu2"), Some(4.0), None);
@@ -157,7 +157,7 @@ fn a_machine_takes_at_most_its_room_and_then_the_next_goes_somewhere_else() {
         hosts.where_is("child-1").is_some(),
         "while the reviewers still on the desk are still counted"
     );
-    // **And the machine that was full takes one again** - the queue's claim limit is this number.
+    // And the machine that was full takes one again - the queue's claim limit is this number.
     assert_eq!(
         hosts.choose(None).and_then(|m| m.name).as_deref(),
         Some("lab2x1"),
@@ -165,7 +165,7 @@ fn a_machine_takes_at_most_its_room_and_then_the_next_goes_somewhere_else() {
     );
 }
 
-/// **`reserve` is subtracted, and it is what makes a big box small** - the arithmetic the operator
+/// `reserve` is subtracted, and it is what makes a big box small - the arithmetic the operator
 /// asked for: `cores − load − reserve`.
 #[test]
 fn reserve_comes_off_the_spare_before_the_cap_is_counted() {
@@ -197,7 +197,7 @@ fn reserve_comes_off_the_spare_before_the_cap_is_counted() {
         .expect("cores and load both said")
         + 24.0;
     assert_eq!(capacity::reviewers_fit(spare), capacity::PER_HOST_MAX);
-    // **A box with no spare takes nobody**, which is a wait and not a refusal for ever.
+    // A box with no spare takes nobody, which is a wait and not a refusal for ever.
     assert_eq!(capacity::reviewers_fit(0.0), 0);
     assert_eq!(capacity::reviewers_fit(-3.0), 0, "an oversubscribed box");
 }
@@ -236,7 +236,7 @@ fn a_host_that_said_no_is_skipped_this_pass_and_asked_again_next_one() {
     assert_eq!(hosts.capacity(None), capacity::PER_HOST_MAX * 2);
 }
 
-/// **A pool of this machine alone** - what a fixture gets, and what `["local"]` means: no probe, no
+/// A pool of this machine alone - what a fixture gets, and what `["local"]` means: no probe, no
 /// ssh, and a reviewer that runs here.
 #[test]
 fn a_local_pool_has_one_machine_and_never_asks_a_host() {
@@ -262,7 +262,7 @@ fn a_local_pool_has_one_machine_and_never_asks_a_host() {
     assert!(hosts.unknown(Some(&only)).is_empty());
 }
 
-/// **A name nobody declared is reported, and does not empty the pool** - a project that names a
+/// A name nobody declared is reported, and does not empty the pool - a project that names a
 /// machine that has been removed runs here and is told, rather than stopping.
 #[test]
 fn a_host_nobody_declared_is_reported_and_the_pool_keeps_this_machine() {
@@ -279,7 +279,7 @@ fn a_host_nobody_declared_is_reported_and_the_pool_keeps_this_machine() {
     );
 }
 
-/// **Before the first snapshot the pool is this machine** - the queue starts here and fans out as
+/// Before the first snapshot the pool is this machine - the queue starts here and fans out as
 /// soon as the probe lands, which is what keeps it from stalling on a network.
 #[test]
 fn before_any_probe_the_pool_is_this_machine_and_the_capacity_is_its_own() {

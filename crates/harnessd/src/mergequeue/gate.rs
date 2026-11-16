@@ -16,7 +16,7 @@ use letibot_transcript::text::bytes_head;
 
 use super::git;
 
-/// Thirty minutes - the operator's decision 9. A gate that is still running then is killed and
+/// Thirty minutes. A gate that is still running then is killed and
 /// its row is `timed_out`, an outcome of its own.
 pub const GATE_DEADLINE: Duration = Duration::from_secs(30 * 60);
 
@@ -61,7 +61,7 @@ const NOTE_BYTES: usize = 512;
 /// newline before it; the cap [`read_excerpt`] hands [`excerpt`].
 const EXCERPT_BYTES: usize = EVIDENCE_BYTES - NOTE_BYTES - 1;
 
-/// The marker of an INSTALL step - run after the push, never before it (decision 7): a landing that
+/// The marker of an INSTALL step - run after the push, never before it: a landing that
 /// installed first installed code that was not on the target when the push failed.
 pub const INSTALL_MARK: &str = "install-gate-build";
 
@@ -497,7 +497,7 @@ pub(crate) enum StepMemory {
 
 /// How close to its cap a step's peak has to be for a red step that showed no failing code to be read
 /// as killed at the cap - 95%. The kernel's `oom_kill` count is the proof and is read first; this is
-/// the second reading, for a cargo that died with its rustc's still compiling (measured: 96.8%).
+/// the second reading, for a cargo that died with its rustc's still compiling.
 pub const NEAR_CAP_PERCENT: u64 = 95;
 
 /// How the step's leader ended - its own exit code, or the signal that ended it. Kept on the row
@@ -621,8 +621,8 @@ pub(crate) fn apparatus_absent_words(step: &str, what: &str, machine: Option<&st
         Some(h) => format!("`{h}`"),
         None => "this machine".to_string(),
     };
-    // One thing missing reads as the brief's own sentence - *"the gate could not run here: a cgroup
-    // v2 subtree … is not on `lab2x1`"*; several read as a list, because "A; B is not" is not English.
+    // One thing missing reads as one sentence ("the gate could not run here: a cgroup v2 subtree …
+    // is not on `lab2x1`"); several read as a list, because "A; B is not" is not English.
     let names: Vec<&str> = what.split('\n').collect();
     let absent = match names.as_slice() {
         [one] => format!("{one} is not on {here}"),
@@ -831,9 +831,7 @@ pub trait GateRunner: Send + Sync {
     }
 }
 
-/// The daemon's gate - decision 8: *"the gate runs here for now"*, and, since the
-/// operator's 2026-10-29 ruling, on a declared host when `[queue] gate_host` /
-/// `--gate-host` names one.
+/// The daemon's gate: here, or on a declared host when `[queue] gate_host` / `--gate-host` names one.
 #[derive(Debug, Default, Clone)]
 pub struct LocalGate;
 
@@ -897,8 +895,7 @@ pub fn run_with_launcher(
     launch: &dyn Fn(&str) -> String,
 ) -> GateRun {
     // The cap is resolved once and used twice: the cgroup the step joins is capped with it and the
-    // build's parallelism is bounded by it ([`StepEnv`]) - a step judged by two different numbers is
-    // the bug this closes.
+    // build's parallelism is bounded by it ([`StepEnv`]), so a step is never judged by two numbers.
     let cap = intended_cap(memory);
     let place = placement(memory, cap);
     // One scratch for the whole run, and the gate owns it: made here, handed to every step
@@ -1318,7 +1315,7 @@ fn run_step(
 
 /// Every process a step starts inherits a core limit of zero. A gate step killed for writing a
 /// file too big is the gate's own doing, and a core dump from one wakes a crash reporter that has
-/// nothing to report - on one box 121k of them filled a user manager's unit table (TODO.md R191).
+/// nothing to report - on one box 121k of them filled a user manager's unit table.
 fn no_core_dumps(cmd: &mut Command) {
     use std::os::unix::process::CommandExt;
     // SAFETY: `setrlimit` is called between fork and exec, touches only this child's limits and

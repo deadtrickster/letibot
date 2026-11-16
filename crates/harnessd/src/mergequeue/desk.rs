@@ -1406,8 +1406,8 @@ mod tests {
         assert!(both.contains("two different scopes"), "{both}");
     }
 
-    /// A session seated above several repositories says so in one sentence and names both ways to widen -
-    /// it does not print the box, which is the defect this change exists to fix.
+    /// A session seated above several repositories says so in one sentence and names both ways to
+    /// widen - it does not print the box.
     #[test]
     fn a_session_in_no_one_repository_says_so_and_names_both_escapes() {
         let dir = TempDir::new("desk-nowhere");

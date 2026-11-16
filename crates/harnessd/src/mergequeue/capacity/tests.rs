@@ -156,8 +156,8 @@ fn a_waiting_row_is_held_only_by_its_own_capacity_wait() {
     assert!(!held_until(&why, None, 50));
 }
 
-/// The gist of a placement failure is firecode's own `error:` sentence, not its banner - the
-/// hub row showed *"starting a VM and leaving it up (log: …)"* and nothing else.
+/// The gist of a placement failure is firecode's own `error:` sentence, not its banner ("starting
+/// a VM and leaving it up").
 #[test]
 fn the_gist_of_a_firecode_refusal_is_its_error_sentence() {
     let g = gist(&format!("the reviewer `x` failed: {FIRECODE_NO_SLOT}"));
@@ -169,8 +169,7 @@ fn the_gist_of_a_firecode_refusal_is_its_error_sentence() {
     assert_eq!(gist("first line\nsecond"), "first line");
 }
 
-/// The sentence a `needs_human` turned on - the reviewer's `BUT …`, as in the verdict of
-/// 2026-10-11 on `agent/panic-groupingsets-join`.
+/// The sentence a `needs_human` turned on - the reviewer's `BUT …`.
 #[test]
 fn the_decisive_reason_is_the_but_sentence_in_the_reviewers_own_words() {
     let reasons = vec![
@@ -264,18 +263,18 @@ fn a_branch_waits_once_across_its_rows() {
 /// project's number, else the pool's.
 #[test]
 fn the_claim_limit_is_the_placements_own_and_a_vm_queue_keeps_the_vm_slots() {
-    // **A `host` queue takes what its machines can take** - eighteen spare cores is four here, and
+    // A `host` queue takes what its machines can take - eighteen spare cores is four here, and
     // a pool of five machines is twenty.
     assert_eq!(review_limit(Reviewers::Host, None, 1), 1);
     assert_eq!(review_limit(Reviewers::Host, None, 18), 18);
-    // **A number the project (or the flag) named wins** over the pool's own capacity, in both
+    // A number the project (or the flag) named wins over the pool's own capacity, in both
     // directions: three on a pool that could take twenty, and twenty on a pool that could take one.
     assert_eq!(review_limit(Reviewers::Host, Some(3), 18), 3);
     assert_eq!(review_limit(Reviewers::Host, Some(20), 1), 20);
-    // **Never zero** - a pool with no spare capacity is a wait (`WAITING_FOR_ROOM`), not a queue
+    // Never zero - a pool with no spare capacity is a wait (`WAITING_FOR_ROOM`), not a queue
     // that has stopped, and a limit of zero reads on screen exactly like a broken one.
     assert_eq!(review_limit(Reviewers::Host, None, 0), 1);
-    // **And `vm` is untouched, whatever anybody says.** Its limit is the box's firecode taps, which
+    // And `vm` is untouched, whatever anybody says. Its limit is the box's firecode taps, which
     // `vm_capacity` recognises at the placement; this number only has to stay what it always was.
     assert_eq!(
         review_limit(Reviewers::Vm, None, 20),
@@ -289,7 +288,7 @@ fn the_claim_limit_is_the_placements_own_and_a_vm_queue_keeps_the_vm_slots() {
     assert_eq!(crate::mergequeue::serve::MAX_REVIEWING, 2);
 }
 
-/// **`spare / CORES_PER_REVIEWER`, floored, and never more than `PER_HOST_MAX`** - the arithmetic
+/// `spare / CORES_PER_REVIEWER`, floored, and never more than `PER_HOST_MAX` - the arithmetic
 /// behind the pool's per-host cap, on its own so the bounds are visible.
 #[test]
 fn a_machines_room_is_spare_cores_over_four_capped_at_four() {
@@ -300,7 +299,7 @@ fn a_machines_room_is_spare_cores_over_four_capped_at_four() {
     assert_eq!(reviewers_fit(8.0), 2);
     assert_eq!(reviewers_fit(12.0), 3);
     assert_eq!(reviewers_fit(16.0), PER_HOST_MAX);
-    // **A 64-core box takes four, not sixteen** - the cap is about the machine answering for itself
+    // A 64-core box takes four, not sixteen - the cap is about the machine answering for itself
     // and about one box not taking the whole queue, not about cores alone.
     assert_eq!(reviewers_fit(64.0), PER_HOST_MAX);
     assert_eq!(PER_HOST_MAX, 4);
