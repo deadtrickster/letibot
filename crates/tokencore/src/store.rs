@@ -204,7 +204,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 53;
+pub const SCHEMA_VERSION: i64 = 54;
 
 /// A session's plan-check pause as its row holds it: `until` is `0` for until resumed, else the
 /// unix ms it ends at. `at_ms` and `by` are `None` on a row written before v51.
@@ -2682,6 +2682,22 @@ impl Store {
                         ))?;
                     }
                 }
+            }
+        }
+        if from < 54 {
+            // v54: an owner's last return to live, which the hard TTL runs from. NULL reads as the
+            // creation, which is what every earlier build measured from.
+            let has = |sql: &str| -> bool {
+                self.conn()
+                    .prepare(sql)
+                    .and_then(|mut st| st.exists([]))
+                    .unwrap_or(false)
+            };
+            if has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'owner'")
+                && !has("SELECT 1 FROM pragma_table_info('owner') WHERE name = 'live_since_ms'")
+            {
+                self.conn()
+                    .execute_batch("ALTER TABLE owner ADD COLUMN live_since_ms INTEGER")?;
             }
         }
         Ok(())

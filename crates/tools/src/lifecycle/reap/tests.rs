@@ -167,6 +167,36 @@ fn a_hard_ttl_does_not_care_what_the_owner_is_doing() {
     assert!(close_due(&o, &busy, 3_600_000).is_some());
 }
 
+/// The hard TTL runs from the last return to live, not from creation: otherwise every resume of
+/// a day-old package is closed at the next sweep, mid-turn.
+#[test]
+fn a_reopened_package_older_than_hard_ttl_is_not_closed() {
+    let b = Box_::new("reopen-ttl");
+    let store = b.store();
+    let day = 24 * 60 * 60 * 1000;
+    let first = crate::lifecycle::owner_for_open(&store, "s-1", OwnerKind::Package, None, 0)
+        .expect("the first open");
+    assert_eq!(first.hard_ttl_ms, Some(day));
+    let mut closed = first.clone();
+    closed.state = OwnerState::Closed;
+    closed.closed_ms = Some(day / 2);
+    store.put_owner(&closed).expect("closed");
+    let reopen_at = day + 60 * 60 * 1000;
+    let row = crate::lifecycle::owner_for_open(&store, "s-1", OwnerKind::Package, None, reopen_at)
+        .expect("the reopen");
+    assert_eq!(row.created_ms, 0, "the creation stays the record");
+    store.put_owner(&row).expect("live again");
+    let row = store.owner("s-1").unwrap().unwrap();
+    assert_eq!(close_due(&row, &activity(true), reopen_at + 60_000), None);
+    // The store's own reopen restarts the clock the same way.
+    store.put_owner(&closed).expect("closed again");
+    store.reopen_owner("s-1", reopen_at).expect("reopened");
+    let row = store.owner("s-1").unwrap().unwrap();
+    assert_eq!(close_due(&row, &activity(true), reopen_at + 60_000), None);
+    // And the bound still holds a day after the reopen.
+    assert!(close_due(&row, &activity(true), reopen_at + day).is_some());
+}
+
 /// The operator's hold stops every automatic trigger; an expired one does not.
 #[test]
 fn a_hold_stops_the_close_and_an_expired_one_does_not() {

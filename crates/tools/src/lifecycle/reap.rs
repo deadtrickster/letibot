@@ -158,10 +158,10 @@ pub fn close_due(o: &OwnerRow, a: &Activity, now_ms: i64) -> Option<String> {
     }
     if o.kind != OwnerKind::Session
         && let Some(ttl) = o.hard_ttl_ms
-        && now_ms - o.created_ms >= ttl
+        && now_ms - o.live_since() >= ttl
     {
         return Some(format!(
-            "hard TTL: a {} is closed {} after it was created, whatever it is doing",
+            "hard TTL: a {} is closed {} after it was created or reopened, whatever it is doing",
             o.kind.noun(),
             human_millis(ttl as u64)
         ));

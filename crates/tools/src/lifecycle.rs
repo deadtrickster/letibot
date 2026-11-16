@@ -13,7 +13,8 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use letibot_tokencore::store::{
-    HoldingClass, HoldingRow, HoldingState, OwnerKind, OwnerRow, Result as StoreResult, Store,
+    HoldingClass, HoldingRow, HoldingState, OwnerKind, OwnerRow, OwnerState, Result as StoreResult,
+    Store,
 };
 
 use crate::exec::scope::{self, ScopeUse};
@@ -458,6 +459,10 @@ pub fn owner_for_open(
     row.hard_ttl_ms = hard_ttl_ms;
     if let Some(was) = existing {
         row.created_ms = was.created_ms;
+        // A restart of a live owner keeps its clock; only a return from a close restarts it.
+        if was.state == OwnerState::Live {
+            row.live_since_ms = was.live_since_ms;
+        }
         row.held_until_ms = was.held_until_ms;
         row.landed_sha = was.landed_sha;
         row.parent_id = was.parent_id;
