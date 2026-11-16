@@ -1237,6 +1237,9 @@ fn name_intents(program: &str, argv: &[Word]) -> Vec<Intent> {
         "curl" | "wget" | "nc" | "netcat" | "socat" | "telnet" | "ftp" | "http" | "httpie"
         | "aria2c" => vec![Network],
         "ssh" | "sftp" | "scp" | "sshfs" | "ssh-add" | "ssh-agent" => vec![Network],
+        // A file-transfer client copies in both directions, so it reads, writes and reaches a
+        // host; neither half alone is the answer, and `Unknown` was the wrong one.
+        "rclone" | "lftp" => vec![Network, ReadFile, WriteFile],
         "apt" | "apt-get" | "dnf" | "yum" | "pacman" | "brew" | "snap" | "flatpak" | "npm"
         | "pnpm" | "yarn" | "pip" | "pip3" | "gem" | "cargo-install" | "rustup" | "uv" => {
             vec![PackageChange, Network]

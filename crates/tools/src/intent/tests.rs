@@ -1750,6 +1750,31 @@ fn git_cherry_is_inspect() {
     }
 }
 
+/// A file-transfer client moves bytes over the wire, which is what the reviewer probe and the
+/// card both need to read off the table: `Unknown` says nobody knows what the program does, and
+/// that is a different answer from "it reaches a host".
+#[test]
+fn rclone_and_lftp_are_named_transfers() {
+    for cmd in [
+        "rclone copy /w/x remote:path",
+        "rclone sync /w/x remote:path",
+        "lftp -c 'put /w/x :/x'",
+        "lftp -u user,pass host:/dir",
+    ] {
+        let base = b(cmd);
+        assert!(
+            !base.intents.contains(&Intent::Unknown),
+            "{cmd}: {:?}",
+            base.intents
+        );
+        assert!(
+            base.intents.contains(&Intent::Network),
+            "{cmd} moves bytes off the box: {:?}",
+            base.intents
+        );
+    }
+}
+
 /// Toolchain probes print a version or a query and build nothing, so they read as reads. A real
 /// build, and a `--print` handed a source file, stay what they were.
 #[test]

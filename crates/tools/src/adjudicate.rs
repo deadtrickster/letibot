@@ -1536,8 +1536,9 @@ pub fn a_command_that_crosses_nothing(
 }
 
 /// A reviewer's exec the mode may admit: a point that admits exec, a call off the always-ask list,
-/// intents that only look, write or run, and every place it names inside the clone, scratch or temp.
-/// Pushes, network, package and permission changes and unplaced paths still ask.
+/// intents that only look, write or run - all of them read, never `Unknown` - and every place it
+/// names inside the clone, its scratch, or a temp directory it only reads. Pushes, network,
+/// package and permission changes, a write into the shared `/tmp` and unplaced paths still ask.
 pub fn a_reviewers_probe(
     mode: crate::mode::Mode,
     access: Access,
@@ -1549,20 +1550,20 @@ pub fn a_reviewers_probe(
         && mode.exec == crate::mode::Disposition::Admit
         && matches!(tier, Tier::Auto | Tier::MayApprove)
         && baseline.intents.iter().all(|i| {
+            // A program layer A could not name is none of the three the sentence claims:
+            // `Unknown` is the absence of a reading, and this probe is where one is required.
             matches!(
                 i,
-                Intent::Inspect
-                    | Intent::ReadFile
-                    | Intent::WriteFile
-                    | Intent::ExecuteCode
-                    | Intent::Unknown
+                Intent::Inspect | Intent::ReadFile | Intent::WriteFile | Intent::ExecuteCode
             )
         })
-        && baseline.regions.iter().all(|r| {
-            matches!(
-                r,
-                Region::Workspace | Region::Scratch | Region::Temp | Region::None
-            )
+        // The clone, its own scratch and nothing else may be written. `/tmp` is shared with
+        // every other process on the box, so writing there is not the reviewer's own business;
+        // reading it is, which is how a probe script runs.
+        && baseline.regions.iter().all(|r| match r {
+            Region::Workspace | Region::Scratch | Region::None => true,
+            Region::Temp => !baseline.intents.contains(&Intent::WriteFile),
+            _ => false,
         })
 }
 

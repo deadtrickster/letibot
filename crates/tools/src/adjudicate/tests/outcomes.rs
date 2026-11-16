@@ -1062,7 +1062,6 @@ fn a_reviewers_probe_runs_at_allow_all_and_anything_beyond_still_asks() {
     for cmd in [
         "clippy-driver --version",
         "python3 /tmp/probe.py",
-        "python3 -c \"open('/tmp/mc.rs','w').write('fn main() {}')\"",
         "python3 -c \"open('src/mc.rs','w').write('fn main() {}')\"",
     ] {
         let (admitted, asked, log) = runs(Mode::ALLOW_ALL_HERE, true, cmd);
@@ -1079,6 +1078,9 @@ fn a_reviewers_probe_runs_at_allow_all_and_anything_beyond_still_asks() {
     assert_eq!(log[0].decision.by, "gate:reviewer");
     for cmd in [
         "python3 -c \"open('/home/dead/mc.rs','w').write('fn main() {}')\"",
+        // The shared `/tmp` is not the reviewer's own scratch: reading a script there is the
+        // probe's business, writing one is not.
+        "python3 -c \"open('/tmp/mc.rs','w').write('fn main() {}')\"",
         "git push origin HEAD",
         "curl -fsS https://example.com",
     ] {
@@ -1100,4 +1102,61 @@ fn a_reviewers_probe_runs_at_allow_all_and_anything_beyond_still_asks() {
         !admitted && asked == 1,
         "a confined seat without limits asks"
     );
+}
+
+/// The probe's sentence is "it only looks, writes or runs", which is a claim about what layer A
+/// read: a program nobody can name is none of the three, and the shared `/tmp` is not the
+/// reviewer's own scratch, so a write there asks while a read does not.
+#[test]
+fn a_reviewers_probe_asks_for_an_unknown_program() {
+    use crate::mode::Mode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let runs = |cmd: &str| {
+        let asked = std::sync::Arc::new(AtomicUsize::new(0));
+        let a = asked.clone();
+        let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+            "human:test",
+            move |req: &AdjudicationRequest| {
+                a.fetch_add(1, Ordering::Relaxed);
+                Some(AdjudicationDecision::selected(
+                    req,
+                    "deny_and_tell",
+                    "human:test",
+                    "not now",
+                ))
+            },
+        )))
+        .with_mode(Mode::ALLOW_ALL_HERE)
+        .with_reviewer_limits(true)
+        .with_surroundings(pinned());
+        let d = g.admit(&bash(&json!({ "command": cmd })));
+        (
+            d == GateDecision::Admit,
+            asked.load(Ordering::Relaxed),
+            g.log,
+        )
+    };
+
+    for cmd in [
+        // A binary this table cannot name: `Unknown` is not "looks, writes or runs".
+        "/usr/local/bin/frobnicate --wipe /w/mc.rs",
+        // A write into the shared `/tmp`, which is not the reviewer's own scratch.
+        "python3 /tmp/probe.py > /tmp/out.txt",
+    ] {
+        let (admitted, asked, log) = runs(cmd);
+        assert!(
+            !admitted && asked == 1,
+            "`{cmd}` ran unasked: {}",
+            log[0].request.baseline
+        );
+    }
+    // A read in `/tmp` is still a read, and the probe is what admits it.
+    let (admitted, asked, log) = runs("python3 /tmp/probe.py");
+    assert!(
+        admitted && asked == 0,
+        "a read in `/tmp` was asked about: {}",
+        log[0].request.baseline
+    );
+    assert_eq!(log[0].decision.by, "gate:reviewer");
 }
