@@ -1499,15 +1499,30 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 ## R341 - rows, the journal and warnings: head before store, jobs marked delivered first, operator-only rows in the model transcript, warnings, the room store
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I48, I49, I50, I51, I52. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** partially built 2026-11-16, one commit per finding: I48 `e49ad2e4` (store the round's rows before the seam's side work), I49 `352d753b` (a job lost at restart is owed until its notice is stored), I50 `abc0b71a` (reaches_model is the one decision on operator-only rows). Each proving test was red on the unfixed tree and green after. I52 was built by a subagent on branch `remote/xmg/12035371` (commits `392d8124`, `13cbd845`, `1aaf0e97`), each test red then green, `letibot-room` green, clippy and fmt clean — to land through the queue. I51 is moved to `## R341a` below: its change list is a routing redesign plus a schema table, not a fix-shaped change. No store schema number was taken; main stays at 55. Filed from the review at `9e9312b06`. Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I48, I49, I50, I51, I52. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+
+**What was built.**
+- I48: `after_the_round` calls `persist()` right after append and reconcile, before the gate-admission flush, the usage notices, the jobs publish, the queued mode change, the operator's queued run and the review pass. The method is `pub(crate)` so the seam can be driven directly. `append_imported` (the operator call's settle path) stores nothing itself, so the seam's write is the only one.
+- I49: the relic and running-job loops in `restore_after_restart` push the handle to `restart_owed` instead of `deliver_job` at once; `restart_owed_stored` marks the delivery when the notice's row lands, and a `lost at restart` row with `delivered = 0` is picked up by the next open's undelivered-settlements pass (`undelivered_jobs` excludes only `running` and `detached`).
+- I50: `TranscriptItem::reaches_model()` — the exhaustive, every-arm-spelled decision (Offer and SegmentMark false) — called by the qwen and glm renderers and their cli views, the gemini, anthropic, messages and responses request builders, the handover writer (whose markdown had rendered offers into the foreign conversation), `restart::display_only`, and the shadow seat's two `append_offer_rows` sites now say `offer_rows_not_stored` instead of discarding the failure.
+
+**Where the tests are.** `a_round_is_stored_before_reviews_run` (harnessd/src/harness/tests/seam_store.rs: holds the store's write lock and asserts the seam's store-busy wait is said before the operator's queued call — red had the call at index 4 and the wait at 7); `a_job_lost_at_restart_is_told_after_a_second_restart` (harnessd/tests/restart_restore.rs: red on "the first pass marked the ending delivered with no row stored"); `every_transcript_item_kind_declares_whether_it_reaches_the_model` (transcript/src/lib.rs, all eight kinds pinned) and `handover_drops_offers` (claude/src/handover/tests.rs, red with the offer in the handover's markdown and lines); `an_invalid_byte_never_compacts_the_board_away`, `a_torn_line_does_not_swallow_the_next_record`, `a_torn_closed_segment_line_does_not_swallow_the_next_row` and `a_trim_waits_until_the_closed_segment_holds_the_row` (room/src/store.rs tests, on the I52 branch).
+
+**Residue.**
+- I48: "warn at open when a head's last seen item_id is absent" is not built — the Hello frame carries no last-seen id, so the check needs a wire or server-tracking seam; a design change in a fix-only phase. The finding's own "emit after commit or add a retraction event" stays open with it.
+- I48: a gate-admission notice between the append and the seam used to store the results incidentally (its own `append_notice` persist); rounds whose gate admitted nothing were the exposed ones. The fix stores every round's results regardless.
+- I49: "sweep undelivered settlements at daemon start" is not built — a session never reopened keeps `delivered = 0` until it is; the scenario the proving test covers (a second restart) is closed, the never-reopened half needs a daemon-start pass that speaks for closed sessions.
+- I50: `delete_empty_session` still cannot remove an offer-only session — the rows are physically blocked by the `transcript_item` append-only trigger (the R129 carve precedent would be needed), so the guard still counts them.
+- I50: "amend I2 to name the exception" — `invariants.md` lives outside this repository (`/data/review-prep/`); the post-batch invariants pass (review section 7, item 4) is where I2 is amended. `reaches_model`'s doc names the exception for it to cite.
+- I52: "version the records" skipped (both proving tests green without it); fsync added but unprovable by an in-process test; a beat now costs one fsync (`letibot-room --lib` went 0.46s to ~44s); refusing compaction after a partial read grows the live file until an operator deals with it.
+- Box: `cargo test -p letibot-harnessd --lib` has three pre-existing reds on this box (bwrap ENOSPC for `reviewer_mode`; the two `claude_tests` SIGINT/process-table reds) — present on the base commit, unrelated to these changes. The builds needed `CARGO_HOME=$HOME/cargo-home` (a copy of `~/.cargo` with the pinned rano rev fetched in) and commits need `-c commit.gpgsign=false`.
 
 **Scope.** I49 is R319's remainder (A4-F14).
 
-**Proving tests.** the tests named in each entry. Each fails on the snapshot.
 
 **Size.** M. **After:** B7 (R327).
 
-**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
+**Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row. I51 is moved: see `## R341a` after this row's findings.
 
 **Findings, verbatim from the record.**
 
@@ -1570,6 +1585,14 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - Change: read lossy. Refuse to compact after a failed or skipped load and keep the old file as `.bad`. `sync_data` on append, `sync_all` on tmp, fsync the directory. Repair a missing trailing newline at open. Commit the trim only after the closed segment holds the bytes. Version the records.
 - Sources: P4-F5, P4-F6, P4-F7, P4-F8. P4 r1 GLM, P4 r1 fable, P4 r2 opus, P4 r2 DeepSeek, DeepSeek (supplementary).
 - Test: `an_invalid_byte_never_compacts_the_board_away` and `a_torn_line_does_not_swallow_the_next_record`.
+
+## R341a - warnings: routing, audiences, placement, a durable copy — I51 moved here from R341
+
+**Status:** open, moved 2026-11-16 from `## R341` (I51), unchanged in content. Reason for the move: the change list is a routing redesign — `note_beside` and `count_edge_note` do not exist, the warning-code newtype, one-event-two-audiences, the placement column and the guard re-drive through real events all reshape `sessionlog/src/warning.rs` and its six readers — plus an append-only disclosures table with a store schema bump and replay into snapshots. None of it is fix-shaped against the session that built R341, and half-landing a schema change under time pressure risks the store. The two proving tests below stay the row's done-when.
+
+**Findings, verbatim from the record.** The I51 entry of R341 above (free-string codes; provider_quota drawn as a conversation row the model never got; the guard green over `SessionEvent::Warning`; `Go::Notes` placement; `lifecycle_{event}` bypassing the table; TWIN hand-written and `target_red`'s EMERGENCY to `roots_of` only; 128 in-memory warnings lost at restart; `limit_returned` drawn twice and `limit_resumed` unread; ten codes skipped by `continue`).
+
+**Proving tests.** `provider_quota_is_never_a_conversation_row` through ProviderTrouble, plus `a_warning_detail_survives_restart`. Each fails on the snapshot.
 
 ## R342 - migrations and the split schema
 
