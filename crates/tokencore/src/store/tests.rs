@@ -1913,6 +1913,43 @@ fn a_v53_store_gains_the_queued_skill_column() {
     let _ = std::fs::remove_file(&path);
 }
 
+/// A session written before v56 reads as nothing limited, and its limit state then round-trips.
+#[test]
+fn a_v55_store_gains_the_limit_state_column() {
+    let path = std::env::temp_dir().join(format!(
+        "letibot-migrate-v55-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_file(&path);
+    {
+        let s = Store::open(&path).unwrap();
+        let _ = seeded(&s);
+        s.connection()
+            .execute_batch(
+                "ALTER TABLE session DROP COLUMN limit_state;
+                 UPDATE schema_version SET version = 55;",
+            )
+            .unwrap();
+    }
+    let s = Store::open(&path).unwrap();
+    assert_eq!(s.limit_state("sess-1").unwrap(), None);
+    s.set_limit_state("sess-1", Some("{\"park\":null}"))
+        .unwrap();
+    assert_eq!(
+        s.limit_state("sess-1").unwrap().as_deref(),
+        Some("{\"park\":null}")
+    );
+    s.set_limit_state("sess-1", None).unwrap();
+    assert_eq!(s.limit_state("sess-1").unwrap(), None);
+    assert!(s.set_limit_state("no-such", Some("{}")).is_err());
+    drop(s);
+    let _ = std::fs::remove_file(&path);
+}
+
 #[test]
 fn a_v44_store_gains_the_prompt_context_column() {
     let path = std::env::temp_dir().join(format!(

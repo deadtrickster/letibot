@@ -204,7 +204,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 55;
+pub const SCHEMA_VERSION: i64 = 56;
 
 /// A session's plan-check pause as its row holds it: `until` is `0` for until resumed, else the
 /// unix ms it ends at. `at_ms` and `by` are `None` on a row written before v51.
@@ -329,7 +329,11 @@ CREATE TABLE IF NOT EXISTS session (
                                      -- and empty is an archive nobody gave a reason for.
     nags_paused_at INTEGER,          -- v51; unix ms the pause in `nags_paused_until` was made.
                                      -- NULL with it, or a pause written before v51.
-    nags_paused_by TEXT              -- v51; who made it (`operator`, `model`, `bridge`, ...).
+    nags_paused_by TEXT,             -- v51; who made it (`operator` or `model` or `bridge`).
+    limit_state    TEXT              -- v56; the session's usage-limit park, re-tries, way back
+                                     -- and limited models, as JSON. NULL = nothing limited.
+                                     -- No comma in the comment above: sqlite's DROP COLUMN of
+                                     -- a last column cuts at the last comma before it.
 );
 
 CREATE TABLE IF NOT EXISTS transcript (
@@ -2717,6 +2721,22 @@ impl Store {
                 )?;
             }
         }
+        if from < 56 {
+            // v56: a session's limit state, so a restart keeps a park. NULL reads as nothing
+            // limited, which is what every earlier daemon started at.
+            let has = |sql: &str| -> bool {
+                self.conn()
+                    .prepare(sql)
+                    .and_then(|mut st| st.exists([]))
+                    .unwrap_or(false)
+            };
+            if has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'")
+                && !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'limit_state'")
+            {
+                self.conn()
+                    .execute_batch("ALTER TABLE session ADD COLUMN limit_state TEXT")?;
+            }
+        }
         Ok(())
     }
 
@@ -3817,6 +3837,31 @@ impl Store {
             )
             .optional()?
             .flatten())
+    }
+
+    /// The session's limit state as its harness wrote it, or `None` for nothing limited.
+    pub fn limit_state(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row(
+                "SELECT limit_state FROM session WHERE id = ?1",
+                params![id],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten())
+    }
+
+    /// Record the session's limit state, or clear it with `None`.
+    pub fn set_limit_state(&self, id: &str, state: Option<&str>) -> Result<()> {
+        let n = self.exec(
+            "UPDATE session SET limit_state = ?2 WHERE id = ?1",
+            params![id, state],
+        )?;
+        if n == 0 {
+            return Err(StoreError::NotFound(format!("session {id}")));
+        }
+        Ok(())
     }
 
     /// The provider this session was switched to, or `None` for one that never

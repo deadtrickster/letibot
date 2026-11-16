@@ -777,6 +777,8 @@ impl<'a> Sessions<'a> {
         // A `--continue` resumes the session on the model it was switched to. The first session is
         // the common resume
         harness.restore_provider_choice();
+        // The limit state after the model it is measured against. See `Harness::restore_limit_state`.
+        harness.restore_limit_state();
         // And on the compaction the no-progress guard stood down, for the same reason - a resumed
         // session coming back with the pre-emptive door re-armed is the guard's finding silently
         // unrecorded, and the loop it existed to stop comes back with it.
@@ -2211,6 +2213,7 @@ impl<'a> Sessions<'a> {
             // a subagent's parent coming back - so a session this daemon did not start running still
             // comes back on its own model rather than the CLI default.
             h.restore_provider_choice();
+            h.restore_limit_state();
             // And the stood-down compaction with it - the pair on the row is the guard's
             // finding, and a session this daemon adopts must not come back with it unrecorded.
             h.restore_auto_compact();

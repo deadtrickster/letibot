@@ -3855,6 +3855,7 @@ impl Harness {
             limited: Default::default(),
             limit_return: None,
             limit_probing: Default::default(),
+            limit_saved: None,
             limit_row: Default::default(),
             limit_episodes,
             question_slot: question_head.clone(),

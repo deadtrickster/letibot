@@ -500,18 +500,42 @@ fn down_span(stop: &Stopped, back_ms: u64) -> String {
 
 /// Whether a session's rows stop in a turn that was still going: an `Assistant` with no call is a
 /// finished turn, a harness row of its own is not a turn, and every other row never got its answer.
-/// Display-only rows (offer cards, segment marks) are filed after the answer and are read past.
+/// Display-only rows (offer cards, segment marks) and a park's resume notice are read past: the
+/// first is filed after the answer, the second re-opens the turn before it.
 pub fn mid_turn(items: &[TranscriptItem]) -> bool {
-    let last = items.iter().rev().find(|i| !display_only(i));
-    match last {
-        None => false,
-        Some(TranscriptItem::Assistant { tool_calls, .. }) => !tool_calls.is_empty(),
-        Some(TranscriptItem::User {
-            speaker: Speaker::Agent,
-            ..
-        }) => false,
-        Some(_) => true,
+    for item in items.iter().rev() {
+        if display_only(item) || a_parks_resume(item) {
+            continue;
+        }
+        return match item {
+            TranscriptItem::Assistant { tool_calls, .. } => !tool_calls.is_empty(),
+            TranscriptItem::User {
+                speaker: Speaker::Agent,
+                ..
+            } => false,
+            _ => true,
+        };
     }
+    false
+}
+
+/// How the harness's row ending a parked turn on Esc begins. Every other `[limit]` row re-opens
+/// the parked turn.
+pub const PARK_INTERRUPTED: &str = "[limit] the operator interrupted this turn";
+
+/// Whether a row is the harness's notice re-opening a parked turn, refused or not.
+pub fn a_parks_resume(item: &TranscriptItem) -> bool {
+    let TranscriptItem::User {
+        speaker: Speaker::Agent,
+        parts,
+    } = item
+    else {
+        return false;
+    };
+    parts.iter().any(|p| {
+        matches!(p, letibot_transcript::UserPart::Text { text }
+            if text.starts_with("[limit] ") && !text.starts_with(PARK_INTERRUPTED))
+    })
 }
 
 /// A row the model never reads, filed by the harness for the operator.
@@ -1354,6 +1378,29 @@ mod tests {
             assert!(promises_a_restart(p, None), "lexical: {p}");
             assert!(promises_a_restart(p, Some(&tier)), "with a tier: {p}");
         }
+    }
+
+    /// A park's resume notice re-opens the turn before it; the Esc that ends a park closes it.
+    #[test]
+    fn a_parks_resume_notice_is_read_past_and_its_interrupt_is_not() {
+        use letibot_transcript::{Speaker, TranscriptItem, UserPart};
+        let said = |text: &str| TranscriptItem::User {
+            speaker: Speaker::Agent,
+            parts: vec![UserPart::Text { text: text.into() }],
+        };
+        let prompt = TranscriptItem::User {
+            speaker: Speaker::Operator,
+            parts: vec![UserPart::Text {
+                text: "say hello".into(),
+            }],
+        };
+        let resume = said("[limit] glm is limited until 01:20:02 UTC and this turn is asked again");
+        assert!(super::mid_turn(&[prompt.clone(), resume.clone()]));
+        let esc = said(&format!(
+            "{} while it was parked on glm's usage limit",
+            super::PARK_INTERRUPTED
+        ));
+        assert!(!super::mid_turn(&[prompt, resume, esc]));
     }
 
     /// An offer card is filed after the answer it follows. It is not a turn still going.
