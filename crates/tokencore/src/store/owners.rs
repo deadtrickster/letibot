@@ -36,7 +36,9 @@ CREATE TABLE IF NOT EXISTS owner (
     settled_ms    INTEGER,
     created_ms    INTEGER NOT NULL,
     -- the last return to live, which the hard TTL is measured from (schema 54); NULL = creation
-    live_since_ms INTEGER
+    live_since_ms INTEGER,
+    -- the latest close, which the work grace is measured from (schema 58); NULL = the first close
+    last_closed_ms INTEGER
 );
 CREATE INDEX IF NOT EXISTS owner_by_state ON owner (state);
 CREATE INDEX IF NOT EXISTS owner_by_parent ON owner (parent_id);
@@ -302,6 +304,8 @@ pub struct OwnerRow {
     pub created_ms: i64,
     /// The last return to `live`. The hard TTL runs from it, so a resume is not closed at once.
     pub live_since_ms: Option<i64>,
+    /// The latest close. The work grace runs from it; `closed_ms` keeps the first one.
+    pub last_closed_ms: Option<i64>,
 }
 
 impl OwnerRow {
@@ -324,6 +328,7 @@ impl OwnerRow {
             settled_ms: None,
             created_ms: now_ms,
             live_since_ms: Some(now_ms),
+            last_closed_ms: None,
         }
     }
 
@@ -331,6 +336,12 @@ impl OwnerRow {
     /// written before schema 54.
     pub fn live_since(&self) -> i64 {
         self.live_since_ms.unwrap_or(self.created_ms)
+    }
+
+    /// What the work grace is measured from: the latest close, or the first one on a row written
+    /// before schema 58. Both clocks stay on a reopen, and each close re-stamps this one.
+    pub fn closed_at(&self) -> Option<i64> {
+        self.last_closed_ms.or(self.closed_ms)
     }
 
     /// Is the operator holding it? `Some(0)` never expires.
@@ -451,7 +462,7 @@ pub struct ReapEvent {
 
 const OWNER_COLUMNS: &str = "id, kind, parent_id, repo, state, held_until_ms, lease_ms, idle_ttl_ms, \
                              hard_ttl_ms, closed_ms, closed_why, landed_sha, settled_ms, created_ms, \
-                             live_since_ms";
+                             live_since_ms, last_closed_ms";
 
 fn owner_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<OwnerRow> {
     let kind: String = r.get(1)?;
@@ -474,6 +485,7 @@ fn owner_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<OwnerRow> {
         settled_ms: r.get(12)?,
         created_ms: r.get(13)?,
         live_since_ms: r.get(14)?,
+        last_closed_ms: r.get(15)?,
     })
 }
 
@@ -510,15 +522,16 @@ impl Store {
         self.exec(
             "INSERT INTO owner (id, kind, parent_id, repo, state, held_until_ms, lease_ms,
                                 idle_ttl_ms, hard_ttl_ms, closed_ms, closed_why, landed_sha,
-                                settled_ms, created_ms, live_since_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+                                settled_ms, created_ms, live_since_ms, last_closed_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
              ON CONFLICT(id) DO UPDATE SET
                kind = excluded.kind, parent_id = excluded.parent_id, repo = excluded.repo,
                state = excluded.state, held_until_ms = excluded.held_until_ms,
                lease_ms = excluded.lease_ms, idle_ttl_ms = excluded.idle_ttl_ms,
                hard_ttl_ms = excluded.hard_ttl_ms, closed_ms = excluded.closed_ms,
                closed_why = excluded.closed_why, landed_sha = excluded.landed_sha,
-               settled_ms = excluded.settled_ms, live_since_ms = excluded.live_since_ms",
+               settled_ms = excluded.settled_ms, live_since_ms = excluded.live_since_ms,
+               last_closed_ms = excluded.last_closed_ms",
             params![
                 o.id,
                 o.kind.word(),
@@ -535,6 +548,7 @@ impl Store {
                 o.settled_ms,
                 o.created_ms,
                 o.live_since_ms,
+                o.last_closed_ms,
             ],
         )?;
         Ok(())
@@ -564,7 +578,8 @@ impl Store {
         Ok(out)
     }
 
-    /// Move an owner to `state`, keeping the two clocks that date a close.
+    /// Move an owner to `state`, dating a close: the first close stays on the row, and each
+    /// close re-stamps the latest one, which is the clock the work grace runs from.
     pub fn set_owner_state(
         &self,
         id: &str,
@@ -574,7 +589,9 @@ impl Store {
     ) -> Result<()> {
         self.exec(
             "UPDATE owner SET state = ?2, closed_ms = COALESCE(closed_ms, ?3),
-                              closed_why = COALESCE(closed_why, ?4)
+                              closed_why = COALESCE(closed_why, ?4),
+                              last_closed_ms = CASE WHEN ?2 IN ('closing', 'closed')
+                                                    THEN ?3 ELSE last_closed_ms END
                WHERE id = ?1",
             params![id, state.word(), now_ms, why],
         )?;

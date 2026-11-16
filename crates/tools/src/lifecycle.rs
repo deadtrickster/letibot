@@ -468,9 +468,11 @@ pub fn owner_for_open(
         row.parent_id = was.parent_id;
         // The close is a fact, and a resume does not rewrite it: a row that lost `closed_ms` on
         // its way back to `live` would make `letibot gc --log` answer nothing about why it was
-        // shut, and the plan would count a first close that never happened.
+        // shut, and the plan would count a first close that never happened. The latest close
+        // stays too: the next close re-stamps it, and the grace runs from that one.
         row.closed_ms = was.closed_ms;
         row.closed_why = was.closed_why;
+        row.last_closed_ms = was.last_closed_ms;
     }
     Ok(row)
 }
