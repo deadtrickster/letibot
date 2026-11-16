@@ -1,10 +1,8 @@
 //! `/todo title:"…" body:"…"` - the operator's own way to add a row, as the built-in `todo` layer.
 //!
-//! The line is the guest's: `title:` and `body:` are parsed here, quoted or bare, in any order, and
-//! a line with neither is the whole thing as a title. The act is the host's: this layer cannot
-//! write a todo (its `capabilities` are empty), so it answers one declared act name and `plugin.toml`
-//! is what a reviewer reads. A line that is not an add (`done 2`, `rm 3`) passes, so the head answers
-//! it as it always did.
+//! `title:` and `body:` are parsed here, quoted or bare, in any order; a line with neither is all title.
+//! Writing the todo is the host's act, since this layer has no capabilities, and a line that is not an
+//! add passes to the head.
 //! ```jsonc
 //! // command_todo: in
 //! {"line": "title:\"a\" body:\"b\"",
@@ -14,10 +12,8 @@
 //!    "repo_todos": [{"text": "T1 git init", "mark": "[x]", "indent": 4, "item": true}]}}
 //! ```
 //!
-//! `nag_todo` is the other export: the plan-check's decision. This layer says exactly what the
-//! harness's own nag says - one row, the harness's words - so the bottom of the stack is the daemon
-//! itself, and an operator's layer above it is where a project's own answer is written. It names the
-//! input's row back, which is all an identity layer may do: the clock and the filter are not its to move.
+//! `nag_todo` is the plan-check's decision, in the harness's own words, so the bottom of the stack is the
+//! daemon itself. It names the input's row back, which is all an identity layer may do.
 
 /// The act name the host performs, and the one its `plugin.toml` declares.
 const ACT: &str = "add_todo";

@@ -345,10 +345,8 @@ impl<'a> Ctx<'a> {
             .is_some_and(|p| self.in_branch(p, Some((project, system))))
     }
 
-    /// The projects this feed holds, the one that moved most recently first - the key and the name
-    /// to draw. First-seen order is the daemon's, and it buries the project somebody is working on
-    /// behind whatever the store listed first; a tie keeps that order, because a stable sort is the
-    /// only thing that can.
+    /// The projects this feed holds, most recently moved first: the key and the name to draw. The
+    /// daemon's first-seen order buries the active project; a stable sort keeps it for ties.
     fn projects(&self, bucket: &str) -> Vec<(&str, &str)> {
         let mut out: Vec<(&str, &str, u64)> = Vec::new();
         let mut at: HashMap<&str, usize> = HashMap::new();

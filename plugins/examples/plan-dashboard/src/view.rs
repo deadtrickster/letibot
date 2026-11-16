@@ -1,11 +1,6 @@
-//! **The pane contract's types** (`docs/plugins-slice1.md` C3), in serde: the input the host calls
-//! the hook with, and the `View` it reads back. They are written out here rather than imported
-//! from the host because a plugin is a separate crate with its own copy of the contract - the host
-//! validates an answer into *its* types, and this one has to produce JSON that survives that.
-//!
-//! The shape is serenedash's, which is why nothing is looser than it has to be: every bar carries
-//! its panel's denominator, every stop has an id (`↑`/`↓` and the wheel move between them), and
-//! every sentence a person reads in the legend is the same sentence the hover shows.
+//! The pane contract's types in serde: the hook's input and the `View` read back. Written out
+//! rather than imported because a plugin is a separate crate whose JSON must survive the host's
+//! types. Every bar carries its denominator and every stop an id.
 
 use std::collections::BTreeMap;
 
@@ -13,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::status::Status;
 
-/// The C3 input.
+/// The pane hook's input.
 /// The host also sends `"v"`, `"event"` and `"size"`, and this pane acts on none of them: its
 /// actions are `say` and `look`, both performed by the host.
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -42,7 +37,7 @@ pub struct LookResult {
     pub stderr: String,
 }
 
-/// **The C3 answer.**
+/// The pane hook's answer.
 #[derive(Debug, Clone, Serialize)]
 pub struct View {
     pub title: String,
@@ -94,7 +89,7 @@ pub struct Panel {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub key: Option<String>,
     pub title: String,
-    /// What every bar in this panel is a share of - C3 makes this obligatory, because a bar
+    /// What every bar in this panel is a share of - the contract makes this obligatory, because a bar
     /// without a denominator is a decoration.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub denominator: Option<String>,
@@ -255,7 +250,7 @@ impl Action {
     }
 }
 
-/// **The colour language**, and the one sentence each colour means - the legend and the hover show
+/// The colour language, and the one sentence each colour means - the legend and the hover show
 /// the same string, so a reader is never guessing what "attention" was claiming.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]

@@ -9,10 +9,9 @@
 //! {"continue":"…"} | {"stop":true}
 //! ```
 //!
-//! It answers what the harness decided: the sentence it would have appended, or a stop when it had
-//! nothing to say. A project puts a layer above this one to change the decision - to keep a turn
-//! going after a compaction, or to stop one the harness would have nudged - and the two rules a
-//! layer cannot cross (the budget, and an interrupted turn) are the host's, not this file's.
+//! It answers what the harness decided: the sentence it would have appended, or a stop. A layer
+//! above it changes the decision; the budget and an interrupted turn are the host's rules, not this
+//! file's.
 
 use letibot_guest_abi as abi;
 

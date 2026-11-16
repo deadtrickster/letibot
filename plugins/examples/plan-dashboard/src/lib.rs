@@ -1,11 +1,6 @@
 //! The first letibot pane plugin: a project plan's tiers, stages, agents and hosts, drawn from
-//! `<project>/.letibot/status.json` - the status file the agents keep as data rather than prose.
-//!
-//! Everything the plugin is lives in one pure function, [`view`]: an input in, a `View` out. It has
-//! no memory but the `state` the host hands back, no clock but the one it is given, and no
-//! capability but `read`. That is why the native tests below can assert the whole dashboard without
-//! a wasm host, and why [`pane_dashboard`] is thin.
-//! What is not here, deliberately: the layer stack's answer protocol, which belongs to the host.
+//! `<project>/.letibot/status.json`. All of it is one pure function, [`view`], with no memory but
+//! the host's `state`, no clock but the one given, so native tests cover it without a wasm host.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -30,7 +25,7 @@ mod view;
 pub const STATUS_PATH: &str = ".letibot/status.json";
 
 /// The status file is a snapshot the agents overwrite; a rewrite every half minute is soon enough
-/// to notice one and slow enough to cost nothing. C3's floor for a repeating look is 5 seconds.
+/// to notice one and slow enough to cost nothing. The contract's floor for a repeating look is 5 seconds.
 pub const EVERY_S: u32 = 30;
 
 /// A status file this old is a claim about the past, and the dashboard says so rather than
@@ -42,7 +37,7 @@ pub const STALE_AFTER_H: i64 = 24;
 const FIX_STATUS: &str =
     "write .letibot/status.json (see plugins/examples/plan-dashboard/status.example.json)";
 
-/// **The pane's whole logic.** An input in, a `View` out, with no I/O and no hidden state.
+/// The pane's whole logic. An input in, a `View` out, with no I/O and no hidden state.
 pub fn view(input: &Value) -> Value {
     view_before(input, now())
 }
@@ -75,7 +70,7 @@ fn now() -> Option<i64> {
 fn view_before(input: &Value, now: Option<i64>) -> Value {
     let Ok(input) = Input::deserialize(input) else {
         // Unreadable is not the same as refused: a host that hands this pane something which is
-        // not a C3 input gets the first frame back - and the first frame asks for the file.
+        // not a pane input gets the first frame back - and the first frame asks for the file.
         return to_value(loading());
     };
 
@@ -294,7 +289,7 @@ fn tier_line(tier: &Tier) -> Line {
     }
 }
 
-/// One row of a tier: the three cells C5 asks for, the colours its status earns, and a detail a
+/// One row of a tier: the three cells the status file names, the colours its status earns, and a detail a
 /// person can read without opening the file.
 fn tier_row(row: &TierRow) -> Row {
     let mut actions = vec![refresh()];
@@ -455,7 +450,7 @@ fn yours_panel(status: &Status) -> Panel {
 fn findings(status: &Status, now: Option<i64>) -> Vec<Finding> {
     let mut out = Vec::new();
 
-    // **An age is a measurement, and one needs a clock.** A guest has none (see [`now`]), so the
+    // An age is a measurement, and one needs a clock. A guest has none (see [`now`]), so the
     // staleness finding exists exactly where it could have been computed.
     if let (Some(now), Some(at)) = (now, time::epoch(&status.updated)) {
         let age = now - at;
@@ -645,7 +640,7 @@ fn tier_tail(tier: &Tier) -> String {
     }
 }
 
-/// Row status to colour, which is C5's vocabulary and nothing else: an unfamiliar status is
+/// Row status to colour, which is the status file's vocabulary and nothing else: an unfamiliar status is
 /// `plain`, not a guess.
 fn row_role(status: &str) -> Role {
     match status {
@@ -752,7 +747,7 @@ fn to_value(view: View) -> Value {
 // `rano_abi` and `rano_alloc`: the two exports every rano plugin has.
 rano_plugin::abi!();
 
-/// `pane_dashboard`, the hook the host calls: a C3 input in, a C3 `View` out.
+/// `pane_dashboard`, the hook the host calls: a pane input in, a `View` out.
 /// `None` - the ABI's *leave it alone* - is for text this plugin cannot read as JSON at all, which
 /// is a host defect rather than a dashboard state. Every state the plan can be in is answered.
 #[unsafe(no_mangle)]

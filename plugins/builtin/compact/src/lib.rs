@@ -10,9 +10,9 @@
 //! {"sections":[…], "pin":["agents_md","row:1"], "after":"continue"}
 //! ```
 //!
-//! It asks for the record the harness has always asked for - the same eight sections, in the same
-//! order, and no sentence of its own - and adds the two things to carry verbatim: the project's
-//! `AGENTS.md`, then the rows still open. A pin past the budget is cut and said by the host.
+//! The same eight sections the harness always asked for, in order, plus two pins to carry verbatim:
+//! the project's `AGENTS.md`, then the rows still open. A pin past the budget is cut and said by
+//! the host.
 
 use letibot_guest_abi as abi;
 

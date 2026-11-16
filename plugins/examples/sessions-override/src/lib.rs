@@ -1,11 +1,6 @@
-//! Overriding the session list, the way the plan says it should be done: one small layer that asks
-//! for the layer below and edits what it finds, instead of re-implementing the list.
-//!
-//! Copy this directory into `<project>/.letibot/plugins/sessions/` (the `plugin.wasm` beside this
-//! file is what the host loads) and open the session list: the `system` branch is renamed, says what
-//! this project thinks of it, and stops listing it. Everything else is what the built-in answered.
-//! The request is echoed back as `{"below": <the same input>}`, so a policy change is a diff of what
-//! changed, and no verb is named that `plugin.toml` does not declare.
+//! Overriding the session list as the plan intends: one small layer that asks the layer below and
+//! edits what it finds. Copy this directory into `<project>/.letibot/plugins/sessions/` and the
+//! `system` branch is renamed, annotated and unlisted; the rest is the built-in's answer.
 
 use letibot_guest_abi as abi;
 use serde_json::{Value, json};
@@ -19,11 +14,11 @@ const SYSTEM: &str = "system (";
 const RENAMED: &str = "the harness's own (0)";
 const LEGEND: &str = "this project keeps no system agents on its list";
 
-/// **The id the renamed line takes.** The host keys its fold state by id, so a rename that kept
+/// The id the renamed line takes. The host keys its fold state by id, so a rename that kept
 /// the old one would fold under a name nobody can see.
 const RENAMED_ID: &str = "no-system-agents";
 
-/// **One call**: the first time, ask below with the same request; the second time, edit.
+/// One call: the first time, ask below with the same request; the second time, edit.
 fn answer(bytes: &[u8]) -> Option<String> {
     let input: Value = serde_json::from_slice(bytes).ok()?;
     match input.get("below") {
@@ -51,13 +46,13 @@ fn edit(mut view: Value) -> Option<Value> {
         return Some(view);
     };
     let rows = rows_mut(&mut view)?;
-    // **The branch's line**: a new name, a new id (the host keys its fold state by id, so a
+    // The branch's line: a new name, a new id (the host keys its fold state by id, so a
     // rename that kept the old one would fold under a name nobody can see), and a legend that
     // says what this project decided.
     rows[at]["id"] = json!(RENAMED_ID);
     rows[at]["cells"] = json!([{"text": RENAMED, "role": "strong"}]);
     rows[at]["under"] = json!([LEGEND]);
-    // **And its rows go** - every row after it that is deeper than the group's own line, up to the
+    // And its rows go - every row after it that is deeper than the group's own line, up to the
     // next line at its depth. The list is flat, and `depth` is what says whose child a row is.
     let depth = rows[at]
         .get("depth")
@@ -130,7 +125,7 @@ mod tests {
         })
     }
 
-    /// **The first call asks below with the request it was given**, not with a rebuilt one.
+    /// The first call asks below with the request it was given, not with a rebuilt one.
     #[test]
     fn the_first_call_asks_below_with_the_same_request() {
         let request = json!({"v": 2, "feeds": {"sessions": {"sessions": []}}});
@@ -139,7 +134,7 @@ mod tests {
         assert_eq!(asked, json!({"below": request}));
     }
 
-    /// **The second call keeps everything and changes the one branch**: the name, the legend, and
+    /// The second call keeps everything and changes the one branch: the name, the legend, and
     /// the rows not drawn - and not one other row is touched.
     #[test]
     fn it_renames_the_branch_and_hides_its_rows() {
@@ -164,7 +159,7 @@ mod tests {
         );
     }
 
-    /// **A list with no such branch is left alone** - the edit is an edit, not a requirement.
+    /// A list with no such branch is left alone - the edit is an edit, not a requirement.
     #[test]
     fn a_list_without_the_branch_is_untouched() {
         let view = json!({"panels": [{"summary": [{"tree": {"rows": [
