@@ -95,6 +95,24 @@ fn kimi_windows_are_read_and_the_duplicate_month_is_one() {
     assert_eq!(windows(&limits_only)[0].used, 0.44);
 }
 
+/// Kimi's captured body with its two shapes disagreeing on the 5-hour window: whichever reads
+/// higher is the reading, and the other shape's lag cannot hide a spent window.
+#[test]
+fn a_kimi_body_with_both_shapes_reports_the_greater_used() {
+    let mut body: Value = serde_json::from_str(KIMI).unwrap();
+    body["limits"][0]["detail"]["used"] = serde_json::json!("100");
+    body["limits"][0]["detail"]["resetTime"] = serde_json::json!("2026-11-15T07:07:01.5Z");
+    let w = windows(&body);
+    assert_eq!(w.len(), 2, "{w:?}");
+    assert_eq!(w[0].name, "5h");
+    assert_eq!(w[0].used, 1.0);
+    assert_eq!(w[0].reset_ms, Some(ms("2026-11-15T07:07:01.5Z")));
+    // The other way round: `usages` ahead of `limits[]`.
+    let mut body: Value = serde_json::from_str(KIMI).unwrap();
+    body["usages"]["limit_5h"]["used_ratio"] = serde_json::json!(0.9);
+    assert_eq!(windows(&body)[0].used, 0.9);
+}
+
 #[test]
 fn zai_windows_are_read_off_percentage() {
     let body = serde_json::json!({"data": {"limits": [
