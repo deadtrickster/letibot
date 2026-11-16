@@ -1489,6 +1489,8 @@ pub struct AdjudicatedGate {
     view_loaded: Vec<(std::path::PathBuf, bool)>,
     /// Whether the last view card was answered on a relayed card.
     view_relayed: bool,
+    /// Who answered the last view card, and their basis.
+    view_by: (String, String),
 }
 
 /// A call the gate admitted without asking anybody, and why. Deliberately not a denial with a
@@ -1619,6 +1621,7 @@ impl AdjudicatedGate {
             unkept_memory: None,
             view_loaded: Vec::new(),
             view_relayed: false,
+            view_by: Default::default(),
         }
     }
 
@@ -1691,7 +1694,7 @@ impl AdjudicatedGate {
         if let Some(view) = &self.view {
             for (path, writable) in &self.view_loaded {
                 if !views.contains(&(path.clone(), *writable)) {
-                    view.forget(path, *writable);
+                    view.revoke(path);
                 }
             }
             for (path, writable) in &views {
@@ -1705,20 +1708,27 @@ impl AdjudicatedGate {
     fn keep_view(&mut self, path: &std::path::Path, answer: &crate::runtime::ViewGrant) {
         if let crate::runtime::ViewGrant::Granted { writable } = answer {
             let relayed = self.view_relayed;
+            let (by, basis) = std::mem::take(&mut self.view_by);
+            let why = if by.starts_with(crate::grant_ledger::SHADOW_BY) {
+                basis
+            } else {
+                "granted into the view by an answer to a card".to_string()
+            };
             self.keep_grant(
                 crate::grant_ledger::Kept::View {
                     path: crate::view::key(path),
                     writable: *writable,
                 },
                 relayed,
-                "granted into the view by an answer to a card",
+                &why,
+                &by,
             );
         }
     }
 
     /// Write a grant this session was just given down in the ledger: at the queue's scope when
     /// it was answered on a card relayed from a queue session, else at this session's.
-    fn keep_grant(&mut self, kept: crate::grant_ledger::Kept, relayed: bool, why: &str) {
+    fn keep_grant(&mut self, kept: crate::grant_ledger::Kept, relayed: bool, why: &str, by: &str) {
         use crate::grant_ledger::{Kept, Scope};
         let Some(ledger) = self.ledger.clone() else {
             return;
@@ -1727,7 +1737,7 @@ impl AdjudicatedGate {
             (Some(q), true) => Scope::Queue(q.clone()),
             _ => Scope::Session(self.session_id.clone()),
         };
-        match ledger.keep(&scope, &kept, why) {
+        match ledger.keep(&scope, &kept, why, by) {
             Ok(()) => {
                 // Read from the ledger from now on, so a revoke takes it out of the record.
                 if let Kept::View { path, writable } = &kept {
@@ -2778,6 +2788,7 @@ impl AdjudicatedGate {
         };
         let d = self.adjudicator.decide(&req);
         self.view_relayed = self.adjudicator.last_relayed();
+        self.view_by = (d.by.clone(), d.basis.clone());
         match &d.outcome {
             DecisionOutcome::Selected { option_id } if option_id == "grant_ro" => {
                 ViewGrant::Granted { writable: false }
@@ -2866,6 +2877,8 @@ impl Gate for AdjudicatedGate {
     }
 
     fn view_revocations(&mut self) -> Vec<std::path::PathBuf> {
+        // A grant revoked in the ledger leaves the record here, so it is unbound below.
+        self.refresh_grants();
         let Some(view) = &self.view else {
             return Vec::new();
         };
@@ -2979,6 +2992,7 @@ impl Gate for AdjudicatedGate {
                         crate::grant_ledger::Kept::Memory(m),
                         relayed,
                         &format!("granted by an answer to {}", req.id),
+                        &d.by,
                     );
                 }
                 MemoryGrant::Granted
@@ -3641,6 +3655,7 @@ impl Gate for AdjudicatedGate {
                                     crate::grant_ledger::Kept::Allow(grant),
                                     relayed,
                                     &why,
+                                    &decision.by,
                                 );
                             }
                         }

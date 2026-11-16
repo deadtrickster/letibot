@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use letibot_sessionlog::pending_asks::{Annotator, AutoGrant, Note, RelayedCall};
+use letibot_sessionlog::pending_asks::{Annotator, Note, RelayedCall, RevokedGrant};
 use letibot_tools::authorise::{CorpusRow, CorpusSink, OperatorOverride};
 
 use super::Job;
@@ -291,6 +291,9 @@ pub struct Relay {
     pub workspace: PathBuf,
     pub home: PathBuf,
     pub answering: Arc<Answering>,
+    /// Whether a grant answered here is kept where `/shadow revoke` finds it: a daemon with a
+    /// store. Without one the shadow only observes.
+    pub revocable: bool,
 }
 
 impl Relay {
@@ -402,7 +405,10 @@ impl Annotator for Relay {
     }
 
     fn may_answer(&self, c: &RelayedCall) -> bool {
-        self.answering.is_on() && scope(c, &self.home).is_ok() && self.parts().is_some()
+        self.revocable
+            && self.answering.is_on()
+            && scope(c, &self.home).is_ok()
+            && self.parts().is_some()
     }
 
     fn answered(&self, req_id: &str, effect: &str) {
@@ -435,12 +441,12 @@ impl Annotator for Relay {
         }
     }
 
-    fn revoked(&self, g: &AutoGrant) {
+    fn revoked(&self, g: &RevokedGrant) {
         let rec = self.parts().map(|(_, r)| r);
         self.answering.disagree(
             &format!(
-                "operator revoked the read of {} for {} ({})",
-                g.path, g.asker, g.req_id
+                "operator revoked the read of {} for {} (grant {})",
+                g.path, g.session, g.id
             ),
             rec.as_ref(),
         );
@@ -473,13 +479,4 @@ pub fn rules_of(rules: &[letibot_tools::permission::Rule]) -> Vec<String> {
         .filter(|r| r.action == letibot_tools::permission::Action::Allow)
         .map(|r| format!("{} {}", r.permission, r.pattern))
         .collect()
-}
-
-/// A session tree's view record as the main session revokes from it.
-pub struct TreeRevoker(pub Arc<letibot_tools::view::ViewGrants>);
-
-impl letibot_sessionlog::pending_asks::ViewRevoker for TreeRevoker {
-    fn revoke(&self, path: &str) -> bool {
-        self.0.revoke(std::path::Path::new(path))
-    }
 }

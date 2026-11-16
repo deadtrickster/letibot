@@ -2642,6 +2642,16 @@ impl Store {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN nags_paused_by TEXT")?;
             }
+            // And who answered a kept grant. Empty on a row written at v50: nobody recorded it.
+            if has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_grant'")
+                && !has(
+                    "SELECT 1 FROM pragma_table_info('session_grant') WHERE name = 'granted_by'",
+                )
+            {
+                self.conn().execute_batch(
+                    "ALTER TABLE session_grant ADD COLUMN granted_by TEXT NOT NULL DEFAULT ''",
+                )?;
+            }
         }
         Ok(())
     }

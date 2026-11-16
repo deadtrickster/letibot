@@ -1659,12 +1659,14 @@ impl<'a> Sessions<'a> {
                     ]);
                 };
                 let gatekeeper = self.base.serve_queues.then_some(self.gatekeeper.as_str());
-                crate::grants::permissions(&store, session_id, gatekeeper, revoke)
+                let set = self.registry.pending_asks();
+                crate::grants::permissions(&store, session_id, gatekeeper, revoke, Some(&set))
             }
             Slash::Shadow { revoke } => {
                 let set = self.registry.pending_asks();
+                let store = self.base.store_at().and_then(|a| a.open().ok());
                 match self.open.get_mut(session_id) {
-                    Some(h) => h.shadow_verb(Some(&set), revoke),
+                    Some(h) => h.shadow_verb(store.as_ref(), &set, revoke),
                     None => SlashReply {
                         lines: vec![format!("session {session_id} is not open")],
                         ok: false,

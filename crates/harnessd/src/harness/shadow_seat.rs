@@ -30,6 +30,7 @@ impl Harness {
             workspace: self.cfg.workspace.clone(),
             home: std::env::var_os("HOME").map(Into::into).unwrap_or_default(),
             answering: self.shadow_answering.clone(),
+            revocable: self.cfg.store_at().is_some(),
         }))
     }
 
@@ -50,54 +51,34 @@ impl Harness {
         }
     }
 
-    /// `/shadow`: the reads the shadow answered and its breaker. `/shadow revoke [N]` takes grant
-    /// N (the newest when left out) back out of the asker's view.
+    /// `/shadow`: the reads the shadow answered and its breaker. `/shadow revoke [N]` revokes
+    /// grant N (the newest when left out) through the same path as `/permissions revoke`.
     pub(crate) fn shadow_verb(
         &mut self,
-        set: Option<&letibot_sessionlog::pending_asks::PendingAsks>,
+        store: Option<&letibot_tokencore::store::Store>,
+        set: &letibot_sessionlog::pending_asks::PendingAsks,
         revoke: Option<Option<usize>>,
     ) -> crate::slash::SlashReply {
-        let Some(set) = set else {
-            return crate::slash::SlashReply {
-                lines: vec!["no relayed asks reach this session".into()],
-                ok: false,
-            };
+        let Some(store) = store else {
+            return crate::slash::SlashReply::refused(vec![
+                "no store, so the shadow keeps no grant and answers none".into(),
+            ]);
         };
-        let a = &self.shadow_answering;
-        let state = format!(
-            "answer_reads: {} · {} of {} disagreements",
-            if a.is_on() { "on" } else { "off" },
-            a.disagreements(),
-            crate::shadow::permission::BREAKER_AT
-        );
-        let Some(n) = revoke else {
-            let mut lines = vec![state];
-            for (i, g) in set.auto_grants().iter().enumerate() {
-                lines.push(format!("{}. {}", i + 1, g.row));
-            }
-            return crate::slash::SlashReply { lines, ok: true };
+        let state = |a: &crate::shadow::permission::Answering| {
+            format!(
+                "answer_reads: {} · {} of {} disagreements",
+                if a.is_on() { "on" } else { "off" },
+                a.disagreements(),
+                crate::shadow::permission::BREAKER_AT
+            )
         };
-        let reply = match set.revoke(n) {
-            Ok(g) => crate::slash::SlashReply {
-                lines: vec![
-                    format!(
-                        "revoked: `{}` leaves the view of {} at its next call",
-                        g.path, g.asker
-                    ),
-                    format!(
-                        "answer_reads: {} · {} of {} disagreements",
-                        if a.is_on() { "on" } else { "off" },
-                        a.disagreements(),
-                        crate::shadow::permission::BREAKER_AT
-                    ),
-                ],
-                ok: true,
-            },
-            Err(why) => crate::slash::SlashReply {
-                lines: vec![why],
-                ok: false,
-            },
-        };
+        let listing = revoke.is_none();
+        let mut reply = crate::grants::shadow(store, Some(set), revoke);
+        if listing {
+            reply.lines.insert(0, state(&self.shadow_answering));
+        } else if reply.ok {
+            reply.lines.push(state(&self.shadow_answering));
+        }
         self.shadow_answered_rows();
         reply
     }

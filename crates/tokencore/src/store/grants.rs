@@ -16,6 +16,7 @@ CREATE TABLE IF NOT EXISTS session_grant (
     body        TEXT NOT NULL,   -- the grant itself, JSON, opaque to the store
     why         TEXT NOT NULL DEFAULT '',
     granted_ms  INTEGER NOT NULL,
+    granted_by  TEXT NOT NULL DEFAULT '',  -- v51; who answered: `human:<name>`, `shadow:<judge>`
     UNIQUE (session_id, scope, kind, key)
 );
 CREATE INDEX IF NOT EXISTS session_grant_by_session ON session_grant (session_id, scope);
@@ -32,6 +33,7 @@ pub struct GrantRow {
     pub body: String,
     pub why: String,
     pub granted_ms: i64,
+    pub by: String,
 }
 
 /// A grant to write. A second write of the same `(session, scope, kind, key)` replaces the body,
@@ -44,14 +46,17 @@ pub struct NewGrant<'a> {
     pub key: &'a str,
     pub body: &'a str,
     pub why: &'a str,
+    pub by: &'a str,
 }
 
 impl Store {
     pub fn put_grant(&self, g: &NewGrant<'_>) -> Result<()> {
         self.exec(
-            "INSERT INTO session_grant (session_id, scope, kind, key, body, why, granted_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(session_id, scope, kind, key) DO UPDATE SET body = ?5, why = ?6",
+            "INSERT INTO session_grant
+                 (session_id, scope, kind, key, body, why, granted_ms, granted_by)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(session_id, scope, kind, key)
+                 DO UPDATE SET body = ?5, why = ?6, granted_by = ?8",
             params![
                 g.session_id,
                 g.scope,
@@ -59,7 +64,8 @@ impl Store {
                 g.key,
                 g.body,
                 g.why,
-                now_ms()
+                now_ms(),
+                g.by
             ],
         )?;
         Ok(())
@@ -67,13 +73,28 @@ impl Store {
 
     /// Every grant held under `(session_id, scope)`, oldest first.
     pub fn grants(&self, session_id: &str, scope: &str) -> Result<Vec<GrantRow>> {
+        self.grant_rows(
+            "WHERE session_id = ?1 AND scope = ?2",
+            params![session_id, scope],
+        )
+    }
+
+    /// Every grant whose answerer starts with `prefix`, in any session, oldest first.
+    pub fn grants_by(&self, prefix: &str) -> Result<Vec<GrantRow>> {
+        self.grant_rows(
+            "WHERE substr(granted_by, 1, length(?1)) = ?1",
+            params![prefix],
+        )
+    }
+
+    fn grant_rows(&self, filter: &str, args: impl rusqlite::Params) -> Result<Vec<GrantRow>> {
         let conn = self.at("session_grant");
-        let mut st = conn.prepare(
-            "SELECT id, session_id, scope, kind, key, body, why, granted_ms FROM session_grant
-             WHERE session_id = ?1 AND scope = ?2 ORDER BY id",
-        )?;
+        let mut st = conn.prepare(&format!(
+            "SELECT id, session_id, scope, kind, key, body, why, granted_ms, granted_by
+             FROM session_grant {filter} ORDER BY id"
+        ))?;
         let rows = st
-            .query_map(params![session_id, scope], |r| {
+            .query_map(args, |r| {
                 Ok(GrantRow {
                     id: r.get(0)?,
                     session_id: r.get(1)?,
@@ -83,6 +104,7 @@ impl Store {
                     body: r.get(5)?,
                     why: r.get(6)?,
                     granted_ms: r.get(7)?,
+                    by: r.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -123,6 +145,7 @@ mod tests {
             key,
             body,
             why: "answered on a card",
+            by: "human:op",
         }
     }
 
@@ -154,5 +177,23 @@ mod tests {
         assert_eq!(s.forget_session_grants("s-gk").unwrap(), 1);
         assert_eq!(s.grants("s-gk", "queue").unwrap().len(), 1);
         assert_eq!(s.clear_grants("s-gk", "queue", "view").unwrap(), 1);
+    }
+
+    #[test]
+    fn grants_are_found_by_who_answered_them() {
+        let s = Store::open_in_memory().unwrap();
+        s.put_grant(&grant("s-1", "session", "/a", "{}")).unwrap();
+        s.put_grant(&NewGrant {
+            by: "shadow:deepseek",
+            ..grant("s-2", "session", "/b", "{}")
+        })
+        .unwrap();
+        let shadow = s.grants_by("shadow:").unwrap();
+        assert_eq!(shadow.len(), 1);
+        assert_eq!(
+            (shadow[0].session_id.as_str(), shadow[0].by.as_str()),
+            ("s-2", "shadow:deepseek")
+        );
+        assert_eq!(s.grants("s-1", "session").unwrap()[0].by, "human:op");
     }
 }

@@ -23,7 +23,6 @@ struct Inner {
     open: BTreeMap<String, Entry>,
     askers: BTreeMap<String, Asker>,
     annotator: Option<Arc<dyn Annotator>>,
-    answered: Vec<AutoGrant>,
 }
 
 /// A queue session named for the operator: its role and work, and its workspace in short.
@@ -108,33 +107,16 @@ pub trait Annotator: Send + Sync {
         false
     }
     /// The operator took back a grant [`Annotator::note`] gave.
-    fn revoked(&self, _grant: &AutoGrant) {}
+    fn revoked(&self, _grant: &RevokedGrant) {}
 }
 
-/// Takes a path back out of a session tree's view: how an answered read is undone.
-pub trait ViewRevoker: Send + Sync {
-    /// `true` when the record held the path and it is now gone.
-    fn revoke(&self, path: &str) -> bool;
-}
-
-/// A read the annotator granted for the operator, kept so `/shadow revoke` can take it back.
-#[derive(Clone)]
-pub struct AutoGrant {
-    pub req_id: String,
-    pub asker: String,
+/// A kept grant the annotator answered, revoked by the operator: the store's row id, the
+/// session it was kept for and the path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RevokedGrant {
+    pub id: i64,
+    pub session: String,
     pub path: String,
-    pub row: String,
-    pub revoker: Arc<dyn ViewRevoker>,
-}
-
-impl std::fmt::Debug for AutoGrant {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("AutoGrant")
-            .field("req_id", &self.req_id)
-            .field("asker", &self.asker)
-            .field("path", &self.path)
-            .finish()
-    }
 }
 
 /// The set, one per daemon. Keyed by the card's `req_id`, which is the ask's id on every surface.
@@ -277,48 +259,6 @@ impl PendingAsks {
             return None;
         }
         a.note(call)
-    }
-
-    /// Keep a grant the annotator answered, newest last.
-    pub fn granted(&self, grant: AutoGrant) {
-        self.lock().answered.push(grant);
-    }
-
-    /// The grants the annotator answered that are still in force, oldest first.
-    pub fn auto_grants(&self) -> Vec<AutoGrant> {
-        self.lock().answered.clone()
-    }
-
-    /// Take back grant `n` (1-based, oldest first), or the newest. The annotator is told, which
-    /// counts against it.
-    pub fn revoke(&self, n: Option<usize>) -> Result<AutoGrant, String> {
-        let grant = {
-            let mut g = self.lock();
-            if g.answered.is_empty() {
-                return Err("the shadow has answered no ask that is still in force".into());
-            }
-            let at = match n {
-                None => g.answered.len() - 1,
-                Some(n) if (1..=g.answered.len()).contains(&n) => n - 1,
-                Some(n) => {
-                    return Err(format!(
-                        "there is no grant {n}; the shadow holds {}",
-                        g.answered.len()
-                    ));
-                }
-            };
-            g.answered.remove(at)
-        };
-        if !grant.revoker.revoke(&grant.path) {
-            return Err(format!(
-                "`{}` was no longer in the view record; nothing changed",
-                grant.path
-            ));
-        }
-        if let Some(a) = self.annotator() {
-            a.revoked(&grant);
-        }
-        Ok(grant)
     }
 
     /// Ask the annotator about a posted card on its own thread. The card is never held for it, and

@@ -231,15 +231,9 @@ impl ViewGrants {
         }
     }
 
-    /// Take `path` out of the record: its grant was revoked. A bind already made stays in the
-    /// running session's namespace until it reopens.
-    pub fn forget(&self, path: &Path, _writable: bool) {
-        let key = key(path);
-        self.lock().granted.retain(|e| e.path != key);
-    }
-
-    /// Take `path` back: its entry leaves the record and every session of the tree is told to
-    /// unbind it at its next call. `false` when the record held no entry for exactly this path.
+    /// Take `path` back, the one revoke for every grant however it was answered: its entry leaves
+    /// the record and every session of the tree unbinds it at its next call. `false` when the
+    /// record held no entry for exactly this path.
     pub fn revoke(&self, path: &Path) -> bool {
         let key = key(path);
         let mut g = self.lock();

@@ -601,8 +601,6 @@ struct Inner {
     /// Where a card goes when no head here can decide it: the daemon's pending set. `None` keeps
     /// the card here alone. See [`crate::pending_asks`].
     escalation: Option<Arc<crate::pending_asks::PendingAsks>>,
-    /// What takes a granted path back out of this session tree's view.
-    view_revoker: Option<Arc<dyn crate::pending_asks::ViewRevoker>>,
     /// Open password requests: `req_id` -> the channel to the `askpass` connection
     /// waiting on it. The secret goes through the channel and nowhere else - not the log,
     /// not the view, not a `CommandIssued`.
@@ -736,7 +734,6 @@ impl Hub {
                 answers: None,
                 relays: HashMap::new(),
                 escalation: None,
-                view_revoker: None,
                 secrets: HashMap::new(),
                 next_secret: 0,
                 screens: HashMap::new(),
@@ -948,15 +945,6 @@ impl Hub {
     /// The pending set this session's undecidable cards go to, when it has one.
     pub fn escalation(&self) -> Option<Arc<crate::pending_asks::PendingAsks>> {
         self.lock().escalation.clone()
-    }
-
-    /// What takes a granted path back out of this session tree's view.
-    pub fn set_view_revoker(&self, r: Arc<dyn crate::pending_asks::ViewRevoker>) {
-        self.lock().view_revoker = Some(r);
-    }
-
-    pub fn view_revoker(&self) -> Option<Arc<dyn crate::pending_asks::ViewRevoker>> {
-        self.lock().view_revoker.clone()
     }
 
     /// The relayed cards open here, by `req_id`.

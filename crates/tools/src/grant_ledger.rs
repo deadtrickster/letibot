@@ -217,12 +217,25 @@ pub struct Stored {
     pub scope: Scope,
     pub kept: Kept,
     pub why: String,
+    /// Who answered it: `human:<name>`, `shadow:<judge>`. Empty when nobody recorded it.
+    pub by: String,
 }
+
+impl Stored {
+    /// Given by the main session's shadow rather than a person.
+    pub fn by_shadow(&self) -> bool {
+        self.by.starts_with(SHADOW_BY)
+    }
+}
+
+/// How a grant the shadow answered names its answerer.
+pub const SHADOW_BY: &str = "shadow:";
 
 /// The store behind a gate's grants. Errors are sentences: a grant that was not kept still
 /// holds for this process, and the gate says so.
 pub trait GrantLedger: Send + Sync {
-    fn keep(&self, scope: &Scope, kept: &Kept, why: &str) -> Result<(), String>;
+    /// Keep `kept` under `scope`, answered by `by`.
+    fn keep(&self, scope: &Scope, kept: &Kept, why: &str, by: &str) -> Result<(), String>;
     fn load(&self, scope: &Scope) -> Result<Vec<Stored>, String>;
     /// Drop every grant of `kind` under `scope`.
     fn clear(&self, scope: &Scope, kind: &str) -> Result<usize, String>;

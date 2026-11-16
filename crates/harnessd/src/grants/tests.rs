@@ -202,7 +202,7 @@ fn revoking_a_grant_removes_it_from_the_store_and_a_running_session() {
     assert_eq!(rows.len(), 1);
     assert!(matches!(rows[0].kept, Kept::View { .. }));
 
-    let listed = permissions(&store, MAIN, None, None);
+    let listed = permissions(&store, MAIN, None, None, None);
     assert!(
         listed
             .lines
@@ -211,7 +211,7 @@ fn revoking_a_grant_removes_it_from_the_store_and_a_running_session() {
         "{:?}",
         listed.lines
     );
-    let revoked = permissions(&store, MAIN, None, Some(rows[0].id));
+    let revoked = permissions(&store, MAIN, None, Some(rows[0].id), None);
     assert!(revoked.ok, "{:?}", revoked.lines);
     assert!(
         load(&store, &Scope::Session(MAIN.into()))
@@ -219,7 +219,11 @@ fn revoking_a_grant_removes_it_from_the_store_and_a_running_session() {
             .is_empty()
     );
 
-    // The running session reads the revoke on its next ask, and asks again.
+    // The running session unbinds it at its next call, and asks again.
+    assert_eq!(
+        g.view_revocations(),
+        vec![letibot_tools::view::key(&f.build())]
+    );
     assert_eq!(
         g.grant_view(&f.build().join("letibot-r114"), "bash", ViewAccess::Read),
         ViewGrant::Granted { writable: false }
@@ -228,6 +232,6 @@ fn revoking_a_grant_removes_it_from_the_store_and_a_running_session() {
     let _ = view;
 
     // Another session's grant cannot be revoked from here.
-    let other = permissions(&store, "s-other", None, Some(rows[0].id));
+    let other = permissions(&store, "s-other", None, Some(rows[0].id), None);
     assert!(!other.ok);
 }

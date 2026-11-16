@@ -3,8 +3,9 @@
 
 use std::path::PathBuf;
 
-use letibot_tokencore::store::NewGrant;
-use letibot_tools::grant_ledger::{GrantLedger, Kept, Scope, Stored};
+use letibot_sessionlog::pending_asks::{PendingAsks, RevokedGrant};
+use letibot_tokencore::store::{GrantRow, NewGrant};
+use letibot_tools::grant_ledger::{GrantLedger, Kept, SHADOW_BY, Scope, Stored};
 
 use crate::config::{Config, StoreAt};
 
@@ -24,7 +25,7 @@ impl StoreLedger {
 }
 
 impl GrantLedger for StoreLedger {
-    fn keep(&self, scope: &Scope, kept: &Kept, why: &str) -> Result<(), String> {
+    fn keep(&self, scope: &Scope, kept: &Kept, why: &str, by: &str) -> Result<(), String> {
         self.store()?
             .put_grant(&NewGrant {
                 session_id: scope.owner(),
@@ -33,6 +34,7 @@ impl GrantLedger for StoreLedger {
                 key: &kept.key(),
                 body: &kept.body(),
                 why,
+                by,
             })
             .map_err(|e| e.to_string())
     }
@@ -53,17 +55,120 @@ pub fn load(store: &letibot_tokencore::store::Store, scope: &Scope) -> Result<Ve
     let rows = store
         .grants(scope.owner(), scope.as_str())
         .map_err(|e| e.to_string())?;
+    Ok(rows.into_iter().filter_map(stored).collect())
+}
+
+/// A row as a gate reads it. `None` for one this build cannot read whole.
+fn stored(r: GrantRow) -> Option<Stored> {
+    Some(Stored {
+        id: r.id,
+        scope: Scope::parse(&r.scope, &r.session_id)?,
+        kept: Kept::parse(&r.kind, &r.body)?,
+        why: r.why,
+        by: r.by,
+    })
+}
+
+/// The view grants the shadow answered, in any session, oldest first.
+pub fn shadow_grants(store: &letibot_tokencore::store::Store) -> Result<Vec<Stored>, String> {
+    let rows = store.grants_by(SHADOW_BY).map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
-        .filter_map(|r| {
-            Some(Stored {
-                id: r.id,
-                scope: scope.clone(),
-                kept: Kept::parse(&r.kind, &r.body)?,
-                why: r.why,
-            })
-        })
+        .filter_map(stored)
+        .filter(|s| matches!(s.kept, Kept::View { .. }))
         .collect())
+}
+
+/// The one revoke, for `/permissions revoke` and `/shadow revoke` alike: the row leaves the
+/// store, and every gate reading it drops the grant at its next call, unbinding a view path. A
+/// grant the shadow answered counts against its breaker.
+pub fn revoke(
+    store: &letibot_tokencore::store::Store,
+    row: &Stored,
+    asks: Option<&PendingAsks>,
+) -> Result<Vec<String>, String> {
+    if !store.revoke_grant(row.id).map_err(|e| e.to_string())? {
+        return Err(format!(
+            "grant {} was already gone; nothing changed",
+            row.id
+        ));
+    }
+    letibot_tools::grant_ledger::bump();
+    if row.by_shadow()
+        && let Kept::View { path, .. } = &row.kept
+        && let Some(a) = asks.and_then(PendingAsks::annotator)
+    {
+        a.revoked(&RevokedGrant {
+            id: row.id,
+            session: row.scope.owner().to_string(),
+            path: path.display().to_string(),
+        });
+    }
+    let mut lines = vec![format!(
+        "revoked {}: {} for {}",
+        row.id,
+        row.kept.describe(),
+        row.scope.describe()
+    )];
+    if matches!(row.kept, Kept::View { .. }) {
+        lines.push("a running session unbinds the path at its next call".into());
+    }
+    Ok(lines)
+}
+
+/// `/shadow`'s listing of the reads the shadow answered, or `/shadow revoke [N]`: grant N, 1-based
+/// and oldest first, the newest when N is left out.
+pub fn shadow(
+    store: &letibot_tokencore::store::Store,
+    asks: Option<&PendingAsks>,
+    revoke_n: Option<Option<usize>>,
+) -> crate::slash::SlashReply {
+    let rows = match shadow_grants(store) {
+        Ok(r) => r,
+        Err(e) => return crate::slash::SlashReply::refused(vec![e]),
+    };
+    let Some(n) = revoke_n else {
+        return crate::slash::SlashReply::listing(
+            rows.iter()
+                .enumerate()
+                .map(|(i, r)| format!("{}. {}", i + 1, line(r)))
+                .collect(),
+        );
+    };
+    let at = match n {
+        _ if rows.is_empty() => {
+            return crate::slash::SlashReply::refused(vec![
+                "the shadow has answered no ask that is still in force".into(),
+            ]);
+        }
+        None => rows.len() - 1,
+        Some(n) if (1..=rows.len()).contains(&n) => n - 1,
+        Some(n) => {
+            return crate::slash::SlashReply::refused(vec![format!(
+                "there is no grant {n}; the shadow holds {}",
+                rows.len()
+            )]);
+        }
+    };
+    match revoke(store, &rows[at], asks) {
+        Ok(lines) => crate::slash::SlashReply::listing(lines),
+        Err(e) => crate::slash::SlashReply::refused(vec![e]),
+    }
+}
+
+/// One kept grant in a listing.
+fn line(r: &Stored) -> String {
+    let by = if r.by.is_empty() {
+        String::new()
+    } else {
+        format!(" (by {})", r.by)
+    };
+    format!(
+        "{:>4}  {} - {}{by}",
+        r.id,
+        r.kept.describe(),
+        r.scope.describe()
+    )
 }
 
 /// The review queue a session's grants also come from: its gatekeeper, for a queue seat.
@@ -106,12 +211,13 @@ pub fn kept_views(
 }
 
 /// `/permissions` and `/permissions revoke ID`, for `session` and, when given, the queue under
-/// `gatekeeper`.
+/// `gatekeeper` and the reads the shadow answered for its seats.
 pub fn permissions(
     store: &letibot_tokencore::store::Store,
     session: &str,
     gatekeeper: Option<&str>,
-    revoke: Option<i64>,
+    revoke_id: Option<i64>,
+    asks: Option<&PendingAsks>,
 ) -> crate::slash::SlashReply {
     let mut scopes = vec![Scope::Session(session.to_string())];
     if let Some(g) = gatekeeper.filter(|g| *g != session) {
@@ -129,30 +235,27 @@ pub fn permissions(
             Err(e) => return crate::slash::SlashReply::refused(vec![e]),
         }
     }
-    if let Some(id) = revoke {
+    if gatekeeper.is_some() {
+        match shadow_grants(store) {
+            Ok(r) => {
+                for s in r {
+                    if !rows.iter().any(|had| had.id == s.id) {
+                        rows.push(s);
+                    }
+                }
+            }
+            Err(e) => return crate::slash::SlashReply::refused(vec![e]),
+        }
+    }
+    if let Some(id) = revoke_id {
         let Some(row) = rows.iter().find(|r| r.id == id) else {
             return crate::slash::SlashReply::refused(vec![format!(
                 "no grant {id} here - `/permissions` lists the ones this session can revoke"
             )]);
         };
-        return match store.revoke_grant(id) {
-            Ok(_) => {
-                letibot_tools::grant_ledger::bump();
-                let mut lines = vec![format!(
-                    "revoked {id}: {} for {}",
-                    row.kept.describe(),
-                    row.scope.describe()
-                )];
-                if matches!(row.kept, Kept::View { .. }) {
-                    lines.push(
-                        "a session that already bound the path keeps it until it reopens; no new \
-                         session gets it"
-                            .into(),
-                    );
-                }
-                crate::slash::SlashReply::listing(lines)
-            }
-            Err(e) => crate::slash::SlashReply::refused(vec![e.to_string()]),
+        return match revoke(store, row, asks) {
+            Ok(lines) => crate::slash::SlashReply::listing(lines),
+            Err(e) => crate::slash::SlashReply::refused(vec![e]),
         };
     }
     if rows.is_empty() {
@@ -162,12 +265,7 @@ pub fn permissions(
     }
     let mut lines = vec!["kept grants (`/permissions revoke ID` removes one):".to_string()];
     for r in &rows {
-        lines.push(format!(
-            "  {:>4}  {} - {}",
-            r.id,
-            r.kept.describe(),
-            r.scope.describe()
-        ));
+        lines.push(format!("  {}", line(r)));
     }
     crate::slash::SlashReply::listing(lines)
 }

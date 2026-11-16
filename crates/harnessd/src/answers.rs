@@ -9,7 +9,7 @@ use letibot_sessionlog::event::{
     OnTimeout as WireOnTimeout, OptionKind, SessionEvent, SubagentAsk,
 };
 use letibot_sessionlog::hub::{AnswerSink, Hub, Reply};
-use letibot_sessionlog::pending_asks::{AutoGrant, Note, RelayedCall};
+use letibot_sessionlog::pending_asks::{Note, RelayedCall};
 use letibot_tools::adjudicate::{
     AdjudicationDecision, AdjudicationRequest, Adjudicator, DecisionOutcome, ModelAdvice,
     OnTimeout, OptionKind as ToolOptionKind, RequestKind,
@@ -148,18 +148,10 @@ impl Answers {
             .as_ref()
             .map(|set| relayed_call(req, hub, subagent, set));
         let mut line = None;
-        if let (Some(set), Some(call)) = (&route, &call)
-            && let Some(revoker) = hub.view_revoker()
-        {
+        if let (Some(set), Some(call)) = (&route, &call) {
             match set.note_before(call) {
+                // The asker's gate keeps the grant like any other, answered by the shadow.
                 Some(Note::Answer { option_id, by, row }) => {
-                    set.granted(AutoGrant {
-                        req_id: req.id.clone(),
-                        asker: call.asker.clone(),
-                        path: call.view_read.clone().unwrap_or_default(),
-                        row: row.clone(),
-                        revoker,
-                    });
                     return AdjudicationDecision {
                         request_id: req.id.clone(),
                         outcome: DecisionOutcome::Selected { option_id },
