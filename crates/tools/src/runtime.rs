@@ -823,6 +823,12 @@ pub trait Gate: Send + Sync {
         ViewGrant::NotAsked
     }
 
+    /// Who answered the last view card [`Gate::grant_view`] raised: `human:<name>`,
+    /// `shadow:<judge>`. `None` when nobody is known.
+    fn view_answered_by(&self) -> Option<String> {
+        None
+    }
+
     /// Paths taken back out of this session's view since the last call, to unbind before the
     /// next one runs. The default is none.
     fn view_revocations(&mut self) -> Vec<std::path::PathBuf> {
@@ -2400,12 +2406,12 @@ impl ToolRuntime {
                 if !gated {
                     continue;
                 }
-                match self
-                    .gate
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .grant_view(&path, &schema.name, ask.access)
-                {
+                let (answer, by) = {
+                    let mut gate = self.gate.lock().unwrap_or_else(|e| e.into_inner());
+                    let answer = gate.grant_view(&path, &schema.name, ask.access);
+                    (answer, gate.view_answered_by())
+                };
+                match answer {
                     ViewGrant::Refused(why) => {
                         invocation.notes.push(format!(
                             "`{}` was NOT granted into this session's view: {why}",
@@ -2417,10 +2423,15 @@ impl ToolRuntime {
                     // differs: `Covered` is a grant the tree already holds, so no card was raised.
                     granted @ (ViewGrant::Granted { .. } | ViewGrant::Covered { .. }) => {
                         let writable = granted.writable().unwrap_or(false);
-                        let how = if matches!(granted, ViewGrant::Covered { .. }) {
-                            "by a grant this session's tree already holds"
-                        } else {
-                            "by your answer"
+                        // The model must not read a model's grant as a person's consent.
+                        let how = match (&granted, by.as_deref()) {
+                            (ViewGrant::Covered { .. }, _) => {
+                                "by a grant this session's tree already holds".to_string()
+                            }
+                            (_, Some(by)) if by.starts_with(crate::grant_ledger::SHADOW_BY) => {
+                                format!("by the main session's shadow (`{by}`), not by a person")
+                            }
+                            _ => "by your answer".to_string(),
                         };
                         let note = match self.backend.grant_into_view(
                             &path,

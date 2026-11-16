@@ -311,6 +311,90 @@ fn the_access_a_tool_reported_is_the_access_the_gate_is_asked_about() {
     );
 }
 
+/// A backend whose view takes every grant, so the note a granted read leaves can be read.
+struct Binds;
+
+impl crate::backend::ExecBackend for Binds {
+    fn run(
+        &self,
+        _cmd: &crate::backend::Command,
+    ) -> Result<crate::backend::Output, crate::backend::BackendError> {
+        Err(crate::backend::BackendError::Unsupported(
+            "a fake runs nothing",
+        ))
+    }
+    fn grant_into_view(
+        &self,
+        _path: &std::path::Path,
+        _writable: bool,
+        _why: &str,
+    ) -> Result<String, crate::backend::BackendError> {
+        Ok("the workspace and the granted path".into())
+    }
+    fn read(&self, path: &str) -> Result<Vec<u8>, crate::backend::BackendError> {
+        Err(crate::backend::BackendError::NotFound(path.to_string()))
+    }
+    fn write(&self, path: &str, _bytes: &[u8]) -> Result<(), crate::backend::BackendError> {
+        Err(crate::backend::BackendError::NotFound(path.to_string()))
+    }
+    fn list(
+        &self,
+        _path: &str,
+    ) -> Result<Vec<crate::backend::DirEntry>, crate::backend::BackendError> {
+        Ok(Vec::new())
+    }
+    fn stat(&self, _path: &str) -> Option<crate::backend::DirEntry> {
+        None
+    }
+    fn describe(&self) -> String {
+        "a view that takes every grant".into()
+    }
+    fn processes_arc(&self) -> Option<std::sync::Arc<dyn crate::exec::ProcessHost>> {
+        None
+    }
+}
+
+/// Grants a read the way the main session's shadow does: `grant_ro`, by `shadow:<judge>`.
+struct ShadowGrants;
+
+impl crate::adjudicate::Adjudicator for ShadowGrants {
+    fn decide(
+        &self,
+        req: &crate::adjudicate::AdjudicationRequest,
+    ) -> crate::adjudicate::AdjudicationDecision {
+        crate::adjudicate::AdjudicationDecision::selected(
+            req,
+            "grant_ro",
+            "shadow:deepseek",
+            "the shadow allowed it under the reviewer's rule `read /build/**`",
+        )
+    }
+    fn describe(&self) -> String {
+        "asked at the head: a test".into()
+    }
+}
+
+/// The note a shadow-granted read leaves never tells the model a person answered.
+#[test]
+fn a_shadow_grant_note_names_the_shadow() {
+    let gate = crate::adjudicate::AdjudicatedGate::new(Box::new(ShadowGrants))
+        .with_identity("s-test", "agent")
+        .with_view_grants(std::sync::Arc::new(crate::view::ViewGrants::new()));
+    let mut reg = Registry::new();
+    reg.register(Box::new(Hidden {
+        access: crate::view::ViewAccess::Read,
+    }))
+    .unwrap();
+    let rt = ToolRuntime::new(reg, Box::new(Binds)).with_gate(Box::new(gate));
+    let mut sink = RecordingToolSink::default();
+    let out = rt
+        .invoke("t1", &call("hidden", r#"{"path":"/build/x"}"#), &mut sink)
+        .render();
+    assert!(out.contains("is now in this session's view"), "{out}");
+    assert!(!out.contains("by your answer"), "{out}");
+    assert!(out.contains("shadow:deepseek"), "{out}");
+}
+
 /// An envelope repair is said to the model once per session, and still counted.
 #[test]
 fn an_envelope_repair_is_said_once_and_still_counted() {

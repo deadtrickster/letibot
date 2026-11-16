@@ -1491,6 +1491,8 @@ pub struct AdjudicatedGate {
     view_relayed: bool,
     /// Who answered the last view card, and their basis.
     view_by: (String, String),
+    /// Who answered the last view card, kept past `keep_view` for the note the model reads.
+    view_answered_by: Option<String>,
 }
 
 /// A call the gate admitted without asking anybody, and why. Deliberately not a denial with a
@@ -1622,6 +1624,7 @@ impl AdjudicatedGate {
             view_loaded: Vec::new(),
             view_relayed: false,
             view_by: Default::default(),
+            view_answered_by: None,
         }
     }
 
@@ -2789,6 +2792,7 @@ impl AdjudicatedGate {
         let d = self.adjudicator.decide(&req);
         self.view_relayed = self.adjudicator.last_relayed();
         self.view_by = (d.by.clone(), d.basis.clone());
+        self.view_answered_by = Some(d.by.clone());
         match &d.outcome {
             DecisionOutcome::Selected { option_id } if option_id == "grant_ro" => {
                 ViewGrant::Granted { writable: false }
@@ -2874,6 +2878,10 @@ impl Gate for AdjudicatedGate {
                 answer
             }
         }
+    }
+
+    fn view_answered_by(&self) -> Option<String> {
+        self.view_answered_by.clone()
     }
 
     fn view_revocations(&mut self) -> Vec<std::path::PathBuf> {
