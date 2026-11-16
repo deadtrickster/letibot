@@ -1505,6 +1505,8 @@ fn read_passes_resolves_symlinks_and_refuses_agent_stores() {
         "/dev/sda".to_string(),
         format!("{h}/.claude/.credentials.json"),
         format!("{h}/.codex/auth.json"),
+        format!("{h}/.config/rclone/rclone.conf"),
+        format!("{h}/.pgpass"),
         format!("{h}/.local/share/letibot/sessions.db"),
     ] {
         assert!(read_passes(&bad, &home).is_err(), "{bad}");

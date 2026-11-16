@@ -385,13 +385,15 @@ fn a_wide_seat_file_read_refuses_flow_rule_secrets() {
     let pem = f.project().join("deploy.pem");
     let stray = f.project().join("old/id_rsa");
     let claude = f.home().join(".claude/.credentials.json");
-    for p in [&flowy, &pem, &stray, &claude] {
+    // Masked in a child's view only, and still a secret to every seat's file tools.
+    let rclone = f.home().join(".config/rclone/rclone.conf");
+    for p in [&flowy, &pem, &stray, &claude, &rclone] {
         std::fs::create_dir_all(p.parent().expect("a parent")).expect("a dir");
         std::fs::write(p, "fake-secret\n").expect("a fake secret");
     }
     let fence = FileFence::of(&f.seat(), &f.view()).owning(&f.store(), "s-1");
     let mut h = f.harness();
-    for p in [&flowy, &pem, &stray, &claude] {
+    for p in [&flowy, &pem, &stray, &claude, &rclone] {
         assert!(
             fence.refusal(p, false).is_some(),
             "{} is a secret",

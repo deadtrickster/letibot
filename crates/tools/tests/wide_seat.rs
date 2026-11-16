@@ -159,7 +159,7 @@ fn a_wide_seat_reads_and_writes_its_home_and_the_masks_are_the_fence() {
     assert_ne!(rc, 0, "a command wrote into the key store: {out}");
     assert!(!f.home().join(".ssh/planted").exists(), "{out}");
 
-    // gh's config is the one store a top-level seat keeps: the token it injects is for `gh`.
+    // gh's config is a store a top-level seat keeps: the token it injects is for `gh`.
     let (out, rc) = run(&b, &f, "cat \"$HOME/.config/gh/hosts.yml\"");
     assert_eq!(rc, 0, "a top-level seat reads gh's config: {out}");
     assert!(out.contains("user: fixture"), "{out}");
@@ -228,10 +228,15 @@ fn a_tight_seat_is_still_a_view_of_the_checkout_and_not_the_machine() {
 /// The tight seat with the operator's toolchain granted read-only, which is where a credential
 /// store arrives inside a view that otherwise holds nothing of theirs.
 fn tight_with_cargo(f: &Fixture) -> Option<Bwrap> {
+    tight_with(f, ".cargo")
+}
+
+/// The tight seat with one home-relative directory granted read-only.
+fn tight_with(f: &Fixture, rel: &str) -> Option<Bwrap> {
     let seat = seat_view(
         &letibot_tools::mode::Mode::WRITES_ALLOWED,
         "this machine",
-        &[f.home().join(".cargo").display().to_string()],
+        &[f.home().join(rel).display().to_string()],
         &f.home(),
     );
     let view = ViewSpec::project_only(f.project()).masking(seat.masked.iter().cloned());
@@ -294,4 +299,43 @@ fn a_granted_toolchain_carries_no_credential_store_into_the_view() {
     );
     assert_eq!(rc, 0, "the toolchain's own config stays readable: {out}");
     assert!(out.contains("opt-level=2"), "{out}");
+}
+
+/// The operator runs `rclone` from a top-level session, so its config is not masked there. A child
+/// granted the directory that holds it still reads nothing of it.
+#[test]
+fn a_wide_seat_reads_rclones_config_and_a_tight_seat_does_not() {
+    let Some(f) = Fixture::new("rclone") else {
+        return;
+    };
+    let rclone = f.home().join(".config/rclone");
+    std::fs::create_dir_all(&rclone).expect("a fake rclone config");
+    let conf = rclone.join("rclone.conf");
+    std::fs::write(&conf, format!("[remote]\ntoken = {TOKEN}\n")).expect("a fake rclone config");
+    let cat = format!("cat {} ; echo \"rc=$?\"", conf.display());
+    let Some(b) = probe(&f) else {
+        return;
+    };
+    let (out, _) = run(&b, &f, &cat);
+    assert!(
+        out.contains(TOKEN),
+        "a top-level seat reads rclone's config: {out}"
+    );
+    let Some(b) = tight_with(&f, ".config") else {
+        return;
+    };
+    let (out, _) = run(&b, &f, &cat);
+    assert!(
+        !out.contains(TOKEN),
+        "a tight seat read rclone's config: {out}"
+    );
+    let (out, rc) = run(
+        &b,
+        &f,
+        &format!("cat {}", f.home().join(".config/gh/hosts.yml").display()),
+    );
+    assert!(
+        !out.contains("user: fixture"),
+        "a tight seat read gh's config: {out} {rc}"
+    );
 }

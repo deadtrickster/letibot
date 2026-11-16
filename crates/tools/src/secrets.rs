@@ -7,8 +7,9 @@
 pub enum Seat {
     /// Masked in every seat's view and never written.
     Both,
-    /// The operator's ruling: a top-level session needs `gh`, so this is masked in a child's view
-    /// only. A read is still a disclosure to the flow rule and the file tools.
+    /// The operator's ruling: a top-level session runs these stores' own CLIs (`gh`, `psql`,
+    /// `rclone`, `vault`, ...), so they are masked in a child's view only. A read is still a
+    /// disclosure to the flow rule and the file tools, and the gate never writes one.
     TightOnly,
     /// Masked in no view, because a tool the operator runs needs it: a command reading it asks,
     /// and a file tool, which has no card to show, refuses.
@@ -93,15 +94,16 @@ pub const STORES: &[Store] = &[
     both(".pypirc"),
     both(".cargo/credentials"),
     both(".cargo/credentials.toml"),
-    both(".pgpass"),
-    both(".my.cnf"),
-    both(".s3cfg"),
-    both(".vault-token"),
-    both(".config/rclone"),
-    both(".config/sops"),
+    // Stores whose CLIs the operator runs from a top-level session: a child's alone.
+    tight(".pgpass"),
+    tight(".my.cnf"),
+    tight(".s3cfg"),
+    tight(".vault-token"),
+    tight(".config/rclone"),
+    tight(".config/sops"),
     tight(".config/hub"),
-    both(".claude/.credentials.json"),
-    both(".codex/auth.json"),
+    tight(".claude/.credentials.json"),
+    tight(".codex/auth.json"),
     // `.docker` and not only its config file: a directory of registries is a read-side secret.
     unmasked(".docker"),
     unmasked(".config/flowy"),
@@ -161,8 +163,8 @@ fn scoped(seats: &[Seat]) -> Vec<&'static str> {
         .collect()
 }
 
-/// What the seat's profile denies after every allow: everything in both seats, and `gh`'s config
-/// in a child's only.
+/// What the seat's profile denies after every allow: everything in both seats, and the stores of
+/// the operator's own CLIs in a child's only.
 pub fn seat_denied(wide: bool) -> Vec<&'static str> {
     match wide {
         true => scoped(&[Seat::Both]),
@@ -201,8 +203,8 @@ mod tests {
                     gate.contains(p) && flow.contains(p) && wide.contains(p) && tight.contains(p),
                     "{p} is in every list"
                 ),
-                // The operator's ruling: a top-level session needs gh, and a child has no token
-                // to spend.
+                // The operator's ruling: a top-level session runs these CLIs, and a child has no
+                // credential to spend.
                 Seat::TightOnly => assert!(
                     gate.contains(p) && flow.contains(p) && !wide.contains(p) && tight.contains(p),
                     "{p} is a child's alone"
@@ -237,11 +239,27 @@ mod tests {
         ] {
             assert!(seat.contains(&path), "{path} is not fenced by the seat");
         }
-        let gh = STORES.iter().find(|s| s.path == ".config/gh");
-        assert_eq!(
-            gh.map(|s| s.seat),
-            Some(Seat::TightOnly),
-            "the top-level seat needs gh, by the operator's ruling"
-        );
+        let tight = crate::exec::seatbelt::deny_under_home(false);
+        for path in [
+            ".config/gh",
+            ".config/hub",
+            ".pgpass",
+            ".my.cnf",
+            ".s3cfg",
+            ".vault-token",
+            ".config/rclone",
+            ".config/sops",
+            ".claude/.credentials.json",
+            ".codex/auth.json",
+        ] {
+            let s = STORES.iter().find(|s| s.path == path);
+            assert_eq!(
+                s.map(|s| s.seat),
+                Some(Seat::TightOnly),
+                "{path}: the top-level seat runs its CLI, by the operator's ruling"
+            );
+            assert!(!seat.contains(&path), "{path} is masked in the wide seat");
+            assert!(tight.contains(&path), "{path} is readable in a tight seat");
+        }
     }
 }
