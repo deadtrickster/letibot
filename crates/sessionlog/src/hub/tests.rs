@@ -1141,3 +1141,39 @@ fn a_second_load_of_a_queued_skill_is_collapsed() {
     }
     assert_eq!(loads, 2);
 }
+
+/// A pane flooding a head that is not reading drops its own oldest bytes, never a fact frame:
+/// the `Settings` pushed before the flood is still delivered, once, as its latest value.
+#[test]
+fn a_flooding_pane_never_evicts_a_settings_frame() {
+    use crate::protocol::{ServerFrame, SettingRow};
+    let settings = |v: &str| ServerFrame::Settings {
+        rows: vec![SettingRow {
+            key: "model".into(),
+            value: v.into(),
+            source: String::new(),
+            editable: String::new(),
+            choices: vec![],
+            tools: vec![],
+        }],
+    };
+    let hub = Hub::new("side-facts");
+    let head = hub.attach("h", "tui", Caps::default(), 0).head_id;
+    hub.push_frame(settings("glm/glm-5.3"));
+    hub.push_frame(settings("deepseek/deepseek-flash"));
+    for i in 0..(MAX_SIDE + 50) {
+        hub.push_frame(ServerFrame::TermOutput {
+            pane: 1,
+            bytes: format!("{i}").into_bytes(),
+        });
+    }
+    let Delivery::Frames(frames) = hub.next_batch(&head, 256) else {
+        panic!("the side channel first");
+    };
+    assert_eq!(frames.len(), MAX_SIDE);
+    let facts: Vec<&ServerFrame> = frames
+        .iter()
+        .filter(|f| matches!(f, ServerFrame::Settings { .. }))
+        .collect();
+    assert_eq!(facts, vec![&settings("deepseek/deepseek-flash")]);
+}
