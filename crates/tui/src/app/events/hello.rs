@@ -51,6 +51,9 @@ impl App {
                 // skew is cheap to say, with nothing read yet and both numbers nameable. It does not
                 // exit: a skew is usually survivable, so the head says which way round it is and goes on.
                 self.daemon_protocol = Some(protocol_version);
+                // A different attachment is a different answer: what the last daemon accepted says
+                // nothing about this one, and empty is the honest reading until it echoes.
+                self.daemon_features.clear();
                 // And which daemon that is: a head outlives the daemon that gave it its facts, so the
                 // party at the other end is checked rather than assumed. The pid is re-read per
                 // connection, and the check is on the SEATING - once per attach, not per keystroke.

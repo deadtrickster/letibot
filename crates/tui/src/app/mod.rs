@@ -1088,6 +1088,10 @@ pub struct App {
     /// which is not the same as speaking zero. Kept because `/status` must answer which build is on
     /// the other end long after the handshake. The comparison is [`letibot_sessionlog::protocol_skew`].
     pub(crate) daemon_protocol: Option<u32>,
+    /// What the daemon echoed of the features this head declared ([`ServerFrame::Features`]): the
+    /// subset it understood. Empty until it says, and empty forever against a daemon that never
+    /// echoes - which is a daemon that drops the fields those features fill.
+    pub(crate) daemon_features: Vec<String>,
     /// Which daemon this head is drawing: the socket's peer pid (`SO_PEERCRED`, so an identity and
     /// not a guess) and the `PROTOCOL_VERSION` from the `Hello`. A head outlives its daemon, and a
     /// daemon that comes back is not the one whose answers are on the screen.
@@ -1640,6 +1644,7 @@ impl App {
             restoring: None,
             link: Link::Attached,
             daemon_protocol: None,
+            daemon_features: Vec::new(),
             daemon_seat: None,
             skew_override_for: None,
             attach_started_ms: 0,

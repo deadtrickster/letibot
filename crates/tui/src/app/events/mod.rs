@@ -57,6 +57,7 @@ impl App {
             | ServerFrame::Resync { .. }
             | ServerFrame::Accepted { .. }
             | ServerFrame::Rejected { .. }
+            | ServerFrame::Features { .. }
             | ServerFrame::Bye { .. }) => self.on_replies(frame),
             // A confirmation of `allow-all` that another head asked for, and how it ended
             // (`PROTOCOL_VERSION` 54). Neither a list nor a reply to anything this head

@@ -152,6 +152,7 @@ fn every_frame_is_accounted_for_at_this_version() {
             | ServerFrame::Resync { .. }
             | ServerFrame::Accepted { .. }
             | ServerFrame::Rejected { .. }
+            | ServerFrame::Features { .. }
             | ServerFrame::Bye { .. } => {}
         }
     }
@@ -159,8 +160,13 @@ fn every_frame_is_accounted_for_at_this_version() {
     let _ = event;
     let _ = server;
     assert_eq!(
-        PROTOCOL_VERSION, 78,
-        "the match above was last reconciled with the frame list at 78. 78 added \
+        PROTOCOL_VERSION, 79,
+        "the match above was last reconciled with the frame list at 79. 79 added \
+             `ServerFrame::Features` and counted the meaning changes that rode earlier numbers: \
+             `Prompt.delivery` arrived under 76, and `Prompt.from` under 74, both defaulted, so a \
+             daemon of either number parses the frame and drops the field - a queued prompt steers \
+             and a peer's line is stored as the operator's. A head now asks for \
+             `FEATURE_QUEUE_PROMPT` and queues only when the echoed set carries it. 78 added \
              `TranscriptItem::ToolResult`'s `ran_ms` and `decision`: the daemon writes a call's \
              duration and the decision that gated it on the stored row, so a head that restarts or \
              resyncs draws both. Defaulted, so an older row and an older head read as before. 77 added \

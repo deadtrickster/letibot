@@ -512,6 +512,12 @@ impl App {
                 ));
                 Disposition::Control
             }
+            ServerFrame::Features { accepted } => {
+                // The daemon's half of the negotiation: a feature it did not name here is one it
+                // drops the field of, so the composer must not offer the lane.
+                self.daemon_features = accepted;
+                Disposition::Control
+            }
             ServerFrame::Bye { reason } => {
                 // Into the transcript, AND kept for after the terminal is restored: a `Bye` is the last
                 // thing this head draws and the frame it lands in is about to go with the alternate

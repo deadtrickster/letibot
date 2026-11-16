@@ -106,6 +106,12 @@ impl App {
         self.daemon_protocol
     }
 
+    /// Whether the daemon echoed this feature in [`ServerFrame::Features`]: the one reading that
+    /// says it will not drop the field the feature fills, which a version number cannot.
+    pub(crate) fn accepts(&self, feature: &str) -> bool {
+        self.daemon_features.iter().any(|f| f == feature)
+    }
+
     /// Whether a plain detach should be sent on the way out: not while a stop is in flight, since the daemon's
     /// `Detach` handling would take this head off the session it is shutting down. The connection is going anyway.
     pub fn wants_detach(&self) -> bool {

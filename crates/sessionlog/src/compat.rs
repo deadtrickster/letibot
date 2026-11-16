@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use letibot_transcript::{Speaker, TranscriptItem};
 
 use crate::event::{Envelope, FinishReason, SessionEvent, Timings, TodoBy, TodoEntry, Usage};
-use crate::protocol::TURN_ENDED_SINCE;
+use crate::protocol::{QUEUE_PROMPT_SINCE, TURN_ENDED_SINCE};
 use crate::view::{Snapshot, TurnState};
 
 /// A change to what the daemon sends that an older head cannot decode, and whether this module
@@ -24,6 +24,11 @@ pub const PARKED_SINCE: u32 = 75;
 pub const TODO_BY_PEER_SINCE: u32 = 77;
 
 pub const SINCE: &[Since] = &[
+    Since {
+        version: QUEUE_PROMPT_SINCE,
+        what: "`ServerFrame::Features` (and the queue lane behind it)",
+        translated: true,
+    },
     Since {
         version: TODO_BY_PEER_SINCE,
         what: "the `Peer <handle>` todo author",
