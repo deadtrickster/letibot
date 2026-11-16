@@ -1343,3 +1343,142 @@ fn a_command_inside_the_boundary_cannot_connect_to_or_see_the_room_coordinator()
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// Counts view-grant asks and admits every call, so a card that should not be raised is counted.
+struct CountingViewAsks {
+    inner: Box<dyn letibot_tools::runtime::Gate>,
+    asks: std::sync::Arc<std::sync::Mutex<Vec<PathBuf>>>,
+}
+
+impl letibot_tools::runtime::Gate for CountingViewAsks {
+    fn admit(
+        &mut self,
+        call: &letibot_tools::runtime::GateCall<'_>,
+    ) -> letibot_tools::runtime::GateDecision {
+        self.inner.admit(call)
+    }
+
+    fn grant_view(
+        &mut self,
+        path: &Path,
+        _tool: &str,
+        _access: letibot_tools::view::ViewAccess,
+    ) -> letibot_tools::runtime::ViewGrant {
+        self.asks.lock().unwrap().push(path.to_path_buf());
+        letibot_tools::runtime::ViewGrant::NotAsked
+    }
+
+    fn describe(&self) -> String {
+        "admits, and counts view asks".into()
+    }
+}
+
+/// A confined seat reads its own job's spill and its `/tmp` by their host paths with no card, reads
+/// a child's spill but cannot write it, and another session's spill stays outside.
+#[test]
+fn a_sessions_own_spill_is_in_its_view_and_another_sessions_is_not() {
+    use letibot_tools::exec::JobId;
+    use letibot_tools::lifecycle::SPILL_REL;
+
+    let gc = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("own-spill-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&gc);
+    let owners = gc.join("box");
+    let asks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let gate = Box::new(CountingViewAsks {
+        inner: letibot_tools::testing::allow_all(),
+        asks: asks.clone(),
+    });
+    let mut h = match letibot_tools::testing::confined_owner_harness(gate, &gc, "s-rev") {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&gc);
+            no_boundary(&e, "a_sessions_own_spill_is_in_its_view");
+            return;
+        }
+    };
+    // After the view was measured, as a real child starts.
+    let child = owners.join("s-rev-sub-1").join(SPILL_REL);
+    let other = owners.join("s-other").join(SPILL_REL);
+    for (d, text) in [(&child, "CHILD-OUT"), (&other, "OTHER-OUT")] {
+        std::fs::create_dir_all(d).unwrap();
+        std::fs::write(d.join("job-j1.out"), text).unwrap();
+    }
+
+    let r = h.call(
+        "bash",
+        &serde_json::json!({
+            "command": "yes x | head -c 200000",
+            "background": true,
+        })
+        .to_string(),
+    );
+    let handle = match &r.outcome {
+        ToolOutcome::Backgrounded { handle, .. } => handle.clone(),
+        other => panic!("asked for the background: {other:?}\n{}", r.render()),
+    };
+    let host = h.processes.clone().unwrap();
+    let jid = JobId(handle.clone());
+    let file = host
+        .job(&jid)
+        .and_then(|v| v.output_file)
+        .expect("a background job has its output file");
+    assert!(
+        Path::new(&file.path).starts_with(owners.join("s-rev").join(SPILL_REL)),
+        "the job's file is in the session's own spill: {}",
+        file.path
+    );
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    while host.job(&jid).is_some_and(|v| v.state.is_running())
+        && std::time::Instant::now() < deadline
+    {
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let bash = |h: &mut letibot_tools::testing::Harness, c: &str| {
+        h.call("bash", &serde_json::json!({ "command": c }).to_string())
+            .render()
+    };
+    let own = bash(&mut h, &format!("wc -c < {}", file.path));
+    assert!(own.contains("200000"), "its own spill reads whole: {own}");
+    let tmp = owners.join("s-rev").join("tmp").join("session");
+    let own_tmp = bash(
+        &mut h,
+        &format!("echo kept > /tmp/f && cat {}/f", tmp.display()),
+    );
+    assert!(
+        own_tmp.contains("kept"),
+        "its /tmp at its own path: {own_tmp}"
+    );
+    let kid = bash(&mut h, &format!("cat {}/job-j1.out", child.display()));
+    assert!(kid.contains("CHILD-OUT"), "a child's spill reads: {kid}");
+    assert!(
+        asks.lock().unwrap().is_empty(),
+        "its own and its child's spills raised a card: {:?}",
+        asks.lock().unwrap()
+    );
+    let kid_w = bash(
+        &mut h,
+        &format!("echo x > {}/w; echo rc=$?", child.display()),
+    );
+    assert!(
+        !child.join("w").exists() && !kid_w.contains("rc=0"),
+        "a child's spill is read-only: {kid_w}"
+    );
+
+    let theirs = bash(&mut h, &format!("cat {}/job-j1.out", other.display()));
+    assert!(
+        !theirs.contains("OTHER-OUT") && theirs.contains("No such file"),
+        "another session's spill is outside: {theirs}"
+    );
+    assert!(
+        asks.lock()
+            .unwrap()
+            .iter()
+            .any(|p| p.starts_with(owners.join("s-other"))),
+        "the other session's spill is a card: {:?}",
+        asks.lock().unwrap()
+    );
+    drop(h);
+    let _ = std::fs::remove_dir_all(&gc);
+}

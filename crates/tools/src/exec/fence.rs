@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 
 use super::boundary::Origin;
-use super::confine::{Grant, HomeView, TmpView, ViewSpec};
+use super::confine::{ChildSpills, Grant, HomeView, TmpView, ViewSpec};
 use super::seat::SeatView;
 
 /// What a file tool may not touch, and why. Two rules, one list: a path the view masks is denied,
@@ -27,6 +27,8 @@ pub struct FileFence {
     /// A tight view's roots, and whether a write may land in each. `None` for a wide view, which
     /// holds the machine: nothing is outside it and only the masks are denied.
     inside: Option<Vec<(PathBuf, bool)>>,
+    /// This session's children's spills, readable and never writable.
+    children: Option<ChildSpills>,
 }
 
 impl FileFence {
@@ -57,6 +59,7 @@ impl FileFence {
             hidden: seat.hidden.clone(),
             firecode_only: seat.firecode_only.clone(),
             inside,
+            children: view.children.clone().filter(|_| !view.wide),
             ..Default::default()
         }
     }
@@ -110,6 +113,9 @@ impl FileFence {
             return Some(self.sentence(path, hit));
         }
         let roots = self.inside.as_ref()?;
+        if !write && self.children.as_ref().is_some_and(|c| c.holds(path)) {
+            return None;
+        }
         // A path a root has not got is outside the view; a root that has it decides writability.
         let holder = roots
             .iter()

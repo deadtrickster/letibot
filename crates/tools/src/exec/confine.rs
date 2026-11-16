@@ -361,6 +361,54 @@ pub enum TmpView {
     Session(PathBuf),
 }
 
+/// A session's children's spill directories, read-only in its view. Children start after the view
+/// is measured, so this is a rule (`<owners>/<prefix>*/<rel>`) and each spawn binds what exists.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildSpills {
+    /// The directory every owner root sits in.
+    pub owners: PathBuf,
+    /// What a child's owner name starts with.
+    pub prefix: String,
+    /// The spill directory, relative to an owner root.
+    pub rel: PathBuf,
+}
+
+impl ChildSpills {
+    /// Whether `path` is in a child's spill directory, lexically. A parent of one is inside too.
+    pub fn holds(&self, path: &Path) -> bool {
+        let Ok(rest) = path.strip_prefix(&self.owners) else {
+            return self.owners.starts_with(path);
+        };
+        let mut parts = rest.components();
+        let Some(owner) = parts.next() else {
+            return true;
+        };
+        let owner = owner.as_os_str().to_string_lossy();
+        if owner.len() <= self.prefix.len() || !owner.starts_with(&self.prefix) {
+            return false;
+        }
+        let below = parts.as_path();
+        below.starts_with(&self.rel) || self.rel.starts_with(below)
+    }
+
+    /// The children's spill directories that exist now.
+    pub fn present(&self) -> Vec<PathBuf> {
+        let mut out: Vec<PathBuf> = std::fs::read_dir(&self.owners)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter(|e| {
+                let n = e.file_name().to_string_lossy().to_string();
+                n.len() > self.prefix.len() && n.starts_with(&self.prefix)
+            })
+            .map(|e| e.path().join(&self.rel))
+            .filter(|p| p.is_dir())
+            .collect();
+        out.sort();
+        out
+    }
+}
+
 /// The sentence a [`Presence::Replaced`] for `/tmp` carries when a session's directory is
 /// bound there: an `ENOENT` under it is neither "this command started empty" nor the host's.
 const SESSION_TMP_WHAT: &str = "this session's own directory, bound here: it survives between the calls of one session \
@@ -562,6 +610,8 @@ pub struct ViewSpec {
     /// where the path is a directory and `/dev/null` where it is a file. A credential store has to
     /// be gone even from a view of the whole machine, and it is empty rather than absent.
     pub masked: Vec<PathBuf>,
+    /// This session's children's spills, read-only: see [`ChildSpills`].
+    pub children: Option<ChildSpills>,
 }
 
 /// A path a confined command must not write, and what to bind there when it does not exist. bwrap
@@ -734,6 +784,7 @@ impl ViewSpec {
             protected: Vec::new(),
             wide: false,
             masked: Vec::new(),
+            children: None,
         }
     }
 
@@ -795,6 +846,22 @@ impl ViewSpec {
         self
     }
 
+    /// The session's own directories, read-write at their own paths, and its children's spills
+    /// read-only. Never a card: what the session itself writes is never outside its view.
+    pub fn owning(mut self, dirs: &[PathBuf], children: Option<ChildSpills>) -> ViewSpec {
+        for d in dirs {
+            if self.grants.iter().any(|g| g.path() == d.as_path()) {
+                continue;
+            }
+            self.grants.push(Grant::ReadWrite {
+                path: d.clone(),
+                why: "this session's own temp and spill directory".to_string(),
+            });
+        }
+        self.children = children;
+        self
+    }
+
     /// What a host path is, from inside the view: three answers, not two, because a fresh
     /// tmpfs inside the view is not the host's `/tmp`. Lexical on purpose: a `stat` on the
     /// host would disclose what the operator has, and cannot answer about an absent path.
@@ -824,6 +891,9 @@ impl ViewSpec {
         if let HomeView::Dir(d) = &self.home
             && (path == d || path.starts_with(d) || d.starts_with(path))
         {
+            return Presence::Inside;
+        }
+        if self.children.as_ref().is_some_and(|c| c.holds(path)) {
             return Presence::Inside;
         }
         // One directory, two spellings: `/var/run` is linked to `/run` inside a view that grants
@@ -892,6 +962,14 @@ impl ViewSpec {
             for g in &self.grants {
                 s.push_str(&format!("\n    grant: {}", g.line()));
             }
+        }
+        if let Some(c) = &self.children {
+            s.push_str(&format!(
+                "\n    children's spills: {}/{}*/{} (read-only)",
+                c.owners.display(),
+                c.prefix,
+                c.rel.display()
+            ));
         }
         // A grant of a directory can carry a credential store with it, and this view does not: the
         // list is the one a wide view masks, and only what this view reaches is named.
@@ -2718,6 +2796,16 @@ fn pieces_of(
                 arg(&mut a, path.display().to_string());
                 arg(&mut a, AGENT_SOCKET);
             }
+        }
+    }
+    // Per spawn, because a child starts after the view was measured.
+    if !view.wide
+        && let Some(c) = &view.children
+    {
+        for p in c.present() {
+            arg(&mut a, "--ro-bind-try");
+            arg(&mut a, p.display().to_string());
+            arg(&mut a, p.display().to_string());
         }
     }
 

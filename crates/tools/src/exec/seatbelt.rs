@@ -341,6 +341,17 @@ pub fn render_profile(view: &ViewSpec, egress: &Egress, l: &Layout) -> String {
             )),
         }
     }
+    // A rule, not a path: the profile is written once and a child starts after it.
+    if let Some(c) = &view.children {
+        for owners in both_spellings(&c.owners) {
+            s.push_str(&format!(
+                "(allow file-read* (regex #\"^{}/{}[^/]+/{}(/.*)?$\"))\n",
+                super::store::re(&owners.display().to_string()),
+                super::store::re(&c.prefix),
+                super::store::re(&c.rel.display().to_string())
+            ));
+        }
+    }
 
     s.push_str(
         "\n; --- write: the checkout, the session's own directories, and nothing else ---\n",

@@ -134,7 +134,7 @@ pub fn fence_note(body: &str, store: &Path) -> Option<String> {
     ))
 }
 
-fn re(s: &str) -> String {
+pub(crate) fn re(s: &str) -> String {
     let mut o = String::new();
     for c in s.chars() {
         if ".+*?()[]{}|^$\\".contains(c) {

@@ -253,9 +253,8 @@ pub fn owner_env(places: &Places, owner: &str) -> Vec<(String, String)> {
 /// files are a cache of its owner's, on the disk the owner root was put on.
 pub fn session_dirs(places: &Places, owner: &str) -> std::io::Result<(PathBuf, PathBuf)> {
     use std::os::unix::fs::DirBuilderExt;
-    let tmp = places.owner_root(owner).join("tmp");
-    let spill = tmp.join("spill");
-    let session = tmp.join("session");
+    let spill = places.owner_root(owner).join(SPILL_REL);
+    let session = places.owner_root(owner).join("tmp").join("session");
     for d in [&spill, &session] {
         // 0700, because what a command writes to its `/tmp` is not the next session's business.
         std::fs::DirBuilder::new()
@@ -264,6 +263,24 @@ pub fn session_dirs(places: &Places, owner: &str) -> std::io::Result<(PathBuf, P
             .create(d)?;
     }
     Ok((spill, session))
+}
+
+/// Where [`session_dirs`] puts a session's spill, relative to its owner root.
+pub const SPILL_REL: &str = "tmp/spill";
+
+/// What a child of `owner` is named with: a subagent of `s-1` is `s-1-sub-<n>`.
+pub fn child_prefix(owner: &str) -> String {
+    format!("{owner}-sub-")
+}
+
+/// The rule that puts `owner`'s children's spills in its view, read-only: the same placement as
+/// [`session_dirs`], so the view cannot name a place the spills are not.
+pub fn child_spills(places: &Places, owner: &str) -> crate::exec::confine::ChildSpills {
+    crate::exec::confine::ChildSpills {
+        owners: places.box_dir(),
+        prefix: child_prefix(owner),
+        rel: PathBuf::from(SPILL_REL),
+    }
 }
 
 /// `$LETIBOT_DAEMON_LOGS`, else `~/logs`, where `scripts/letibot` sends each daemon's output.

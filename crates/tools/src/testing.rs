@@ -430,6 +430,66 @@ pub fn confined_harness_with(
     confined_harness_with_gate(None, build)
 }
 
+/// A confined session whose spill, `/tmp` and children's spills are placed and put in its view the
+/// way the daemon's open does, over owner roots under `gc_root` on box `box`.
+pub fn confined_owner_harness(
+    gate: Box<dyn crate::runtime::Gate>,
+    gc_root: &std::path::Path,
+    owner: &str,
+) -> Result<Harness, crate::exec::ExecError> {
+    let places = crate::lifecycle::Places {
+        gc_root: gc_root.to_path_buf(),
+        box_id: "box".into(),
+        settings: Default::default(),
+        data_dir: gc_root.join("data"),
+        rundir: gc_root.join("run"),
+        daemon_logs: gc_root.join("logs"),
+        firecode_runs: None,
+        firecode_cache: None,
+        proc_root: "/proc".into(),
+        cgroup_fs: "/sys/fs/cgroup".into(),
+        docker_engine: None,
+    };
+    let (spill, tmp) = crate::lifecycle::session_dirs(&places, owner)
+        .map_err(|e| crate::exec::ExecError::NoConfinement(e.to_string()))?;
+    let dir = TempDir::new();
+    fixture_tree(dir.path());
+    let root = dir
+        .path()
+        .canonicalize()
+        .unwrap_or_else(|_| dir.path().to_path_buf());
+    let confine = crate::exec::Bwrap::project(&root).map(|b| Box::new(b) as _)?;
+    let host = Arc::new(crate::exec::HostProcesses::confined(&root, confine)?);
+    let backend = crate::backend::HostBackend::executable_with(&root, Arc::clone(&host))
+        .expect("fixture root")
+        .with_scratch_dir(&spill)
+        .with_session_dirs(
+            &tmp,
+            &[spill.clone(), tmp.clone()],
+            Some(crate::lifecycle::child_spills(&places, owner)),
+        )
+        .map_err(|e| crate::exec::ExecError::NoConfinement(e.to_string()))?;
+    let registry = crate::runner_tools(Arc::new(Unavailable)).expect("built-ins register");
+    let rt = ToolRuntime::new(registry, Box::new(backend)).with_gate(gate);
+    Ok(Harness {
+        rt,
+        sink: RecordingToolSink::new(),
+        processes: Some(host),
+        mount: Default::default(),
+        promote: None,
+        interrupt: None,
+        _dir: dir,
+        _scratch: None,
+        _notes_global: TempDir::new(),
+        _notes: (std::path::PathBuf::new(), std::path::PathBuf::new()),
+        _notes_repo: TempDir::new(),
+        _notes_project: std::path::PathBuf::new(),
+        _changelog: std::path::PathBuf::new(),
+        _changelog_dir: TempDir::new(),
+        _host_config: FixturePlatform::new(),
+    })
+}
+
 /// A confined session with a chosen gate, the confined half of [`runner_harness_with_gate`]: a
 /// harness whose gate happened to admit would make every boundary test also a test that the gate
 /// is broken, and a test that counts the gate's calls needs one it chose.

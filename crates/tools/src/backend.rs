@@ -415,7 +415,19 @@ impl HostBackend {
     /// Give this session a `/tmp` that outlives one command, by binding `dir` there: a confined
     /// session's `/tmp` was a fresh tmpfs per command, so a file one call wrote was gone in the
     /// next. A new view and a new probe, because the argv is built once.
-    pub fn with_session_tmp(mut self, dir: impl AsRef<Path>) -> Result<Self, BackendError> {
+    pub fn with_session_tmp(self, dir: impl AsRef<Path>) -> Result<Self, BackendError> {
+        self.with_session_dirs(dir, &[], None)
+    }
+
+    /// [`Self::with_session_tmp`], and the session's own directories (`own`: its spill, its
+    /// `/tmp` at its own path) read-write in the view with its children's spills read-only, so a
+    /// path the session was handed is never outside its view.
+    pub fn with_session_dirs(
+        mut self,
+        dir: impl AsRef<Path>,
+        own: &[PathBuf],
+        children: Option<crate::exec::confine::ChildSpills>,
+    ) -> Result<Self, BackendError> {
         let dir = dir.as_ref().to_path_buf();
         let Some(host) = self.processes.as_ref() else {
             return Ok(self);
@@ -428,7 +440,8 @@ impl HostBackend {
         };
         let widened = boundary
             .view
-            .with_tmp(crate::exec::TmpView::Session(dir.clone()));
+            .with_tmp(crate::exec::TmpView::Session(dir.clone()))
+            .owning(own, children);
         let confine = crate::exec::confine::probe(widened, boundary.egress)
             .map_err(|e| BackendError::Io(e.to_string()))?;
         host.replace_confinement(confine);

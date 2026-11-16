@@ -183,6 +183,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R84a | Worktrees and landing trees beside the checkout (`wt/`, `landing/`) | Parked | three behaviour changes the operator has not ruled on, then rebasing the parked branch |
 | R297 | A limit's model switch was a transient line that vanished | Code work | built (branch `limit-notice`): a fallback move, a park, a resume and the switch back each hold a resident line above the composer until `ctrl-n` or `/notes dismiss N`; the bridge reports a park once and a switch as `switched to Y`; left: R233's hook decision once it lands, and the 5h window is not named because the provider's refusal does not carry it |
 | R291 | No user-facing fork at a message | Code work | built (audit J15, plan 2.5): `/fork` lists the conversation's messages and `/fork N` makes a new session whose transcript is this one up to message N and its exchange, copied verbatim under the same prefix with `parent_transcript_id`/`forked_at_seq` naming the source; the source is untouched; left: no head picker or auto-switch (the reply names `/resume ID`), the pane does not nest a fork under its source, a fork after a compaction carries only the current transcript |
+| R315 | A confined seat's own job spill is outside its view, and reading it raises a card | Code work | built (branch `own-spill`): a session's spill and `/tmp` are read-write grants at their own paths and its children's spills a read-only rule, wired from `lifecycle::session_dirs` / `child_spills` |
 
 ---
 
@@ -5324,3 +5325,18 @@ The operator ran `letibot --restart` in rano twice and both times saw about 40 s
 3. Two `session · restarted · carrying on: …` rows with one time, seen after the two restarts at 01:34:24 and 01:35:37. They were two real restarts (rows 662 and 666, written 01:35:05 and 01:35:38). A resume re-announces every stored row (`republish_after`), and each announcement was stamped with the resume's clock, so every earlier row drew the time of the last resume. The rows now keep their stored `created_at` (`Hub::append_row_at`, `Store::item_times`). The owed card also dropped the down time, so the two lines read the same. It now says `restarted · down 25s · carrying on: …`. Tests: `harnessd/tests/resume.rs` (every re-announced row carries its stored time), `tui` `restartcard` tests.
 
 **Left.** The restart row does not say which launcher or seat restarted the daemon. The stop reason (`letibot --restart`) reaches only the old daemon's interrupt. To name it, the launcher writes it into the `.restart` marker, the daemon records it with its stop in `daemon_life`, and the next start's notice reads it. That needs a store column.
+## R315 - A confined seat's own job spill is outside its view, and reading it raises a card
+
+**Status:** built, 2026-11-16, branch `own-spill`.
+
+A rano review-queue reviewer (`s-gatekeeper-c74d1fd17483-sub-1794789410934096562`) ran a background job and then asked the operator to grant `~/.cache/letibot/gc/<box>/<session>/tmp/spill/job-j87063.out`, its own job's output, into its view: "a path outside the view... the command saw it as absent".
+
+**Cause.** A tight view bound the session's `/tmp` dir at `/tmp` and nothing else of the owner root. The spill dir, where `HostProcesses` writes `job-<id>.out` and whose host path the job result names, was never in a tight view: only the file fence allowed it (`FileFence::allowing`), so `read` worked and `bash` did not. 70c1bf8b1 (background jobs on their own output file) began handing the model that host path, and 6f217ab74 had already moved the spill to `<owner>/tmp/spill`, beside the bound `<owner>/tmp/session` rather than inside it.
+
+**Built.**
+1. `ViewSpec::owning(dirs, children)`: the session's own dirs are `Grant::ReadWrite` at their own paths; `ChildSpills` is a rule (`<box dir>/<owner>-sub-*/tmp/spill`) for its children's spills, read-only. Children start after the view is measured, so bwrap binds the ones present at each spawn (`--ro-bind-try`), seatbelt renders a regex allow, `classify` and the file fence match it lexically.
+2. `HostBackend::with_session_dirs(tmp, own, children)`, called by `harness::open` with the two paths `lifecycle::session_dirs` returned and `lifecycle::child_spills`, which uses the same `SPILL_REL` and `child_prefix` that place them. `mint_sub_id_at` names children with `child_prefix`.
+
+**Tests.** `tools/tests/confine.rs` `a_sessions_own_spill_is_in_its_view_and_another_sessions_is_not`: a confined seat (`testing::confined_owner_harness`, wired like `open`) runs a 200 KB background job, reads the job file and its `/tmp` by host path with no view ask, reads a child's spill and cannot write it, and another session's spill is absent and raises the ask. It fails without the grants.
+
+**Left.** `owner_env` points `TMPDIR` and `CARGO_TARGET_DIR` at `<owner>/tmp` and `<owner>/target` when `[gc] root` is set; a tight view holds neither the target nor `<owner>/tmp` itself.

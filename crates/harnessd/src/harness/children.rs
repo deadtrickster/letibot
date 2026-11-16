@@ -1964,14 +1964,15 @@ pub(crate) fn mint_sub_id_at(
     ns: u128,
     handed_out: impl Fn(&str) -> bool,
 ) -> String {
-    let mut id = format!("{parent}-sub-{ns}");
+    let prefix = letibot_tools::lifecycle::child_prefix(parent);
+    let mut id = format!("{prefix}{ns}");
     let mut n = 1u32;
     // Announced as well as held: a spawn that has been handed its handle and has not opened
     // yet owns this id, and minting it again would give two children one name
     // ([`Registry::announce_spawn`]).
     while registry.get(&id).is_some() || registry.opening(&id) || handed_out(&id) {
         n += 1;
-        id = format!("{parent}-sub-{ns}-{n}");
+        id = format!("{prefix}{ns}-{n}");
     }
     id
 }

@@ -1160,8 +1160,16 @@ impl Harness {
             }
         }
         let backend = backend.with_scratch_dir(&scratch);
+        // Both in the view at their own paths: a job's output is named by its host path.
         let backend = backend
-            .with_session_tmp(&session_tmp)
+            .with_session_dirs(
+                &session_tmp,
+                &[scratch.clone(), session_tmp.clone()],
+                Some(letibot_tools::lifecycle::child_spills(
+                    &places,
+                    &cfg.session_id,
+                )),
+            )
             .map_err(|e| HarnessError::Setup(format!("this session's /tmp: {e}")))?;
         // And the pairs that point a build at the owner root, when this box named one.
         if let Some(seat) = seat.as_mut() {
