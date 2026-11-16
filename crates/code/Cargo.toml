@@ -28,6 +28,6 @@ repository.workspace = true
 # twenty-two more, and one engine. Same deliberate absolute path as the other two
 # consumers, for the same reason: rano is an operator-local project, not a
 # published crate.
-rano = { git = "https://github.com/deadtrickster/rano", rev = "c07e8eab62e7704fdada2c7ba5ee66c26c3604d7" }
+rano = { git = "https://github.com/deadtrickster/rano", rev = "593f153bcc45ac30c0c1e5cd31f3fb7de3ddedc9" }
 # One truncation helper for a header it prints, from the crate that owns the text helpers.
 letibot-transcript.workspace = true
