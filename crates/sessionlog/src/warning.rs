@@ -113,6 +113,16 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     ("plugin_refused", Class::Routine, Action::Nothing),
     ("plugin_view_refused", Class::Routine, Action::Nothing),
     ("model_refused_images", Class::Routine, Action::Nothing),
+    // A lifecycle layer's `say` (`lifecycle_<event>`, read by its family): the sentence is also
+    // sent to the model as a note, so it is that note restated.
+    ("lifecycle", Class::Routine, Action::Nothing),
+    // A lifecycle layer asked for an act this session cannot perform: nothing was done, and the
+    // layer is the one that has to change.
+    (
+        "lifecycle_refused",
+        Class::Routine,
+        Action::Do("fix the layer, or `plugin disable`"),
+    ),
     // A look a plugin declared that the gate would not run: the layer is told through its
     // look result and the session once per (layer, program, reason). The gate did its job and
     // the layer is the one that has to change.
@@ -1174,6 +1184,7 @@ pub const TABLE: &[(&str, Class, Action)] = &[
 /// auto_compact      the same row, from the wall
 /// cleared           the `[cleared]` orientation (`harness::clear`)
 /// restart_*         the `[restart]` notice (`crate::restart::notice`)
+/// lifecycle_*       a layer's `say`, sent to the model as a note (`harness::note_to_model`)
 /// target_red        the session's `EMERGENCY - ` notice (`mergequeue::notices::health`)
 /// gate_*            the same notice, for a tip the gate could not judge
 /// ```
@@ -1205,6 +1216,10 @@ pub const TWIN: &[(&str, &str)] = &[
     (
         "restart_nothing",
         "the same `[restart]` notice - nothing was running, and the notice says so",
+    ),
+    (
+        "lifecycle",
+        "the layer's `say`, which the model is sent as a note (`harness::note_to_model`)",
     ),
     (
         "target_red",
@@ -1358,6 +1373,11 @@ pub fn role(code: &str) -> pane::Role {
 /// one code per request: the id is the notice's identity, and what kind of thing it is is
 /// `denied`. One answer to the second question, so the copies cannot drift.
 pub fn family(code: &str) -> &str {
+    if let Some(event) = code.strip_prefix(letibot_plugin::lifecycle::PREFIX)
+        && letibot_plugin::lifecycle::EVENTS.contains(&event)
+    {
+        return "lifecycle";
+    }
     match code.split_once(':') {
         Some(("denied", _)) => "denied",
         _ => code,
@@ -1737,6 +1757,24 @@ mod tests {
     }
 
     /// The daemon's log carries a diagnostic and nothing else: a warning the operator is meant to
+    /// A `lifecycle_<event>` code is read by its family, so the table classifies it: a layer's
+    /// `say` is the model's note restated, and a refused act asks the layer's owner to fix it.
+    #[test]
+    fn a_lifecycle_code_is_classified_by_its_family() {
+        for event in letibot_plugin::lifecycle::EVENTS {
+            let code = letibot_plugin::lifecycle::hook(event);
+            assert_eq!(family(&code), "lifecycle", "`{code}`");
+            assert_eq!(destination(&code), Go::Model, "`{code}`");
+            assert!(
+                TABLE.iter().any(|(c, _, _)| *c == family(&code)),
+                "`{code}`"
+            );
+        }
+        assert_eq!(family("lifecycle_refused"), "lifecycle_refused");
+        assert!(matches!(action("lifecycle_refused"), Action::Do(_)));
+        assert_eq!(destination("lifecycle_refused"), Go::Notes);
+    }
+
     /// act on is not copied into a log nobody reads.
     #[test]
     fn only_a_developer_code_reaches_the_daemons_log() {
@@ -1799,13 +1837,13 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_99_routine_16_refused_and_115_failures() {
+    fn the_table_is_101_routine_16_refused_and_115_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k, _)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 230, "the table's size");
-        assert_eq!(count(Class::Routine), 99, "the seven limits are routine");
+        assert_eq!(TABLE.len(), 232, "the table's size");
+        assert_eq!(count(Class::Routine), 101, "the seven limits are routine");
         assert_eq!(count(Class::Refused), 16, "the sixteen in READER_INPUT");
         assert_eq!(count(Class::Failure), 115);
         // A code with an id is read by its family.
