@@ -1274,6 +1274,10 @@ impl<'a> Sessions<'a> {
                 };
                 SlashReply { lines, ok: false }
             }
+            Slash::Mcp(verb) => match self.harness(session_id) {
+                Ok(h) => h.mcp_verb(&verb),
+                Err(e) => SlashReply::refused(vec![e.to_string()]),
+            },
             Slash::Gate(verb) => {
                 let at = self.base.store_at();
                 crate::slash::gate(at.as_ref(), &verb)

@@ -414,6 +414,8 @@ pub struct Harness {
     /// line per child that was resumed or could not be. Filled by `restore_after_restart` at open and
     /// said by the next turn the session takes.
     restart_notices: Vec<String>,
+    /// This session's MCP servers, reconciled by `/mcp` and at turn start.
+    mcp: crate::mcp::Live,
     /// What a driving head did to this session's board, said by the next turn the session takes.
     board_notices: Vec<String>,
     /// Handles of ended jobs a restart notice says. Marked delivered once that notice's row is
@@ -605,6 +607,11 @@ pub fn skill_message(skill: &letibot_tools::builtins::skill::Skill, then: &str) 
 }
 
 impl Harness {
+    /// `/mcp`, `/mcp reload`, `/mcp restart NAME` on this session's servers.
+    pub fn mcp_verb(&mut self, verb: &crate::mcp::Verb) -> crate::slash::SlashReply {
+        self.mcp.verb(&mut self.cfg, verb)
+    }
+
     /// This session's store, or `None` for one opened with no durable half. The door `Sessions`
     /// needs to move the owner's lease on every turn: the lease is what
     /// an idle TTL is measured from, and a turn is the activity it is measured by.

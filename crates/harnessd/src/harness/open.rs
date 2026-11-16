@@ -2193,20 +2193,12 @@ impl Harness {
         }
         // MCP servers from the user file, and a checkout's `.mcp.json` only where the user file
         // trusts it; a project leticode.toml's `[mcp]` is named and not started.
-        let (mcp_tables, mcp_warnings) = crate::mcp::servers(&cfg);
+        // Attached even when empty, so a `/mcp reload` that adds a server reaches the doors.
+        let (mcp, mcp_warnings) = crate::mcp::Live::open(&cfg);
         for line in mcp_warnings {
             hub.warn("mcp_server", line);
         }
-        if crate::mcp::configured(&mcp_tables) {
-            let (specs, bad) = crate::mcp::specs(&mcp_tables);
-            let (catalog, started) = crate::mcp::pool(&specs, bad);
-            if started {
-                for line in crate::mcp::failure_lines(&catalog) {
-                    hub.warn("mcp_server", line);
-                }
-            }
-            external.mcp = catalog;
-        }
+        external.mcp = mcp.catalog();
         if cfg.read_project_config
             && let Some(path) = crate::leticode_config::LeticodeConfig::discover(&cfg.workspace)
             && let Ok(project) = crate::leticode_config::LeticodeConfig::load(&path)
@@ -3821,6 +3813,7 @@ impl Harness {
             gatekeepers: Default::default(),
             restart_notices: Vec::new(),
             board_notices: Vec::new(),
+            mcp,
             restart_owed: Vec::new(),
             kept_jobs,
             workspace_gone_said: false,
