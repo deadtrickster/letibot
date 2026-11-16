@@ -363,6 +363,20 @@ impl Bridge {
         self
     }
 
+    /// The provider this start names, resolved to its preset and key, asked whether the ACCOUNT
+    /// behind it can serve at all. A name this build cannot resolve is left to the daemon, whose
+    /// own sentence a caller already knows.
+    fn account_refusal(model: &str) -> Option<String> {
+        let (provider, name) = model.split_once('/').unwrap_or((model, ""));
+        let name = (!name.is_empty()).then_some(name);
+        let (choice, _notes) =
+            letibot_harnessd::slash::models_choice(provider, name, None, None).ok()?;
+        let letibot_harnessd::slash::ModelChoice::Metered(pc) = choice else {
+            return None;
+        };
+        letibot_harnessd::account::refusal(&pc.name, pc.model.as_deref(), pc.api_key.as_deref())
+    }
+
     /// Start leticode on a worktree. A daemon this call started already holds its first
     /// session, so the brief runs there; a daemon already up is somebody else's, so a new
     /// session is created and attached by id. Each argument is a `leticode_start` schema field.
@@ -385,6 +399,14 @@ impl Bridge {
         // daemon's own point, which can be wider than the caller asked for.
         letibot_tools::mode::Mode::parse(mode)
             .map_err(|why| format!("nothing was started and no brief was sent: {why}"))?;
+        // And before any daemon: a provider whose ACCOUNT cannot serve answers its first real call
+        // with `1113`, and that call is a whole turn spent learning a fact one GET knows. A probe
+        // that cannot answer itself refuses nothing.
+        if let Some(model) = model
+            && let Some(said) = Self::account_refusal(model)
+        {
+            return Err(format!("nothing was started: {said}"));
+        }
         // A package is its own worktree and its own branch, made HERE and row first: the owner row
         // and its root are written before anything exists to leak, and the session is opened on
         // the id already written down.
