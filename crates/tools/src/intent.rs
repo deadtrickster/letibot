@@ -2482,6 +2482,21 @@ fn ask_rule(name: &str) -> Option<&'static AlwaysAskRule> {
     ALWAYS_ASK.iter().find(|r| r.name == name)
 }
 
+/// A view ask's tier. A path in a secret store is the operator's every time, whoever else could
+/// answer; the gate's card and the relay that picks who may answer both read this one value.
+pub fn view_tier(path: &str, env: &Surroundings) -> Tier {
+    match (env.region_of(path), ask_rule("credential_use")) {
+        (Region::Secret(store), Some(rule)) => Tier::AlwaysAsk {
+            rule: rule.name,
+            why: format!(
+                "{} — `{path}` is in the {store} store, and a grant binds it into the view",
+                rule.why
+            ),
+        },
+        _ => Tier::MayApprove,
+    }
+}
+
 /// Programs that authenticate as the operator.
 const AUTHENTICATES: &[&str] = &[
     "ssh", "scp", "sftp", "sshfs", "ssh-add", "rsync", "gh", "glab", "aws", "kubectl", "helm",

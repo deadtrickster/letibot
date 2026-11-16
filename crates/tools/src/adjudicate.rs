@@ -2685,6 +2685,48 @@ impl AdjudicatedGate {
         self.log.iter().map(AdjudicationRow::corpus).collect()
     }
 
+    /// Layer A's reading of a view ask, placed by this gate's surroundings like any call's path.
+    /// The tier is [`crate::intent::view_tier`]'s, so a secret store never reaches a model.
+    fn view_reading(
+        &self,
+        path: &std::path::Path,
+        access: crate::view::ViewAccess,
+    ) -> crate::intent::Baseline {
+        let p = path.display().to_string();
+        let mut b = crate::intent::Baseline::of_paths(
+            [p.as_str()],
+            access == crate::view::ViewAccess::Write,
+            false,
+            &self.surroundings,
+        );
+        b.tier = crate::intent::view_tier(&p, &self.surroundings);
+        b
+    }
+
+    /// The asker's trail at the moment of a view ask. The harness's source reads the transcript and
+    /// not the call, so a path-shaped call is enough to collect it.
+    fn trail_for_view(
+        &self,
+        tool: &str,
+        path: &std::path::Path,
+    ) -> crate::authorise::AuthorisationTrail {
+        let Some(f) = &self.trail_source else {
+            return crate::authorise::AuthorisationTrail::default();
+        };
+        let args = serde_json::json!({ "path": path.display().to_string() });
+        f(&GateCall {
+            name: tool,
+            access: Access::Read,
+            args: &args,
+            turn_id: "",
+            call_id: "",
+            workspace: "",
+            target_exists: None,
+            scripts: &[],
+            preview: &[],
+        })
+    }
+
     /// The card itself, written once: a view ask is one question whether or not the tree's
     /// record had to be consulted first.
     fn ask_to_see(
@@ -2748,6 +2790,7 @@ impl AdjudicatedGate {
                 ),
             ),
         };
+        let reading = self.view_reading(path, access);
         let req = AdjudicationRequest {
             id: self.next_id(),
             session_id: self.session_id.clone(),
@@ -2770,7 +2813,7 @@ impl AdjudicatedGate {
             examples: Vec::new(),
             brief_variant: crate::authorise::BriefVariant::AskedForIt,
             agent_claim: None,
-            reading: None,
+            reading: Some(reading.clone()),
             shape: None,
             advice: None,
             summary,
@@ -2793,10 +2836,10 @@ impl AdjudicatedGate {
             // left off the ladder.
             options_note: None,
             on_timeout: OnTimeout::Deny,
-            tier: Tier::MayApprove,
+            tier: reading.tier.clone(),
             resolved: true,
             baseline,
-            trail: crate::authorise::AuthorisationTrail::default(),
+            trail: self.trail_for_view(tool, path),
         };
         let d = self.adjudicator.decide(&req);
         self.view_relayed = self.adjudicator.last_relayed();

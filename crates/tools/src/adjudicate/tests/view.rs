@@ -354,3 +354,61 @@ fn a_write_the_view_refuses_says_which_of_the_two_it_was() {
         seen[0].0
     );
 }
+
+/// Keeps the tier and whether a trail came with each view ask, and refuses it.
+#[derive(Clone, Default)]
+struct Spy {
+    seen: Arc<Mutex<Vec<(Tier, bool)>>>,
+}
+
+impl Adjudicator for Spy {
+    fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+        self.seen
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((req.tier.clone(), req.trail.was_collected()));
+        AdjudicationDecision::selected(req, "deny", "human:test", "no")
+    }
+
+    fn describe(&self) -> String {
+        "asked at the head: a spy".into()
+    }
+}
+
+fn operator_trail() -> crate::authorise::AuthorisationTrail {
+    crate::authorise::AuthorisationTrail::from_messages(
+        vec![crate::authorise::Utterance::operator(
+            "read the review notes under /build",
+            0,
+        )],
+        1,
+    )
+}
+
+/// A secret store is the operator's every time: its view ask is always-ask, never a literal
+/// may-approve a model could widen, and every view ask carries the asker's trail.
+#[test]
+fn view_ask_for_credential_path_is_always_ask() {
+    let spy = Spy::default();
+    let mut g = AdjudicatedGate::new(Box::new(spy.clone()))
+        .with_identity("s-test", "agent")
+        .with_trail_source(|_| operator_trail());
+    for path in ["/home/u/.aws/credentials", "/build/letibot-r1"] {
+        g.grant_view(Path::new(path), "bash", ViewAccess::Read);
+    }
+    let seen = spy.seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 2, "{seen:?}");
+    assert!(
+        matches!(
+            seen[0].0,
+            Tier::AlwaysAsk {
+                rule: "credential_use",
+                ..
+            }
+        ),
+        "{:?}",
+        seen[0].0
+    );
+    assert_eq!(seen[1].0, Tier::MayApprove);
+    assert!(seen.iter().all(|(_, trail)| *trail), "{seen:?}");
+}
