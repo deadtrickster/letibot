@@ -3123,3 +3123,63 @@ fn a_batched_settlement_is_delivered_when_its_row_is_stored() {
     let d = turn.join().expect("the turn's thread");
     d.stop(None);
 }
+
+/// Once the daemon has begun to stop, a wake opens no turn: the settlement it would carry stays
+/// owed in the store, and the next daemon says it.
+#[test]
+fn a_wake_after_the_stop_began_opens_no_turn_and_the_next_daemon_says_its_cause() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
+    let dir = Scratch::new("restart-split-stopping");
+    let data = split_store(&dir);
+    let parts = parts_for(&config(&dir.repo(), &data, Endpoint::new("127.0.0.1", 1)));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &data, stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    let mut d = a_daemon(&parts, &cfg);
+    let store = open_split(&data, &dir.repo());
+    store
+        .put_job(PARENT, &a_job("j45", "exited 0", "make"))
+        .unwrap();
+    store
+        .put_job_context(
+            PARENT,
+            &JobContext {
+                handle: "j45".into(),
+                slug: None,
+                cwd: "/somewhere".into(),
+                instance: d.registry.instance().to_string(),
+                started_ms: letibot_sessionlog::registry::now_ms(),
+            },
+        )
+        .unwrap();
+    let _ = d.parent.restore_after_restart();
+    let before = stub.arrived();
+    d.registry.close();
+    assert!(
+        matches!(d.parent.wake(), Ok(None)),
+        "a stopping daemon opened a turn"
+    );
+    assert_eq!(
+        stub.arrived(),
+        before,
+        "a request went out after the stop began"
+    );
+    assert_eq!(rows_naming(&d.hub(), "j45"), 0);
+    assert!(!delivered(&store, "j45"), "marked without a stored row");
+    d.stop(None);
+
+    let mut next = a_daemon(&parts, &cfg);
+    let notice = next
+        .parent
+        .restore_after_restart()
+        .expect("the next daemon says the owed ending");
+    assert!(notice.contains("- job `j45` had ENDED"), "{notice}");
+    let _ = next.parent.wake();
+    assert!(delivered(&store, "j45"));
+    next.stop(None);
+}

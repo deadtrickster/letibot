@@ -435,6 +435,11 @@ impl Harness {
     /// comes through. `Ok(None)` means nothing had settled after all, which is a real outcome: returning it
     /// rather than running an empty turn is what stops a spurious wake costing a generation.
     pub fn wake(&mut self) -> Result<Option<Reply>, HarnessError> {
+        // A daemon that has begun to stop opens no turn. Nothing is taken, so the store still owes
+        // every cause to the next daemon.
+        if self.session_registry.is_stopping() {
+            return Ok(None);
+        }
         // The merge queue's reviews first, and they are never a turn of this session: a gatekeeper
         // started or a verdict written is the queue's business. A wake is one of three doors into it,
         // beside the round boundary and the daemon's own clock.
@@ -660,33 +665,45 @@ impl Harness {
                 firing_facts.as_ref(),
             ));
         }
-        // The wall is checked BEFORE the send, as `nag_turn`'s pre-flight is. Not the load-bearing
-        // fix: a refused wake is classified as the wall and recovered by the turn tail, so this only
-        // spares a round trip the daemon's own ledger already knows will not fit.
-        self.compact_if_at_the_wall();
-        // The harness talking to itself, not the operator. A firing - or a job's end  -
-        // must never be able to authorise the action it reports on.
-        self.trail.begin_turn();
-        for item in &items {
-            self.trail.say(
-                Speaker::Agent,
-                &letibot_sessionlog::view::body_of(item),
-                Some(Instant::now()),
-            );
-        }
+        // The stop may have begun while this wake was taking: then everything taken goes back below.
         let mut opened = false;
-        let out = self.cheaply(cheap, |h| {
-            h.submit_items_then(items, |h| {
-                opened = true;
-                if let (Some(d), Some(now)) = (&deliveries, &door) {
-                    d.stored(now);
-                }
-                h.restart_owed_stored(&owed_taken);
-            })
-        });
-        if opened && !room_seqs.is_empty() {
+        let out = if self.session_registry.is_stopping() {
+            eprintln!(
+                "  {} · the daemon is stopping: this wake opens no turn, and what it carried stays owed",
+                self.cfg.session_id
+            );
+            None
+        } else {
+            // The wall is checked BEFORE the send, as `nag_turn`'s pre-flight is. Not the
+            // load-bearing fix: a refused wake is classified as the wall and recovered by the turn
+            // tail, so this only spares a round trip the daemon's own ledger knows will not fit.
+            self.compact_if_at_the_wall();
+            // The harness talking to itself, not the operator. A firing - or a job's end  -
+            // must never be able to authorise the action it reports on.
+            self.trail.begin_turn();
+            for item in &items {
+                self.trail.say(
+                    Speaker::Agent,
+                    &letibot_sessionlog::view::body_of(item),
+                    Some(Instant::now()),
+                );
+            }
+            Some(self.cheaply(cheap, |h| {
+                h.submit_items_then(items, |h| {
+                    opened = true;
+                    if let (Some(d), Some(now)) = (&deliveries, &door) {
+                        d.stored(now);
+                    }
+                    h.restart_owed_stored(&owed_taken);
+                })
+            }))
+        };
+        if let Some(out) = &out
+            && opened
+            && !room_seqs.is_empty()
+        {
             // Silent: nothing said and nothing called. The tokens are the whole turn's.
-            let (silent, tokens) = match &out {
+            let (silent, tokens) = match out {
                 Ok(r) => (
                     r.text.trim().is_empty() && r.tool_calls == 0,
                     r.metrics
@@ -725,6 +742,9 @@ impl Harness {
             self.restart_owed = owed;
             self.monitor_cursor.store(cursor_before, Ordering::SeqCst);
         }
+        let Some(out) = out else {
+            return Ok(None);
+        };
         out.map(Some)
             // ...and the condition is spent only once the model HAS been told. Consuming before the submit would
             // let a turn that failed to start silently eat the firing, and a firing nobody hears is the failure

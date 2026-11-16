@@ -1778,6 +1778,14 @@ impl Store {
         }
     }
 
+    /// The project file's connection, when this handle is a set that has one.
+    pub(crate) fn project_file_conn(&self) -> Option<Conn<'_>> {
+        match &self.project {
+            Some(Some(project)) => Some(Conn(project.conn())),
+            _ => None,
+        }
+    }
+
     /// Is this handle a split set's? A set whose project file is missing is still one: its
     /// listing may not fall back to the single-file query, which reads a file it has not got.
     pub fn is_set(&self) -> bool {
@@ -4383,6 +4391,9 @@ mod tests;
 
 #[cfg(test)]
 mod split_tests;
+
+#[cfg(test)]
+mod split_coverage_tests;
 
 #[cfg(test)]
 mod corpus_tests {

@@ -168,7 +168,7 @@ impl Store {
         let mut tables = Vec::with_capacity(TABLES.len());
         for (table, filter, order) in TABLES {
             let sql = format!("SELECT * FROM {table} WHERE {filter} {order}");
-            let conn = self.conn();
+            let conn = self.at(table);
             let mut st = conn.prepare(&sql)?;
             let columns: Vec<String> = st.column_names().iter().map(|c| c.to_string()).collect();
             let mut rows = st.query(rusqlite::params![session_id])?;
@@ -250,7 +250,7 @@ impl Store {
                 )));
             }
             verify_chains(transfer)?;
-            let mut report = self.write_tx(|tx| catch_up(tx, transfer, into))?;
+            let mut report = self.import_tx(|tx| catch_up(tx, transfer, into))?;
             report.caught_up = true;
             return Ok(report);
         }
@@ -258,7 +258,7 @@ impl Store {
         // prefix's tokens, the rows in `seq` order, every link re-hashed.
         verify_chains(transfer)?;
 
-        let report = self.write_tx(|tx| {
+        let report = self.import_tx(|tx| {
             for table in &transfer.tables {
                 if table.rows.is_empty() {
                     continue;
@@ -304,6 +304,38 @@ impl Store {
             settle(tx, transfer, into)
         })?;
         Ok(report)
+    }
+
+    /// The import's one transaction. On a split set it runs on the project file with `shared.db`
+    /// attached, so unqualified names resolve to whichever file holds the table. In WAL mode the
+    /// two files commit one after the other, not as one.
+    fn import_tx<T>(
+        &self,
+        mut body: impl FnMut(&rusqlite::Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        if !self.is_set() {
+            return self.write_tx(body);
+        }
+        let (Some(project), Some(shared)) = (self.project_file_conn(), self.path()) else {
+            return Err(StoreError::Refused(
+                "this set has no project file to import a session into".into(),
+            ));
+        };
+        let shared = shared.to_string_lossy().into_owned();
+        project.execute("ATTACH DATABASE ?1 AS idx", [&shared])?;
+        let out = super::busy::retry_store(|| {
+            let tx = rusqlite::Transaction::new_unchecked(
+                &project,
+                rusqlite::TransactionBehavior::Immediate,
+            )?;
+            let out = body(&tx)?;
+            tx.commit()?;
+            Ok(out)
+        });
+        let detached = project.execute("DETACH DATABASE idx", []);
+        let out = out?;
+        detached?;
+        Ok(out)
     }
 
     /// Say where a session lives now - `None` for the store you are reading (it is

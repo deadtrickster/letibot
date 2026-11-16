@@ -266,7 +266,7 @@ impl Store {
     /// One child's row.
     pub fn subagent_run(&self, child_id: &str) -> Result<Option<SubagentRun>> {
         Ok(self
-            .conn()
+            .at("subagent_run")
             .query_row(
                 &format!("{SELECT_RUN} WHERE child_id = ?1"),
                 params![child_id],
