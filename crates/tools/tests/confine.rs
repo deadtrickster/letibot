@@ -1482,3 +1482,53 @@ fn a_sessions_own_spill_is_in_its_view_and_another_sessions_is_not() {
     drop(h);
     let _ = std::fs::remove_dir_all(&gc);
 }
+
+/// With `[gc] root` set, the env points a build at the owner root, and both places it names are
+/// writable from a confined seat with no view ask.
+#[test]
+fn a_sessions_build_dirs_from_the_gc_root_are_writable_with_no_ask() {
+    let gc = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("own-build-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&gc);
+    let asks = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let gate = Box::new(CountingViewAsks {
+        inner: letibot_tools::testing::allow_all(),
+        asks: asks.clone(),
+    });
+    let mut h = match letibot_tools::testing::confined_owner_harness(gate, &gc, "s-build") {
+        Ok(h) => h,
+        Err(e) => {
+            let _ = std::fs::remove_dir_all(&gc);
+            no_boundary(&e, "a_sessions_build_dirs_from_the_gc_root");
+            return;
+        }
+    };
+    let root = gc.join("box").join("s-build");
+    let said = h
+        .call(
+            "bash",
+            &serde_json::json!({
+                "command": "echo \"T=$CARGO_TARGET_DIR D=$TMPDIR\"; \
+                            mkdir -p \"$CARGO_TARGET_DIR/debug/deps\" \
+                            && echo obj > \"$CARGO_TARGET_DIR/debug/deps/a.o\" \
+                            && echo t > \"$TMPDIR/cc-x.s\" && echo WROTE",
+            })
+            .to_string(),
+        )
+        .render();
+    assert!(
+        said.contains(&format!("T={}", root.join("target").display()))
+            && said.contains(&format!("D={}", root.join("tmp").display())),
+        "the env names the owner root's build dirs: {said}"
+    );
+    assert!(said.contains("WROTE"), "both writes landed: {said}");
+    assert!(root.join("target/debug/deps/a.o").is_file(), "{said}");
+    assert!(root.join("tmp/cc-x.s").is_file(), "{said}");
+    assert!(
+        asks.lock().unwrap().is_empty(),
+        "a write to its own build dirs raised a card: {:?}",
+        asks.lock().unwrap()
+    );
+    drop(h);
+    let _ = std::fs::remove_dir_all(&gc);
+}

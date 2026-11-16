@@ -1721,6 +1721,13 @@ impl HostProcesses {
         *self.confined_env.lock().unwrap_or_else(|e| e.into_inner()) = pairs;
     }
 
+    /// Add pairs to the confined env, replacing a pair of the same name.
+    pub fn extend_confined_env(&self, pairs: Vec<(String, String)>) {
+        let mut env = self.confined_env.lock().unwrap_or_else(|e| e.into_inner());
+        env.retain(|(k, _)| !pairs.iter().any(|(p, _)| p == k));
+        env.extend(pairs);
+    }
+
     /// Environment every command carries whose values are masked in any output slice.
     pub fn set_secret_env(&self, secrets: super::seat::SecretEnv) {
         *self.secret_env.lock().unwrap_or_else(|e| e.into_inner()) = secrets;

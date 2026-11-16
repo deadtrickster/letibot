@@ -430,8 +430,8 @@ pub fn confined_harness_with(
     confined_harness_with_gate(None, build)
 }
 
-/// A confined session whose spill, `/tmp` and children's spills are placed and put in its view the
-/// way the daemon's open does, over owner roots under `gc_root` on box `box`.
+/// A confined session whose spill, `/tmp`, build dirs and children's spills are placed and put in
+/// its view the way the daemon's open does, over `[gc] root = gc_root` on box `box`.
 pub fn confined_owner_harness(
     gate: Box<dyn crate::runtime::Gate>,
     gc_root: &std::path::Path,
@@ -440,7 +440,10 @@ pub fn confined_owner_harness(
     let places = crate::lifecycle::Places {
         gc_root: gc_root.to_path_buf(),
         box_id: "box".into(),
-        settings: Default::default(),
+        settings: crate::lifecycle::Settings {
+            root: Some(gc_root.to_path_buf()),
+            ..Default::default()
+        },
         data_dir: gc_root.join("data"),
         rundir: gc_root.join("run"),
         daemon_logs: gc_root.join("logs"),
@@ -463,10 +466,9 @@ pub fn confined_owner_harness(
     let backend = crate::backend::HostBackend::executable_with(&root, Arc::clone(&host))
         .expect("fixture root")
         .with_scratch_dir(&spill)
-        .with_session_dirs(
+        .with_own_view(
             &tmp,
-            &[spill.clone(), tmp.clone()],
-            Some(crate::lifecycle::child_spills(&places, owner)),
+            crate::lifecycle::own_view(&places, owner, &spill, &tmp),
         )
         .map_err(|e| crate::exec::ExecError::NoConfinement(e.to_string()))?;
     let registry = crate::runner_tools(Arc::new(Unavailable)).expect("built-ins register");

@@ -449,6 +449,22 @@ impl HostBackend {
         Ok(self)
     }
 
+    /// [`Self::with_session_dirs`] over a session's [`crate::lifecycle::OwnView`], and its env on
+    /// every confined command: the view and the env come from one value, so they agree.
+    pub fn with_own_view(
+        self,
+        tmp: impl AsRef<Path>,
+        own: crate::lifecycle::OwnView,
+    ) -> Result<Self, BackendError> {
+        let this = self.with_session_dirs(tmp, &own.dirs, Some(own.children))?;
+        if let Some(host) = &this.processes
+            && !own.env.is_empty()
+        {
+            host.extend_confined_env(own.env);
+        }
+        Ok(this)
+    }
+
     /// A backend that can change the operator's tree, spelled as its own constructor so that
     /// `grep -rn 'HostBackend::writable'` finds every place that became possible.
     pub fn writable(root: impl AsRef<Path>) -> Result<Self, BackendError> {

@@ -1160,24 +1160,16 @@ impl Harness {
             }
         }
         let backend = backend.with_scratch_dir(&scratch);
-        // Both in the view at their own paths: a job's output is named by its host path.
-        let backend = backend
-            .with_session_dirs(
-                &session_tmp,
-                &[scratch.clone(), session_tmp.clone()],
-                Some(letibot_tools::lifecycle::child_spills(
-                    &places,
-                    &cfg.session_id,
-                )),
-            )
-            .map_err(|e| HarnessError::Setup(format!("this session's /tmp: {e}")))?;
-        // And the pairs that point a build at the owner root, when this box named one.
+        // Every directory the session was placed in or pointed at is in its view at its own path,
+        // and the pairs that point a build at the owner root reach its commands.
+        let own =
+            letibot_tools::lifecycle::own_view(&places, &cfg.session_id, &scratch, &session_tmp);
         if let Some(seat) = seat.as_mut() {
-            seat.env.extend(letibot_tools::lifecycle::owner_env(
-                &places,
-                &cfg.session_id,
-            ));
+            seat.env.extend(own.env.iter().cloned());
         }
+        let backend = backend
+            .with_own_view(&session_tmp, own)
+            .map_err(|e| HarnessError::Setup(format!("this session's /tmp: {e}")))?;
         // R121 item 8: the file tools obey the perimeter the shell's view draws, so a path a
         // command cannot reach is refused to `read` and `write` in the same words. The letibot
         // store is reachable only where this session's own `sessions/<id>/` is. A seat whose view

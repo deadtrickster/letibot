@@ -233,15 +233,45 @@ impl Places {
 /// for a `gc.root` keeps cargo's own default, because moving a build nobody was warned about is a
 /// slower surprise than the disk filling.
 pub fn owner_env(places: &Places, owner: &str) -> Vec<(String, String)> {
-    if places.settings.root.is_none() && std::env::var_os("LETIBOT_GC_ROOT").is_none() {
+    let Some((target, tmp)) = owner_build_dirs(places, owner) else {
         return Vec::new();
-    }
-    let (target, tmp) = places.build_dirs(owner);
+    };
     vec![
         ("CARGO_TARGET_DIR".to_string(), target.display().to_string()),
         ("TMPDIR".to_string(), tmp.display().to_string()),
         ("LETIBOT_OWNER".to_string(), owner.to_string()),
     ]
+}
+
+/// The directories [`owner_env`] points a build at, made; `None` where it sets nothing.
+fn owner_build_dirs(places: &Places, owner: &str) -> Option<(PathBuf, PathBuf)> {
+    if places.settings.root.is_none() && std::env::var_os("LETIBOT_GC_ROOT").is_none() {
+        return None;
+    }
+    Some(places.build_dirs(owner))
+}
+
+/// What a session's view must hold of its own, and the env that names it: every directory it was
+/// placed in or pointed at, read-write, and its children's spills read-only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnView {
+    pub dirs: Vec<PathBuf>,
+    pub children: crate::exec::confine::ChildSpills,
+    pub env: Vec<(String, String)>,
+}
+
+/// [`OwnView`] for a session whose [`session_dirs`] are `spill` and `tmp`, with [`owner_env`]'s
+/// directories from the same placement, so the view holds every path the env names.
+pub fn own_view(places: &Places, owner: &str, spill: &Path, tmp: &Path) -> OwnView {
+    let mut dirs = vec![spill.to_path_buf(), tmp.to_path_buf()];
+    if let Some((target, owner_tmp)) = owner_build_dirs(places, owner) {
+        dirs.extend([target, owner_tmp]);
+    }
+    OwnView {
+        dirs,
+        children: child_spills(places, owner),
+        env: owner_env(places, owner),
+    }
 }
 
 /// A session's two temporary directories, both under its owner root ON DISK: `spill`, where tools
