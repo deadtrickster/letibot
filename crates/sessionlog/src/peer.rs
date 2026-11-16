@@ -165,11 +165,11 @@ pub enum Role {
 
 impl Role {
     /// The kind a head attached as is the one thing asked. A frame's `from` names which peer is
-    /// speaking; it never makes a connection a person's. An ACP client is the person's editor;
-    /// on the visible socket it is still a peer, because the socket decides first.
+    /// speaking; it never makes a connection a person's. rano's panel and an ACP client are the
+    /// person's editor; on the visible socket they are still peers, because the socket decides first.
     pub fn of(kind: &str) -> Role {
         match kind.trim() {
-            "tui" | "remote" | "acp" => Role::Operator,
+            "tui" | "remote" | "acp" | "editor" => Role::Operator,
             _ => Role::Peer,
         }
     }

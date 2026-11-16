@@ -2939,7 +2939,7 @@ fn a_rows_words_are_what_the_carry_matches_it_by() {
 
     let merged = row(
         Some(TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![
                 UserPart::Text {
                     text: "first".into(),
@@ -4361,7 +4361,7 @@ fn an_answered_page_lands_above_the_window() {
             ledger_head: String::new(),
             ts: 0,
             item: Some(TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![letibot_transcript::UserPart::Text {
                     text: format!("older row {i}\n"),
                 }],
@@ -4455,7 +4455,7 @@ fn scrolling_above_the_window_asks_for_the_rows_it_is_missing() {
             ledger_head: String::new(),
             ts: 0,
             item: Some(TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![letibot_transcript::UserPart::Text {
                     text: format!("older row {i}\n"),
                 }],
@@ -4494,7 +4494,7 @@ fn page_of(from: usize, count: usize) -> Vec<SnapshotItem> {
             ledger_head: String::new(),
             ts: 0,
             item: Some(TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![letibot_transcript::UserPart::Text {
                     text: format!("older row {i}\n"),
                 }],
@@ -4776,7 +4776,7 @@ fn a_fresh_attach_to_a_long_session_draws_its_tail() {
             ledger_head: "beef".into(),
             ts: 0,
             item: Some(TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![letibot_transcript::UserPart::Text {
                     text: format!("row {i} of a long conversation\n"),
                 }],
@@ -4828,7 +4828,7 @@ fn rows_below_a_parked_reader_are_let_go_and_fetched_back() {
         ledger_head: String::new(),
         ts: 0,
         item: Some(TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![letibot_transcript::UserPart::Text { text: words(i) }],
         }),
     };
@@ -5806,7 +5806,7 @@ fn a_window_that_let_rows_go_whole_draws_no_tail_of_the_session() {
                 ledger_head: String::new(),
                 ts: 0,
                 item: Some(TranscriptItem::User {
-                    speaker: Default::default(),
+                    speaker: letibot_transcript::Speaker::Operator,
                     parts: vec![letibot_transcript::UserPart::Text {
                         text: format!("row {i}\n{RING_BODY}"),
                     }],

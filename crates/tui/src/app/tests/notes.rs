@@ -33,7 +33,7 @@ fn a_row_that_only_contains_the_prompt_does_not_retire_it() {
         a.record_item(
             "s.contains",
             TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![UserPart::Text { text: row.into() }],
             },
         );
@@ -48,7 +48,7 @@ fn a_row_that_only_contains_the_prompt_does_not_retire_it() {
     a.record_item(
         "s.4",
         TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: "something else\nsecond thing".into(),
             }],
@@ -81,7 +81,7 @@ fn one_row_does_not_retire_two_identical_prompts() {
     a.record_item(
         "s.0",
         TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: "say it twice".into(),
             }],
@@ -111,7 +111,7 @@ fn blank_lines_claim_nothing() {
     a.record_item(
         "s.0",
         TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: "\n\n\n".into(),
             }],
@@ -201,7 +201,7 @@ fn a_body_with_no_row_and_a_daemon_that_is_ahead_are_both_counted() {
     a.record_item(
         "s.gone",
         TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: "a prompt that fell out of a snapshot".into(),
             }],
@@ -1955,7 +1955,7 @@ fn one_warning_delivered_twice_is_noted_once() {
         hub.record_item(
             &format!("r{i}"),
             letibot_transcript::TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![letibot_transcript::UserPart::Text {
                     text: format!("row r{i}"),
                 }],

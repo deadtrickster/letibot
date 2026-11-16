@@ -501,7 +501,7 @@ fn no_escape_from_content_this_head_did_not_author_reaches_the_terminal() {
             item_rows(
                 false,
                 T::User {
-                    speaker: Default::default(),
+                    speaker: letibot_transcript::Speaker::Operator,
                     parts: vec![UserPart::Text {
                         text: format!("I pasted{HOSTILE} out of a log"),
                     }],
@@ -748,7 +748,7 @@ fn the_plain_palette_emits_no_escapes_and_keeps_the_glyphs() {
         SessionEvent::TranscriptContent {
             item_id: "u".into(),
             item: Box::new(TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![UserPart::Text {
                     text: "hello".into(),
                 }],

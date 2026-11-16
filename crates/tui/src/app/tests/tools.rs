@@ -124,7 +124,7 @@ fn content_this_head_did_not_write_cannot_reconfigure_the_terminal() {
         (
             "the operator's own paste",
             render_one(T::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![UserPart::Text {
                     text: format!("I pasted {EVIL} out of a log\nsecond line"),
                 }],

@@ -240,12 +240,13 @@ pub fn appended(item_id: &str, kind: &str) -> SessionEvent {
     }
 }
 
-/// The body for a row `appended` announced.
+/// The body for a row `appended` announced: the operator's prompt, since a row that names
+/// nobody is the session's own.
 pub fn content(item_id: &str, text: &str) -> SessionEvent {
     SessionEvent::TranscriptContent {
         item_id: item_id.into(),
         item: Box::new(letibot_transcript::TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![letibot_transcript::UserPart::Text { text: text.into() }],
         }),
     }

@@ -148,7 +148,7 @@ fn the_engine_join_of_several_prompts_retires_every_echo_it_answered() {
     a.record_item(
         "s.0",
         TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: six.join("\n"),
             }],
@@ -164,7 +164,7 @@ fn the_engine_join_of_several_prompts_retires_every_echo_it_answered() {
     a.record_item(
         "s.1",
         TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: seventh.to_string(),
             }],
@@ -316,7 +316,7 @@ fn an_unconfirmed_echo_retires_when_its_row_lands_inside_a_merged_item() {
     a.record_item(
         "s.0",
         TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: "one of mine\nand another".into(),
             }],
@@ -350,7 +350,7 @@ fn the_live_and_snapshot_paths_retire_the_same_echoes() {
         a
     };
     let row = || TranscriptItem::User {
-        speaker: Default::default(),
+        speaker: letibot_transcript::Speaker::Operator,
         parts: vec![UserPart::Text {
             text: "first of mine\nsecond of mine".into(),
         }],
@@ -425,7 +425,7 @@ fn a_landing_row_retires_its_echo_and_a_piece_strips_the_front() {
     a.record_item(
         "s.0",
         TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: "first\nsecond".into(),
             }],
@@ -441,7 +441,7 @@ fn a_landing_row_retires_its_echo_and_a_piece_strips_the_front() {
     a.record_item(
         "s.1",
         TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: "third".into(),
             }],
@@ -451,7 +451,7 @@ fn a_landing_row_retires_its_echo_and_a_piece_strips_the_front() {
     a.record_item(
         "s.2",
         TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: "fourth".into(),
             }],
@@ -745,7 +745,7 @@ fn a_snapshot_keeps_only_the_bindings_whose_rows_are_still_bodyless() {
         ledger_head: "beef".into(),
         ts: 0,
         item: Some(TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: "from the snapshot".into(),
             }],
@@ -782,7 +782,7 @@ fn a_snapshot_keeps_only_the_bindings_whose_rows_are_still_bodyless() {
     a.record_item(
         "s.11",
         TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: "still queued".into(),
             }],
@@ -1140,7 +1140,7 @@ fn the_ladder_cycles_through_the_conversation_rung_by_name() {
     // everything the head made out.
     use letibot_transcript::{ReasoningField, TranscriptItem as T};
     let user = T::User {
-        speaker: Default::default(),
+        speaker: letibot_transcript::Speaker::Operator,
         parts: vec![letibot_transcript::UserPart::Text { text: "hi".into() }],
     };
     let answer = T::Assistant {
@@ -2587,7 +2587,7 @@ fn the_log_alone_is_enough_to_render_the_conversation() {
     hub.record_item(
         "s.0",
         TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: "why did the cache miss".into(),
             }],
@@ -2779,7 +2779,7 @@ fn a_settled_call_is_one_row_when_the_round_does_not_start_at_row_zero() {
         SessionEvent::TranscriptContent {
             item_id: "u".into(),
             item: Box::new(TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![UserPart::Text {
                     text: "what is in the tree".into(),
                 }],
@@ -2879,7 +2879,7 @@ fn a_message_sent_mid_round_does_not_orphan_the_rounds_results() {
         SessionEvent::TranscriptContent {
             item_id: "u".into(),
             item: Box::new(TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![UserPart::Text {
                     text: "continue".into(),
                 }],
@@ -2927,7 +2927,7 @@ fn a_turn_is_a_question_a_step_of_working_and_an_answer_back_at_the_margin() {
         SessionEvent::TranscriptContent {
             item_id: "u".into(),
             item: Box::new(TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![UserPart::Text {
                     text: "what crates are in this workspace".into(),
                 }],
@@ -3029,7 +3029,7 @@ fn the_queued_echo_stands_down_when_the_row_lands() {
         SessionEvent::TranscriptContent {
             item_id: "u2".into(),
             item: Box::new(TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![UserPart::Text {
                     text: "also bump the retry budget".into(),
                 }],
@@ -3071,7 +3071,7 @@ fn switching_sessions_leaves_the_queue_behind_and_a_resync_keeps_what_is_still_q
     hub.record_item(
         "u1",
         TranscriptItem::User {
-            speaker: Default::default(),
+            speaker: letibot_transcript::Speaker::Operator,
             parts: vec![UserPart::Text {
                 text: "also bump the retry budget".into(),
             }],
@@ -4207,7 +4207,7 @@ fn the_work_in_flight_is_counted_by_one_marker_not_two() {
         SessionEvent::TranscriptContent {
             item_id: "s.2".into(),
             item: Box::new(TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![UserPart::Text {
                     text: "and what about the cache?".into(),
                 }],
@@ -4699,7 +4699,7 @@ fn the_waiting_words_are_the_only_row_that_moves_when_the_daemon_takes_them() {
         SessionEvent::TranscriptContent {
             item_id: "u2".into(),
             item: Box::new(TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![UserPart::Text {
                     text: "a queued line".into(),
                 }],
@@ -5414,7 +5414,7 @@ fn the_counts_after_the_operators_own_message_stand_on_their_own_line() {
         SessionEvent::TranscriptContent {
             item_id: "s.0".into(),
             item: Box::new(TranscriptItem::User {
-                speaker: Default::default(),
+                speaker: letibot_transcript::Speaker::Operator,
                 parts: vec![letibot_transcript::UserPart::Text {
                     text: "make verbosity a config option".into(),
                 }],
