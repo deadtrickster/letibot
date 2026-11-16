@@ -6,8 +6,9 @@ use std::collections::BTreeMap;
 
 use super::*;
 
-/// What a park adds to the provider's own instant: two sessions refused together must not call
-/// together, and a couple of seconds is enough to spread a fleet of them.
+/// The spread a park adds to the provider's own instant: two sessions refused together must not
+/// call together. This is the MEAN - each park draws its own, [`letibot_http::retry::spread`]'s
+/// percent either way, because a fixed couple of seconds puts a fleet back in step.
 pub(crate) const PARK_JITTER_MS: u64 = 2_000;
 
 /// One park: when the turn is owed again, which model refused, and what it said.
@@ -42,12 +43,49 @@ pub(crate) struct LimitReturn {
 
 /// Early re-tries of a park ([`crate::config::Config::limit_probe`]): a park comes due at the next
 /// step rather than the reset, and the first answer lifts it.
-#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Probing {
     /// Re-tries refused since the last answer: the index of the next step.
     refused: usize,
     /// The park the re-try in flight was lifted from: its model and its reset.
     asked: Option<(String, u64)>,
+    /// This session's jitter state, seeded afresh per session: two sessions parked together draw
+    /// different instants, and the same session keeps drawing from one state.
+    #[serde(skip, default = "letibot_http::retry::fresh_seed")]
+    rng: u64,
+    /// The offset this episode's parks add, once drawn. A re-try that drew again would move the
+    /// reset it is counting to, and the reset is the provider's fact, not this build's.
+    #[serde(default)]
+    jitter: Option<u64>,
+}
+
+impl Default for Probing {
+    fn default() -> Probing {
+        Probing {
+            refused: 0,
+            asked: None,
+            rng: letibot_http::retry::fresh_seed(),
+            jitter: None,
+        }
+    }
+}
+
+impl Probing {
+    /// What this park adds to the provider's own instant: [`PARK_JITTER_MS`] moved by up to
+    /// [`letibot_http::retry::JITTER_PERCENT`] either way, so two parks do not end in step. Drawn
+    /// ONCE per episode, so every re-try of one park counts to the same instant.
+    pub(crate) fn jitter_ms(&mut self) -> u64 {
+        if let Some(at) = self.jitter {
+            return at;
+        }
+        let drawn = letibot_http::retry::spread(
+            std::time::Duration::from_millis(PARK_JITTER_MS),
+            &mut self.rng,
+        );
+        let ms = u64::try_from(drawn.as_millis()).unwrap_or(PARK_JITTER_MS);
+        self.jitter = Some(ms);
+        ms
+    }
 }
 
 /// Everything a session knows about its limits, as the session row keeps it. One record, so a
@@ -139,6 +177,8 @@ impl Harness {
     /// model is no longer limited, and the session's log says when.
     pub(crate) fn a_round_answered(&mut self) {
         let was_refused = std::mem::take(&mut self.limit_probing.refused) > 0;
+        // The limit is over: the next one is a new episode and draws its own offset.
+        self.limit_probing.jitter = None;
         let Some((model, reset_ms)) = self.limit_probing.asked.take() else {
             if was_refused {
                 self.save_limit_state();
@@ -240,7 +280,8 @@ impl Harness {
             return LimitAnswer::Retry;
         };
         let model = self.model_name();
-        self.note_limited(&model, reset_ms.saturating_add(PARK_JITTER_MS));
+        let jitter = self.limit_probing.jitter_ms();
+        self.note_limited(&model, reset_ms.saturating_add(jitter));
         LimitAnswer::Wait { reset_ms }
     }
 
@@ -260,14 +301,14 @@ impl Harness {
         if self.limit_probing.asked.take().is_some() {
             self.limit_probing.refused += 1;
         }
-        let reset_ms = reset_ms.saturating_add(PARK_JITTER_MS);
-        let probe_ms = self
-            .next_probe_ms(now)
-            .map_or(u64::MAX, |at| at.saturating_add(PARK_JITTER_MS));
+        let reset_ms = reset_ms.saturating_add(self.limit_probing.jitter_ms());
+        let probe_ms = self.next_probe_ms(now).map_or(u64::MAX, |at| {
+            at.saturating_add(self.limit_probing.jitter_ms())
+        });
         let until_ms = reset_ms
             .min(
                 now.saturating_add(letibot_http::reset::LONGEST)
-                    .saturating_add(PARK_JITTER_MS),
+                    .saturating_add(self.limit_probing.jitter_ms()),
             )
             .min(probe_ms);
         let words = words.unwrap_or_else(|| park_words(now, until_ms, reset_ms));
@@ -631,12 +672,13 @@ impl Harness {
                 if self.cfg.on_limit == OnLimit::Switch {
                     // A reset this close costs less waited for than a switch there and back.
                     if left < within {
-                        let words = wait_words(now, reset_ms + PARK_JITTER_MS, within);
+                        let until = reset_ms.saturating_add(self.limit_probing.jitter_ms());
+                        let words = wait_words(now, until, within);
                         let said = self.park_until(reset_ms, Some(words), e);
                         return AfterTheLadder::Parked { said };
                     }
                     if let Some(next) = self.fall_back_from(e, tried) {
-                        let back_ms = reset_ms.saturating_add(PARK_JITTER_MS);
+                        let back_ms = reset_ms.saturating_add(self.limit_probing.jitter_ms());
                         self.note_the_way_back_from_a_limit(&here, back_ms);
                         let why = switch_words(&here, now, back_ms, within, &next);
                         self.write_limit_row(Some(why.clone()));
