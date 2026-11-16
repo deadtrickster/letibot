@@ -33,6 +33,27 @@ struct World {
     gatekeeper: Arc<Hub>,
     answers: Arc<Answers>,
     set: Arc<PendingAsks>,
+    /// The reviewer's own permission rules, `permission pattern`, all Allow.
+    rules: std::sync::Mutex<Vec<String>>,
+}
+
+/// The reviewer's gate as its relayed calls carry it: `w`'s rules, in its clone.
+fn reviewer_gate(w: &World) -> letibot_sessionlog::pending_asks::AskerGate {
+    let rules: Vec<letibot_tools::permission::Rule> = w
+        .rules
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|r| {
+            let (permission, pattern) = r.split_once(' ').unwrap();
+            letibot_tools::permission::Rule::new(
+                permission,
+                pattern,
+                letibot_tools::permission::Action::Allow,
+            )
+        })
+        .collect();
+    crate::shadow::permission::asker_gate(&rules, std::path::Path::new(CLONE))
 }
 
 fn world() -> World {
@@ -50,6 +71,7 @@ fn world() -> World {
         gatekeeper,
         answers,
         set,
+        rules: Default::default(),
     }
 }
 
@@ -503,11 +525,10 @@ fn with_shadow_rules(
         rows.clone() as Arc<dyn crate::shadow::record::Recorder>,
     ));
     let answering = crate::shadow::permission::Answering::new(true);
+    *w.rules.lock().unwrap() = rules.iter().map(|r| r.to_string()).collect();
     w.set
         .set_annotator(Some(Arc::new(crate::shadow::permission::Relay {
             cell,
-            rules: rules.iter().map(|r| r.to_string()).collect(),
-            workspace: "/w/proj".into(),
             home: "/home/op".into(),
             answering: answering.clone(),
             revocable: true,
@@ -530,7 +551,8 @@ fn relay_a_probe(w: &World, look: Duration) -> (OpenDecision, Duration, Adjudica
             HeadAdjudicator::new(w.gatekeeper.clone(), w.answers.clone())
                 .with_budget(Duration::from_secs(10)),
         ),
-    );
+    )
+    .with_gate(reviewer_gate(w));
     let mut req = request();
     req.id = "adj-probe-0001".into();
     req.session_id = REVIEWER.into();
@@ -851,6 +873,7 @@ fn reviewer_adjudicator(w: &World) -> SubagentAdjudicator {
                 .with_budget(Duration::from_secs(10)),
         ),
     )
+    .with_gate(reviewer_gate(w))
 }
 
 /// Ask `req` through the reviewer, watching the main session: the first card seen and its
@@ -1003,9 +1026,10 @@ fn a_shadow_timeout_on_a_read_shows_the_card() {
     assert!(answering.take_rows().is_empty());
 }
 
+/// The rule the verdict quotes is a label: the grant cites the asker's rule that covers the path.
 #[test]
-fn an_unlisted_rule_never_acts() {
-    let (w, _, _) = view_world(Slow {
+fn a_quoted_rule_is_only_a_label() {
+    let (w, _, answering) = view_world(Slow {
         reply: r#"{"verdict":"allow","rule":"a path outside the view","evidence":""}"#,
         sleep: Duration::from_millis(20),
     });
@@ -1015,11 +1039,10 @@ fn an_unlisted_rule_never_acts() {
         letibot_tools::Access::Read,
     );
     let (card, d) = ask_watching(&w, &req, "deny", Duration::from_millis(50));
-    assert!(
-        card.is_some(),
-        "a rule the harness did not list is no grant"
-    );
-    assert!(d.by.starts_with("human:"), "{}", d.by);
+    assert!(card.is_none(), "{d:?}");
+    assert_eq!(d.by, "shadow:deepseek");
+    let rows = answering.take_rows();
+    assert!(rows[0].0.contains("(rule: read /build/**)"), "{rows:?}");
 }
 
 #[test]
@@ -1178,4 +1201,46 @@ fn a_later_no_to_a_granted_shape_counts_toward_the_breaker() {
     assert_eq!(card.shadow.as_deref(), Some("shadow (deepseek): ask"));
     assert!(d.by.starts_with("human:"), "{}", d.by);
     assert_eq!(answering.disagreements(), 1, "a No to a shape it granted");
+}
+
+/// The shadow acts only on the asker's rule that covers the path: a rule for another place, or a
+/// rule for another permission, is no grant whatever the verdict quotes.
+#[test]
+fn acting_rule_must_cover_the_requested_path() {
+    let (w, _, answering) = view_world(Slow {
+        reply: ALLOW_READ,
+        sleep: Duration::from_millis(20),
+    });
+    let req = view_request(
+        "adj-view-0400",
+        "/home/dead/proj/secret.txt",
+        letibot_tools::Access::Read,
+    );
+    let (card, d) = ask_watching(&w, &req, "deny", Duration::from_millis(50));
+    assert!(
+        card.is_some(),
+        "a rule for /build covers nothing else: {d:?}"
+    );
+    assert!(d.by.starts_with("human:"), "{}", d.by);
+    assert!(answering.take_rows().is_empty());
+
+    let w = world();
+    name_reviewer(&w.set);
+    let (_, answering) = with_shadow_rules(
+        &w,
+        Slow {
+            reply: r#"{"verdict":"allow","rule":"git status","evidence":""}"#,
+            sleep: Duration::from_millis(20),
+        },
+        &["bash git status*"],
+    );
+    let req = view_request(
+        "adj-view-0401",
+        "/build/letibot-r1",
+        letibot_tools::Access::Read,
+    );
+    let (card, d) = ask_watching(&w, &req, "deny", Duration::from_millis(50));
+    assert!(card.is_some(), "a bash rule never covers a read: {d:?}");
+    assert!(d.by.starts_with("human:"), "{}", d.by);
+    assert!(answering.take_rows().is_empty());
 }

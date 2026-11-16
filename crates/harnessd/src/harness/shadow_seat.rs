@@ -26,8 +26,6 @@ impl Harness {
             .set_wake(Arc::new(move || bell.ring_wake(&id)));
         Some(Arc::new(crate::shadow::permission::Relay {
             cell: self.shadow_cell.clone(),
-            rules: crate::shadow::permission::rules_of(&self.cfg.permission),
-            workspace: self.cfg.workspace.clone(),
             home: std::env::var_os("HOME").map(Into::into).unwrap_or_default(),
             answering: self.shadow_answering.clone(),
             revocable: self.cfg.store_at().is_some(),

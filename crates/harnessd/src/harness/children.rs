@@ -4099,7 +4099,11 @@ impl HarnessTaskRunner {
                 ..Default::default()
             },
             sub_head,
-        );
+        )
+        .with_gate(crate::shadow::permission::asker_gate(
+            &sub_cfg.permission,
+            &sub_cfg.workspace,
+        ));
 
         let mut sub = Harness::open_with_registry(
             &parts,

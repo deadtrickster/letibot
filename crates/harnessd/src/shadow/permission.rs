@@ -6,8 +6,11 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
-use letibot_sessionlog::pending_asks::{Annotator, Note, RelayedCall, RevokedGrant};
+use letibot_sessionlog::pending_asks::{
+    Annotator, AskerGate, AskerRule, Note, RelayedCall, RevokedGrant,
+};
 use letibot_tools::authorise::{CorpusRow, CorpusSink, OperatorOverride};
+use letibot_tools::permission::{Action, Rule, Ruleset};
 
 use super::Job;
 use super::guard::Call;
@@ -267,28 +270,59 @@ pub fn scope(c: &RelayedCall, home: &std::path::Path) -> Result<(String, &'stati
     Ok((path, kind))
 }
 
-/// The rule an `allow` relied on, when it may act: a verdict, an allow, and its rule one the
-/// harness listed. Void, stale, timed out, `ask` or an unlisted rule is `None`.
-pub fn acting_rule(outcome: &Outcome, rules: &[String]) -> Option<String> {
+/// The rule an `allow` may act on: the asker's rule that covers a read of `path` by the gate's
+/// own matcher, last match wins and a Deny is seen. The model's verdict only gates it; the rule
+/// it quoted is a label. Void, stale, timed out, `ask` or no covering Allow is `None`.
+pub fn acting_rule(outcome: &Outcome, path: &str, rules: &Ruleset) -> Option<String> {
     let Outcome::Verdict(Verdict::Permission {
-        decision: Decision::Allow { rule },
+        decision: Decision::Allow { .. },
         ..
     }) = outcome
     else {
         return None;
     };
-    let rule = rule.trim();
-    (rule.len() >= super::verdict::MIN_QUOTE && rules.iter().any(|r| r.contains(rule)))
-        .then(|| rule.to_string())
+    covering_rule(path, rules)
+}
+
+/// The Allow rule in `rules` that covers a read of `path` at its canonical key, or `None`.
+pub fn covering_rule(path: &str, rules: &Ruleset) -> Option<String> {
+    let key = letibot_tools::view::key(std::path::Path::new(path));
+    let r = letibot_tools::permission::evaluate("read", &key.to_string_lossy(), &[rules]);
+    (r.action == Action::Allow).then(|| format!("{} {}", r.permission, r.pattern))
+}
+
+/// A session's gate as its relayed calls carry it.
+pub fn asker_gate(rules: &[Rule], workspace: &std::path::Path) -> AskerGate {
+    AskerGate {
+        workspace: workspace.to_path_buf(),
+        rules: rules
+            .iter()
+            .map(|r| AskerRule {
+                permission: r.permission.clone(),
+                pattern: r.pattern.clone(),
+                action: r.action.as_str().to_string(),
+            })
+            .collect(),
+    }
+}
+
+/// The asker's rules back as the gate's type. An action this build cannot read is a Deny.
+pub fn ruleset_of(g: &AskerGate) -> Ruleset {
+    g.rules
+        .iter()
+        .map(|r| {
+            let action = Action::parse(&r.action).unwrap_or(Action::Deny);
+            Rule::new(r.permission.clone(), r.pattern.clone(), action)
+        })
+        .collect()
 }
 
 /// The main session's shadow on a relayed card: asked under the permission job's deadline, its
 /// verdict one line on the card and the operator's answer beside it in the record. It answers only
-/// a review-queue seat's read of a path outside its view, while `answering` is on.
+/// a review-queue seat's read of a path outside its view, while `answering` is on, and judges it
+/// in the asker's own rules and workspace, never the main session's.
 pub struct Relay {
     pub cell: Cell,
-    pub rules: Vec<String>,
-    pub workspace: PathBuf,
     pub home: PathBuf,
     pub answering: Arc<Answering>,
     /// Whether a grant answered here is kept where `/shadow revoke` finds it: a daemon with a
@@ -302,14 +336,24 @@ impl Relay {
     }
 
     fn shown_for(&self, c: &RelayedCall) -> Shown {
+        let workspace = c
+            .gate
+            .as_ref()
+            .map(|g| g.workspace.clone())
+            .unwrap_or_default();
+        let rules = c
+            .gate
+            .as_ref()
+            .map(|g| rules_of(&ruleset_of(g)))
+            .unwrap_or_default();
         let call = Call {
             tool: c.tool.clone(),
             args: c.arguments.clone(),
-            cwd: self.workspace.clone(),
-            workspace: self.workspace.clone(),
+            cwd: workspace.clone(),
+            workspace,
             home: self.home.clone(),
         };
-        let mut s = shown(&c.req_id, &c.tool, &c.arguments, &self.rules, None, call);
+        let mut s = shown(&c.req_id, &c.tool, &c.arguments, &rules, None, call);
         s.data.push_str(&format!(
             "\nasked by: {} (relayed)\nlayer A: {}\n",
             c.role.as_deref().unwrap_or(&c.asker),
@@ -337,9 +381,9 @@ impl Relay {
         let outcome = shadow.ask(Job::Permission, self.shown_for(c))?;
         let judge = shadow.label(Job::Permission);
         let line = line_of(judge.as_deref(), &outcome);
-        let acting = match (&scoped, may_act && self.answering.is_on()) {
-            (Ok((path, kind)), true) => {
-                acting_rule(&outcome, &self.rules).map(|r| (path.clone(), *kind, r))
+        let acting = match (&scoped, &c.gate, may_act && self.answering.is_on()) {
+            (Ok((path, kind)), Some(gate), true) => {
+                acting_rule(&outcome, path, &ruleset_of(gate)).map(|r| (path.clone(), *kind, r))
             }
             _ => None,
         };
@@ -407,6 +451,7 @@ impl Annotator for Relay {
     fn may_answer(&self, c: &RelayedCall) -> bool {
         self.revocable
             && self.answering.is_on()
+            && c.gate.is_some()
             && scope(c, &self.home).is_ok()
             && self.parts().is_some()
     }

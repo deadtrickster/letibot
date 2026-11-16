@@ -1477,25 +1477,32 @@ fn answer_reads_is_on_with_the_permission_job_unless_turned_off() {
 }
 
 #[test]
-fn only_a_listed_rule_on_an_allow_verdict_acts() {
+fn only_a_covering_rule_on_an_allow_verdict_acts() {
     use super::permission::acting_rule;
-    let rules = vec!["read /build/**".to_string()];
+    use letibot_tools::permission::{Action, Rule};
+    let rules = vec![
+        Rule::new("read", "/build/**", Action::Allow),
+        Rule::new("read", "/build/secret/**", Action::Deny),
+    ];
     let allow = |rule: &str| {
         Outcome::Verdict(Verdict::Permission {
             decision: Decision::Allow { rule: rule.into() },
             evidence: String::new(),
         })
     };
+    let v = allow("read /build/**");
     assert_eq!(
-        acting_rule(&allow("read /build/**"), &rules).as_deref(),
+        acting_rule(&v, "/build/letibot-r1", &rules).as_deref(),
         Some("read /build/**")
     );
-    assert_eq!(acting_rule(&allow("the operator said so"), &rules), None);
+    assert_eq!(acting_rule(&v, "/home/dead/proj/secret.txt", &rules), None);
     assert_eq!(
-        acting_rule(&allow("/build"), &rules),
+        acting_rule(&v, "/build/secret/x", &rules),
         None,
-        "too short to be a quote"
+        "a later Deny wins"
     );
+    let bash = vec![Rule::new("bash", "git status*", Action::Allow)];
+    assert_eq!(acting_rule(&allow("git status"), "/build/x", &bash), None);
     for o in [
         Outcome::Void("x".into()),
         Outcome::Stale { judged: 1, now: 2 },
@@ -1506,6 +1513,6 @@ fn only_a_listed_rule_on_an_allow_verdict_acts() {
             evidence: String::new(),
         }),
     ] {
-        assert_eq!(acting_rule(&o, &rules), None, "{o:?}");
+        assert_eq!(acting_rule(&o, "/build/letibot-r1", &rules), None, "{o:?}");
     }
 }

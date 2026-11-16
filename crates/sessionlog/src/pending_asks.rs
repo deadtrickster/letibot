@@ -73,6 +73,25 @@ pub struct RelayedCall {
     /// The path, when the ask is ONLY a read of a path outside the asker's view: a read class,
     /// `may_approve`, and a card that offers the read-only rung.
     pub view_read: Option<String>,
+    /// The asker's own gate. `None` is an asker whose rules nobody passed, and nothing acts on it.
+    pub gate: Option<AskerGate>,
+}
+
+/// What the asking session's gate holds, for a judge of its call: its real workspace and its
+/// permission rules in order, so a rule written for another session never covers this one.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AskerGate {
+    pub workspace: std::path::PathBuf,
+    pub rules: Vec<AskerRule>,
+}
+
+/// One permission rule of the asker's, as `permission pattern action`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AskerRule {
+    pub permission: String,
+    pub pattern: String,
+    /// `allow`, `deny` or `ask`.
+    pub action: String,
 }
 
 /// What the annotator says about a card before it is shown.

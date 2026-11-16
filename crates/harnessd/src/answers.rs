@@ -133,6 +133,7 @@ impl Answers {
         req: &AdjudicationRequest,
         budget: Duration,
         subagent: Option<&SubagentAsk>,
+        gate: Option<&letibot_sessionlog::pending_asks::AskerGate>,
     ) -> AdjudicationDecision {
         let started = Instant::now();
         let (who, route) = match escalation(hub) {
@@ -146,7 +147,7 @@ impl Answers {
         // The main session's shadow may answer a relayed read before any card goes up.
         let call = route
             .as_ref()
-            .map(|set| relayed_call(req, hub, subagent, set));
+            .map(|set| relayed_call(req, hub, subagent, set, gate));
         let mut line = None;
         if let (Some(set), Some(call)) = (&route, &call) {
             match set.note_before(call) {
@@ -419,6 +420,7 @@ fn relayed_call(
     hub: &Arc<Hub>,
     subagent: Option<&SubagentAsk>,
     set: &letibot_sessionlog::pending_asks::PendingAsks,
+    gate: Option<&letibot_sessionlog::pending_asks::AskerGate>,
 ) -> RelayedCall {
     let asker = subagent.map_or_else(|| hub.session_id(), |s| s.handle.clone());
     RelayedCall {
@@ -429,6 +431,7 @@ fn relayed_call(
         arguments: req.arguments.clone(),
         reading: req.baseline.clone(),
         view_read: view_read(req),
+        gate: gate.cloned(),
     }
 }
 
@@ -1164,6 +1167,8 @@ pub struct HeadAdjudicator {
     pattern: Mutex<Option<String>>,
     /// Whether the last answer came on a relayed card.
     relayed: Mutex<bool>,
+    /// This session's own gate, for a judge of its relayed asks.
+    gate: Option<letibot_sessionlog::pending_asks::AskerGate>,
 }
 
 impl HeadAdjudicator {
@@ -1175,7 +1180,14 @@ impl HeadAdjudicator {
             shown: Mutex::new(None),
             pattern: Mutex::new(None),
             relayed: Mutex::new(false),
+            gate: None,
         }
+    }
+
+    /// The asking session's rules and workspace, carried on its relayed calls.
+    pub fn with_gate(mut self, gate: letibot_sessionlog::pending_asks::AskerGate) -> Self {
+        self.gate = Some(gate);
+        self
     }
 
     pub fn with_budget(mut self, budget: Duration) -> Self {
@@ -1189,13 +1201,16 @@ impl HeadAdjudicator {
         &self,
         req: &AdjudicationRequest,
         subagent: Option<&SubagentAsk>,
+        gate: Option<&letibot_sessionlog::pending_asks::AskerGate>,
     ) -> AdjudicationDecision {
         *self.shown.lock().unwrap_or_else(|e| e.into_inner()) = Some(req.brief());
         // Cleared before the ask, not after: a pattern left over from the previous answer
         // would be applied to this one, which is a rule the operator did not write for a call
         // they were not looking at when they typed it.
         *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) = None;
-        let d = self.answers.ask(&self.hub, req, self.budget, subagent);
+        let d = self
+            .answers
+            .ask(&self.hub, req, self.budget, subagent, gate);
         *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) =
             self.answers.take_pattern(&req.id);
         *self.relayed.lock().unwrap_or_else(|e| e.into_inner()) =
@@ -1206,7 +1221,7 @@ impl HeadAdjudicator {
 
 impl Adjudicator for HeadAdjudicator {
     fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
-        self.decide_as(req, None)
+        self.decide_as(req, None, self.gate.as_ref())
     }
 
     fn describe(&self) -> String {
@@ -1249,11 +1264,22 @@ pub struct SubagentAdjudicator {
     child: SubagentAsk,
     /// The tree's answer path, when there is one.
     head: Option<HeadAdjudicator>,
+    /// The child's own gate, never the root's: a relayed read is judged by the asker's rules.
+    gate: Option<letibot_sessionlog::pending_asks::AskerGate>,
 }
 
 impl SubagentAdjudicator {
     pub fn new(child: SubagentAsk, head: Option<HeadAdjudicator>) -> SubagentAdjudicator {
-        SubagentAdjudicator { child, head }
+        SubagentAdjudicator {
+            child,
+            head,
+            gate: None,
+        }
+    }
+
+    pub fn with_gate(mut self, gate: letibot_sessionlog::pending_asks::AskerGate) -> Self {
+        self.gate = Some(gate);
+        self
     }
 
     /// No head-wired adjudicator in this tree, said as the fact it is. `by` is `gate:no-head`
@@ -1281,7 +1307,7 @@ impl SubagentAdjudicator {
 impl Adjudicator for SubagentAdjudicator {
     fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
         match &self.head {
-            Some(head) => head.decide_as(req, Some(&self.child)),
+            Some(head) => head.decide_as(req, Some(&self.child), self.gate.as_ref()),
             None => AdjudicationDecision::unavailable(req, "gate:no-head", &self.no_path()),
         }
     }

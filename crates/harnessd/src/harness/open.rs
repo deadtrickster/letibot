@@ -2945,7 +2945,14 @@ impl Harness {
                                 .with_ask_log(asked.clone())
                                 .with_workspace(cfg.workspace.clone()),
                         ));
-                        Box::new(crate::answers::HeadAdjudicator::new(hub.clone(), answers))
+                        Box::new(
+                            crate::answers::HeadAdjudicator::new(hub.clone(), answers).with_gate(
+                                crate::shadow::permission::asker_gate(
+                                    &cfg.permission,
+                                    &cfg.workspace,
+                                ),
+                            ),
+                        )
                     }
                     (None, AdjudicatorChoice::Console) => {
                         Box::new(letibot_tools::ConsoleAdjudicator::stdio(cfg.owner.clone()))
@@ -2972,10 +2979,13 @@ impl Harness {
                         ));
                         Box::new(crate::answers::EscalateOnTimeout::new(
                             std::sync::Arc::from(model),
-                            std::sync::Arc::new(crate::answers::HeadAdjudicator::new(
-                                hub.clone(),
-                                answers,
-                            )),
+                            std::sync::Arc::new(
+                                crate::answers::HeadAdjudicator::new(hub.clone(), answers)
+                                    .with_gate(crate::shadow::permission::asker_gate(
+                                        &cfg.permission,
+                                        &cfg.workspace,
+                                    )),
+                            ),
                         ))
                     }
                 };
