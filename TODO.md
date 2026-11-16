@@ -1391,7 +1391,7 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 **Residue.**
 - A process the operator's own tmux server, `systemd-run --user`, `ssh localhost` or macOS `setsid` spawns runs outside every view, so no mask stops it reaching the heads' socket by path. Decision 6 masks; those routes are ruled on separately, as I5's own note says.
-- ACP attaches as kind `acp`, which is a peer's: an editor seat can no longer answer a permission card or a mode consent. That is I6's rule as written; letting the editor decide is a new finding, not a defect here.
+- ACP attaches as kind `acp`, which is the operator's: an ACP client is the person's editor. On the visible socket it is a peer all the same, because the socket decides before the kind.
 - `letibot` verbs run from inside a session's command now speak to the visible socket, which serves no operator door: `--sessions`, `--stop` and the launcher's other reads refuse there. The launcher is the operator's, run outside a seat.
 - `from` still names a handle freely, so a connection may sign as another peer's handle; only the operator signature is refused. Binding `from` to the seats a connection demonstrably holds needs the seat registry R323 left open.
 - A session's origin still comes from the first head to attach (`Registry::note_attach`), so a peer that attaches first still decides it. R323's residue, unchanged here.
