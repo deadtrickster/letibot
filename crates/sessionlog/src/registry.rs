@@ -817,6 +817,17 @@ pub const PREFIX_CURRENT: &str = "this session now speaks the prompt this daemon
 /// my turn end*.
 pub const STOPPING_TURN_REASON: &str = "the daemon is stopping";
 
+/// The identity `letibot-tui --interrupt-all` attaches under: the launcher's stop, which
+/// interrupts every turn before it signals. See [`Registry::begin_stop`].
+pub const STOP_FORCE_OPENER: &str = "stop-force";
+
+/// How long [`Registry::begin_stop`] holds without the close that should follow it: the
+/// launcher's interrupt wait plus its signal. A stop that never came does not refuse turns for good.
+const STOP_BEGUN_HOLD_MS: u64 = 120_000;
+
+/// How long [`Registry::begin_stop`] waits for the journals, over every hub together.
+const STOP_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// A session's standing notes, as rows, computed where the vocabulary is. A closure rather than
 /// a mailbox, because the FORM each note takes depends on the budget at the moment of asking.
 pub type NotesSource = Arc<dyn Fn() -> Vec<crate::protocol::NoteEntry> + Send + Sync>;
@@ -956,6 +967,8 @@ pub struct Registry {
     started_ms: u64,
     /// See [`Registry::is_stopping`].
     stopping: std::sync::atomic::AtomicBool,
+    /// When [`Registry::begin_stop`] marked the stop, in ms; `0` for never.
+    stop_begun_ms: std::sync::atomic::AtomicU64,
     /// See [`Registry::is_restarting`].
     restarting: std::sync::atomic::AtomicBool,
     /// The names of the subagents this daemon spawned, by session id - see
@@ -1111,6 +1124,7 @@ impl Registry {
             instance: mint_instance(),
             started_ms: now_ms(),
             stopping: std::sync::atomic::AtomicBool::new(false),
+            stop_begun_ms: std::sync::atomic::AtomicU64::new(0),
             restarting: std::sync::atomic::AtomicBool::new(false),
             slugs: Mutex::new(std::collections::HashMap::new()),
             store_older: Mutex::new(None),
@@ -2633,6 +2647,30 @@ impl Registry {
         self.close_once.call_once(|| self.close_hubs_and_runs());
     }
 
+    /// The launcher's stop has begun: it interrupts every turn, then signals. Marked before any
+    /// interrupt, so an interrupted child stays resumable and a wake in the gap opens no turn; then
+    /// the journals are flushed, as a close does.
+    pub fn begin_stop(&self) {
+        self.stop_begun_ms
+            .store(now_ms().max(1), std::sync::atomic::Ordering::SeqCst);
+        let hubs: Vec<Arc<Hub>> = self
+            .lock()
+            .entries
+            .iter()
+            .map(|(_, e)| e.hub.clone())
+            .collect();
+        let by = std::time::Instant::now() + STOP_SAVE_WAIT;
+        for h in hubs {
+            let left = by.saturating_duration_since(std::time::Instant::now());
+            if !h.journal_settled(left) {
+                eprintln!(
+                    "  {} · queued prompts not saved as the stop began",
+                    h.session_id()
+                );
+            }
+        }
+    }
+
     /// [`Registry::close`] for a restart: each session's run ender keeps the host jobs that can
     /// outlive this daemon, for the next one to take back.
     pub fn close_for_restart(&self) {
@@ -2693,10 +2731,20 @@ impl Registry {
         self.bell.is_closed()
     }
 
-    /// This daemon has begun to stop: set at the very start of `close`, before the turns in flight
-    /// are interrupted, so whoever asks learns the daemon is going rather than stuck.
-    pub fn is_stopping(&self) -> bool {
+    /// `close` has begun. Unlike [`Registry::is_stopping`] it never lapses: a background loop that
+    /// ends on it must not end on a launcher's stop that was never followed by a signal.
+    pub fn is_closing(&self) -> bool {
         self.stopping.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// This daemon has begun to stop: set at the very start of `close`, or by the launcher's
+    /// interrupt ([`Registry::begin_stop`]), before the turns in flight are interrupted.
+    pub fn is_stopping(&self) -> bool {
+        if self.is_closing() {
+            return true;
+        }
+        let begun = self.stop_begun_ms.load(std::sync::atomic::Ordering::SeqCst);
+        begun != 0 && now_ms().saturating_sub(begun) < STOP_BEGUN_HOLD_MS
     }
 }
 

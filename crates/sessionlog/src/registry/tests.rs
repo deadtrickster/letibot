@@ -1138,3 +1138,16 @@ fn a_put_row_replaces_its_key_and_keeps_the_rest() {
     assert_eq!(usage, vec![&row(crate::protocol::MODEL_USAGE_KEY, "5h 2%")]);
     assert!(!r.put_setting("s-gone", row("x", "y")));
 }
+
+/// The launcher's interrupt marks the stop for the turns and the children, and not for the
+/// background loops: those end only on the close, since the signal may never come.
+#[test]
+fn begin_stop_marks_stopping_but_not_closing() {
+    let r = reg();
+    assert!(!r.is_stopping());
+    r.begin_stop();
+    assert!(r.is_stopping());
+    assert!(!r.is_closing());
+    r.close();
+    assert!(r.is_stopping() && r.is_closing());
+}

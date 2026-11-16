@@ -963,7 +963,7 @@ pub fn spawn(
                 }
                 let until = Instant::now() + TICK;
                 while Instant::now() < until {
-                    if registry.is_stopping() || registry.is_closed() {
+                    if registry.is_closing() || registry.is_closed() {
                         return;
                     }
                     std::thread::sleep(Duration::from_millis(100));

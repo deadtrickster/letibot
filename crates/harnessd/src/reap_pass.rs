@@ -198,12 +198,12 @@ pub fn spawn(store_at: Option<impl Into<StoreAt>>, registry: Arc<Registry>) {
                 }
                 let began = std::time::Instant::now();
                 while began.elapsed() < SWEEP && !LOOK_NOW.swap(false, Ordering::Relaxed) {
-                    if registry.is_stopping() || registry.is_closed() {
+                    if registry.is_closing() || registry.is_closed() {
                         return;
                     }
                     std::thread::sleep(Duration::from_secs(1));
                 }
-                if registry.is_stopping() || registry.is_closed() {
+                if registry.is_closing() || registry.is_closed() {
                     return;
                 }
             }

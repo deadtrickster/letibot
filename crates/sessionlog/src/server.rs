@@ -1953,6 +1953,11 @@ pub fn serve_conn_rooted(
                 expected_seq,
                 reason,
             }) => {
+                // The launcher interrupts every turn before its SIGTERM: the stop starts here, or
+                // the children it stops read as stopped by a person.
+                if identity == crate::registry::STOP_FORCE_OPENER {
+                    registry.begin_stop();
+                }
                 let f = seat.hub.submit(
                     &seat.head_id,
                     client_request_id,

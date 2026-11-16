@@ -561,6 +561,122 @@ fn a_child_running_when_the_daemon_stopped_resumes_and_its_answer_reaches_the_pa
     two.stop(None);
 }
 
+/// The launcher interrupts every turn before its SIGTERM. That interrupt is the start of the
+/// stop: the parent's interrupt stops its children, and none of them may be recorded as
+/// stopped by a person, nor may a wake in the gap before the signal open a turn.
+#[test]
+fn launcher_interrupt_before_close_keeps_child_resumable() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
+    let dir = Scratch::new("restart-stop-force");
+    let parts = parts_for(&config(
+        &dir.repo(),
+        &dir.store(),
+        Endpoint::new("127.0.0.1", 1),
+    ));
+    let stub = Stub::new(plain(&parts.vocab, ANSWER), 1);
+    let cfg = config(&dir.repo(), &dir.store(), stub.endpoint.clone());
+    let mut one = a_daemon(&parts, &cfg);
+    let life = Lifeline::start(cfg.store.clone(), one.registry.clone());
+    let started = one.call(
+        "task_start",
+        serde_json::json!({"prompt": "fix the flaky test", "slug": "fix-flaky"}),
+    );
+    let handle = match &started.outcome {
+        letibot_transcript::ToolOutcome::Backgrounded { handle, .. } => handle.clone(),
+        other => panic!(
+            "task_start did not start a child: {other:?} {}",
+            started.payload
+        ),
+    };
+    wait_until("the child's first turn to reach the model", || {
+        stub.arrived() >= 1
+    });
+
+    // `letibot --restart`'s interrupt, the way `letibot-tui --interrupt-all` sends it.
+    let socket = letibot_sessionlog::testing::socket_path(&dir.root, "d.sock");
+    let server = letibot_sessionlog::server::serve_registry(one.registry.clone(), &socket)
+        .expect("the socket binds");
+    let (mut head, _hello, mut reader) = letibot_sessionlog::client::HeadClient::attach(
+        &socket,
+        PARENT,
+        0,
+        "remote",
+        letibot_sessionlog::registry::STOP_FORCE_OPENER,
+        letibot_sessionlog::protocol::Caps::default(),
+    )
+    .expect("the stop's head attaches");
+    let asked = head.interrupt(0, "letibot --restart").expect("sent");
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        while let Ok(f) = reader.read::<letibot_sessionlog::protocol::ServerFrame>() {
+            if let letibot_sessionlog::protocol::ServerFrame::Accepted {
+                client_request_id, ..
+            } = f
+                && client_request_id == asked
+            {
+                let _ = tx.send(());
+            }
+        }
+    });
+    rx.recv_timeout(PATIENCE)
+        .expect("the interrupt is accepted");
+
+    // What the parent's interrupt does to its children: stop them, then wait.
+    std::thread::spawn({
+        let stub_release = stub.gate.clone();
+        move || {
+            std::thread::sleep(Duration::from_millis(200));
+            let (lock, cv) = &*stub_release;
+            lock.lock().unwrap().1 = usize::MAX;
+            cv.notify_all();
+        }
+    });
+    let _ = one.parent.stop_children();
+    let child = one.registry.get(&handle).expect("the child's hub");
+    wait_until("the child's turn to end", || !child.turn_in_flight());
+    // Its settlement is written by the child's thread just after the turn ends.
+    std::thread::sleep(Duration::from_millis(500));
+    let store = Store::open(&dir.store()).unwrap();
+    let row = store.subagent_run(&handle).unwrap().unwrap();
+    assert_eq!(
+        row.state, "running",
+        "the launcher's interrupt is the daemon's stop, not a person's: {row:?}"
+    );
+    // A wake in the gap before the signal opens no turn.
+    let arrived = stub.arrived();
+    assert!(matches!(one.parent.wake(), Ok(None)));
+    assert_eq!(
+        stub.arrived(),
+        arrived,
+        "a wake after the stop began reached the model"
+    );
+    drop(head);
+    server.shutdown();
+    one.stop(Some(&life));
+
+    // The next daemon resumes the child.
+    let stub2 = Stub::new(plain(&parts.vocab, ANSWER), 0);
+    let cfg2 = config(&dir.repo(), &dir.store(), stub2.endpoint.clone());
+    let mut two = a_daemon(&parts, &cfg2);
+    let notice = two
+        .parent
+        .restore_after_restart()
+        .expect("the parent had a child to bring back");
+    assert!(
+        notice.contains(&format!(
+            "- subagent `fix-flaky · {handle}` (fix the flaky test): resumed."
+        )),
+        "{notice}"
+    );
+    wait_until("the resumed child to answer", || answered(&two, &handle));
+    two.stop(None);
+}
+
 /// A child that had answered and was mid-way through a LATER turn when the daemon stopped
 /// is resumed too - its row read `done` from the first answer, so the next daemon left it
 /// and every door then disagreed about what had become of it.
