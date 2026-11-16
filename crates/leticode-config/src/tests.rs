@@ -321,10 +321,8 @@ fn the_embeddings_table_is_carried_not_refused() {
     assert!(cfg.main_model.is_none(), "and sets no model at this level");
 }
 
-/// The `[bridge]` table is carried and not interpreted too: the permission relay's key is the
-/// MCP bridge's own, and this reader refuses nothing it has no opinion about - except that a
-/// `deny_unknown_fields` refusal here would make the daemon reject the very file that turns the
-/// bridge's feature on.
+/// The `[bridge]` table is carried and not interpreted: a refusal here would reject the very
+/// file that turns the bridge's feature on.
 #[test]
 fn the_bridge_table_is_carried_not_refused() {
     let dir = project_dir("bridge_table");
@@ -350,8 +348,7 @@ fn a_typo_inside_a_role_table_is_named_not_ignored() {
 }
 
 /// A window or a reply cap in a role's table is refused by name, and the sentence says
-/// why: a child's samplers are the operator's numbers but its context limit is not,
-/// because that is measured on the box that answers it.
+/// why: a child's context limit belongs to the box that answers it.
 #[test]
 fn a_window_or_a_reply_cap_in_a_role_table_is_refused_by_name() {
     let dir = project_dir("no_window");
@@ -497,12 +494,11 @@ fn a_role_the_file_does_not_know_is_carried_not_refused() {
     assert_eq!(cfg.role_model("some_future_role"), Some("a-model"));
 }
 
-/// The subagent runs on the operator's measured parameters and the file does not have
-/// to say so, because a fix that only works in projects that knew about it is no fix.
-/// The answer carries samplers and no window: a child's wall is measured where it runs.
+/// The subagent runs on the dense78 parameters with no file at all. The answer carries
+/// samplers and no window: a child's window is measured where it runs.
 #[test]
 fn the_subagent_runs_on_the_parameters_measured_on_dense78() {
-    // The absent-file case: the operator's numbers, stated in code.
+    // The absent-file case: the defaults, stated in code.
     let cfg = LeticodeConfig::default();
     let p = cfg.parameters_for(SUBAGENT_ROLE);
     assert_eq!(p.temperature, Some(0.7));
@@ -1318,8 +1314,7 @@ fn the_fallback_models_are_disclosed_as_fallback_lines() {
     assert!(LeticodeConfig::default().set_models().is_empty());
 }
 
-/// The operator's ruling, in the file: what a session does when its provider puts a time on a
-/// limit. `switch` when a fallback list exists, `wait` when nothing is set, and the file's own
+/// What a session does when its provider puts a time on a limit: `switch` when a fallback list exists, `wait` when nothing is set, and the file's own
 /// word over both.
 #[test]
 fn the_provider_table_says_what_a_limit_does_and_its_defaults_are_the_rulings() {
