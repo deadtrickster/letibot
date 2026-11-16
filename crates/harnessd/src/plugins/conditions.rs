@@ -96,7 +96,7 @@ impl PluginConditions for HostConditions {
 }
 
 /// The stack, as a condition asks it.
-struct StackOver {
+pub(crate) struct StackOver {
     host: Arc<PluginHost>,
     hub: Arc<Hub>,
     gate: Option<Arc<dyn Unasked>>,
@@ -187,10 +187,10 @@ impl StackOver {
         workspace: &std::path::Path,
         answered: Option<&letibot_plugins::Layer>,
     ) -> Option<Look> {
-        // A built-in, or a layer whose bytes a person pinned, runs freely - `exec` included: the
-        // pin stands in for the judgement a card would otherwise be. The layer that answered and
-        // not the one that declares the hook, and a look nobody attributed is adjudicated too.
-        if answered.is_some_and(|layer| layer.trusted) {
+        // A built-in runs freely: its bytes are the binary's own, so there is nobody whose pin could
+        // stand for the judgement. A placed layer's pin is not that statement - it was granted
+        // before this argv existed - so the call is judged as the `bash` it would have been.
+        if answered.is_some_and(|layer| layer.scope == letibot_plugins::Scope::BuiltIn) {
             return None;
         }
         let Some(gate) = self.gate.as_deref() else {
@@ -250,6 +250,31 @@ impl StackOver {
                  look did not run, and its monitor keeps asking until the layer changes it"
             ),
         );
+    }
+}
+
+/// A stack and its gate, from a test: the two facts an `exec` look asks, with no session to build.
+#[cfg(test)]
+impl StackOver {
+    pub(crate) fn for_test(
+        host: Arc<PluginHost>,
+        hub: Arc<Hub>,
+        gate: Option<Arc<dyn Unasked>>,
+    ) -> StackOver {
+        StackOver {
+            host,
+            hub,
+            gate,
+            answered: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    /// Which layer the answer came from, as [`PluginStack::ask`] records it.
+    pub(crate) fn answered_by(&self, hook: &str, id: &str) {
+        self.answered
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(hook.to_string(), id.to_string());
     }
 }
 

@@ -461,6 +461,63 @@ fn a_read_path_tree_is_readable_from_a_pane_look_and_nothing_else_is() {
     );
 }
 
+/// A pin is not a licence to run a program: an `exec` look from a layer whose bytes a person pinned
+/// still goes through the gate, which is the only thing that says whether the program ran. A pin
+/// was granted before this argv existed, and a condition can run a program every time it is asked.
+#[test]
+fn a_pinned_layers_exec_look_still_asks_the_gate() {
+    /// A gate that refuses every call, in its own words.
+    struct No;
+
+    impl crate::plugins::conditions::Unasked for No {
+        fn admit_unasked(
+            &self,
+            _call: &letibot_tools::runtime::GateCall<'_>,
+        ) -> Option<GateDecision> {
+            Some(GateDecision::Refuse {
+                outcome: letibot_transcript::ToolOutcome::Denied {
+                    req_id: "ask-1".into(),
+                },
+                tell: "no plugin runs a program in this session".into(),
+            })
+        }
+    }
+
+    let root = tempdir("exec-gate");
+    let table = Table::new();
+    let dir = table.layer_with_caps(
+        &root,
+        "watch",
+        &["exec:true"],
+        &[("condition_watch", says(json!({"look": {"exec": ["true"]}})))],
+    );
+    let host = Arc::new(pinned_table_host(&root, &table, &dir));
+    let layer = host.layer("watch").expect("the layer is admitted");
+    assert!(layer.trusted, "the fixture's layer is pinned");
+    let stack = crate::plugins::conditions::StackOver::for_test(
+        host,
+        Hub::new("s-plugins"),
+        Some(Arc::new(No)),
+    );
+    stack.answered_by("condition_watch", &layer.id);
+    let asked = letibot_plugin::condition::LookAsk::Exec(vec!["true".into()]);
+    match letibot_tools::exec::plugin_condition::PluginStack::look(
+        &stack,
+        "condition_watch",
+        &asked,
+    ) {
+        letibot_tools::exec::plugin_condition::Look::Done(result) => {
+            assert_ne!(result.exit, 0, "{result:?}");
+            assert!(
+                result.stderr.contains("no plugin runs a program"),
+                "{}",
+                result.stderr
+            );
+        }
+        _ => panic!("the pinned layer's `exec` look skipped the gate and ran"),
+    }
+}
+
 /// A pane's look is fenced twice over: a `read:<path>` tree is a pinned layer's reach, and the file
 /// is read through the session's view rather than off the daemon's own disk. The tree the layer
 /// arrives with is the checkout, so an unpinned layer's declared reach is not the operator's.
