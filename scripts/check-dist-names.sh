@@ -114,7 +114,7 @@ if [ -n "$missing_from_installer" ]; then
   exit 1
 fi
 
-# **The macOS list, held to the same rule.** install.sh's LIBRARIES_DARWIN is what a Mac
+# The macOS list, held to the same rule. install.sh's LIBRARIES_DARWIN is what a Mac
 # copies and make-dist.sh's ARCHIVE_LIBRARIES_DARWIN is what an `*-apple-darwin` archive
 # holds; the binaries are shared with the Linux lists above.
 inst_darwin=$(sed -n 's/^LIBRARIES_DARWIN="\(.*\)"$/\1/p' "$repo/install.sh" | head -1)
@@ -131,7 +131,7 @@ if [ "$(printf '%s\n' $inst_darwin | sort)" != "$(printf '%s\n' $pack_darwin | s
   exit 1
 fi
 
-# **A role link is made at install time, never shipped, and never a launcher's name.**
+# A role link is made at install time, never shipped, and never a launcher's name.
 launchers=$(sed -n 's/^LAUNCHERS="\(.*\)"$/\1/p' "$repo/install.sh" | head -1)
 roles=$(sed -n 's/^ROLE_LINKS="\(.*\)"$/\1/p' "$repo/install.sh" | head -1)
 for r in $roles; do
@@ -144,7 +144,7 @@ for r in $roles; do
   esac
 done
 
-# **No compiled binary under a launcher's name in a build's output.** An install loop that copies
+# No compiled binary under a launcher's name in a build's output. An install loop that copies
 # `target/release/*` would put it over the command a person types. A file older than
 # `letibot-multi` is a leftover from before the rename and is named, not failed.
 if [ -n "$built_dir" ]; then

@@ -1,18 +1,11 @@
 #!/usr/bin/env bash
 # One command to start chatting: brings up harnessd if it is not already up,
-# then attaches the TUI head to it.
+# then attaches the TUI head to it. The daemon owns the session, the ledger and the model
+# connection; a head can close mid-turn and reattach, and a second head can attach at once.
 #
-# WHY IT IS TWO PROCESSES AND NOT ONE. The daemon owns the session, the ledger and
-# the model connection; the TUI is one head among several that may attach to it.
-# That separation is the point of the design, not an accident of packaging -- you
-# can close this window mid-turn and reattach, and the turn keeps running, because
-# idle means quiet rather than unwatched. A second head can attach at the same time
-# and see the same stream from a snapshot.
-#
-#   letibot                     attach — or start this folder's daemon on a NEW session
+#   letibot                     attach, or start this folder's daemon on a NEW session
 #                               (never a resume: that is --continue's, and only its)
-#   letibot --continue          reopen the newest session in THIS workspace — the only verb
-#                               that reopens anything without being asked which. Takes no argument;
+#   letibot --continue          reopen the newest session in THIS workspace. Takes no argument;
 #                               a session id after it is read as --session ID (and said);
 #                               a session NAME (its /rename title) after it opens that one,
 #                               here first, else in any folder (asked before moving there).
@@ -40,72 +33,27 @@
 #   letibot --stop              stop the daemon
 #   letibot --restart           stop it keeping its host background jobs, start a new one on
 #                               the newest session, and let that one take the jobs back
-#   letibot --room              the BOX'S ROOM: start its coordinator if none is serving, and say
-#                               what it is (`--room --stop` stops it). One per box, not one per
-#                               folder: a run makes sure one exists before it opens a session
+#   letibot --room              the box's room: start its coordinator if none is serving, and say
+#                               what it is (`--room --stop` stops it). One per box, not per folder
 #   letibot --status            is it up, and on what
 #
-# HOW A SESSION IS REOPENED, IN BOTH DIRECTIONS. Every one of the session commands
-# has to work with a daemon already running and with none, and the two paths are
-# genuinely different:
-#
-#   no daemon    start harnessd with `--session ID`. It finds the transcript in the
-#                store, replays the stored TOKENS into a new ledger, verifies the
-#                hash chain twice, and refuses by name if it does not reproduce.
-#   daemon up    ask it over the socket (`letibot-tui --resume ID`), which is the
-#                same two frames the ctrl-s picker sends. Restarting the daemon
-#                instead would take down every other session on the box to open one.
+# Reopening works with a daemon up or not:
+#   no daemon    start harnessd with `--session ID`; it replays the stored tokens into a new
+#                ledger, verifies the hash chain, and refuses by name if it does not reproduce.
+#   daemon up    ask it over the socket (`letibot-tui --resume ID`), as the ctrl-s picker does.
+#                Restarting the daemon would take down every other session.
 #
 # Each folder's daemon logs to ~/logs/harnessd-<folder hash>.log (~/logs/harnessd.log names
 # which file a start went to); the socket lives in $XDG_RUNTIME_DIR.
 
 set -euo pipefail
 
-# **THE OPEN-FILE LIMIT IS RAISED HERE, ONCE, BEFORE ANYTHING IS STARTED — and every process
-# this launcher starts inherits it: the daemon, a one-shot, the head, and every `bash`, `git`
-# and `cargo` the daemon runs in turn.**
-#
-# Darwin's soft limit is 256 (`ulimit -Sn` in a shell; `launchctl limit maxfiles` says
-# `256 unlimited`), and this daemon is not a 256-descriptor process. MEASURED 2026-10-30 on
-# the operator's Mac, on the daemon serving the worktree this was written in (pid 99166, up
-# one hour): **253 descriptors, the highest numbered 254** — three to spare — and a reviewer
-# could not start:
-#
-#     git checkout --quiet --detach 0200fe9a…: Too many open files (os error 24)
-#
-# because the `git` the daemon forked could not open one more file. The census of those 253:
-# 210 were `sessions.db` + `sessions.db-wal` + `-shm` (105 + 104 + 1 — sqlite keeps three
-# files per connection and a harness opens two connections), 22 the token ledger's temp
-# files, the rest logs, `metrics.db`, four unix sockets and four pipes.
-#
-# **Why here and not in harnessd.** A soft limit can only be raised up to the HARD limit the
-# process was born with, and a process is born with its parent's — so a daemon cannot give
-# itself room it was not started with. The launcher is the thing that decides what the daemon
-# is, so the raise belongs to it, and rlimits survive `fork` and `exec`: every child inherits
-# it, including the `git checkout` and the `cargo` that were hitting the wall.
-#
-# **A daemon that is ALREADY RUNNING keeps the limit it was started with**, and this cannot
-# change that: attaching to it is a socket conversation, and no process may move another's
-# rlimits. So a folder's daemon picks this up when it is next started — `letibot --stop &&
-# letibot` — and a daemon somebody else started (a systemd unit, a test, an older `~/bin`
-# copy of this file) keeps whatever it was given. That is the one gap, and it is not silent:
-# a daemon still on 256 says `Too many open files` in the same place it always did.
-#
-# **`ulimit -Sn`, never `ulimit -n`.** Without `-S` the builtin moves the soft AND the HARD
-# limit — MEASURED here, `ulimit -n 8192` leaves `soft=8192 hard=8192` where the box gave
-# `hard=unlimited`, so a daemon that later needed more could never get it, and neither could
-# a child of it. The same trap is in `a-session-on-its-own-thread-is-a-court.md` (trap 4),
-# where a fixture's `ulimit -n 256` dropped the hard limit and made its own check fail.
-#
-# **The request is a number, not "as high as it goes".** `unlimited` here means the kernel's
-# `kern.maxfilesperproc` (MEASURED: 245760), so a leak would hold a quarter of a million
-# descriptors before anything said so. 8192 is thirty-two times the ceiling that failed
-# tonight, and a process leaking one descriptor per unit of work still trips on it — later
-# than 256, but it trips, and this is the number to grep for when it does.
-#
-# A hard limit BELOW the request is a fact about the box, not a failure: the launcher takes
-# what the box will give and says so, once, naming both numbers. A box that cannot raise it
-# at all keeps working exactly as it did.
+# The open-file limit is raised here, once, and every process the launcher starts inherits
+# it. Darwin's soft limit is 256, which the daemon exceeds (sqlite keeps three files per
+# connection). A process cannot raise its soft limit past the hard limit it was born with, so
+# this belongs to the parent. A daemon already running keeps its limit until restarted.
+# `ulimit -Sn`, never `ulimit -n`: without -S the hard limit drops too. 8192, not unlimited,
+# so a descriptor leak still trips. A hard limit below the request is taken and said once.
 OPEN_FILES_WANTED=8192
 raise_open_files() { # raise_open_files ASKED
   local asked="$1" want hard soft got
@@ -120,7 +68,7 @@ raise_open_files() { # raise_open_files ASKED
   soft="$(ulimit -Sn 2>/dev/null || true)"
   case "$soft" in
     '') : ;;
-    # Already unlimited, or already above the request: **never lower one**, and say nothing —
+    # Already unlimited, or already above the request: never lower one, and say nothing —
     # a person who started this from a shell with `ulimit -n 20000` meant it.
     *[!0-9]*) return 0 ;;
     *) if [ "$soft" -ge "$asked" ]; then return 0; fi ;;
@@ -135,32 +83,10 @@ raise_open_files() { # raise_open_files ASKED
 }
 raise_open_files "$OPEN_FILES_WANTED"
 
-# Where the binaries are: **beside this launcher, unless told otherwise.**
-#
-# The default used to be an absolute path into the operator's build tree
-# (`/home/dead/Projects/letibot/letibot/target/release`), which resolves on exactly
-# one machine — and that is why nothing caught it. On that box it works, the
-# `~/bin/letibot` symlink hides it, and every check passes. Installed anywhere else
-# the launcher starts, looks for `letibot-tui` in a directory that does not exist,
-# and reports the head missing while it sits RIGHT BESIDE THE LAUNCHER.
-#
-# Same shape as leticl's `native/hl`: a default that happens to be right in one
-# place, whose failure exists only on boxes nobody tests on. Its workflow comment
-# names the general case better than this one can — *"a comment about a dependency
-# is a claim with a lifetime"* — and a default is a claim that never expires.
-#
-# It resolves its OWN location, THROUGH SYMLINKS, because the operator reaches it as
-# `~/bin/letibot` -> `scripts/letibot` and `dirname "$0"` alone would answer `~/bin`.
-# Then it takes the first candidate that actually holds the binaries, so both layouts
-# work with no special case:
-#
-#   * beside the launcher  — the INSTALLED layout, which is what install.sh makes;
-#   * ../../target/release — the SOURCE-TREE layout, which is where this file lives
-#     before it is installed, and where the operator runs it from today.
-#
-# `LETIBOT_BIN` is authoritative when set and is never second-guessed: leticl's
-# install is built on it, and a wrong value should be NAMED rather than routed
-# around.
+# Where the binaries are: beside this launcher (the installed layout), else
+# ../../target/release (the source-tree layout). The launcher's own location is resolved
+# through symlinks, since `~/bin/letibot` links to `scripts/letibot`.
+# `LETIBOT_BIN` is authoritative when set: a wrong value is named, not routed around.
 if [ -n "${LETIBOT_BIN:-}" ]; then
   BIN="$LETIBOT_BIN"
 else
@@ -176,51 +102,36 @@ else
   # Nothing found: keep the FIRST candidate, so the message below names the place a
   # reader would expect to look — beside the launcher.
   [ -n "$BIN" ] || BIN="$_dir"
-  # **Resolved, so every message that names the binary names a path a reader can
-  # paste.** The source-tree candidate is `$_dir/../target/release`, and it printed
-  # through as `…/scripts/../target/release/harnessd` — ugly, and a path that only
-  # works from the directory it was written in. One `cd`, once, at startup: this is
-  # the value `--status`, the staleness line and every refusal quote back.
+  # Resolved once, so every message names a path a reader can paste.
   BIN="$(cd -- "$BIN" 2>/dev/null && pwd -P || printf '%s' "$BIN")"
 fi
-# THE HEAD IS A SEAT'S CHOICE. Everything above the head — finding or starting the
-# folder's daemon, the seat's defaults, --continue, --new — is this launcher's, and
-# another head (leticl, the Common Lisp one) wants all of it and only draws
-# differently. So the five places that exec the TUI go through $LETIBOT_HEAD, and
-# the utility calls (--probe, --list-sessions, --interrupt-all) stay on letibot-tui:
-# they ask the daemon questions, they do not draw. The head is handed
-# `--socket S [--resume ID | --new-session TITLE]`, which is the
-# contract a substitute has to speak.
+# The head is a seat's choice: everything up to the head is the launcher's, and another
+# head (leticl) only draws differently. The places that exec the TUI go through
+# $LETIBOT_HEAD; utility calls (--probe, --list-sessions, --interrupt-all) stay on
+# letibot-tui. A substitute head must speak `--socket S [--resume ID | --new-session TITLE]`.
 HEAD="${LETIBOT_HEAD:-$BIN/letibot-tui}"
 
-# ONE DAEMON PER FOLDER, tmux-style. The workspace is the git toplevel when you
-# are inside a checkout (so `letibot` in a subdirectory joins the daemon of the
-# repo, not a second one), else the directory you are standing in. Its daemon
-# lives at a socket named by the workspace's path, and a small record beside the
-# socket says what it is - pid, role, model, when it started - so `--status`,
-# `--stop` and `--ls` act on THIS folder's daemon by pid, never on every
-# harnessd on the box.
+# One daemon per folder, tmux-style. The workspace is the git toplevel inside a checkout,
+# else the current directory. Its daemon's socket is named by the workspace path, and a record
+# beside it (pid, role, model, start) lets `--status`, `--stop` and `--ls` act on this
+# folder's daemon by pid, never on every harnessd on the box.
 #
 #   letibot                     connect to this folder's daemon, or start one
 #   letibot --attach [DIR]      connect only; refuse to start one
 #   letibot --ls                every folder's daemon and the live sessions inside it
 #   letibot --stop [--all]      this folder's daemon (or all of them)
 WORKSPACE="${LETIBOT_WORKSPACE:-$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null || echo "$PWD")}"
-# `cd` into it to normalise, but a FAILED cd must not leave this empty: an empty
-# workspace is a socket key everything shares and a `--scope` that matches every
-# session on the box, which is how `--continue` reopened another project's
-# conversation. The directory can genuinely be gone -- a pruned worktree does it.
+# A failed cd must not leave this empty: an empty workspace is a socket key everything
+# shares and a `--scope` that matches every session. A pruned worktree can be gone.
 if ! WORKSPACE="$(cd "$WORKSPACE" 2>/dev/null && pwd -P)" || [ -z "$WORKSPACE" ]; then
   echo "letibot: cannot resolve a workspace from $PWD -- the directory may have been" >&2
   echo "         removed (a pruned git worktree does this). cd somewhere that exists," >&2
   echo "         or set LETIBOT_WORKSPACE." >&2
   exit 1
 fi
-# **The host's facts, asked the way each kernel answers them.** Linux has `/proc`, `ss`,
-# `setsid(1)` and GNU `stat`/`date`; macOS has none of those and answers the same
-# questions through `ps`, `lsof`, BSD `stat`/`date` and perl's `POSIX::setsid`. Every
-# caller below goes through these, so the two spellings live in one place. On Linux each
-# helper is the exact command the script used before.
+# Host facts, asked the way each kernel answers: Linux has `/proc`, `ss`, `setsid(1)` and GNU
+# `stat`/`date`; macOS uses `ps`, `lsof`, BSD `stat`/`date` and perl's `POSIX::setsid`.
+# Every caller goes through these helpers.
 HOST_OS="$(uname -s)"
 # The first twelve hex of the workspace's SHA-256 — `launcher.rs`'s key, on either box.
 sha12() {
@@ -267,23 +178,10 @@ pid_started() { # pid_started PID
     [ -n "$l" ] && LC_ALL=C date -j -f '%a %b %e %T %Y' "$l" +%s 2>/dev/null
     return 0
   fi
-  # **The PROCESS's start time, and not the mtime of its /proc directory.** This read
-  # `stat -c %Y "/proc/$1"` until 2026-10-09, and a procfs DIRECTORY's mtime is not a
-  # process's start: it moves whenever an entry appears or disappears under it, which a
-  # long-lived daemon does all day. MEASURED that evening on the operator's box — pid
-  # 2076966, up since 09-21 07:16 by every honest reader (`ps -o lstart=`, and `btime`
-  # from /proc/stat plus the process's own `starttime`), was read as **10-08 21:20**:
-  # seventeen days late. The conclusion it fed (`it is not running what is on disk`)
-  # happened to be right that time, so nothing looked broken — but the evidence printed
-  # beside it was false, and the same error runs the other way: a stale daemon that has
-  # not touched its directory since it started reads as freshly started, `bt` is not
-  # greater than `dt`, and `daemon_stale_line` says NOTHING at all about a daemon that
-  # is not running what is on disk.
-  #
-  # The kernel's answer is field 22 of `/proc/<pid>/stat` — clock ticks since boot —
-  # added to `btime` from `/proc/stat`. **Field 2 is the program name in parentheses and
-  # may contain spaces and parentheses**, so the fields are counted from after the LAST
-  # `)` rather than by splitting the whole line: after `)^ `, field 22 is field 20.
+  # The process's start time, not its /proc directory's mtime, which moves whenever an entry
+  # under it changes. Field 22 of `/proc/<pid>/stat` (ticks since boot) plus `btime`. Field 2
+  # is the name in parentheses and may contain spaces and `)`, so fields are counted after the
+  # last `)`: there, field 22 is field 20.
   local bt rest st hz
   bt="$(awk '/^btime/{print $2; exit}' /proc/stat 2>/dev/null)"
   case "$bt" in '' | *[!0-9]*) return 0 ;; esac
@@ -307,27 +205,13 @@ epoch_fmt() { # epoch_fmt SECONDS FORMAT
 # Run a command as the leader of a new session, detached from this terminal. macOS has the
 # system call and not the command, and perl's POSIX module is on every Mac.
 #
-# **And on Linux, in a systemd scope of its own** (TODO.md R64). `setsid` makes a new
-# SESSION, not a new cgroup: a daemon started from a tmux window stayed in that window's
-# `tmux-spawn-*.scope`, beside the shell and the head, and so did every process its tools
-# started. `DefaultOOMPolicy=stop` then turned one runaway tool process into the whole
-# window going — MEASURED 2026-10-10/11, four OOM kills in seven hours, each logged as
-# `tmux-spawn-….scope: Failed with result 'oom-kill'`, each taking a window, a head and a
-# daemon with it. In its own scope the daemon is out of the window's blast radius.
-#
-# `Delegate=yes` is what lets the daemon carve that scope into its own leaf and a tree of
-# memory-capped jobs (R65) — cgroup v2 will not put a cap on a child of a cgroup that
-# still holds a process, and without delegation the daemon may not write the controls.
-# `OOMPolicy=continue`: a capped job killed at its cap must not stop the daemon's scope.
+# On Linux also in a systemd scope of its own: `setsid` makes a session, not a cgroup, and a
+# daemon left in a tmux window's scope is OOM-killed with the window.
+# `Delegate=yes` lets the daemon make its own leaf and memory-capped job tree.
+# `OOMPolicy=continue`: a job killed at its cap must not stop the daemon's scope.
 # `--expand-environment=no`: systemd-run otherwise rewrites `$X` in the arguments.
-#
-# No user manager (a bare ssh login without lingering, a container): the scope cannot be
-# made, `scope_ok` says so once, and the daemon starts the old way — it then reports its
-# tool calls as UNCAPPED itself, so the fallback is never silent.
-#
-# **AND WHAT IT SAYS IS THE MANAGER'S OWN ANSWER** (TODO.md R192): "no systemd user manager
-# here" was false on the box that reported it - the manager was there, at its unit limit, and
-# refusing. The probe is bounded too, so a manager pegged at 100% CPU costs seconds, not minutes.
+# With no user manager the scope cannot be made, `scope_ok` says so with the manager's own
+# answer, and the daemon reports its tool calls as uncapped. The probe is bounded.
 SCOPE_PROBE_SECONDS=2
 SCOPE_WHY=""
 # A command that cannot outlive `SCOPE_PROBE_SECONDS`. `timeout` is coreutils and is absent on a
@@ -339,10 +223,9 @@ probe_bounded() {
   fi
   "$@"
 }
-# **A probe past its bound is left running, not killed** (TODO.md R274). The session starts
-# without waiting; the probe's answer lands in `SCOPE_LATE` (`rc<TAB>seconds<TAB>last line`),
-# and the daemon, handed that path, tells its sessions what systemd said. One probe per launcher
-# run: the room and the daemon are detached in subshells, and the directory is the lock.
+# A probe past its bound is left running, not killed. The session starts without waiting;
+# the answer lands in `SCOPE_LATE` (`rc<TAB>seconds<TAB>last line`) and the daemon relays it.
+# One probe per launcher run; the directory is the lock.
 SCOPE_LATE=""
 scope_probe_start() {
   local dir="$RUNDIR/scope-probe-$$"
@@ -407,15 +290,10 @@ scope_ok() {
 }
 # Sets SCOPE_RUN to the words that start a command in such a scope, or to nothing.
 #
-# **Every daemon goes under `letibot.slice`** (`docs/lifecycle.md` d.7): one slice is where
-# letibot as a whole can be throttled by a `MemoryHigh` instead of starving another project's
-# work, and it is also what makes "the units named letibot-*" a thing the sweep can read.
-#
-# A caller that knows the command is a PACKAGE daemon exports `LETIBOT_SCOPE_RUNTIME_MAX` (a
-# systemd timespan, `25h`) and the scope carries that wall-clock bound. It is asked for rather
-# than assumed because a `--scope` is not a service: the manager refuses a property its unit
-# type does not have, and a bound nobody asked for must not be the reason a daemon never starts.
-# What is left of the hard TTL when this cannot be had is the reaper's own (`owner.hard_ttl_ms`).
+# Every daemon goes under `letibot.slice` (`docs/lifecycle.md` d.7), so letibot as a whole can
+# be throttled and the sweep can find its units. A package daemon's caller exports
+# `LETIBOT_SCOPE_RUNTIME_MAX` (a systemd timespan) for a wall-clock bound. It is opt-in: the
+# manager refuses a property a unit type lacks. Otherwise the reaper's `owner.hard_ttl_ms` applies.
 SCOPE_SLICE=letibot.slice
 SCOPE_RUNTIME_WHY=""
 scope_accepts_runtime_max() {
@@ -512,30 +390,14 @@ if [ -z "${LETIBOT_STORE:-}" ] && [ -f "$STORE/sessions.db" ] && [ ! -e "$STORE/
   STORE_FILE="$STORE"
 fi
 
-# **Each folder's daemon logs to its own file** (TODO R92.3), keyed like its socket. One file
-# shared by every folder's daemon meant a boot failure's reason sat among other daemons' lines,
-# and the "did not come up" tail below could show another folder's. The shared file
-# (`SHARED_LOG`) still gets one line per start naming where that daemon logs.
+# Each folder's daemon logs to its own file, keyed like its socket, so a boot failure's tail
+# is that daemon's. `SHARED_LOG` gets one line per start naming where that daemon logs.
 SHARED_LOG="$HOME/logs/harnessd.log"
 LOG="${LETIBOT_LOG:-$HOME/logs/harnessd-$KEY.log}"
 
-# THE DAEMON NEEDS NO GPU AND WAS TAKING 1.1 GB OF IT.
-#
-# harnessd links libllama for one reason: the TOKENIZER, to count tokens and
-# build prompts from `--vocab <gguf>`. That shared object pulls in
-# libggml-cuda / libcudart / libcublas, and ggml registers every available
-# backend when the library LOADS -- so a CUDA context is opened on each card at
-# process start, before anything asks for one.
-#
-# Measured on this box: a fresh daemon holds 1100 MiB across the two cards and
-# runs not one op on them. Inference is the model server's, over HTTP. With two
-# daemons up that was 2.2 GB of a card that had 1.9 GB free.
-#
-#   GPUs visible              1100 MiB
-#   CUDA_VISIBLE_DEVICES=""      0 MiB, daemon alive and serving
-#
-# Set for harnessd ONLY, not exported: a later child of this script that does
-# want a GPU must not inherit a blindfold from a line about the tokenizer.
+# The daemon needs no GPU: it links libllama only for the tokenizer, but ggml opens a CUDA
+# context on every card at load (about 1.1 GB). Inference is the model server's.
+# Set for harnessd only, not exported, so a later child that wants a GPU still gets one.
 NOGPU=(env CUDA_VISIBLE_DEVICES=)
 
 die() {
@@ -543,26 +405,15 @@ die() {
   exit 1
 }
 
-# **THE COMMAND THE PERSON ACTUALLY TYPED**, for every sentence that hands one back.
-#
-# `leticode` execs this script, so `$0` here is `letibot` on that path — and a fix line
-# built from it told the operator to run a different command: not their seat
-# (`LETIBOT_ROLE=leticode`, which the wrapper exports) and not their model flag, so
-# `leticode --glm` answered *"Fix:  letibot --stop && letibot"*, which starts a
-# **coder** daemon on the **default** model. MEASURED 2026-10-07, and it is the whole
-# of why that pair of words could not be reached. The wrapper names itself in
-# `LETIBOT_INVOKED_AS`; a bare `letibot` names nothing and `$0` is already right.
+# The command the person typed, for every sentence that hands one back. `leticode` execs
+# this script, so `$0` is `letibot`; the wrapper names itself in `LETIBOT_INVOKED_AS`.
 ME="${LETIBOT_INVOKED_AS:-$(basename "$0")}"
 
-# **`--glm`/`--dense` are CONSUMED by the flag loop and never reach
-# `EXTRA_ARGS`.** No other check in this script can see that a model was asked for —
-# which is how a warning about swallowed flags came to say nothing about the one flag
-# that picks the model, and how `leticode --glm` against a daemon bound to another
-# model attached in SILENCE whenever the port happened to serve what that daemon was
-# bound to. Recorded the moment it is parsed; empty means the model was left alone.
+# `--glm`/`--dense` are consumed by the flag loop and never reach `EXTRA_ARGS`, so the
+# model choice is recorded here for the attach checks. Empty means the model was left alone.
 MODEL_FLAG=""
 
-# **What would apply this run's model choice**, in the person's own words: their verb,
+# What would apply this run's model choice, in the person's own words: their verb,
 # their flag. One function because three sentences hand a command back and three
 # copies would be three answers to *what do I run next*.
 restart_advice() {
@@ -594,7 +445,7 @@ case "${1:-}" in
     ;;
 esac
 
-# **`<verb> --help` answers for that verb.** One wall of text for every question is what this
+# `<verb> --help` answers for that verb. One wall of text for every question is what this
 # was: a person asking about `--delete` read twenty commands to find the one they typed.
 verb_help() { # verb_help VERB
   case "$1" in
@@ -882,36 +733,22 @@ EOF
   esac
 }
 
-# HELP BEFORE ANYTHING. No network, no daemon probe, no vocabulary: a question
-# about the command must not cost a model turn to answer.
-#
-# Found 2026-09-13, and the mechanism is worth writing down: `--help` matched no
-# case below, nothing shifted it, and by the one-shot branch `$#` was still 1 --
-# so it ran `harnessd --prompt "--help"`. The banner printed, the vocabulary
-# loaded (the multi-second hang), and GLM answered the prompt "--help" with
-# usage examples. The operator's report -- "prints something then hangs then
-# offers usage examples" -- was the model's answer to a flag it was never meant
-# to see. Any typo'd flag (`--halp`, `--vesion`) rode the same fall-through and
-# became a billed turn, so unknown `--` words are now refused rather than
-# prompted; a one-shot prompt whose first word begins with `--` is rare enough
-# that refusing it with a name of the mistake is the honest trade.
+# Help before anything: no network, no daemon probe, no vocabulary. Unknown `--` words are
+# refused rather than sent as a one-shot prompt, which would be a billed model turn.
 
-# **THE FLAGS THIS PARSER READS, IN ONE LIST, AND THE HELP IS GENERATED FROM IT.**
+# The flags this parser reads, in one list; the help is generated from it.
 #
-# One row per flag: `NAME[,NAME…]|TIER|VALUE|NOTE`.
+# One row per flag: `NAME[,NAME...]|TIER|VALUE|NOTE`.
 #   NAME   every spelling, space separated; the first is the one the help prints
-#   TIER   daily   `letibot --help` — the seven a person types, and nothing else
+#   TIER   daily   `letibot --help` - the seven a person types, and nothing else
 #          more    `letibot --help all`
 #          config  the setting lives in a file; using the flag prints the key to set
 #   VALUE  the placeholder for the word it consumes, or empty when it takes none (which is
 #          also what keeps a value like `--mem` from being read as a flag of ours)
 #   NOTE   one line: what it is for, or for `config`, the key and the file
 #
-# The guard below reads this list and nothing else, and `tests/launcher.sh` walks both the
-# daily help and `--help all` and asks this parser for every flag it finds: the guard used to
-# hold a second, hand-kept copy, and five flags that were documented and had arms
-# (`--web-fetch`, `--no-web-fetch`, `--effort`, `--vm-copy`, `--listen`) died "unknown flag"
-# before their arm could run. A new flag is added HERE first.
+# The guard below reads only this list, and `tests/launcher.sh` checks every flag both help
+# pages print. A new flag is added here first.
 flags_table() {
   cat <<'EOF'
 --help -h help         |daily |       |this page; `--help all` for every other flag
@@ -974,9 +811,8 @@ flags_table() {
 EOF
 }
 
-# **WHAT THIS RELEASE TOOK AWAY, and what replaced it.** A removed flag is refused BY NAME
-# with its replacement, rather than read as a prompt: `--daemons` used to fall through to the
-# one-shot and hand the model a sentence nobody asked it.
+# What this release took away, and what replaced it. A removed flag is refused by name
+# with its replacement, rather than read as a one-shot prompt.
 removed_flags_table() {
   cat <<'EOF'
 --daemons  |`--ls` - the same listing, numbered, and it is the one `--stop N` takes
@@ -1125,11 +961,10 @@ saying `use --ls`, so a script that still passes one learns where it went.
 EOF
 }
 
-# **`--help` AFTER A VERB IS THAT VERB'S** (see `verb_help`): the wall above answers *what can I
-# run*, and a person who typed `--delete --help` asked a narrower question. Only a first word that
-# IS a verb is read this way, so `letibot 'x' --help` still runs the prompt.
-# The three pages, and one place that picks between them: `--help` is the daily set,
-# `--help all` is every flag, `--help removed` is what this release took away.
+# `--help` after a verb is that verb's (`verb_help`). Only a first word that is a verb is
+# read this way, so `letibot 'x' --help` still runs the prompt.
+# The three pages: `--help` is the daily set, `--help all` every flag, `--help removed` what
+# this release took away.
 show_help() { # show_help [all|removed]
   case "${1:-}" in
     all) usage_all ;;
@@ -1181,8 +1016,7 @@ for a in "$@"; do
     --*) ;;
     *) break ;; # the prompt starts here; nothing after it is a flag
   esac
-  # **A REMOVED FLAG IS REFUSED BY NAME, WITH ITS REPLACEMENT.** Falling through to the
-  # one-shot is how `letibot --halp` used to become a billed turn.
+  # A removed flag is refused by name, with its replacement, not sent as a prompt.
   why="$(removed_flag "$a")"
   if [ -n "$why" ]; then
     die "$a is not a flag any more: $why
@@ -1190,7 +1024,7 @@ for a in "$@"; do
   fi
   known_flag "$a" || die "unknown flag: $a
          ('$ME --help' lists the flags; a bare prompt needs no flag)"
-  # **A SETTING WITH A CONFIG KEY SAYS WHICH KEY.** One line, once per use, on stderr: the
+  # A SETTING WITH A CONFIG KEY SAYS WHICH KEY. One line, once per use, on stderr: the
   # flag still works for this release, and the file is where it belongs from the next one.
   if [ "$(flag_field "$a" 2)" = config ]; then
     printf '%s: %s\n' "$ME" "$(flag_field "$a" 4)" >&2
@@ -1202,122 +1036,62 @@ done
 
 # Qwen is the default because it is what this box serves. Both Qwen models ship a
 # byte-identical template, so this one dialect covers Flash-Next and the 27B dense.
-# WRITES BY DEFAULT. `letibot` with no flags can edit files, and every write is
-# gated -- the head asks you and you answer in the TUI. Read-only is `--read-only`.
-#
-# It was the other way round until 2026-09-10 and that was wrong twice over: the
-# operator hit "no edit tools" with no way to change it in place, which is a
-# refusal that cannot be lifted from where it is met -- the exact failure
-# docs/boundary-and-adjudication.md 4b makes a requirement -- and it made the
-# price of writing a file a flag nobody should have to know.
-#
-# **And the seat is `leticode`** — opencode's tool union, run on this host, with bash —
-# because that is the one the operator runs, on Linux and on a Mac alike (2026-10-07:
-# *"in fact even on linux i use only leticode"*). It was `coder`, the namespace-confined
-# seat, which on a Mac cannot start at all (no bubblewrap there) and on Linux was the
-# default nobody chose. `coder` is still one variable away: LETIBOT_ROLE=coder.
+# Writes by default: every write is gated in the TUI. Read-only is `--read-only`. A refusal
+# must be liftable where it is met (docs/boundary-and-adjudication.md 4b).
+# The seat is `leticode` (opencode's tool union, on this host, with bash): `coder` is
+# namespace-confined and cannot start on a Mac. LETIBOT_ROLE=coder still selects it.
 ROLE="${LETIBOT_ROLE:-leticode}"
 # `head` posts the decision to the attached TUI and waits for your answer.
 # `console` reads the daemon's own stdin, which a detached daemon does not have,
 # so every write would refuse with "nobody answered".
 ADJ="${LETIBOT_ADJUDICATOR:-head}"
 
-# APPROVAL POLICY, which is not the role.
+# Approval policy, which is not the role. The mode is a daemon property, fixed at start.
 #
-# `always-ask` is the daemon default and its grant scope is `Once`: an answer settles
-# that one call. So choosing "allow this class for the rest of the session" at that
-# point recorded nothing, and the next write asked again -- reported twice as
-# "allow_session doesn't stick" before the cause was found.
-#
-# `writes-allowed` is the point whose grant scope is `Session`. It is the one to start
-# in if you want to approve edits once and be left alone.
-#
-#   --mode writes-allowed       approve a class once, for the session (the default)
-#   LETIBOT_MODE=writes-allowed letibot        the same, by env
-#
-# The mode is a property of the DAEMON, decided when it starts -- like the model and
-# the role. A daemon already running cannot be re-pointed; stop it first.
-# DEFAULT: writes are allowed for the session.
-#
-# `always-ask` is harnessd's own default and it is right for a tree nobody has seen
-# before -- `letibot_tools::mode::UNSEEN_PROJECT` is literally that constant. It is
-# wrong as the way you work every day: its grant scope is `Once`, so every edit asks,
-# and the answer settles that call and nothing else.
-#
-# This is the operator's standing request, asked for three times: "i want to allow
-# edits for the entire session". `writes-allowed` is the named point whose grant scope
-# is `Session`, so approving a class approves it until the daemon stops.
-#
-# It is NOT a silent widening. The daemon prints the point and its four dials at
-# startup -- `write admit, exec ask, network ask, grants session` -- so what changed is
-# on the screen, and commands, the network and the always-ask list (privilege
-# escalation, deleting outside the project, a host never seen before) still ask at
-# every point. Nothing at any mode reaches an inexpressible action.
+# `always-ask` (harnessd's default, `letibot_tools::mode::UNSEEN_PROJECT`) has grant scope
+# `Once`, so "allow for the session" records nothing and every edit asks. `writes-allowed`
+# has grant scope `Session`: approving a class approves it until the daemon stops. It is the
+# launcher's default, and not a silent widening: the daemon prints the point and its dials at
+# startup, and commands, network and the always-ask list still ask.
 #
 #   letibot            writes allowed, approve a class once per session
-#   letibot --ask      the old behaviour: every write asks, every time
+#   letibot --ask      every write asks, every time
 #   letibot --mode N   read-only | always-ask | writes-allowed | automode |
 #                      automode-edits | allow-all
+#   LETIBOT_MODE=N     the same, by env
 MODE="${LETIBOT_MODE:-writes-allowed}"
 
-# THE GUARD MODEL, for the two points that consult one.
-#
-# `supervised` asks the model AND you, on every gated call; `automode` asks only the
-# model. Both need an endpoint and both refuse by name without one -- the daemon does
-# that, and this checks it here too so the refusal arrives before a daemon starts and
-# a session opens, rather than at the first write.
-# The guard's address is CONFIG, not an argument: `[gatekeeper] endpoint` in
-# ~/.config/letibot/providers.toml, read by the daemon itself. These two are the
-# one-off override and are empty in the ordinary case, which is every case.
+# The guard model, for the two points that consult one. `supervised` asks the model and you
+# on every gated call; `automode` asks only the model. Both refuse without an endpoint; the
+# check is repeated here so the refusal comes before a daemon starts.
+# The guard's address is config (`[gatekeeper] endpoint` in providers.toml, read by the
+# daemon). These two are a one-off override and normally empty.
 SUPERVISE="${LETIBOT_SUPERVISE:-}"
 ORACLE="${LETIBOT_ORACLE:-}"
 ORACLE_BUDGET="${LETIBOT_ORACLE_BUDGET_MS:-}"
 
-# A SHELL, AND WHAT IT NEEDS TO BE USEFUL.
-#
-# The shell is ON by default, for every seat that can carry one. It was a flag —
-# `bash` is the one tool whose result is an arbitrary byte stream, and §5's single
-# choke point for tool results does not exist yet — and the flag produced a coder
-# that could edit a test and not run it. The operator, 2026-09-15, on finding a
-# session seated without one: "i dont think having coder that cant do tests is a
-# sane idea anyway". Correct. What guards the shell is not its absence: every exec
-# call still asks (or the guard model answers, at automode), and the preapproved
-# list is what runs unasked. `--no-bash` seats no shell.
-#
-# The grants are the other half. The confined view is HERMETIC: `$HOME` inside is a
-# fresh tmpfs, so `~/.cargo` and `~/.rustup` are ABSENT — the same property that keeps a
-# secret out, pointed at the toolchain. Without them `cargo` is not found and a shell is
-# a shell that cannot build. Checked 2026-09-11: neither holds a `credentials.toml` or
-# anything else credential-shaped.
-#
-# Read-only in the view still means readable INTO THE TRANSCRIPT, which is why these are
-# named here where you can see them rather than compiled into the daemon.
+# The shell is on by default for every seat that can carry one: a coder that cannot run its
+# tests is not useful. Every exec call still asks (or the guard model answers at automode),
+# and the preapproved list runs unasked.
+# The confined view's `$HOME` is a fresh tmpfs, so `~/.cargo` and `~/.rustup` are granted
+# read-only, named here rather than compiled in, since readable means readable into the
+# transcript. Neither holds credentials.
 #
 #   letibot              a shell, and the toolchain granted read-only into it
 #   letibot --no-bash    no shell
 #   LETIBOT_BASH=        the same, by env (any non-empty value seats one)
 BASH_ON="${LETIBOT_BASH-1}"
 
-# `web_fetch`: curl egress behind the tool, reader-mode extracted and rendered
-# as markdown before it reaches the model. OFF here and ON for the leticode
-# seat, which sets LETIBOT_WEB_FETCH=1 itself — the operator's rule
-# (2026-09-17): "i dont want any flags to leticode", the same rule that already
-# makes `--bash` a default there.
-#
-# It is not seated without this. `role_for_seat` adds the tool only when the
-# daemon was told to attach a fetcher, so a session started without it has the
-# prompt bytes it always had — and `reseat` in such a session correctly reports
-# nothing to change, which is how this was found.
+# `web_fetch`: curl egress behind the tool, reader-mode extracted and rendered as markdown.
+# Off here; the leticode wrapper sets LETIBOT_WEB_FETCH=1. Without it the tool is not seated.
 WEB_FETCH="${LETIBOT_WEB_FETCH-}"
 GRANTS_RO="${LETIBOT_GRANTS_RO:-$HOME/.cargo $HOME/.rustup}"
 
-# THE PROVIDERS FILE, READ BY THE LAUNCHER TOO. The daemon reads
-# ~/.config/letibot/providers.toml for provider keys, per-model sampling and the
-# [default] block; this launcher asks the same file the two questions it cannot
-# answer alone -- where a named model lives (`model_home`, below), and what
-# [default] sends the turns to (`default_provider`, for `answers_now`). One file,
-# one reader shape, so the launcher and the daemon cannot disagree about where a
-# model lives. `LETIBOT_PROVIDERS` points both readers at another file.
+# The providers file, read by the launcher too. The daemon reads
+# ~/.config/letibot/providers.toml for keys, sampling and [default]; the launcher asks it two
+# questions: where a named model lives (`model_home`) and what [default] sends turns to
+# (`default_provider`). Same reader shape as the daemon's. `LETIBOT_PROVIDERS` points both
+# readers at another file.
 PROVIDERS="${LETIBOT_PROVIDERS:-$HOME/.config/letibot/providers.toml}"
 
 # The [default] block's KEY, or empty when the file or the key is absent (callers
@@ -1337,25 +1111,16 @@ default_provider() { # default_provider [KEY]
   ' "$PROVIDERS" 2>/dev/null
 }
 
-# Every `[model."…"]` block that serves one alias, one `name<TAB>host:port` line
-# per block, in file order. The daemon's reader of these blocks is `local_models`
-# (crates/provider/src/keys.rs) and this mirrors it ruling for ruling rather than
-# inventing a second dialect of the file:
+# Every `[model."..."]` block that serves one alias, one `name<TAB>host:port` line per block,
+# in file order. Mirrors `local_models` (crates/provider/src/keys.rs) rule for rule:
 #
-#   * a block header is `[model.<name>]`; the name may be quoted and dotted --
-#     `[model."local.qwe"]` -- which is the one shape the `[default]` matcher
-#     above never had to meet;
-#   * `url` is the address, and `endpoint` is accepted as the same key (`url` wins
-#     when a block carries both), as it is on the daemon side;
-#   * the alias a block serves is its `model` value when it has one, else the
-#     block's own name;
-#   * a scheme and a path are discarded (`http://h:p/v1` is `h:p`) -- the same
-#     deal `parse_local_url` makes in harnessd, because `$ENDPOINT` below is a
-#     bare host:port;
+#   * a block header is `[model.<name>]`; the name may be quoted and dotted (`[model."local.qwe"]`);
+#   * `url` is the address, `endpoint` an accepted synonym (`url` wins when both are present);
+#   * the alias is the block's `model` value, else the block's name;
+#   * scheme and path are dropped (`http://h:p/v1` is `h:p`), as `parse_local_url` does;
 #   * `#` starts a comment anywhere on a line, as `parse_file` has it.
 #
-# Blocks without an address are sampling profiles, not homes, and are not listed
-# -- a lookup that returned one would point a run at an address it does not have.
+# Blocks without an address are sampling profiles, not homes, and are not listed.
 model_home() { # model_home ALIAS — matching blocks, `name<TAB>host:port` each
   [ -f "$PROVIDERS" ] || return 0
   awk -v want="$1" '
@@ -1404,24 +1169,13 @@ model_home() { # model_home ALIAS — matching blocks, `name<TAB>host:port` each
   ' "$PROVIDERS" 2>/dev/null
 }
 
-# WHICH MODEL, AND WHERE IT LIVES. Three units serve this fleet's models and are
-# systemd `Conflicts=` with one another, so exactly one is up at a time -- glm on
-# one port, the Qwen dense on another, the flash on a third, one port each since
-# the split of 2026-10-07. Two questions follow, answered in order below: WHICH
-# model this run wants (the env vars, a --glm/--dense flag, or the server
-# itself over /props), and WHERE that model lives (the [model."…"] block in
-# providers.toml that carries its alias -- nothing here hard-codes an address).
-#
-# This matters beyond convenience. The vocab is how the harness counts tokens and
-# how it renders tool calls, and the dialect is which parser reads the model's
-# output. Naming the wrong one does not fail loudly -- it produces a token ledger
-# that is quietly wrong and tool calls that arrive as literal <function...> text.
-# A flag the operator must keep in sync with a service they switched an hour ago
-# is a mistake waiting to be made; /props already knows the answer.
-#
-# The explicit flags remain, because detection needs a server and there are two
-# times there isn't one: the model is still loading, and you want the daemon up
-# first. LETIBOT_DIALECT / LETIBOT_MODEL / LETIBOT_VOCAB still win over both.
+# Which model, and where it lives. Three units serve this fleet's models, systemd
+# `Conflicts=` with one another, one port each. Which model: the env vars, a --glm/--dense
+# flag, or the server's /props. Where: the [model."..."] block in providers.toml carrying its
+# alias; nothing here hard-codes an address. The wrong vocab or dialect does not fail loudly:
+# the token ledger is wrong and tool calls arrive as literal text.
+# The explicit flags remain for when the server is loading or not up yet.
+# LETIBOT_DIALECT / LETIBOT_MODEL / LETIBOT_VOCAB win over both.
 model_by_path() {
   # $1 = model_path from /props -> "dialect|alias|vocab", or empty if unrecognised
   case "$1" in
@@ -1438,20 +1192,15 @@ model_by_path() {
   esac
 }
 
-# The model this run starts from, before any flag or server has spoken: the three
-# env vars, else the Qwen flash default, which is what this box serves most of the
-# time. Both Qwen models ship a byte-identical template, so the one dialect covers
-# Flash-Next and the 27B dense; only the vocab differs between them. --glm/--dense/
-# --dense overwrite all three in the flag loop below, and /props detection refines
-# them only when neither the env nor a flag has spoken.
+# The starting model: the three env vars, else the Qwen flash default. --glm/--dense
+# overwrite all three in the flag loop; /props detection refines them only when neither env
+# nor a flag has spoken.
 DIALECT="${LETIBOT_DIALECT:-qwen}"
 MODEL="${LETIBOT_MODEL:-qwen-3.8-flash-next}"
 VOCAB="${LETIBOT_VOCAB:-$HOME/models/qwen3.8-flash-next/Qwen3.8-Flash-Next-UD-Q6_K_XL.gguf}"
-# MODEL_FLAG is the flag that settled the model, if any: it is what silences the
-# /props detect (an explicit choice does not need the server's opinion) and, with
-# MODEL_FROM, what an unresolved-endpoint refusal quotes back. MODEL_FROM is the
-# SENTENCE-TRUE name of whatever chose the model -- a flag, $LETIBOT_MODEL, or the
-# default -- so a refusal says who asked for the model it could not find a home for.
+# MODEL_FLAG is the flag that settled the model, if any: it silences /props detection and
+# is quoted by an unresolved-endpoint refusal. MODEL_FROM names whatever chose the model (a
+# flag, $LETIBOT_MODEL, or the default) for the same refusal.
 MODEL_FLAG=""
 MODEL_FROM="${LETIBOT_MODEL:+\$LETIBOT_MODEL}"
 [ -n "$MODEL_FROM" ] || MODEL_FROM="the default (no flag chose one)"
@@ -1476,16 +1225,10 @@ if [ "${1:-}" != "--where" ]; then
   done
 fi
 
-# One loop over every flag, in any order and any number. Two single-shot
-# `case "$1"` blocks used to stand here — the mode flag first, then the model
-# flag — so `--glm --bash` consumed `--glm` and handed `--bash` on as the
-# one-shot prompt: harnessd ran in the foreground with `--prompt --bash`, the
-# vocabulary loaded, and GLM answered a prompt that said "--bash". Measured
-# 2026-09-14, from the operator's own leticode --glm --bash.
-# **Every expansion of an array that may be empty is `${A[@]+"${A[@]}"}`.** Bash before 4.4
-# — which is `/usr/bin/env bash` on every stock Mac (3.2) — calls an empty array unbound
-# under `set -u`, so a plain `"${A[@]}"` killed the launch with no flags given. MEASURED
-# 2026-10-07: `EXTRA_ARGS[@]: unbound variable` on the first macOS start.
+# One loop over every flag, in any order and any number, so no flag falls through as a
+# one-shot prompt.
+# Every expansion of an array that may be empty is `${A[@]+"${A[@]}"}`: bash before 4.4 (stock
+# macOS) calls an empty array unbound under `set -u`.
 EXTRA_ARGS=()
 MODEL_OVERRIDE=""
 PROVIDER_SET=""
@@ -1547,7 +1290,7 @@ while [ $# -gt 0 ]; do
       EXTRA_ARGS+=(--vm-arg "$2")
       shift 2
       ;;
-    # **Tools on another machine** (`docs/remote-hosts.md`). Forwarded verbatim;
+    # Tools on another machine (`docs/remote-hosts.md`). Forwarded verbatim;
     # harnessd owns the meaning and refuses a name that is not in the file, so this
     # line does not have to know what a host is.
     --host)
@@ -1567,12 +1310,7 @@ while [ $# -gt 0 ]; do
       EXTRA_ARGS+=(--web-search "$2")
       shift 2
       ;;
-    # `web_fetch`: curl egress behind the tool, reader-mode extracted and
-    # rendered as markdown before it reaches the model. Off unless asked for --
-    # the tool is not even SEATED without it, so a session started without this
-    # flag has the prompt bytes it always had. Measured 2026-09-17: a `reseat`
-    # in a session started without it correctly reported "nothing to re-seat",
-    # because there was nothing seated to change.
+    # `web_fetch` is off unless asked for: without it the tool is not seated at all.
     --web-fetch)
       WEB_FETCH=1
       shift
@@ -1602,12 +1340,9 @@ while [ $# -gt 0 ]; do
       MODEL_OVERRIDE="$2"
       shift 2
       ;;
-    # Explicit model overrides. Each names one of the three singleton servers;
-    # they do not START it -- `model glm` / `systemctl --user start glm` does.
-    # The flag also settles the model question (MODEL_FLAG, so /props detection
-    # below keeps quiet) and names itself for a refusal (MODEL_FROM): a flag
-    # whose model has no home in providers.toml is refused BY FLAG NAME below,
-    # not silently pointed somewhere else.
+    # Explicit model overrides. Each names one of the three singleton servers; they do not
+    # start it (`model glm` / `systemctl --user start glm` does). The flag settles the model
+    # (MODEL_FLAG) and names itself for a refusal (MODEL_FROM).
     --glm)
       DIALECT=glm
       MODEL=glm-5.3-flash
@@ -1628,46 +1363,20 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# **WHERE THAT MODEL LIVES -- the entry says, not this script.**
-#
-# The operator: *"and you dont have to teach letibot anything - it should come
-# from providers.toml"*. ENDPOINT used to be a literal `127.0.0.1:8080`: a claim
-# about one box wearing the grammar of a constant, and the port split of
-# 2026-10-07 ended even that -- the three units no longer share a port, so the
-# literal was pointing the default (flash-next) at whatever 8080 happened to be
-# serving. Now the flag names a MODEL, the [model."…"] block carrying that model
-# value says the address, and `LETIBOT_ENDPOINT` remains the manual override that
-# wins over all of it.
-#
-# Matching the MODEL VALUE, not a flag→entry-name table (`--dense → local.qwe`),
-# is the point: a table here would be a second list of the same models -- right
-# today, wrong the first time an entry is renamed. The value moves only when the
-# weights do.
-#
-# THE ONE AMBIGUITY IS MEASURED, on this box's own file: `qwen-3.8-27b` is
-# served twice on the fleet -- `[model."dense78"]` (192.168.1.78, another box)
-# and `[model."local.qwe"]` (127.0.0.1, this one) both carry it, and the file
-# itself warns about exactly this. First-match-in-file-order would take dense78,
-# which is on another machine, while --glm/--dense and the default all
-# name THIS box's servers (the units are `systemctl --user` ones). So among
-# blocks that carry the model, one whose address is on this box wins -- a
-# loopback address is "this box" by definition, not by the entry's naming
-# convention, so it survives a rename. If that still leaves the home ambiguous
-# (the same model twice off-box, or twice on it), that is refused by name below
-# rather than guessed. A model with exactly one home is taken wherever that home
-# is: that is the file's answer, and it is not this script's to second-guess.
-#
-# Nothing here starts anything or talks to any server: it is a file read, once,
-# before the screen exists.
+# Where that model lives: the [model."..."] block whose model value matches says the
+# address. `LETIBOT_ENDPOINT` is a manual override that wins over all of it. Matching the
+# model value rather than a flag-to-entry table avoids a second list of the same models.
+# When several blocks carry the model, one with a loopback address wins, since the flags and
+# the default name this box's servers. A home still ambiguous is refused by name; a model
+# with exactly one home is taken wherever it is. A file read, once; nothing is started.
 ENDPOINT="${LETIBOT_ENDPOINT:-}"
 LOOKUP_MODEL="$MODEL"
 PROV_MISSING=""
 PROV_LISTED=""
 if [ -n "$MODEL_OVERRIDE" ] && [ -z "$PROVIDER_SET" ]; then
-  # `--model M` with no --provider names what the LOCAL server is asked for, so M
-  # is the model whose home the lookup needs. With a provider it names a CLOUD
-  # model, and the local endpoint is not where those turns go -- the lookup keeps
-  # the local alias.
+  # `--model M` with no --provider names what the local server is asked for, so M is the
+  # model whose home the lookup needs. With a provider it names a cloud model, and the lookup
+  # keeps the local alias.
   LOOKUP_MODEL="$MODEL_OVERRIDE"
   MODEL_FROM="--model $MODEL_OVERRIDE"
 fi
@@ -1714,18 +1423,12 @@ if [ -z "$ENDPOINT" ]; then
   fi
 fi
 
-# Why this run's model has no home. A missing FILE is a different fact from a missing
-# ENTRY, and each sentence says which; every sentence names what asked for the model,
-# the model value searched for, and the file searched, and leaves two doors: give the
-# model a home in the file, or name a server by hand for this run. `127.0.0.1:8080` is
-# deliberately NOT fallen back to WITH IDS: a daemon given this model's vocabulary and
-# no address would send token ids to whatever 8080 is serving -- the 2026-09-10
-# incident further down -- while reading as though the flag had worked.
-#
-# **A note now, not a refusal** (see "THE LAUNCHER NEVER GATES ON A MODEL"): said when a
-# flag or LETIBOT_MODEL asked for the model by name, because then the operator meant
-# something the file does not carry; the default with no home is a bare box, and the
-# head's chooser says that better than this does.
+# Why this run's model has no home. A missing file and a missing entry get different
+# sentences; each names what asked for the model, the model value and the file searched, and
+# offers two ways on: give the model a home, or name a server for this run. No fallback to
+# `127.0.0.1:8080` with ids: they would go to whatever is serving there.
+# A note, not a refusal (see "THE LAUNCHER NEVER GATES ON A MODEL"), and only when a flag or
+# LETIBOT_MODEL asked by name; a bare box with no home is the head chooser's to explain.
 endpoint_missing() {
   case "$PROV_MISSING" in
     file)
@@ -1767,17 +1470,10 @@ EOF
   esac
 }
 
-# ASK THE SERVER WHAT IT IS ACTUALLY SERVING (the /props detect). This needs the
-# endpoint, so it runs after the resolution above -- and the flag loop sits
-# between them for the same reason: a flag changes which model is wanted, and the
-# endpoint follows the model. It refines DIALECT/MODEL/VOCAB only when nothing
-# else has spoken (none of the three env vars, no --glm/--dense), and it
-# is skipped entirely when no endpoint resolved: there is nothing to ask, and
-# the refusal above is what this run meets at the gates that need an address.
-# When the server names a model other than the one looked up, the server wins
-# for dialect/model/vocab -- it is what is actually loaded -- and the endpoint
-# stays where the entry sent it: that is a file misdescribing its server, and
-# the vocab is the thing that has to be right.
+# Ask the server what it is serving (/props). Needs the endpoint, so it runs after the
+# resolution above. It refines DIALECT/MODEL/VOCAB only when nothing else has spoken, and is
+# skipped when no endpoint resolved. When the server names another model than the one looked
+# up, the server wins for dialect/model/vocab (it is what is loaded), and the endpoint stays.
 DETECTED=""
 if [ -z "${LETIBOT_DIALECT:-}${LETIBOT_MODEL:-}${LETIBOT_VOCAB:-}" ] && [ -z "$MODEL_FLAG" ] && [ -n "$ENDPOINT" ]; then
   # One `curl` and a `sed`, not a `curl` piped into an interpreter: this is on the
@@ -1803,34 +1499,13 @@ else
   MODEL_ARGS=(--model "$MODEL")
 fi
 
-# **What will actually answer the turns**, which is not `$MODEL`.
-#
-# The operator, after a restart: *"leticode --session … letibot: no harnessd for
-# /home/dead/Projects/letibot - starting one (role leticode, model qwen-3.8-27b, pid
-# 907864) … so - qwen again"*. `$MODEL` is the LOCAL alias — the vocab the daemon submits
-# token ids against — while the turns were going to deepseek, because
-# `~/.config/letibot/providers.toml` carries a `[default]` block:
-#
-#     [default]
-#     model = "deepseek-flash"
-#     provider = "deepseek"
-#
-# The daemon reads that itself, so nothing on this command line mentioned deepseek and
-# the banner could not have known from its arguments alone. It could know from the same
-# file, which is what this does.
-#
-# Used for the start banner and the record. **Not** passed to harnessd: the daemon
-# resolves this itself, and a launcher that also passed it would be a second opinion on a
-# question with one owner.
-# (the reader itself, `default_provider`, lives up beside `model_home` at the top
-# of the providers-file section, so the file's two readers stay one shape)
+# What will answer the turns, which is not `$MODEL` (the local vocab alias): providers.toml's
+# `[default]` block can send them to a provider. The daemon resolves this itself; the
+# launcher reads the same file for the start banner and the record only, and never passes it.
+# (`default_provider` lives beside `model_home` in the providers-file section.)
 # `deepseek/deepseek-flash`, or the local alias when no provider is configured.
-#
-# **The provider and its model come from the same place, and which place differs.** An
-# explicit `--provider` means this script does not know the model — the catalogue that
-# holds each preset's default is the daemon's — so it names the provider alone rather
-# than borrowing the *config's* model for it. That borrowing was the first version's bug,
-# caught by running it: `--provider glm` printed `glm/deepseek-flash`.
+# An explicit `--provider` names the provider alone: its model is the daemon catalogue's, not
+# the config's.
 answers_now() {
   local p m=""
   if [ -n "$PROVIDER_NAME" ]; then
@@ -1860,50 +1535,19 @@ if [ -n "$BASH_ON" ]; then
   done
 fi
 
-# LIVENESS IS A CONVERSATION, NOT A FILE. A stale socket outlives a crashed daemon,
-# so the honest test is talking to it. What the daemon *says* when it refuses is kept
-# in PROBE, because there is one refusal that must not be treated as "not running":
-# a daemon speaking a different protocol version is alive and serving, and starting a
-# second one over it would unlink its socket, leave it orphaned holding every session
-# it has, and give no sign that had happened.
+# Liveness is a conversation, not a file: a stale socket outlives a crashed daemon. The
+# refusal text is kept in PROBE because a daemon on another protocol version is alive, and
+# starting a second one over it would unlink its socket and orphan its sessions.
 PROBE=""
-# **Is a daemon there, without running one to find out.**
-#
-# `up` below answers the same question by attaching a whole head — right when the
-# *protocol* matters, and four times too expensive when it does not. Measured 2026-09-20,
-# `leticode --session …` with the daemon already up ran **four** `letibot-tui` processes,
-# three of them that probe at three separate gates, to answer a question `ss` answers
-# without forking anything.
-#
-# **`| grep -q` is a trap under `set -o pipefail`, which this script sets.** `grep -q`
-# exits the moment it matches, sending `ss` a SIGPIPE — and `pipefail` reports the 141
-# from the killed command even though the last one succeeded. Measured: `--attach` said
-# *"no harnessd"* for a live daemon about one run in ten, on a socket list long enough
-# that `ss` had more left to write than `grep` needed to read. The same shape sat at the
-# `--ls` checks, where it shows up as a live daemon labelled STALE.
-#
-# So both readers below run `ss` to completion and match the string in the shell: no
-# pipe, no signal, and an answer that does not depend on what followed the match.
-#
-# One implementation, because `--ls` checks *every*
-# record rather than this folder's, and a fix applied to one caller and forgotten in the
-# other is exactly how this class of bug survives.
-# **The folder's claim, read from the KERNEL rather than from this launcher's record.**
-#
-# `daemon_pid` reads a file this script writes, and that is a proxy: a daemon started by
-# any other means, or a record cleaned up early, leaves it empty while the folder is very
-# much held. MEASURED 2026-10-11 on the operator's box, `letibot --continue`: the record
-# said nothing, so the wait below never fired, the launcher started a daemon, and harnessd
-# refused it three times -- *"already served by a live daemon (pid 4138759)"* -- after
-# which the poll gave up with "daemon did not come up". The pid in that refusal was alive
-# and the record knew nothing about it.
-#
-# The lock beside the socket is the fact harnessd ITSELF guards on, so it is the one to
-# ask. `/proc/locks` is a pure read -- `flock -n` would TAKE the claim, which is the
-# opposite of testing it -- and the kernel answers about the INODE, which is what makes
-# this immune to the window that defeats every other test: a daemon on its way out has
-# already closed its listener (so `ss` says nothing), has already unlinked its socket file
-# (so `-S` says nothing), and still holds this.
+# Is a daemon there, without running a head to find out. `up` attaches a whole head, which
+# is needed only when the protocol matters; `ss` answers this without a fork.
+# No `| grep -q` under `set -o pipefail`: grep exits on the match, `ss` takes SIGPIPE, and
+# pipefail reports 141. Both readers run `ss` to completion and match in the shell. One
+# implementation, shared with `--ls`.
+# The folder's claim, read from the kernel rather than this launcher's record, which can be
+# empty for a daemon started any other way. The lock beside the socket is what harnessd
+# guards on. `/proc/locks` is a pure read (`flock -n` would take the claim) and answers about
+# the inode, so it still sees a daemon on its way out after its listener and socket file are gone.
 #
 # Field layout, from `/proc/locks`: `4: FLOCK ADVISORY WRITE <pid> <maj:min:inode> 0 EOF`.
 folder_lock_pid() { # prints the pid holding this folder's claim, or fails
@@ -1932,19 +1576,13 @@ socket_is_listening() { # socket_is_listening PATH
   esac
 }
 live() {
-  # **NOT `[ -S "$SOCKET" ]` FIRST, AND THAT LINE WAS THE DEFECT.** A daemon's own shutdown
-  # path UNLINKS the socket file while the process goes on listening on the now-nameless
-  # inode, so "is there a file" answers *no* for a folder that has a daemon. MEASURED
-  # 2026-10-05 on the operator's box, and the consequence was a BRICKED session: the launcher
-  # read no-file as no-daemon, started a second one, and two daemons interleaved rows into
-  # one transcript until the store refused every append (`transcript_item seq must be the
-  # next one`). `ss` names the path of a bound socket whether or not the file still exists —
-  # verified here: one LISTEN row for a path `ls` said was not there — so it is the reader
-  # that answers this question. The daemon now also holds a lock beside the socket, and it is
-  # what refuses a second start; this is the launcher refusing to TRY.
+  # Not `[ -S "$SOCKET" ]` first: a daemon's shutdown unlinks the socket file while it still
+  # listens, and reading no-file as no-daemon starts a second daemon into the same transcript.
+  # `ss` names a bound socket's path whether or not the file exists. The daemon's lock also
+  # refuses a second start; this is the launcher refusing to try.
   socket_is_listening "$SOCKET"
 }
-# **Listening but unreachable**: a daemon is here and its socket file is gone, so nothing can
+# Listening but unreachable: a daemon is here and its socket file is gone, so nothing can
 # connect to it and starting a second one is the thing that corrupts the transcript. The one
 # cleanup is a hand on the process, so the refusal names the pid.
 live_detached() {
@@ -1952,7 +1590,7 @@ live_detached() {
   [ -S "$SOCKET" ] && return 1
   return 0
 }
-# **The refusal, in one place for both callers.** `--attach` and the plain run both reach a
+# The refusal, in one place for both callers. `--attach` and the plain run both reach a
 # folder a daemon is holding without a file, and a message written twice is a message that
 # drifts. Neither of them may start anything or hand a head a path that is gone.
 refuse_detached() {
@@ -1971,14 +1609,9 @@ refuse_detached() {
 }
 up() {
   [ -S "$SOCKET" ] || return 1
-  # **`--probe`, not `--no-tty`.** The question is "is there a daemon here, and does
-  # it speak this build's protocol" -- nothing about the transcript. `--no-tty
-  # --since 0` is a whole head: it builds the config, reads the prefs, APPLIES THE
-  # ENTIRE SNAPSHOT and renders a frame, and this runs before anything is on the
-  # screen. Measured 2026-09-20 on a 1397-row session: 0.14 s that way, 0.02 s as a
-  # probe. `--probe` attaches past the end so the daemon sends no history at all,
-  # and prints the same refusal line on stderr, which is what this variable is read
-  # for below.
+  # `--probe`, not `--no-tty`: the question is whether a daemon is here and speaks this
+  # build's protocol. `--no-tty --since 0` is a whole head that applies the snapshot and renders.
+  # `--probe` attaches past the end, gets no history, and prints the same refusal on stderr.
   PROBE="$("$BIN/letibot-tui" --socket "$SOCKET" --probe </dev/null 2>&1 >/dev/null)" &&
     return 0
   return 1
@@ -2001,10 +1634,9 @@ version_skew_or_continue() {
   esac
 }
 
-# The record beside the socket: what this folder's daemon is. Written by the
-# launcher when it starts one; read by --status, --stop, --ls and the
-# attach banner. The pid in it is how the daemon is stopped - a name is how
-# every harnessd on the box gets stopped.
+# The record beside the socket: what this folder's daemon is. Written when the launcher
+# starts one; read by --status, --stop, --ls and the attach banner. The pid in it is how the
+# daemon is stopped; a name would stop every harnessd on the box.
 record_write() {
   rundir
   python3 - "$RECORD" "$WORKSPACE" "$SOCKET" "$1" "$ROLE" "$MODEL" "$DIALECT" "${BASH_ON:-}" "$(answers_now)" <<'PY'
@@ -2016,14 +1648,10 @@ json.dump({"workspace": ws, "socket": sock, "pid": int(pid), "role": role, "mode
           open(rec, "w"))
 PY
 }
-# **Flat-JSON field reads, in bash.** The record is written by `record_write` below
-# and is a single flat object, so a `sed` is enough — and it matters: this function is
-# called several times on the path that runs *before* anything is on the screen, and
-# each call was a `python3` fork of ~30 ms. Measured on `--attach` 2026-09-20: nine
-# interpreter and filter forks, 0.43 s of launcher against 0.07 s of actual work.
+# Flat-JSON field reads in bash: the record (`record_write`) is one flat object, so `sed`
+# does, without a `python3` fork on the path before the screen exists.
 #
-# A string field, or an empty string when the file or the key is absent — the same
-# contract the python3 version had, including the empty string (callers test `-n`).
+# A string field, or empty when the file or key is absent (callers test `-n`).
 json_str() { # json_str KEY FILE
   [ -f "$2" ] || return 0
   sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$2" 2>/dev/null | head -1
@@ -2032,12 +1660,8 @@ json_num() { # json_num KEY FILE
   [ -f "$2" ] || return 0
   sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$2" 2>/dev/null | head -1
 }
-#
-# A field whose type the caller does not know — `--ls` wants `pid` and `workspace`
-# through the same call, and one is a number and one is a string. So this tries the
-# quoted form and falls back to the bare number, which is what the python3 version did
-# by virtue of not caring. **Found by running `--ls`, which printed `pid ` with the
-# number missing**: the string reader cannot see `"pid": 645043`.
+# A field of unknown type (`--ls` reads `pid` and `workspace` through one call): tries the
+# quoted form, then the bare number.
 json_field() { # json_field KEY FILE
   local v
   v="$(json_str "$1" "$2")"
@@ -2050,12 +1674,8 @@ json_field() { # json_field KEY FILE
 record_field() { json_field "$1" "$RECORD"; }
 record_field_of() { json_field "$2" "$1"; }
 
-# **A number from `--ls`, or a directory, resolved to that daemon's socket.**
-#
-# tmux's whole ergonomic claim is that you act on a thing by the handle the list
-# just gave you, rather than retyping a path. `--ls` numbers the daemons in
-# $RUNDIR order; this maps that number back. A directory still works, and so does
-# no argument at all (this folder), so nothing that used to work stops.
+# A number from `--ls`, or a directory, resolved to that daemon's socket. `--ls` numbers
+# daemons in $RUNDIR order; a directory or no argument (this folder) still works.
 #
 # Sets WORKSPACE, KEY, SOCKET and RECORD, the four the rest of this script reads.
 retarget() {
@@ -2076,16 +1696,11 @@ retarget() {
         [ "$n" = "$want" ] || continue
         ws="$(record_field_of "$r" workspace)"
         WORKSPACE="$ws"
-        # **A record's own socket wins over the one this folder's hash would name.** They are
-        # the same for every folder's daemon (that is how the record was written); they differ
-        # for the box's room, whose socket is named by the HOST and lives in the data directory.
-        # Reading it here is what lets `--stop N` reach the room as it reaches anything else.
+        # A record's own socket wins over the one this folder's hash would name. They differ only
+        # for the box's room, whose socket is named by the host, so `--stop N` reaches the room too.
         sock="$(record_field_of "$r" socket)"
-        # **And the record the number printed is the one the verb then reads.** For a folder's
-        # daemon that is the same file as the key below; the box's is `room-<host key>.json`, and
-        # reading the key-named file instead left `RECORD` pointing at nothing — so `--stop N`
-        # sent the room the session protocol's interrupt (a refusal, printed as turns that could
-        # not be interrupted) and could not remove the record it had just stopped.
+        # And the record the number printed is the one the verb reads: the room's is
+        # `room-<host key>.json`, not the key-named file.
         rec="$r"
         break
       done
@@ -2097,7 +1712,7 @@ retarget() {
   RECORD="${rec:-$RUNDIR/$KEY.json}"
   [ -n "${LETIBOT_LOG:-}" ] || LOG="$HOME/logs/harnessd-$KEY.log"
 }
-# **A session NAME (its /rename title or slug) to SESSION**, this folder first and then every
+# A session NAME (its /rename title or slug) to SESSION, this folder first and then every
 # folder in the store. A hit elsewhere is offered, never taken: the answer decides where the
 # daemon runs and what its tools can touch. Defined after `retarget`, which it calls.
 tilde() { # tilde PATH -- $HOME shown as ~
@@ -2180,14 +1795,9 @@ EOF
   SESSION="${ids[$i]}"
   echo "letibot: opening ${titles[$i]} in $(tilde "$WORKSPACE"). A program cannot change its parent shell's directory, so yours stays put. To follow: cd $(printf '%q' "$WORKSPACE")" >&2
 }
-# **Is this pid gone, waited for, bounded.** The one place the launcher decides
-# whether a daemon actually stopped, so the two verbs that stop one cannot disagree.
-#
-# Measured 2026-09-16: a daemon wedged on a `llama-server` that had gone away swallowed
-# SIGTERM, `--stop` printed "stopped", deleted the record, and left an orphan holding the
-# store and the GPU that `--ls` could no longer see. So "stopped" is said after the
-# process is gone and never after the signal is sent. `--stop --all` had the other half of
-# that defect until now: it echoed `stopped` straight off `kill`'s exit status.
+# Is this pid gone, waited for, bounded. The one place the launcher decides whether a daemon
+# stopped. "stopped" is said after the process is gone, never after the signal: a daemon can
+# swallow SIGTERM.
 wait_gone() { # wait_gone PID [TENTHS]
   local p="$1" n="${2:-10}" i=0
   while [ "$i" -lt "$n" ]; do
@@ -2199,13 +1809,8 @@ wait_gone() { # wait_gone PID [TENTHS]
   return 0
 }
 
-# **How long a stop waits for the daemon to actually go** (2026-10-26): thirty seconds, in tenths.
-# The daemon's own orderly stop is bounded but not short — the merge queues joined (a gate in
-# flight killed, its row back in line), every session's subagents told to stop and waited for
-# (`SUBAGENT_EXIT_GRACE`, 5 s), the VMs brought down — and the old five seconds was shorter than
-# the sum of them. What that measured as was `--stop` saying the daemon "is ignoring SIGTERM"
-# while the daemon was in the middle of shutting down, and a `leticode` run right after it
-# refused by the folder lock the still-exiting daemon held.
+# How long a stop waits for the daemon to go: thirty seconds, in tenths. The daemon's orderly
+# stop joins the merge queues, waits for subagents (`SUBAGENT_EXIT_GRACE`) and brings VMs down.
 STOP_TENTHS=60
 # A forced stop keeps FIVE seconds for its SIGTERM window: the SIGKILL is the whole of what
 # `--force` is for, and the daemon's own VM and child teardown is bounded by then (cli.rs).
@@ -2251,7 +1856,7 @@ stop_wait() {
   return 0
 }
 
-# **A restart says each step as it happens** (R312): one `restart:` line per step, its clock
+# A restart says each step as it happens: one `restart:` line per step, its clock
 # redrawn in place on a terminal and said once off one. `--restart` sets LETIBOT_RESTART_STEPS
 # for the `--stop` and `--continue` it runs; unset here so no daemon or tool inherits it.
 RESTART_STEPS="${LETIBOT_RESTART_STEPS:-0}"
@@ -2317,20 +1922,9 @@ daemon_pid() {
     echo "$p"
     return 0
   }
-  # **Then the lock, and only then the record.** The lock is the claim harnessd itself
-  # refuses a second daemon on, and the daemon writes its OWN pid into it
-  # (`FolderClaim::write_pid`), so it is the folder's answer about the folder. The record
-  # is this launcher's note about what it once started.
-  #
-  # MEASURED 2026-10-11, pg-noop: nothing was listening, the record said pid 1119301, the
-  # lock said 1119303. `--stop` took the record's answer, killed it, saw it gone, printed
-  # `stopped harnessd for …` and deleted the record — while the daemon holding the folder
-  # went on holding it. The next `--continue` then had no record and no listener, started a
-  # daemon, and harnessd refused it by name. Why the two pids differed is NOT known; the
-  # obvious theory was that `setsid` forks and `$!` names the wrapper, and that was tested
-  # on this box and is false — it exec'd and `$!` was the real pid. So the fix does not rest
-  # on a cause: whatever wrote the wrong number, the lock is the one that cannot be wrong
-  # about who holds the lock.
+  # Then the lock, and only then the record. harnessd writes its own pid into the lock
+  # (`FolderClaim::write_pid`), so the lock is the folder's answer; the record is the launcher's
+  # note about what it started, and the two have been seen to differ.
   p="$(folder_lock_pid || true)"
   [ -n "$p" ] && pid_alive "$p" && {
     echo "$p"
@@ -2344,20 +1938,13 @@ daemon_pid() {
   return 1
 }
 
-# **THE BOX'S ROOM, AND WHY THE LAUNCHER IS WHAT STARTS IT.**
-#
-# `docs/room.md` § *Still owed* item 4 says it plainly: `--room` exists and nothing starts a
-# coordinator, so a session's `room` tool refuses by name — honest, and not the same as the room
-# being there. The tool cannot start one: it runs inside a daemon, and a daemon that forked another
-# daemon would be a second `harnessd` under a lease it does not hold. The door is here, so every
-# run that is about to open a session first makes sure the box has a coordinator.
-#
-# **One per box, and the lease is the only guard.** Two runs at the same instant start two
-# coordinators and exactly one wins: `letibot_room::lease` refuses the other by name, and this
-# script PRINTS that sentence rather than inventing a lock of its own. The winner's socket and
-# lease are both derived from the HOST (`room-<host key>.sock` and `.lease` under the data
-# directory), so the key is derived here too: a launcher that spelled it differently would look for
-# a socket no coordinator ever binds, and start a second one on every run for ever.
+# The box's room, started by the launcher. A session's `room` tool cannot start a
+# coordinator: a daemon forking another `harnessd` would act under a lease it does not hold.
+# So every run that is about to open a session first makes sure one is serving.
+# One per box, and the lease is the only guard: of two simultaneous starts `letibot_room::lease`
+# refuses one by name, and this prints that sentence. Socket and lease are named from the host
+# (`room-<host key>.sock` and `.lease` under the data directory), so the key is derived here the
+# same way.
 ROOM_DATA="${XDG_DATA_HOME:-$HOME/.local/share}/letibot"
 # Resolved once, on first use: `--help` and `--status` must not fork `uname`, `od` and `sed` to
 # answer a question about a daemon they are not going to touch.
@@ -2378,24 +1965,15 @@ room_paths() {
   ROOM_LOG="$HOME/logs/$(basename "$ROOM_SOCKET" .sock).log"
   ROOM_RECORD="$RUNDIR/$(basename "$ROOM_SOCKET" .sock).json"
 }
-# `letibot_room::lease::host_key_of`, in bash: the host's name made safe for a filename, cut to 24
-# characters, with the low 32 bits of FNV-1a of the RAW name appended.
-#
-# **The arithmetic is done in 32 bits, and that is exact** — truncating a product to 32 bits
-# depends only on the operands' low 32 bits, so the low half of the 64-bit FNV-1a is
-# `h = (h ^ byte) * (0x100000001b3 & 0xffffffff)` starting from `0xcbf29ce484222325 & 0xffffffff`.
-# It matters that the multiplier is the 64-bit prime's LOW HALF (435) and not the 32-bit FNV's own
-# prime (16777619): MEASURED here, the 32-bit variant gives `MacBook-Pro -> 271c727b` where the
-# Rust answers `45a1c8db`. And the smaller constants are the only ones bash 3.2 can spell at all.
-# `crates/room/src/lease.rs`'s `the_host_key_matches_what_the_launcher_derives` pins the same table
-# this function is tested against, so a change on either side has to change both.
+# `letibot_room::lease::host_key_of`, in bash: the host's name made safe for a filename, cut
+# to 24 characters, with the low 32 bits of FNV-1a of the raw name appended.
+# 32-bit arithmetic is exact for the low half: multiply by the 64-bit prime's low half (435),
+# starting from `0xcbf29ce484222325 & 0xffffffff`; bash 3.2 can spell only these.
+# `crates/room/src/lease.rs`'s `the_host_key_matches_what_the_launcher_derives` pins the same table.
 room_host_key() { # room_host_key NAME
   local raw="$1" safe hex h b
-  # Per CHARACTER, which is what the Rust maps: a UTF-8 locale makes `.` and the negated class
-  # match characters rather than bytes, so one non-ASCII character is one dash and not three.
-  # `[:upper:]`/`[:lower:]` and not `A-Z`/`a-z`, which shellcheck is right about: in a UTF-8
-  # locale the class forms fold an accented letter the same way `to_ascii_lowercase` would leave
-  # it — and either way it is not ASCII alphanumeric, so it becomes one dash below.
+  # Per character, as the Rust maps: in a UTF-8 locale one non-ASCII character is one dash.
+  # `[:upper:]`/`[:lower:]` rather than `A-Z`/`a-z`; a non-ASCII letter becomes a dash either way.
   safe="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' |
     sed 's/[^a-z0-9]/-/g; s/^\(.\{24\}\).*/\1/; s/-*$//')"
   [ -n "$safe" ] || safe=host
@@ -2408,11 +1986,9 @@ room_host_key() { # room_host_key NAME
   hex="$(printf '%08x' "$h")"
   printf '%s-%s' "$safe" "$hex"
 }
-# **Is a coordinator here?** Two facts, and either is enough: something is LISTENING on the room's
-# socket (the reader `live` uses for a folder's daemon), or the lease names a pid that is running
-# and whose argv says `--room`. The second covers the moment between the lease being taken and the
-# bind; the argv check is what stops a recycled pid from answering for a room that is gone, the
-# same discipline `daemon_has_bash` uses one daemon down.
+# Is a coordinator here? Either fact is enough: something listens on the room's socket, or
+# the lease names a running pid whose argv says `--room` (the window between lease and bind).
+# The argv check stops a recycled pid answering for a room that is gone.
 room_pid() {
   local p
   room_paths
@@ -2432,7 +2008,7 @@ room_up() {
   p="$(room_pid)" || return 1
   pid_argv "$p" | grep -qx -- '--room'
 }
-# **Socket activation serves the room** (`letibot rooms install`): the manager holds the socket
+# Socket activation serves the room (`letibot rooms install`): the manager holds the socket
 # and starts the coordinator on the first dial, so the launcher never leases or spawns one. The
 # file test is the cheap gate; `rooms is-on` asks the manager. Asked once per run.
 ROOM_ACTIVATED=""
@@ -2448,28 +2024,21 @@ room_activated() {
   fi
   [ "$ROOM_ACTIVATED" = yes ]
 }
-# **What the coordinator last said about failing**, from its own log — the lease's refusal names
+# What the coordinator last said about failing, from its own log — the lease's refusal names
 # the holder, the model's refusal names the key, and neither sentence is one this script could
 # write itself. `starting:` lines are the boot's progress, not its reason.
 room_failure() {
   tail -n 20 "$ROOM_LOG" 2>/dev/null | grep -v '^ *starting: ' | grep -v '^$' | tail -1 || true
 }
-# **Start one, detached, and say what happened.** `detach` is the door the folder's daemon goes
-# through too (setsid, and a systemd scope on Linux), so the coordinator outlives this run, this
-# terminal and the session that asked for it — which is the room's whole point, since it exists for
-# the moment a session cannot reach anything else.
-#
-# It is started with NO model flags on purpose: a coordinator's arbiter is `providers.toml`'s
-# default or deepseek (`docs/room.md`), not this folder's local model, and the byte vocabulary that
-# follows from a provider needs no GGUF. An operator who wants another model runs
-# `harnessd --room --model …` by hand, and every launcher after that finds it and leaves it alone.
+# Start one, detached (`detach`: setsid, and a systemd scope on Linux), so it outlives this
+# run and terminal. No model flags on purpose: a coordinator's arbiter is providers.toml's
+# default or deepseek (`docs/room.md`), with the byte vocabulary. Another model means running
+# `harnessd --room --model ...` by hand; later launchers find it and leave it alone.
 room_start() {
   local p i
   mkdir -p "$(dirname "$ROOM_LOG")" "$ROOM_DATA" 2>/dev/null || true
-  # A socket FILE with nothing listening is a leftover from a coordinator that was killed, and it is
-  # deliberately NOT removed here: a box whose reader cannot see the listener would have this
-  # script unlink a LIVE socket — the `live_detached` brick, one daemon down — and the bind replaces
-  # a dead file by itself.
+  # A socket file with nothing listening is not removed here: a box whose reader cannot see the
+  # listener would unlink a live socket. The bind replaces a dead file itself.
   detach letibot-room "${NOGPU[@]}" "$BIN/harnessd" --room >>"$ROOM_LOG" 2>&1 </dev/null &
   p=$!
   # Ten seconds. The socket is what is watched, and a coordinator that LOSES the lease exits in
@@ -2483,10 +2052,8 @@ room_start() {
   done
   return 1
 }
-# The record `--ls` and `--stop` read: the same flat JSON the folder daemons get, with
-# `role: room` as what tells the two apart (a folder's record names the seat its daemon serves, and
-# nothing serves `room`). R102's shape — the launcher writes the record of what it started, so the
-# launcher's own tools can see it.
+# The record `--ls` and `--stop` read: the folder daemons' flat JSON with `role: room`,
+# which tells the two apart.
 room_record_write() { # room_record_write PID
   rundir
   python3 - "$ROOM_RECORD" "$(dirname "$ROOM_SOCKET")/room-workspace" "$ROOM_SOCKET" "$1" <<'PY'
@@ -2496,7 +2063,7 @@ json.dump({"workspace": ws, "socket": sock, "pid": int(pid), "role": "room",
            "started": time.strftime("%Y-%m-%dT%H:%M:%S%z")}, open(rec, "w"))
 PY
 }
-# **Make sure the box has a coordinator — the one call the run paths make.** A start that fails is
+# Make sure the box has a coordinator — the one call the run paths make. A start that fails is
 # SAID, from the coordinator's own words, and is never fatal: the session's `room` tool still
 # refuses by name, which is true, and everything else about the run is what it was.
 room_ensure() {
@@ -2505,7 +2072,7 @@ room_ensure() {
   room_activated && return 0
   if room_up; then
     room_stale_line >&2
-    # **And the record is a note this launcher keeps true.** A room started by hand (`harnessd
+    # And the record is a note this launcher keeps true. A room started by hand (`harnessd
     # --room` in a terminal), or one whose record a tidy-up removed, is still the box's room — and
     # `--ls` and `--stop --all` are how a person sees it and stops it.
     if [ ! -f "$ROOM_RECORD" ]; then
@@ -2530,14 +2097,9 @@ room_ensure() {
 }
 
 warn_swallowed_flags() {
-  # **The SEAT is the flag that is silently swallowed most, and it does not travel
-  # in EXTRA_ARGS.** Role reaches harnessd as `--role` and the shell as `--bash`,
-  # so a `leticode` (role leticode, bash on) run against a folder whose daemon is
-  # already a plain `letibot` (coder, no bash) attached to the coder daemon and
-  # said nothing -- the operator got a session that could not run a test and was
-  # told nothing about why. The seat is fixed when the daemon starts; attaching
-  # cannot change it, and the honest thing is to say so, not to look only at the
-  # args a person typed after the verb.
+  # The seat does not travel in EXTRA_ARGS: role reaches harnessd as `--role` and the shell as
+  # `--bash`. The seat is fixed when the daemon starts and attaching cannot change it, so a
+  # mismatch is said here rather than attaching in silence.
   local want_role="$ROLE" want_bash have_role have_bash mism=0
   # The model this run asked for: an explicit `--model` wins over the flag that
   # picked a family, and the daemon's record carries the same word for both.
@@ -2554,19 +2116,12 @@ warn_swallowed_flags() {
       echo "letibot: you asked for $([ "$want_bash" = true ] && echo "a shell" || echo "no shell"), but this folder's daemon was started with $([ "$have_bash" = true ] && echo "one" || echo "none")."
       mism=1
     fi
-    # **And the MODEL flag, which no other check in this script can see.** The
-    # port check above fires only when the port serves a model the daemon is not
-    # bound to — so a daemon bound to `qwen-3.8-27b` while 8081 serves that same
-    # model, plus a `--glm`, passed every gate and attached in silence to the
-    # wrong model. That is the same silent shape the seat check exists for.
+    # And the model flag: the port check above fires only when the port serves a model the
+    # daemon is not bound to, so a `--glm` against a daemon bound to what the port serves would
+    # otherwise attach in silence.
     if [ -n "$MODEL_FLAG" ]; then
       local dpid have_model
-      # **The process's own command line first, the record second**, for the reason
-      # `daemon_models` reads `/proc` at all: a record written before the field existed
-      # has no `model`, and MEASURED 2026-10-07 on this box, the daemon holding the
-      # operator's own workspace is exactly such a record — `--status` printed
-      # `vocab unknown`, so a check that only read the record stayed SILENT about the
-      # model flag on the one daemon it had to speak about.
+      # The process's command line first, the record second: an older record has no `model`.
       dpid="$(daemon_pid 2>/dev/null || true)"
       have_model=""
       [ -n "$dpid" ] && have_model="$(pid_argv "$dpid" |
@@ -2577,11 +2132,8 @@ warn_swallowed_flags() {
         mism=1
       fi
     fi
-    # **One advice line for both mismatches, and it comes AFTER the model check.**
-    # The first version put this block before it, so a MODEL mismatch set `mism` and
-    # then nothing printed it: a warning with no way out. MEASURED 2026-10-07 by
-    # running `leticode --dense` against this folder's glm daemon and reading the
-    # output — one line, and it ended there.
+    # One advice line for both mismatches, after the model check, so a model mismatch is
+    # printed too.
     if [ "$mism" = 1 ]; then
       echo "         The seat and the model are fixed when harnessd STARTS; attaching to a running one cannot change either."
       echo "         For what you asked for:  $(restart_advice)"
@@ -2598,11 +2150,8 @@ warn_swallowed_flags() {
 }
 daemon_line() {
   # One line about this folder's daemon, for the attach banner and --status.
-  #
-  # **`answers`, not `model`,** when the record has one: the `model` field is the local
-  # vocab the daemon binds (`qwen-3.8-27b`), and a session whose turns go to deepseek was
-  # being announced as qwen on every attach — the operator: *"so - qwen again"*. The two
-  # are both recorded, because they are both true; only one answers the turns.
+  # `answers`, not `model`, when the record has one: `model` is the local vocab the daemon binds,
+  # not what answers the turns. Both are recorded.
   local p started role model answers who
   p="$(daemon_pid || true)"
   started="$(record_field started)"
@@ -2614,13 +2163,8 @@ daemon_line() {
     echo "the box's room${p:+ (pid $p)}${started:+, up since $started}"
     return 0
   fi
-  # **`answers` is what answers the turns; `model` is the local vocab.**
-  #
-  # A record written before this field existed has no `answers`, and the honest label for
-  # the field it does have is **`vocab`** — it is the vocab the daemon binds token ids
-  # against, which is true and is not a claim about what is answering. Calling it `model`
-  # for a legacy record is what produced the operator's *"so - qwen again"* on an attach
-  # to a session whose turns went to deepseek.
+  # `answers` is what answers the turns; `model` is the local vocab. An older record has no
+  # `answers`, and its `model` is labelled `vocab`, which is what it is.
   if [ -n "$answers" ]; then
     who="model $answers"
   else
@@ -2629,51 +2173,13 @@ daemon_line() {
   echo "harnessd for $WORKSPACE${p:+ (pid $p)}${started:+, up since $started}${role:+, role $role}${who:+ $who}"
 }
 
-# **THE DAEMON IS A PROCESS, AND EVERY FIX REACHES IT LAST.**
-#
-# A commit, a build and a running daemon are three different facts, and only the
-# third one changes what the operator sees. This is the tree's own rule — *"landed,
-# deployed and running are three different facts, and a rule you can read in a file
-# is evidence of none of them"* — and the daemon is where it keeps biting, because
-# it is the one long-lived process here and it reads its executable exactly once, at
-# exec.
-#
-# MEASURED 2026-10-02, three times in one day, and the third is the one that cost the
-# most: a fix committed at 16:37 and another at 17:01 were both in
-# `target/release/harnessd`, built 17:02, while leticl's daemon had started at 16:02.
-# So the head went on failing with `400: you requested 1464765 tokens` — which reads
-# EXACTLY like the unfixed bug, because as far as that process was concerned it was
-# the unfixed bug. The operator's report was *"leticl is stuck with compaction again,
-# for some reason it is broken"*, and it was not broken; it was 25 minutes behind.
-# Knowing that meant comparing a commit timestamp, `ps -o lstart` and a file's mtime
-# by hand. Nobody should have to do that once, never mind three times.
-#
-# **Both facts are already in this script**: `BIN` is the binary this launcher would
-# start, and `daemon_pid` names the one that is live. The process's start time comes from
-# `/proc/<pid>/stat` field 22 — starttime in clock ticks since boot, added to `btime` from
-# `/proc/stat`, which `pid_started` reads — so the whole comparison is a couple of reads
-# and no interpreter fork, on a path that runs before anything is on the screen.
-#
-# **The sentence that used to stand here said `/proc/<pid>`'s own mtime IS the process
-# start time, "checked against field 22 … the two agree to 0.0s", and it was FALSE.**
-# They agree for a process that has just started and drift for one that lives — MEASURED
-# 2026-10-09: pid 2076966, up since 09-21 07:16 by `ps`, `/proc/stat` and field 22 alike,
-# had a `/proc/<pid>` mtime of **10-08 21:20**. The check that "confirmed" it must have
-# been run against a young process, which is the only kind it can ever be right about.
-# See `pid_started` for the reader and for why the error runs both ways.
-#
-# **A line, not a restart, and not a refusal.** A restart drops an in-flight turn and
-# that is the operator's call every time; the defect is not that a daemon is old, it is
-# that nothing says so. `/proc/<pid>/exe` reading `(deleted)` is the kernel telling the
-# truth — true of both stale daemons on this box today — but it says the executable was
-# REPLACED, not which way; the timestamps are what make the sentence specific.
-#
-# **And the line is about the BINARY, not about correctness.** A rebuild that only
-# touched the TUI obliges no daemon restart, so anything stronger would cry wolf on a
-# safe box. `it is not running what is on disk` is checkable and is true whenever it is
-# printed. The stronger answer is a build id carried by the daemon and compared by the
-# launcher — `--version` already distinguishes releases and would have caught every
-# case today — and that is a separate change.
+# The daemon reads its executable once, at exec, so a fix built after it started is not in
+# it. This compares `BIN` (what the launcher would start) with the live daemon's start time
+# (`pid_started`, from `/proc/<pid>/stat` field 22) without an interpreter fork.
+# A line, not a restart and not a refusal: a restart drops an in-flight turn and is the
+# operator's call. `/proc/<pid>/exe` `(deleted)` says the file was replaced but not when; the
+# timestamps make the sentence specific. The line is about the binary, not correctness: a
+# TUI-only rebuild needs no daemon restart. A build id compared by the launcher would be stronger.
 daemon_stale_line() {
   local p dt bt
   p="$(daemon_pid 2>/dev/null || true)"
@@ -2687,10 +2193,8 @@ daemon_stale_line() {
   case "$dt$bt" in '' | *[!0-9]*) return 0 ;; esac
   # Built before this daemon started? Then it is running what was on disk then.
   [ "$bt" -gt "$dt" ] || return 0
-  # **With the date, not just the clock.** The daemon this was written for had been
-  # up for five days, and `started 14:57` reads as though that were today — the gap
-  # this line exists to name is a day count as often as it is minutes, so both ends
-  # carry the day. The path is quoted as resolved, which is what `BIN` now holds.
+  # With the date, not just the clock: a stale daemon can be days old. The path is quoted as
+  # resolved.
   printf 'daemon %s started %s; %s was built %s — it is not running what is on disk\n' \
     "$p" "$(epoch_fmt "$dt" '+%m-%d %H:%M')" "$BIN/harnessd" "$(epoch_fmt "$bt" '+%m-%d %H:%M')"
 }
@@ -2714,9 +2218,8 @@ room_stale_line() {
 }
 
 # `--listen WORDS...` sets which repositories of this folder the sessions hear gate news of
-# (`-REPO`, `+REPO`, `only REPO|this`, `all`), in the store, before anything starts - so a session
-# started right after is never woken by a muted repository. The words run to the next `--flag`;
-# whatever follows is the launcher's usual command. No words lists the state and exits.
+# (`-REPO`, `+REPO`, `only REPO|this`, `all`), in the store, before anything starts. The words
+# run to the next `--flag`; what follows is the usual command. No words lists the state and exits.
 if [ "${1:-}" = --listen ]; then
   shift
   listen_words=()
@@ -2730,11 +2233,10 @@ if [ "${1:-}" = --listen ]; then
   "${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --workspace "$PWD" --listen "${listen_words[@]}" || exit $?
 fi
 
-# Questions about the store need no socket, no model and no vocabulary. They are
-# answered before any of that is checked, so `letibot --sessions` still works on a
-# box whose model server is down -- which is exactly when you want to look.
+# Questions about the store need no socket, model or vocabulary, so they are answered first:
+# `letibot --sessions` works while the model server is down.
 # The old session flags stay one release as aliases: each names its new spelling on stderr and
-# runs it, so the two cannot drift apart.
+# runs it.
 case "${1:-}" in
   --sessions | --list | --rename | --delete | --archive | --unarchive)
     case "$1" in
@@ -2762,7 +2264,7 @@ case "${1:-}" in
     shift
     exec "${NOGPU[@]}" "$BIN/letibot-multi" session "$@" --store "$STORE"
     ;;
-  # **What Claude Code has on this box** (Package H): the ids `letibot --session cc-<id>`
+  # What Claude Code has on this box (Package H): the ids `letibot --session cc-<id>`
   # takes, so a person can find a uuid without opening the JSONL. No store, no socket.
   --list-claude | --claude-sessions)
     shift
@@ -2773,8 +2275,8 @@ case "${1:-}" in
     shift
     exec "${NOGPU[@]}" "$BIN/harnessd" --providers "$@"
     ;;
-  # **The return trip**, and the one write this launcher offers into a file another program
-  # owns. `--handover SESSION DIR` writes a transcript `claude --resume <path>` opens;
+  # The return trip, the one write into a file another program owns.
+  # `--handover SESSION DIR` writes a transcript `claude --resume <path>` opens;
   # `--note TRANSCRIPT TEXT` appends one line after taking a proven backup;
   # `--revert TRANSCRIPT BACKUP` puts it back, byte for byte.
   --handover)
@@ -2800,17 +2302,16 @@ case "${1:-}" in
     exec "${NOGPU[@]}" "$BIN/harnessd" --revert "$2" "$3"
     ;;
   --where)
-    # **Which socket this folder's daemon listens on, and whether it is up** — for a program
-    # that drives letibot and must not re-derive the path. The answer is the BRIDGE's
-    # (`bridge::daemon::resolve`), not a second copy of the hash here: `$BIN/letibot-multi where`
-    # is that resolver, and it is also what `--ensure` starts a daemon with. This folder is
-    # passed as a word so `LETIBOT_WORKSPACE` keeps its meaning.
+    # Which socket this folder's daemon listens on, and whether it is up, for a program that
+    # drives letibot. The bridge's resolver answers (`$BIN/letibot-multi where`), the same one
+    # `--ensure` uses; no second copy of the hash. The folder is passed so `LETIBOT_WORKSPACE`
+    # keeps its meaning.
     [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the where verb lives there)"
     shift
     exec "$BIN/letibot-multi" where "$WORKSPACE" "$@"
     ;;
   --migrate)
-    # **The whole daemon, on a host and back** (`docs/remote-hosts.md` RH4). A verb and not a
+    # The whole daemon, on a host and back (`docs/remote-hosts.md` RH4). A verb and not a
     # role: it is one act, it needs the store and the rundir this script already knows, and
     # nothing invokes it by a program name.
     [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the migration verb lives there)"
@@ -2819,7 +2320,7 @@ case "${1:-}" in
     ;;
   --reattach)
     # What this script runs when a moved session's forward has dropped, here so an operator can ask
-    # for it by hand. **The argument comes first**: a missing ID is a mistake about this line, where
+    # for it by hand. The argument comes first: a missing ID is a mistake about this line, where
     # a missing binary is a fact about the install, and only one of the two is theirs to fix.
     [ $# -ge 2 ] || need "ID" --reattach
     [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN"
@@ -2827,16 +2328,8 @@ case "${1:-}" in
     exec "$BIN/letibot-multi" migrate --reattach "$1" --store "$STORE_FILE"
     ;;
   --ls | --list-all)
-    # **The byobu view: every folder's daemon, and what is live inside it.**
-    #
-    # `--ls` answers "which folders have one"; `--sessions` answers "what is
-    # on disk, here". Neither answers the question an operator actually has with
-    # three of these running — what is going on, everywhere — and neither gives a
-    # handle to act on. This does both: one numbered list, and the number is what
-    # `--stop N` and `--attach N` take.
-    #
-    # Live sessions only, plus a count of the rest: byobu lists the windows that
-    # exist, not every one ever opened, and a daemon here holds ~70 on disk.
+    # The byobu view: every folder's daemon and what is live inside it, numbered; the number is
+    # what `--stop N` and `--attach N` take. Live sessions only, plus a count of the rest.
     i=0
     found=0
     for r in "$RUNDIR"/*.json; do
@@ -2847,7 +2340,7 @@ case "${1:-}" in
       if socket_is_listening "$sock"; then state=up; else state=STALE; fi
       found=1
       i=$((i + 1))
-      # **The box's room is one of these daemons and none of these folders.** Its record says
+      # The box's room is one of these daemons and none of these folders. Its record says
       # `role: room`; its "workspace" is a directory of its own under the data directory, which
       # is true and is not a folder anybody works in.
       if [ "$(json_str role "$r")" = room ]; then
@@ -2882,11 +2375,9 @@ SESSIONS_EOF
     exit 0
     ;;
   --room)
-    # **The box's room, and nothing else's.** A coordinator is a daemon of its own (`harnessd
-    # --room`): it serves every session on this machine, it has no project and no store, and it
-    # outlives the run that started it — which is why this is a verb of its own rather than a
-    # side effect of the folder's daemon. Bare, it makes sure one is serving (starting one when
-    # none is) and says what it is; `--stop` is how it goes.
+    # The box's room. A coordinator is a daemon of its own (`harnessd --room`) that serves every
+    # session on the machine, has no project and no store, and outlives the run that started it.
+    # Bare, it makes sure one is serving and says what it is; `--stop` stops it.
     ROOM_STOP=0
     shift
     for a in "$@"; do
@@ -2939,7 +2430,7 @@ SESSIONS_EOF
       echo "stopped the room (pid $p)"
       exit 0
     fi
-    # **A stop needs no binary** — it is a signal to a pid. A START does: the coordinator IS this
+    # A stop needs no binary — it is a signal to a pid. A START does: the coordinator IS this
     # box's `harnessd`, and the launcher's own check for it comes later on the run paths.
     [ -x "$BIN/harnessd" ] || die "no harnessd at $BIN (the room's coordinator is that daemon, with --room)"
     room_ensure
@@ -2952,7 +2443,7 @@ SESSIONS_EOF
     echo "  socket  $ROOM_SOCKET"
     echo "  lease   $ROOM_LEASE"
     echo "  log     $ROOM_LOG"
-    # **`started` comes from the LEASE, not from the record**: the lease is the coordinator's own
+    # `started` comes from the LEASE, not from the record: the lease is the coordinator's own
     # claim and survives being started by hand, where the record is only what this launcher wrote.
     started_ms="$(awk -F'\t' 'NR == 1 { print $4; exit }' "$ROOM_LEASE" 2>/dev/null || true)"
     case "$started_ms" in
@@ -2964,7 +2455,7 @@ SESSIONS_EOF
     exit 0
     ;;
   --restart)
-    # **A restart keeps the host jobs** (docs/lifecycle.md, "Jobs across a restart"). The marker
+    # A restart keeps the host jobs (docs/lifecycle.md, "Jobs across a restart"). The marker
     # beside the socket makes the daemon's stop leave them running; one still there after the
     # stop was never read, so the daemon predates this and ended them as a plain stop does.
     [ $# -eq 1 ] || die "--restart takes nothing after it"
@@ -2983,10 +2474,8 @@ SESSIONS_EOF
     LETIBOT_RESTART_STEPS=1 exec "$0" --continue
     ;;
   --stop)
-    # `--stop N` and `--stop DIR` reach another folder's daemon; `--stop` alone is
-    # still this one's. Numbering comes from `--ls`. **The flags go anywhere after it**
-    # (TODO R92.23): `--stop --force 3` stopped THIS folder's daemon, because only `$2` was
-    # read as the target.
+    # `--stop N` and `--stop DIR` reach another folder's daemon; `--stop` alone is this one's.
+    # Numbering comes from `--ls`. The flags go anywhere after it.
     STOP_ALL=0
     STOP_AT=""
     shift
@@ -3008,7 +2497,7 @@ SESSIONS_EOF
     [ "$FORCE" = 1 ] && STOP_REASON="$STOP_REASON --force"
     [ -n "$STOP_AT" ] && STOP_REASON="$STOP_REASON $STOP_AT"
     # interrupt SOCKET -- abort the daemon's running turns; on failure INTR_FAILED holds why.
-    # Not `|| true` (R92.21): a failed interrupt is why a daemon then goes on past SIGTERM,
+    # Not `|| true`: a failed interrupt is why a daemon then goes on past SIGTERM,
     # and the sentence after it has to say so instead of blaming the signal.
     INTR_FAILED=""
     interrupt() {
@@ -3083,7 +2572,7 @@ SESSIONS_EOF
       else
         echo "NOT stopped: $1 (pid $2) is still running ${6}s after SIGTERM." >&2
       fi
-      # **What the daemon itself last said it was doing** — the difference between a stop that is
+      # What the daemon itself last said it was doing — the difference between a stop that is
       # waiting for its children and one that is wedged. Read from the log's tail since the
       # signal, so it is this stop's step and not a previous run's.
       step="$(stop_step "$4" "$5" || true)"
@@ -3127,7 +2616,7 @@ SESSIONS_EOF
       echo "$HOME/logs/harnessd-$(printf '%s' "$1" | sha12).log"
     }
     if [ "$STOP_ALL" = 1 ]; then
-      # **And the exit status agrees with the words**, as the single-target path's
+      # And the exit status agrees with the words, as the single-target path's
       # does: a run that said `NOT stopped` and exited 0 would be a script a caller
       # cannot branch on, which is the same defect one layer out.
       all_failed=0
@@ -3136,9 +2625,8 @@ SESSIONS_EOF
         pid="$(json_num pid "$r")"
         ws="$(json_str workspace "$r")"
         if pid_alive "$pid" && pid_argv "$pid" | head -1 | grep -q harnessd; then
-          # The turns first, as for one daemon (R92.23: `--all` never interrupted). **Except the
-          # room's**, which is a different protocol on its socket: an interrupt there is a frame
-          # it refuses, and a refusal would be reported as turns that could not be interrupted.
+          # The turns first, as for one daemon. Except the room's: its socket speaks another
+          # protocol, and the refusal would read as turns that could not be interrupted.
           sock="$(json_str socket "$r")"
           is_room="$(json_str role "$r")"
           if [ "$is_room" = room ]; then
@@ -3153,9 +2641,8 @@ SESSIONS_EOF
           if [ "$is_room" = room ] && [ -n "$sock" ]; then
             rlog="$HOME/logs/$(basename "$sock" .sock).log"
           fi
-          # **Signal, then WAIT, then say it.** The exit status of `kill` says the
-          # signal was delivered and nothing about whether the process took it —
-          # which is the whole of the 2026-09-16 incident, one verb over.
+          # Signal, then wait, then say it: `kill`'s exit status says the signal was
+          # delivered, not that the process took it.
           if stop_one "$ws (pid $pid)" "$pid" "$rlog" "letibot --stop --all --force"; then
             echo "stopped $ws (pid $pid)"
             rm -f "$r"
@@ -3172,36 +2659,15 @@ SESSIONS_EOF
       exit "$all_failed"
     fi
     if p="$(daemon_pid)"; then
-      # **Abort the turns BEFORE the signal, and for every stop rather than only for
-      # `--force`.** The operator's ruling, verbatim: *"a stop must not start a turn, and
-      # must interrupt the turns it holds"*. What `--force` used to be the only spelling of
-      # is now what stopping MEANS: a busy daemon's worker finishes a turn mid-flight before
-      # honouring SIGTERM, and the socket file and the listener are already gone by then — so
-      # the folder looks empty to every liveness test this box has while the process still
-      # holds the lock, and the next `--continue` starts a daemon that the lock refuses
-      # (measured: eleven of those in one evening's log, five back to back). An interrupt is
-      # the frame an Esc-Esc sends, and it is the one door that reaches a turn in flight.
-      #
-      # The daemon's own half (`Registry::close`) interrupts what it holds when the signal
-      # reaches it, which is what covers `--stop --all` and every stop this script did not
-      # make — a ctrl-c, a systemd unit, another terminal. This is the first of two doors.
-      #
-      # **The box's room is not interrupted**: `letibot-tui --interrupt-all` speaks the session
-      # protocol, and the room's socket answers another one, so the frame would come back a
-      # refusal that reads as turns which could not be interrupted. Its own shutdown drops its
-      # server and gives the lease back.
+      # Abort the turns before the signal, for every stop: a stop must not start a turn and must
+      # interrupt the turns it holds. A busy worker otherwise finishes its turn after SIGTERM, with
+      # socket and listener already gone, and the next start is refused by the lock. The daemon's
+      # own `Registry::close` covers stops this script did not make.
+      # The box's room is not interrupted: `--interrupt-all` speaks the session protocol, which the
+      # room's socket does not.
       [ "$(record_field role)" = room ] || interrupt "$SOCKET"
-      # "stopped" is said AFTER the process is gone, not after the signal is
-      # sent, and the record is removed only then. Measured 2026-09-16: a daemon
-      # wedged on a llama-server that had gone away swallowed SIGTERM, this
-      # printed "stopped", deleted the record, and left an orphan holding the
-      # store and the GPU that `--ls` could no longer see.
-      #
-      # **And the wait is the daemon's own bound, not a guess at it** (2026-10-26): its orderly
-      # stop joins the merge queues, brings the VMs down and waits up to five seconds for subagent
-      # threads, so five seconds of patience called a daemon that was shutting down "ignoring
-      # SIGTERM" and left the next start to be refused by the folder lock it still held. Thirty
-      # seconds, with the daemon's own `stopping: …` line relayed as it comes.
+      # "stopped" is said after the process is gone, and only then is the record removed. The wait
+      # is the daemon's own bound (thirty seconds), with its `stopping: ...` lines relayed.
       line="$(daemon_line)"
       if stop_one "$line" "$p" "$LOG" "letibot --stop --force${STOP_AT:+ $STOP_AT}"; then
         [ "$RESTART_STEPS" = 1 ] || echo "stopped $line"
@@ -3221,7 +2687,7 @@ SESSIONS_EOF
       [ -n "$stale" ] && echo "! $stale"
       echo "socket   $SOCKET"
     elif live_detached; then
-      # **A daemon is here and cannot be reached.** Saying "no daemon" here is the sentence
+      # A daemon is here and cannot be reached. Saying "no daemon" here is the sentence
       # that got a second one started, and saying "up" would be false: the path a head needs
       # is gone. Both halves of the truth, and which one to act on.
       echo "DETACHED: a harnessd is listening on $SOCKET but the socket FILE is gone (pid $(daemon_pid 2>/dev/null || echo ?))"
@@ -3235,19 +2701,15 @@ SESSIONS_EOF
     else
       echo "no daemon for $WORKSPACE"
     fi
-    # **What this folder's owners hold on disk** (docs/lifecycle.md d.9): one `holds:` line per
+    # What this folder's owners hold on disk (docs/lifecycle.md d.9): one `holds:` line per
     # owner, read from the store and the kernel rather than from the daemon, so it answers while
     # the daemon is wedged or gone. Read-only; a box with no store yet prints nothing.
     if [ -x "$BIN/letibot-multi" ]; then
       "$BIN/letibot-multi" holds --folder "$WORKSPACE" --line 2>/dev/null || true
     fi
-    # The local model server is a separate fact from what answers the turns, so it is
-    # reported separately — and labelled for what it is. It said `model`, beside a
-    # daemon whose turns go to a provider, which reads as "this is the model": the
-    # operator's *"so - qwen again"* was about the line two rows up, but this one
-    # invited the same reading. See `daemon_line`.
-    # No resolved address is a refusal here too, not a quiet skip of the line:
-    # "what would answer locally" is half of what --status exists to say.
+    # The local model server is reported separately from what answers the turns, and labelled
+    # for what it is, not as `model` (see `daemon_line`).
+    # No resolved address is a refusal here too: what would answer locally is half of --status.
     if [ -z "$ENDPOINT" ]; then
       # No local home is a fact to report, never a refusal: a provider answers the turns,
       # or nothing does yet and `letibot` asks for a model on the first message (see "THE
@@ -3269,11 +2731,9 @@ SESSIONS_EOF
     fi
     exit 0
     ;;
-  # **The binary's own verbs, which take words after them.** `stats`, `fb`, `boundary` and
-  # `migrate` are commands of `$BIN/letibot-multi`, and with no arm here the first word fell through to
-  # the one-shot below: `letibot stats --since 1d` started a session and handed the model the
-  # sentence "stats --since 1d", which is a billed turn and not a lookup. Each hands its whole
-  # line on unchanged, and the verb's own parser refuses what it does not know by name.
+  # The binary's own verbs (`stats`, `fb`, `boundary`, `migrate`), which take words after them.
+  # Without an arm the first word would fall through to a one-shot prompt. Each hands its line
+  # on unchanged; the verb's parser refuses what it does not know.
   stats | boundary | fb | holds | gc)
     [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the metrics, boundary and lifecycle verbs live there)"
     exec "$BIN/letibot-multi" "$@"
@@ -3327,13 +2787,9 @@ SESSIONS_EOF
     esac
     ;;
   attach)
-    # **The GitHub reviewer seat**: one long-lived poll of one scope. It drafts until
-    # `[github] post` and a token are set, so this verb posts nothing by itself; the seat is the
-    # binary's, because a poll that opens sessions belongs next to the sessions.
-    #
-    # **Each word is named separately, and the second line is the command.** A line that already
-    # said `github` was told it needed "a source and a scope", and the binary is looked for after
-    # the argument: a missing word is the mistake the person can act on.
+    # The GitHub reviewer seat: one long-lived poll of one scope. It drafts until `[github] post`
+    # and a token are set, so this verb posts nothing by itself.
+    # Each missing word is named separately, before the binary is looked for.
     ATTACH_USAGE="\`$ME attach github <org|owner/repo>\` — an org, or one repository"
     [ "$#" -ge 2 ] || die "attach needs a source: github
          $ATTACH_USAGE"
@@ -3351,13 +2807,8 @@ SESSIONS_EOF
     retarget "${2:-}"
     if live_detached; then refuse_detached; fi
     if live; then
-      # **The protocol question, asked here too** — the same one the plain run asks below,
-      # for the same reason and with the same cost. This arm's comment used to say the head
-      # reports the skew itself and that this would be "the same refusal"; it is the same
-      # REFUSAL and not the same SENTENCE. The head prints the bare
-      # `protocol version 36, this daemon speaks 22` and nothing about `--stop`, the socket,
-      # or the fact that every transcript is on disk — which is the whole of what someone
-      # staring at that line needs. Measured 2026-10-09.
+      # The protocol question, asked here too, so a skewed daemon gets the full sentence (`--stop`,
+      # the socket, transcripts on disk) instead of the head's bare version line.
       if up; then :; else version_skew_or_continue; fi
       echo "letibot: attached to $(daemon_line)" >&2
       stale="$(daemon_stale_line)"
@@ -3365,10 +2816,7 @@ SESSIONS_EOF
       warn_swallowed_flags
       exec "$HEAD" --socket "$SOCKET"
     fi
-    # **No probe here when nothing is listening, and that is still right.** This path
-    # starts nothing, so there is nothing to guard: a daemon that is not there is the
-    # message below. Probing would be a head process to re-ask a question `live` just
-    # answered. (When one IS listening, the probe above runs — see the note there.)
+    # No probe when nothing is listening: this path starts nothing, and `live` already answered.
     echo "letibot: no harnessd for $WORKSPACE - run \`letibot\` there to start one" >&2
     echo "         (letibot --ls lists the folders that have one)" >&2
     exit 1
@@ -3378,14 +2826,9 @@ esac
 # Which session this invocation is about, decided before anything is started.
 # SESSION is the id to reopen; NEW_TITLE (when set) means make a fresh one instead.
 #
-# **A PLAIN RUN DECLARES NOTHING HERE, AND THAT IS LOAD-BEARING.** With no `--session` on the
-# daemon's command line, `harnessd` mints a new id, so the daemon a plain `letibot` starts opens a
-# FRESH session — it does not resume the newest one, and nothing here looks for it. The operator,
-# 2026-10-26: *"if i just start leticode in stroppy-io, without --continue it still attaches to
-# the latest session, like with --continue"*. In this tree only `--continue` (and `--session ID`)
-# ever names a session to reopen; a start is always a fresh one, which is what `--help` says and
-# what `tests/launcher.sh` now pins. A start that reopened the newest would also make the two
-# verbs indistinguishable, and the second thing typed would land in a conversation nobody chose.
+# A plain run declares nothing here, and that is load-bearing: with no `--session`, harnessd
+# mints a new id, so a plain start opens a fresh session. Only `--continue` and `--session ID`
+# reopen one. `tests/launcher.sh` pins it.
 SESSION=""
 NEW_TITLE=""
 WANT_NEW=0
@@ -3396,16 +2839,9 @@ STARTED=0
 case "${1:-}" in
   --continue | -c)
     shift
-    # **AN ID HERE MEANS `--session`, AND ANYTHING ELSE IS REFUSED** (2026-10-26). `--continue`
-    # takes no argument, so `leticode --continue s-1791394076177451000` fell through to the
-    # one-shot branch below and ran a prompt whose whole text was the id — into the NEWEST
-    # session, which is the one the operator was trying to reopen. That session then acted on the
-    # string: an ssh to another box, a benchmark, an edit to a file.
-    #
-    # A session id is not ambiguous, so it is read as the verb it names and the reading is said
-    # out loud. Anything else after `--continue` is refused: a one-shot's prompt is the FIRST
-    # argument and only the first, and an argument that arrives after a verb is a mistake about
-    # the verb rather than a prompt nobody meant to type.
+    # An id after `--continue` means `--session`, said out loud; anything else is refused. A
+    # one-shot prompt is only the first argument, and text after a verb is a mistake about the
+    # verb, not a prompt to run in the newest session.
     if [ $# -gt 0 ] && [[ "$1" =~ ^s-[0-9]+(#t[0-9]+)?$ ]]; then
       echo "letibot: --continue takes no argument; $1 is a session id, so this is --session $1" >&2
       SESSION="$1"
@@ -3423,17 +2859,11 @@ case "${1:-}" in
          to name one: $ME --session ID (--sessions lists them); to run a prompt, put it first" >&2
       exit 1
     fi
-    # Scoped to this workspace by default. A session's workspace is a stored fact,
-    # and reopening a ~/ conversation while standing in Projects/rano is almost
-    # never what was meant -- so the scope is a path prefix with the exact match
-    # preferred, which lets `--continue` work from a subdirectory without reaching
-    # sideways into a sibling tree.
-    # stderr is deliberately NOT captured: harnessd prints which session it picked,
-    # its title, its row count and its workspace there. Continuing the wrong
-    # conversation is not a keystroke you can take back -- the next thing you type
-    # lands in it -- so the pick is announced before the head opens over it.
-    # **Only when no id was given** (see above): a named session is not a question about which
-    # one is newest, and asking would overwrite the answer the operator already gave.
+    # Scoped to this workspace by default: a path prefix with the exact match preferred, so
+    # `--continue` works from a subdirectory without reaching into a sibling tree.
+    # stderr is not captured: harnessd announces the pick (title, rows, workspace) before the head
+    # opens, since the next thing typed lands in it.
+    # Only when no id was given: a named session is not a question about the newest.
     if [ -z "$SESSION" ]; then
       if ! SESSION="$("${NOGPU[@]}" "$BIN/harnessd" --store "$STORE" --latest-session --scope "$WORKSPACE")"; then
         echo "letibot: no session with anything in it under $WORKSPACE." >&2
@@ -3455,16 +2885,10 @@ case "${1:-}" in
     ;;
 esac
 
-# **A SESSION THAT LIVES ON A HOST IS ATTACHED THROUGH ITS FORWARD.**
-#
-# `letibot --migrate SESSION --to lab2x1` moves the session's daemon there and records the
-# forwarded socket beside this folder's daemon records (`docs/remote-hosts.md` RH4). A head
-# that kept looking at THIS folder's daemon would open the copy left behind — which the
-# daemon now refuses by name, because a marked copy is not the conversation. So the record
-# is read here, the forward is re-established when it has dropped, and the head goes there.
-#
-# A dropped forward leaves its socket FILE behind and nothing answering on it, so the
-# question is asked of the socket (`--probe`) and not of the file.
+# A session that lives on a host is attached through its forward. `--migrate` records the
+# forwarded socket beside this folder's daemon records (`docs/remote-hosts.md` RH4); the copy
+# left behind refuses by name. A dropped forward leaves its socket file, so the socket is
+# asked (`--probe`), not the file, and the forward is re-established.
 if [ -n "$SESSION" ] && [ "$WANT_NEW" != 1 ]; then
   MIGRATED_RECORD="$RUNDIR/migrated-$SESSION.json"
   if [ -f "$MIGRATED_RECORD" ]; then
@@ -3488,40 +2912,19 @@ fi
   From an install the binaries should be beside this script, so re-install, or
   point LETIBOT_BIN at the directory holding them."
 
-# **THE LAUNCHER NEVER GATES ON A MODEL.**
+# The launcher never gates on a model. A run starts whatever answers or not, and the head
+# asks: the first message sent while the model cannot be reached opens the `/models` chooser
+# with the reason, and a cloud row with no key goes through the key card and becomes
+# `[default]`. The check is per attempt, so a server that comes up later answers.
+# `--provider` stays as a shortcut past the chooser.
 #
-# There was a gate here, in three layers: no `[model."…"]` home and no provider died on
-# `endpoint_refusal` (now `endpoint_missing`, a note); nothing answering `/health` and no
-# provider died on *"nothing serving on …"*; and at a terminal that second death became a
-# question, *"1) deepseek 2) glm 3) grok"*. Each layer was a fix for the one before it,
-# and together they were a second model chooser — three rows, in shell, before the screen
-# exists — beside the one the head already has. The operator, 2026-10-18, after `leticode` on a box with no local model
-# refused that way: *"idk why i even have to do --provider. horrible ux - we already have
-# models chooser and keys asker"*.
+# With no home for the model, no `--endpoint` is invented and no `--vocab` passed: token ids for
+# a model with no address would go to whatever the default port serves. A daemon with no GGUF
+# and no provider refuses a local turn by name (`NO_MODEL_CHOSEN`).
+# `--vocab` is passed when the GGUF file is there or LETIBOT_VOCAB named it. A provider needs
+# none: the ledger uses the byte vocabulary (`letibot_tokencore::Vocab::bytes`).
 #
-# So a run starts whatever answers or does not, and the HEAD asks: the first message sent
-# while the session's model cannot be reached — nothing on the local `/health`, or no local
-# model on this box at all — opens the `/models` chooser with the reason on it, and a cloud
-# row with no key goes through the head's key card and becomes `[default]` in providers.toml,
-# so the question is asked once per box. The check is per attempt, so a llama-server that
-# comes up later simply answers. `--provider` stays, as a shortcut past the chooser.
-#
-# **With no home for the model, the daemon keeps its own default endpoint** — no
-# `--endpoint` is invented here. And no `--vocab` either: a local server takes TOKEN IDS, and
-# ids rendered for a model nobody gave an address to would be sent to whatever the daemon's
-# default port is serving — the 2026-09-10 incident `endpoint_missing`'s comment names. A
-# daemon started with no GGUF and no provider has no model chosen; it refuses a TURN on the
-# local route by name (`NO_MODEL_CHOSEN` in harness.rs) and the head's chooser is the way on.
-#
-# **The vocabulary goes with the same question.** A local model needs the GGUF it serves,
-# so `--vocab` is passed when it names a file that is there (a box with the model keeps
-# using it, and its sessions keep their ids) or when LETIBOT_VOCAB asked for it by name. A
-# provider needs none — the daemon keeps its ledger in the byte vocabulary
-# (`letibot_tokencore::Vocab::bytes`). A GGUF named by default and missing used to be
-# passed anyway and refused by the daemon at start; it is the no-model case above now.
-#
-# `tests/launcher.sh` holds the cases: nothing serving and no provider starts, and the head
-# runs.
+# `tests/launcher.sh` holds the cases: nothing serving and no provider starts, and the head runs.
 if [ -z "$ENDPOINT" ] && [ -z "$PROVIDER_SET" ] && [ -z "$(default_provider provider)" ] &&
   [ "$MODEL_FROM" != "the default (no flag chose one)" ]; then
   {
@@ -3541,24 +2944,10 @@ if [ -z "${LETIBOT_VOCAB:-}" ]; then
   fi
 fi
 
-# THE RUNNING DAEMON'S MODEL MUST BE THE MODEL ON THE PORT.
-#
-# A daemon renders and submits TOKEN IDS, so its vocab has to be the vocab of the
-# server on the other end. Nothing reconciles that at runtime: --dialect, --model
-# and --vocab are decided when the daemon starts, so `letibot --glm` against an
-# already-running Qwen daemon sets three variables that are then never used, and
-# the detection above is equally powerless -- it also only feeds a daemon START.
-#
-# Measured 2026-09-10, and it is why this check exists: GLM took port 8080, the
-# Qwen-bound daemon stayed up, and every turn came back
-#   http 400 {"error":{"code":400,"message":"Prompt contains invalid tokens"}}
-# That is the honest failure -- ids from one vocab are not ids in the other, and
-# llama.cpp validates them. A client sending `messages` rather than ids would have
-# received a plausible WRONG ANSWER instead of a 400, which is the whole argument
-# for submitting ids.
-#
-# Refuse in the same call that would have failed, and hand over the fix, per
-# docs/tool-design-brief.md 2.1.
+# The running daemon's model must be the model on the port. A daemon submits token ids, and
+# --dialect/--model/--vocab are fixed at its start, so `letibot --glm` against a running
+# Qwen daemon changes nothing, and llama.cpp answers `Prompt contains invalid tokens`.
+# Refuse here and hand over the fix, per docs/tool-design-brief.md 2.1.
 daemon_models() {
   # Only the pids actually LISTENING on OUR socket. A stale daemon whose path was
   # rebound out from under it still shows in `ps`, and killing or trusting the
@@ -3572,14 +2961,9 @@ daemon_models() {
 }
 
 if live && [ -n "$ENDPOINT" ]; then
-  # THE PROBE'S FAILURE IS NOT THE LAUNCHER'S FAILURE (found 2026-10-09, measured:
-  # `letibot --continue` in a folder whose model server was down printed the resolved
-  # session and exited 7 without ever exec'ing the head -- exit 7 being curl's own
-  # connection-refused code, surfaced through `set -e -o pipefail` by this very
-  # assignment). The probe exists to catch a VOCAB MISMATCH, which needs the server to
-  # ANSWER; a server that does not answer is not a mismatch, is not this pre-flight's
-  # verdict to deliver, and is the daemon's own story on the next turn. `|| :` keeps
-  # the empty answer an answer.
+  # The probe's failure is not the launcher's: it exists to catch a vocab mismatch, which needs
+  # an answer. A server that does not answer is the daemon's story on the next turn. `|| :`
+  # keeps curl's exit code from aborting under `set -e -o pipefail`.
   SERVING="$(curl -sf -m 3 "http://$ENDPOINT/props" 2>/dev/null |
     sed -n 's/.*"model_alias"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)" || :
   BOUND="$(daemon_models | paste -sd, -)"
@@ -3598,21 +2982,14 @@ fi
 
 mkdir -p "$STORE_DIR" "$(dirname "$LOG")" "$(dirname "$SHARED_LOG")"
 
-# **THE BOX'S ROOM, BEFORE ANY SESSION CAN LOOK FOR IT** (`docs/room.md` § *Still owed* item 4).
-#
-# A session's `room` tool is seated at `Harness::open` from the socket that exists THEN — a
-# coordinator started afterwards is one the session cannot see — so this has to run before the
-# daemon opens its first session, which is exactly here: after the verbs that touch no daemon
-# (`--stop`, `--ls`, `--status`) and before the one-shot and the attach/start.
-#
-# It is not fatal and it is not quiet: a start that fails prints the coordinator's own sentence
-# and the run goes on, because a session with no room is a session that works.
+# The box's room, before any session can look for it. A session's `room` tool is seated at
+# `Harness::open` from the socket that exists then, so this runs after the verbs that touch no
+# daemon and before the one-shot and the attach/start. Not fatal and not quiet: a failed start
+# prints the coordinator's sentence and the run goes on.
 room_ensure
 
-# One-shot: no daemon, no TUI. Useful in scripts and for a quick question. The
-# socket is its own, so two one-shots side by side do not fight over the
-# folder's (measured: the second said "already served by a live daemon" and
-# exited before its prompt ran).
+# One-shot: no daemon, no TUI. Its socket is its own, so two one-shots side by side do not
+# fight over the folder's.
 if [ $# -gt 0 ]; then
   rundir
   ONESHOT_SOCK="$RUNDIR/oneshot-$$.sock"
@@ -3629,67 +3006,39 @@ if [ $# -gt 0 ]; then
     ${SESSION:+--session "$SESSION"} --prompt "$*"
 fi
 
-# **A flag that shapes the SESSION cannot be applied to a daemon that is already
-# running.** (definition; called from both the attach and the start paths) The role, the model, the provider and the search backend are all
-# decided when harnessd starts and are cloned into every session it opens, so
-# passing one here while a daemon is up used to do exactly nothing, silently.
-#
-# Measured 2026-09-15: `leticode --web-search brave` against a daemon started
-# without it attached, seated no `web_search`, and said so nowhere -- the
-# operator reasonably concluded the feature did not work. That is the same
-# "a banner saying one thing and a session doing another" this tree refuses
-# everywhere else, and a launcher is not exempt from it.
-#
-# It is a WARNING rather than a refusal: attaching is still what you asked for
-# and the session is still usable. What it may not do is pretend the flag landed.
+# A flag that shapes the session cannot apply to a daemon already running: role, model,
+# provider and search backend are fixed when harnessd starts. Called from both the attach and
+# the start paths. A warning, not a refusal: attaching still works, but the launcher must not
+# pretend the flag landed.
 
 if live; then warn_swallowed_flags; fi
 
-# **And nothing is ever started over a daemon that is listening without its file.** This is
+# And nothing is ever started over a daemon that is listening without its file. This is
 # the state that bricked a session: `live` is true, so the start branch below is not taken,
 # and every path past here would have attached a head to a socket path that does not exist.
 if live_detached; then refuse_detached; fi
 
 if ! live; then
-  # **The probe belongs here and only here.** This is the branch that is about to
-  # *start* a daemon, and starting one over a live-but-skewed daemon unlinks its
-  # socket and orphans every session it holds. `live` already said nothing is
-  # listening; `up` is the belt to that braces, because it is a real conversation
-  # rather than a netlink dump.
+  # The probe belongs here only: this branch is about to start a daemon, and starting one over
+  # a live-but-skewed daemon orphans its sessions. `up` is a real conversation, not a socket dump.
   version_skew_or_continue
-  # **AND A DAEMON THAT IS STILL THERE IS NOT A DAEMON THAT IS GONE.** `live` asks the
-  # socket path, and a daemon that was asked to stop unlinks that file and drops its
-  # listener within a poll of the signal while it finishes the turn it was holding. In
-  # that window nothing this box tests can see it — and the folder LOCK still can, which
-  # is what refused the second daemon ten times in one evening: `--continue` started one,
-  # and harnessd answered *"is already served by a live daemon (pid N) ... stop the one
-  # named here (`letibot --stop`) and start again"*.
-  #
-  # The record beside the socket is the fact that survives that window: `--stop` removes
-  # it only after the process is gone. So a pid that is still alive and is a harnessd is
-  # a daemon on its way out, and the honest thing is to WAIT for it rather than to start a
-  # second one — with the daemon interrupting its own turns at the signal, that wait is
-  # milliseconds. `wait_gone` is the same bounded wait `--stop` uses, so the two verbs
-  # cannot disagree about what "gone" means.
+  # A daemon that is still there is not gone. A stopping daemon unlinks its socket and drops
+  # its listener while finishing its turn, but still holds the folder lock. The record survives
+  # that window (`--stop` removes it after the process is gone), so a live harnessd pid in it is
+  # waited for (`wait_gone`, the same bound `--stop` uses) rather than started over.
   if _going="$(daemon_pid)"; then
-    # **And it has to be THIS folder's daemon.** The record's pid can be stale, and a pid can
-    # be recycled onto another folder's harnessd — which would make a stranger's daemon the
-    # reason this folder waits, and then the reason it refuses. A daemon's argv names the
-    # socket it serves, so that is the question asked. No pipe into `grep`: `pid_argv` is read
-    # whole, so no SIGPIPE and no `set -e` abort from an assignment.
+    # And it has to be this folder's daemon: a recycled pid could be another folder's harnessd.
+    # A daemon's argv names its socket. `pid_argv` is read whole, so no SIGPIPE under `set -e`.
     _going_argv="$(pid_argv "$_going")"
     if grep -qxF -- "$SOCKET" <<<"$_going_argv"; then
       echo "letibot: a harnessd for $WORKSPACE (pid $_going) is still going - waiting for it" >&2
-      # **Thirty seconds, and what IT says it is doing** (2026-10-26): a daemon on its way out is
-      # bounded but not quick (the merge queues joined, the subagent threads waited for), and the
-      # ten seconds this used to allow turned a stop that was working into a refusal to start.
+      # Thirty seconds, relaying what the daemon says: its way out is bounded but not quick
+      # (merge queues joined, subagent threads waited for).
       _going_from="$(log_at "$LOG")"
       if ! stop_wait "letibot: a harnessd for $WORKSPACE (pid $_going)" "$_going" "$LOG" \
         "$_going_from" "$STOP_TENTHS"; then
-        # **Not `refuse_detached`.** That sentence says the daemon is still LISTENING with
-        # its socket file gone, and nothing was listening here — only a pid holding the
-        # folder claim. Saying the other thing would be a report about a state nobody
-        # measured, at the one moment a person is trying to get back into their session.
+        # Not `refuse_detached`, which says the daemon is still listening; nothing was here, only a
+        # pid holding the folder claim.
         echo "letibot: a harnessd for $WORKSPACE (pid $_going) still holds this folder and is" >&2
         echo "         not taking heads, $((STOP_TENTHS / 2))s after it was asked to stop. Nothing was started" >&2
         echo "         over it: two daemons for one folder interleave rows into one transcript." >&2
@@ -3702,11 +3051,9 @@ if ! live; then
   fi
   # Nothing answered, so the file is a leftover.
   rm -f "$SOCKET"
-  # **The daemon opens its FIRST session eagerly, and that session is the one this start is
-  # about.** `--session ID` here is what makes a resume — and its hash-chain check — happen at
-  # startup, where a failure is a line in this terminal rather than a surprise inside a prompt;
-  # with no `--session` (a plain run, and `--new`) the daemon mints a fresh id, which is the
-  # fresh session those two verbs mean. `--title` names it when `--new` gave one.
+  # The daemon opens its first session eagerly, and that is the one this start is about.
+  # `--session ID` makes a resume and its hash-chain check happen at startup; without it (a
+  # plain run, `--new`) the daemon mints a fresh id. `--title` names it when `--new` gave one.
   STARTED=1
   rundir
   scope_ask_here
@@ -3761,39 +3108,20 @@ if ! live; then
     tail -15 "$LOG" >&2
     exit 1
   }
-  # **Record the pid the DAEMON claims, not the one this shell started.** By here the
-  # claim is taken and the listener is up, so the lock names the process that holds the
-  # folder. `--stop --all` reads these records directly and cannot consult `daemon_pid`,
-  # so a record holding the wrong number is a stop that kills the wrong thing — which is
-  # exactly what was measured on 2026-10-11. `$DPID` stays as the fallback for a box whose
-  # `/proc/locks` this cannot read.
+  # Record the pid the daemon claims (the lock), not the one this shell started: `--stop --all`
+  # reads these records directly. `$DPID` is the fallback where `/proc/locks` is unreadable.
   record_write "$(folder_lock_pid || echo "$DPID")"
-  # **This head attaches to THAT session by being the head of this daemon**, and it is handed
-  # no `--resume` and no `--new-session`: a start has already opened the session this
-  # invocation is about, whether that is the one `--continue` named or the fresh one a plain
-  # run or `--new` asked for. Asking a second time here is what left a folder's daemon holding
-  # two — the empty first session, which is what the NEXT plain attach lands on, and the one
-  # the operator was in. (That is the shape of the 2026-10-26 report: a `--new` head exited and
-  # the folder's daemon was on a session nobody was looking at.)
+  # This head attaches by being the head of this daemon, with no `--resume` and no
+  # `--new-session`: the start already opened the session. Asking again would leave the daemon
+  # holding two, and the next plain attach would land on the empty one.
   [ "$RESTART_STEPS" = 1 ] && step_line "restart: attaching"
   exec "$HEAD" --socket "$SOCKET"
 fi
 
-# **And ask it the protocol question BEFORE a head is handed to it.** Everything above
-# this line is the cheap check — is anything listening — and until 2026-10-09 that was the
-# whole of this path's evidence. `version_skew_or_continue` then ran only in the branch
-# that is about to START a daemon, so an already-listening daemon from an older build was
-# handed a head anyway: the launcher printed `attached to …`, the head was refused at its
-# first frame, and the person was left at a bare `protocol version 36, this daemon speaks
-# 22` with a live session they could no longer open. MEASURED 2026-10-09 on a daemon up
-# since 09-21, whose warm KV is minutes to rebuild.
-#
-# `up` is the same conversation `--probe` runs, and it is the CHEAP one — 0.02 s measured
-# on a 1397-row session against 0.14 s for a whole head — so the argument that kept it off
-# this path ("four times too expensive", see `up`) does not weigh against a refusal that
-# costs somebody their session. A refusal for any OTHER reason falls through untouched:
-# `version_skew_or_continue` matches on the protocol sentence alone, and the head still
-# gets its chance to report whatever is actually wrong.
+# Ask the protocol question before a head is handed to an already-listening daemon, so an
+# older build gets the full refusal instead of the head's bare version line. `up` is the
+# cheap probe. Any other refusal falls through: `version_skew_or_continue` matches only the
+# protocol sentence.
 if up; then :; else version_skew_or_continue; fi
 # A daemon is already up. Ask it, rather than restarting it: a restart would cost
 # every other session on this box to open one, and one of them may be mid-turn.
@@ -3803,22 +3131,16 @@ else
   echo "letibot: attached to $(daemon_line)" >&2
 fi
 
-# **And say whether what is answering is what is on disk**, before anything else is
+# And say whether what is answering is what is on disk, before anything else is
 # said: a stale daemon makes every other line here describe the wrong build. See
 # `daemon_stale_line` for why this is a sentence and not a restart.
 stale="$(daemon_stale_line)"
 [ -n "$stale" ] && echo "letibot: ! $stale" >&2
 
-# LANDED IS NOT RUNNING. `--bash` is a DAEMON flag: it decides which tools the seat
-# is given at open, and a daemon that is already up was opened without it. Attaching
-# here gets you that daemon's seat, not the one you just asked for -- and the way
-# you would find out is a model saying it has no `bash` tool, three turns in.
-# So say it here, where the choice is still yours to make.
-# Read the daemon's own argv out of /proc, matched by EXACT process name. The
-# obvious spelling -- `pgrep -af 'harnessd .*--bash'` -- matches its own caller:
-# any shell whose command line happens to mention both strings is a hit, and the
-# check then reports that a shell-less daemon has a shell. Measured here on
-# 2026-09-11, one hour after it was written.
+# Landed is not running. `--bash` is a daemon flag that decides the seat's tools at open, so
+# attaching to a daemon started without it gives no shell. Say so here.
+# Read the daemon's argv from /proc, matched by exact process name: `pgrep -af` would match
+# its own caller's command line.
 daemon_has_bash() {
   local p
   p="$(daemon_pid)" || return 1
@@ -3838,7 +3160,7 @@ if [ -n "$BASH_ON" ] && ! daemon_has_bash; then
 fi
 
 if [ "$WANT_NEW" = 1 ] && [ "$STARTED" = 0 ]; then
-  # **Only when the daemon was already up.** With none, the start above opened the fresh session
+  # Only when the daemon was already up. With none, the start above opened the fresh session
   # this verb asked for and the head attaches to that one; asking here as well would open a
   # SECOND session in the same daemon and leave the first empty.
   exec "$HEAD" --socket "$SOCKET" \

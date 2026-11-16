@@ -70,7 +70,7 @@ fi
 # step installs what the gate built, so a launcher is not its business.
 launchers=$(sed -n 's/^LAUNCHERS="\(.*\)"$/\1/p' "$tree/install.sh" | head -1)
 
-# **The two the launcher execs are not optional**, whatever the list says: a `BINARIES=` that
+# The two the launcher execs are not optional, whatever the list says: a `BINARIES=` that
 # had lost one would install a directory the launcher cannot start, silently.
 for name in harnessd letibot-tui; do
   case " $bins " in

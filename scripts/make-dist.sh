@@ -345,7 +345,7 @@ fi # the Linux half, from the RUNPATH check down; macOS's is the block above it
 
 COPYFILE_DISABLE=1 tar -czf "$outdir/$name" -C "$stage" .
 
-# **Prove the archive is what the installer expects before it is published.** Every
+# Prove the archive is what the installer expects before it is published. Every
 # file at the root, the three binaries executable, and no extra entries — a stray
 # file riding along into a release is a thing that only shows up on a user's disk.
 listing=$(tar -tzf "$outdir/$name" | sed 's|^\./||' | grep -v '^$' | sort)
