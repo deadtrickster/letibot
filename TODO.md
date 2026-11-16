@@ -913,6 +913,10 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 **Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Batch B12 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I53. Record: `docs/review/2026-11-16/INTEGRATION.md`.
 
+**Built 2026-11-16 on branch `b12-carve` (`5927e5f07`), awaiting the gate.** `carve` takes `BEGIN IMMEDIATE` on its own connection, with `pragmas`, before staging and holds it to the delete's commit. Claims are re-checked inside the lock, and the delete is refused if any staged transcript's ids, row counts or last seq differ from the copy. `open_transition` refuses an uncarved key whose project file already exists. No schema change, no number taken. Test `rows_appended_after_the_claim_check_are_not_deleted_uncopied` (hook `carve_with`) failed on base in both halves - the mid-carve open returned `Ok`, and the committed append was deleted (2 rows kept of 3) - and passes after. tokencore tests and the harnessd `store_split_*` tests are green. `restart_restore` fails 1-2 different tests per run on bwrap's missing `~/.cache/letibot/gc/.../s-restart-parent/tmp/session` path, unrelated to this change.
+
+**Residue.** A daemon whose handle predates the carve and claims after the commit still writes to `sessions.db`. An append to a carved transcript fails the seq trigger loudly, but a new transcript lands there unseen. `--project` still requires the daemon stopped. Other projects' writers wait on the carve's lock up to their 90 s ladder, so a carve longer than that fails their writes. The gap between `BEGIN IMMEDIATE` and the project file's creation is not covered by the `open_transition` refusal, but a handle opened there blocks on the lock. Revisit cutting the carve mode (decision 18) after this lands.
+
 **Scope.** `tokencore/src/migrate_split.rs`, `store/split.rs` `open_transition`. Lock the carve now: one IMMEDIATE transaction plus an `open_transition` refusal (C15, decision 18).
 
 **Proving tests.** `rows_appended_after_the_claim_check_are_not_deleted_uncopied`. Each fails on the snapshot.
