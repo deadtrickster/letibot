@@ -275,29 +275,30 @@ impl ModeStore {
     }
 }
 
-/// The rows `modes.tsv` held, into the store - once per store. A row the store already
-/// has is not overwritten (the store's is newer), and the file is left exactly where it is
+/// A moved session's rows: its own, and its project's when `project` names one (a root's).
+/// The consent is written only beside the point that needs it.
 pub fn record(
     store: &std::sync::RwLock<ModeStore>,
-    workspace: &Path,
+    project: Option<&Path>,
     session_id: &str,
     mode: Mode,
     consented: bool,
-    session_moved: bool,
 ) -> std::io::Result<()> {
     let consented_here = consented && mode.name == Mode::ALLOW_ALL.name;
     let when = consented_here.then(letibot_flowy::seat::rfc3339_now);
     let mut st = store.write().unwrap_or_else(|e| e.into_inner());
-    st.set(workspace, mode)?;
-    if let Some(when) = &when {
-        st.set_consent(workspace, when)?;
-    }
-    if session_moved {
-        st.set_session(session_id, mode, when.as_deref())?;
+    st.set_session(session_id, mode, when.as_deref())?;
+    if let Some(workspace) = project {
+        st.set(workspace, mode)?;
+        if let Some(when) = &when {
+            st.set_consent(workspace, when)?;
+        }
     }
     Ok(())
 }
 
+/// The rows `modes.tsv` held, into the store - once per store. A row the store already
+/// has is not overwritten (the store's is newer), and the file is left exactly where it is
 pub fn import_tsv(db: &Path, tsv: &Path) -> std::io::Result<usize> {
     let Ok(text) = std::fs::read_to_string(tsv) else {
         return Ok(0);

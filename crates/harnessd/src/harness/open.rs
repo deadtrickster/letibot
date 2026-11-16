@@ -452,6 +452,9 @@ struct Placed {
     whole_host: bool,
 }
 
+/// Where a point came from when no row named one.
+const FLAG_SOURCE: &str = "daemon flag / default";
+
 /// A session's point from its rows, for a parent that is not open here: its own row, held under its
 /// own parent's, else its project's row, else `base`. The chain stops at a depth no spawn reaches.
 fn stored_point(
@@ -715,7 +718,7 @@ impl Harness {
         // The mode is a session property, resolved after the workspace is final: the per-project
         // point is looked up now (longest ancestor wins), so a project with no row keeps the
         // daemon's default and one with a row takes its own.
-        let mut mode_source = String::from("daemon flag / default");
+        let mut mode_source = String::from(FLAG_SOURCE);
         {
             // Read fresh: another daemon may have written a row since this one started.
             let mut store = parts.mode_store.write().unwrap();
@@ -2949,6 +2952,24 @@ impl Harness {
                     // looks when the settings row is not in front of them.
                     notes.push(why.to_string());
                 }
+            }
+            // A stored row this session cannot carry is not the operator's word for this open:
+            // it falls to the nearest point it can carry, and says so. A flag still refuses.
+            if cfg.parent_session_id.is_none()
+                && mode_source != FLAG_SOURCE
+                && cfg.mode.check(&have, seats).is_err()
+            {
+                let fallback = cfg.mode.inherited_by(&have, seats, cfg.seat.as_str());
+                let said = format!(
+                    "the stored `{}` ({mode_source}) cannot be carried here, so this session \
+                     opens at `{}`: {}",
+                    cfg.mode.name,
+                    fallback.mode().name,
+                    cfg.mode.check(&have, seats).unwrap_err()
+                );
+                cfg.mode = fallback.mode();
+                mode_source = format!("{mode_source}, fallen back");
+                notes.push(said);
             }
             if let Err(why) = cfg.mode.check(&have, seats) {
                 return Err(HarnessError::Setup(why));

@@ -3331,40 +3331,7 @@ impl Harness {
                 return;
             }
         };
-        // The rows are written here too (`modes::record`, the worker's writes). This said the
-        // worker's path would write them; it never saw this command, which this turn had already
-        // taken off the queue.
-        let consented = *consented;
-        // A child's point only narrows, and a refused one writes no row either.
-        if let Err(why) = self.mode_past_parent(mode, consented) {
-            self.hub.warn(
-                "mode_set_refused",
-                format!("this session stays at `{}`: {why}", self.cfg.mode.name),
-            );
-            return;
-        }
-        let moved = self.set_mode_consented(mode, consented);
-        // And written down, as the worker's door writes it - applying the
-        // point without writing would lose a `/mode` typed while the session worked at the
-        // next restart.
-        if let Err(e) = crate::modes::record(
-            &self.mode_store,
-            self.workspace(),
-            &self.cfg.session_id,
-            mode,
-            consented,
-            moved.is_ok(),
-        ) {
-            self.hub.warn(
-                "mode_unpersisted",
-                format!(
-                    "`{}` applies to this session now, but could not be recorded, so a restart \
-                     will not bring it back: {e}",
-                    mode.name
-                ),
-            );
-        }
-        match moved {
+        match self.move_mode(mode, *consented) {
             Ok(said) => {
                 let applied = self.cfg.mode;
                 self.hub

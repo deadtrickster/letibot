@@ -181,8 +181,7 @@ pub struct Harness {
     /// because the claim is a LIFETIME and not a permission check: it is what a second process's open is
     /// refused by. `None` with no store, and for a session whose live copy is elsewhere.
     _writer: Option<crate::writer::Claim>,
-    /// The daemon's mode rows, which a `/mode` taken by a running turn writes
-    /// (`apply_queued_mode`, through [`crate::modes::record`]).
+    /// The daemon's mode rows, written by [`Harness::move_mode`] and nothing else.
     mode_store: std::sync::Arc<std::sync::RwLock<crate::modes::ModeStore>>,
     /// The worktree and branch this session's work must end up on, for a `task_start` child, and `None`
     /// for every other session. Read as a turn ends, so a dirty tree is told once and the turn goes on.
@@ -777,12 +776,10 @@ impl Harness {
         let mut said = format!("this session is at `{}` from the next call", mode.name);
         if vouched {
             // Said here and not only on the card: the banner, the log warning and this sentence are what
-            // a person reads later. Not "the project's row still reads allow-all" - it does not, because
-            // nothing was written.
+            // a person reads later.
             said.push_str(
                 " — nothing confines this box, and this point stands on your \
-                 confirmation rather than on a boundary. It lasts for this session \
-                 only: nothing was written down, and a daemon restart drops it",
+                 confirmation rather than on a boundary",
             );
         }
         if dropped > 0 {
@@ -808,6 +805,42 @@ impl Harness {
         let adjudicator = self.gate().describe();
         self.wiring.adjudicator = adjudicator;
         self.publish_settings();
+        Ok(said)
+    }
+
+    /// Every door that moves a point: check, move, then write. The session row is written after a
+    /// move; the project row only for a root, so a point this session could not carry never
+    /// becomes the project's. A write that fails leaves the move in force and says so.
+    pub fn move_mode(
+        &mut self,
+        mode: letibot_tools::mode::Mode,
+        consented: bool,
+    ) -> Result<String, String> {
+        let mut said = self.set_mode_consented(mode, consented)?;
+        let root = self.parent_point.is_none();
+        if let Err(e) = crate::modes::record(
+            &self.mode_store,
+            root.then_some(self.cfg.workspace.as_path()),
+            &self.cfg.session_id,
+            mode,
+            consented,
+        ) {
+            self.warn(
+                "mode_unpersisted",
+                format!(
+                    "`{}` applies to this session now, but could not be recorded, so a restart \
+                     will not bring it back: {e}",
+                    mode.name
+                ),
+            );
+        }
+        if root {
+            said.push_str(&format!(
+                ". {} is at `{}` from every later session too",
+                self.cfg.workspace.display(),
+                mode.name
+            ));
+        }
         Ok(said)
     }
 

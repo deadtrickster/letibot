@@ -282,3 +282,56 @@ fn a_reopened_child_follows_its_parent_once_the_parent_opens() {
         h.config().mode.name
     );
 }
+
+fn mode_command(name: &str, consented: bool) -> letibot_sessionlog::hub::QueuedCommand {
+    letibot_sessionlog::hub::QueuedCommand {
+        head_id: "head-1".into(),
+        identity: "dead".into(),
+        client_request_id: "m1".into(),
+        at_seq: 0,
+        enqueued_ms: 0,
+        kind: letibot_sessionlog::hub::CommandKind::Mode {
+            name: name.into(),
+            consented,
+        },
+    }
+}
+
+/// A `/mode` the session cannot carry writes no project row, and a row it cannot carry left by an
+/// older daemon does not fail the next open in that project: it falls back and says so.
+#[test]
+fn mode_refused_move_writes_no_project_row_and_next_open_succeeds() {
+    let dir = Scratch::new("mode-refused-row");
+    let Some((parts, cfg, registry, path)) = daemon_at(&dir, Mode::ALWAYS_ASK) else {
+        return;
+    };
+    let ws = cfg.workspace.clone();
+    let mut sessions = crate::sessions::Sessions::open_first(&parts, cfg, registry)
+        .expect("the first session opens");
+    // No oracle on this daemon, so `automode` cannot be carried.
+    sessions.dispatch("s-first", &mode_command("automode", false));
+    assert_eq!(
+        sessions.held("s-first").unwrap().config().mode,
+        Mode::ALWAYS_ASK,
+        "the session did not move"
+    );
+    let rows = crate::modes::ModeStore::load(&path);
+    assert!(!rows.is_set(&ws), "no project row for a refused move");
+    assert!(rows.session("s-first").is_none(), "nor a session row");
+
+    let mut rows = crate::modes::ModeStore::load(&path);
+    rows.set(&ws, Mode::AUTO).unwrap();
+    sessions
+        .open("s-root")
+        .expect("an uncarryable row falls back rather than failing the open");
+    let h = sessions.held("s-root").unwrap();
+    assert!(h.config().mode.no_wider_than(Mode::AUTO));
+    assert_ne!(h.config().mode, Mode::AUTO);
+    assert!(
+        h.open_notes()
+            .iter()
+            .any(|n| n.contains("cannot be carried here")),
+        "{:?}",
+        h.open_notes()
+    );
+}

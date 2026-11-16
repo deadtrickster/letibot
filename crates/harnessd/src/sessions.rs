@@ -4917,15 +4917,22 @@ impl<'a> Sessions<'a> {
                         return Outcome::Failed("unknown mode".into());
                     }
                 };
-                // The project root this session is confined to, read off the harness
-                // (the session's own, not the daemon's start directory), then cloned so
-                // the harness borrow ends before the store write below.
-                let workspace = {
-                    let Some(harness) = self.harness_of(session_id) else {
-                        return Outcome::Failed(format!("session {session_id} is not open"));
-                    };
-                    // A child's point only narrows, and a refused one writes no row either.
-                    if let Err(why) = harness.mode_past_parent(mode, *consented) {
+                let Some(harness) = self.open.get_mut(session_id) else {
+                    return Outcome::Failed(format!("session {session_id} is not open"));
+                };
+                match harness.move_mode(mode, *consented) {
+                    Ok(said) => {
+                        if let Some(hub) = &hub {
+                            hub.warn(
+                                "mode_set",
+                                format!("{said}. {}", harness.config().mode.summary),
+                            );
+                        }
+                        Outcome::Ignored
+                    }
+                    // Refused before anything moved or was written: the project keeps its row, so a
+                    // point this session cannot carry never fails the next open there.
+                    Err(why) => {
                         if let Some(hub) = &hub {
                             hub.warn(
                                 "mode_set_refused",
@@ -4935,96 +4942,9 @@ impl<'a> Sessions<'a> {
                                 ),
                             );
                         }
-                        return Outcome::Failed(why);
-                    }
-                    harness.workspace().to_path_buf()
-                };
-                // A consented `allow-all` IS written - with the answer that opens it. It is
-                // otherwise left out of the row, for a good reason.
-                let consented_here =
-                    *consented && mode.name == letibot_tools::mode::Mode::ALLOW_ALL.name;
-                // The row, and then the answer - in that order, through one lock, so a reader of the file
-                // never sees a consent for a row that is not there.
-                if let Err(e) = (|| -> std::io::Result<()> {
-                    let mut store = self.parts.mode_store.write().unwrap();
-                    store.set(&workspace, mode)?;
-                    if consented_here {
-                        store.set_consent(&workspace, &letibot_flowy::seat::rfc3339_now())?;
-                    }
-                    Ok(())
-                })() {
-                    if let Some(hub) = &hub {
-                        hub.warn(
-                            "mode_unpersisted",
-                            format!(
-                                "could not record `{}` for {}: {e}",
-                                mode.name,
-                                workspace.display()
-                            ),
-                        );
-                    }
-                    return Outcome::Failed(format!("persisting mode: {e}"));
-                }
-                // And this session moves too. The row above is the project's point for every session that
-                // opens later
-                let moved = match self.open.get_mut(session_id) {
-                    // The operator's answer travels with the command, and only this call reads it: the project
-                    // row above is written from the NAME, which stays `allow-all` and stays refused for the
-                    // next daemon. Consent is for the session in front of them.
-                    Some(h) => h
-                        .set_mode_consented(mode, *consented)
-                        .map(|said| (said, h.config().mode)),
-                    None => Err("this session has no harness open".into()),
-                };
-                // And the session remembers where it was put - its own row, so a restart or a reseat
-                // brings it back here whatever the project's row says by then. The requested point's NAME
-                // with the answer beside it, as the project row is written
-                if moved.is_ok() {
-                    let when = consented_here.then(letibot_flowy::seat::rfc3339_now);
-                    let store = self.parts.mode_store.read().unwrap();
-                    if let Err(e) = store.set_session(session_id, mode, when.as_deref())
-                        && let Some(hub) = &hub
-                    {
-                        hub.warn(
-                            "mode_unpersisted",
-                            format!("could not record `{}` for this session: {e}", mode.name),
-                        );
+                        Outcome::Failed(why)
                     }
                 }
-                if let Some(hub) = &hub {
-                    let _ = match moved {
-                        Ok((said, applied)) => hub.warn(
-                            "mode_set",
-                            // Say what is true of the project separately from what is true of this session, because
-                            // they can differ: a point the row carries may still be one this session cannot move to.
-                            {
-                                let row = self
-                                    .parts
-                                    .mode_store
-                                    .read()
-                                    .ok()
-                                    .map(|st| st.for_project(&workspace).name)
-                                    .unwrap_or(mode.name);
-                                format!(
-                                    "{said}. {} is at `{row}` from every later session too. {}",
-                                    workspace.display(),
-                                    applied.summary
-                                )
-                            },
-                        ),
-                        Err(why) => hub.warn(
-                            "mode_set_next_session_only",
-                            format!(
-                                "{} is set to `{}` for every LATER session in this \
-                                 project; this one stays where it opened, because it \
-                                 cannot carry that point: {why}",
-                                workspace.display(),
-                                mode.name
-                            ),
-                        ),
-                    };
-                }
-                Outcome::Ignored
             }
         }
     }
