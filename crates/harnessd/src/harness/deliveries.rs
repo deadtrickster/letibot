@@ -1048,6 +1048,16 @@ impl Deliveries {
         crate::room::wake::ack_through(&self.me, now.ack);
     }
 
+    /// The row carrying `now` is persisted: the store's `delivered` and the room's seen mark are
+    /// written at once, not at the turn's end. [`Self::read`] still runs after the turn.
+    pub(crate) fn stored(&self, now: &HeldNow) {
+        let results = results_of(&now.told);
+        if !results.is_empty() {
+            self.watch.stored(&results);
+        }
+        crate::room::wake::ack_through(&self.me, now.ack);
+    }
+
     /// Nothing was told - the turn that was to carry it did not open - so it is held again for the
     /// next break to say: the results in the watcher set, the room's lines back in their pen, unacked.
     pub(crate) fn put_back(&self, now: HeldNow) {

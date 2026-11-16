@@ -19,7 +19,7 @@ impl Store {
     /// session that has learned nothing yet.
     pub fn session_marks(&self, session_id: &str) -> Result<Option<String>> {
         Ok(self
-            .conn()
+            .at("session_marks")
             .query_row(
                 "SELECT marks_json FROM session_marks WHERE session_id = ?1",
                 params![session_id],

@@ -37,7 +37,7 @@ impl Store {
     /// The newest units of this file's project, newest first. `limit` is the whole bound: a round
     /// scores what it is given, so this is where the index's cost is decided.
     pub fn recall_units(&self, limit: usize) -> Result<Vec<RecallUnit>> {
-        let conn = self.conn();
+        let conn = self.at("recall_unit");
         let mut stmt = conn.prepare(
             "SELECT unit, session, title, at_ms, text FROM recall_unit
               ORDER BY at_ms DESC, unit ASC LIMIT ?1",
@@ -71,7 +71,7 @@ impl Store {
 
     /// The units this model has no vector for, newest first: what an index build still owes.
     pub fn recall_pending(&self, model: &str, limit: usize) -> Result<Vec<(String, String)>> {
-        let conn = self.conn();
+        let conn = self.at("recall_unit");
         let mut stmt = conn.prepare(
             "SELECT unit, text FROM recall_unit
               WHERE vector IS NULL OR model <> ?1
@@ -151,7 +151,7 @@ impl Store {
         &self,
         model: &str,
     ) -> Result<std::collections::BTreeMap<String, Vec<f32>>> {
-        let conn = self.conn();
+        let conn = self.at("recall_unit");
         let mut stmt = conn.prepare(
             "SELECT unit, vector FROM recall_unit WHERE model = ?1 AND vector IS NOT NULL",
         )?;

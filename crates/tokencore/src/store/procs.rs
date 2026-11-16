@@ -353,7 +353,7 @@ impl Store {
     /// One record, by its two keys. `None` for a handle this store never supervised.
     pub fn process(&self, session_id: &str, handle: &str) -> Result<Option<ProcessRecord>> {
         Ok(self
-            .conn()
+            .at("process")
             .prepare(&format!(
                 "SELECT {COLUMNS} FROM process WHERE session_id = ?1 AND handle = ?2"
             ))?

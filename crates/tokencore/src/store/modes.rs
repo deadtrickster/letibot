@@ -97,7 +97,7 @@ impl Store {
     /// The point this session was put at, and the answer that opened it, if it was put anywhere.
     pub fn session_mode(&self, session_id: &str) -> Result<Option<(String, Option<String>)>> {
         Ok(self
-            .conn()
+            .at("session_mode")
             .query_row(
                 "SELECT mode, consented_at FROM session_mode WHERE session_id = ?1",
                 params![session_id],

@@ -3708,6 +3708,7 @@ impl Harness {
             gatekeepers: Default::default(),
             restart_notices: Vec::new(),
             board_notices: Vec::new(),
+            restart_owed: Vec::new(),
             kept_jobs,
             workspace_gone_said: false,
             late_scope_said: false,

@@ -514,7 +514,7 @@ impl Store {
 
     pub fn job_context(&self, session_id: &str, handle: &str) -> Result<Option<JobContext>> {
         Ok(self
-            .conn()
+            .at("job_context")
             .query_row(
                 "SELECT handle, slug, cwd, instance, started_ms FROM job_context
                   WHERE session_id = ?1 AND handle = ?2",

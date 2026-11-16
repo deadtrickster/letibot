@@ -2872,3 +2872,254 @@ fn the_jobs_a_closing_backend_takes_with_it_are_named_and_their_rows_settled() {
     );
     d.stop(None);
 }
+
+/// The split data directory a launched daemon is handed, and the set it opens.
+fn split_store(dir: &Scratch) -> PathBuf {
+    let data = dir.root.join("data");
+    std::fs::create_dir_all(&data).unwrap();
+    data
+}
+
+fn open_split(data: &Path, repo: &Path) -> Store {
+    let key = letibot_tokencore::migrate_split::project_key(&repo.to_string_lossy());
+    Store::open_set(data, &key).expect("the set opens")
+}
+
+fn delivered(store: &Store, handle: &str) -> bool {
+    store
+        .undelivered_jobs(PARENT)
+        .unwrap()
+        .iter()
+        .all(|j| j.handle != handle)
+}
+
+fn rows_naming(hub: &Hub, handle: &str) -> usize {
+    user_rows(hub)
+        .iter()
+        .filter(|r| r.contains(&format!("job `{handle}`")))
+        .count()
+}
+
+/// A job that ended while its daemon stopped, on the split store a launched daemon opens: said
+/// once by the next daemon, whichever seat the launcher gave it (`letibot` or `leticode`), and
+/// marked delivered only once the row that says it is stored.
+#[test]
+fn a_job_that_ended_while_the_daemon_restarted_is_said_once_on_a_split_store() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
+    for seat in [Seat::Coder, Seat::Leticode] {
+        let dir = Scratch::new("restart-split-job");
+        let data = split_store(&dir);
+        let parts = parts_for(&config(&dir.repo(), &data, Endpoint::new("127.0.0.1", 1)));
+        let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+        let mut cfg = config(&dir.repo(), &data, stub.endpoint.clone());
+        cfg.seat = seat;
+        seed_session(&parts, &cfg);
+        {
+            let store = open_split(&data, &dir.repo());
+            old_daemon_stopped(&store, Duration::from_secs(5));
+            store.put_job(PARENT, &a_job("j41", "running", "")).unwrap();
+            the_old_daemons(&store, "j41");
+            store
+                .put_job(
+                    PARENT,
+                    &a_job("j41", "exited 0", "cargo test > /tmp/j41.log"),
+                )
+                .unwrap();
+        }
+        let mut d = a_daemon(&parts, &cfg);
+        let notice = d
+            .parent
+            .restore_after_restart()
+            .unwrap_or_else(|| panic!("{seat:?}: the ended job is said"));
+        assert!(
+            notice.contains("- job `j41` had ENDED"),
+            "{seat:?}: {notice}"
+        );
+        let store = open_split(&data, &dir.repo());
+        assert!(
+            !delivered(&store, "j41"),
+            "{seat:?}: delivered before any row said it"
+        );
+        let _ = d.parent.wake();
+        assert!(
+            delivered(&store, "j41"),
+            "{seat:?}: the stored row did not mark it"
+        );
+        assert_eq!(rows_naming(&d.hub(), "j41"), 1, "{seat:?}");
+        d.stop(None);
+        let mut again = a_daemon(&parts, &cfg);
+        assert!(
+            again
+                .parent
+                .restore_after_restart()
+                .is_none_or(|n| !n.contains("j41")),
+            "{seat:?}: said twice"
+        );
+        again.stop(None);
+    }
+}
+
+/// A daemon that dies before the turn carrying the restart notice stores its row leaves the job
+/// owed: the next daemon says it, exactly once.
+#[test]
+fn a_restart_notice_whose_turn_never_stored_its_row_is_said_by_the_next_daemon() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
+    let dir = Scratch::new("restart-split-unstored");
+    let data = split_store(&dir);
+    let parts = parts_for(&config(&dir.repo(), &data, Endpoint::new("127.0.0.1", 1)));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 0);
+    let cfg = config(&dir.repo(), &data, stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    {
+        let store = open_split(&data, &dir.repo());
+        old_daemon_stopped(&store, Duration::from_secs(5));
+        store.put_job(PARENT, &a_job("j42", "running", "")).unwrap();
+        the_old_daemons(&store, "j42");
+        store
+            .put_job(PARENT, &a_job("j42", "exited 0", "make"))
+            .unwrap();
+    }
+    // Restored, then gone before any turn: nothing stored the notice.
+    let mut first = a_daemon(&parts, &cfg);
+    assert!(
+        first
+            .parent
+            .restore_after_restart()
+            .is_some_and(|n| n.contains("j42"))
+    );
+    first.stop(None);
+    let store = open_split(&data, &dir.repo());
+    assert!(!delivered(&store, "j42"), "marked without a stored row");
+
+    let mut second = a_daemon(&parts, &cfg);
+    let notice = second
+        .parent
+        .restore_after_restart()
+        .expect("the next daemon says it");
+    assert!(notice.contains("- job `j42` had ENDED"), "{notice}");
+    let _ = second.parent.wake();
+    assert!(delivered(&store, "j42"));
+    assert_eq!(rows_naming(&second.hub(), "j42"), 1);
+    second.stop(None);
+
+    let mut third = a_daemon(&parts, &cfg);
+    assert!(
+        third
+            .parent
+            .restore_after_restart()
+            .is_none_or(|n| !n.contains("j42"))
+    );
+    third.stop(None);
+}
+
+/// The turn carrying a restart notice marks it delivered once its row is stored, while the turn
+/// is still running: a daemon killed mid-turn does not say it again, since the row it left is in
+/// the transcript the next daemon resumes.
+#[test]
+fn a_restart_notice_is_delivered_when_its_row_is_stored_not_when_the_turn_ends() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
+    let dir = Scratch::new("restart-split-midturn");
+    let data = split_store(&dir);
+    let parts = parts_for(&config(&dir.repo(), &data, Endpoint::new("127.0.0.1", 1)));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 1);
+    let cfg = config(&dir.repo(), &data, stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    {
+        let store = open_split(&data, &dir.repo());
+        old_daemon_stopped(&store, Duration::from_secs(5));
+        store.put_job(PARENT, &a_job("j43", "running", "")).unwrap();
+        the_old_daemons(&store, "j43");
+        store
+            .put_job(PARENT, &a_job("j43", "exited 0", "make"))
+            .unwrap();
+    }
+    let mut d = a_daemon(&parts, &cfg);
+    assert!(
+        d.parent
+            .restore_after_restart()
+            .is_some_and(|n| n.contains("j43"))
+    );
+    let turn = std::thread::spawn(move || {
+        let _ = d.parent.wake();
+        d
+    });
+    let store = open_split(&data, &dir.repo());
+    wait_until("the stored row to mark j43", || delivered(&store, "j43"));
+    assert!(
+        !turn.is_finished(),
+        "the turn ended before the mark was looked at"
+    );
+    stub.release();
+    let d = turn.join().expect("the turn's thread");
+    d.stop(None);
+    let mut next = a_daemon(&parts, &cfg);
+    assert!(
+        next.parent
+            .restore_after_restart()
+            .is_none_or(|n| !n.contains("j43"))
+    );
+    next.stop(None);
+}
+
+/// This daemon's own settlement, carried by a wake's batch: delivered once the batch's row is
+/// stored, while the turn still runs. Killed there, the daemon leaves nothing to say twice.
+#[test]
+fn a_batched_settlement_is_delivered_when_its_row_is_stored() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let Some(_) = room::room_for("eighteen daemons and their children in parallel", 1024) else {
+        return;
+    };
+    let dir = Scratch::new("restart-split-batch");
+    let data = split_store(&dir);
+    let parts = parts_for(&config(&dir.repo(), &data, Endpoint::new("127.0.0.1", 1)));
+    let stub = Stub::new(plain(&parts.vocab, "noted"), 1);
+    let cfg = config(&dir.repo(), &data, stub.endpoint.clone());
+    seed_session(&parts, &cfg);
+    let mut d = a_daemon(&parts, &cfg);
+    let store = open_split(&data, &dir.repo());
+    store
+        .put_job(PARENT, &a_job("j44", "exited 0", "make"))
+        .unwrap();
+    store
+        .put_job_context(
+            PARENT,
+            &JobContext {
+                handle: "j44".into(),
+                slug: None,
+                cwd: "/somewhere".into(),
+                instance: d.registry.instance().to_string(),
+                started_ms: letibot_sessionlog::registry::now_ms(),
+            },
+        )
+        .unwrap();
+    let _ = d.parent.restore_after_restart();
+    let turn = std::thread::spawn(move || {
+        let _ = d.parent.wake();
+        d
+    });
+    wait_until("the stored batch to mark j44", || delivered(&store, "j44"));
+    assert!(
+        !turn.is_finished(),
+        "the turn ended before the mark was looked at"
+    );
+    stub.release();
+    let d = turn.join().expect("the turn's thread");
+    d.stop(None);
+}

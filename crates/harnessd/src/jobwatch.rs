@@ -811,6 +811,19 @@ impl JobWatchers {
             .extend(done.iter().map(|c| (c.kind, c.job.clone())));
     }
 
+    /// These completions are in a persisted row: their store `delivered` is written now.
+    pub fn stored(&self, done: &[JobCompletion]) {
+        let recorder = self.recorder.lock().expect("job recorder").clone();
+        if let Some(rec) = recorder {
+            for c in done {
+                match c.kind {
+                    BackgroundKind::Subagent => rec.subagent_delivered(&c.job),
+                    BackgroundKind::Job => rec.job_delivered(&c.job),
+                }
+            }
+        }
+    }
+
     /// Write the store's `delivered` for what [`Self::read_now`] recorded.
     pub fn mark_delivered(&self) {
         let pending = std::mem::take(&mut *self.undelivered.lock().expect("undelivered"));

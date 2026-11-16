@@ -2238,6 +2238,29 @@ Seen live: `clippy-driver --version` asked under allow-all, because layer A had 
 
 Tests: `intent::tests::toolchain_probes_are_reads_and_builds_are_not` in `crates/tools`.
 
+## R313 - An ended job's delivery across a restart: marked at the turn's end, missed by restore on a split store
+
+**Status:** built on branch `job-redeliver`, 2026-11-16.
+
+Seen live on rano (project c74d1fd17483, session s-1794057745451974498), operator: "a job was lost it seems with `leticode --restart`". j87036 (a gate) ended `exited 0` at 01:27:07. The restart's interrupt stopped turn #530 at 01:33:57. A wake opened turn #572 at 01:33:58 with j87036 in its batch (`delivery job batched`, door `turn-start`). Its row (seq 651) was stored, and the model read it (seq 652, and it read the gate log at seq 657 after the restart). The daemon exited on the second SIGTERM at about 01:34:24, mid-turn. The store still says `delivered = 0`, and the two next daemons (2110685, 2156992) both said "Nothing was running".
+
+**Cause 1.** The store's `delivered` was written after the turn's rounds, not when its row was stored. Every door ran `the_batch_arrived` (and the wake door `Deliveries::read`) after `submit_items_then` returned, which is after `run_rounds`. A daemon that dies mid-turn never writes it. Room acks had the same timing. Nothing was marked early, so an interrupted turn does not lose a settlement. It leaves a stale `delivered = 0`.
+
+**Cause 2.** Restore never saw the job. `Store::job_context` read `job_context` on the shared connection (`self.conn()`), and on a split store that table lives in `projects/<key>.db`. The read failed with "no such table", `.ok().flatten()` turned it into `None`, and both `restore_after_restart` and `deliver_settlements_left_undelivered` skip a row with no context. The same defect was in `process`, `session_mode`, `session_marks`, `citations`, `recall_units`, `recall_pending` and `recall_vectors`. The tests passed because they use a one-file store.
+
+**letibot vs leticode.** No difference found. Both restarts were `letibot --restart` underneath (the stop reason in the log reads so both times), both end in `--continue`, and restore does not read the seat. The new test runs under `Seat::Coder` and `Seat::Leticode`.
+
+**Change:**
+- Project-table reads go through `self.at(table)` (`crates/tokencore/src/store/{subagents,procs,modes,marks,citations,recall}.rs`).
+- Every door marks what its batch carried as delivered in the `opened` callback of `submit_items_then`, after `persist()` and before `run_rounds` (`Harness::the_batch_stored`, `Deliveries::stored`, `JobWatchers::stored`). The room is acked there too.
+- A restart notice no longer marks the ended jobs it names when it is built. They wait in `Harness::restart_owed` and are marked once the turn carrying the notice stores its row. A daemon that dies before that leaves them owed for the next one.
+
+**Decision.** The brief asked that a turn interrupted after its row was stored re-deliver the settlement. It does not. The row is in the transcript the next daemon resumes, so the model reads it again anyway, and a second notice would repeat it. Only a turn whose row never went in leaves a settlement owed. The restart line keeps its tested wording ("had ENDED before the stop ... its result never reached you") and does not use "ended while the daemon restarted".
+
+**Done when:** `cargo test -p letibot-tokencore a_project_tables_read_finds_what_its_write_put`, `cargo test -p letibot-harnessd --test restart_restore -- split_store restart_notice batched_settlement`.
+
+**Left:** the log also shows `no such table: subagent_run` (113 lines across projects, "that its answer was read was not recorded") and `no such table: queued_prompt` / `session` at daemon start. These come through other paths and are not fixed here. A wake can open a turn while the daemon is stopping (turn #572 opened 2 s after the stop's interrupt).
+
 ## R209 - Expanding a tool row: the key, the marker, `/t` and the window disagree
 
 **Status:** built, 2026-11-13. left: the pointer's close is the row's HEADER only, so a click on a seam of the open window still acts on nothing; `cmd-v` reaches the clipboard only from a terminal that reports super+v (an empty bracketed paste stays the other door); and the open fold's word is rewritten in the strings rano drew, because the sentence is rano's.

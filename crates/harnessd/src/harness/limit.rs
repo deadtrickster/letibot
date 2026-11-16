@@ -373,7 +373,10 @@ impl Harness {
                 speaker: letibot_transcript::Speaker::Agent,
                 parts: vec![UserPart::Text { text }],
             }],
-            |_| opened = true,
+            |h| {
+                opened = true;
+                h.the_batch_stored(riding.as_ref());
+            },
         );
         self.the_batch_arrived(riding, opened);
         out

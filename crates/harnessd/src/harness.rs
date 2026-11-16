@@ -420,6 +420,9 @@ pub struct Harness {
     restart_notices: Vec<String>,
     /// What a driving head did to this session's board, said by the next turn the session takes.
     board_notices: Vec<String>,
+    /// Handles of ended jobs a restart notice says. Marked delivered once that notice's row is
+    /// stored, so a daemon that dies first leaves them for the next one.
+    restart_owed: Vec<String>,
     /// The jobs a restart kept and this open took back or found lost, for the restart notice.
     kept_jobs: Vec<crate::kept_jobs::Taken>,
     /// Whether this harness has said its workspace is gone - once, at the first wake
@@ -1398,6 +1401,14 @@ impl Harness {
     /// hands it back with [`Harness::the_batch_arrived`].
     pub(crate) fn batch_riding_in(&self) -> Option<HeldNow> {
         self.deliveries().map(|d| d.at_turn_start_unread())
+    }
+
+    /// The door's row is in the store: what the batch carried is delivered from here, whether or
+    /// not the turn's rounds finish. A daemon killed mid-turn must not say it again.
+    pub(crate) fn the_batch_stored(&self, now: Option<&HeldNow>) {
+        if let (Some(now), Some(d)) = (now, self.deliveries()) {
+            d.stored(now);
+        }
     }
 
     /// That batch reached the model, or it did not: `opened` is whether the door's row went in.

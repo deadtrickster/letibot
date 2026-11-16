@@ -349,7 +349,10 @@ impl Harness {
         // the batch the moment the rows are appended, and a round that fails afterwards said nothing
         // about whether it was read.
         let mut opened = false;
-        let out = self.submit_items_then(items, |_| opened = true);
+        let out = self.submit_items_then(items, |h| {
+            opened = true;
+            h.the_batch_stored(riding.as_ref());
+        });
         self.the_batch_arrived(riding, opened);
         out
     }
@@ -463,6 +466,7 @@ impl Harness {
         notices.extend(self.say_all(&Facts::Steer, board_taken.clone()));
         let restart_taken = self.restart_notices.clone();
         let restarts = std::mem::take(&mut self.restart_notices);
+        let owed_taken = std::mem::take(&mut self.restart_owed);
         notices.extend(self.say_all(
             &Facts::Restart {
                 lines: restarts.len(),
@@ -671,7 +675,15 @@ impl Harness {
             );
         }
         let mut opened = false;
-        let out = self.cheaply(cheap, |h| h.submit_items_then(items, |_| opened = true));
+        let out = self.cheaply(cheap, |h| {
+            h.submit_items_then(items, |h| {
+                opened = true;
+                if let (Some(d), Some(now)) = (&deliveries, &door) {
+                    d.stored(now);
+                }
+                h.restart_owed_stored(&owed_taken);
+            })
+        });
         if opened && !room_seqs.is_empty() {
             // Silent: nothing said and nothing called. The tokens are the whole turn's.
             let (silent, tokens) = match &out {
@@ -708,6 +720,9 @@ impl Harness {
             let mut board = board_taken;
             board.append(&mut self.board_notices);
             self.board_notices = board;
+            let mut owed = owed_taken;
+            owed.append(&mut self.restart_owed);
+            self.restart_owed = owed;
             self.monitor_cursor.store(cursor_before, Ordering::SeqCst);
         }
         out.map(Some)
@@ -744,6 +759,7 @@ impl Harness {
     pub fn continue_after_restart(&mut self, notice: &str) -> Result<Reply, HarnessError> {
         let mut parts = vec![notice.to_string()];
         parts.append(&mut self.restart_notices);
+        let owed = std::mem::take(&mut self.restart_owed);
         let riding = self.batch_riding_in();
         let text = match &riding {
             Some(now) => now.text_after(&parts.join("\n\n")),
@@ -761,8 +777,15 @@ impl Harness {
                 speaker: letibot_transcript::Speaker::Agent,
                 parts: vec![UserPart::Text { text }],
             }],
-            |_| opened = true,
+            |h| {
+                opened = true;
+                h.the_batch_stored(riding.as_ref());
+                h.restart_owed_stored(&owed);
+            },
         );
+        if !opened {
+            self.restart_owed.splice(0..0, owed);
+        }
         self.the_batch_arrived(riding, opened);
         out
     }
@@ -857,6 +880,21 @@ impl Harness {
         let me = self.session_registry.instance().to_string();
         let sid = self.cfg.session_id.clone();
         self.deliver_settlements_left_undelivered(store, &me, &sid)
+    }
+
+    /// A restart notice's row is stored: the ended jobs it names are delivered.
+    fn restart_owed_stored(&self, owed: &[String]) {
+        let Some(store) = self.store.as_ref() else {
+            return;
+        };
+        for handle in owed {
+            if let Err(e) = store.deliver_job(&self.cfg.session_id, handle) {
+                eprintln!(
+                    "  {} · job {handle}: its delivery was not recorded ({e})",
+                    self.cfg.session_id
+                );
+            }
+        }
     }
 
     /// What this session was running when its daemon stopped, restored or reminded: called once, when the
@@ -976,7 +1014,10 @@ impl Harness {
             let Some(ctx) = store.job_context(&sid, &job.handle).ok().flatten() else {
                 continue;
             };
-            if ctx.instance == me || running(&ctx.instance) {
+            if ctx.instance == me
+                || running(&ctx.instance)
+                || self.restart_owed.contains(&job.handle)
+            {
                 continue;
             }
             settled.push((job, ctx));
@@ -1193,12 +1234,12 @@ impl Harness {
 
         // Jobs that ended untold: their ending, said now - whatever the down time, the way a
         // settled child's result is delivered past the threshold too: a result is not work to
-        // redo, and nothing is re-run. Marked delivered once said, so it is said once.
+        // redo, and nothing is re-run. Marked delivered when the notice's row is stored.
         for (job, ctx) in settled {
             restored_any |= restore;
             lines.push(crate::restart::settled_job_line(&job, ctx.slug.as_deref()));
             said.push(crate::restart::said::job_settled(&job.handle));
-            let _ = store.deliver_job(&sid, &job.handle);
+            self.restart_owed.push(job.handle.clone());
         }
 
         for t in &kept {
@@ -1508,7 +1549,10 @@ impl Harness {
                 speaker: letibot_transcript::Speaker::Agent,
                 parts: vec![UserPart::Text { text }],
             }],
-            |_| opened = true,
+            |h| {
+                opened = true;
+                h.the_batch_stored(riding.as_ref());
+            },
         );
         self.the_batch_arrived(riding, opened);
         out

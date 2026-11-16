@@ -516,3 +516,63 @@ fn an_older_set_migrates_both_files() {
         );
     }
 }
+
+/// Every read of a project table goes to the project file. One that took the shared connection
+/// failed with "no such table" on a split set, and restart restore lost a job's context to it.
+#[test]
+fn a_project_tables_read_finds_what_its_write_put() {
+    let dir = temp("project-reads");
+    let set = Store::open_set(&dir, KEY).expect("a set's handle");
+    set.put_job_context(
+        "s1",
+        &super::JobContext {
+            handle: "j7".into(),
+            slug: Some("gate".into()),
+            cwd: "/w".into(),
+            instance: "d-1-2-0".into(),
+            started_ms: 5,
+        },
+    )
+    .unwrap();
+    let ctx = set.job_context("s1", "j7").expect("job_context reads");
+    assert_eq!(ctx.map(|c| c.instance).as_deref(), Some("d-1-2-0"));
+
+    set.put_process(&super::ProcessRecord::starting("s1", "j7", None, 42))
+        .unwrap();
+    let p = set.process("s1", "j7").expect("process reads");
+    assert_eq!(p.map(|p| p.pid), Some(42));
+
+    set.set_session_mode("s1", "allow-all", None).unwrap();
+    let m = set.session_mode("s1").expect("session_mode reads");
+    assert_eq!(m.map(|m| m.0).as_deref(), Some("allow-all"));
+
+    set.set_session_marks("s1", "{}").unwrap();
+    let marks = set.session_marks("s1").expect("session_marks reads");
+    assert_eq!(marks.as_deref(), Some("{}"));
+
+    set.put_citations("s1", "h", "[]", 1).unwrap();
+    let cites = set.citations("s1", "h").expect("citations reads");
+    assert_eq!(cites.as_deref(), Some("[]"));
+
+    set.put_recall_units(&[super::RecallUnit {
+        unit: "u1".into(),
+        session: "s1".into(),
+        title: "t".into(),
+        at_ms: 1,
+        text: "words".into(),
+    }])
+    .unwrap();
+    assert_eq!(set.recall_units(10).expect("recall_units reads").len(), 1);
+    assert_eq!(
+        set.recall_pending("m", 10)
+            .expect("recall_pending reads")
+            .len(),
+        1
+    );
+    set.put_recall_vectors("m", &[("u1".into(), vec![1.0])], 2)
+        .unwrap();
+    assert_eq!(
+        set.recall_vectors("m").expect("recall_vectors reads").len(),
+        1
+    );
+}
