@@ -2914,6 +2914,34 @@ fn a_superseded_fix_branch_whose_session_is_live_keeps_its_tree() {
     assert!(said[0].contains("still live"), "{}", said[0]);
 }
 
+/// The queue's registry sees only this daemon's sessions, so a tree another daemon or a build
+/// works in looks free to it: the retire itself asks whether anything has its cwd there.
+#[test]
+fn a_superseded_fix_branch_with_a_foreign_process_in_its_tree_keeps_it() {
+    let w = World::new("fix-foreign");
+    let red = commit(&w.repo, "broken", "x\n", "a commit that breaks the gate");
+    let (branch_name, wt) = a_fix_tree(&w, &red, "cdef0123");
+    fix_branch(&w, "fixer-4", &branch_name, &wt, &red);
+    let mut sleeper = std::process::Command::new("sleep")
+        .arg("60")
+        .current_dir(&wt)
+        .spawn()
+        .expect("a process working in the tree");
+    commit(&w.repo, "broken", "y\n", "the tip after it");
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let r = w.store().review_row("fixer-4").unwrap().unwrap();
+    let there = wt.exists();
+    let _ = sleeper.kill();
+    let _ = sleeper.wait();
+    assert_eq!(r.state, ReviewState::Withdrawn, "{r:?}");
+    assert!(there, "a tree with a process in it is not removed");
+    assert!(git::branch_head(&w.repo, &branch_name).is_some());
+    let said = w.door.warnings("queue_branch_kept");
+    assert_eq!(said.len(), 1, "{said:?}");
+    assert!(said[0].contains("has its cwd in it"), "{}", said[0]);
+}
+
 /// A worktree on a fresh branch cut from `at`, with nothing committed on it - what a fixer's tree
 /// is between the spawn and its first commit.
 fn a_fix_tree(w: &World, at: &str, short: &str) -> (String, PathBuf) {

@@ -3558,6 +3558,8 @@ impl HarnessTaskRunner {
             &child.placement.base_sha,
             &child.placement.branch,
             Some(&child.placement.path),
+            // The failed child's own writer row names this daemon: only a process cwd keeps it.
+            None,
         );
     }
 

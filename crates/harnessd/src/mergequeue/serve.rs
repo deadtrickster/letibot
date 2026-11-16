@@ -1632,7 +1632,7 @@ impl RepoQueue {
                     r.branch, r.session_id
                 ))
             } else {
-                git::retire_if_empty(&self.repo, &tip, &r.branch, Some(wt))
+                git::retire_if_empty(&self.repo, &tip, &r.branch, Some(wt), Some(&self.store))
             };
             if let Err(kept) = kept {
                 // Said where a person reads it, not only in the daemon's log - and once

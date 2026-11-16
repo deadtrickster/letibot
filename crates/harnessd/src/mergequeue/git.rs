@@ -841,14 +841,26 @@ pub fn retire_branch(repo: &Path, branch: &str, worktree: Option<&str>) -> Resul
 }
 
 /// Remove a superseded branch's worktree and the branch, but only when there is nothing in
-/// them to lose - no commit over `base`, and (through [`retire_branch`]) nothing
-/// uncommitted.
+/// them to lose - no commit over `base`, nothing uncommitted (through [`retire_branch`]), and
+/// nothing using the tree: a session in any daemon (`store`) or a process with its cwd there.
 pub fn retire_if_empty(
     repo: &Path,
     base: &str,
     branch: &str,
     worktree: Option<&str>,
+    store: Option<&letibot_tokencore::store::Store>,
 ) -> Result<(), String> {
+    // `--force` takes ignored files too, a running build's `target/` among them.
+    if let Some(wt) = worktree
+        && Path::new(wt).exists()
+        && let Some(why) = letibot_tools::lifecycle::in_use::why_kept(
+            Path::new(wt),
+            store,
+            &letibot_tools::lifecycle::autoarchive::Here::this_process(),
+        )
+    {
+        return Err(format!("the worktree {wt} and `{branch}` are kept: {why}"));
+    }
     if let Some(head) = branch_head(repo, branch) {
         match commit_on(repo, &head, base, base, &format!("`{branch}`")) {
             Proof::On | Proof::Gone => {}
