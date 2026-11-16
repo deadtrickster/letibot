@@ -1546,7 +1546,7 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R342 - migrations and the split schema
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I54, I55, I56. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built 2026-11-16 on `remote/30004413`: `c4e67f01` (I54), `e9e17ac8` (I55) and `67049f75` (I56). All three findings are closed. The schema was 56 and is 57 (`import_pending`, additive). Filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I54, I55, I56. Record: `docs/review/2026-11-16/INTEGRATION.md`.
 
 **Scope.** One `BATCHES` constant, `place_of` derived.
 
@@ -1591,6 +1591,65 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 - Change: write a pending marker before the import and clear it last. Open through `StoreAt` or `open_set_existing`.
 - Sources: A5-F7, A5-F10. A5 r1 opus, A5 r1 DeepSeek, A5 r2 GLM, A5 r2 Kimi, DeepSeek (supplementary).
 - Test: `a_crash_after_the_project_commit_is_detected_on_retry`.
+
+**What was built.**
+
+- I54 (`c4e67f01`). `Store::migrate` runs the version re-read, `migrate_from`,
+  `repair_queue_mute`, one `UPDATE` stamp and the reader floor inside one `BEGIN IMMEDIATE`, so
+  a kill or a refusal leaves the file at the version it was. A file holding tables and no version
+  row is refused by name instead of being read as fresh. Every arm's probe returns its error
+  (`Store::probe`/`probe_with`). v2 and v4 grew the existence check, and v8, v19 and v20 ask for
+  each column separately (`Store::add_missing`). `migrate_from` is told which file it migrates,
+  a fresh file comes from the tree's one batch list, and `enqueue_review_on` lets the v24 arm
+  write inside the migration's transaction.
+  Tests, each failing on the snapshot: `a_kill_inside_v19_does_not_lose_a_column`,
+  `a_kill_inside_v8_does_not_lose_the_second_column`,
+  `a_kill_inside_v20_is_finished_rather_than_refused`,
+  `two_openers_racing_migrate_create_no_stray_tables`.
+- I55 (`e9e17ac8`). `batch_for(file, ddl)` routes a migration batch statement by statement
+  through the same assignment the fresh path uses, so a set's `shared.db` no longer gains
+  `recall_unit`, `session_grant` or the shadow's breaker, and a project file no longer gains the
+  queue; `migrate_queues_to_v24` runs only on the file that holds `review_queue`.
+  `migrating_from_each_recorded_version_equals_a_fresh_set` rewinds a store to every version
+  `READER_ARMS` records - parsing the arms' own source for what each creates, and resolving a
+  batch called by name from its module - migrates it, and compares objects and columns with a
+  fresh store. It found one drift of its own: the v28 arm added `job.delivered` with
+  `DEFAULT 1`, which also said a job written tomorrow had been delivered; the arm now adds 0 and
+  stamps the rows that already exist. The coverage scan reads `grants.rs`, follows `tx.`/`conn.`,
+  and `every_module_the_store_has_is_scanned` holds its file list to the store's `mod` list.
+  Tests: `migrating_from_each_recorded_version_equals_a_fresh_set` (fails on the snapshot:
+  version 44's `shared.db` held `recall_unit` and `session_grant`),
+  `every_arm_names_the_batches_this_parse_can_read`,
+  `every_module_the_store_has_is_scanned`.
+- I56 (`67049f75`). Schema 57 adds `import_pending` (`transfer::IMPORT_PENDING_SQL`, a project table).
+  `import_session` writes the marker in its own commit before `import_tx` and clears it after -
+  on both endings, because a refused import rolled back and only a process that DIES between the
+  two files' commits leaves it - and a retry that finds one refuses by name rather than writing
+  a second half over the first. `Store::import_pending`/`Store::forget_import` are the read and
+  the operator's repair. `letibot/src/migrate.rs` opens through `open_store`, which turns a data
+  directory (or a path whose parent holds a `shared.db`) into `Store::open_set_existing` of the
+  session's own project file, so no verb creates a full-schema `sessions.db` beside a set.
+  Tests: `a_crash_after_the_project_commit_is_detected_on_retry`,
+  `a_split_box_is_not_given_a_stray_sessions_db`.
+
+**Residue.**
+
+- A probe's error is now returned, but no test makes a probe fail: a file this build cannot ask
+  about is usually refused earlier by the version read. The change is proved by reading, not by
+  a test.
+- `migrating_from_each_recorded_version_equals_a_fresh_set` tolerates `merge_review` and the v24
+  `_v23` archive tables. `merge_review` is created by the v18/v20 arms and by no fresh schema -
+  a pre-existing inconsistency of the same class this row fixed, worth its own row.
+- The rewind cannot restore the OLD SHAPE of a table two arms create (`merge_queue` at 16 and
+  again at 22): the fixture keeps the current shape, so versions 16-23 are checked for a missing
+  object and not for an extra column.
+- The single-file half of that test checks a superset (a missing object), not equality: the
+  transition's leftovers are not drift, and the set half is where the wrong-file check bites.
+- `open_store` derives a session's project key from its `workspace_root`. A session whose folder
+  moved would open the set without its project file (shared-only) rather than the wrong file.
+  Not covered by a test.
+- `Store::forget_import` has no `letibot` sub-verb: an operator's repair of a half-import is a
+  library door today. A `letibot store forget-import SESSION` belongs with the next store verb.
 
 ## R343 - liveness predicates, `closed_ms`, the lifecycle invariants
 
