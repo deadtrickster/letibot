@@ -18,8 +18,10 @@ install step.
   killed with its process group and the row is `timed_out`.
 - The same steps, without the install, gate the target's own tip whenever it moves.
 - A step named `install-gate-build` runs only after the landing was pushed.
-- The queue does not fetch. It rebases onto and updates the local target ref, so a target that moved
-  on `origin` fails the push and the row ends `landed_local`, with no install.
+- With rows in line the queue fetches `origin`'s target (at most every 30 s) and fast-forwards the
+  local target and its checkouts when origin is ahead. A push refused because origin moved since
+  puts the local target back at origin's tip and requeues the row, which is rebased and gated
+  again. `landed_local` is left for a push that fails with origin unreachable.
 
 A branch is gated when it is ready to land, not on every save. `queue status` says where a row is,
 and a green line names the commit and the machine that judged it.
