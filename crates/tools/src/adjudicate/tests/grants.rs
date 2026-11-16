@@ -559,3 +559,43 @@ fn a_gate_says_who_is_adjudicating_or_that_nobody_is() {
     let gate = AdjudicatedGate::new(Box::new(NoAdjudicator));
     assert_eq!(gate.describe(), NoAdjudicator.describe());
 }
+
+/// A move to `read-only` leaves the seated tools in place, so the gate refuses what the point does
+/// not seat: an allow rule written for `bash` must not run it after the move.
+#[test]
+fn permission_allow_outlives_a_move_to_read_only() {
+    use crate::runtime::Gate;
+    let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+        "human:test",
+        |req: &AdjudicationRequest| {
+            Some(AdjudicationDecision::selected(
+                req,
+                "allow_once",
+                "human:test",
+                "yes",
+            ))
+        },
+    )))
+    .with_mode(crate::mode::Mode::AUTO)
+    .with_permission(vec![crate::permission::Rule::new(
+        "bash",
+        "*",
+        crate::permission::Action::Allow,
+    )])
+    .with_surroundings(pinned());
+    let args = serde_json::json!({"command": "touch /w/x"});
+    assert!(matches!(
+        g.admit(&bash_at(&args, "s#1")),
+        GateDecision::Admit
+    ));
+    g.set_mode(crate::mode::Mode::READ_ONLY)
+        .expect("the gate moves");
+    assert!(
+        !matches!(g.admit(&bash_at(&args, "s#2")), GateDecision::Admit),
+        "an allow rule ran bash after the move to read-only"
+    );
+    assert_eq!(
+        g.log.last().map(|r| r.decision.by.as_str()),
+        Some("gate:mode")
+    );
+}

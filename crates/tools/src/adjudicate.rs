@@ -3330,6 +3330,27 @@ impl Gate for AdjudicatedGate {
             return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
         }
 
+        // 1.4. An access the point does not seat. A tool kept across a move to `read-only` is
+        //      one a fresh open would not have seated, so no rule, grant or answer admits it.
+        if !self.mode.seats(call.access) {
+            let why = format!(
+                "the `{}` mode seats no {}: this tool is absent at this point, so nothing \
+                 can admit it",
+                self.mode.name,
+                call.access.as_str()
+            );
+            let d = AdjudicationDecision {
+                request_id: req.id.clone(),
+                outcome: DecisionOutcome::Unavailable,
+                by: "gate:mode".into(),
+                basis: why.clone(),
+                latency_ms: 0,
+            };
+            let tell = self.surface(&req, &d, "not_run", breaker_state.clone());
+            self.record(req, d, "refuse", direction.key());
+            return GateDecision::refuse_and_tell(ToolOutcome::NotRun { why }, tell);
+        }
+
         // 1.5. opencode's permission model, evaluated before the mode: `deny` refuses, `allow`
         //      admits, `ask` falls through. Last rule wins over the config plus `always`.
         if !self.permission.is_empty() {
