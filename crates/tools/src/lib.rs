@@ -10,10 +10,9 @@
 //!
 //! ```text
 //!   ToolCall ──salvage──> args ──gate?──> Tool::invoke ──spill──> ToolResult
-//!    (clause 2)                (clause 4)   (clause 1)  (clause 5)   (clause 3)
 //!                                  │           │                        │
 //!                            Adjudicator  ExecBackend            FileEdit ─> a head
-//!                            (§11.2)      (the W9/W10 seam)      (both sides)
+//!                                                                (both sides)
 //! ```
 
 pub mod adjudicate;
@@ -244,7 +243,7 @@ pub fn with_session_tools(
     if reg.get(builtins::host_config::TOOL).is_none() {
         reg.register(Box::new(builtins::host_config::HostConfigTool::nowhere()))?;
     }
-    // The model's own verbs on its own session (X24). Registered here for the reason `room` is: a
+    // The model's own verbs on its own session. Registered here for the reason `room` is: a
     // role that names one resolves on every registry this crate builds, and the tool then says there
     // is no session behind it. The daemon seats its own desk at open.
     register_self_verbs(
@@ -298,7 +297,7 @@ pub fn external_tools(
     Ok(reg)
 }
 
-/// The M2 tool set: the read-only ones plus `write` and `edit`. Registering them is not being able to use
+/// The write tool set: the read-only ones plus `write` and `edit`. Registering them is not being able to use
 /// them: the gate must admit the call, since the default boundary refuses, and the backend must have been
 /// opened writable. A refusal names which of the two stopped it.
 pub fn coder_tools(

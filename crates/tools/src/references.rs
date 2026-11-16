@@ -832,8 +832,8 @@ mod tests {
         r
     }
 
-    /// The whole point, in one test: a note whose references are good and a note whose
-    /// references are not are told apart, and the difference is the evidence.
+    /// A note whose references are good and a note whose references are not are told apart,
+    /// and the difference is the evidence.
     #[test]
     fn a_good_reference_resolves_and_a_gone_one_does_not() {
         let root = tree("resolve");

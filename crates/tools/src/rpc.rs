@@ -10,7 +10,7 @@ use std::time::{Duration, Instant, SystemTime};
 use std::os::unix::process::CommandExt;
 
 // ---------------------------------------------------------------------------
-// Rule 5 - the circuit breaker
+// The circuit breaker
 // ---------------------------------------------------------------------------
 
 /// How many connection failures in a row open the breaker: three, because each failure already
@@ -58,8 +58,7 @@ struct Health {
     /// says `Permission denied` is up, and saying "last reached never" would be false.
     last_reached: Option<Instant>,
     /// A probe is in flight. Exactly one call at a time is let through after a cooldown:
-    /// letting every queued call through would open the floodgates at the moment the
-    /// breaker knows least.
+    /// every queued call at once would load the host at the moment the breaker knows least.
     probing: bool,
 }
 
@@ -175,7 +174,7 @@ pub fn standing(host: &str) -> Standing {
 }
 
 // ---------------------------------------------------------------------------
-// Rule 8 - back-pressure
+// Back-pressure
 // ---------------------------------------------------------------------------
 
 /// How many ssh invocations this process has in flight to one host. Eight, because OpenSSH's `MaxSessions`
@@ -282,7 +281,7 @@ pub fn enter_git(host: &str, within: Duration) -> Result<Entered, String> {
 }
 
 // ---------------------------------------------------------------------------
-// Rule 7 - the call records
+// The call records
 // ---------------------------------------------------------------------------
 
 /// What one call came to, in the closed vocabulary the contract names.
@@ -318,7 +317,7 @@ impl Outcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CallRecord {
     pub host: String,
-    /// Which step asked - *reading a path*, *a probe of lab2x1*, *this command ran*. A
+    /// Which step asked - *reading a path*, *a probe of a host*, *this command ran*. A
     /// name, never the command: a record is read by a head and printed to a log, and
     /// neither is a place to put a payload.
     pub step: String,

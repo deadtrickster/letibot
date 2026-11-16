@@ -1,10 +1,6 @@
-//! Role profiles: what a subagent role IS, in a file.
-//!
-//! A role used to be a name in a match arm, so a child that asked for `coder` got a tool list and
-//! no instructions. A profile is the whole role: a one-line purpose, a prompt overlay, the tools it
-//! keeps, and what it may start. It only ever NARROWS - it never grants a tool, a permission or a
-//! model its parent does not hold - which is what lets one table serve a `--role` seat and a
-//! `task {role}` child without a second authority (`TODO.md` R120, `pkg/kimi-code.md` §5.6).
+//! Role profiles: a subagent role in a file - a one-line purpose, a prompt overlay, the tools it
+//! keeps, and what it may start. A profile only narrows, never granting what its parent does not
+//! hold, so one table serves a `--role` seat and a `task {role}` child without a second authority.
 //!
 //! Files, read in this order and first name wins: `<workspace>/.letibot/roles/*.md`,
 //! `~/.config/letibot/roles/*.md`, then this build's own `roles/*.md`. The frontmatter is the
@@ -103,10 +99,9 @@ impl Profile {
         }
     }
 
-    /// The tools to seat, given the seat's own table and - for a child - the parent's: the
-    /// profile's filter, applied to both. A profile that names no tools keeps the seat's table,
-    /// which is the behaviour every child had before profiles existed; `ceiling` is `None` for a
-    /// session with no parent, where there is nothing to be narrower than.
+    /// The tools to seat: the profile's filter over the seat's own table and, for a child, the
+    /// parent's. A profile that names no tools keeps the seat's table; `ceiling` is `None` for a
+    /// session with no parent.
     pub fn narrow(&self, seat: &[String], ceiling: Option<&[String]>) -> Vec<String> {
         if self.tools.is_none() {
             return seat.to_vec();
@@ -286,12 +281,9 @@ pub struct Profiles {
     broken: Vec<(String, String)>,
 }
 
-/// This build's own roles, compiled in. One file each, so a built-in is read by the same parser as
-/// the operator's and the two cannot mean different things by the same words. A SEAT with no file of
-/// its own still resolves - [`Profile::of_seat`] - which is what `leticode` is for: a role named after
-/// it would spell the INSTRUCTION FILE's own name in this crate, and the guard in
-/// `standing_notes::tests::the_runtime_names_neither_instruction_file` is right that a runtime holds
-/// that name nowhere.
+/// This build's own roles, compiled in, read by the same parser as the operator's. `leticode` has
+/// no file and resolves as a seat ([`Profile::of_seat`]): a role file named after it would spell the
+/// instruction file's name in the runtime, which `standing_notes` tests forbid.
 pub const BUILT_IN: [(&str, &str); 9] = [
     (
         "orchestrator",
@@ -444,18 +436,10 @@ impl Profiles {
     }
 }
 
-/// The directories a tool call touched, under the session's root: every directory the path names
-/// or passes through - `crates/tools/src/lib.rs` touches `crates`, `crates/tools` and
-/// `crates/tools/src` - and never the root's own, whose `AGENTS.md` is already in the prompt.
-///
-/// The path's last segment is tried too, so a call that names a DIRECTORY
-/// (`grep {path: "crates"}`) finds that directory's file. A file cannot be a directory, so the
-/// extra probe costs one failed read and nothing else.
-///
-/// A tool names a path with the `path` key - one spelling across `read`, `write`, `edit`, `grep`,
-/// `glob`, `outline` and `lsp` - so this reads that key and nothing else. A command's own targets
-/// are NOT guessed at: `bash` carries no path, and a guess about what a shell line will open is how
-/// a session is handed a file about a directory it never entered.
+/// The directories a tool call touched, under the session's root: every directory its `path` key
+/// names or passes through, the last segment included so a directory-naming call finds its own
+/// file, and never the root, whose `AGENTS.md` is already in the prompt. `bash` targets are not
+/// guessed at: a wrong guess hands a session a file about a directory it never entered.
 pub fn touched(args: &serde_json::Value) -> Vec<String> {
     let Some(path) = args.get("path").and_then(|v| v.as_str()) else {
         return Vec::new();

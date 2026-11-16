@@ -55,7 +55,7 @@ pub enum Existing {
 
 /// Read a command as the one file write it might be, or say that it is not one. Never panics and never
 /// guesses: every arm that cannot know the bytes returns `None`, and the command runs through the shell
-/// exactly as it did before this module existed.
+/// unchanged.
 pub fn recognise(command: &str) -> Option<HeredocWrite> {
     let normalised = shell::normalise(command);
     // A command with anything unresolved is not this shape. That covers `$HOME` anywhere in it and a

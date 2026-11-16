@@ -198,7 +198,7 @@ pub fn offers_log(workspace: &Path) -> Vec<Offered> {
 
 /// The score at which one note is called a duplicate of another: the write gate's own floor, so
 /// a duplicate gate and a supersession proposal are the same arithmetic asking the same
-/// question. When `letibot_tools::similarity` lands this should import its constant instead.
+/// question.
 pub const SUPERSEDED_FLOOR: f64 = 0.30;
 
 /// What the similarity door said about this note.
@@ -214,9 +214,8 @@ pub enum Nearest {
     Note { path: PathBuf, score: f64 },
 }
 
-/// The door a superseded-by-another-note judgement goes through. The arithmetic is
-/// `letibot_tools::similarity`'s and it is not in this tree, so the keeper asks through a door:
-/// a keeper is a caller of that arithmetic, never a second implementation of it.
+/// The door a superseded-by-another-note judgement goes through: the keeper is a caller of
+/// `letibot_tools::similarity`'s arithmetic, never a second implementation of it.
 pub trait Supersession {
     /// The note most like `text`, and its score, excluding `skip`: a note is never its own
     /// duplicate. `None` when the door cannot say, which the keeper is told rather than guessed
@@ -533,9 +532,8 @@ fn parse_proposal(line: &str) -> Result<Proposal, String> {
         ));
     };
     let rest = rest.trim();
-    // The separator's length comes from the literal itself: `" - ".len()` is five bytes (two
-    // spaces and a three-byte em dash) and a hand-written `3` here was a real bug, caught by a
-    // test slicing inside the dash.
+    // The separator's length comes from the literal itself: the dash separator is five bytes,
+    // two spaces and a three-byte em dash.
     let (at, sep) =
         match (rest.find(" — "), rest.find(": ")) {
             (Some(d), Some(c)) if c < d => (c, 2),

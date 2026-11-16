@@ -1,4 +1,4 @@
-//! ONE similarity score, with four uses - lexical, local, deterministic.
+//! One similarity score, with four uses - lexical, local, deterministic.
 //!
 //! ```text
 //! similarity(a, b) = Σ_t w_a(t)·w_b(t) / (‖a‖·‖b‖)
@@ -451,9 +451,8 @@ mod tests {
         );
     }
 
-    /// The case the entry was filed for. Lexically a paraphrase scores 0.126 under an
-    /// unrelated note's 0.133, so no floor separates them; with the second tier's cosine
-    /// the paraphrase leads.
+    /// Lexically a paraphrase scores under an unrelated note, so no floor separates them;
+    /// with the second tier's cosine the paraphrase leads.
     #[test]
     fn the_tier_separates_what_the_words_cannot() {
         let paraphrase = blended(0.126, Some(0.88));
