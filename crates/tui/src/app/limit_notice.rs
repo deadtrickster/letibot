@@ -14,20 +14,29 @@ pub(crate) const LIMIT_NOTICES: &[&str] = &[
 ];
 
 impl App {
-    /// The newest limit note the reader has not dismissed, with how many older ones are also up.
-    pub(crate) fn limit_notice(&self) -> Option<(String, usize)> {
-        let mut up = self.notes.iter().filter_map(|(_, n)| match n {
-            Note::Warned(w) if LIMIT_NOTICES.contains(&w.code.as_str()) && !self.is_retired(n) => {
-                Some(w)
+    /// The limit episode's notice: its newest note, which supersedes the older ones (still in
+    /// `/notes`). A park, a lift or a return closes once a turn has ended after it.
+    pub(crate) fn limit_notice(&self) -> Option<String> {
+        let newest = self
+            .notes
+            .iter()
+            .filter_map(|(_, n)| match n {
+                Note::Warned(w)
+                    if LIMIT_NOTICES.contains(&w.code.as_str()) && !self.is_retired(n) =>
+                {
+                    Some(w)
+                }
+                _ => None,
+            })
+            .next_back()?;
+        match newest.code.as_str() {
+            // The parked turn's own line says it, in local time.
+            "limit_park" if self.turn_parked() => None,
+            "limit_park" | "limit_resumed" | "limit_returned" if self.turn_ended_ts > newest.ts => {
+                None
             }
-            _ => None,
-        });
-        let newest = up.next_back()?;
-        // The parked turn's own line says it, in local time.
-        if newest.code == "limit_park" && self.turn_parked() {
-            return None;
+            _ => Some(limit_words(&newest.code, &newest.detail)),
         }
-        Some((limit_words(&newest.code, &newest.detail), up.count()))
     }
 
     /// The turn in view is parked on a limit, and its own line says so.
@@ -40,15 +49,10 @@ impl App {
 
     /// The limit notice as resident lines, in the warning register.
     pub(crate) fn limit_notice_line(&self, w: usize) -> Vec<String> {
-        let Some((said, older)) = self.limit_notice() else {
+        let Some(said) = self.limit_notice() else {
             return Vec::new();
         };
-        let more = if older > 0 {
-            format!(" · {older} more in /notes")
-        } else {
-            String::new()
-        };
-        let said = format!("{said}{more} · ctrl-n dismisses");
+        let said = format!("{said} · ctrl-n dismisses");
         crate::ui::render::row_strings(&facts::warning(&said, w), self.cfg.palette())
     }
 }
@@ -61,6 +65,7 @@ pub(crate) fn limit_words(code: &str, detail: &str) -> String {
         "model_fallback" => moved(&flat),
         "limit_park" => parked(&flat),
         "limit_returned" => returned(&flat),
+        "limit_resumed" => resumed(&flat),
         _ => None,
     };
     read.unwrap_or_else(|| {
@@ -98,6 +103,18 @@ fn parked(s: &str) -> Option<String> {
     let (_, rest) = rest.rsplit_once("`, so this session is ")?;
     let words = rest.split(". ").next()?.trim_end_matches('.');
     Some(format!("{model} hit its limit - {words}"))
+}
+
+/// `the limit on M lifted, so the turn it stopped goes on ...`, or `M is asked again before its
+/// reset at AT, so ...`.
+fn resumed(s: &str) -> Option<String> {
+    if let Some(rest) = s.strip_prefix("the limit on ") {
+        let (model, _) = rest.split_once(" lifted, ")?;
+        return Some(format!("{model}'s limit lifted - the turn goes on"));
+    }
+    let (model, rest) = s.split_once(" is asked again before its reset at ")?;
+    let (at, _) = rest.split_once(", so ")?;
+    Some(format!("{model} is asked again before its reset at {at}"))
 }
 
 /// `the limit on M lifted: ...`, the switch back that took.

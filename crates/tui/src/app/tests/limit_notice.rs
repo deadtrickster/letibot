@@ -74,21 +74,25 @@ fn the_switch_back_raises_its_own_notice() {
     assert!(!s.contains("limit lifted"), "{s}");
 }
 
+/// One episode, one notice: each newer limit note replaces the one before in place, with no
+/// pile counted beside it.
 #[test]
-fn the_newest_limit_notice_counts_the_older_ones() {
+fn a_limit_episode_is_one_notice_updated_in_place() {
     let (mut a, hub) = attached();
     warn(&mut a, &hub, "model_fallback", MOVED);
     warn(&mut a, &hub, "limit_returned", BACK);
     let s = a.screen(160, 30).join("\n");
-    assert!(
-        s.contains("back on glm-coding/glm-5.3 · 1 more in /notes"),
-        "{s}"
-    );
+    assert!(s.contains("back on glm-coding/glm-5.3 · ctrl-n"), "{s}");
+    assert!(!s.contains("more in /notes"), "{s}");
+    assert!(!s.contains("hit its limit"), "{s}");
 }
 
 const PARK: &str = "kimi-code/k2 said `429 usage limit`, so this session is paused until \
                     13:07:09 UTC. Nothing is lost - the daemon opens the turn by itself and a \
                     prompt sent meanwhile waits with it.";
+const RESUMED: &str = "the limit on kimi-code/k2 lifted, so the turn it stopped goes on by itself \
+                       - nothing was sent to make that happen";
+
 /// One event at `ts` on the daemon's clock, in the order the log gives it.
 fn at(a: &mut App, ts: u64, event: SessionEvent) {
     let seq = a.seq + 1;
@@ -148,6 +152,30 @@ fn one_park_is_said_once_in_local_time() {
     assert_eq!(said.len(), 1, "{}", s.join("\n"));
     assert!(said[0].contains("(local time)"), "{}", s.join("\n"));
     assert!(!s.join("\n").contains("UTC"), "{}", s.join("\n"));
+}
+
+/// The lift says the stopped turn goes on, and closes itself once that turn has ended.
+#[test]
+fn the_lift_notice_closes_once_the_stopped_turn_has_ended() {
+    let (mut a, _hub) = attached();
+    parked_turn(&mut a);
+    at(&mut a, 40, said("limit_resumed", RESUMED));
+    at(&mut a, 50, testing::turn_started("t2"));
+    let s = a.screen(160, 30).join("\n");
+    assert!(
+        s.contains("kimi-code/k2's limit lifted - the turn goes on"),
+        "{s}"
+    );
+    at(
+        &mut a,
+        60,
+        SessionEvent::TurnEnded {
+            turn_id: "t2".into(),
+        },
+    );
+    let s = a.screen(160, 30).join("\n");
+    assert!(!s.contains("limit lifted"), "{s}");
+    assert!(!s.contains("goes on"), "{s}");
 }
 
 #[test]

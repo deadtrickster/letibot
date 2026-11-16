@@ -362,6 +362,9 @@ pub struct App {
     /// session's row after a restart knows the prompt size but not the cache fraction, and the
     /// header shows a percentage only when one was measured.
     pub(crate) usage_cache_measured: bool,
+    /// When the last turn ended, on the daemon's clock: a limit notice older than that is about a
+    /// turn that is over.
+    pub(crate) turn_ended_ts: u64,
     /// The last turn's `timings`, kept past the end of the turn so the header can show the
     /// decode rate while nothing is running.
     pub(crate) last_timings: Option<Timings>,
@@ -1394,6 +1397,7 @@ impl App {
             want_new_session: false,
             usage: None,
             usage_cache_measured: true,
+            turn_ended_ts: 0,
             last_timings: None,
             prefix_check: None,
             dialect_template_sha: String::new(),

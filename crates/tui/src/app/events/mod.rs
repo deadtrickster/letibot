@@ -138,6 +138,7 @@ impl App {
             self.job_edits.clear();
             self.usage = None;
             self.usage_cache_measured = true;
+            self.turn_ended_ts = 0;
             self.last_timings = None;
             // The total belongs to the conversation, not to the head: switching
             // sessions must not carry one session's bill onto another's header.
