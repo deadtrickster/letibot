@@ -1,74 +1,60 @@
-# The gate - how a branch is judged, here and on the fleet
+# The gate
 
-**The gate is the `## Merge gate` section of a repository's `AGENTS.md`, and nothing else is.** It is
-read from `main`'s copy, so a branch cannot weaken the gate it is about to be judged by, and it is
-a list of shell commands - one per line - in the first fenced block under that heading. A
-repository without the section does not have a weak gate: the queue holds every branch of it until
-somebody writes one (`merge_gate` is the tool that asks the operator what it should be).
+The gate is the `## Merge gate` section of a repository's `AGENTS.md`: the first fenced block under
+that heading, one shell command per line. It is read from `main`'s copy, so a branch cannot weaken
+the gate it is judged by. A repository without the section has no gate, and the queue holds every
+branch of it until somebody writes one (`merge_gate` asks the operator what it should be).
 
 ## Who runs it, and when
 
-The merge queue, on an approved branch, after the reviewer's verdict and after rebasing the branch
-onto the target's tip - never on the branch's own base, which is what makes the answer a fact about
-the landing rather than about the push. It runs in a landing worktree of its own
-(`~/.local/share/letibot/landing/<repo>-<hash>`, never inside `.git`) with `CARGO_TARGET_DIR`
-pointed at that worktree's `target`, so a branch is never judged with the main tree's artifacts -
-and nothing a branch builds reaches the main tree's `target/release` while it is still a candidate:
-the sixth step does that, after the push.
+The merge queue, on an approved branch, after rebasing it onto the target's tip. It runs in a
+landing worktree of its own (`~/.local/share/letibot/landing/<repo>-<hash>`, never inside `.git`)
+with `CARGO_TARGET_DIR` pointed at that worktree's `target`, so a branch is never judged with the
+main tree's artifacts and nothing it builds reaches the main tree's `target/release` before the
+install step.
 
-- The first step that fails **parks** the branch; the row says which step and carries what it wrote.
-- A step still running after thirty minutes is killed with its process group and the row is
-  `timed_out`.
-- The same steps, without the install, gate the **target's own tip** whenever it moves.
-- A step named `install-gate-build` runs only **after the landing was pushed**, so nothing is
-  installed that is not on the remote.
+- The first step that fails parks the branch. The row names the step and carries its output.
+- One thirty-minute deadline covers the whole run, not each step. Past it the step in flight is
+  killed with its process group and the row is `timed_out`.
+- The same steps, without the install, gate the target's own tip whenever it moves.
+- A step named `install-gate-build` runs only after the landing was pushed.
+- The queue does not fetch. It rebases onto and updates the local target ref, so a target that moved
+  on `origin` fails the push and the row ends `landed_local`, with no install.
 
-The gate's cost is a compile, so it is not run on every save: a branch is gated when it is ready to
-land. `queue status` says where a row is, and the row's green line names the commit and the machine
-that judged it - `` `main` is green at 0f2d9550 (lab2x1 gate) ``.
+A branch is gated when it is ready to land, not on every save. `queue status` says where a row is,
+and a green line names the commit and the machine that judged it.
 
 ## Where it runs
 
-Two places, and a project picks with one line in its own `leticode.toml`:
+On this machine, or on a host named in the project's `leticode.toml`:
 
 ```toml
 [queue]
 gate_host = "lubuntu1"    # a [host.…] from ~/.config/letibot/hosts.toml; empty is this machine
 ```
 
-or `--gate-host lubuntu1` on the daemon's command line, which wins over the file, and
-`--gate-host local` to put it back here for one run. The name is read once at daemon start. The
-landing worktree is made here either way, and the target branch moves here; a host only runs the
-steps, in a copy of that tree ([docs/remote-hosts.md](remote-hosts.md), *The merge gate on a
-declared host*, has the transport, the two clocks, the one-line time report and what a cold cache
-costs).
+`--gate-host NAME` on the daemon's command line wins over the file, and `--gate-host local` puts it
+back here. The name is read once at daemon start. The landing worktree and the target branch stay
+here; a host only runs the steps, in a copy of the tree ([remote-hosts.md](remote-hosts.md), *The
+merge gate on a declared host*).
 
-**`gate_in = "firecode"` runs each step in a firecode VM.** Opt-in per repository, in the same
-`[queue]` table. On the gate machine (this one, or the `gate_host`) every step becomes a `firecode`
-call over the gate's checkout: on a Mac `firecode sh -c` (project mounted read-only with a
-throwaway layer, nothing copied back, the VM deleted), elsewhere `firecode run` (files sent in,
-nothing copied back, the VM discarded after the gate). Deadlines, logs and verdicts are the
-ordinary gate's, since the step is still the unit. A machine without a working firecode (no CLI, no
-`/dev/kvm` on Linux, `firecode doctor` failing) leaves the tip UNJUDGED with a sentence. The steps
-never run on the host instead. Default is `gate_in = "host"`, which is today's behaviour.
+`gate_in = "firecode"` in the same table runs each step in a firecode VM on the gate machine: on a
+Mac `firecode sh -c` (project mounted read-only, nothing copied back), elsewhere `firecode run`
+(files sent in, nothing copied back). Deadline, logs and verdicts are the ordinary gate's. A machine
+without a working firecode leaves the tip unjudged with a sentence; the steps never fall back to the
+host. The default is `gate_in = "host"`.
 
-**A step that runs a `[boundary] firecode_only` program always runs in firecode.** The gate reads
-each step the way the seat does, through scripts it calls, and a hit puts the whole gate in a VM
-whatever `gate_in` says. When the gate host cannot start a VM, the steps run in this machine's VM
-instead. They never run bare.
+A step that runs a `[boundary] firecode_only` program always runs in firecode, whatever `gate_in`
+says. When the gate host cannot start a VM, the steps run in this machine's VM instead.
 
-**`~/.config/letibot/hosts.toml` is the operator's, and is never in a repository.** A machine is a
-`[host.NAME]` table - `hostname`, `user`, `key` (the identity file ssh is given; the key itself is
-never read into a session or a log), `root`, `path` (directories put in front of the remote
-`PATH`), `reserve`, `flags`, `mise`, `never_touch`. The `hosts` tool lists them and, with `probe`,
-reports cores, load and the **spare** cores, which is how a busy box is passed over for a free one.
-A name that is not in that file is refused by name, with the file's path, rather than being taken
-as a hostname and dialled.
+`~/.config/letibot/hosts.toml` is the operator's and never in a repository. A `[host.NAME]` table
+has `hostname`, `user`, `key` (the identity file ssh is given, never read into a session or a log),
+`root`, `path`, `reserve`, `flags`, `mise`, `never_touch`. The `hosts` tool lists them and, with
+`probe`, reports cores, load and spare cores. A name not in the file is refused by name.
 
-## Running it by hand, on this box
+## Running it by hand
 
-The section in `AGENTS.md` is the definition; this is what it means to type, and the two things
-that make a by-hand run disagree with the queue are called out under it:
+The `AGENTS.md` section is the definition. By hand, on this box:
 
 ```sh
 sh scripts/check-fmt.sh main
@@ -76,84 +62,73 @@ sh scripts/check-test-attrs.sh
 sh scripts/clippy-gate.sh --workspace --all-targets -- -D warnings
 LETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace --no-fail-fast -- --nocapture
 cargo build --release --bins
+sh scripts/check-dist-names.sh --built
 ```
 
-- **Name both llama.cpp variables** on anything that builds: `LETIBOT_LLAMA_DIR` and
-  `LETIBOT_LLAMA_LIB`. Each `build.rs` searches for a checkout and bakes the answer into an rpath,
-  and `cargo` cannot see that input - so a worktree that linked one llama.cpp keeps linking it.
-  A surprising run of vocabulary failures is usually this.
-- **`scripts/clippy-gate.sh`, not `cargo clippy`.** Cargo's fingerprint ignores the arguments after
-  `--`, so a unit already built by a plain `cargo clippy` is fresh for `-D warnings` and the step can
-  exit green having linted nothing.
-- **`LETIBOT_REQUIRE_APPARATUS=1` is the project's own demand**, written into the step so a test
-  that skips itself - no vocabulary GGUF, no delegated cgroup - cannot read as a pass. Without it,
-  ten review tests that never ran report `10 passed`.
-- **The shell suites are inside that `cargo test`.** `tests/launcher.sh` and `tests/rrun.sh` run
-  from `crates/tools/tests/shell_suites.rs`: `scripts/letibot` and `scripts/rrun` are shell, so no
-  `#[test]` reaches them, and four launcher cases drifted with nothing running the file. Both need
-  `bash` and `python3`; without them the test skips through `apparatus`, which the step's
-  `LETIBOT_REQUIRE_APPARATUS=1` turns into a failure.
-- **`check-fmt.sh` takes the ref this change started from.** `main` is that ref for a branch
-  about to land, which is why the section says `main`; checking something else, name its base.
+- Name both llama.cpp variables on anything that builds: `LETIBOT_LLAMA_DIR` and
+  `LETIBOT_LLAMA_LIB`. Each `build.rs` bakes the llama.cpp it found into an rpath that cargo does not
+  track, so a worktree keeps linking the first one. A run of vocabulary failures is usually this.
+- `scripts/clippy-gate.sh`, not `cargo clippy`. Cargo's fingerprint ignores the arguments after
+  `--`, so a unit built by plain clippy is fresh for `-D warnings` and nothing is linted.
+- `LETIBOT_REQUIRE_APPARATUS=1` turns a test that skips itself (no vocabulary GGUF, no delegated
+  cgroup) into a failure, so a skip cannot read as a pass.
+- The shell suites `tests/launcher.sh` and `tests/rrun.sh` run inside that `cargo test`, from
+  `crates/tools/tests/shell_suites.rs`. They need `bash` and `python3`.
+- `check-fmt.sh` takes the ref the change started from. `main` is that ref for a branch about to
+  land.
 
-The `queue` tool's `restart` puts a parked row back in line, and its `regate` gates the target's tip
-again once the cause of a red is gone. Neither is a way past a red - a branch that cannot pass the
-gate is not landed, which is the whole point of having one.
+The `queue` tool's `restart` puts a parked row back in line, and `regate` gates the target's tip
+again once the cause of a red is gone. Neither is a way past a red.
 
 ## Batched landings: `[queue] gate_train`
 
-The review stays per branch. What batches is the gate. With `gate_train = N` in the project's
-`leticode.toml`, the queue takes up to N approved rows, rebases them one onto the last onto the
-target's tip in queue order (a branch cut from another one in the stack goes after it), and gates
-the final tree once. The default, 1, is one branch and one gate.
+Review stays per branch; the gate batches. With `gate_train = N` in `leticode.toml`, the queue takes
+up to N approved rows, rebases them one onto the last onto the target's tip in queue order (a branch
+cut from another in the stack goes after it), and gates the final tree once. The default, 1, is one
+branch and one gate.
 
-- **Green** lands every row in order, one commit each, so each row's `landed_sha` is its own
-  commit and a bisect walks the tree the gate judged. The push and the install run once.
-- **Red** lands nothing and the target does not move. The stack is split into two halves, first
-  half first, and each row's evidence names its half (`TRAIN_SPLIT [half 0f2d9550:ab]`). The first
-  half is gated as its own stack. Green lands it, and the red is in the second half, so that half is
-  split again with no gate, or parked `failed` when it is one row. Red splits the first half again
-  and the second half goes back in line as plain rows. This is the bors / merge-train bisection.
-  For one bad row, it is parked within log2(n)+1 gate runs after the red stack.
+- Green lands every row in order, one commit each, so each row's `landed_sha` is its own commit.
+  The push and the install run once.
+- Red lands nothing. The stack is split in halves and each row's evidence names its half
+  (`TRAIN_SPLIT [half 0f2d9550:ab]`). The first half is gated as its own stack. Green lands it and
+  the second half is split again without a gate, or parked `failed` when it is one row. Red splits
+  the first half again and the second goes back in line as plain rows. One bad row is parked within
+  log2(n)+1 gate runs after the red stack.
 - A parked row is `failed` like a lone branch. Its author fixes it and the new head goes back to
   review.
-- A fix for a red target always lands alone. A stack only forms while the target is green at its
-  current tip.
+- A fix for a red target always lands alone. A stack forms only while the target is green.
 
-**Agents enqueue, they do not gate.** A seat calls the `queue` tool. A Claude Code agent calls the
-bridge's `queue` tool: `{action: "enqueue", branch, why}` for a pushed branch, then `{action:
-"status", id}` to read its review and landing rows. Then it stops. No agent runs the workspace
-suite or knows about a lock.
+Agents enqueue, they do not gate: the `queue` tool with `{action: "enqueue", branch, why}`, then
+`{action: "status", id}`.
 
-## The local landing gate: `scripts/gate-at.sh`
+## The local stack gate: `scripts/gate-at.sh`
 
-This is the lead's stopgap while a repository's queue does not batch (`gate_train` unset, or no
-queue serving it). Agents test the crates they touched and push a branch. The lead stacks the
-branches on `origin/main` in one worktree and runs one full gate over the stack:
+For a repository whose queue does not batch. Agents test the crates they touched and push a branch;
+the lead stacks the branches on `origin/main` in one worktree and runs:
 
 ```sh
 env -i HOME=$HOME PATH=$PATH sh scripts/gate-at.sh <worktree> /build/target-<name> origin/main
 ```
 
-- **One full gate per box.** The script takes `flock` on `/build/gate.lock` before `cargo test
-  --workspace`, and a second caller waits there. Eight parallel gates put the box at load 225.
-  `LETIBOT_GATE_LOCK` names another lock file. Never remove the lock: end the stuck gate.
-- **Isolated home.** The tests run with `HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and a short
-  `XDG_RUNTIME_DIR` of their own, so a test that forgets to isolate cannot reach the operator's
-  store or sockets. `hosts.toml`, `keys` and `known_hosts` are linked in for the remote-host tests.
-  `providers.toml` is not. Cargo and rustup stay at the real `HOME`.
-- **Stale builtins output.** `crates/builtins/build.rs` watches absolute paths, so a target dir
-  shared by worktrees keeps another tree's `chat.wasm`. The script deletes every
-  `letibot-builtins-*` output whose `rerun-if-changed` is not this worktree.
-- **The verdict.** `check-fmt.sh` against `BASE` first (exit 4), then the test run: `GREEN` with
-  exit 0, or the failing lines and exit 3. Logs are `<name>.fmt.log` and `<name>.test.log` under
-  `$LETIBOT_GATE_LOGS` (default `$TMPDIR/letibot-gate`).
-- **On red,** bisect the stack, fix the failing commit, gate again, then push `main`.
+It is not the merge gate. It runs `check-fmt.sh` against `BASE` (exit 4 on failure), then
+`cargo test --workspace --no-fail-fast` without `LETIBOT_REQUIRE_APPARATUS`, clippy, the test-attribute
+check or the build. The verdict comes from the log, not cargo's exit code: `GREEN` and exit 0 when no
+suite failed and at least 140 suites reported `ok`, else the failing lines and exit 3.
 
-`TARGET_DIR` goes on `/build`, never the root disk. Delete it after the landing; each one is about
-200G. A link that dies with `signal 7 [Bus error]` is a full `/build`: `df -h /build` first.
-`letibot doctor`'s `gate lock` row warns about a holder older than 2h, and its disk rows list
-`/build/target-*` dirs that no process works in.
+- One workspace run per box: it takes `flock` on `/build/gate.lock` (`LETIBOT_GATE_LOCK` names
+  another) and a second caller waits. Never remove the lock; end the stuck gate.
+- Isolated home: the tests get their own `HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and a short
+  `XDG_RUNTIME_DIR`. `hosts.toml`, `keys` and `known_hosts` are linked in; `providers.toml` is not.
+  Cargo and rustup stay at the real `HOME`.
+- Stale builtins output: `crates/builtins/build.rs` watches absolute paths, so the script deletes
+  every `letibot-builtins-*` output whose `rerun-if-changed` is not this worktree.
+- Logs are `<name>.fmt.log` and `<name>.test.log` under `$LETIBOT_GATE_LOGS` (default
+  `$TMPDIR/letibot-gate`).
+- On red, bisect the stack, fix the failing commit, gate again, then push `main`.
+
+`TARGET_DIR` goes on `/build`, never the root disk, and is deleted after the landing. A link that dies
+with `signal 7 [Bus error]` is a full `/build`. `letibot doctor` warns about a gate lock held over 2h
+and lists `/build/target-*` dirs no process works in.
 
 ## On a host, by hand
 
@@ -161,45 +136,33 @@ env -i HOME=$HOME PATH=$PATH sh scripts/gate-at.sh <worktree> /build/target-<nam
 ssh -i ~/.config/letibot/keys/lubuntu1 dead@lubuntu1
 ```
 
-**Tools by full path**: `~/.local/bin` and `~/.cargo/bin` are not on the `PATH` of a
-non-interactive ssh command, so `~/.cargo/bin/cargo`, `~/.local/bin/act`. Most of the time the
-answer is not to run it by hand at all: set `[queue] gate_host` and let the queue do it, which also
-transfers the tree, keeps the build cache and reports the time.
+`~/.local/bin` and `~/.cargo/bin` are not on a non-interactive ssh command's `PATH`, so call tools
+by full path. Usually set `[queue] gate_host` instead, which also transfers the tree and keeps the
+build cache.
 
 ## What a red is, and what it is not
 
-- **Red** is a verdict about the branch: a step exited non-zero, and the row parks with its output.
-- **`timed_out`** is a verdict about the step: thirty minutes with no answer, killed with its
+- Red is a verdict about the branch: a step exited non-zero.
+- `timed_out` is the run passing its thirty-minute deadline; the step in flight is killed with its
   process group.
-- **`Infra` is not a verdict.** A machine that did not answer, a key that is not installed, a tree
-  that would not arrive - the target goes back to `gating` with the sentence that stopped it and is
-  tried again after a minute. A host that is down costs the queue a minute per attempt, not a
-  `/queue restart`. The one `Infra` that stays `blocked` is a step killed at the gate's memory cap,
-  because that step *ran*.
-- **`blocked`** is a tip nobody can judge at all: no `## Merge gate` section, or a landing tree that
-  cannot be made. It stops both queues, and it is the one state that is somebody's to fix by hand.
+- `Infra` is not a verdict. A machine that did not answer or a tree that would not arrive sends the
+  target back to `gating` with the reason, retried after a minute. The one `Infra` that stays
+  `blocked` is a step killed at the gate's memory cap, because that step ran.
+- `blocked` is a tip nobody can judge: no `## Merge gate` section, or a landing tree that cannot be
+  made. It stops both queues and needs fixing by hand.
 
 ## Never on GitHub Actions
 
-The operator, 2026-10-11: *"i've been rate limited on github recently with actions, so _act_ is our
-friend. we can use other machines like lubuntu2 to run tests"*, and *"for runners id prefere
-lubuntu1,2 only"*. So the gate runs in the queue - here, or on a declared box over `ssh -i` - and
-**no workflow in this repository runs it**. A workflow judges a push, which is not the commit that
-lands; its red is read by nobody; and it spends a budget that is rationed.
-
-`.github/workflows/release.yml` remains, and is not a gate: a tag starts it, it builds the assets
-`install.sh` downloads, and no branch ever triggers it. `crates/tools/tests/gate_not_on_github.rs`
-refuses a workflow that runs the gate's steps or answers a `pull_request`, so the second gate
-cannot come back by accident.
+Actions are rate-limited for this account, so the gate runs in the queue, here or on a declared host,
+and no workflow in this repository runs it. A workflow judges a push, which is not the commit that
+lands. `.github/workflows/release.yml` is not a gate: a tag starts it and it builds the assets
+`install.sh` downloads. `crates/tools/tests/gate_not_on_github.rs` refuses a workflow that runs a gate
+step or answers a `pull_request`.
 
 ## What the gate does not see
 
-A machine without an apparatus the tests demand prints `THIS IS NOT A PASS` with the reason and the
-step still passes - that is a fact about the machine, not about the diff, and it is why the gate
-says so loudly. And `crates/turn/tests/restore.rs`'s real-store tests read the operator's own
-`sessions.db` and run only with `LETIBOT_CHECK_REAL_STORE=1`, by hand, on the box that has the
-store: a red there is a fact about the store rather than about the code, so it is not in the gate.
-
-And the acceptance specs - the real head driven in tmux, `tests/acceptance/run.sh` - are not a step
-of the gate either: they need a terminal, a release build and, for `--local`, this box's firecode.
-Run them by hand when a change reaches the head.
+Apparatus the platform can never have (`apparatus::applies`) prints `THIS IS NOT A PASS` and the
+step still passes. `crates/turn/tests/restore.rs`'s real-store tests
+read the operator's `sessions.db` and run only with `LETIBOT_CHECK_REAL_STORE=1`, by hand. The
+acceptance specs (`tests/acceptance/run.sh`, the real head in tmux) need a terminal, a release build
+and, for `--local`, firecode; run them by hand when a change reaches the head.

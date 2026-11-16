@@ -16,8 +16,6 @@ makes each of them a decision somebody took.
 - Context is summarised in levels, and each level says what it cost and what it dropped.
 - The wire carries facts, not summaries of facts, so a head attaching to a session that has been
   running for hours draws it correctly.
-- Nothing moves that the reader did not ask to move: a queued message keeps its place, a drawn row
-  is not redrawn elsewhere, and a counter that stopped is drawn differently from one that counts.
 
 ## What it does
 
@@ -73,19 +71,18 @@ is how to put a session in a VM instead.
 
 ## Documentation
 
-- [docs/STATUS.md](docs/STATUS.md) - where the tree stands today: what works, what is half built, what
-  is broken, and what is next.
+- [docs/STATUS.md](docs/STATUS.md) - what works, what is half built, what is broken.
 - [docs/design-brief.md](docs/design-brief.md) - the thesis, and the constraints it puts on the code.
 - [docs/boundary-and-adjudication.md](docs/boundary-and-adjudication.md) - the gate: what is read, what is refused, and why.
 - [docs/socket.md](docs/socket.md) - the daemon socket, and what a tool call may and may not do through it.
 - [docs/gate.md](docs/gate.md) - the merge gate: what a branch is judged by, here and on the fleet, and how to run it.
-- [docs/compaction.md](docs/compaction.md) and [docs/closed-loop.md](docs/closed-loop.md) - the two subsystems with the most measurement behind them.
+- [docs/compaction.md](docs/compaction.md) and [docs/closed-loop.md](docs/closed-loop.md) - context compaction, and the harness as a feedback loop.
 - [docs/skills.md](docs/skills.md) - what a session can be handed, and how a skill offers itself; [docs/embeddings.md](docs/embeddings.md) - the second similarity tier, and which callers use it.
 - [docs/providers.md](docs/providers.md) - keys, prices, and where a session goes when its model is out.
 - [docs/github-reviewer.md](docs/github-reviewer.md) - the reviewer seat on a GitHub scope: what it watches, and what it will not send.
 - [docs/room.md](docs/room.md) - coordination between sessions; [docs/plugins-plan.md](docs/plugins-plan.md) - panes and hooks.
 - [docs/cookbook.md](docs/cookbook.md) - recipes; [docs/remote-hosts.md](docs/remote-hosts.md) - running a session on another machine.
-- [agents.md](agents.md) - the conventions a change is held to.
+- [AGENTS.md](AGENTS.md) - the conventions a change is held to, and the merge gate.
 
 ## Licence
 

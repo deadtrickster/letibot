@@ -8,8 +8,9 @@ rakes already stepped on. Design writing lives in `docs/`.
 A local coding-agent harness in two processes. `harnessd` (crates/harnessd) owns sessions, the
 hash-chained ledger, the model connection and the permission gate. The TUI (crates/tui) is one head
 that attaches to a daemon over a unix socket, so closing it mid-turn does not stop the turn. The
-wire contract is `crates/sessionlog/src/protocol.rs`; `PROTOCOL_VERSION` there is the compatibility
-number.
+wire contract is `crates/sessionlog/src/protocol.rs`. The daemon accepts a head on a different
+`PROTOCOL_VERSION` and logs it; judging the skew is the head's job (the TUI goes read-only on an
+older daemon).
 
 ## Layout
 
@@ -61,8 +62,9 @@ the folder's daemon and exec the binaries from `target/release`.
 ## Merge gate
 
 The merge queue runs these steps in its own landing worktree after rebasing an approved branch onto
-the target's tip. The first failure parks the branch. A step running over thirty minutes is killed
-(`timed_out`). `install-gate-build` runs only after the landing was pushed. The same steps without
+the target's tip. The first failure parks the branch. One thirty-minute deadline covers the whole
+run, not each step: past it the step in flight is killed (`timed_out`). `install-gate-build` runs
+only after the landing was pushed. The same steps without
 the install gate the target's tip when it moves. The section is read from `main`, so a branch cannot
 change its own gate. The queue reads the first fenced block under this heading, one command per
 line. It runs on this box or the host `[queue] gate_host` names, never on GitHub Actions.
@@ -93,11 +95,10 @@ sh scripts/install-gate-build.sh
   v2 subtree, no store fixture) into a failure. Without it a skipping test returns and counts as
   passed. Apparatus the platform can never have goes through `apparatus::applies` and is not
   refusable.
-- **The shell suites are in the `cargo test` step.** `tests/launcher.sh` and `tests/rrun.sh` run from
+- The shell suites are in the `cargo test` step. `tests/launcher.sh` and `tests/rrun.sh` run from
   `crates/tools/tests/shell_suites.rs`, because `scripts/letibot` and `scripts/rrun` decide a run
-  before any Rust executes and no `#[test]` reaches them - four launcher cases had drifted with
-  nothing running the file. Each needs `bash` and `python3`, and without them the test skips loudly
-  through `apparatus`, which `LETIBOT_REQUIRE_APPARATUS=1` turns into a failure.
+  before any Rust executes and no `#[test]` reaches them. Each needs `bash` and `python3`, and
+  without them the test skips loudly through `apparatus`.
 - Each of the `build.rs` scripts bakes the llama.cpp it first found into an rpath, and cargo does
   not see that input change. If vocabulary targets are red on a box with a working llama.cpp, set
   `LETIBOT_LLAMA_DIR` and `LETIBOT_LLAMA_LIB` on the build steps or delete that worktree's `target/`.
@@ -125,11 +126,12 @@ sh scripts/install-gate-build.sh
 - Agents test the crates they touch (`cargo test -p <crate>`), push a branch, enqueue it (the
   bridge's or the seat's `queue` tool, `action: "enqueue"`), wait on the row (`letibot-mcp
   wait-queue <repository> <id>` in the background: 0 landed, 10 rejected, 20 red) and report its
-  tip. They never run a full gate and never push `main`. The queue gates approved branches as one stack (`[queue]
-  gate_train`, `docs/gate.md`). Where it does not, the lead stacks them and runs one full gate
-  (`scripts/gate-at.sh`), because parallel full gates choke the box. A gate on a fleet host is `scripts/rrun NAME
-  WORKTREE --host H [--target DIR] --gate` (default host lab2x1). The Mac runs only
-  platform-touching tests.
+  tip. They never run a full gate and never push `main`. The queue gates approved branches as one
+  stack (`[queue] gate_train`, `docs/gate.md`). Where it does not, the lead stacks them and runs
+  `scripts/gate-at.sh` once, because parallel workspace runs choke the box. That script is not the
+  merge gate: it runs `check-fmt.sh` and `cargo test --workspace` only. `scripts/rrun NAME WORKTREE
+  --host H [--target DIR] --gate` runs the first four gate steps on a fleet host (default lab2x1).
+  The Mac runs only platform-touching tests.
 - Agents never type into a session's head over tmux (`tmux send-keys`). A head cannot tell typed
   text from the operator, so it is stored as the operator's words. Use the bridge (`leticode_send`)
   or the room.
