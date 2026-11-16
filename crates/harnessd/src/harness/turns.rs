@@ -1279,8 +1279,6 @@ impl Harness {
             let mut lost = job.clone();
             lost.state = "lost at restart".into();
             let _ = store.put_job(&sid, &lost);
-            // And said: a `lost at restart` row is an ending, and an undelivered ending is what
-            // the next open would announce again.
             let _ = store.deliver_job(&sid, &job.handle);
         }
 
@@ -2651,7 +2649,7 @@ impl Harness {
     /// What happens once the round's results are in: they are appended in one batch, the gate's
     /// admissions are said after them, the doors a running turn holds shut are answered at this
     /// boundary, and the two corrections ride the next step - the intent diff and a context claim.
-    fn after_the_round(
+    pub(crate) fn after_the_round(
         &mut self,
         results: &[TranscriptItem],
         turn_id: &str,
@@ -2663,6 +2661,9 @@ impl Harness {
         self.session
             .append_items(&self.engine, results, &mut sink)?;
         self.reconcile(&mut sink, results);
+        // Stored before the boundary's side work: the head run and the review pass can run for
+        // minutes, and a row a head has already drawn must not live only in memory through them.
+        self.persist()?;
         // And the calls this round's gate admitted without asking anybody, said after the results and never
         // between them: a notice between a call and its result closes the pairing window.
         self.flush_gate_admissions()?;
@@ -2689,7 +2690,6 @@ impl Harness {
                 self.hub.session_id()
             );
         }
-        self.persist()?;
         self.shadow_during_round();
         // The calls of this round have run; if the model revised its plan,
         // the store and the heads hear about it now, at the round boundary  -
