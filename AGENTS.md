@@ -62,11 +62,11 @@ the folder's daemon and exec the binaries from `target/release`.
 ## Merge gate
 
 The merge queue runs these steps in its own landing worktree after rebasing an approved branch onto
-the target's tip. The first failure parks the branch. One thirty-minute deadline covers the whole
-run, not each step: past it the step in flight is killed (`timed_out`). `install-gate-build` runs
-only after the landing was pushed. The same steps without
-the install gate the target's tip when it moves. The section is read from `main`, so a branch cannot
-change its own gate. The queue reads the first fenced block under this heading, one command per
+the target's tip. The first failure parks the branch. A gate on this box takes `/build/gate.lock`
+first. One deadline (thirty minutes, or `[queue] gate_deadline_minutes`) covers the whole run, not
+each step: past it the step in flight is killed (`timed_out`). `install-gate-build` runs only after
+the landing was pushed. The same steps without the install gate the target's tip when it moves.
+The section is read from `main`, so a branch cannot change its own gate. The queue reads the first fenced block under this heading, one command per
 line. It runs on this box or the host `[queue] gate_host` names, never on GitHub Actions.
 `docs/gate.md` covers gating through the queue and by hand.
 

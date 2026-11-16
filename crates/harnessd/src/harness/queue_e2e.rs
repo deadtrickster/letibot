@@ -260,6 +260,7 @@ fn worker(fx: &Fixture, repo: &Path) -> RepoQueue {
             settings: Arc::new(|_| Ok(Default::default())),
             landing_root: crate::mergequeue::serve::tests::test_landing_root(),
             gate_deadline: std::time::Duration::from_secs(60),
+            gate_lock: None,
             review_deadline_ms: crate::mergequeue::serve::REVIEW_DEADLINE_MS,
             reviewer_start_grace_ms: crate::mergequeue::serve::REVIEWER_START_GRACE_MS,
             idle: std::time::Duration::from_millis(10),
@@ -1597,6 +1598,7 @@ fn a_blocked_childs_review_is_rung_and_told_to_its_root_once() {
             }),
             landing_root: crate::mergequeue::serve::tests::test_landing_root(),
             gate_deadline: std::time::Duration::from_secs(60),
+            gate_lock: None,
             review_deadline_ms: crate::mergequeue::serve::REVIEW_DEADLINE_MS,
             // Nobody starts a reviewer here, so the claim is blocked on the next pass.
             reviewer_start_grace_ms: 0,

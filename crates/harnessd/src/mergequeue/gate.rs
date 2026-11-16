@@ -20,6 +20,71 @@ use super::git;
 /// its row is `timed_out`, an outcome of its own.
 pub const GATE_DEADLINE: Duration = Duration::from_secs(30 * 60);
 
+/// The box's gate lock: `LETIBOT_GATE_LOCK`, else `/build/gate.lock` on a box that has `/build` -
+/// the file `scripts/gate-at.sh` takes, so a queue gate and a hand-run gate never run at once.
+pub fn box_gate_lock() -> Option<PathBuf> {
+    match std::env::var_os("LETIBOT_GATE_LOCK") {
+        Some(p) if !p.is_empty() => Some(PathBuf::from(p)),
+        _ => {
+            Some(PathBuf::from("/build/gate.lock")).filter(|p| p.parent().is_some_and(Path::is_dir))
+        }
+    }
+}
+
+/// Wait for the box's gate lock, polling so that a stop or a lost lease ends the wait. The lock
+/// is held while the returned file is open.
+pub fn wait_for_box_lock(
+    path: &Path,
+    stop: &AtomicBool,
+    alive: &dyn Fn() -> bool,
+) -> Result<std::fs::File, GateRun> {
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(path)
+        .map_err(|e| GateRun {
+            steps: vec![],
+            verdict: GateVerdict::Infra(format!(
+                "the box's gate lock {} could not be opened: {e}",
+                path.display()
+            )),
+        })?;
+    let mut said = false;
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) => {}
+            Err(std::fs::TryLockError::Error(e)) => {
+                return Err(GateRun {
+                    steps: vec![],
+                    verdict: GateVerdict::Infra(format!(
+                        "the box's gate lock {} could not be taken: {e}",
+                        path.display()
+                    )),
+                });
+            }
+        }
+        if stop.load(Ordering::Relaxed) || !alive() {
+            return Err(GateRun {
+                steps: vec![],
+                verdict: GateVerdict::Stopped(format!(
+                    "stopped while waiting for the box's gate lock {}",
+                    path.display()
+                )),
+            });
+        }
+        if !said {
+            eprintln!(
+                "  merge queue: waiting for the box's gate lock {}",
+                path.display()
+            );
+            said = true;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+}
+
 /// The environment variable the gate's builds are pointed with - `<worktree>/target`, so a branch
 /// is never judged with another tree's artifacts.
 pub const GATE_TARGET_DIR: &str = "CARGO_TARGET_DIR";

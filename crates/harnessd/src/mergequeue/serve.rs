@@ -152,7 +152,11 @@ pub struct QueueEnv {
     pub desk: Option<Arc<letibot_tools::builtins::verdict::ReviewDesk>>,
     pub settings: SettingsFor,
     pub landing_root: LandingRootFor,
+    /// The whole run's deadline when `[queue] gate_deadline_minutes` says nothing.
     pub gate_deadline: Duration,
+    /// The box's one-workspace-run lock, the file `scripts/gate-at.sh` takes: a gate on this
+    /// machine waits for it before its first step and holds it to the last. `None` takes none.
+    pub gate_lock: Option<PathBuf>,
     pub review_deadline_ms: u64,
     pub reviewer_start_grace_ms: u64,
     /// How long a worker sleeps after a pass with nothing to do.
@@ -207,6 +211,7 @@ impl QueueEnv {
                 })
             }),
             gate_deadline: gate::GATE_DEADLINE,
+            gate_lock: gate::box_gate_lock(),
             review_deadline_ms: REVIEW_DEADLINE_MS,
             reviewer_start_grace_ms: REVIEWER_START_GRACE_MS,
             idle: Duration::from_secs(2),
@@ -861,9 +866,12 @@ impl RepoQueue {
         gate::watch(&wt, &self.key);
         let cancel = Arc::new(AtomicBool::new(false));
         let lease = self.lease_ok.clone();
-        let mut gate_in = (self.env.settings)(&self.repo)
-            .map(|s| s.gate_in)
-            .unwrap_or_default();
+        let settings = (self.env.settings)(&self.repo).ok();
+        let mut gate_in = settings.as_ref().map(|s| s.gate_in).unwrap_or_default();
+        let budget = settings
+            .as_ref()
+            .and_then(|s| s.gate_deadline)
+            .unwrap_or(self.env.gate_deadline);
         if let Some(why) = firecode_only_step(&self.repo, &steps) {
             eprintln!(
                 "  merge queue: {}: {why}; the gate runs in firecode",
@@ -872,14 +880,26 @@ impl RepoQueue {
             gate_in = super::settings::GateIn::Firecode;
         }
         let runner = super::gate_firecode::runner_for(gate_in, &self.env.gate);
-        let deadline = Instant::now() + self.env.gate_deadline;
-        let budget = self.env.gate_deadline;
+        let lock = self
+            .env
+            .gate_lock
+            .clone()
+            .filter(|_| runner.name().starts_with("local"));
         let stop = cancel.clone();
         let short: String = sha.chars().take(8).collect();
         let run = std::thread::Builder::new()
             .name(format!("gate-{short}"))
             .spawn(move || {
                 let alive = move || lease.load(Ordering::Relaxed);
+                // The deadline starts once the lock is held: the wait is the box's, not the gate's.
+                let _held = match lock {
+                    Some(path) => match gate::wait_for_box_lock(&path, &stop, &alive) {
+                        Ok(file) => Some(file),
+                        Err(run) => return run,
+                    },
+                    None => None,
+                };
+                let deadline = Instant::now() + budget;
                 let ctl = GateControl {
                     deadline,
                     budget,

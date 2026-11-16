@@ -260,6 +260,7 @@ fn env_with_desk_and_hosts(
         settings: Arc::new(move |_| Ok(settings.clone())),
         landing_root: test_landing_root(),
         gate_deadline: Duration::from_secs(60),
+        gate_lock: None,
         review_deadline_ms: REVIEW_DEADLINE_MS,
         reviewer_start_grace_ms: REVIEWER_START_GRACE_MS,
         reviewers_at_once: None,
@@ -927,6 +928,76 @@ fn a_gate_past_its_deadline_is_killed_and_timed_out_is_its_own_outcome() {
             .iter()
             .any(|(r, c)| r == &w.key() && c == "target_timed_out")
     );
+}
+
+/// A gate that records when it ran and the budget it was handed. Named `local`, so it is a gate on
+/// this machine and takes the box's lock.
+#[derive(Default)]
+struct RecordsBudget {
+    ran: Mutex<Vec<(std::time::Instant, Duration)>>,
+}
+
+impl GateRunner for RecordsBudget {
+    fn run(&self, wt: &Path, steps: &[String], ctl: &GateControl) -> GateRun {
+        self.ran
+            .lock()
+            .unwrap()
+            .push((std::time::Instant::now(), ctl.budget));
+        GreenGate.run(wt, steps, ctl)
+    }
+}
+
+/// The queue's gate and `gate-at.sh` take the same box lock: a gate here waits while another
+/// holds it, and its first step starts once it is let go.
+#[test]
+fn a_queue_gate_waits_for_the_box_gate_lock() {
+    let w = World::new("boxlock");
+    let lock = w.dir.0.join("gate.lock");
+    let other = std::fs::File::create(&lock).unwrap();
+    other.lock().unwrap();
+    let gate = Arc::new(RecordsBudget::default());
+    let mut e = env(gate.clone(), w.door.clone(), "a");
+    Arc::get_mut(&mut e).unwrap().gate_lock = Some(lock.clone());
+    let store = w.store();
+    store
+        .acquire_queue_lease(&w.key(), &e.me, gate::now_ms(), LEASE_TTL_MS)
+        .unwrap();
+    let q = RepoQueue::new(store, w.repo.clone(), e);
+    let stop = AtomicBool::new(false);
+    assert_ne!(q.pass(&stop).unwrap(), Pass::LostLease);
+    std::thread::sleep(Duration::from_millis(600));
+    assert!(
+        gate.ran.lock().unwrap().is_empty(),
+        "the gate ran while another held the box's lock"
+    );
+    let released = std::time::Instant::now();
+    drop(other);
+    run(&q, 2);
+    let ran = gate.ran.lock().unwrap();
+    assert_eq!(ran.len(), 1, "the target's gate ran once the lock was free");
+    assert!(ran[0].0 >= released);
+}
+
+/// `[queue] gate_deadline_minutes` is the run's budget; without it the daemon's own.
+#[test]
+fn the_gate_deadline_is_the_projects_setting() {
+    let w = World::new("deadline-setting");
+    let gate = Arc::new(RecordsBudget::default());
+    let mut e = env(gate.clone(), w.door.clone(), "a");
+    let settings = QueueSettings {
+        gate_deadline: Some(Duration::from_secs(45 * 60)),
+        ..QueueSettings::default()
+    };
+    Arc::get_mut(&mut e).unwrap().settings = Arc::new(move |_| Ok(settings.clone()));
+    let store = w.store();
+    store
+        .acquire_queue_lease(&w.key(), &e.me, gate::now_ms(), LEASE_TTL_MS)
+        .unwrap();
+    let q = RepoQueue::new(store, w.repo.clone(), e);
+    run(&q, 1);
+    let ran = gate.ran.lock().unwrap();
+    assert_eq!(ran.len(), 1);
+    assert_eq!(ran[0].1, Duration::from_secs(45 * 60));
 }
 
 /// A target whose landing tree cannot be made ready is said : `target_unjudged`
@@ -2844,6 +2915,7 @@ fn a_reviewer_that_is_still_opening_is_not_re_seated_and_one_that_ends_is() {
         settings: Arc::new(|_| Ok(QueueSettings::default())),
         landing_root: test_landing_root(),
         gate_deadline: Duration::from_secs(60),
+        gate_lock: None,
         review_deadline_ms: REVIEW_DEADLINE_MS,
         reviewer_start_grace_ms: REVIEWER_START_GRACE_MS,
         reviewers_at_once: None,

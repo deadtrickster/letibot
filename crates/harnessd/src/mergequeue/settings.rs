@@ -36,6 +36,8 @@
 //!                                 #   on (`["*"]` is all of them). Default: this machine only
 //! reviewers_run_suites = true     # opt in: a reviewer's `bash` may run whole test suites.
 //!                                 #   Default: refused, a reviewer runs single named tests
+//! gate_deadline_minutes = 45      # the deadline of one whole gate run, counted from when the
+//!                                 #   box's gate lock is held. Default: 30
 //! [queue.claude]                  # the reviewers are headless `claude -p` runs instead of
 //!                                 #   letibot children. The table absent is the letibot
 //!                                 #   reviewer.
@@ -177,6 +179,9 @@ pub struct QueueSettings {
     /// `[queue] reviewers_run_suites`: a reviewer's `bash` may run whole test suites. Off by
     /// default, because the gate runs the suite and a reviewer that repeats it dies at its limits.
     pub reviewers_run_suites: bool,
+    /// `[queue] gate_deadline_minutes`: one gate run's deadline. `None` is the daemon's thirty
+    /// minutes ([`super::gate::GATE_DEADLINE`]).
+    pub gate_deadline: Option<std::time::Duration>,
     /// `[queue] grant_ttl_hours`: how long a session answer on a relayed queue card covers the
     /// queue. It covers every later reviewer, so it is bounded in time rather than by one seat.
     pub grant_ttl_hours: u64,
@@ -202,6 +207,7 @@ impl Default for QueueSettings {
             reviewers_at_once: None,
             reviewer_hosts: Some(vec!["local".to_string()]),
             reviewers_run_suites: false,
+            gate_deadline: None,
             grant_ttl_hours: GRANT_TTL_HOURS,
             claude: None,
             path: None,
@@ -242,6 +248,8 @@ struct QueueTable {
     reviewers_run_suites: Option<bool>,
     #[serde(default)]
     grant_ttl_hours: Option<i64>,
+    #[serde(default)]
+    gate_deadline_minutes: Option<i64>,
     /// `[queue.claude]`: present is *this project's reviewers are Claude Code runs*.
     #[serde(default)]
     claude: Option<ClaudeTable>,
@@ -350,6 +358,17 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
             ));
         }
     };
+    let gate_deadline = match q.gate_deadline_minutes {
+        None => None,
+        Some(n) if n >= 1 => Some(std::time::Duration::from_secs(n as u64 * 60)),
+        Some(other) => {
+            return Err(format!(
+                "{}: [queue] gate_deadline_minutes = {other} - it is how long one gate run may \
+                 take, so it is 1 or more (the default is 30)",
+                path.display()
+            ));
+        }
+    };
     let mut gate_carry = Vec::new();
     for entry in &q.gate_carry {
         let rel = super::carry::validate(entry).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -414,6 +433,7 @@ pub fn parse(path: &Path) -> Result<QueueSettings, String> {
         reviewers_at_once,
         reviewer_hosts,
         reviewers_run_suites: q.reviewers_run_suites.unwrap_or(false),
+        gate_deadline,
         grant_ttl_hours,
         claude: match q.claude {
             None => None,
@@ -541,6 +561,25 @@ mod tests {
         assert_eq!(s.red_target, RedTarget::Raise);
         // The model reader still reads the same file.
         assert!(LeticodeConfig::load(&dir.join("leticode.toml")).is_ok());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn gate_deadline_minutes_is_read_and_zero_is_refused() {
+        let (dir, repo) = file("[queue]\ngate_deadline_minutes = 45\n");
+        assert_eq!(
+            for_repository(&repo).unwrap().gate_deadline,
+            Some(std::time::Duration::from_secs(45 * 60))
+        );
+        std::fs::write(
+            dir.join("leticode.toml"),
+            "[queue]\ngate_deadline_minutes = 0\n",
+        )
+        .unwrap();
+        let e = for_repository(&repo).unwrap_err();
+        assert!(e.contains("gate_deadline_minutes = 0"), "{e}");
+        std::fs::write(dir.join("leticode.toml"), "[queue]\n").unwrap();
+        assert_eq!(for_repository(&repo).unwrap().gate_deadline, None);
         let _ = std::fs::remove_dir_all(dir);
     }
 

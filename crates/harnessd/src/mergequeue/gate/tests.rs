@@ -1662,6 +1662,8 @@ fn the_gate_env_passes_exactly_the_apparatus_and_nothing_else() {
         .output()
         .expect("the env script runs");
     assert!(out.status.success(), "{out:?}");
+    // A gate a step starts takes a lock of its own, under the scratch.
+    let lock = scratch.join("gate.lock");
     let said = String::from_utf8_lossy(&out.stdout).to_string();
     let env: BTreeMap<&str, &str> = said.lines().filter_map(|l| l.split_once('=')).collect();
     let letibot: BTreeMap<&str, &str> = env
@@ -1671,6 +1673,7 @@ fn the_gate_env_passes_exactly_the_apparatus_and_nothing_else() {
         .collect();
     let want: BTreeMap<&str, &str> = [
         ("LETIBOT_CALIBRATION", calibration.to_str().unwrap()),
+        ("LETIBOT_GATE_LOCK", lock.to_str().unwrap()),
         ("LETIBOT_VOCAB_GGUF", qwen.to_str().unwrap()),
     ]
     .into_iter()
