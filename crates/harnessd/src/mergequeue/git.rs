@@ -682,16 +682,53 @@ fn pushed_said(sha: &str, target: &str, plan: &PushPlan) -> String {
     }
 }
 
-/// The row's sentence for a push that was refused: git's own words, plus - when `gh` answered -
-/// that it did, so *no access for this account* is not read as *no credential at all*.
+/// Why git refused a push, read from git's own words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PushRefusal {
+    /// `(fetch first)` or `(non-fast-forward)`: origin's branch moved past the push's base.
+    OriginMoved,
+    /// The remote refused the credential, or none could be offered.
+    Auth,
+    /// Anything else: the network, a hook, a protected branch.
+    Other,
+}
+
+fn push_refusal(e: &str) -> PushRefusal {
+    const MOVED: &[&str] = &["(fetch first)", "(non-fast-forward)", "non-fast-forward"];
+    const AUTH: &[&str] = &[
+        "Authentication failed",
+        "Invalid username or password",
+        "Permission denied",
+        "could not read Username",
+        "could not read Password",
+        "The requested URL returned error: 401",
+        "The requested URL returned error: 403",
+    ];
+    if MOVED.iter().any(|w| e.contains(w)) {
+        PushRefusal::OriginMoved
+    } else if AUTH.iter().any(|w| e.contains(w))
+        || (e.contains("Permission to") && e.contains("denied to"))
+    {
+        PushRefusal::Auth
+    } else {
+        PushRefusal::Other
+    }
+}
+
+/// The row's sentence for a push that was refused: git's own words, plus what they mean. Only an
+/// authentication failure on gh's helper names the credential, so *no access for this account* is
+/// not read as *no credential at all*, and a moved origin is never read as either.
 fn failed_said(e: &str, plan: &PushPlan) -> String {
-    if plan.gh {
-        format!(
+    match push_refusal(e) {
+        PushRefusal::OriginMoved => format!(
+            "{e} — origin moved: its branch has commits this push does not, and nothing was \
+             forced"
+        ),
+        PushRefusal::Auth if plan.gh => format!(
             "{e} — the credential offered was gh's (`{GH_HELPER}`, inherited helpers cleared), so \
              this refusal is about the account gh is logged in as, not a missing credential"
-        )
-    } else {
-        e.to_string()
+        ),
+        PushRefusal::Auth | PushRefusal::Other => e.to_string(),
     }
 }
 
