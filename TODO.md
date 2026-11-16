@@ -47,7 +47,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | id | title | group | left |
 |---|---|---|---|
 | R320 | B1 wire and peer: an unbounded first frame, raw snapshots to older heads, inside judged by one daemon's cgroup | Code work | B1: I65, I66, I5; M; after - |
-| R321 | B1b skew measured: round-trip tests use the current types at both ends | Code work | B1b: I67; M; after B1 (R320) |
+| R321 | B1b skew measured: round-trip tests use the current types at both ends | Code work | B1b: I67; built on `b1b-skew`, awaiting the stack gate; left: old binaries against this daemon, the SINCE-row bump test |
 | R322 | B2 shadow and grants: the acting rule is never matched to the path, the breaker resets while grants persist | Code work | B2: I8, I9, I10, I11, I7; M; after - |
 | R323 | B3 provenance: anything without a speaker label counts as the operator | Code work | built on branch `b3-provenance` (I1-I4, each with its proving test, failing on main); left: one full gate and the landing, then the residue in the entry's Status |
 | R324 | B4 gate rules: approved shapes admit any body, seed rows admit write and exec flags, own-config by substring, Absent never refused | Code work | B4: I18, I20, I21, I22, I23; M; after - |
@@ -298,7 +298,20 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R321 - B1b skew measured: round-trip tests use the current types at both ends
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Batch B1b of `docs/review/2026-11-16-letibot.md` section 7. Findings: I67. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built on branch `b1b-skew`, 2026-11-16, on main `bf72aa1d9`, awaiting the stack gate. Filed 2026-11-16 from the review at `9e9312b06`. Batch B1b of `docs/review/2026-11-16-letibot.md` section 7. Findings: I67. Record: `docs/review/2026-11-16/INTEGRATION.md`. No store schema change, no protocol bump.
+
+**Built.**
+- I67 (`wire: a kept corpus per protocol ...`): `testing::wire_corpus` runs one fixed exchange through the real server (peer and operator rows, a tool result with `ran_ms` and `decision`, a peer todo, a parked turn, then a live peer row, a round and `TurnEnded`) and records the raw lines a head at a given protocol is sent, plus eight head frames (attach, ack, resync, a prompt with context, `from` and `delivery: queue`, driver todos, answer, interrupt, detach). `examples/wire_capture.rs` writes it. `tests/wire_golden/v78/` is that corpus at 78.
+- `tests/wire_skew.rs`: `wire_golden_frames_from_v78_still_decode_with_same_meaning` reads v78 with value assertions. `this_build_sends_its_own_versions_corpus` refuses a change to the frames under an unchanged version and refuses a version with no corpus dir, so a bump adds its row. `every_kept_corpus_decodes`.
+- Two-build job: `scripts/wire-skew.sh [REF...]` builds each older ref's sessionlog outside the workspace (normal deps only), and its `examples/wire_decode.rs` decodes the frames this daemon sends a head at that ref's protocol, plus this head's frames. A frame that fails to decode, a shared field read with another value, or a field dropped beside one filled by default (a rename) fails it. Default refs: the last commit before the current bump (`5eecd00f1^`, 77) and the newest tag (`v0.6.0`, 64, below the floor, so a Bye). `.github/workflows/wire-skew.yml` runs it.
+
+**Tests.** The proving test is new, so on the base it does not exist. Checked by mutation instead: `serde(rename = "deliver")` on `Prompt.delivery` leaves `cargo test -p letibot-sessionlog --lib` (256) and `late_head` (13) green, and fails both corpus tests and the job (this build over v78, and the 77 decoder: `sent ["deliver"], read ["delivery"] filled by default`). `rename = "author"` on `TodoEntry.by` fails the same three, on the server side. Unmutated: `wire_skew` green; `wire-skew.sh` green against 77, 75 (`8d4943a7a^`), 74 (`7d7b2a9a1^`), 70 (`d3b3dd1e0^`) and v0.6.0; `act -j wire-skew` green from a clone of the branch. Clippy `-D warnings --all-targets` and `check-fmt.sh` on sessionlog; shellcheck and shfmt on the script.
+
+**Residue.**
+- The job decodes bytes; it does not run the old tag's head and bridge binaries against this harnessd. Those need llama and a full build per ref. Left here.
+- The bump test that refuses a new wire variant without a `SINCE` row (moved from R320) is not built. A new variant is caught only once a corpus row exercises it: the corpus is a fixed script, and frames outside it (Todos, Jobs, Term, most head frames) are not covered. Left here.
+- What the job reports as notes, today: `Prompt.delivery` is dropped by daemons at 75 and below, so a queued prompt steers (I68, R344). `EditorContext.captured` arrived with no bump and daemons at 77 and below drop it. `sessions[].role` and `status.held_rooms` are unknown at 70.
+- A batch that bumps to 79 must add `tests/wire_golden/v79` (`cargo run -p letibot-sessionlog --example wire_capture -- crates/sessionlog/tests/wire_golden/v79 79`); `this_build_sends_its_own_versions_corpus` refuses the bump without it.
 
 **Scope.** Two-build CI job under `act`, golden frames the previous tag must decode. Counts as a test, so it lands in the stability phase (C19).
 
