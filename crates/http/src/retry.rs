@@ -29,6 +29,13 @@ pub const OFFLINE_BUDGET: Duration = Duration::from_secs(60 * 60);
 /// The longest one wait for the network to come back.
 pub const OFFLINE_STEP: Duration = Duration::from_secs(30);
 
+/// The z.ai table, keyed to the status its provider sends it on: every z.ai limit is a
+/// `429`, so the parenthesised code is read as z.ai's only there - anywhere else a number
+/// in parens is another provider's number that happens to collide.
+fn zai_limit(code: u16, body: &str) -> Option<crate::zai::Limit> {
+    (code == 429).then(|| crate::zai::limit(body)).flatten()
+}
+
 /// What one failure is, in the only terms a retry can use.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Class {
@@ -156,7 +163,7 @@ impl Policy {
         match e {
             HttpError::Io(_) | HttpError::Malformed(_) => Class::Transport,
             HttpError::Status { code, body, .. } => {
-                if let Some(l) = crate::zai::limit(body) {
+                if let Some(l) = zai_limit(*code, body) {
                     // GLM's code decides, before the money words: a spent window whose prose says
                     // "insufficient balance for extra usage" (1316) still lifts at its reset.
                     if l == crate::zai::Limit::Refused {
@@ -164,8 +171,8 @@ impl Policy {
                     } else {
                         Class::TryAgain
                     }
-                } else if Self::states_a_refusal(body) {
-                    // A 429 (or a 400) whose body says the account cannot pay. The status is not
+                } else if Self::states_a_refusal(*code, body) {
+                    // A 429 (or a 402) whose body says the account cannot pay. The status is not
                     // the instrument here: the same 429 means both *not yet* and *not ever until
                     // somebody tops up*, and only the body knows which.
                     Class::Refused
@@ -208,14 +215,16 @@ impl Policy {
     pub fn trouble(e: &HttpError) -> Option<Trouble> {
         match e {
             HttpError::Status { code, body, .. } => {
-                if let Some(l) = crate::zai::limit(body) {
+                if let Some(l) = zai_limit(*code, body) {
                     match l {
                         crate::zai::Limit::Refused => Some(Trouble::Quota),
                         _ => Some(Trouble::RateLimit),
                     }
-                } else if Self::states_a_refusal(body) {
-                    // Money, whatever the status says: the provider's own words are the instrument,
-                    // and a 400 naming an unpaid balance is the same fact as a 429 that does.
+                } else if Self::states_a_refusal(*code, body) {
+                    // Money, where a status can carry it or the body codes it: a structured code
+                    // is the provider's own instrument on any status, prose is read only on the
+                    // two statuses that can be about money - anything else mentioning billing is
+                    // about something else (a link, a subsystem) and not a quota.
                     Some(Trouble::Quota)
                 } else if *code == 429 || *code == 408 || *code == 529 {
                     // A 529 is Anthropic's `overloaded_error`: not now, and it lifts on its own,
@@ -240,12 +249,14 @@ impl Policy {
     /// ([`crate::reset`]). A limit with a known reset is never a reason to give up on a turn.
     pub fn reset_ms(e: &HttpError, now_ms: u64) -> Option<u64> {
         let HttpError::Status {
-            retry_after, body, ..
+            code,
+            retry_after,
+            body,
         } = e
         else {
             return None;
         };
-        if Self::is_transient_limit(body) {
+        if Self::is_transient_limit(*code, body) {
             return None;
         }
         retry_after
@@ -255,20 +266,24 @@ impl Policy {
 
     /// A rate or concurrency limit that names a code saying so (GLM `1302`, `1305`): it has no
     /// reset to park on, whatever numbers its prose or headers carry, so it is the long retry.
-    pub fn is_transient_limit(body: &str) -> bool {
-        crate::zai::limit(body) == Some(crate::zai::Limit::Transient)
+    /// Keyed to the status its provider sends it on: every z.ai limit is a 429, so a number in
+    /// parens riding any other status is another provider's number and not this table's.
+    pub fn is_transient_limit(code: u16, body: &str) -> bool {
+        zai_limit(code, body) == Some(crate::zai::Limit::Transient)
     }
 
     /// [`Policy::reset_ms`] without the prose's six-hour ceiling: the instant the provider really
     /// named, so a weekly limit reads as the day it lifts and not as the park's bound.
     pub fn reset_unbounded_ms(e: &HttpError, now_ms: u64) -> Option<u64> {
         let HttpError::Status {
-            retry_after, body, ..
+            code,
+            retry_after,
+            body,
         } = e
         else {
             return None;
         };
-        if Self::is_transient_limit(body) {
+        if Self::is_transient_limit(*code, body) {
             return None;
         }
         retry_after
@@ -290,24 +305,28 @@ impl Policy {
         }
     }
 
-    /// A refusal no retry can lift: the account behind the key cannot pay. Only
-    /// phrases naming MONEY, because a bare `quota` is the transient thing the ladder
-    /// exists for, and swallowing it would stop retrying the case it was written around.
-    pub fn states_a_refusal(body: &str) -> bool {
-        const FILLED: &[&str] = &[
-            "insufficient balance",
+    /// A refusal no retry can lift: the account behind the key cannot pay. A structured code
+    /// (`insufficient_quota`, Kimi's `exceeded_current_quota_error`) is the provider's own
+    /// instrument and decides on any status; prose naming money is read only on the statuses
+    /// that can be about money - 402 and 429 - because everywhere else the words ride a body
+    /// about something else (a link, a subsystem) and "billing" alone never names a spent
+    /// account. A bare `quota` stays the transient thing the ladder exists for.
+    pub fn states_a_refusal(code: u16, body: &str) -> bool {
+        const CODED: &[&str] = &[
             "insufficient_quota",
+            // Kimi's coding plan, whose own client reads this one code as a spent account rather
+            // than a wait: its 5-hour and weekly limits are 429s whose prose names a window, and
+            // those stay retryable rate limits.
+            "exceeded_current_quota_error",
+        ];
+        const PROSE: &[&str] = &[
+            "insufficient balance",
             "insufficient funds",
             "insufficient credit",
             "out of credit",
             "credit balance",
             "please recharge",
             "no available resource package",
-            "billing",
-            // Kimi's coding plan, whose own client reads this one code as a spent account rather
-            // than a wait: its 5-hour and weekly limits are 429s whose prose names a window, and
-            // those stay retryable rate limits.
-            "exceeded_current_quota_error",
             // The provider's own words, which are what actually arrived: a reader who cannot
             // decode them would otherwise be told only that the endpoint "did not answer".
             "余额不足",
@@ -315,7 +334,8 @@ impl Policy {
             "资源包",
         ];
         let b = body.to_ascii_lowercase();
-        FILLED.iter().any(|p| b.contains(p))
+        CODED.iter().any(|p| b.contains(p))
+            || (code == 402 || code == 429) && PROSE.iter().any(|p| b.contains(p))
     }
 
     /// What failed, in the few words the ending sentence needs. `name resolution
@@ -348,11 +368,11 @@ impl Policy {
             // mid-answer, which is the same story as a reset.
             HttpError::Malformed(_) => "the answer did not arrive whole",
             HttpError::Status { code, body, .. } => {
-                if crate::zai::limit(body) == Some(crate::zai::Limit::Refused) {
+                if zai_limit(*code, body) == Some(crate::zai::Limit::Refused) {
                     "the plan or account behind the key cannot serve the call"
-                } else if crate::zai::limit(body).is_some() {
+                } else if zai_limit(*code, body).is_some() {
                     "the provider said to try again"
-                } else if Self::states_a_refusal(body) {
+                } else if Self::states_a_refusal(*code, body) {
                     "the account behind the key cannot pay for the call"
                 } else if TRY_AGAIN.contains(code) {
                     "the provider said to try again"
@@ -368,9 +388,9 @@ impl Policy {
     pub fn brief(e: &HttpError) -> String {
         match e {
             HttpError::Status { code, body, .. } => {
-                let glm = crate::zai::limit(body);
+                let glm = zai_limit(*code, body);
                 if glm == Some(crate::zai::Limit::Refused)
-                    || (glm.is_none() && Self::states_a_refusal(body))
+                    || (glm.is_none() && Self::states_a_refusal(*code, body))
                 {
                     "the account cannot pay".to_string()
                 } else if *code == 429 || *code == 408 {
@@ -622,9 +642,14 @@ mod tests {
             "a 429 whose body says the account cannot pay is not a wait"
         );
         assert_eq!(
-            Policy::trouble(&said(400, "Your credit balance is too low")),
+            Policy::trouble(&said(402, "Your credit balance is too low")),
             Some(Trouble::Quota),
-            "the provider's own words decide it, not the status"
+            "money prose decides on the status that can be about money"
+        );
+        assert_eq!(
+            Policy::trouble(&said(400, "Your credit balance is too low")),
+            None,
+            "money prose on a status money cannot ride is about something else"
         );
         // Kimi's coding plan says `exceeded_current_quota_error` for a spent plan, and its own
         // client treats that one as non-retryable; a 429 naming a window is still a rate limit.
@@ -821,6 +846,67 @@ mod tests {
         );
         assert_eq!(p.class(&limit), Class::TryAgain);
         assert!(p.after(&limit, 0).is_some());
+    }
+
+    /// Money words name a quota only where money can be the fact - a 402, a 429, or a structured
+    /// code - and a body that merely mentions billing is not one: a link to the billing page on a
+    /// rate limit, and a server's own billing subsystem on a 500, are both something else.
+    #[test]
+    fn a_429_linking_billing_is_not_quota() {
+        let p = Policy::standard();
+        // Anthropic's 429 names its docs and the billing console in one sentence.
+        let anthropic = said(
+            429,
+            r#"{"type":"error","error":{"type":"rate_limit_error","message":"Number of request \
+               tokens has exceeded your per-request rate limit. See your billing details at \
+               https://console.anthropic.com/settings/billing"}}"#,
+        );
+        assert_eq!(
+            Policy::trouble(&anthropic),
+            Some(Trouble::RateLimit),
+            "a link to a billing page is not a spent account"
+        );
+        assert_eq!(p.class(&anthropic), Class::TryAgain);
+        // OpenAI's rate limit names the same page.
+        let openai = said(
+            429,
+            r#"{"error":{"message":"You are sending too fast. Check your usage and billing at \
+               https://platform.openai.com/account/billing"}}"#,
+        );
+        assert_eq!(Policy::trouble(&openai), Some(Trouble::RateLimit));
+        // A server error from the provider's own billing subsystem is a server error.
+        let internal = said(500, "internal error in the billing service");
+        assert_eq!(
+            Policy::trouble(&internal),
+            None,
+            "money words on a 500 are about the server, not the account"
+        );
+        assert_eq!(p.class(&internal), Class::TryAgain);
+        // Where money CAN be the fact, it still is: 402 and 429 carry it, a structured
+        // code carries it on any status, and prose alone on another status does not.
+        assert_eq!(
+            Policy::trouble(&said(402, "Your credit balance is too low")),
+            Some(Trouble::Quota)
+        );
+        assert_eq!(
+            Policy::trouble(&said(429, "Your credit balance is too low")),
+            Some(Trouble::Quota)
+        );
+        assert_eq!(
+            Policy::trouble(&said(400, "Your credit balance is too low")),
+            None,
+            "prose money on a status money cannot ride is not a quota instrument"
+        );
+        // A z.ai code is keyed to the status its provider sends it on: every z.ai limit
+        // is a 429, so a `(1302)` riding any other status is another provider's number.
+        let stray = said(500, "upstream dependency failed (1302)");
+        assert_eq!(Policy::trouble(&stray), None, "not a z.ai refusal");
+        assert_eq!(p.class(&stray), Class::TryAgain);
+        assert!(!Policy::is_transient_limit(
+            500,
+            "upstream dependency failed (1302)"
+        ));
+        assert!(Policy::is_transient_limit(429, "Rate limit reached (1302)"));
     }
 
     /// The ladder's numbers, and the cap is a cap.
