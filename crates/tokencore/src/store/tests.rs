@@ -3967,7 +3967,9 @@ fn a_forked_session_holds_the_rows_up_to_the_point_and_the_source_is_untouched()
 }
 
 /// A file nothing else can open: a raw rollback-journal connection holds `BEGIN EXCLUSIVE` on it,
-/// so a `Store::open` of it waits in the busy handler until `release` is sent.
+/// so a `Store::open` of it waits in the busy handler until `release` is sent. It is stamped with
+/// this build's version, because a store of tables and no version is refused before it gets that
+/// far.
 fn held_file(dir: &std::path::Path) -> (std::path::PathBuf, std::sync::mpsc::Sender<()>) {
     let path = dir.join("held.db");
     let (held, hold) = std::sync::mpsc::channel();
@@ -3975,8 +3977,14 @@ fn held_file(dir: &std::path::Path) -> (std::path::PathBuf, std::sync::mpsc::Sen
     let p = path.clone();
     std::thread::spawn(move || {
         let raw = rusqlite::Connection::open(&p).unwrap();
-        raw.execute_batch("CREATE TABLE x(a); BEGIN EXCLUSIVE; INSERT INTO x VALUES (1);")
-            .unwrap();
+        raw.execute_batch(&format!(
+            "CREATE TABLE schema_version (version INTEGER);
+             INSERT INTO schema_version (version) VALUES ({SCHEMA_VERSION});
+             CREATE TABLE x(a);
+             BEGIN EXCLUSIVE;
+             INSERT INTO x VALUES (1);"
+        ))
+        .unwrap();
         held.send(()).unwrap();
         let _ = released.recv();
         raw.execute_batch("ROLLBACK").unwrap();
@@ -4040,4 +4048,145 @@ fn racing_opens_of_one_file_share_one_connection() {
     );
     drop(stores);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// An arm that adds several columns and is interrupted between them. Each of its guards reads the
+/// arm as done from the first column it finds, so the rest are lost for good - and an arm that
+/// guarded on its last column instead has it the other way round: the guard passes, the batch runs
+/// again, and the migration is REFUSED on a duplicate column. An arm is only ever half-applied.
+mod interrupted_arms {
+    use super::*;
+
+    /// A store file this test owns, removed when it drops.
+    struct Fixture(std::path::PathBuf);
+
+    impl Fixture {
+        /// A store of this build for the test to unwind: the arms' own DDL is the only honest
+        /// record of what an older file looked like, so an old file is made from a current one.
+        fn seeded(tag: &str) -> Fixture {
+            static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "letibot-interrupted-{tag}-{}-{}.db",
+                std::process::id(),
+                N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+            let _ = std::fs::remove_file(&path);
+            let fixture = Fixture(path);
+            Store::open(fixture.path()).expect("a store of this build");
+            fixture
+        }
+
+        fn path(&self) -> &std::path::Path {
+            &self.0
+        }
+
+        /// Undo what this test is about, on a connection of its own, and say the old version. An
+        /// assertion on the fixture follows every call: a fixture that is not the state claimed
+        /// proves nothing about the arm.
+        fn unwound(&self, sql: &str) {
+            rusqlite::Connection::open(self.path())
+                .expect("a connection to the fixture")
+                .execute_batch(sql)
+                .expect("the fixture's DDL");
+        }
+    }
+
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// The columns `table` has, read off the FILE: what is asserted is what is on disk, not what a
+    /// `Store` this build opened believes.
+    fn columns(fixture: &Fixture, table: &str) -> Vec<String> {
+        let conn = rusqlite::Connection::open(fixture.path()).expect("a connection");
+        let mut st = conn
+            .prepare("SELECT name FROM pragma_table_info(?1)")
+            .expect("a statement");
+        let mut names: Vec<String> = st
+            .query_map([table], |r| r.get::<_, String>(0))
+            .expect("the column list")
+            .filter_map(std::result::Result::ok)
+            .collect();
+        names.sort();
+        names
+    }
+
+    /// v19 adds the stood-down pair. A kill after the first `ALTER` leaves `auto_compact_resident`
+    /// and no `auto_compact_after`, which the snapshot read as an arm that had run.
+    #[test]
+    fn a_kill_inside_v19_does_not_lose_a_column() {
+        let fixture = Fixture::seeded("v19");
+        fixture.unwound(
+            "ALTER TABLE session DROP COLUMN auto_compact_after;
+             UPDATE schema_version SET version = 18;",
+        );
+        assert!(
+            columns(&fixture, "session").contains(&"auto_compact_resident".to_string()),
+            "the fixture is not a half-applied v19 arm"
+        );
+        assert!(
+            !columns(&fixture, "session").contains(&"auto_compact_after".to_string()),
+            "the fixture still has the column the arm adds, so the arm is untested"
+        );
+
+        Store::open(fixture.path()).expect("the migration finishes the arm it started");
+        let got = columns(&fixture, "session");
+        assert!(
+            got.contains(&"auto_compact_after".to_string()),
+            "a kill between the arm's two ALTERs lost its second column for good: {got:?}"
+        );
+    }
+
+    /// v8 adds the pair a turn's context is measured with, guarded on `context_tokens` alone.
+    #[test]
+    fn a_kill_inside_v8_does_not_lose_the_second_column() {
+        let fixture = Fixture::seeded("v8");
+        fixture.unwound(
+            "ALTER TABLE session DROP COLUMN context_cached;
+             UPDATE schema_version SET version = 7;",
+        );
+        assert!(
+            !columns(&fixture, "session").contains(&"context_cached".to_string()),
+            "the fixture still has the column the arm adds"
+        );
+
+        Store::open(fixture.path()).expect("the migration finishes the arm it started");
+        let got = columns(&fixture, "session");
+        assert!(
+            got.contains(&"context_cached".to_string()),
+            "a kill between the arm's two ALTERs lost its second column for good: {got:?}"
+        );
+    }
+
+    /// v20 adds three columns to a table that already exists, guarded on the LAST of them: a kill
+    /// after `attempts` makes the guard pass and the batch run again, so the migration is refused
+    /// on a column that is already there. A fresh store has no `merge_review` - the arms make it -
+    /// so this fixture is the v18 shape with the v20 columns it lost. v24 archives the table the
+    /// arm touched under `_v23`, which is where the columns are asserted.
+    #[test]
+    fn a_kill_inside_v20_is_finished_rather_than_refused() {
+        let fixture = Fixture::seeded("v20");
+        fixture.unwound(
+            "CREATE TABLE merge_review (
+                 entry_id TEXT PRIMARY KEY,
+                 attempts INTEGER NOT NULL DEFAULT 0
+             );
+             UPDATE schema_version SET version = 19;",
+        );
+        assert!(
+            columns(&fixture, "merge_review").contains(&"attempts".to_string()),
+            "the fixture is not a half-applied v20 arm"
+        );
+
+        Store::open(fixture.path()).expect("the migration finishes the arm it started");
+        let got = columns(&fixture, "merge_review_v23");
+        for column in ["attempts", "failed_ms", "failure"] {
+            assert!(
+                got.contains(&column.to_string()),
+                "the arm left the table without {column}: {got:?}"
+            );
+        }
+    }
 }

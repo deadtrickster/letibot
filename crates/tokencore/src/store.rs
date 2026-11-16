@@ -1646,7 +1646,14 @@ impl Store {
     /// the process and releases it only when the last connection closes, so a connection per caller
     /// is a descriptor leak wearing a pool's clothes.
     pub fn open(path: &Path) -> Result<Self> {
-        Self::open_sharing(path, true)
+        Self::open_sharing(path, true, None)
+    }
+
+    /// [`Store::open`] for ONE file of a split set, told which file it is: what a fresh file is
+    /// built from and what an arm may touch both follow from it. Crate-visible, because the split
+    /// is the only caller that knows, and a single file holds every table.
+    pub(crate) fn open_file(path: &Path, file: split::StoreFile) -> Result<Self> {
+        Self::open_sharing(path, true, Some(file))
     }
 
     /// A split set's one handle over `shared.db` and `projects/<key>.db` under `dir`, created if
@@ -1672,7 +1679,7 @@ impl Store {
     /// connections to one file (WAL, `BEGIN IMMEDIATE`, the busy handler). Production code wants
     /// [`Store::open`]: a second connection here is a descriptor the process cannot give back.
     pub fn open_private(path: &Path) -> Result<Self> {
-        Self::open_sharing(path, false)
+        Self::open_sharing(path, false, None)
     }
 
     /// Another folder's project file, for the corpus sweep only (§ The corpus, `docs/store-split.md`):
@@ -1698,10 +1705,10 @@ impl Store {
         Ok(store)
     }
 
-    fn open_sharing(path: &Path, share: bool) -> Result<Self> {
+    fn open_sharing(path: &Path, share: bool, file: Option<split::StoreFile>) -> Result<Self> {
         split::refuse_creating_beside_legacy(path)?;
         if !share {
-            return Self::from_connection(Connection::open(path)?, Some(path.to_path_buf()));
+            return Self::from_connection(Connection::open(path)?, Some(path.to_path_buf()), file);
         }
         let slot = shared_stores()
             .lock()
@@ -1720,13 +1727,13 @@ impl Store {
                 project: None,
             });
         }
-        let store = Self::from_connection(Connection::open(path)?, Some(path.to_path_buf()))?;
+        let store = Self::from_connection(Connection::open(path)?, Some(path.to_path_buf()), file)?;
         *slot = std::sync::Arc::downgrade(&store.shared);
         Ok(store)
     }
 
     pub fn open_in_memory() -> Result<Self> {
-        Self::from_connection(Connection::open_in_memory()?, None)
+        Self::from_connection(Connection::open_in_memory()?, None, None)
     }
 
     /// The file this store is, when it has one: a PATH because the caller that needs one is on
@@ -1826,7 +1833,11 @@ impl Store {
 
     /// The one place a `Shared` is built, and therefore the one place [`LIVE`] is counted:
     /// every `Store` is a handle onto a `Shared`, so this is the count of connections.
-    fn from_connection(conn: Connection, path: Option<std::path::PathBuf>) -> Result<Self> {
+    fn from_connection(
+        conn: Connection,
+        path: Option<std::path::PathBuf>,
+        file: Option<split::StoreFile>,
+    ) -> Result<Self> {
         pragmas(&conn)?;
         let store = Store {
             shared: std::sync::Arc::new(Shared {
@@ -1841,7 +1852,7 @@ impl Store {
         // refuse and drop this store, so an add after the `?` would leave that drop subtracting
         // from a counter nobody added to.
         LIVE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        store.migrate()?;
+        store.migrate(file)?;
         Ok(store)
     }
 
@@ -1849,11 +1860,40 @@ impl Store {
     /// schema and checks the migration carries it forward.
     #[cfg(test)]
     fn remigrate(self) -> Result<Self> {
-        self.migrate()?;
+        self.migrate(None)?;
         Ok(self)
     }
 
-    fn migrate(&self) -> Result<()> {
+    /// Bring this file to this build's schema: ONE transaction around the version re-read, every
+    /// arm, the queue-mute repair and a single stamp.
+    fn migrate(&self, file: Option<split::StoreFile>) -> Result<()> {
+        busy::retry_store(|| {
+            // `IMMEDIATE` takes the write lock BEFORE the version is read, so two openers of one
+            // file cannot both decide on the same pre-migration state: the second waits here and
+            // finds the stamp. The transaction belongs to the connection, so it spans the arms
+            // that take this process's guard one at a time - and `Store::open` holds the file's
+            // slot for the whole call, so no other thread of this process is inside it.
+            self.conn().execute_batch("BEGIN IMMEDIATE")?;
+            match self.migrate_under_lock(file) {
+                Ok(()) => match self.conn().execute_batch("COMMIT") {
+                    Ok(()) => Ok(()),
+                    // A refused commit leaves its transaction open, and the next attempt must not
+                    // run inside this one's.
+                    Err(e) => {
+                        let _ = self.conn().execute_batch("ROLLBACK");
+                        Err(e.into())
+                    }
+                },
+                Err(e) => {
+                    let _ = self.conn().execute_batch("ROLLBACK");
+                    Err(e)
+                }
+            }
+        })
+    }
+
+    /// [`Store::migrate`]'s body, inside its transaction.
+    fn migrate_under_lock(&self, file: Option<split::StoreFile>) -> Result<()> {
         // Only a missing table is a fresh store. `.unwrap_or(None)` read EVERY failure as "no
         // schema yet", including `database is locked`, and then stamped the current version over
         // a store whose migrations had not run.
@@ -1873,16 +1913,17 @@ impl Store {
             // An older store is MIGRATED, not left alone and not rebuilt: the rows are append-only
             // and cannot be recreated, and before v2 `SCHEMA_SQL` only ran on an empty file.
             Some(v) if v < SCHEMA_VERSION => {
-                self.migrate_from(v)?;
+                self.migrate_from(v, file)?;
                 self.repair_queue_mute()?;
-                self.conn().execute("DELETE FROM schema_version", [])?;
+                // ONE statement: a DELETE and an INSERT left a reader - in this process or in
+                // another - able to see the moment between them as a store with no version.
                 self.conn().execute(
-                    "INSERT INTO schema_version (version) VALUES (?1)",
+                    "UPDATE schema_version SET version = ?1",
                     params![SCHEMA_VERSION],
                 )?;
-                // The floor AFTER the version, never before: a floor above the version beside it
-                // would refuse an older build a store that has not been migrated yet, and the two
-                // writes cannot share a transaction without holding the write lock across it.
+                // The floor AFTER the version and in the same transaction: a floor above the
+                // version beside it would refuse an older build a store that has not been
+                // migrated, so neither of the two may be seen without the other.
                 let floor = self.ensure_reader_floor(SCHEMA_VERSION)?;
                 debug_assert!(
                     floor <= SCHEMA_VERSION,
@@ -1897,27 +1938,34 @@ impl Store {
                 self.repair_queue_mute()?;
                 return Ok(());
             }
+            // Tables and no version row: a schema that was written and never stamped, which is
+            // what a kill between the two leaves. Read as a fresh store, the whole DDL went into
+            // WHICHEVER file this is - which is how a split `shared.db` gained every project
+            // table - so it is refused rather than guessed at.
+            None if self.probe(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+            )? =>
+            {
+                return Err(StoreError::Refused(format!(
+                    "{} holds tables and no schema version, so a schema was written and never \
+                     stamped - an interrupted creation or migration. This build cannot tell \
+                     which of it finished, and running the fresh schema over it would put tables \
+                     in a file that does not hold them. Restore the file from a copy, or delete \
+                     it if it holds nothing you need.",
+                    self.path()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "this store".into())
+                )));
+            }
             None => {}
         }
-        self.conn().execute_batch(SCHEMA_SQL)?;
-        self.conn().execute_batch(SESSION_INDEXES_SQL)?;
-        self.conn().execute_batch(CORPUS_INDEXES_SQL)?;
-        self.conn().execute_batch(queues::QUEUES_SQL)?;
-        self.conn().execute_batch(subagents::SUBAGENTS_SQL)?;
-        self.conn().execute_batch(modes::MODES_SQL)?;
-        self.conn().execute_batch(told::TOLD_SQL)?;
-        self.conn().execute_batch(marks::MARKS_SQL)?;
-        self.conn().execute_batch(seat::SEAT_TODO_SQL)?;
-        self.conn().execute_batch(seat::SEAT_JOB_SQL)?;
-        self.conn().execute_batch(citations::CITATIONS_SQL)?;
-        self.conn().execute_batch(writers::WRITERS_SQL)?;
-        self.conn().execute_batch(procs::PROCS_SQL)?;
-        self.conn().execute_batch(leases::LEASES_SQL)?;
-        self.conn().execute_batch(prompts::PROMPTS_SQL)?;
-        self.conn().execute_batch(recall::RECALL_SQL)?;
-        self.conn().execute_batch(owners::OWNERS_SQL)?;
-        self.conn().execute_batch(grants::GRANTS_SQL)?;
-        self.conn().execute_batch(grants::BREAKER_SQL)?;
+        // A fresh file, from the tree's ONE list of batches: a single file holds every table, and
+        // a set's file only the ones the assignment gives it.
+        let ddl = match file {
+            None => split::all_schema_sql(),
+            Some(file) => split::schema_sql(file),
+        };
+        self.conn().execute_batch(&ddl)?;
         self.conn().execute("DELETE FROM schema_version", [])?;
         self.conn().execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
@@ -1930,16 +1978,48 @@ impl Store {
         Ok(())
     }
 
+    /// A migration's probe: the answer, or the error. Read as `false` instead, a file this build
+    /// could not ask about skipped the arm and the stamp then said the arm had run.
+    fn probe(&self, sql: &str) -> Result<bool> {
+        self.probe_with(sql, &[])
+    }
+
+    /// [`Store::probe`] for a statement with one bound name.
+    fn probe_with(&self, sql: &str, args: &[&dyn rusqlite::ToSql]) -> Result<bool> {
+        Ok(self.conn().prepare(sql)?.exists(args)?)
+    }
+
+    /// Add each of `columns` - a name and its type - that `table` has not got, and say whether any
+    /// was added. An arm that adds several is interrupted BETWEEN them, and a guard on one of its
+    /// columns cannot tell that state from a finished arm.
+    fn add_missing(&self, table: &str, columns: &[(&str, &str)]) -> Result<bool> {
+        let mut added = false;
+        for (column, kind) in columns {
+            if !self.probe(&format!(
+                "SELECT 1 FROM pragma_table_info('{table}') WHERE name = '{column}'"
+            ))? {
+                self.conn()
+                    .execute_batch(&format!("ALTER TABLE {table} ADD COLUMN {column} {kind}"))?;
+                added = true;
+            }
+        }
+        Ok(added)
+    }
+
     /// Apply the steps from `from` up to [`SCHEMA_VERSION`]: one arm per version, each idempotent on
     /// its own, so a store two versions behind is carried forward by running both. An arm that
     /// breaks an older READER declares itself in [`READER_ARMS`].
-    fn migrate_from(&self, from: i64) -> Result<()> {
+    fn migrate_from(&self, from: i64, file: Option<split::StoreFile>) -> Result<()> {
         if from < 2 {
             // v2: a session records its own role. `ALTER TABLE ... ADD COLUMN` with
             // no default writes NULL into every existing row, which is exactly the
-            // "unrecorded, use the daemon default" case the column documents.
-            self.conn()
-                .execute_batch("ALTER TABLE session ADD COLUMN role TEXT")?;
+            // "unrecorded, use the daemon default" case the column documents. Guarded like
+            // every arm after it: an interrupted run kept the column, and a second `ADD` would
+            // refuse the whole migration.
+            if !self.probe("SELECT 1 FROM pragma_table_info('session') WHERE name = 'role'")? {
+                self.conn()
+                    .execute_batch("ALTER TABLE session ADD COLUMN role TEXT")?;
+            }
         }
         if from < 3 {
             // v3: the session todo list. A migrated store never runs `SCHEMA_SQL`
@@ -1957,8 +2037,12 @@ impl Store {
             // v4: a session records the session that spawned it as a subagent, so a
             // subagent tree is a fact on disk rather than an id convention. NULL in
             // every existing row: a session that predates v4 is a top-level one.
-            self.conn()
-                .execute_batch("ALTER TABLE session ADD COLUMN parent_session_id TEXT")?;
+            if !self.probe(
+                "SELECT 1 FROM pragma_table_info('session') WHERE name = 'parent_session_id'",
+            )? {
+                self.conn()
+                    .execute_batch("ALTER TABLE session ADD COLUMN parent_session_id TEXT")?;
+            }
         }
         if from < 5 {
             // v5: the adjudication corpus. Created here for a migrated store,
@@ -2005,12 +2089,9 @@ impl Store {
         if from < 6 {
             // v6: the SHAPE of the command a decision was about - the parse with its literals
             // replaced by holes, so two `grep`s differing only in pattern and range are one row.
-            let has: bool = self
-                .conn()
-                .prepare("SELECT 1 FROM pragma_table_info('adjudication') WHERE name = 'shape'")
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            if !self
+                .probe("SELECT 1 FROM pragma_table_info('adjudication') WHERE name = 'shape'")?
+            {
                 self.conn()
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN shape TEXT")?;
             }
@@ -2018,31 +2099,22 @@ impl Store {
         if from < 7 {
             // v7: the effect class a shape was approved at, so the shape cache can
             // survive a restart without widening. Same idempotence argument as v6.
-            let has: bool = self
-                .conn()
-                .prepare(
-                    "SELECT 1 FROM pragma_table_info('adjudication') WHERE name = 'shape_class'",
-                )
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            if !self.probe(
+                "SELECT 1 FROM pragma_table_info('adjudication') WHERE name = 'shape_class'",
+            )? {
                 self.conn()
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN shape_class TEXT")?;
             }
         }
         if from < 8 {
             // v8: the last turn's context on the session row, so a head that attaches after a
-            // restart can say how big the prompt is without waiting for a turn.
-            let has: bool = self
-                .conn()
-                .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_tokens'")
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
-                self.conn().execute_batch(
-                    "ALTER TABLE session ADD COLUMN context_tokens INTEGER;
-                     ALTER TABLE session ADD COLUMN context_cached INTEGER;",
-                )?;
+            // restart can say how big the prompt is without waiting for a turn. Added one column
+            // at a time, because a kill between the two left `context_cached` out for good.
+            let added = self.add_missing(
+                "session",
+                &[("context_tokens", "INTEGER"), ("context_cached", "INTEGER")],
+            )?;
+            if added {
                 // Backfill it for the sessions that already exist: `NULL` reads as "no turn has
                 // finished", which is false for a conversation upgraded mid-life.
                 self.conn().execute(
@@ -2071,15 +2143,9 @@ impl Store {
         if from < 9 {
             // v9: what the oracle answered, verbatim. `shown` was meant to be the other half and
             // held the operator's card instead, so the reply needed a column of its own.
-            let has: bool = self
-                .conn()
-                .prepare(
-                    "SELECT 1 FROM pragma_table_info('adjudication') \
-                     WHERE name = 'oracle_reply'",
-                )
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            if !self.probe(
+                "SELECT 1 FROM pragma_table_info('adjudication') WHERE name = 'oracle_reply'",
+            )? {
                 self.conn()
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN oracle_reply TEXT")?;
             }
@@ -2088,15 +2154,9 @@ impl Store {
             // v10: whether an oracle was consulted, as a column rather than a reading of the
             // verdict's prose. NULL-able on purpose: "we did not keep it" must not look like
             // "nobody asked".
-            let has: bool = self
-                .conn()
-                .prepare(
-                    "SELECT 1 FROM pragma_table_info('adjudication') \
-                     WHERE name = 'consulted'",
-                )
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            if !self
+                .probe("SELECT 1 FROM pragma_table_info('adjudication') WHERE name = 'consulted'")?
+            {
                 self.conn()
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN consulted INTEGER")?;
             }
@@ -2105,15 +2165,9 @@ impl Store {
             // v11: which of the four `Unsure`s the answer was, as a token. NULL on everything before
             // it, because those rows recorded the reason in a sentence and the two are not
             // interchangeable.
-            let has: bool = self
-                .conn()
-                .prepare(
-                    "SELECT 1 FROM pragma_table_info('adjudication') \
-                     WHERE name = 'oracle_reading'",
-                )
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            if !self.probe(
+                "SELECT 1 FROM pragma_table_info('adjudication') WHERE name = 'oracle_reading'",
+            )? {
                 self.conn()
                     .execute_batch("ALTER TABLE adjudication ADD COLUMN oracle_reading TEXT")?;
             }
@@ -2121,12 +2175,9 @@ impl Store {
         if from < 12 {
             // v12: the ledger `context_tokens` was measured against, because a provider count paired
             // with today's ledger is only the same conversation if nothing was appended since.
-            let has: bool = self
-                .conn()
-                .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_ledger'")
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            if !self
+                .probe("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_ledger'")?
+            {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN context_ledger INTEGER")?;
             }
@@ -2134,14 +2185,9 @@ impl Store {
         if from < 13 {
             // v13: the provider this session was switched to. `set_provider` was in-memory and the
             // row had nowhere to record the choice, so a restart came back on the CLI default.
-            let has: bool = self
-                .conn()
-                .prepare(
-                    "SELECT 1 FROM pragma_table_info('session') WHERE name = 'provider_choice'",
-                )
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            if !self.probe(
+                "SELECT 1 FROM pragma_table_info('session') WHERE name = 'provider_choice'",
+            )? {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN provider_choice TEXT")?;
             }
@@ -2149,12 +2195,9 @@ impl Store {
         if from < 14 {
             // v14: the window a session plans its compaction against. The number lived only in the
             // spawn line, and a child's window belongs to the model that answers it.
-            let has: bool = self
-                .conn()
-                .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_window'")
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            if !self
+                .probe("SELECT 1 FROM pragma_table_info('session') WHERE name = 'context_window'")?
+            {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN context_window INTEGER")?;
             }
@@ -2202,12 +2245,7 @@ impl Store {
         if from < 17 {
             // v17: the ask a branch was produced under, on the entry, because the gatekeeper reviews
             // the artifact AGAINST the ask and nothing else can supply it once the child is gone.
-            let has_brief: bool = self
-                .conn()
-                .prepare("SELECT 1 FROM pragma_table_info('merge_queue') WHERE name = 'brief'")
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has_brief {
+            if !self.probe("SELECT 1 FROM pragma_table_info('merge_queue') WHERE name = 'brief'")? {
                 self.conn().execute_batch(
                     "ALTER TABLE merge_queue ADD COLUMN brief TEXT NOT NULL DEFAULT ''",
                 )?;
@@ -2267,37 +2305,29 @@ impl Store {
                      commands_json  TEXT NOT NULL DEFAULT '[]'
                  );",
             )?;
-            let has: bool = self
-                .conn()
-                .prepare("SELECT 1 FROM pragma_table_info('merge_review') WHERE name = 'failure'")
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
-                // Every existing row reads as no failed attempt: it has a decision and an answered
-                // stamp, and a verdict is not a failure.
-                self.conn().execute_batch(
-                    "ALTER TABLE merge_review ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
-                     ALTER TABLE merge_review ADD COLUMN failed_ms INTEGER;
-                     ALTER TABLE merge_review ADD COLUMN failure TEXT NOT NULL DEFAULT '';",
-                )?;
-            }
+            // Every existing row reads as no failed attempt: it has a decision and an answered
+            // stamp, and a verdict is not a failure. One column at a time: the arm guarded on
+            // `failure`, so a kill after `attempts` made the batch run again and the migration
+            // was refused on a column that was already there.
+            self.add_missing(
+                "merge_review",
+                &[
+                    ("attempts", "INTEGER NOT NULL DEFAULT 0"),
+                    ("failed_ms", "INTEGER"),
+                    ("failure", "TEXT NOT NULL DEFAULT ''"),
+                ],
+            )?;
         }
         if from < 19 {
             // v19: the pair that stood automatic compaction down, two columns because a reader
             // compares them and should not parse a blob to do it.
-            let has: bool = self
-                .conn()
-                .prepare(
-                    "SELECT 1 FROM pragma_table_info('session') WHERE name = 'auto_compact_resident'",
-                )
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
-                self.conn().execute_batch(
-                    "ALTER TABLE session ADD COLUMN auto_compact_resident INTEGER;
-                     ALTER TABLE session ADD COLUMN auto_compact_after INTEGER;",
-                )?;
-            }
+            self.add_missing(
+                "session",
+                &[
+                    ("auto_compact_resident", "INTEGER"),
+                    ("auto_compact_after", "INTEGER"),
+                ],
+            )?;
         }
         if from < 22 {
             // v22: the landing half's own rows, so a landing can be DRAWN and not merely judged.
@@ -2322,14 +2352,9 @@ impl Store {
                   CREATE INDEX IF NOT EXISTS merge_queue_state_idx
                       ON merge_queue (state, priority, created_ms);",
             )?;
-            let has: bool = self
-                .conn()
-                .prepare(
-                    "SELECT 1 FROM pragma_table_info('merge_queue') WHERE name = 'gate_steps_json'",
-                )
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            if !self.probe(
+                "SELECT 1 FROM pragma_table_info('merge_queue') WHERE name = 'gate_steps_json'",
+            )? {
                 self.conn().execute_batch(
                     "ALTER TABLE merge_queue ADD COLUMN gate_steps_json TEXT NOT NULL DEFAULT '[]'",
                 )?;
@@ -2340,11 +2365,10 @@ impl Store {
             // build. `from < 23` and not a pair of numbers, because v22 took that number while this
             // was in flight, and the arm must run for a store left at 21 or 22 either way.
             for table in ["merge_queue", "merge_review"] {
-                let there: bool = self
-                    .conn()
-                    .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1")
-                    .and_then(|mut st| st.exists(params![table]))
-                    .unwrap_or(false);
+                let there = self.probe_with(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    &[&table],
+                )?;
                 if there {
                     self.conn().execute(&format!("DELETE FROM {table}"), [])?;
                 }
@@ -2358,14 +2382,9 @@ impl Store {
         if from < 25 {
             // v25: the operator's pause of the idle plan-check. NULL in every existing row, because
             // nobody has paused a session yet.
-            let has: bool = self
-                .conn()
-                .prepare(
-                    "SELECT 1 FROM pragma_table_info('session') WHERE name = 'nags_paused_until'",
-                )
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            if !self.probe(
+                "SELECT 1 FROM pragma_table_info('session') WHERE name = 'nags_paused_until'",
+            )? {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN nags_paused_until INTEGER")?;
             }
@@ -2385,14 +2404,10 @@ impl Store {
             // v28: whether a job's ending reached the model. Every existing row is stamped
             // delivered, the conservative reading: this build cannot know, and a restart must not
             // re-announce every job a store ever held.
-            let has = |sql: &str| -> bool {
-                self.conn()
-                    .prepare(sql)
-                    .and_then(|mut st| st.exists([]))
-                    .unwrap_or(false)
-            };
-            let table = has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'job'");
-            let column = has("SELECT 1 FROM pragma_table_info('job') WHERE name = 'delivered'");
+            let table =
+                self.probe("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'job'")?;
+            let column =
+                self.probe("SELECT 1 FROM pragma_table_info('job') WHERE name = 'delivered'")?;
             if table && !column {
                 self.conn().execute_batch(
                     "ALTER TABLE job ADD COLUMN delivered INTEGER NOT NULL DEFAULT 1",
@@ -2413,17 +2428,11 @@ impl Store {
         if from < 31 {
             // v31: a session can live somewhere else. Two additive columns, NULL in every existing
             // row, which is true: no session that predates this verb was ever migrated.
-            let has = |sql: &str| -> bool {
-                self.conn()
-                    .prepare(sql)
-                    .and_then(|mut st| st.exists([]))
-                    .unwrap_or(false)
-            };
-            if !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'lives_on'") {
+            if !self.probe("SELECT 1 FROM pragma_table_info('session') WHERE name = 'lives_on'")? {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN lives_on TEXT")?;
             }
-            if !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'moved_ms'") {
+            if !self.probe("SELECT 1 FROM pragma_table_info('session') WHERE name = 'moved_ms'")? {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN moved_ms INTEGER")?;
             }
@@ -2436,12 +2445,7 @@ impl Store {
         if from < 33 {
             // v33: who a session is for. `NULL` in every existing row is the honest value, and a
             // reader falls back to the parent edge and the queue's id convention.
-            let has: bool = self
-                .conn()
-                .prepare("SELECT 1 FROM pragma_table_info('session') WHERE name = 'origin'")
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            if !self.probe("SELECT 1 FROM pragma_table_info('session') WHERE name = 'origin'")? {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN origin TEXT")?;
             }
@@ -2459,15 +2463,9 @@ impl Store {
         if from < 36 {
             // v36: the answer of a turn the child ran AFTER the one that settled it - a settlement
             // of its own, kept beside `outcome`, which stays the first answer.
-            let has: bool = self
-                .conn()
-                .prepare(
-                    "SELECT 1 FROM pragma_table_info('subagent_run') \
-                     WHERE name = 'later_answer'",
-                )
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            if !self.probe(
+                "SELECT 1 FROM pragma_table_info('subagent_run') WHERE name = 'later_answer'",
+            )? {
                 self.conn()
                     .execute_batch("ALTER TABLE subagent_run ADD COLUMN later_answer TEXT")?;
             }
@@ -2545,23 +2543,21 @@ impl Store {
         if from < 45 {
             // v45: a session can be put out of sight and kept. Two additive columns, NULL in every
             // existing row, which is true: nothing was ever archived.
-            let has = |sql: &str| -> bool {
-                self.conn()
-                    .prepare(sql)
-                    .and_then(|mut st| st.exists([]))
-                    .unwrap_or(false)
-            };
             // A split store's project file holds no `session`: that file has nothing to add.
-            let table =
-                has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'");
+            let table = self
+                .probe("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'")?;
             if table
-                && !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'archived_ms'")
+                && !self.probe(
+                    "SELECT 1 FROM pragma_table_info('session') WHERE name = 'archived_ms'",
+                )?
             {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN archived_ms INTEGER")?;
             }
             if table
-                && !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'archived_reason'")
+                && !self.probe(
+                    "SELECT 1 FROM pragma_table_info('session') WHERE name = 'archived_reason'",
+                )?
             {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN archived_reason TEXT")?;
@@ -2570,18 +2566,13 @@ impl Store {
         if from < 46 {
             // v46: editor context on the prompt journal. Defaulted, so an older queued prompt reads
             // as one with no context. A split `shared.db` holds no `queued_prompt`.
-            let has = |sql: &str| -> bool {
-                self.conn()
-                    .prepare(sql)
-                    .and_then(|mut st| st.exists([]))
-                    .unwrap_or(false)
-            };
-            let table =
-                has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'queued_prompt'");
+            let table = self.probe(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'queued_prompt'",
+            )?;
             if table
-                && !has(
+                && !self.probe(
                     "SELECT 1 FROM pragma_table_info('queued_prompt') WHERE name = 'context_json'",
-                )
+                )?
             {
                 self.conn().execute_batch(
                     "ALTER TABLE queued_prompt ADD COLUMN context_json TEXT NOT NULL DEFAULT ''",
@@ -2598,26 +2589,21 @@ impl Store {
             // v48: the owner, holding and reap_event tables (`docs/lifecycle.md` d.2) - box-wide,
             // because a reaper with no daemon opens one file. A split set's project file holds no
             // `session`, so it has nothing to add and must not be given the tables.
-            let has: bool = self
-                .conn()
-                .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'")
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if has {
+            if split::holds_for(file, "owner")
+                && self.probe(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'",
+                )?
+            {
                 self.conn().execute_batch(owners::OWNERS_SQL)?;
             }
         }
         if from < 49 {
             // v49: a job kept across a daemon restart keeps its cgroup directory on its process
             // row. Additive and NULL everywhere, which is true: nothing was ever kept.
-            let has = |sql: &str| -> bool {
-                self.conn()
-                    .prepare(sql)
-                    .and_then(|mut st| st.exists([]))
-                    .unwrap_or(false)
-            };
-            if has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'process'")
-                && !has("SELECT 1 FROM pragma_table_info('process') WHERE name = 'cgroup'")
+            if self
+                .probe("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'process'")?
+                && !self
+                    .probe("SELECT 1 FROM pragma_table_info('process') WHERE name = 'cgroup'")?
             {
                 self.conn()
                     .execute_batch("ALTER TABLE process ADD COLUMN cgroup TEXT")?;
@@ -2631,32 +2617,30 @@ impl Store {
         if from < 51 {
             // v51: when a plan-check pause was made, and by whom. NULL everywhere, which reads as
             // a pause of unknown origin.
-            let has = |sql: &str| -> bool {
-                self.conn()
-                    .prepare(sql)
-                    .and_then(|mut st| st.exists([]))
-                    .unwrap_or(false)
-            };
-            let table =
-                has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'");
+            let table = self
+                .probe("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'")?;
             if table
-                && !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'nags_paused_at'")
+                && !self.probe(
+                    "SELECT 1 FROM pragma_table_info('session') WHERE name = 'nags_paused_at'",
+                )?
             {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN nags_paused_at INTEGER")?;
             }
             if table
-                && !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'nags_paused_by'")
+                && !self.probe(
+                    "SELECT 1 FROM pragma_table_info('session') WHERE name = 'nags_paused_by'",
+                )?
             {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN nags_paused_by TEXT")?;
             }
             // And who answered a kept grant. Empty on a row written at v50: nobody recorded it.
-            if has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_grant'")
-                && !has(
-                    "SELECT 1 FROM pragma_table_info('session_grant') WHERE name = 'granted_by'",
-                )
-            {
+            if self.probe(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_grant'",
+            )? && !self.probe(
+                "SELECT 1 FROM pragma_table_info('session_grant') WHERE name = 'granted_by'",
+            )? {
                 self.conn().execute_batch(
                     "ALTER TABLE session_grant ADD COLUMN granted_by TEXT NOT NULL DEFAULT ''",
                 )?;
@@ -2670,17 +2654,13 @@ impl Store {
         if from < 53 {
             // v53: a journaled prompt's sender and lane. Defaulted, so an older row reads as the
             // operator's steer, which is what every prompt was restored as before.
-            let has = |sql: &str| -> bool {
-                self.conn()
-                    .prepare(sql)
-                    .and_then(|mut st| st.exists([]))
-                    .unwrap_or(false)
-            };
-            if has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'queued_prompt'") {
+            if self.probe(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'queued_prompt'",
+            )? {
                 for col in ["from_who", "delivery"] {
-                    if !has(&format!(
+                    if !self.probe(&format!(
                         "SELECT 1 FROM pragma_table_info('queued_prompt') WHERE name = '{col}'"
-                    )) {
+                    ))? {
                         self.conn().execute_batch(&format!(
                             "ALTER TABLE queued_prompt ADD COLUMN {col} TEXT NOT NULL DEFAULT ''"
                         ))?;
@@ -2691,14 +2671,10 @@ impl Store {
         if from < 54 {
             // v54: an owner's last return to live, which the hard TTL runs from. NULL reads as the
             // creation, which is what every earlier build measured from.
-            let has = |sql: &str| -> bool {
-                self.conn()
-                    .prepare(sql)
-                    .and_then(|mut st| st.exists([]))
-                    .unwrap_or(false)
-            };
-            if has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'owner'")
-                && !has("SELECT 1 FROM pragma_table_info('owner') WHERE name = 'live_since_ms'")
+            if self.probe("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'owner'")?
+                && !self.probe(
+                    "SELECT 1 FROM pragma_table_info('owner') WHERE name = 'live_since_ms'",
+                )?
             {
                 self.conn()
                     .execute_batch("ALTER TABLE owner ADD COLUMN live_since_ms INTEGER")?;
@@ -2707,14 +2683,10 @@ impl Store {
         if from < 55 {
             // v55: a queued skill load is journaled beside the prompts. Defaulted, so an older row
             // reads as a prompt.
-            let has = |sql: &str| -> bool {
-                self.conn()
-                    .prepare(sql)
-                    .and_then(|mut st| st.exists([]))
-                    .unwrap_or(false)
-            };
-            if has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'queued_prompt'")
-                && !has("SELECT 1 FROM pragma_table_info('queued_prompt') WHERE name = 'skill'")
+            if self.probe(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'queued_prompt'",
+            )? && !self
+                .probe("SELECT 1 FROM pragma_table_info('queued_prompt') WHERE name = 'skill'")?
             {
                 self.conn().execute_batch(
                     "ALTER TABLE queued_prompt ADD COLUMN skill TEXT NOT NULL DEFAULT ''",

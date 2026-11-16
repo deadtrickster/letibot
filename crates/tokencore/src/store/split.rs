@@ -148,6 +148,12 @@ pub fn holds(file: StoreFile, table: &str) -> bool {
     }
 }
 
+/// [`holds`] for a store that may be a single file, which holds every table: a migration asks this
+/// so that one arm can serve `sessions.db` and a set's two files without a second spelling.
+pub fn holds_for(file: Option<StoreFile>, table: &str) -> bool {
+    file.is_none_or(|file| holds(file, table))
+}
+
 /// Every table `file` is assigned, the two it shares with the other file included.
 pub fn tables_in(file: StoreFile) -> impl Iterator<Item = &'static str> {
     let own: &'static [&'static str] = match file {
@@ -304,6 +310,12 @@ pub fn schema_sql(file: StoreFile) -> String {
     }
 }
 
+/// The whole tree's DDL, for a single file that holds every table: the same [`batches`] list, so a
+/// batch added to one path is a batch the other has.
+pub fn all_schema_sql() -> String {
+    batches().join("\n")
+}
+
 /// A project file holds no `session` row - the index is `shared.db`'s (§ Table assignment) - so a
 /// key to it could never be checked here, and with `foreign_keys` on it would refuse the first
 /// append for a table this file does not have. The keys between project tables are kept.
@@ -454,8 +466,8 @@ impl StoreSet {
         Ok(StoreSet {
             dir: dir.to_path_buf(),
             key: key.to_string(),
-            shared: Store::open(&shared_path)?,
-            project: Store::open(&project_path)?,
+            shared: Store::open_file(&shared_path, StoreFile::Shared)?,
+            project: Store::open_file(&project_path, StoreFile::Project)?,
             shared_writer,
             project_writer,
         })
@@ -564,11 +576,15 @@ pub fn open_handle(dir: &Path, key: &str, create: bool) -> Result<Store> {
             )));
         }
     }
-    let shared = Store::open(&shared_path)?;
+    let shared = Store::open_file(&shared_path, StoreFile::Shared)?;
     // A set whose project file is not there is still a set: its listing is the index's, and a
     // question about a transcript is the question a renamed-away file cannot answer.
     let project = match project_path.is_file() {
-        true => Some(Store::open(&project_path)?.shared.clone()),
+        true => Some(
+            Store::open_file(&project_path, StoreFile::Project)?
+                .shared
+                .clone(),
+        ),
         false => None,
     };
     Ok(Store::of_set(shared.shared.clone(), project))
@@ -607,7 +623,7 @@ fn open_transition(dir: &Path, key: &str) -> Result<Store> {
             project_path.display()
         )));
     }
-    let project = Store::open(&project_path)?;
+    let project = Store::open_file(&project_path, StoreFile::Project)?;
     Ok(Store::of_set(
         shared.shared.clone(),
         Some(project.shared.clone()),
