@@ -970,7 +970,20 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R334 - B14 plugins and MCP: unpinned layers decide, MCP servers inherit the env, `.mcp.json` trusted by prefix
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Batch B14 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I93, I94, I95. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built 2026-11-16 on branch `b14-plugins`, waiting for the lead's gate. Filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Batch B14 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I93, I94, I95. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+
+**Built.** One commit per finding, no store schema change.
+- I93: `Layer::may_answer` in `plugins/src/stack.rs` refuses an unpinned layer for the `DECIDES` prefixes (`limit_`, `steer_`, `compact_`), in `Stack::run` and in `PluginHost::answering`/`ask`. An unpinned answer falls through to the built-in ladder. A limit `switch` outside `input.candidates` falls back (`limit_hook.rs`). Tests: `plugins::tests::an_unpinned_layers_limit_decide_answer_is_ignored` (failed on base: "an unpinned layer answers `limit_decide`"), `limits::a_limit_hook_switch_outside_the_candidates_falls_back` (failed on base: the switch ran), `plugins::tests::a_limit_call_cycle_ends_at_the_chain_bound` (coverage, passes on base too). `with_limit_hook` in `limits.rs` and `steering_host` in `steer_door.rs` now pin their layer.
+- I94: `crates/mcp/src/wire.rs` clears the env and keeps `KEPT_ENV` (PATH, HOME, USER, LOGNAME, SHELL, TERM, LANG, LC_ALL, LC_CTYPE, TMPDIR) plus the spec's env. The server leads its own process group and drop `killpg`s it. Test `stdio_env::stdio_spawn_does_not_leak_env_or_orphan` failed on base on both halves (the key leaked; with env fixed only, the grandchild outlived drop).
+- I95: `[mcp_projects.pinned]` maps an exact `.mcp.json` path to a sha256. `mcp_json` returns `McpJson { path, sha256, servers }` hashed from the bytes it parses, `mcp_pin` answers Held, Moved or Unpinned. A moved pin starts nothing and the warning gives both hashes and the re-pin line. `trusted` starts nothing alone. Tests: `mcp::tests::an_edited_mcp_json_under_a_trusted_dir_is_not_started` (failed on base: the edited server started), `an_mcp_json_pin_holds_for_its_exact_path_and_bytes_only`. Reference and `docs/config/leticode.toml.md` regenerated.
+- I65 MCP part: `bounded_line` caps stdio lines and SSE lines and events at 8 MiB, a JSON body too, and the stdio read-ahead is a 16-line `sync_channel`. Past the cap the server is Gone and restarted on backoff. Test `fake_server::an_mcp_server_endless_line_is_dropped` failed on base (waited the 10 s timeout).
+
+**Residue.**
+- Decision 8 (b): spawning MCP stdio servers through the exec backend sandbox.
+- Decision 9 (b): the pin flow offering a pin when an unpinned layer's deciding answer is skipped. Today the skip is silent beyond the existing `plugin_untrusted` load warning.
+- A10's GLM position also named `command_` as a deciding prefix; INTEGRATION's change does not, so it is not in `DECIDES`.
+- No `/mcp pin` verb: the operator pastes the line the warning prints. The operator's live config has no `[mcp_projects]`, so nothing stops on this box.
+- A `new_session` limit answer is not restricted to the candidates (only `switch` is, per A10-F15).
 
 **Scope.** `harnessd/src/plugins/hook.rs`, `plugins/src/stack.rs`, `crates/mcp`, `leticode-config` MCP trust, `harnessd/src/mcp.rs`. Plus I65's MCP part (entry in R320). Decision 8: `env_clear` and a process group now, the exec sandbox later. Decision 9: an unpinned layer's deciding answer falls back to the fixed ladder, then the pin flow offers a pin.
 
