@@ -834,6 +834,13 @@ impl App {
         (crate::ui::rows::row(&line, self.cfg.palette()), labels)
     }
 
+    /// `shadow: armed` while this session has a shadow running, so it is seen without ctrl-s.
+    pub(crate) fn shadow_marker(&self) -> Option<(String, Role)> {
+        let b = self.shadow_of(&self.session_id)?;
+        let role = if b.tripped { Role::Warning } else { Role::Info };
+        Some((format!("shadow: {}", b.breaker()), role))
+    }
+
     /// The composer box's bottom edge, carrying the alarm, where the reader is, the rung and the queue's
     /// standings, and where the standings were drawn, since that span is a click target. Read off the line rano
     /// returned: the edge is cut from the right and the standings are the last thing on it.
@@ -851,11 +858,13 @@ impl App {
             rung: self.rung_state(),
         };
         let standings = self.queue_standings();
+        let shadow = self.shadow_marker();
         let mut right = bottom_markers(
             &bottom,
             &standings,
             self.asks_folded_count(),
             self.plugin_badge(),
+            shadow.clone(),
         );
         // The step is what the edge can spare. rano cuts the block's tail to `w - 5` cells, so a
         // step that does not fit would take `stuck` and `done` with it, and the click target, which
@@ -876,6 +885,7 @@ impl App {
                 &bare,
                 self.asks_folded_count(),
                 self.plugin_badge(),
+                shadow,
             );
         }
         let p = self.cfg.palette();
@@ -1178,6 +1188,7 @@ fn bottom_markers(
     standings: &Standings,
     folded: Option<usize>,
     badge: Option<(String, Role)>,
+    shadow: Option<(String, Role)>,
 ) -> Option<rano::render::Line> {
     use rano::render::{Line, Span};
     use rano::style::Role;
@@ -1208,6 +1219,10 @@ fn bottom_markers(
     // an agent's turn count, one screen over (`docs/plugins-slice1.md` C3's `badge`): drawn
     // where the waits-on-you counter is drawn, and only while that pane is on the screen.
     if let Some((text, role)) = badge {
+        sep(&mut right);
+        right.push(Span::role(text, role));
+    }
+    if let Some((text, role)) = shadow {
         sep(&mut right);
         right.push(Span::role(text, role));
     }

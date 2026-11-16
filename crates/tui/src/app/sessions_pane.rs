@@ -1004,7 +1004,13 @@ impl App {
         let total = kept.len();
         let kept = letibot_plugin::pane::cap_session_rows(kept, |(_, s)| {
             (
-                s.live || s.status.running || s.status.heads > 0 || s.session_id == self.session_id,
+                s.live
+                    || s.status.running
+                    || s.status.heads > 0
+                    || s.session_id == self.session_id
+                    // The shadow of the session here is never capped away.
+                    || (crate::app::session::is_shadow_brief(s)
+                        && s.parent_session_id.as_deref() == Some(self.session_id.as_str())),
                 s.moved_ms,
             )
         });
@@ -1012,11 +1018,14 @@ impl App {
         let sessions: Vec<Value> = kept
             .into_iter()
             .map(|(i, s)| {
+                let shadow = self.shadow_row_facts(s);
                 json!({
                     "id": s.session_id,
-                    "title": s.title,
+                    // A shadow is named by the session it watches, as the header names it.
+                    "title": if shadow.is_some() { self.session_label(&s.session_id) } else { s.title.clone() },
                     "slug": s.slug,
                     "parent": s.parent_session_id,
+                    "shadow": shadow,
                     // The origin's wire word - the same one the store holds.
                     "origin": s.origin.as_str(),
                     "live": s.live,

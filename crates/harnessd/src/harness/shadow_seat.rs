@@ -92,6 +92,7 @@ impl Harness {
             Err(e) => crate::slash::SlashReply::refused(vec![e]),
         };
         self.shadow_answered_rows();
+        self.publish_shadow();
         reply
     }
 
@@ -111,6 +112,7 @@ impl Harness {
                     Some((shadow.clone(), recorder.clone()));
             }
         }
+        self.publish_shadow();
         let Some(s) = self.shadow.get() else {
             return;
         };
@@ -130,6 +132,30 @@ impl Harness {
             s.feed(crate::shadow::feed::rows_of(items, from));
             self.shadow_fed = items.len();
         }
+    }
+
+    /// The shadow as the operator sees it: on the watched session's bar and on the shadow's own
+    /// row. Republished at each tend, which is every point a verdict can be acted on.
+    pub(crate) fn publish_shadow(&self) {
+        let brief = self.shadow.get().map(|s| {
+            let states = s.states();
+            letibot_sessionlog::ShadowBrief {
+                session_id: crate::shadow::session_id(&self.cfg.session_id),
+                jobs: states
+                    .iter()
+                    .map(|(j, st)| format!("{} {}", j.as_str(), st.mode.as_str()))
+                    .collect(),
+                model: states
+                    .first()
+                    .and_then(|(j, _)| s.label(*j))
+                    .unwrap_or_default(),
+                tripped: states.iter().any(|(_, st)| st.mode == Mode::Paused)
+                    || self.shadow_answering.tripped(),
+                last_verdict: s.last_verdict(),
+            }
+        });
+        self.session_registry
+            .set_shadow(&self.cfg.session_id, brief);
     }
 
     /// At a round boundary: queue the during check when the subject changed or enough calls ran.
@@ -385,6 +411,7 @@ impl Harness {
         if !rows.is_empty() {
             let _ = self.append_offer_rows(&mut rows);
         }
+        self.publish_shadow();
         notices
     }
 

@@ -426,6 +426,14 @@ impl App {
 
     pub(crate) fn session_label(&self, id: &str) -> String {
         let brief = self.sessions.iter().find(|s| s.session_id == id);
+        // A shadow is named by the session it watches: its stored title is its job states.
+        if let Some(parent) = brief
+            .filter(|b| is_shadow_brief(b))
+            .and_then(|b| b.parent_session_id.as_deref())
+            .filter(|p| *p != id)
+        {
+            return format!("shadow of {}", self.session_label(parent));
+        }
         // A subagent is named by its slug, the name its parent was handed; its title is the first
         // line of a brief that can run to 256 characters.
         if let Some(b) = brief.filter(|b| !b.slug.trim().is_empty()) {
@@ -1076,6 +1084,55 @@ pub(crate) struct Project {
 
 /// One of the harness's own agents: the groups under a project's `system` branch. These are the marks this tree
 /// can read off a session row, and a row carrying none of them is drawn as the session it looks like.
+/// Whether a brief is a shadow's record, by origin or seat, as `letibot_sessionlog::is_shadow`.
+pub(crate) fn is_shadow_brief(b: &SessionBrief) -> bool {
+    b.origin == SessionOrigin::Shadow || b.role == letibot_sessionlog::SHADOW_SEAT
+}
+
+/// A running shadow's facts as one line: jobs, model, breaker, last verdict.
+pub(crate) fn shadow_facts(b: &letibot_sessionlog::ShadowBrief) -> String {
+    let mut facts = vec![b.jobs.join(", ")];
+    if !b.model.is_empty() {
+        facts.push(b.model.clone());
+    }
+    facts.push(b.breaker().to_string());
+    if let Some(v) = &b.last_verdict {
+        facts.push(format!("last {v}"));
+    }
+    facts.retain(|f| !f.is_empty());
+    facts.join(" · ")
+}
+
+impl App {
+    /// The shadow watching `id`, when its harness published one.
+    pub(crate) fn shadow_of(&self, id: &str) -> Option<&letibot_sessionlog::ShadowBrief> {
+        self.sessions
+            .iter()
+            .find(|s| s.session_id == id)
+            .and_then(|s| s.shadow.as_ref())
+    }
+
+    /// A shadow row's facts: its watched session's published brief, else the job states its
+    /// stored title carries, said as not running.
+    pub(crate) fn shadow_row_facts(&self, b: &SessionBrief) -> Option<String> {
+        if !is_shadow_brief(b) {
+            return None;
+        }
+        let live = b
+            .parent_session_id
+            .as_deref()
+            .and_then(|p| self.shadow_of(p))
+            .filter(|s| s.session_id == b.session_id);
+        Some(match live {
+            Some(s) => shadow_facts(s),
+            None => match b.title.strip_prefix("shadow · ") {
+                Some(jobs) => format!("{jobs} · not running"),
+                None => "not running".to_string(),
+            },
+        })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SystemKind {
     /// The review queue's own session, one per project (`s-gatekeeper-<key>`).

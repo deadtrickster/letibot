@@ -325,6 +325,11 @@ impl Harness {
         extra: Vec<UserPart>,
         beside: Vec<String>,
     ) -> Result<Reply, HarnessError> {
+        // A shadow's record is opened to be read: a turn here would be a model answering the
+        // operator in the shadow's name.
+        if self.cfg.seat == crate::config::Seat::Shadow {
+            return Err(HarnessError::Setup(SHADOW_READ_ONLY.into()));
+        }
         // New words start a new turn: a nudge held for the last one never goes out after them.
         self.shadow_held = None;
         self.trail.begin_turn();

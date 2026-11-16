@@ -349,7 +349,8 @@ fn the_gatekeeper_and_the_reviewers_are_under_the_projects_system_branch() {
     );
 }
 
-/// A shadow is drawn under `system/shadows`, and not as a child of the session it watches.
+/// A shadow is drawn under `system/shadows`, and not as a child of the session it watches. Standing
+/// in the watched session opens the group, so the shadow is on the list without a fold.
 #[test]
 fn a_shadow_is_drawn_under_the_projects_shadows_group() {
     let mut shadow = child("s-habr-shadow", "shadow · turn_end on", "s-habr", LETIBOT);
@@ -363,23 +364,69 @@ fn a_shadow_is_drawn_under_the_projects_shadows_group() {
         Hub::new("s-habr").snapshot(),
     ));
     a.push_surface(Surface::Picker);
-    a.set_row_fold(&format!("{LETIBOT}/system"), true);
-    a.set_row_fold("s-habr", true);
-    let drawn = rows(&a);
     assert_eq!(
-        drawn,
+        rows(&a),
         vec![
             "[letibot (2)]",
             "the habr article",
             "[system (1)]",
             "[shadows (1)]",
+            "shadow · turn_end on",
         ],
-        "the system branch draws the group its count includes"
+        "the shadow of the session here is on the list"
     );
-    a.set_row_fold(&format!("{LETIBOT}/system/shadows"), true);
-    let at = row_of(&a, "s-habr-shadow");
     assert_eq!(depth_of(&a, "s-habr-shadow"), 3, "{:?}", rows(&a));
-    assert_eq!(rows(&a)[at - 1], "[shadows (1)]");
+    let drawn = a.picker_layout(200, 40).0.join("\n");
+    assert!(drawn.contains("shadow of the habr article"), "{drawn}");
+    assert!(drawn.contains("turn_end on · not running"), "{drawn}");
+}
+
+/// A running shadow's row says its jobs, model, breaker and last verdict, and the watched
+/// session's composer edge says the shadow is on.
+#[test]
+fn a_running_shadow_lists_its_facts_and_the_watched_sessions_bar_says_so() {
+    let mut shadow = child("s-habr-shadow", "shadow · turn_end on", "s-habr", LETIBOT);
+    shadow.origin = SessionOrigin::Shadow;
+    shadow.role = letibot_sessionlog::SHADOW_SEAT.into();
+    let mut watched = in_tree("s-habr", "the habr article", LETIBOT);
+    watched.shadow = Some(letibot_sessionlog::ShadowBrief {
+        session_id: "s-habr-shadow".into(),
+        jobs: vec!["turn_end on".into(), "during paused".into()],
+        model: "deepseek-flash".into(),
+        tripped: true,
+        last_verdict: Some("turn_end: owed".into()),
+    });
+    let mut a = app();
+    a.home = "/home/dead".into();
+    a.apply(hello(
+        "s-habr",
+        vec![watched, shadow],
+        Hub::new("s-habr").snapshot(),
+    ));
+    let (edge, _) = a.box_bottom(120, None);
+    assert!(edge.contains("shadow: tripped"), "{edge}");
+    a.push_surface(Surface::Picker);
+    let drawn = a.picker_layout(200, 40).0.join("\n");
+    assert!(drawn.contains("shadow of the habr article"), "{drawn}");
+    assert!(
+        drawn.contains(
+            "turn_end on, during paused · deepseek-flash · tripped · last turn_end: owed"
+        ),
+        "{drawn}"
+    );
+    assert_eq!(fold_of(&a, "s-habr-shadow"), None, "a leaf: {:?}", rows(&a));
+}
+
+/// No shadow, no marker: the edge says only what is true.
+#[test]
+fn a_session_with_no_shadow_draws_no_shadow_marker() {
+    let mut a = app();
+    a.apply(hello(
+        "s-only",
+        vec![in_tree("s-only", "the only one", LETIBOT)],
+        Hub::new("s-only").snapshot(),
+    ));
+    assert!(!a.box_bottom(120, None).0.contains("shadow"));
 }
 
 /// The empty case: one project, one session, no children - and no `system` line, because a

@@ -208,3 +208,63 @@ fn an_unsure_verdict_falls_back_to_the_held_regex_nudge() {
         "{titles:?}"
     );
 }
+
+/// The shadow is published on the watched session's brief - jobs, model, breaker, last verdict -
+/// which is what the operator's list and bar draw.
+#[test]
+fn the_watched_sessions_brief_carries_its_shadow() {
+    let (mut h, rang, _rows) = a_session(
+        "brief",
+        r#"{"verdict":"owed","promise":"I'll run the parser tests next"}"#,
+    );
+    h.session_registry
+        .adopt(
+            h.hub.clone(),
+            "watched",
+            letibot_sessionlog::registry::SessionWiring::default(),
+            None,
+        )
+        .expect("adopted");
+    let brief = |h: &Harness| {
+        h.session_registry
+            .list()
+            .into_iter()
+            .find(|b| b.session_id == h.cfg.session_id)
+            .and_then(|b| b.shadow)
+    };
+    h.tend_shadow();
+    let s = brief(&h).expect("published at the first tend");
+    assert_eq!(s.session_id, shadow::session_id(&h.cfg.session_id));
+    assert_eq!(s.jobs, vec!["turn_end on".to_string()]);
+    assert_eq!(s.model, "stub/judge");
+    assert_eq!(s.breaker(), "armed");
+    assert_eq!(s.last_verdict, None);
+    h.submit_operator("fix the parser").expect("a turn runs");
+    rang.recv_timeout(Duration::from_secs(10))
+        .expect("the verdict rings the wake");
+    let _ = h.wake().expect("the wake runs");
+    assert_eq!(
+        brief(&h).and_then(|s| s.last_verdict).as_deref(),
+        Some("turn_end: owed")
+    );
+}
+
+/// A shadow's own record takes no turn: opened in a head, it is read, never talked to.
+#[test]
+fn a_shadow_seat_refuses_a_prompt() {
+    let dir = letibot_sessionlog::testing::scratch_root()
+        .join(format!("shadow-readonly-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let mut cfg = Config::for_this_box(&dir);
+    cfg.dialect = crate::Dialect::Qwen;
+    cfg.session_id = "s-watched-shadow".into();
+    cfg.vocab_gguf = None;
+    cfg.seat = crate::config::Seat::Shadow;
+    let parts = Parts::load(&cfg).expect("the byte vocabulary loads");
+    let mut h = Harness::open(&parts, cfg.clone(), Hub::new(&cfg.session_id)).expect("opens");
+    h.provider = Some(Box::new(Says));
+    let err = h.submit_operator("hello").expect_err("refused");
+    assert!(err.to_string().contains("read-only"), "{err}");
+    assert!(!said(&h, ANNOUNCED), "no model turn ran");
+}

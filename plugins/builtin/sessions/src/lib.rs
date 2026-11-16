@@ -160,6 +160,9 @@ struct Session {
     /// `shadows`), or `None` for a session of the project's own tree.
     #[serde(default)]
     system: Option<String>,
+    /// A shadow's facts, worded by the head: its jobs, its model, its breaker, its last verdict.
+    #[serde(default)]
+    shadow: Option<String>,
 }
 
 /// One ask a session waits on, as the feed spells it. Only the kind is read here.
@@ -329,10 +332,23 @@ impl<'a> Ctx<'a> {
         if key == project {
             return true;
         }
-        let Some(group) = s.system.as_deref() else {
-            return false;
+        // The shadow of the session `here` is on the way too: it is that session's, and a shadow
+        // folded two levels down is one the operator cannot find.
+        let shadowed = || {
+            self.kids.get(self.here).is_some_and(|kids| {
+                kids.iter()
+                    .any(|&k| self.sessions[k].system.as_deref() == Some("shadows"))
+            })
         };
-        key == format!("{project}/system") || key == format!("{project}/system/{group}")
+        match s.system.as_deref() {
+            Some(group) => {
+                key == format!("{project}/system") || key == format!("{project}/system/{group}")
+            }
+            None => {
+                (key == format!("{project}/system") || key == format!("{project}/system/shadows"))
+                    && shadowed()
+            }
+        }
     }
 
     /// Whether session `i`'s parent is on this feed and drawn in this branch - the rule that decides
@@ -905,6 +921,9 @@ fn facts_of(s: &Session) -> Vec<Cell> {
     }
     if s.nags_paused {
         push_fact(&mut facts, format_args!("nags paused"));
+    }
+    if let Some(shadow) = s.shadow.as_deref().filter(|f| !f.is_empty()) {
+        push_fact(&mut facts, format_args!("{}", clean(shadow)));
     }
     let rows = if s.stored > 0 { s.stored } else { s.items };
     if rows > 0 {

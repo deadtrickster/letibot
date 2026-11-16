@@ -312,6 +312,34 @@ pub struct SessionBrief {
     /// profile its run record names, else the seat the row kept. Empty for a row older than either.
     #[serde(default)]
     pub role: String,
+    /// This session's shadow, when it has one running: what the operator reads on the watched
+    /// session's bar and on the shadow's own row. Live only, so `None` for a row on disk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shadow: Option<ShadowBrief>,
+}
+
+/// A running shadow as a head draws it: its session, its jobs, its model, its breaker and the
+/// last thing it said. Published by the watched session's harness.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ShadowBrief {
+    /// The shadow's own stored session, `<watched>-shadow`.
+    pub session_id: String,
+    /// Each job that is on, with its mode: `turn_end on`, `during paused`.
+    pub jobs: Vec<String>,
+    /// The model the jobs ask.
+    pub model: String,
+    /// `true` while any breaker has a job paused or the answering of reads tripped.
+    pub tripped: bool,
+    /// The newest verdict, e.g. `turn_end: done`, or `None` before the first.
+    #[serde(default)]
+    pub last_verdict: Option<String>,
+}
+
+impl ShadowBrief {
+    /// The breaker as one word: `armed` or `tripped`.
+    pub fn breaker(&self) -> &'static str {
+        if self.tripped { "tripped" } else { "armed" }
+    }
 }
 
 /// A row this daemon does not hold, as a head reads it: from the store alone, which is all there
@@ -337,6 +365,7 @@ fn unheld(d: StoredBrief) -> SessionBrief {
         origin: d.origin,
         moved_ms: d.last_activity_ms,
         role: d.role,
+        shadow: None,
     }
 }
 
@@ -583,6 +612,8 @@ struct Entry {
     /// The role this session was seated as - a profile's name, or its seat's own. Set by the daemon
     /// once the session is open: a role is what a daemon seated, and nothing about a hub.
     role: String,
+    /// This session's shadow as its harness last published it.
+    shadow: Option<ShadowBrief>,
 }
 
 struct Inner {
@@ -1141,6 +1172,7 @@ impl Registry {
                     stale_for_model: None,
                     origin: SessionOrigin::Operator,
                     role: String::new(),
+                    shadow: None,
                 },
             );
         }
@@ -1205,6 +1237,7 @@ impl Registry {
                 stale_for_model: None,
                 origin: SessionOrigin::Operator,
                 role: String::new(),
+                shadow: None,
             },
         );
         drop(g);
@@ -1261,6 +1294,7 @@ impl Registry {
                 stale_for_model: None,
                 origin: SessionOrigin::Operator,
                 role: String::new(),
+                shadow: None,
             },
         );
         Ok(())
@@ -1723,6 +1757,23 @@ impl Registry {
             e.role = role.to_string();
             g.roster_changes += 1;
         }
+    }
+
+    /// The watched session's shadow, as its harness sees it now. Counted as a roster change only
+    /// when it moved, so a list is not rebuilt for an unchanged publish.
+    pub fn set_shadow(&self, session_id: &str, shadow: Option<ShadowBrief>) {
+        let mut g = self.lock();
+        if let Some(e) = g.entry_mut(session_id)
+            && e.shadow != shadow
+        {
+            e.shadow = shadow;
+            g.roster_changes += 1;
+        }
+    }
+
+    /// What [`Registry::set_shadow`] was given last.
+    pub fn shadow_of(&self, session_id: &str) -> Option<ShadowBrief> {
+        self.lock().entry(session_id).and_then(|e| e.shadow.clone())
     }
 
     /// What [`Registry::set_role`] was given: empty for a session nobody has seated yet, and for
@@ -2366,6 +2417,7 @@ impl Registry {
                         // The role this daemon seated, off its own entry - never the store's: a
                         // role is a live seating and the store keeps the seat.
                         role: self.role_of(&session_id),
+                        shadow: self.shadow_of(&session_id),
                         session_id,
                     }
                 },
@@ -2685,6 +2737,7 @@ mod stored_end_wire {
             origin: crate::SessionOrigin::Operator,
             moved_ms: 0,
             role: String::new(),
+            shadow: None,
         };
         let mut v = serde_json::to_value(&b).unwrap();
         assert_eq!(

@@ -191,6 +191,8 @@ struct Inner {
     persist: Option<Persist>,
     convo: Mutex<Conversation>,
     asked: AtomicU64,
+    /// The newest verdict's word and when it came, for the operator's view of the shadow.
+    said: Mutex<Option<(Instant, &'static str)>>,
 }
 
 pub struct JobRunner {
@@ -294,6 +296,7 @@ impl JobRunner {
             persist,
             convo: Mutex::new(convo),
             asked: AtomicU64::new(0),
+            said: Mutex::new(None),
         });
         let worker = inner.clone();
         std::thread::Builder::new()
@@ -333,6 +336,11 @@ impl JobRunner {
     pub fn state(&self) -> JobState {
         self.inner.state()
     }
+
+    /// The newest verdict's word, and when it came.
+    pub fn said(&self) -> Option<(Instant, &'static str)> {
+        *self.inner.said.lock().unwrap_or_else(|e| e.into_inner())
+    }
 }
 
 impl Inner {
@@ -345,6 +353,9 @@ impl Inner {
     }
 
     fn finish(&self, req: Request, outcome: Outcome) {
+        if let Outcome::Verdict(v) = &outcome {
+            *self.said.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), v.word()));
+        }
         (self.on_outcome)(req.position, &outcome);
         if let Some(tx) = req.reply {
             let _ = tx.send(outcome);
@@ -892,5 +903,14 @@ impl Shadow {
 
     pub fn states(&self) -> Vec<(Job, JobState)> {
         self.runners.iter().map(|(j, r)| (*j, r.state())).collect()
+    }
+
+    /// The newest verdict of any job, as `job: word`.
+    pub fn last_verdict(&self) -> Option<String> {
+        self.runners
+            .iter()
+            .filter_map(|(j, r)| r.said().map(|(at, w)| (at, *j, w)))
+            .max_by_key(|(at, _, _)| *at)
+            .map(|(_, j, w)| format!("{}: {w}", j.as_str()))
     }
 }

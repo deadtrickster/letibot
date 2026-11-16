@@ -573,6 +573,10 @@ pub struct ResumeReport {
     pub notes: Vec<String>,
 }
 
+/// Why a shadow's session takes no turn: it is the record of another session's verdicts.
+pub const SHADOW_READ_ONLY: &str = "this is a shadow's record, and it is read-only: its rows are \
+     the verdicts of a second model on the session it watches. Talk to that session instead.";
+
 /// The operator's message when they hand a skill over: `/skills NAME`, and the pane's Enter. The label
 /// is the whole of it, because the body is somebody else's prose and a model that read it as the
 /// operator's instruction would follow a text they merely pointed at.
