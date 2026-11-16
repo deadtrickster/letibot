@@ -564,6 +564,12 @@ pub const TABLE: &[(&str, Class, Action)] = &[
         Class::Failure,
         Action::Do("say it again if it still matters"),
     ),
+    // A queued prompt the journal has not saved: a daemon restart before the save loses it.
+    (
+        "prompt_not_saved",
+        Class::Failure,
+        Action::Do("keep a copy until it runs"),
+    ),
     // A file the operator chipped into a prompt was not there when it was sent: the model
     // read a sentence naming a file it was never given. Only the operator can put it back, and
     // the row says which one.

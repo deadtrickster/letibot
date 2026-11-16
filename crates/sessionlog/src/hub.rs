@@ -66,6 +66,13 @@ const MAX_SIDE: usize = 256;
 /// How many handed-on commands a hub remembers to refuse a second hand-on of the same one.
 const HANDED_ON_KEPT: usize = 64;
 
+/// How long a prompt's ack waits for the journal to save it. Past it the ack says not saved: the
+/// daemon can exit before a retried save lands.
+const SUBMIT_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// How long a close waits for the journal's last save, inside the daemon's exit grace.
+const CLOSE_SAVE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// A mutating command, after validation, waiting for the session's single command worker:
 /// commands are serialized on a per-session queue.
 #[derive(Debug, Clone, PartialEq)]
@@ -1775,6 +1782,7 @@ impl Hub {
         kind: CommandKind,
     ) -> ServerFrame {
         let client_request_id = client_request_id.into();
+        let is_prompt = matches!(kind, CommandKind::Prompt { .. });
         // Declared, not initialised: every early return below leaves the function
         // without ringing, and `None` here would be a value nothing ever reads.
         let ring: Option<(Arc<crate::registry::Bell>, String)>;
@@ -2091,7 +2099,34 @@ impl Hub {
         // A command waiting for the worker is a turn the model has not taken yet. Said here
         // because nothing else will: the queue is the only witness.
         self.refresh_activity();
+        if is_prompt && !self.journal_settled(SUBMIT_SAVE_WAIT) {
+            return self.not_saved(frame);
+        }
         frame
+    }
+
+    /// An accepted prompt the journal has not saved: the head is told, so a restart that loses it
+    /// is not a surprise.
+    fn not_saved(&self, frame: ServerFrame) -> ServerFrame {
+        let ServerFrame::Accepted {
+            client_request_id,
+            seq,
+            note,
+        } = frame
+        else {
+            return frame;
+        };
+        let said = format!(
+            "this prompt is queued but not saved yet: the session store refused the save \
+             within {}s. A daemon restart before it saves loses it.",
+            SUBMIT_SAVE_WAIT.as_secs()
+        );
+        self.warn("prompt_not_saved", said.clone());
+        ServerFrame::Accepted {
+            client_request_id,
+            seq,
+            note: format!("{note}; {said}"),
+        }
     }
 
     /// A command the daemon enqueues without a head behind it: the operator's finished shell run
@@ -2445,6 +2480,13 @@ impl Hub {
     /// Shut the hub down. Every waiter wakes with [`Delivery::Closed`], and
     /// [`Hub::take_own_work`] returns [`OwnWork::Closed`].
     pub fn close(&self) {
+        // The journal's last save first: the daemon exits right after its hubs close.
+        if !self.journal_settled(CLOSE_SAVE_WAIT) {
+            eprintln!(
+                "  {} · queued prompts not saved at close",
+                self.lock().log.session_id()
+            );
+        }
         let ring = {
             let mut g = self.lock();
             g.closed = true;
@@ -2686,6 +2728,42 @@ mod mode_steering_tests {
             "the submit or the take waited on the journal's store write"
         );
         let _ = kept;
+    }
+
+    /// A prompt the journal could not save is not acked as kept: the daemon can exit before the
+    /// save ever lands, so the head is told it is not saved rather than shown a queued prompt.
+    #[test]
+    fn a_prompt_accepted_during_a_failing_save_is_not_lost_at_close() {
+        struct Failing;
+        impl PromptJournal for Failing {
+            fn save(&mut self, _: &[JournaledPrompt]) -> Result<(), String> {
+                Err("database is locked".into())
+            }
+        }
+        let hub = Hub::new("s-journal-failing");
+        hub.journal_prompts(Box::new(Failing), Vec::new());
+        let a = hub.attach("tui", "dead", Caps::default(), 0);
+        let frame = hub.submit(
+            &a.head_id,
+            "c1",
+            0,
+            CommandKind::Prompt {
+                text: "keep this".into(),
+                attachments: Vec::new(),
+                context: None,
+                from: None,
+                delivery: Default::default(),
+            },
+        );
+        hub.close();
+        drop(hub);
+        let ServerFrame::Accepted { note, .. } = frame else {
+            panic!("the prompt was refused: {frame:?}");
+        };
+        assert!(
+            note.contains("not saved"),
+            "the ack claims a prompt the store never held: {note:?}"
+        );
     }
 
     /// Looking is not taking: `has_queued_prompt` exists so a round that backgrounded a job can
