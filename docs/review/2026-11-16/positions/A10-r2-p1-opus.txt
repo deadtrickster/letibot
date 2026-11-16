@@ -1,0 +1,14 @@
+A10 R2, position 1 (untrusted repo content gets authority). Round 1 never ran, so this case is built fresh from code.
+
+Position 2:
+- Conceded: no host imports (plugins-rano/src/lib.rs:43), so `Http` is inert. Fuel, memory and a fresh instance per call hold. The `on_tool_call` shrink rule and the floor holds stand.
+- Rebutted: "an unpinned layer cannot widen" is false for the decision hooks. `Stack::run` (plugins/src/stack.rs:1053-1088) checks only `disabled`, the session ban list (`NOT_A_SESSIONS`, :140, which is the floor and review only) and native copies. It never checks `trusted`. `discover_scope` (:932-1030) wires a cloned repo's `.letibot/plugins` module with `trusted=false`. `PluginHost::steer`, `compact` and `limit` (harnessd/src/plugins/hook.rs:223, :259, :289) never ask `trusted`. `free_layer` (:10) is used only for exec looks.
+- Agreed and kept: trust by path instead of bytes, and MCP process hygiene.
+
+Position 3: it failed and gave no evidence. Thin hook tests are plausible (HYP).
+
+FINAL findings:
+1. HIGH - harnessd/src/harness/limit_hook.rs:105-114, :165, :334. An unpinned project layer answers `limit_decide`. It can `Switch` the session to any metered model the operator has keys for (turns.rs:3613), or `NewSession`, which forks the whole conversation onto a target it picks. Change: require `trusted` for `limit_decide` (`host.free_layer(limit::HOOK)`), else use the fixed ladder.
+2. MEDIUM - hook.rs:259. An unpinned layer writes a sentence and pins into the compaction record, so its text outlives compaction. Change: pinned layers only.
+3. MEDIUM - hook.rs:223. An unpinned layer's `steer_turn` continues turns, within the budget, with its own text. Change: pinned only, or the text shown as `Agent`.
+4. MEDIUM - mcp/src/wire.rs:80-90 and harnessd/src/mcp.rs trust lists. A trusted checkout's `.mcp.json` is trusted by path. It inherits the daemon's whole env (no `env_clear`) and runs unsandboxed. An agent edit to it runs on the next start. Change: pin the file's sha, clear the env, run inside the tool sandbox.

@@ -1,0 +1,37 @@
+A4 R1, position 2 (defence). All file:line at 9e9312b06, paths under crates/harnessd/src unless noted.
+
+THESIS
+The three mechanisms hold on the paths that run in normal operation, and the backbone understates one of them. The remaining holes are narrow, each with a small fix. Nothing here needs a redesign.
+
+WHAT HOLDS (verified in code)
+
+1. A child resumed after a restart DOES follow its live parent. invariants.md:76 and STALE F4 say otherwise; they are wrong for the restore path. Automatic restore and `task_resume` both go `resume_run` (harness/children.rs:2267) -> `spawn_child` (:2308) -> the same seat path: `mode: point` read live (:3946), then `sub.follow_parent(self.point.clone())` (:4114). A grandchild comes back the same way (:4208). Spawn clamp: harness/open.rs:2874-2875. One width check, `within_parent` (harness.rs:813), before any state moves (:765).
+
+2. P8's HYP is resolved: the parent link survives a restart. Registry resume takes `on_disk.parent_session_id` (sessionlog/src/registry.rs:2324-2325), and open applies `parent_for` (harness/open.rs:740). A reopened child is never seated as a root. Its worst point is the daemon's base (`UNSEEN_PROJECT = ALWAYS_ASK`, tools/src/mode.rs:651, or the operator's flag).
+
+3. Restore window: `Stopped::restores` measures stop -> session open (restart.rs:257-260), a crash is dated from the last beat (:305-308), an unknown stop restores nothing (:259 via `at_ms`). A live daemon's rows are not taken (`is_running`, :320-336, pid checked).
+
+4. R313 marking is uniform: all eight doors mark inside `opened` (harness/turns.rs:352, 690, 792, 1562; nags.rs:439; wall.rs:353, 388; limit.rs:371), and an unopened turn puts everything back (turns.rs:722-740). `wake` refuses once stopping (:440, :668).
+
+5. R311: `restore_nag_pause` (harness/nags.rs:626-662) drops an older daemon's pause with one row.
+
+FINDINGS
+
+F1. MEDIUM, new. A job running at the stop is marked delivered before its notice is stored. harness/turns.rs:1308-1315 writes `lost at restart` and calls `deliver_job` immediately; the line lives only in `self.restart_notices` (memory, ~:1293). Same at :1043-1047 for relics. R313 fixed exactly this for settled jobs via `restart_owed` (:1259) and skipped this branch. Scenario: `letibot --restart` twice in a row (bad build, restart again). Second daemon skips the row (state is neither `running` nor stopped-with-daemon, :991; delivered, so not in `undelivered_jobs`, :1026). The model is never told the job died, and a todo row waiting on it waits forever. Change: push the handle to `restart_owed`, mark in `restart_owed_stored` (:903); keep the state flip.
+
+F2. HIGH, concede P4 A2, area evidence. `opened` runs unconditionally after `persist()` (turns.rs:1713-1714), and `persist_rows` returns Ok on `BusyWait::Leave` (:4507). So "marked when stored" is false on a stop during a busy store. Bound: needs a person's interrupt plus a locked store plus a daemon death before the next write. Change: call `opened` only when every row was written.
+
+F3. MEDIUM, narrows P8 A2. The only unfollowed child is one reopened through the worker door (sessions.rs:2155-2164) while no parent thread owns it (:2143 refuses otherwise), e.g. parent reminded-not-resumed past 1 h. It opens at the daemon base, and the row `narrow_to_parent` wrote (harness.rs:866) is never read (open.rs:669-673). Scenario: daemon flag `allow-all`, parent narrowed to read-only, orphan child reopened by a head: wide. Change: for a child, read its own row and take the narrower of row and base. Test.
+
+F4. LOW. `daemon_life_started_ms` is lazy (nag_pause.rs:102-105) and compared on wall time. A second daemon sharing the store drops a live daemon's pause on open. Fails toward nags on.
+
+CONCESSIONS
+- Brief as `Speaker::Operator` (children.rs:4223): real (P2 A1). The mode clamp bounds what the child can do, not what its oracle believes.
+- Narrowing lands at batch boundaries (turns.rs:1826, 2652); a running call keeps the wider point.
+- A failed `narrow_to_parent` only warns (harness.rs:890-897).
+
+ANTICIPATING
+- Position 1 will cite "reopened child after restart" as an identity break. It is F3 only: the restore path hands over the live cell. Their best points are F2 and the brief.
+- Position 3 will call open/reseat duplicated. For children the opposite holds: spawn and resume share one seat path, which is why item 1 holds. `turns.rs` at 5997 lines is fair; F1 is a branch missed inside one 400-line function.
+
+Not run: no test executed. F1's second-restart outcome is from reading, not reproduced (HYP on the todo-row wait).

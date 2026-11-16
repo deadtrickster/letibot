@@ -1,0 +1,11 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+A1 R2, position 3. Read at 9e9312b06; no test run.
+
+P1: #1 conceded and verified — `resume_after_limit` files `User{Agent}` (limit.rs:369), the refusal does not remove it, `mid_turn` is false on that row (restart.rs:496-499), park is `None` (open.rs:3738). #2, #3 not re-checked by me. #5 agreed (limit.rs:11,240). I adopt #6: `turns.rs:3089-3091` rebuilds the ladder without `offline_for`, unlike :2949. #4 stays HYP.
+
+P2: "scattered is not a defect" fails on two facts. The durable half of one decision is the *optional plugin's* (`limit-hook.json` loaded at open.rs:3606) while park/limited/return/probing are reset (open.rs:3737-3740). And `Policy` carries no provider identity, so `zai::code` scans every provider's body for `(NNNN)` (retry.rs:211). Your Retry-After cap is right and worse than stated: see 2. Your downgrade of my #1 to LOW accepted (needs `on_limit=Switch`; default Wait, config.rs:1733).
+
+1. MEDIUM. retry.rs:306 `"billing"` substring over any body (retry.rs:216) → `Trouble::Quota` → `limit_answer` GiveUp (limit.rs:213) → no park; fallback empty by default (config.rs:1727) so the turn fails, breaking "never fail on a limit with a known reset" (limit.rs:2). Trigger wording HYP. Change: provider-keyed code table.
+2. MEDIUM. Two Retry-After readers disagree: reset.rs:15-22 accepts an HTTP-date and lib.rs:438 uses it; every ureq adapter parses seconds only (anthropic.rs:315, openai.rs:569, responses.rs:1264, gemini.rs:399) → None → `Retry` (limit.rs:216), not `Wait`.
+3. MEDIUM. One `LimitState` (park, probing, return, limited, episodes) persisted whole on the session row.
+4. LOW. retry.rs:220 counts 408 as RateLimit, though :285 treats it as neither.

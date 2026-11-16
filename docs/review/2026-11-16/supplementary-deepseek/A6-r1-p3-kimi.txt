@@ -1,0 +1,20 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+THESIS
+
+Positions 1 and 2 argue about whether the queue decides rightly. Both take the mechanism for granted. It should not be: the gate is a shell list read from the target's `AGENTS.md`, executed against the *branch's* programs, and judged partly by counting phrases in their output and re-decided by string-prefix tests at six sites. A branch can make green, or wedge the queue, with one commit.
+
+FINDINGS
+
+1. **critical — the verdict is decided by prose counts, and a branch controls the prose.** `gate.rs:86 APPARATUS_SAID`, `:574-712 apparatus_absent` counts `"panicked at"` against `" is not on this machine"` and bails on any `error[`/`Diff in ` in the output; `:1005-1018` turns that into `MergeGateOutcome::NotRun` + an `Infra` sentence that does not start with `GATE_KILLED`, so `serve.rs:2916` sends the row back to `Queued`; `serve.rs:47 UNJUDGED_RETRY_MS` is 60 s and `serve.rs:2164` makes it eligible again, while `serve.rs:2930 first_time` dedupes the notice. Scenario: a branch adds one failing test whose panic message quotes the refusal phrase (this tree's own tests do — `gate.rs:86`), with no `error[` in the step's log. The row is never `failed`, never landed, re-gated every 60 s, each pass a rebase plus a full workspace suite, holding the box's single gate. Change: decide from the per-step `MergeGateOutcome` and exit status (`serve.rs:2916`, `:1823`, `:1899`, `:2951`, `notices.rs:219` all branch on a message prefix); an apparatus refusal needs a marker, not a phrase.
+
+2. **high — "a branch cannot change its own gate" is false where it matters.** `gate.rs:2056-2075` reads the *text* from the tip, then `gate.rs:1180-1210` runs `sh -c <step>` with cwd the rebased branch tree (`serve.rs:1930-1936`, `:2442`). Every program a step names is the branch's: `scripts/clippy-gate.sh`, `scripts/check-test-attrs.sh`, `Cargo.toml`'s members. One commit making `clippy-gate.sh` `exit 0`, or dropping a member, is green. Claimed at `AGENTS.md:69-70`, `docs/gate.md:4`, `gate.rs:2054`. Change: bring `scripts/`, `Cargo.toml` and the test attrs from the tip into the landing tree before the steps, or refuse a step whose program differs from the tip's.
+
+3. **high — the step list exists four times and one copy judges by a magic count.** `AGENTS.md:74-81` vs `scripts/rrun:108-111` (adds `--offline`, drops the release build and `check-dist-names`) vs `scripts/gate-at.sh:17,55-61` (2 of 6 steps; `ok -lt 140`). The tree has 313 integration targets, 36 lib targets at this commit — and 301/35 at `e088d20c5`, the commit that wrote `140`. A `GREEN` is reachable with two-thirds of the suites gone, and the only guard (`crates/tools/tests/gate_not_on_github.rs:113-160`) walks `.github/workflows` and never looks at the tree's own second gates. Change: one script both paths run; make the floor the count of targets from `cargo metadata`.
+
+4. **medium — a parse that reads nothing says "no gate section".** `gatekeeper.rs:673-720` takes the first fence whatever its language and returns `None` for an all-comment block; `serve.rs:2450-2465` and `:1751-1764` then hold every branch with "`main` declares no gate" while the section sits in the file. Change: require `sh` in the info string; name the empty fence as its own blocked reason.
+
+5. **medium — copies, not lines.** 35,170 lines of `mergequeue/` (16,124 tests) + 1,861 `store/queues.rs`; the same five-way verdict switch written three times with different outcomes (`serve.rs:1802`, `:2868`, `:3090`). A new outcome lands in one of three.
+
+CONCESSIONS
+
+The no-gate path fails closed. Review/merge separation, the approved-sha binding, rebase-then-read-the-tip ordering and the bisect are real, and the 8k lines of `serve/tests.rs` are real tests — position 2 is not wrong about the mechanics it names, but those mechanics are not where the branch escapes.

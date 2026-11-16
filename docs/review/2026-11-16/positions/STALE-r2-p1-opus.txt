@@ -1,0 +1,13 @@
+Position 1 (against), round 2. Round 1 produced no report, so this case is new. All findings come from reading code at 9e9312b06. No test was run.
+
+Rebuttals
+- P2 finding 1 (R298 on snapshot): conceded and adopted. `sessionlog/src/view.rs:731-745` leaves `turn` alone at the fork. `tui/src/app/events/mod.rs:241-247` copies the old `Finished{usage}`. The warning loop (`mod.rs:373-391`) handles `turn_failed`, boot and `MODEL_SET` but not `compacted`. The correction exists only live (`events/warnings.rs:112-126`). P2's self-resync trigger stays HYP.
+- P2 finding 2 (bridge model): conceded. Settings reads only `idle_exit` (`bridge/src/head.rs:947-952`). `model` is written at `:1003`, `:1116` and `:1342`, never from `model_set`.
+- P2 "four hold as built": not contested item by item. But a fact with no age is a defect even when its event is reliable, because the reader cannot tell fresh from frozen. `queues_got_ms` (`frames.rs:215`) is the only age stamp I found.
+- P3: no report. Against its premise, the daemon's own view is stale at the fork (finding 1), so "render the daemon's view" alone does not fix R298.
+
+Final findings
+1. HIGH - `sessionlog/src/view.rs:731`. The daemon view keeps the pre-fork turn usage. Change: clear or rewrite `turn.usage` at `TranscriptForked`.
+2. MEDIUM - `bridge/src/head.rs:947`. `leticode_status.model` goes stale after `set_model`. Change: take `MODEL_SET` the way the TUI does (`mod.rs:386`).
+3. MEDIUM - `tui/src/app/events/frames.rs:243`. Seat boards are refreshed only on the `Todos` reply: at attach, resync and pane open (`surface.rs:376`). There is no live event. A pane left open shows a frozen board, and `SeatBoard` has no timestamp (`event.rs:172-176`). Change: add a read time and draw the age.
+4. LOW - `frames.rs:289-292`. `asks_setting` is a copy from attach time that nothing refreshes. Change: stamp it, or drop it once the board is read.

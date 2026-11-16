@@ -1,0 +1,45 @@
+A1 R1, reviewer 1, position 1: the loop loses or reorders work. Everything below was found by reading the code at 9e9312b06. No test was run.
+
+THESIS
+P4 already covers show-before-store (its A1-A3). This report is about the limit ladder. A park is promised as "Nothing is lost - the daemon opens the turn by itself" (limit.rs:262). That promise is held only in memory. On the default config, a restart during a park drops the owed turn, the operator prompts that wait on it, and any steering the failed round had taken. Nothing tells the operator.
+
+FINDINGS
+
+1. HIGH. A restart during a probed park drops the owed turn.
+- `limit_park` is not persisted: it is set to `None` at open (open.rs:3738).
+- The probes are on by default at 2, 5 and 15 min (leticode-config/src/lib.rs:537).
+- Each probe runs `resume_after_limit` (limit.rs:355). That stores a `User{Speaker::Agent}` notice before the round (turns.rs:1711-1713). The round is refused and the turn parks again.
+- `restart::mid_turn` returns false when the last row is a `User{Agent}` row (restart.rs:496-499). So `Owed::any` is false and the restart is quiet.
+- Scenario: GLM weekly limit, park, the 2-minute probe is refused. The operator types a prompt, which becomes a row; the next probe puts an Agent notice after it. Daemon restart: no park, no wake. The prompt and the turn are never answered.
+- Change: store the park (model, until, reset) on the session row and restore it at open. In `mid_turn`, skip harness rows the same way display-only rows are skipped, and judge by the last non-Agent row.
+
+2. HIGH. Steering taken by a failed round is held only in memory.
+- `try_steering_command_of` removes the prompt from the hub queue, and `remove` syncs the journal without it (hub.rs:2263, 487-490).
+- After a failed attempt, `give_back` puts it into `handed_back` (hub_io.rs:425). That is a plain `VecDeque` built as `Default` at open (open.rs:3675).
+- `run_rounds` says "they go in at the start of the next turn" (turns.rs:1858-1866). The next turn after a park can be hours away (`LONGEST` is 6 h, http/src/reset.rs:11), and the 1 h offline budget can hold it too.
+- A restart in that window loses the steer. It exists only in the trail, never in the transcript or the journal.
+- Change: put given-back prompts back at the front of the hub queue, so the journal keeps them, instead of in a private buffer.
+
+3. MEDIUM. A restart reorders the queue lane (R290).
+- `JournaledPrompt` has no `delivery` field. Restore sets `delivery: Default::default()`, which is `Steer` (hub.rs:776-781, protocol.rs:605-611).
+- Scenario: three Tab-queued prompts, then a restart. All three now count as steering (`try_steering_command`, hub.rs:2241-2252). They are drained into whichever turn runs first, for example the restart's wake turn, instead of each getting its own turn in order. HYP on wake-versus-queue ordering.
+- Change: journal `delivery`.
+
+4. MEDIUM. A `new_session` fork leaves work behind (R233).
+- `limit_new_session` forks `session.items.len()` rows (limit_hook.rs:337-340). It queues the continuation on a hub that `registry.create` has only just made (limit_hook.rs:351-368). The journal is attached only when a harness opens (hub.rs:755): HYP that this new hub has none before the fork opens.
+- The old session's `handed_back` and its queued prompts stay on the limited model. Each of them can trigger the hook again, and each trigger is a new fork.
+- Change: move the hub queue and `handed_back` into the fork. Make the hook idempotent per episode.
+
+5. LOW. The park "jitter" is a constant.
+- `PARK_JITTER_MS` is 2000 (limit.rs:11), and both `park_until` and the probes add it unchanged (limit.rs:241-245). Sessions on one key wake together at reset+2 s and probe together. The ladder's 20% spread from dbe4c3b9c is not used here.
+- Change: reuse `Ladder::spread`.
+
+6. LOW. The `Again` arm rebuilds the ladder without `offline_for` (turns.rs:3089-3091). After an `ask_user` answer, a network outage uses up the 5 ordinary retries instead of the 1 h offline budget, and the turn fails.
+- Change: use the same constructor as turns.rs:2949.
+
+CONCESSIONS
+- The default `on_limit` of Wait (config.rs:1733) is sound inside one daemon life. A first-round park leaves the operator prompt last, so `mid_turn` is true and the wake re-asks it. Finding 1 needs at least one probe.
+- Within a live daemon, `handed_back` keeps steering in order (hub_io.rs:186-194). A rule mistake would be found by reading; these failures only show across a restart.
+- Show-before-store adds nothing at this level beyond P4's A1/A2.
+
+Expected from position 2: "long GLM sessions survive restarts". The restore path has no park and no `handed_back` (open.rs:3675, 3738), and nothing in the tests covers a restart during a probe. Expected from position 3: "too large to reason about". I agree, and finding 1 shows it: the probe in limit.rs and the restart rule in restart.rs each look correct alone. What breaks is a property neither file owns.

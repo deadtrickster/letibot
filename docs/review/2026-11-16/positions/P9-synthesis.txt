@@ -1,0 +1,12 @@
+Record written to /data/review-run/P9.md. It has the header, Round 1 and Round 2 copied verbatim, and a Synthesis with agreed findings A1-A5, disagreements D1-D5 each with a proposed decision, the order of work and the spot-check table. 4 of 6 seats produced reports. Failed: r1 P2 deepseek (session dropped), r2 P1 glm (protocol 74/78 mismatch), r2 P3 kimi (fell back to glm, no report). No finding was rated critical.
+
+HIGH | crates/harnessd/src/shadow/permission.rs:272-283 | acting_rule accepts any listed-rule substring >= MIN_QUOTE and never checks the path against the rule's glob or permission | VERIFIED
+HIGH | crates/harnessd/src/shadow/guard.rs:138-165 | read_passes is lexical but the grant is kept at view::key (canonical, symlinks followed, view.rs:71-90, adjudicate.rs:1719). .claude/.credentials.json, sessions.db and /proc are not in STORES/secret_dirs/SECRET_FILE_NAMES | VERIFIED
+HIGH->MED (proposed) | crates/tools/src/adjudicate.rs:2784,2787 | ask_to_see hardcodes Tier::MayApprove and an empty trail, so the path is never classified. Only credential reads can reach the shadow this way | VERIFIED
+HIGH | crates/tools/src/adjudicate.rs:1731-1739 | shadow grant kept at Scope::Queue (P1-F4) | NOT-REPRODUCED - the shadow's early return at answers.rs:154-162 skips the relayed insert at :225-230, so the grant is kept at Scope::Session (P3-3 is correct)
+MED | crates/harnessd/src/shadow/permission.rs:170-240 | breaker and granted shapes are in memory, the ledger grants persist across a restart | agreed, not spot-checked (medium)
+MED | crates/harnessd/src/grants.rs:82-116 | a revoke unbinds only at the next call, so a running command keeps its read | agreed, not spot-checked (medium)
+MED | crates/tools/src/adjudicate.rs:2739-2876 | view asks are not recorded in the corpus. Shadow rows would be scored against themselves in R316 replay | agreed, not spot-checked (medium)
+MED | crates/harnessd/src/answers.rs:151-230 | the grant's scope comes from a side-channel boolean: shadow answer is session scope, the operator's card is queue scope (P3-3, replaces P1-F4) | proposed, evidence VERIFIED by the trace above
+
+Proposed stage 1 blockers: A1, A2 with the tier derivation, and the A5 exclusion of shadow rows from replay. Retiring Relay and moving the shadow behind AuthorisationOracle go to follow-up, as the precondition for any stage that widens past read-only view grants.

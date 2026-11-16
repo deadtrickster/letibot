@@ -1,0 +1,46 @@
+P7, position 3 (reviewer 3). Placement logic in bash should be a Rust verb.
+
+THESIS
+scripts/letibot is 3173 lines. Before any Rust runs it decides workspace, key, rundir, store, providers file, endpoint, scope and daemon start. Each of these is a second implementation of something Rust already owns, and the pairs agree only where tests/launcher.sh:601 pins them. P7 positions 1 and 2 (misroutes, hang probes) are symptoms of that duplication. Every verb, path or parser added in Rust needs a bash twin, or it falls through to a billed prompt. The seam list itself says the verbs live outside REGISTRY and nothing checks them against the launcher (seams S14). The launcher should shrink to a small exec shim (about 100 lines: resolve `$0`, exec `letibot-multi launch`). Rust already has `bridge/src/daemon.rs` (key, data_dir, Daemon) and `provider::keys::config_file`.
+
+FINDINGS
+
+1. HIGH. Three resolvers pick the providers file, and they disagree.
+- Launcher: `PROVIDERS="${LETIBOT_PROVIDERS:-$HOME/.config/letibot/providers.toml}"` (scripts/letibot:1095). It ignores `XDG_CONFIG_HOME`.
+- Rust: `provider/src/keys.rs:194-201 config_file` honours `XDG_CONFIG_HOME` and never reads `LETIBOT_PROVIDERS`. My grep over crates found no Rust read of that variable.
+- The launcher comment at :1093 says `LETIBOT_PROVIDERS` "points both". It does not.
+- Failure: a box sets `XDG_CONFIG_HOME=/x`. The launcher finds no file and reports PROV_MISSING="file" (:1385). The daemon reads `/x/letibot/providers.toml` and has the model. Reverse case: `LETIBOT_PROVIDERS=/alt/p.toml` makes the launcher resolve the endpoint and `default_provider` from /alt, while the daemon loads `~/.config`. Turns then go to a different model than the one the launcher announced.
+- Change: Rust owns one `config_file()`. The launcher asks `letibot-multi --config-path`, or the launcher is deleted.
+
+2. HIGH. The awk TOML reader (`model_home`, scripts/letibot:1124-1175) claims to mirror `local_models` "rule for rule". It does not.
+- `keys.rs:850 parse_file` returns Err on any line that is not `key=value` or `[section]`. `local_models` (:1059-1061) then returns an empty Vec, so the Rust side sees no models. The awk skips such lines (`if (eq == 0) next`) and still reports homes.
+- Rust merges duplicate `[model."x"]` sections into one map entry (`entry(sec).or_default().insert`). The awk emits one record per block.
+- Failure: a file with a duplicate alias block, or one stray line such as a multiline array continuation. Rust sees one merged model, or none. The launcher prints "listed at more than one address" (:1386-1412), picks the on-box one and passes `--endpoint`. The daemon's own fleet view disagrees. Only a rule-by-rule test pins them, and tests/launcher.sh cannot parse the Rust side.
+- Change: delete awk. Add `letibot-multi model-home ALIAS`, which uses `local_models`.
+
+3. MEDIUM. Data-dir and store resolution is split.
+- `STORE="${LETIBOT_STORE:-$HOME/.local/share/letibot}"` (:374) ignores `XDG_DATA_HOME`.
+- The room uses `${XDG_DATA_HOME:-...}` (:1948). `tools/src/lifecycle.rs:344` and `bridge/src/daemon.rs:100` also use `XDG_DATA_HOME`.
+- Failure: `XDG_DATA_HOME` set. The launcher's `STORE_FILE` (:386, used by `letibot migrate` at :2745) and its store-split checks (:377-391) look in `~/.local/share`. The daemon and room use XDG. `migrate` moves a session in the wrong store.
+- The seam list already admits this ("ignores XDG_DATA_HOME except for the room").
+
+4. MEDIUM. Key parity rests on one test.
+- Shell: `printf '%s' "$WORKSPACE" | sha12` where WORKSPACE comes from `$(cd ... && pwd -P)` (:123-126). `$(...)` strips trailing newlines.
+- Rust: `bridge/src/daemon.rs:58 key` hashes `as_encoded_bytes`.
+- A path ending in a newline, or a symlink resolved differently by Rust canonicalize, gives the head a different socket than the launcher. This is low-frequency but silent (the head waits on a socket that never appears).
+- Parity relies on tests/launcher.sh:601 plus a doc comment. Rust can compute the key, so no test is needed once the launcher is Rust.
+
+5. MEDIUM. The hang gaps in I28 exist because the shell is the supervisor. `detach` (:337-347) runs `scope_run` and then `setsid "$@"` with no bound after a good probe. Bash has no reliable bound for `systemd-run --scope` (`timeout` is absent on macOS, and `probe_bounded` falls back to unbounded, :219-226). The probe machinery (about 100 lines, :212-336, with race files under `$RUNDIR/scope-probe-$$` and a `find -mmin +60 -exec rm -rf` sweep at :236) exists to work around the language. Rust already has `activation/bounded.rs`.
+
+6. LOW. The launcher is 3173 lines with 79 functions, and about 750 lines of those are flag and help tables (`flags_table` :752, `removed_flags_table` :816). `flag_field`, `known_flag` and `flag_takes_value` hand-roll a parser. Rust (clap, or the existing `cli.rs`) would generate help and refusals from one source. This is the recurring "a bare word is a paid prompt" class: `hold`, `release` and bare `where` have no arm at :2737, and no check can catch that.
+
+ANTICIPATED COUNTERS
+- Position 1 will list misroutes. I say they are inevitable while two verb tables exist (the REGISTRY and the bash `case` at :2737). Fixing them one by one leaves the next verb broken.
+- Position 2 will add tests. A test can show agreement on its inputs. It cannot show agreement for `XDG_CONFIG_HOME`, duplicate sections or malformed lines, which are the cases in findings 1 and 2.
+- Cost: the launcher must run before the binary exists, and `--help` must survive a broken install. Answer: a 100-line shim does `exec` and nothing else. Rust owns every decision.
+
+CONCESSIONS
+- Bash shims are the right choice for exec-only wrappers (`scripts/leticode` at 35 lines is fine).
+- The launcher has a macOS path (`perl setsid`) that Rust would need to replace, so this is a migration, not a one-commit change.
+- The deslop already cut the launcher from 3720 to 3173 lines, and the probe design (backgrounded, bounded read) is sound for what it does.
+- I did not verify HYP: whether Rust `canonicalize` equals `pwd -P` on all paths, or that the Rust `no_hang` tests cover finding 5. I ran no tests.

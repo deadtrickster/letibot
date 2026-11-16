@@ -1,0 +1,24 @@
+A8 round 1, reviewer 2. Position: R259 settled the acks, family mail and replay window, and real-`Server` tests cover the paths in use. All paths under crates/ at 9e9312b06. Read only, no test run.
+
+THESIS
+Holds for the three R259 claims in steady state, and most of position 1's list is bounded by code. It fails in one place: the gap replay after a redial, where an ack still passes mail the model never saw. The real-`Server` claim holds for the coordinator half only.
+
+WHAT HOLDS (verified)
+- A push is not an ack. `ack_delivered` stops at `first pending - 1` (bridge/src/rooms.rs:1205-1208). Pending is settled only by rows shown, a thread reply, a dm to the author or the model's ack (:1071-1085). A bridge restart loses nothing: the cursor is below the oldest pending, so `replay_the_gap` re-owes it (:1143-1147, owed=true).
+- Family mail: `family_of` accepts only the name's own prefix on an external seat (room/src/server.rs:26-35). DM visibility, `names_you` and the inbox count the family. Real `Server`: room/tests/dm.rs `a_dm_to_a_name_reaches_every_bridge_of_it_and_one_ack_hides_nothing`, and through `RoomLink` in bridge/tests/room_share.rs:64-112.
+- Replay window: `request` resends the same frame and id once (rooms.rs:924-943). The coordinator dedups (author, id) over 256 (room/src/chat.rs:29, :1752) and rebuilds it on load (:1452).
+- Against P1 "reply matching by arrival order": one round trip at a time (`call` mutex, :655), and a failed one drops the connection (:936). The generation-blind `waiting.take()` (:1296-1303) costs a spurious redial that the window makes safe. Low.
+- Against P1 "fyi reach divergence": bridge `reach` labels a naming fyi `passing` (:411), but push uses `native: ToMe.passes` (bridge/src/push.rs:304) and owed uses `names_you` (rooms.rs:993). Wrong label for plugin layers, no lost mail. Low. Fix: `Fyi if !names_you`.
+
+FINDINGS
+1. HIGH. Gap rows below a live push are dropped, then acked. `deliver_once` refuses `seq <= delivered` (rooms.rs:1011). The reader delivers live chat from the moment `open` returns (:871), while the gap inbox runs on the supervisor's next pass, up to 2 s later when a tool call redialled (:259, :1174), longer if `call` is held. Scenario: coordinator restarts, G (dm to me) was said while down, tool call redials, chatter L>G is pushed, delivered=L, replay of G returns false, `ack_delivered` acks L (or L-1). G is never shown or raised. This is R259's own "no ack without a delivery" broken. Every Fake test avoids the order ("one step", bridge/tests/room_tools.rs:183-185). Change: dedup replay by a seen-set above `acked`, not the high-water mark, or buffer live pushes until the generation's gap is replayed. Test on real `Server`.
+2. MEDIUM. Bridge ack/pending/reraise is tested only on the Fake (room_tools.rs:756, :797, :826), whose inbox and cursor are 20 lines (:331-357). Position 3 is right here. Change: port those three and the redial test to `Server::serve`, as room_share.rs does.
+3. MEDIUM. `prompt_once` reports "did not take the prompt" after 5 s while its thread still delivers (bridge/src/fleet.rs:200-212). A retry lands twice. Change: say "may still land", or key the prompt for dedup.
+4. MEDIUM, outside mail. `leticode_queue_verb approve` lets a seat approve its own row over the reviewer (bridge/src/queue_desk.rs:192). The gate still runs. Change: refuse approve on a row whose author is this handle.
+5. LOW. Suffix recursion is unbounded: `open` recurses on `name_in_use` (rooms.rs:818-825), and `suffixed` stops changing at 32 chars (:199-203). A doubled suffix also fails `family_of` (tail has `-`). Needs a pid collision mod 4096. Change: loop of 3 with a fresh salt.
+6. LOW. A suffixed name is pid-derived, so a restarted second bridge gets a fresh cursor at head and loses pending family mail (HYP on arm-at-head through the server; chat.rs test `:3203`).
+
+CONCESSIONS
+- To position 1: finding 1 is real loss, and room 12 changed under one number (P1 record). `family` on an older coordinator degrades to pre-R259, silently.
+- To position 3: the bridge client is a copy and its main test is a fake. Finding 1 lives exactly there. I do not concede the rewrite: three ported tests and one dedup fix close it.
+- Not traced: `wait-queue`, harnessd/src/room link acks (P4 covers the stored-mark bug), acp, flowy.

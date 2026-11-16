@@ -1,0 +1,16 @@
+P2 R2 position 3 (model: sonnet-5.5, replaces failed kimi run). Position: authority is asserted by the client frame with an Operator default. It should come from the connection.
+
+VERIFIED
+- `Speaker` is `#[default] Operator` (transcript/src/lib.rs:52). `ClientFrame::Prompt.from` is `Option<String>` with `#[serde(default)]`, and absent means operator (sessionlog/protocol.rs:650-653). A prompt becomes Operator whenever `peer()` returns None (sessionlog/hub.rs:87-94 and harnessd/harness/turns.rs:258-271). Operator is the fall-through, so a missing field grants authority.
+- `identity` and `kind` in Attach are client strings (protocol.rs:621-627). The one rule that treats a connection as an agent is `identity == "letibot-mcp"` (hub.rs:93).
+- The only connection-derived gate is `Peer::refuses` (peer.rs:38-43). It fires only when `inside` is true, meaning the pid descends from the daemon or sits in a `letibot.<pid>.` cgroup or pgid scope (peer.rs:250-296). The socket is 0600 (server.rs:122, 542), so same-uid is the only check.
+- Result: any same-uid process outside the tool tree that sends `Prompt` with no `from` and an identity other than `letibot-mcp` gets Operator words. That includes a Claude Code seat's own shell, a daemonised or `setsid` child that leaves the cgroup, and a third-party head. The gate then accepts those words (authorise.rs:153-176). HYP: whether a double-forked tool escapes the cgroup when the scope fallback is absent.
+
+VS POSITION 2: concede that the in-tree paths are closed (peer.rs:62-118) and that room, parent and notice text is Agent. Rebut "holds": the closure is by ancestry, not by who is speaking. Out-of-tree and an unknown identity both default to Operator.
+
+VS POSITION 1: concede that the journal is a labelling bug only. Peer degrades to a name, not to authority (hub.rs:768-779). The old-daemon and acp claims are unverified (HYP).
+
+FINAL FINDINGS
+1. protocol.rs:650 and turns.rs:258, HIGH. Make the sender an explicit required field, or default to Peer. Mark Operator only for an Attach whose kind is a head (`tui`, `remote`) and which came from outside the tool tree. Treat any other identity as Peer.
+2. hub.rs:93, MED. Replace the `letibot-mcp` string match with a per-connection role fixed at Attach, and never take it from a frame field.
+3. transcript/src/lib.rs:52, LOW. Move `#[default]` to Agent or Peer for new rows. Keep a legacy-row read path for old rows.

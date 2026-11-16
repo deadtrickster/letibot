@@ -1,0 +1,29 @@
+A5 R1, position 1. Read at 9e9312b06, paths under crates/. No test run.
+
+THESIS
+A committed row is safe only after the store's shape is settled. Carve, migration and import each write the shape without holding the write lock across their own check, so a box-wide upgrade or a carve that runs while daemons are live can delete committed rows, wedge an open, or leave tables in the wrong file.
+
+FINDINGS
+
+1. HIGH - carve deletes rows committed after its check. `tokencore/src/migrate_split.rs:228-247` checks claims once. `:236` opens a raw `from`. The copy and `verify_chains` (`:272`) run with no lock. The deleting tx (`:274`, deferred) removes every row of the transcripts staged in `temp.mine_transcript` (`:648-652`, `:781-785`). A daemon of that key that starts in the window gets `open_transition`, which returns a set with no project file (`store/split.rs:584-585`), and appends to `sessions.db`. Scenario: a long copy, then a daemon resumes session S and appends seq 900-910. Carve commits, and 900-910 are deleted although they were committed. S's next append fails the trigger (`store.rs:539-545`, MAX(seq) is gone), so the session is wedged. Change: take BEGIN IMMEDIATE on `from` before staging and hold it to commit, or re-check claims and the per-transcript max(seq) inside the deleting tx and refuse if either moved.
+
+2. HIGH - migration has no tx and no lock. `store.rs:1867-1874` runs `migrate_from`, then a DELETE and an INSERT on `schema_version`, each in autocommit. The arms check and then act (v51 at `:2690-2711`). Scenario: a box-wide restart, and two v51 daemons both read 50. One ALTER wins, and the other fails with "duplicate column" and does not open (daemon reaction HYP). Between the DELETE and the INSERT, `SELECT version` returns Ok(None). That is not "no such table", so a concurrent opener takes the fresh path (`:1890-1907`) and runs unfiltered `SCHEMA_SQL` into `shared.db` (transcript_item and its triggers, job, ...). An older build in the same gap stamps its own lower version. A crash in the gap leaves `schema_version` empty for good. Change: run migrate under BEGIN IMMEDIATE, re-read the version inside it, stamp with one UPDATE, and treat an empty `schema_version` in a file that has tables as corrupt, not fresh.
+
+3. MEDIUM - unguarded arms leave project tables in shared.db. The split exists from v44 (`git show bdf15086d`). v47 `RECALL_SQL` and v50 `GRANTS_SQL` (`store.rs` arms `from < 47`, `from < 50`) run on every file. v51 then ALTERs the stray `session_grant` (`:2713-2720`). Every shared.db created at v44-49 holds an empty `recall_unit` and `session_grant`. On those files an unrouted read gets an empty result and an unrouted write lands in shared.db, where on a fresh file it would fail with "no such table". `an_older_set_migrates_both_files` (`store/split_tests.rs:449`) checks only the v48 tables. Change: guard both arms with `split::holds`, and assert after migration that each file's table set equals `tables_in(file)`.
+
+4. MEDIUM - the coverage scan skips grants.rs. `store/split_coverage_tests.rs:13-31` SOURCES has no `grants.rs` (`mod grants`, `store.rs:36`). It is routed correctly today (`grants.rs:91` `at`, the rest through `exec`). A regression there fails neither the test nor production, because of #3. Change: derive SOURCES from the `mod` list, or assert that they match.
+
+5. MEDIUM - `import_tx` commits two WAL files one after the other (`store/transfer.rs:312-338`, conceded at `:308-310`). Scenario: a crash after the project commit. The project rows have no index row, so `session(id)` is None (`:241`), the retry INSERTs collide on the transcript PK, and the import stays refused with orphan rows. Commit order is the project file first (HYP, SQLite attach order). Change: make the re-import detect and verify an orphan prefix, or write a pending marker in shared.db first and clear it last. The ATTACH is also a second connection to shared.db held at IMMEDIATE for the whole import. The process's own shared connection waits in `on_busy` for at most 5s (HYP).
+
+6. LOW-MEDIUM - `letibot migrate` does not know about the split (`letibot/src/migrate.rs:1813`, `:2021`, `:664`). On a split box, `Store::open(sessions.db)` passes `refuse_creating_beside_legacy` (`store/split.rs:606-635`, dir=None), creates a full-schema stray `sessions.db` and finds no session. This adds to P7's XDG finding. Change: open through `StoreAt`/`open_set_existing`.
+
+7. LOW - carve's raw `from` (`migrate_split.rs:236`) has no busy handler. Any write by another project's daemon refuses the carve, which contradicts the "other projects' daemons are not a reason to stop" message (`:245`). Change: `pragmas(&from)`.
+
+CONCESSIONS
+- R313 routing holds. I found no production `self.conn()` or `connection()` read of a project table. Every hit is a test.
+- The arms after v44 that ALTER are guarded. No arm deletes transcript rows. The floor never goes down, so a version regression from #2 is recoverable.
+- The fresh set path (`prepare`, `split.rs:692`) is filtered and stamped.
+
+ANTICIPATED
+- Position 2: WAL+FULL and the triggers protect against process death. #1 is the carve dropping the triggers and deleting while writers are live (`:313-351`). The coverage test runs on fresh files and cannot see #3.
+- Position 3: agreed that carve-in-progress is the complexity, and #1 is where it fails. The simpler fix is one lock file that stops the key for the whole carve, not more state.

@@ -1,0 +1,16 @@
+POSITION 3 (revised from a failed round 1). Paths under crates/tools/src at 9e9312b06.
+
+Rebuttals
+- P2 "the ladder holds": conceded for ordering. `admit` (adjudicate.rs:3179) is one function, and the :3362 always-ask fall-through is real. But the ladder only decides on a tier and an allow match that come from two weak primitives, and that is what is wrong.
+- P2 finding 1 (stale doc): conceded, minor.
+- P1 produced nothing. I took its "seed rows" lead and checked it.
+
+Findings
+1. HIGH (seed rows are prefix text plus a hand-kept flag deny-list). `config/permission.json:129,127,~160` allow `xxd*`, `uniq*`, `less*`, `rg*`. `write_or_exec_flag` (permission.rs:506) covers only sed, sort, git, tree and `xxd -r`.
+   - `uniq IN OUT` and `xxd IN OUT` (no `-r`) write OUT. `less -o FILE` writes a log file.
+   - `rg --pre CMD` runs CMD per file. `ugrep --filter` is the same class (HYP).
+   - `name_intents` (intent.rs:1078-1080) classes uniq, xxd, less and rg as ReadFile. A grep for flag rules on these programs found none. The allow arm (adjudicate.rs:3363) then admits them with no ask, since the tier is not AlwaysAsk.
+   - Not run. HYP only for the final gate result.
+   - Change: make the seed rows exact verbs, or add the rows to `write_or_exec_flag` and test every seed row against a writes-or-execs corpus.
+2. MEDIUM (duplicate builders). `permission_options` (adjudicate.rs:533) and `once_only_options` (:596) have identical bodies. `exec_options` (:570) differs only in the session label. The 4-way pick at :2413 must match the recording sites by hand. Change: one builder with a `label` and a `scope` parameter.
+3. MEDIUM (P2's doc point). Rewrite the 4l ladder text from the code.

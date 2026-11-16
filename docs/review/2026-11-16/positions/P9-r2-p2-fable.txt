@@ -1,0 +1,18 @@
+P9 r2, reviewer 2 (For), 9e9312b06. Round 1 of this position produced no report, so this is a fresh reading.
+
+REBUTTALS / CONCESSIONS
+- P1-F1 / P3-1: conceded. `harnessd/src/shadow/permission.rs:281` is a substring test only. `shadow/tests.rs:1480` proves "listed", never "covers".
+- P1-F2 / P3-2: conceded. `shadow/guard.rs:143` is lexical, `tools/src/view.rs:78` canonicalises. Also `.claude` is in neither `tools/src/secrets.rs:37 STORES` nor `intent.rs:1571` (`credentials` is an exact name), so `~/.claude/.credentials.json` passes.
+- Breaker: conceded. `permission.rs:185` is in-memory, text says "until restart" (`:233`).
+- "Always-ask reaches the shadow": rebutted. `harnessd/src/answers.rs:432-439` requires `Access::Read`, `Tier::MayApprove`, a `grant_ro` rung and one argument. The only producer is `tools/src/adjudicate.rs:2784`. Exec, write and network never act.
+- "Shadow can deny": rebutted. `permission.rs:346-354` makes anything but a valid allow a card line. No refusal variant exists.
+- Attribution and revoke: hold. `by: shadow:<judge>` (`permission.rs:389`), acts only with a store (`:408`, `harness/shadow_seat.rs:33`), revoke feeds the breaker (`harnessd/src/grants.rs:97-105`).
+- P3 "retire Relay first": rebutted. Path is narrow, one rung. Fix in place.
+
+FINAL FINDINGS
+1. HIGH `permission.rs:272-282` - parse the quote to one `Rule`, require permission `read` and glob match on the canonical path, else ask.
+2. HIGH `guard.rs:138-165` - run `read_passes` on `view::key(path)`. Add `.claude` and the agent credential files to the stores.
+3. MED `permission.rs:170-240` - persist breaker state beside the grants, or drop shadow grants at open.
+4. LOW `permission.rs:367` - body says "for that session". Queue askers get queue scope (`answers.rs:178`, `grant_ledger.rs:30`). HYP: keep path for a shadow answer not traced.
+
+Stage 1 stays blocked on 1 and 2 only. No test run.

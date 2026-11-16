@@ -1,0 +1,11 @@
+P4 R2, position 1 (a crash loses rows or prompts). I took over from glm, whose round 1 produced nothing, so I built the case again. Everything below is from reading at 9e9312b06. I ran no test.
+
+Rebuttals:
+- P2 (fable): Conceded. A committed transcript row is safe, given WAL+FULL, the append-only triggers and the single-transaction split. I drop non-transactional migration. But fable's own finding 1 is position 1's thesis: the loss is everything before the commit, and that is where a prompt lives. Agreed and adopted below as F1.
+- P3 (kimi): No report, nothing to rebut. My unverified guess is that the operator-only row point is real but outside loss.
+- `append_row_at` re-announce on resume (`harnessd/src/harness/open.rs:4269`): HYP. It is a duplicate display at worst, not loss. Dropped.
+
+FINAL findings:
+1. HIGH. `sessionlog/src/hub.rs:483` - `pop_front` syncs the journal, which drops the prompt at once. The prompt reaches the store only at `harnessd/src/harness/turns.rs:1713` (`persist`). Between the two: reseat, append, and a persist that can wait 30 min on a busy store. A restart in that window loses the prompt. Change: keep it journaled until `persist` returns Ok, then remove it.
+2. HIGH. `hub.rs:527-537` - submit accepts and acks before the journal thread saves. `journal_settled` (`hub.rs:809`) is called only from tests. On a locked store, `run_journal` retries every second (`hub.rs:445`). A crash in that time loses an accepted prompt that the head showed as queued. Change: make the submit ack wait on `journal_settled`, with a bound, and otherwise report the prompt as not saved.
+3. MEDIUM. `room/src/store.rs:351-356, 414-416` - the room append and the compaction (`write` tmp, `rename`) never fsync the file or its directory. All rooms on a host share one file. A power loss after compaction can leave it empty or truncated. A failed append exists only in memory until the next compaction. Change: `sync_all` the tmp file before `rename`, then fsync the directory.

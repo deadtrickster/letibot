@@ -1,0 +1,14 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Position 1 stands: round 1's f1 verified end to end, its list trimmed.
+
+P2 (deepseek/fable): concede F1 hard-TTL and F2 `retire_if_empty` (mine below); concede F3 (`/proc` fails open, medium); drop F4. Your "position 1 cannot make these" misses — my losses are subagent rows and package daemons; interactive-session exclusions and remote leases touch neither. Fable's HYP is verified (f2).
+
+P3: concede f1-f4, but `gc --now` exists (crates/letibot/tests/gc_now.rs:382) — only the unit is missing. My f1 needs no per-tree stamp: the launcher's reason is already on the wire (scripts/letibot:2510).
+
+FINAL
+1 HIGH `scripts/letibot:2668` interrupts before SIGTERM (:2590); `is_stopping` is set only at `registry.rs:2566`, so `subagent_record.rs:385` writes "killed", `decide():471` leaves it, `resumable():779` refuses. Restart loses live subagents, and a wake opens a turn in the 30 s window (`head.rs:559`). `restart_restore.rs:153` tests close-first. Fix: treat the launcher's reason as the daemon's own stop.
+2 HIGH (end HYP) `head.rs:716-723`: an idle parent's child is interrupted directly and settles Done (`children.rs:1366`) — a cut answer delivered as final.
+3 HIGH `reap.rs:159-164` precedes :181; `lifecycle.rs:460` keeps `created_ms`, so a reopened package closes and :717/:755 kill its jobs.
+4 HIGH `reap.rs:1175-1179` → :749 writes no Close; :755 kills each job every pass.
+5 MEDIUM `serve.rs:1627/1635` guarded only by `session_is_live` (`mergequeue.rs:416`); `tools/src/git.rs:346` `--force` deletes ignored files.
+6 MEDIUM `remote.rs:173` has one caller (`disks.rs:609`); no `letibot-gc.timer`; `RuntimeMaxSec` never exported (`scripts/letibot:323`).

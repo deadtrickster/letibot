@@ -1,0 +1,20 @@
+[model: glm-coding (the preset's default model)]
+REBUTTALS
+
+P2-r2 (fable): f1 conceded by them, verified by me end to end. Their HYP holds: `Registry::list` is keep-all (registry.rs:2271-2272), so a running child is also interrupted in its own session; fold into fix 1's test. Their "bare SIGTERM is guarded" is exactly why the launcher path is the bug.
+
+P2-r1 (deepseek): F1 is my finding 2, take. F2 is my 5, take. F3 verified in code (in_use.rs:58 `read_dir(...).ok()?` → None; :64 skips unreadable links — fail-open), keep medium, folded into 5's fix. F4 accepted as low, not minimal.
+
+P3: f1+f2 are my 3, take (grep: no timer, no OnUnitActiveSec, no exporter). f4 is U1's root; the stamp fixes both. f5 conceded by all.
+
+FINAL
+
+1. HIGH. scripts/letibot:2668 interrupts before the signal (stop_one kill at :2590, called :2672). Chain: head.rs:714-724 → hub_io.rs:262 → children.rs:3215-3222 → :360-366 → subagent_record.rs:385-388; `is_stopping` is set only in `Registry::close` (registry.rs:2566), after SIGTERM. Live subagents are recorded "killed" and never resumed. Fix: mark the stop over the protocol before interrupting ("stop-force" already travels, head.rs:710) or signal first; test `--restart` with a child mid-turn.
+
+2. HIGH. Hard TTL clocks from `created_ms` and is checked before `starting` and `busy` (reap.rs:159-168 vs :169, :181); reopen preserves it (lifecycle.rs:459-461, owners.rs:593-598). A package resumed past 24h (lifecycle.rs:433) is closed mid-turn, jobs killed (reap.rs:717, :755). Doc lifecycle.md:585 says "or last reopen". Fix: stamp `live_since_ms`.
+
+3. HIGH. lifecycle.md:18, :586, :807 promise `letibot-gc.timer`; :585 promises `RuntimeMaxSec=`. Neither exists: `LETIBOT_SCOPE_RUNTIME_MAX` is read only at scripts/letibot:295, :323-325, never exported. Ship both or strike the doc.
+
+4. HIGH. reap.rs:1175-1179 (self-keep) plus :749-751: an own-daemon close stays `Closing` forever and `end_processes` (:755) kills each new job every pass. Fix: write `Close` when the only compute left is this process's own daemon.
+
+5. MEDIUM. git.rs:846-863 `retire_if_empty` deletes tree and branch on commit proof alone; `why_kept` is asked at serve.rs:1300-1302, :1455-1471 and work.rs:205 but not here, and its `/proc` half fails open (in_use.rs:58). Thread `in_use` in.

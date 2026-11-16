@@ -1,0 +1,21 @@
+P6 R2, position 3 (revised after read; refs at 9e9312b06, paths under crates/ unless noted). Round 1 had no kimi report. This is a fresh case.
+
+VERIFIED. The seven-resolver claim is low: at least nine hand-rolled XDG_CONFIG_HOME resolvers, and they disagree on the empty value.
+- Treat empty as unset: tools/src/lifecycle/config.rs:165-168, activation/src/lib.rs:127, plugins/src/paths.rs:36.
+- Take an empty string as a path: provider/src/keys.rs:195, tools/src/permission.rs:673, websearch/src/lib.rs:38, harnessd/src/modes.rs:41, tools/src/remote.rs:468. skill.rs:343 does the same but pushes both paths.
+- With XDG_CONFIG_HOME="" these resolve to "letibot/providers.toml", a path relative to the cwd. A test that sets it empty gets a miss or the wrong file, and each crate pins the right behaviour with its own test (plugins/src/trust.rs:1168, bridge/src/plugins.rs:286, tui sessions_pane.rs:1602, harnessd/src/plugins/tests.rs:559). That is the by-hand cost.
+- A shared test-env helper does not exist. Only provider/tests/env_door.rs and tools/tests/session_env.rs are local. I found no shared helper, so the claim holds.
+
+Against position 2 (fable):
+- Concede: scripts/gate-at.sh:54 really unsets XDG_CONFIG_HOME and moves HOME, so under that script the keys.rs and sudo_ask leaks do not happen.
+- Rebut "mostly sufficient": the merge-queue gate does not use that script. mergequeue/gate.rs:474-479 `apply` sets only target, tmp and jobs. The step is a plain `sh -c` (gate.rs:1219-1230) with no env_clear or env_remove, so it inherits the daemon's real HOME, XDG dirs and socket. Isolation lives in one script, not in the gate that lands code.
+- Under that gate, letibot/tests/sudo_ask.rs:86 (`Config::for_this_box`, which takes `default_socket_path()` at config.rs:1703) and harnessd/src/config/tests.rs:407 (`keys::resolve` on every preset) read the operator's real providers.toml. The test at :407 compares `resolve` against its own answer, so it is not a secret leak. It does make the result depend on the host.
+
+Against position 1 (glm): it is right about the queue gate, but the fix is not per-test. Disabling the leak at each call site repeats the nine-resolver problem.
+
+FINAL FINDINGS
+1. HIGH - mergequeue/gate.rs:474 `apply` and :1219. Run steps with the gate-at.sh env: a scratch HOME, XDG_DATA_HOME, XDG_STATE_HOME and XDG_RUNTIME_DIR, with XDG_CONFIG_HOME and LETIBOT_SOCKET removed. Better, make gate-at.sh and `apply` share one definition of that environment.
+2. MED - one `config_dir()` in a leaf crate that all nine resolvers call, with empty treated as unset. Targets: provider/src/keys.rs:195, tools/src/permission.rs:673, websearch/src/lib.rs:38, harnessd/src/modes.rs:41, tools/src/remote.rs:468, tools/src/builtins/skill.rs:343.
+3. MED - one test-env guard (RAII: save, set, restore) replacing the four per-crate copies listed above.
+4. LOW - harnessd/src/config/tests.rs:407 and letibot/tests/sudo_ask.rs:86. Give each a private HOME, so the result stops depending on the host's providers.toml.
+HYP - I did not check that every other daemon-spawned step lacks its own env scrub. I did not run any test.

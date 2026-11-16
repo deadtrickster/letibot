@@ -1,0 +1,12 @@
+[model: kimi-code-global (the preset's default model)]
+A7 position 3, round 2, 9e9312b06.
+
+P1: concede 1 (scripts/letibot:2668 interrupts before stop_one:2587; subagent_record.rs:385-388 sees is_stopping false, writes "killed"; decide() Leaves it), 2, 3 (reap.rs:158-163), 4, 5, 6 = my F1. P2's lease renewal does not rescue the hard TTL: close_due checks held_until_ms only (owners.rs:326-331), not lease_ms.
+
+P2: concede r2's 1 and 2; 3 stays HYP; 4 stands. Its round-1 "one predicate, not a redesign" is my point: judge (plan.rs:691-768) never asks in_use, work.rs:205 does, retire_if_empty (git.rs:846) asks nothing — the sites disagree today.
+
+FINAL
+1 HIGH. docs/lifecycle.md:18,586,807,969,1025 promise `letibot-gc.timer`; the only sweep is in-daemon (reap_pass.rs:28,173; cli.rs:1750). Ship it or say only a live daemon reaps.
+2 MED-HIGH. docs:856's RuntimeMaxSec is opt-in and exported by nothing (scripts/letibot:323-325). Derive it from hard_ttl_ms or strike the backstop.
+3 MED-HIGH. in_use.rs:58,64-66: unreadable /proc reads as "not in use", breaking d.4 rule 8 (docs:679); job/cgroup facts are never consulted. Keep on read failure; one predicate everywhere.
+4 MEDIUM. owners.rs:556-566 freezes closed_ms at the first close (lifecycle.rs:462-465); plan.rs:747 and work.rs:30 measure grace from it, so a reopened-then-closed owner's work goes at once — docs:979 promises otherwise. Stamp each close; keep the first-close record separately.

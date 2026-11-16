@@ -1,0 +1,28 @@
+P6 round 1, reviewer 2 (position 2: the isolation that exists is real and mostly sufficient). All refs at 9e9312b06, paths under crates/ unless noted.
+
+THESIS
+The stack gate is a real sandbox, not a convention. scripts/gate-at.sh:54-55 unsets XDG_CONFIG_HOME and XDG_CACHE_HOME, and moves HOME, XDG_DATA_HOME, XDG_STATE_HOME and XDG_RUNTIME_DIR. With XDG_CONFIG_HOME unset, provider/src/keys.rs:194-200 config_file resolves to the scratch home, where no providers.toml is linked (gate-at.sh:40). So position 1's sudo_ask and config/tests.rs:407 leaks cannot happen under this gate. Real-store access is opt-in at both call sites: turn/tests/restore.rs:18 and harnessd/tests/reprefill_feasibility.rs:19 through tokencore/src/apparatus.rs:108-129. I found no third test opening the real sessions.db. Both commits do what they say (f3fddd6b4: nine files; e6cafa02f: read_embeddings_in takes the data dir, HOME_ENV at harnessd/src/lib.rs:32). The remaining gaps are specific and each is a small fix. A workspace-wide test-env helper (position 3) is not required to close them.
+
+FINDINGS
+
+1. HIGH - the isolation is a property of one script, not of the merge gate. harnessd/src/mergequeue/gate.rs:474-479 StepEnv::apply sets only target, tmpdir and jobs. The step is `sh` at gate.rs:1219 with no env_clear, so it inherits the daemon's HOME, XDG dirs and LETIBOT_SOCKET. Scenario: the queue gate runs letibot/tests/sudo_ask.rs (Config::for_this_box at :86, no HOME or XDG_CONFIG_HOME override), which resolves the operator's providers.toml. Change: move the env block of gate-at.sh:32-55 into StepEnv::apply. Position 1 is right here.
+
+2. MEDIUM - gate-at.sh does not scrub LETIBOT_*. Line 54 removes two XDG vars only. docs/gate.md:110 relies on the caller's `env -i`. Scenario: the lead runs it from a seat, harnessd/src/harness/open.rs:1367-1373 has exported LETIBOT_SOCKET and LETIBOT_SESSION, and 14 of the 27 binary-spawning test files do not clear them (e.g. harnessd/tests/key_ask.rs, continue_picks.rs). Change: `env -i` inside the script with an explicit pass list.
+
+3. MEDIUM - the leak detector is not part of the verdict and its labels overlap. gate-at.sh:56 prints ISOLATED for stores under $G/home. Line 57 prints LEAKED for any sessions.db under $G, which includes $G/home. The exit code at :61 ignores both. Scenario: a new test forgets its data dir, writes $G/data/letibot/sessions.db, and the gate prints GREEN. Change: any store under $G/data, $G/state or $G/home exits 3. That enforces I18 mechanically, without a helper crate.
+
+4. MEDIUM - HOME_ENV serialises writers only. plugins/tests.rs:565-567 and mergequeue/git/tests.rs:1007 swap HOME and XDG_CONFIG_HOME under the lock. config/tests.rs:380-413 reads them twice (settings row, then keys::resolve(p, None, None) at :407) without it. Scenario: outside the gate, on a box with a real providers.toml, the swap lands between the two reads and the test fails with "disagrees with the answer". Change: take HOME_ENV in that test, or pass an explicit file. Cause traced by reading, not reproduced.
+
+5. LOW - keys.rs:195 accepts an empty XDG_CONFIG_HOME, so config_file becomes cwd-relative `letibot/providers.toml`. plugins/tests.rs:541-543 documents the same bug as fixed for the plugin reader. Change: filter empty.
+
+6. LOW - per-test coverage is uneven outside the gate. harnessd/tests/sudo_ask_live.rs:98 and stop_ends_runs.rs set HOME but not XDG_CONFIG_HOME. continue_picks, migrated_marker, store_split_* and askpass_from_tool_tree set only XDG_RUNTIME_DIR.
+
+CONCESSIONS
+- gate-at.sh:40-42 links the real `keys` and hosts.toml, so I17 is not met under the gate. This is deliberate (comment at :38), but it is a live credential in a test HOME.
+- gate-at.sh:55 omits LETIBOT_REQUIRE_APPARATUS, so I20 holds only on the AGENTS.md block and scripts/rrun:111.
+- tokencore/src/apparatus.rs:20-22 and :35-36 fall back to literal /home/dead/models paths, so moving HOME does not isolate models.
+- Agents run `cargo test -p` with the real HOME (AGENTS.md:126). Finding 6 matters most there.
+- To position 3: every resolver I traced follows HOME once XDG_CONFIG_HOME is unset, so one env block at the two gate entry points covers them. HYP: I did not trace all seven resolvers.
+- HYP: with HOME moved, the seat mask on `.config/letibot` (tools/src/exec/seatbelt.rs:90) follows the scratch home, which would leave the real directory unmasked for commands that tests spawn. Not verified.
+
+No test was run.

@@ -1,0 +1,19 @@
+P3 reviewer 2 (position 2), round 2, 9e9312b06. Paths under crates/harnessd/src/. Round 1 had no report, so this is a fresh case.
+
+REBUTTALS
+- P1.1 / P3.1 (rule not tied to the call): CONCEDE. `shadow/permission.rs:272-283` is substring-only and is never passed the path. `rules_of` `:476` lists every allow rule.
+- P1.2 (acting path stateless, never strict): fact conceded, harm rejected. For the permission job `strict` adds only the listed-rule check (`verdict.rs:479-487`), and `acting_rule` repeats it against the harness's own `self.rules`, not `data`. A fake rule planted in `arguments` passes `verify` and still fails `:281`. Stateless also means no history, so a resumed injection (a489bc75a) cannot reach the acting path.
+- P3 (model decides nothing): half conceded. Today its `allow` is the only link between rule and path. That is the bug, not proof of redundancy.
+
+HOLDS, verified
+- Never denies: `Decision` is Allow or Ask only (`verdict.rs:459-466`).
+- Timeout, void or stale gives no grant (`permission.rs:274-279`).
+- Scope: queue seat, single `path` argument, read class, `grant_ro` offered (`answers.rs:432-440`). `read_passes` (`guard.rs:140`) runs before the model.
+- Role comes from the daemon's asker table (`answers.rs:420`), not from asker text.
+- No grant without a store (`permission.rs:407-411`).
+
+FINAL FINDINGS
+1. HIGH `permission.rs:281` - pass `path`, require a listed read rule whose pattern matches it via the gate's matcher. Add the cross-rule test.
+2. MED `permission.rs:176-199` - breaker is in-memory and resets on restart. A granted shape posts no card, so only a revoke counts. Persist the count.
+3. LOW, HYP `guard.rs:140-165` - `read_passes` is lexical. A symlink under an allowed path is not resolved.
+4. LOW `permission.rs:312-316` - asker-controlled `arguments` and `reading` sit unspanned in `data`, so they are quotable as `evidence`.

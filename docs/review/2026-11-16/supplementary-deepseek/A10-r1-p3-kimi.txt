@@ -1,0 +1,22 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+THESIS
+
+Positions 1 and 2 both argue about *what the extension surface decides*; neither notices that the machinery is wrong at three specific points, so the argument over policy is moot until they are fixed. The evidence is not a missing check — it is a check the tree applies everywhere except here, a lock held across a network call, and a trust bit attached to the wrong noun.
+
+FINDINGS
+
+1. The MCP stdio spawn is the one spawn in the tree that inherits the daemon's environment. `crates/mcp/src/wire.rs:80-86` builds `Command::new(command).args(args).envs(env)` with no `env_clear()`, while every other spawn clears and re-states (`tools/src/exec/host.rs:2305`, `tools/src/exec/shell.rs:1196`, `tools/src/exec/term.rs:263`). Provider keys are read from the process env (`provider/src/keys.rs:236-240`), so a third-party server binary — or a checkout's `.mcp.json` command under a `[mcp_projects]` prefix (`harnessd/src/mcp.rs:36-57`, `leticode-config/src/lib.rs:1273`) — receives every token the daemon holds, unconfined, with a writable `cwd`. **high.** Change: `env_clear()` + explicit `env` + `PATH`, plus the same BASH_ENV-style filter `HostProcesses` uses.
+
+2. The MCP call path holds a server-wide mutex across the call and never retires a wedged server. `crates/mcp/src/lib.rs:310-311` takes `Mutex<Link>` and holds it through `client.call` (60 s default, `:23`); there is no deadline on the acquire, so one slow `tools/call` queues every session on that server for N×60 s. A timeout becomes plain `Transport` (`:157-162` sets `dead` only on `Gone`) and `wire.rs:200-220` sends no `notifications/cancelled`, so the server keeps working and the model retries a call that may already have run — double execution with no warning. **high.** Change: per-call id + cancel on timeout, mark timeout-uncertain in the tool result, and either a per-call connection or a queued tokio-style deadline.
+
+3. Trust governs what a layer may *do*, never what it may *decide*. `plugins/src/stack.rs:140-149` restricts exactly three hooks (`adjudicate_floor`, `review_brief`, `review_verdict`) from a session's own layer, and `harnessd/src/plugins/hook.rs:16-18` / `:390-404` (`answers`, `answering`) never read `Layer::trusted`. A project-scope layer is a file in the checkout (`plugins/src/paths.rs:85`), so an unpinned layer answering `limit_decide` (`plugin-sdk/src/limit.rs:11`) parks, switches models or forks the conversation (`harnessd/src/harness/limit_hook.rs:105`), and answers `steer_`/`compact_`. HYP: no test exercises an unpinned steer/compact/limit answer. **high.** Change: a `DECIDES` list beside `NOT_A_SESSIONS` requiring a pin, and `ask` refusing an untrusted layer for those kinds.
+
+4. The hook list is four hand-kept arrays with no cross-check: `plugins/src/lib.rs:112-155` (`HOOK_PREFIXES` 20, `SERVED_KINDS` 19, `UNSERVED_KINDS` 1), duplicated into the guest at `plugin-sdk/src/lib.rs:57-78`. Nothing asserts the partition; a prefix added to one and not the other is a hook that silently never fires. **medium.** Change: one const, `SERVED ∪ UNSERVED == PREFIXES` asserted.
+
+5. `RanoModule::call` (`plugins-rano/src/lib.rs:202-210`) holds a mutex across the module call, and a built-in module is shared process-wide by content hash (`:135-162`). Every session's `pane_`, `command_`, `on_tool_call` and `notice_` on that layer serialises behind the others, bounded only by fuel — measured at 33M of 50M for one pane. **medium.**
+
+6. Test surface does not cover the seams that decide: `crates/mcp/` has 16 tests for two transports and 860 lines, none for timeout, hang or contention; `harnessd/src/plugins/conditions.rs` has zero in-file tests for 351 lines including the gate call at `:182-229`.
+
+CONCESSIONS
+
+Fuel and memory caps are real; the shadow gate before a rebuilt module answers is real; the two MCP transports do have wire-level fixtures; a project layer exists only if a checkout carries one. Position 1 is right that unpinned content decides things — but its fix (another check) leaves findings 1 and 2 untouched. Position 2 is right that the caps bound *resources*; they bound neither credentials nor decisions, which is what 1 and 3 are about.

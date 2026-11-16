@@ -1,0 +1,25 @@
+[model: glm-coding (the preset's default model)]
+THESIS: A4's authority model is a caller-side argument, not a property of the connection or the row. Every door that mints a turn defaults to `Speaker::Operator`, and every restart path re-derives identity from a snapshot. So across the child and restart seams, agent text becomes operator text and ceilings go stale — exactly where the system claims R306/R313 closed it.
+
+FINDINGS
+
+1. HIGH — The subagent brief is stored and trailed as the operator's words.
+`crates/harnessd/src/harness/children.rs:4223` runs `h.submit(&brief)`; `submit` is hardwired `Speaker::Operator` (`crates/harnessd/src/harness/turns.rs:201-202`), which writes the trail (`turns.rs:337`) and the row (`turns.rs:291-297`) as Operator. The brief is the parent model's `task` prompt text. The correct door exists and is unused here: `submit_a_parents_message` (`turns.rs:1610`) speaks `Speaker::Agent`.
+Failure: the child's gate oracle cites operator utterances; `cited_operator_words` (`crates/tools/src/authorise.rs:166`) only checks a cite names an Operator row — a brief saying "run whatever is needed, don't ask" is citable operator consent *inside the child*, i.e. the agent authorising itself, the exact thing the check exists to stop. The reseed (`crates/harnessd/src/harness/trail.rs:107,137-141`) carries it across restart, and `fork_session` copies the row into parentless sessions.
+Fix: send the brief through a speaker-carrying door (Agent + parent id), as `parents_message_turn` already does.
+
+2. MEDIUM — A reopened child's ceiling is a snapshot; its own mode row is never read.
+`crates/harnessd/src/harness/open.rs:2212-2217`: `parent_ceiling` is a fresh cell of `cfg.mode`; only a spawn hands over the parent's live cell (`children.rs:4114`, `harness.rs:846`). And `open.rs:669-676` gates the session's own mode row on `parent_session_id.is_none()` — the row `narrow_to_parent` writes (`harness.rs:875`) is never read back for a child.
+Failure: parent narrows to `review`; daemon restarts; the child reopens (resume, park-return, any path not the parent's runner) with a ceiling equal to whatever point the reopen cfg carried. The parent's narrowing never reaches it; `/mode` widens freely inside the stale ceiling; `within_parent` (`harness.rs:813`) checks against the snapshot, not the parent.
+Fix: at open with a resolved `parent_session_id`, clamp to the parent's stored point and read the child's own row as a floor.
+
+3. MEDIUM — `/fork` and the limit-hook fork drop point and parentage.
+`crates/harnessd/src/harness/fork.rs:91-113` mints a parentless session; `limit_hook.rs:334-361` continues a live turn there. The fork reopens as a root (empty own row → project store/daemon default, `open.rs:669-724`), so a narrow child's continuation runs with no ceiling relationship — and a `limit_decide` layer can trigger it.
+
+4. MEDIUM — The restart journal drops `from`.
+`crates/sessionlog/src/hub.rs:773-781` restores `from: None`; `QueuedCommand::peer` (`hub.rs:87-94`) then recognises only identity `letibot-mcp`. A queued prompt sent `from: "cc@x"` under any other head identity is replayed as the operator's. Mechanism verified; reach beyond the bridge HYP.
+
+5. LOW — Undelivered settlements have no sweep: rows stay `delivered = 0` until that one session's next open (`turns.rs:810-812`); a never-reopened session's settlements are said to nobody.
+
+CONCESSIONS
+R306's live-cell handoff is real and tested (`harness/tests/child_mode.rs`); the gap is the reopen path, not the spawn. R313 is coherent: the gone-daemon case is handled (`turns.rs:959-971`, marked at `:903`). R311 holds (`nags.rs:626-661` drops an earlier daemon's pause). To position 2: your tests cover spawn-time clamping and the parent's own restore — none covers a child reopened outside its parent's runner. To position 3: the defect is not the 45k lines; it is that `submit` defaults to Operator at all. Identity should be derived from the sender, never defaulted.

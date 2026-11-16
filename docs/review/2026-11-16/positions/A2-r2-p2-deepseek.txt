@@ -1,0 +1,17 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+POSITION 2 (takeover): the ladder's structure holds; the text tables under it do not.
+
+P1(glm): F1 partly wrong — `<?>` pooling is real (shell.rs:2490,2518-2521), but `"$(git …)/config"` adds a `git` stage, so the two shapes differ. F2 concede: project_code.rs:143-152 knows `python3 -m` only, no `npx`; seed allows `npx vitest*` (permission.json:90). F3 concede (adjudicate.rs:571-587 ignores mode.grants). F4 reject: :3555-3579 is automode's definition, bounded by :3559.
+
+P3(kimi): F1 concede — `write_or_exec_flag` (:509-528) knows sed/sort/git/tree/xxd only; `rg*` (:103) admits `rg --pre`, `less*` (:144) `less -o`. F2 wrong as stated: the key includes scope (adjudicate.rs:337-352), so /tmp→project never matches; only an in-project pair stands. F3 concede — intent.rs:2236 needs the literal `letibot/<name>`. F4 concede, LOW (:408 vs :417). F5 reject: :3362 falls through on AlwaysAsk.
+
+P2(r1-p2): findings 1,2,4,5,6 concede. Revise 3: `xxd` IS covered (:524); the gaps are operand-writers (`uniq`), `rg --pre`, and `npx`.
+
+FINAL
+1. HIGH permission.rs:509-528 + config/permission.json:90,103,124,144 — five-program flag table vs ~60 seed rows. Change: one table row per seeded program; a test iterating the seed, not five fixtures.
+2. HIGH project_code.rs:143-152 — `npx` absent, `python3 -c` unnamed, so adjudicate.rs:3363 admits `npx vitest*` unasked. Change: add both.
+3. HIGH intent.rs:2236 — `changes_its_own_rules` needs `letibot/<file>`; `cd ~/.config/letibot && cp ./x permission.json` fires nothing. Change: compare resolved targets (under()).
+4. MEDIUM code/shell.rs:2537 — redirect target holed; one approval of `echo … > <file>` admits any in-project redirect (HYP: class equality unrun). Change: keep literal targets.
+5. LOW adjudicate.rs:408/417 twins; :533≡:596; docs/boundary-and-adjudication.md:1139,1144 stale.
+
+Not executed: bash refused (gate:timeout), so all findings are read-only.

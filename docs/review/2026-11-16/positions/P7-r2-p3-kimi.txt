@@ -1,0 +1,15 @@
+[model: kimi-code-global (the preset's default model)]
+Verified in-tree at 9e9312b06; no files changed.
+
+REBUTTALS
+P1#1: defect conceded, repair rejected. Adding three words to `scripts/letibot:2737` keeps the whitelist; `holds`/`gc` already route, and bare `where` is advertised (:897, :931) while only `--where` is tested (tests/launcher.sh:1274). A launcher with no verb table cannot fall out of it.
+P1#2: symptom right, fix incomplete. :374 is not the only copy — :377-391 re-implements the store's `sessions.db`/split folding, and :3002 passes `--store`, so bash's path overrides `bridge/src/daemon.rs:90-107` (XDG). XDG at :374 still leaves the folding duplicated.
+P1#4: conceded; :2999 is unbounded, and the 300 s wait is a give-up, not a bound.
+P2#1: accept as a regression test, not as the fix — a loop pins only the words someone remembered. P2's "60 lines" is already broken by its own #3 and my #5; P2 then conceded D4 (delete the awk). P2#2, P2#5: no dispute.
+
+FINDINGS
+1. HIGH `scripts/letibot:371` re-derives the socket hash that `crates/letibot/src/whereis.rs:3-6` forbids any caller to re-derive. Change: ask `where --json`.
+2. HIGH `scripts/letibot:2737` misroutes `hold`, `release`, bare `where` (`crates/letibot/src/main.rs:299-307`) into `--prompt "$*"` (:2993-3006). Change: exec the multicall for any first word.
+3. HIGH three providers resolvers: :1095 (ignores XDG), `crates/provider/src/keys.rs:194-201` (empty XDG yields the relative `letibot/providers.toml`), `crates/plugins/src/paths.rs:53-57` (filters it). Change: one resolver, launcher asks it.
+4. MEDIUM :377-391 duplicates `Store::open`'s file-vs-directory rules. Change: delete; let harnessd resolve its own store.
+5. MEDIUM awk readers :1100-1112, :1124-1170 diverge from `parse_file` (comments, duplicate blocks, malformed lines). Change: delete.

@@ -1,0 +1,19 @@
+A3 R2, reviewer 2 (position 2: the boundary is real). No A3-r1-p2 file exists, so there is nothing to defend - position argued fresh. No test run.
+
+REBUTTALS / CONCESSIONS
+- P1-F2: conceded, VERIFIED. `exec/fence.rs:96-103` returns before the tight `inside` check at `:119`. bwrap skips the store when it is not Inside (`confine.rs:2826`). Fence wider than shell.
+- P1-F1 / P3-3: conceded for wide. Fence is `seat.masked` only (`fence.rs:58`).
+- P1-F3 / P3-5: conceded. `--unshare-net` only when egress denied (`confine.rs:2703`).
+- P1-F4 / P3-2: conceded, but the mask is not a boundary. Fix is keeping the token out, not more masking.
+- P3-1: half. Peer ancestry is P2's record already. Worse than stated: wide is `--dev-bind / /` (`confine.rs:2724`), so the tmux, systemd-user and docker sockets leave bwrap entirely and every wide mask is void. HYP, not executed.
+- P3-4: half. `tests/confine.rs:16-26` asserts the refusal branch, not vacuous. Gate omission is P6 I20.
+- R315: both concede, agreed.
+- Holds: tight seat. `--clearenv` (`:2944`), userns sealed (`:2710`), pid/ipc unshared (`:2699`), secrets on fd, daemon sockets hidden (`backend.rs:556`).
+
+FINAL
+1. HIGH `exec/fence.rs:96-103` - tight view: refuse store outside `own` unless a root holds it. Test beside `:321`.
+2. HIGH (HYP) `exec/confine.rs:2724` - wide: mask `/run/user/<uid>/{bus,systemd}`, `/tmp/tmux-*`, docker socket, or document wide masks as advisory.
+3. HIGH `exec/fence.rs:58` - build from `intent::secret_dirs()` plus names/extensions, add `.claude`, `.codex`. One equality test.
+4. MEDIUM `exec/seat.rs:493` - tight egress `Denied` unless granted.
+5. MEDIUM `scripts/gate-at.sh:55` - set `LETIBOT_REQUIRE_APPARATUS=1`.
+6. LOW `exec/seat.rs:23` - call the mask cosmetic in docs.

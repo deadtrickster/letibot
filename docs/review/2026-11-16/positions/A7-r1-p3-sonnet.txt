@@ -1,0 +1,44 @@
+A7 reviewer 3 (position 3), round 1, 9e9312b06.
+
+THESIS
+The lifecycle design says one fact decides an owner's life: "this tree is owned and alive". The code has no such fact and no second reaper. Liveness is rebuilt per call from owner rows, `process` rows in per-project DBs, cgroups, `/proc/*/cwd` links, daemon records matched by repo path, and git state. Both other positions patch holes in that rebuild. The design doc tells operators two backstops exist that do not. I build on P5 (A1, A2, U1, U2, A3) and do not repeat it.
+
+FINDINGS
+
+1. HIGH. `letibot-gc.timer` does not exist.
+- docs/lifecycle.md:18 says the reaper is "a box-level program run by a systemd user timer and by the daemons". :586 names a "box reaper" for a gone daemon. :807 says "a systemd user timer `letibot-gc.timer` every 10 minutes on every box (the path that needs no daemon)".
+- Grep of crates, scripts and docs finds no unit, no `OnUnitActiveSec` and no installer. The only hit is a test fixture string (crates/tools/src/lifecycle/systemd.rs:204).
+- The only periodic reaper is `reap_pass::SWEEP` (harnessd/src/reap_pass.rs:28, :173-204), which runs inside a daemon.
+- Scenario: a package daemon is SIGKILLed or OOM-killed while its VM, docker containers or remote holdings live. No daemon runs a pass, and `vm_reap::pass` is also daemon-driven (vm_reap.rs:494). Nothing reaps until someone starts another daemon or types `letibot gc`.
+- Change: either ship the timer and `letibot gc --now`, or strike d.6, :18, :586 and :807 and say plainly that only a live daemon reaps.
+
+2. HIGH. The `RuntimeMaxSec` hard-TTL backstop is never set.
+- docs/lifecycle.md:585, :738 and :855-857 say a package daemon adds `-p RuntimeMaxSec=<hard TTL + 1 h>`, "enforced by the user manager, so it holds with every letibot process wedged".
+- scripts/letibot:295-325 adds it only when `LETIBOT_SCOPE_RUNTIME_MAX` is exported by the caller.
+- That name appears only in scripts/letibot and tests/launcher.sh. No Rust code exports it.
+- The reaper's own TTL check (reap.rs:158-164) is therefore the only bound. A wedged reaper means no bound at all.
+- Change: have the daemon spawner compute and export it from `hard_ttl_ms`, or remove the claim.
+
+3. MEDIUM-HIGH. The two checks that keep a tree alive read different facts and fail open.
+- `in_use::why_kept` (tools/src/lifecycle/in_use.rs:13-21) asks `store.writers_under` (the `session_writer` table) and then scans `/proc/*/cwd`.
+- `cwd_inside` (:58-66) returns None when `/proc` is unreadable, and skips any process whose cwd link it cannot read. That includes another user's process and a process in another PID namespace or a sandbox. The comment (:55-56) calls that "not one of ours".
+- This is a separate, unlogged "not in use" answer, distinct from P5's I29 finding. The `process` table and the cgroup (`busy()`, reap.rs:433-451) are not consulted at all.
+- Scenario: the gc plan or the merge queue removes a tree under a shell or editor run in a bwrap or VM-shared mount. Under a different uid or a hidepid mount the link is unreadable and the tree is judged free.
+- Change: make `/proc` read failure return "keep, cannot tell". Add the `holding` and `process` rows as a third input.
+
+4. MEDIUM. `daemons_of` (tools/src/lifecycle.rs:859-872) matches daemon records to an owner by canonicalized repo path, and that is the only link between the two.
+- P5 U1 shows the consequence: an own-daemon idle close becomes `Closing` forever.
+- Beyond U1, a worktree daemon spawned from another folder writes under a different `store_key`. Doc :608-614 admits this and relies on `open_job_elsewhere`, which is a per-call scan of every project DB.
+- Two daemons on one path, or a symlink that canonicalizes differently on a remote host, break the match silently. `unwrap_or_else` falls back to the raw path on a canonicalize error.
+- Change: store `daemon_id` or pid and start time on the owner row at spawn (P5's stamp).
+
+5. LOW. docs/lifecycle.md:585 says "since creation or last reopen". The code uses `created_ms` only (reap.rs:161). Already P5 A1 and conceded.
+
+ANTICIPATING THE OTHER POSITIONS
+- Position 1 is right on the hard-TTL-on-reopen and parent-before-busy points, which P5 verified. These are symptoms of the split in findings 3 and 4.
+- Position 2 lists lease, busy and served-by, restart markers, `why_kept` and gc plans as handled. But `why_kept` fails open on unreadable `/proc` (finding 3), and the two things that make the design survive a dead daemon (findings 1 and 2) are not built. Every "handled" case assumes a live daemon with a working sweep.
+
+CONCESSIONS
+- The comparison tables in the doc that mention `cleanup_ttl_days`, `auto_stop_machines` and `kill_all` describe other harnesses, so they are not stale claims. The `vm_reap::daemon_of`, `teardown_session`, `supervise.rs:14` and `commit_proof` references exist.
+- Position 2's R313 and restart-marker machinery is real and tested. I did not trace it.
+- HYP: whether the daemon's own idle exit bounds the unreaped state in finding 1 (P5 already left this open). I ran no test.

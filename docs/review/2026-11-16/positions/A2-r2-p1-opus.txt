@@ -1,0 +1,11 @@
+A2 r2, position 1 (the gate admits what it must ask about). Refs are at 9e9312b06, under crates/tools/src.
+
+Position 2. I concede the structure. Every admitting arm re-checks the tier, and R305 holds. Its finding 1, the stale doc order, I also concede. I rebut "the ladder holds". The arms check the tier but never `GrantScope`, so a Once point grants anyway (findings 1 and 2).
+
+Position 3 produced no report. Its two-builders claim is worse than it says: the two builders are identical.
+
+FINDINGS
+1. HIGH. `adjudicate.rs:3594-3601` records a shape on any admitting human answer, "Allow this one" included. `:3493` then admits later calls of that shape unasked. Shapes are persisted per workspace (tokencore `store.rs:4195`), seeded at restart and kept across `set_mode` (`:3098`). There is no revoke. Proof: `grants.rs:135 a_shape_the_operator_approved_is_not_asked_twice` runs at `UNSEEN_PROJECT` = `ALWAYS_ASK`, a Once point (`mode.rs:651`). I ran it and it passed: one allow_once, then a second call admitted. Change: record a shape only from AllowSession at a Session point, clear shapes on `set_mode`, and add a revoke path.
+2. MEDIUM. `GrantScope::Once` changes nothing. Its only read is at `:2417`, which picks between `permission_options` (`:523`) and `once_only_options` (`:596`), and those two are the same. The recording site at `:3640` ignores scope. Change: a Once point drops the session rung and refuses AllowSession. Otherwise delete Once and fix `mode.rs:55`.
+3. MEDIUM. Some seed rows run code and escape both guards. `write_or_exec_flag` (`permission.rs:506`) has no `rg` arm, and `--pre` appears nowhere in the code. So `rg --pre=./x.sh y .` is admitted at `:3363` on an unconfined host. `cargo doc*` is missing from `project_code.rs:112`. `ctest*` is missing too, and so are `npx vitest*` and `npx jest*` (HYP: the npx Network intent may still ask). Change: add `rg --pre`/`--pre-glob`, `doc`, `ctest` and `npx` to those tables.
+4. LOW. The doc order, as in position 2's finding 1.

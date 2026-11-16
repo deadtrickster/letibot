@@ -1,0 +1,16 @@
+[model: glm-coding (the preset's default model)]
+A5 R2, position 1. Read at 9e9312b06. No test run.
+
+REBUTTALS
+- P2 r1 (deepseek): the lease re-read (queues.rs:1377) holds, but it guards skew, not a mid-migration open. "The window is benign" is wrong: between `DELETE` (store.rs:1870) and `INSERT` (:1871) a concurrent opener reads `found = None` and :1894 runs unfiltered `SCHEMA_SQL` — project tables plus the append-only triggers into a split `shared.db`. Not a re-run.
+- P2 r2 (fable): carve concession accepted verbatim. MIGRATION: accept MEDIUM on rows (arms guarded, only v23 deletes, :2329); keep the stray-schema consequence above, same one-tx fix. Their #3 (guard tests first column of a multi-column batch) accepted, subsumed by that tx.
+- P3: #1 VERIFIED — `migrate` (store.rs:1894-1911) never calls `batches()` (split.rs:160). #2 verified in shape: the two replaces (split.rs:307-310) cover all five current occurrences (store.rs:337-2158); fragility, not corruption. #3 VERIFIED — v47 (store.rs:2586) and v50 (:2620) unguarded; probes `.unwrap_or(false)` (:2592-2596). #4 verified (v21 :2225, v20 :2241, v19 :2276) — harmless, dropped. #5: one lock is smaller than the cut.
+
+FINAL FINDINGS
+1. HIGH `migrate_split.rs:227-299` — claims checked once (:227), copy unlocked (:242), delete keyed by staged transcript id (:299), triggers dropped (:314-317): rows committed after the check are deleted uncopied. Fix: BEGIN IMMEDIATE on `from` before staging, recheck claims inside.
+2. MEDIUM `store.rs:1867-1874` — migrate, DELETE, INSERT autocommit; wrap in one IMMEDIATE tx re-reading the version.
+3. MEDIUM `store.rs:2586`, `:2620` — unguarded v47/v50 create `recall_unit`/`session_grant` (PROJECT_TABLES, split.rs:80,82) in shared.db. Guard with `split::holds`.
+4. MEDIUM `split_coverage_tests.rs:13-31` — SOURCES omits grants.rs; derive from the mod list.
+5. MEDIUM `transfer.rs:312-338` — two-file import commits, crash between blocks retry; pending marker.
+6. MEDIUM `split.rs:160` vs `store.rs:1894` — two hand-kept batch lists (P3#1).
+7. LOW `split.rs:307-310` — exact-string FK strip, no spelling test (P3#2).

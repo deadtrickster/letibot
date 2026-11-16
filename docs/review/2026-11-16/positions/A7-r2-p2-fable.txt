@@ -1,0 +1,15 @@
+A7 position 2, round 2, 9e9312b06. Round 1 produced no report, so this is a first statement.
+
+REBUTTALS
+P1 f1: CONCEDE, verified. `scripts/letibot:2669` interrupts before `stop_one` (:2590). The parent's Interrupt (`harnessd/src/harness/hub_io.rs:262`) reaches `stop_all` → `TaskSlot::kill` (`children.rs:3215`, :360) → `SubagentRecord::killed` (`harnessd/src/subagent_record.rs:385`). The `is_stopping()` guard (:386) is false, so "killed" is written, and :779 refuses to bring it back. The guard only covers a bare SIGTERM. The launcher, which is the normal path, bypasses it. No reason-aware handling exists: daemon-side grep for "stop-force" / "letibot --restart" finds only `sessionlog/src/origin.rs:459`.
+HYP addition: a background child whose parent is idle is interrupted directly (`tui/src/head.rs:716-723`), is not marked killed, and settles "done" with a cut answer (`subagent_record.rs:281-285`).
+P3 f1: CONCEDE, verified. No `.timer`, `OnUnitActiveSec` or installer in crates or scripts. `docs/lifecycle.md:807` and :1025 promise it.
+P3 thesis: PARTLY. `why_kept` has only four call sites (`mergequeue/serve.rs:1301,1456,3481`, `lifecycle/work.rs:205`), which supports P5 A2. It argues for one predicate, not a redesign.
+
+What holds: the bare-signal path. `killed()` and `settled()` both defer to `is_stopping` (:386, :271).
+
+FINAL
+1. HIGH. `scripts/letibot:2669`, `subagent_record.rs:385`. Mark the stop as the daemon's before the interrupt: a protocol "stopping" command, or skip the record when the opener is `stop-force`. Test: `--restart` with a child mid-turn resumes it.
+2. HIGH. `docs/lifecycle.md:18,586,807,1025`. Ship `letibot-gc.timer` or strike the claims.
+3. MEDIUM (HYP). `head.rs:716-723`. A directly interrupted child is recorded "done". Same fix as 1.
+4. P5 A1, U1, A2, U2 stand. Nothing to add.

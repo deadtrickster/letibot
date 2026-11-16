@@ -1,0 +1,14 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+POSITION 1 (r1 opus). Conceded: A1, A3, A5, A6. Rebutted: your floor needs a per-variant `since` table nobody keeps, and 75 is already wrong — the panel's own two lost seats were `Speaker::Peer` (`crates/transcript/src/lib.rs:61`), added by `7ab2f03fd` with `PROTOCOL_VERSION` 74 on both sides, not `TodoBy::Peer` at 77 as the synthesis says. A floor without translation also exiles every older bridge for good. Your #5 is not a defect: the ack cursor is per-head and monotonic; the real gap is that `Unreadable` never asks for `Resync`.
+
+POSITION 2 (r2 fable). Conceded: lock, stale doc, snapshot translation (#3 is my #1). Rebutted: "loud, not silent" is loud only to the party already dying; the daemon emits the frame and has no surface, and read-only locking never engages because the head never seats.
+
+MINE, revised. r1 #2 withdrawn: `tui/src/app/events/transcript.rs:146` drops an absent decision. r1 #1's direction was wrong: current-build-decodes-old-bytes cannot catch this; the corpus must run the old decoder over new bytes.
+
+FINAL
+1. HIGH `sessionlog/src/server.rs:2219`,`:2302` — `Hello`/`Resync` snapshots go out untranslated; `Speaker::Peer` (`transcript/src/lib.rs:61`) and `TurnState::Parked` (`view.rs:185`) are hard decode failures at `client.rs:79-86`. Change: compat owns the snapshot, driven by a per-variant `since` table that also computes the floor.
+2. HIGH `server.rs:712` before the peer check at `:747`; unbounded `wire.rs:62`.
+3. HIGH `protocol/tests.rs:939` and `tests/late_head.rs:357` pass a version number to the current decoder, so no skew test can fail. Change: recorded frames per version, decoded by the old build.
+4. MED `bridge/src/head.rs:2362`,`:2252` — no send gate.
+5. MED room: `MayPrompt` (`wire.rs:261`) and `family` (`:170`) shipped under 12; an old coordinator closes the socket (`server.rs:4519`) and drops family mail silently. Bump to 13.
+6. LOW `protocol.rs:11-13` doc says refuse; code accepts.

@@ -1,0 +1,21 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+**Thesis.** The queue's landing *mechanics* are careful; what fails is what it *tells you happened*. Three paths report a landing that did not do what the words say, and one deletes a live tree. The bar is: every `landed` row must be reproducible from origin plus `target/release`.
+
+**F1 — the install step is structurally impossible off-box, and the row still says Landed. High.**
+`start_gate(GateFor::Install, …)` (serve.rs:3037-3050) reuses the same remote runner; the gate host keeps a **bare** store (`src = {dir}/src.git`, gate_host.rs:393) and the worktree is a `git worktree add` of it (gate_host.rs:1104-1110). `scripts/install-gate-build.sh:34-43` derives the destination from `git-common-dir` and **refuses anything that is not `*/.git`** → exit 1, always, on a host. `finish_install` (serve.rs:3363-3377) then writes " The install did not complete" but still calls `landed()` → `MergeState::Landed`, `set_target_health(Green)` (serve.rs:3408-3456). Same for `gate_in = "firecode"` ("nothing copied back", docs/gate.md:37-39). Failure: operator sets `[queue] gate_host`; every landing lands, nothing ever appears in `target/release`, they run `letibot --stop && letibot` and get the old binary while `queue status` says landed. Change: run the install steps on the box that owns `target/release` (or make `install_gate_build` a local-only step and refuse `gate_host` + install at config load, loudly), and mark health from the push result, not from the local ref.
+
+**F2 — `retire_if_empty` removes a worktree with no liveness check. High.**
+git.rs:846-863 proves only "no commit over base" and hands to `retire_branch`/`remove_worktree` (tools/src/git.rs:322, which asks only about *dirty*). The queue's only guard is its own registry (serve.rs:1627-1635); `children.rs:3555` asks nothing. `why_kept` — built for exactly this blindness (serve.rs:1301, :1456, :3481) — is not on this path. Failure: a Claude-Code/bridge seat with its own daemon has a clean, uncommitted worktree on the shared FS; it is superseded by a moved red tip; the queue daemon has never heard of that session → the tree is `remove --force`d under a running build, every later tool call ENOENT. Change: `in_use::why_kept` before `retire_branch`, and a store-side writer row.
+
+**F3 — `gate-at.sh` judges a log, not a run. Medium-high.**
+`set -u` only; line 54-55 discards `cargo test`'s exit status; 58-64 decide on `ok ≥ 140` and `bad = 0`. Failure: the run is OOM-killed or the disk fills (documented repeatedly on this box) after 140 suites of ~350; the log ends mid-way, no `^error`/`FAILED` line was written, `gate-at.sh` prints GREEN and exits 0. Change: capture `$?` and require it 0, and compare `ok` against the number of targets `cargo test --no-run --message-format=json` planned.
+
+**F4 — the queue takes no box gate lock. Medium.**
+AGENTS.md:47-50 ("parallel gates choke it") is enforced only in gate-at.sh:47-51; `grep gate.lock crates/harnessd/src/mergequeue/` is empty. A lead gating a stack and the queue landing them run two `cargo test --workspace` jobs at once → the 30-min deadline (gate.rs:21) trips → rows park `TimedOut`, which reads as a code fault.
+
+**F5 — a train's bisection tag is erased by any later verdict. Medium.**
+`train_move` replaces evidence with `why` (serve.rs:2832-2836) and `half_of` requires the `TRAIN_SPLIT [half …]` prefix (serve.rs:66-74); `Stopped`/`Infra` verdicts call `train_back` with a fresh sentence (serve.rs:3128-3151) → both halves untagged, the train re-forms whole, the failing branch is never isolated. Change: carry the tag in a column, not in prose.
+
+**Concessions.** The no-fetch/local-CAS behaviour is honest and documented (docs/gate.md:22-24); the gate read from the target tip (serve.rs:2450, gate.rs:2056) is right; the Infra/Stopped/Blocked split in `judge` (gate.rs:939-1010) is better than most.
+
+**Against position 2:** `retire_if_empty` is not a corner — it is the one invariant the queue was told to honour and did not. **Against position 3:** yes, 35k lines and three gates; but the defect is not the size, it is that the operator's gate (gate-at.sh) and the queue's gate judge different things and neither is authoritative.

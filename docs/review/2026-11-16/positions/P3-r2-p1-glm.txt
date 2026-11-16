@@ -1,0 +1,15 @@
+[model: glm-coding (the preset's default model)]
+REBUTTALS
+P2-r2: I concede the harm half of my r1.2. For Job::Permission `strict` adds only the listed-rule narrowing (verdict.rs:479-488), which `acting_rule` re-does against harness-owned rules, and the denylist runs regardless (:490-503); statelessness also keeps a resumed injection (a489bc75a) off the acting path. What survives is r1.1. I also drop my r1.5: verdict.rs:316-317 makes the echo intended and `/note accept` is operator-gated. P2's holds verified: allow/ask only (:458-464), no grant on timeout/void (:272-279), the single-key read/MayApprove/grant_ro shape (answers.rs:432-445), role from the asker table (:420). P2 r1.1 (armed by the observation switch, config.rs:84-86) and r1.3 ("by your answer", runtime.rs:2421-2423) verified — adopted. P2-r2.4 conceded, display-only.
+P3-r1: finding 1 shared. r1.2 verified as fact (guard.rs:103-126, :167 lexical), exploit HYP. r1.6 folds into finding 1. r1.4 verified (shadow.rs:72, :189). On r1.3: binding rule to path makes the model's allow equal `permission::evaluate` — accepted; that argues for retiring Relay.
+
+FINAL
+1. HIGH shadow/permission.rs:281 — `acting_rule` takes no path; any 8-byte substring of any Allow rule (rules_of :476) grants. Bind a listed read rule to the path via the gate matcher.
+2. HIGH shadow/config.rs:84-86 — `answers_reads` defaults on with the permission job. Default off; promotion recorded.
+3. HIGH shadow/guard.rs:134-165 — read_passes misses ~/.claude/.credentials.json, ~/.codex/auth.json, ~/.local/share/letibot (sessions.db). Allow-list roots.
+4. MED shadow/permission.rs:170-194 — breaker in-memory, grants persist. Persist the trip.
+5. MED tools/src/runtime.rs:2423 — shadow grant noted "by your answer". Thread `by`.
+6. LOW HYP guard.rs:138 — no symlink resolution.
+7. LOW shadow.rs:72,189 — "observe-only" stale after R317.
+8. LOW verdict.rs:415 — offer-author check strict-only; stateless during offers act on tool text (staleness at during.rs:304 is the only guard).
+9. LOW conversation.rs:127-143 — resume checks only the last kept turn.

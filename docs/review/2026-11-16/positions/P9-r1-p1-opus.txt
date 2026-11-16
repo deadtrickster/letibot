@@ -1,0 +1,31 @@
+P9 reviewer 1 (Against), 9e9312b06
+
+Thesis. R317's relayed-read path already does what the oracle seam was built to stop. A model's free-text quote is enough to widen a mount namespace. No trail is cited, the tier is hardcoded, the grant covers the whole queue, and a breaker that forgets at restart sits over grants that do not. Stage 1 should not widen until the items below are fixed.
+
+Findings
+
+F1 high. The cited rule never has to cover the path. `harnessd/src/shadow/permission.rs:272-282` `acting_rule` only checks that the quote is at least 8 bytes long and is a substring of some listed allow rule (`MIN_QUOTE`, `shadow/verdict.rs:12`). The rules are the main session's (`harness/shadow_seat.rs:29`), not the asker's. The test `shadow/tests.rs:1481` only checks that the quote is listed. Scenario: the only rule is `read /build/**`. A reviewer asks for `/home/dead/.claude/.credentials.json`. The shadow answers allow with rule `read /build/**`, and `grant_ro` binds the file. Change: match the path against the cited rule's glob, or refuse to act.
+
+F2 high. The read denylist is lexical and incomplete, and the bind key resolves symlinks. `read_passes` (`shadow/guard.rs:146-170`) checks the path as spelled, but the grant is recorded under `view::key`, which canonicalises (`tools/src/view.rs:71-90`, `:222`). Two scenarios. First, an author creates `wt-feature/link -> ~/.ssh` and a reviewer asks for that link: the check passes and the canonical `~/.ssh` is recorded. Second, `~/.claude/.credentials.json`, `/proc/<pid>/environ` and `~/.local/share/letibot/sessions.db` are not covered by `STORES`/`secret_dirs` (`tools/src/secrets.rs:37-72`, `intent.rs:1554`). Only `.../letibot/keys` is guarded. Change: run `read_passes` on `key(path)`, deny `/proc`, `~/.claude` and the letibot data dir, and allow by list rather than deny by list.
+
+F3 high. The always-ask list cannot reach view reads, because the tier is never derived. `ask_to_see` hardcodes `tier: Tier::MayApprove` and passes `AuthorisationTrail::default()` (`tools/src/adjudicate.rs:2783-2787`). `view_read` checks only that tier (`harnessd/src/answers.rs:432-440`). So `credential_use` is never evaluated for the path. Compare `grant_memory` (`:2890`), which is `AlwaysAsk` "so a guard model widening it would not be the model granting itself the box". Change: classify the path with `Surroundings`, set the tier from that, and carry the asker's trail.
+
+F4 high. One answer becomes a standing grant for the whole queue. A shadow answer is relayed, so `keep_grant` stores it at `Scope::Queue` (`adjudicate.rs:1733-1738`). That scope covers every future reviewer until it is revoked (`grant_ledger.rs:14`). The shadow's own row says "for that session" (`permission.rs:367`), which is false. Change: store shadow grants at `Scope::Session`.
+
+F5 medium. The breaker forgets at restart and the grants do not. `Answering::new` resets `disagreements` and `granted` (`harness/open.rs:3608`, `permission.rs:185`), while the ledger grants persist. A No to a shape granted before the restart no longer counts (`permission.rs:414-441`). Change: persist the breaker count, or rebuild `granted` from `shadow_grants`.
+
+F6 medium. A revoke does not unbind running commands. `ViewGrants::revoke` only queues the path (`view.rs:237`), and binds are dropped "at its next call" (`harnessd/src/grants.rs:112`). A background job or an open fd keeps the read. Change: when a shadow grant is revoked, kill or unmount that job's namespace.
+
+F7 medium. Shadow grants never reach the corpus. Neither `ask_to_see` nor `grant_view` calls `self.record` (`adjudicate.rs:2678-2876`), although the doc comment at `:2830` says they do. Effect on R316: stage replay cannot measure the shadow's own grants from the corpus. If they are added naively, labels written by `shadow:` judges get scored against themselves. Change: record view asks, and exclude `verdict_by` starting `shadow:` from the agreement metrics.
+
+F8 low. `a_reviewers_probe` admits `Intent::Unknown` (`adjudicate.rs:1555`). That goes against the "asked, not admitted" contract at `intent.rs:5002`. `rclone` and `lftp` are not in the table at all, so they classify as Unknown. HYP: whether the reviewer's boundary blocks egress.
+
+Siblings: a `Claim::Shares` waiter gets Covered from the shadow's answer (`adjudicate.rs:2849-2854`). This only multiplies F4.
+
+Not verified (HYP): that the model can be steered by the asker-controlled path text shown at `permission.rs:316-321`. `read_passes` only requires the path to be absolute, so it may contain newlines.
+
+Concessions. `Blocked` is excluded and `AlwaysAsk`-tier calls do not reach the shadow. The shadow only answers `grant_ro`, never rw (`permission.rs:388`). `allow_always` on a relayed card is refused (`answers.rs:204-215`). Grants are tagged `shadow:` and can be revoked through one path (`grants.rs:85`). The `keys` path component is denied.
+
+Against position 2: "Layer A settles tiers first" does not hold here, because a view read has no layer A reading and its tier is a literal. "Every grant is listed and revocable" holds only for future calls (F6), and the grant is queue-wide (F4).
+
+Against position 3: I agree that two models coexist. But removing `Relay` is not a precondition for safety. Fixes F1-F4 are local and small, and they should land before any stage widens.

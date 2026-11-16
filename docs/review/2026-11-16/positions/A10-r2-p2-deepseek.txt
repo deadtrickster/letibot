@@ -1,0 +1,16 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Position 2, round 2. The round-1 core holds; two items revised.
+
+HOLDS (re-verified): `Capabilities::default()` at plugins-rano/src/lib.rs:43, so rano links no host import and refuses unknown ones (rano plugin.rs:299-310,:606) — p1's `Http` is inert; a fresh Store, 64 MiB and 50 M fuel per call (rano plugin.rs:504,:593-600); a project `[mcp]` warns, never starts (harness/open.rs:2135-2151); `.mcp.json` needs a user `[mcp_projects]` prefix (harnessd/src/mcp.rs:36-57, leticode-config/src/lib.rs:1271); backoff 500 ms→30 s (mcp/src/lib.rs:60); MCP tools are `Network` and gated (external/mcp.rs:110,:304).
+
+CONCEDE: p1#2, p3#3 — `answers` reads no trust bit (harnessd/src/plugins/hook.rs:16-18), so a checkout layer decides `limit_decide`/`steer_`/`compact_`, and `new_session` forks a ROOT row (limit_hook.rs:334 → store.rs:2880-2890, parent None). p1#3 real (command file → Operator, sessions.rs:1211) but P2's seam. p1#4 real, low (conditions.rs:193). p1#1: fact right, but needs the operator's own trust line — and the defect under it is mine.
+
+REBUT: p3#4 is false — skill.rs:1619-1645 asserts SERVED∪UNSERVED==PREFIXES. p3#2, #5, #6 stand (mcp: 16 tests). r1's bulk-memory fuel claim: drop (wasmtime 49 meters bulk ops; the 64 MiB limiter bounds each). r1 finding 1: tool looks read through the session fence (tool.rs:82-84); only pane/condition looks bypass it.
+
+FINDINGS
+1. HIGH mcp/src/wire.rs:84-90,:241-244 — `envs()` with no `env_clear`, no process group, Drop kills the child only: an MCP server runs as operator holding every provider key. Clear env, allow-list, killpg.
+2. HIGH plugins/hook.rs:16-18 — require `trusted` for `limit_`/`steer_`/`compact_`.
+3. MEDIUM look.rs:99-160 via pane.rs:89,:314,:371, conditions.rs:140 — unviewed `read:<path>`; pass the view.
+4. MEDIUM mcp/src/wire.rs:95-103,:346-357 — unbounded lines, channel, SSE buffer.
+5. MEDIUM mcp/src/lib.rs:311-314 — link mutex across the call; Timeout leaves the wire alive (:157-162), no `notifications/cancelled`.
+6. LOW plugins-rano/src/lib.rs:205 — one mutex per shared module.

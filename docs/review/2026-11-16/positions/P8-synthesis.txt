@@ -1,0 +1,16 @@
+I wrote the P8 record to /data/review-run/P8.md. Only 3 of 6 seats returned reports: P2 R1 (fable), P1 R2 (opus) and P3 R2 (sonnet). The other three failed on infrastructure, two of them on the head/daemon protocol mismatch (74 vs 78). The repo was not edited.
+
+HIGH | tools/src/mode.rs:564-585 (applied via harnessd/src/harness.rs:924, :903, :784) | `no_wider_than` does not rank `decider`, so a child moves from `writes allowed` to `automode-edits` with no person asked, and the guard model answers its exec and network asks | VERIFIED
+HIGH | harnessd/src/sessions.rs:2164, harnessd/src/harness/open.rs:669-673, :695, :2214-2217 | a reopened child gets the daemon's base point as both its point and its ceiling. It never reads the parent's point or its own row. `follow_parent` runs only at spawn (children.rs:4114) | VERIFIED (whether the registry keeps `parent_session_id` across a restart is HYP and does not change the outcome)
+MEDIUM | harnessd/src/sessions.rs:4910, harnessd/src/modes.rs:291 | the project row is written before the move, whatever its outcome. A child's refused or narrowing `/mode` rewrites the project point | seen in passing, not a required check
+MEDIUM | harnessd/src/sessions.rs:4888 | the worker-door check has no test | not checked (medium)
+MEDIUM | child_mode.rs:70-72, :127-129 | the tests return early without a GGUF and pass vacuously | not checked (medium)
+LOW | harnessd/src/harness/turns.rs:1826, :2652 | narrowing applies only at batch boundaries, and a running call keeps the wider point | not checked (low)
+LOW | harnessd/src/sessions.rs:1513, harnessd/src/harness.rs:1189 | `/supervise` on a child has no parent check | not checked (low)
+LOW | harnessd/src/harness.rs:890-897 | a failed `narrow_to_parent` leaves the child wider, with a warning only | not checked (low)
+
+The record proposes 4 decisions:
+- D1: decider is HIGH.
+- D2: fix it by ranking `decider` inside `no_wider_than`.
+- D3: position 2's thesis does not hold as worded.
+- D4: position 3's overlap claim (grants, permission.json, perimeters) is an open follow-up, not a finding.

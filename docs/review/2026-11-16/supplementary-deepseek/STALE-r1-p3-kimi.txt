@@ -1,0 +1,26 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+THESIS
+
+The head is a second, hand-maintained implementation of the daemon's current state, and both other positions mis-frame the cost. R1 measures the backlog (a timestamp per cached field); R2 measures the refresh paths. Neither is the defect. The defect is that a fact has no single home, so correctness is a property no test can hold. But R3's stated fix — "the head holds no derived state, render the daemon's view on each frame" — is also wrong as written, and I say so as its author. The head must hold the frame's own state (input, scroll, selection, an incremental transcript). What it must not hold is a *copy of a scalar the daemon owns*. The feasible shape is a facts document, not a state-free head.
+
+FINDINGS
+
+F1 — high. The post-compaction context is recovered by parsing prose. `crates/tui/src/app/events/warnings.rs:118-124` sets `u.prompt_tokens = compaction_after(&detail)`, and `compaction_after` (`ui/transcript/notice_card.rs:224-246`) parses `"<n> → [≈]<m> <unit>, …"` out of the warning's human sentence, special-casing the `reseated` prefix (`:228`) and the `≈` marker (`:238`). Failure: any new detail wording (a fork path, a units change, a sentence without the `, ` the parser requires at `:246`) leaves pre-compaction ctx in the header with no way for the reader to tell. Fix: a numeric `context_after` field on the compaction event; delete the parse.
+
+F2 — high. The model name is merged in the head from three sources ordered by two stamps: `ui/header.rs:75-98` compares `settings["model"]`, `self.model` and `wiring.model` using `model_from_settings_at`/`model_from_live_at` (`app/events/turn.rs:105`, `app/events/frames.rs:301`, `app/events/warnings.rs:44`). The head documents that it draws a stale model on purpose (`app/mod.rs:1240-1243`, `model_pending`: "the header keeps naming the old model"). Failure: the daemon switches model on a limit `set_settings` (`sessionlog/src/registry.rs:1820-1843`); the head misses that frame and shows the old model indefinitely, because the row it needs has no seq and nothing re-asks it before the next attach. Fix: one `model` + `model_pending` pair in the facts document, never merged in the head.
+
+F3 — high. Facts share a lossy queue with terminal paint. `sessionlog/src/hub.rs:64 MAX_SIDE = 256`, `:1271` drops the oldest when full; `TermOutput` (`harnessd/src/term.rs:370`, `:564`) is pushed through the same deque as `Settings`, `Sessions`, `Jobs`, `TermStatus`, `Todos`, `Queues`. Failure: a head with a `!term` pane painting a build, or one whose socket write stalls, loses a `Settings` frame — silently, no seq, no ack, no age, and re-asked only at attach (`app/session.rs:797-820`). Fix: latest-value-per-key slots in the hub for facts; paint alone on the evicting deque.
+
+F4 — medium. `ui/screen.rs:20-26` serves `hold_frame`, the rendered bytes of a past frame, while ctrl-p holds: header, status row, "N subagents running" are all frozen, and release reports "N rows arrived" (`app/scroll.rs:158-162`) — a count of rows, so a compaction while held reads as nothing happened. Fix: hold the body; draw header and status live, with the marker naming the age.
+
+FEASIBILITY
+
+One facts frame — mode, model+pending, ctx+usage with the daemon's own read time, held/activity, counts, pause, join state — pushed on change, carried in `Hello`, all fields replaced whole. It replaces six merge sites and `refetch_session_facts`. The transcript stays the incremental log it already is; nothing else is serialised per frame. That is cheap; the state-free head is not.
+
+CONCESSIONS
+
+`Hello` does re-ask (`app/events/hello.rs:104`, `app/session.rs:797-820`), so R2 is right that most copies recover at attach and reconnect, and the window is small for most panes. R1 is right that facts lack ages — but 365 timestamps are 365 new ways to be wrong.
+
+ANTICIPATION
+
+R1 will fold F1/F2 into her list; I agree they are instances, and disagree that per-field stamps fix them. R2 will say F3 needs a stalled reader — true for a local tty head, false for the bridge and for a head whose socket write blocks.

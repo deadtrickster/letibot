@@ -1,0 +1,12 @@
+A8 R2, reviewer 3 (position 3). Paths under crates/ at 9e9312b06. Read only, no test run.
+
+THESIS HOLDS: the bridge re-implements room logic, and one copy has already drifted.
+
+Position 2: concede the ack, family and dedup claims. Not conceded: "real-Server tests cover the paths in use". bridge/tests/room_tools.rs:15,164-174 is a fake that mints `names_you` itself, and it carries the redial, replay and ack tests. Only room_share.rs:9,18 uses the real `Server`. So the real coordinator's `names_you`, and the reach derived from it, is never run through the bridge's redial path.
+
+Position 1: concede that `reach` diverges (finding 1). Rebut "reply matching by arrival order": one round trip at a time, per position 2.
+
+Findings:
+1. HIGH. `reach` ignores `names_you` for a fyi (bridge/src/rooms.rs:409, `Fyi => "passing"`). The room's own `Message::reach` returns Addressed for a named fyi (room/src/chat.rs:395-396). `push.rs:299` feeds the bridge value into the push rules. A fyi that names this seat is pushed as passing and can be silenced, though the room's contract (room/tests/kinds.rs:276) is that it wakes the reader it names. No bridge test covers it. Fix: delete `reach` and `say_kind`, and call `letibot_room::Message::reach` on the deserialized frame. Add a named-fyi test.
+2. MEDIUM. `host_key_of` and `box_key` (rooms.rs:271-312) copy `room::host_key_of` and `host_name` (room/src/lease.rs:300-340). `data_dir` (:117) copies `letibot_data_dir` (harnessd/src/mergequeue/git.rs:173). `socket_path` (:341) copies `room::socket_path` (lease.rs:442). `data_dir` also differs on an empty `$HOME`: it falls back to ".", while the daemon returns `Some` of an empty `$HOME`. Fix: call `letibot_room::host_key` and `letibot_room::socket_path`, and add one test pinning that bridge and daemon paths are equal.
+3. LOW, HYP. `replay_the_gap` fetches 200 rows (:1170) and then marks the generation replayed. A gap over 200 rows is never fully replayed. Fix: loop until a short page.

@@ -1,0 +1,35 @@
+P3 reviewer 3 (position 3), round 1, 9e9312b06. Paths under crates/harnessd/src/.
+
+THESIS
+The one acting model path is where the model does the least. By the time the model speaks, `scope` and `read_passes` have already decided what may be granted. The model only has to quote any listed rule. Rules can make that decision. The other two jobs duplicate a regex and a similarity path that must stay as fallbacks, so every model job ships two implementations. Positions 1 and 2 argue about how safe the model is. I argue the model is not the part that decides.
+
+FINDINGS
+
+1. HIGH. The R317 grant's "rule" is never matched to the request. `shadow/permission.rs:272 acting_rule` accepts the verdict if `rules.iter().any(|r| r.contains(rule))` and `rule.len() >= MIN_QUOTE` (8, `verdict.rs:12`). `rules_of` (`:476`) lists every allow rule in permission.json as "<permission> <pattern>". The check never asks whether that rule covers a read of this path.
+   - Scenario: permission.json holds `bash git status --short` or `edit docs/**`. A reviewer relays a read of `/var/log/foo`, which passes `read_passes`. The model replies allow with rule "git status". That is a substring of a listed rule, so the check passes and `grant_ro` is written as `by: shadow:<judge>` (`permission.rs:389`).
+   - The "rule" is a quote check, not an authorisation check. The invariants entry I49 calls this "acts only on a listed rule"; that holds only as a string match.
+   - The model verifies nothing here. The same rule was asked before the model existed: `letibot_tools::permission::evaluate("read", path, rulesets)`, `tools/src/permission.rs:113`.
+   - Change: replace `acting_rule` with `evaluate(read, path)` returning Allow from the real rulesets. Keep the model only for the card line. With no matching rule, the path is "ask". The breaker, `/shadow revoke` and the quote machinery then guard nothing that rules do not already cover.
+
+2. MEDIUM. The same grant has a lexical-only path guard. `shadow/guard.rs:138 read_passes` and `lexical` do not resolve symlinks. A symlink in a permitted directory that points into `~/.ssh` or `~/.config/letibot` passes. HYP: I did not trace whether `grant_ro` canonicalises later. A rules-only path would sit behind the same real-path check as every other read.
+
+3. MEDIUM. The turn_end job runs two implementations of one decision. The regex nudge is computed and held every turn (`harness/shadow_seat.rs:~340`, `shadow_held`). `turn_end::decide` (`shadow/turn_end.rs:166-205`) is then a 10-way matrix: Owed x reminded, None, Unsure, Void, TimedOut, Failed, Paused, wrong job, Stale and Superseded. Five of those outcomes just release the regex. The model adds one reminder per operator message, in a fixed template (`turn_end.rs:104`). That is a rule's output.
+   - Cost per ended turn in persistent mode: a call under a 30 s deadline, up to a 64 KB conversation (`conversation.rs:11`), plus a second stateless call on every 10th question (`config.rs:27 FRESH_EVERY`, `runner.rs:416 sampled`, `:543 fresh_check`). That is about 10% extra spend, spent only to test the model against itself.
+   - Change: delete the model path unless `shadow/replay.rs` shows the model beating the regex on labelled turns. `replay.rs:2` has the scorer. The CI or release gate should publish its numbers, and none are in the tree. HYP: I did not run it.
+
+4. LOW. `shadow.rs` `Job::acts` doc says "Permission is observe-only". R317 made that false. The `on_outcome` comment says the same. Both were last true before 913e532d6, so a reviewer reads a stale invariant.
+
+5. LOW. The breaker (`permission.rs:170 BREAKER_AT = 2`) lives in the process and resets at restart, while grants persist (store v51). A restart puts the model back at full trust over the grants it already made. With rules deciding (finding 1) there is no breaker to reset.
+
+6. LOW. In stateless mode, `shown.strict` is false, so the `verdict.rs:479-488` listed-rule check is off. Any rule string that merely appears in the shown history passes. This is why the real check should not live inside the model's reply.
+
+CONCESSIONS
+- The model path does not deny (`verdict.rs:458-464`). Quotes are span-checked and the denylist is solid.
+- `replay.rs` is real: it scores the regex against the shadow. If it shows a lift, finding 3 weakens. Finding 1 does not, because rule coverage is deterministic either way.
+- The during job's note and skill picks have no rule equivalent. I leave them alone, with similarity as the fallback.
+
+ANTICIPATING THE OTHER POSITIONS
+- Position 1 (injection steers it): a steered model can still only ask or quote a listed rule. Finding 1 means a steered model and an unsteered one grant identically, so injection scenarios are the wrong place to look.
+- Position 2 (strict, gated, breaker): the gate is real, but it is mostly `scope`, which is not the model. What the model adds is a string match, so the breaker is machinery around a no-op.
+
+Not verified: no test run, as reading sufficed. Finding 2 and the replay lift are HYP.

@@ -1,0 +1,53 @@
+P9 r1, reviewer 3 (position 3: two models, retire Relay before stage 1 widens). All refs at 9e9312b06.
+
+THESIS
+The shadow's acting path (R317) is a second authorisation model. It cites a rule string, not a trail index, and it never touches AuthorisationOracle. Its guarantees are local conventions: a substring match, a lexical denylist, and an in-memory breaker. Stage 1 would widen a path that has no tier, no trail and no persisted breaker. The oracle seam should be the only door. Relay should be reduced to an annotator first.
+
+FINDINGS
+
+1. HIGH. The cited rule is never checked against the call. `shadow/permission.rs:272-282 acting_rule` accepts any model-quoted substring of at least 8 bytes (`MIN_QUOTE`, `verdict.rs:12`) that appears in any listed allow rule (`rules_of`, `:476`, formatted "permission pattern"). Nothing checks that the rule's permission is read, or that its pattern covers `path`.
+   Scenario: the rules include `bash git status*`. The model answers "allow, rule: git status". The quote passes. `answers.rs:154` returns `grant_ro` for `/var/lib/foo`. The row at `permission.rs:~375` prints "rule: git status" as if it were authority.
+   Fix: parse the quote back to one `Rule`. Require its permission to be read and its glob to match the path. Better, have the oracle return the trail index.
+
+2. HIGH. `guard::read_passes` (`shadow/guard.rs:138-165`) is lexical (`lexical()`, `:167`), but the grant is keyed by `view::key` (`tools/src/view.rs:71-78`), which canonicalizes. A path that resolves into the secret store passes the denylist and is stored under its real name.
+   Scenario: a repo under review holds a symlink to `~/.config/letibot/keys`. Whether a reviewer's ask can carry the unresolved spelling is HYP, because I did not trace the view check upstream.
+   Fix: canonicalize with `view::key` first, then run the denylist on the result.
+
+3. MEDIUM. The audit text lies about scope in one direction. `permission.rs` writes "for that session". Verified: the early return at `answers.rs:154` never inserts into `Answers.relayed` (`:226` is only on the card path), so `take_relayed` is false. `keep_grant` (`adjudicate.rs:1736`) then picks `Scope::Session`. Position 1's "queue-scope grant covers every future reviewer" is therefore false for shadow answers. The operator's card for the same ask, via `queue_scoped` (`answers.rs:178`), grants at `Scope::Queue`.
+   Consequence: the identical ask gets a different scope depending on who answers, and nothing records why. Scope follows a side-channel boolean, not the grant.
+   Fix: put scope in `Note::Answer`, and have the oracle emit it.
+
+4. MEDIUM. The breaker is in memory (`permission.rs:~197` `Answering`, built at `harness/open.rs:3608`; the text says "observe-only until restart"). Persisted grants survive restart (I51). After a restart the shadow answers again with `disagreements = 0`, over the same shadow-granted rows. A first revoke restarts the count, so the real threshold is 2 revokes per daemon lifetime.
+   Fix: persist the disagreement count with the grants, or have the breaker be the oracle's.
+
+5. MEDIUM. Revoke is a path-entry delete (`harnessd/src/grants.rs:85-95`), and it admits that a running session "unbinds at its next call". A command already running keeps its read. The shadow is not the cause, but the shadow's autonomous grants enlarge the exposure.
+   Fix: a revoke generation check at exec start, plus a kill of bound children.
+
+6. MEDIUM. `view_read` (`answers.rs:432`) is a structural guess. It requires `Access::Read`, `MayApprove`, a `grant_ro` option and a one-key argument object. The trail is dropped. The only other use of `AuthorisationTrail::default()` is `ask_to_see` (`adjudicate.rs:2787`, R316's gap), where the card is built without one. The corpus therefore holds shadow grants with no trail. R316's replay stages measure the shadow against its own earlier rows (`by == "shadow:..."`, `adjudicate.rs:1712`). That cannot be measured honestly.
+   Fix: stamp shadow-answered rows as excluded from the evaluation set. This is a hard precondition for stage 1.
+
+7. LOW. Always-ask: `requires_given` and `ALWAYS_ASK` (`intent.rs:2409`) are not consulted by `note_before`. Reachability is by construction only. `view_read` needs the read class and one `path` argument, so `credential_use`, `changes_its_own_rules` and `persistence` are probably excluded. I did not prove it, so HYP. The guarantee should be one shared predicate, not two filters that happen to agree.
+
+8. LOW. `queue_kind` (`permission.rs:~244`) trusts the `role` string prefix "reviewer of " / suffix "'s gatekeeper". The origin of `role` is `set.asker().role`. I did not verify who can set it. HYP.
+
+CONCESSIONS TO POSITION 2
+- The shadow only allows or asks, never denies. Failure falls through to the card.
+- Grants are `shadow:<judge>`, listed and revocable through one path (`grants.rs:85`).
+- `read_passes` covers secret dirs and ancestors, and `/` and home are rejected.
+- The R317 and R305/R314 tests show the intended path works. They do not show the failures above, because no test uses a non-covering rule quote or a symlink.
+
+CONCESSIONS TO POSITION 1
+- The shadow's grants are session-scoped, not queue-scoped. Finding 3 corrects that claim. The scope divergence is still real.
+
+AGAINST BOTH
+- Position 2's "Layer A settles tiers first" does not describe R317. The shadow path bypasses the oracle and judges rule text, not tier.
+- Position 1 attacks a path that is narrow today (reads only). The real defect is architectural. The shadow is a second adjudicator in `answers.rs`. Grants live in four places (`permission.json`, approved shapes, `session_grant`, `ViewGrants`). Each stage widening multiplies those combinations.
+
+PROPOSED ORDER
+1. Fix findings 1 and 2 now.
+2. Make `Relay` an annotator only. Remove `Note::Answer` from `note_before`.
+3. Add a shadow adjudicator behind `AuthorisationOracle` that returns a trail and a scope.
+4. Mark shadow rows excluded from replay.
+5. Then widen stage 1.
+
+No test run. This was a reading review.

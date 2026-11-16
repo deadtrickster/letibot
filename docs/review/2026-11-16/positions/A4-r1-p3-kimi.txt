@@ -1,0 +1,24 @@
+[model: kimi-code-global (the preset's default model)]
+THESIS
+
+A4's real defect is not its size. It is that harnessd has no single owner for its own policies: the mode policy has three doors with three behaviours, the restart-owed policy is written three times in one file, and a child's ceiling is a cell wired at one call site. Size is the symptom; duplicated policy is the fault, and one copy demonstrably loses state.
+
+FINDINGS
+
+1. A point moved through the ask/consent door is never persisted — high.
+`Harness::ask_mode_confirm` applies a non-consent point at crates/harnessd/src/harness.rs:933-937; `answer_mode_confirm` applies a consented one at :1054. Neither writes the session row or the project row — `mode_store.set_session` exists only at harness.rs:875, sessions.rs:4945 and modes.rs:296. Reachable: bridge `leticode_mode` → crates/bridge/src/tools.rs `set_mode` → bridge/src/head.rs:2312 `ask_mode` → sessionlog/src/client.rs:529 `mode_confirm`, for *any* mode name, and the answer arriving through sessions.rs:4848.
+Scenario: a bridge seat narrows a project stored at `writes allowed` to `read-only`. The daemon applies it in memory and stamps `mode_source = "/mode, this session"` (harness.rs:795); nothing is written and no `mode_unpersisted` warning is said. The daemon restarts; open.rs:670-676 looks for the session's own row, finds none, and the project row wins — the session is back at `writes allowed` and writes again. Fail-open and silent. No test calls `answer_mode_confirm` at all (only its definition and sessions.rs:4848).
+Change: move the record into `set_mode_consented` (or make one `Harness::move_mode(mode, consented, source)` that all three doors and the ask path call), so persisting cannot be forgotten by a new door; add a test that reads the session row after each door.
+
+2. Two doors on one verb disagree on atomicity — medium.
+sessions.rs:4905-4930 writes rows first and returns `Failed` without moving; turns.rs:3305-3321 (the queued door, `apply_queued_mode` at :3275) moves first and only warns. The same `/mode` typed at an idle session and during a turn produces opposite outcomes when the store write fails. Same fix as 1.
+
+3. Open and reseat do not build the same session — medium.
+A child's ceiling is `parent_ceiling` at open.rs:2214-2220, whose value is the child's *own* clamped mode; the parent's live cell is handed over only by children.rs:4114 `follow_parent`. No open path reconstructs it. `within_parent` (harness.rs:813) therefore compares a reopened child against itself. HYP on the restart consequence (position 1 owns that); verified that the ceiling is not a session fact.
+
+4. The hub is a hub — medium, structural.
+turns.rs is 5,997 lines and handles submission, restart, outage/fallback, silence watching, abandoned-call sweeps, context claim, queues, mode and model choice; `restart_owed` is taken and re-handed at :472, :695, :737-739 and :779-804 across `wake`, `continue_after_restart` and `restore_after_restart`. open.rs (6,032) has three entry points (`:459`, `:466`, `:1994`) over 31,741 lines of `harness/` plus 13,576 of its own tests. Change: `harness/restart.rs` for the owed path, one open, one mode door.
+
+CONCESSIONS
+
+Position 2 is right about the common path: the TUI's own `/mode` goes through the persisting door (tui/src/app/keys/cards.rs:78-80), clamping and restore work when the invariants hold, and line count alone is not a defect. Position 1 would call 1 and 3 authority bugs; I say the authority is fine and the bookkeeping is not, because three doors each re-implement it — which is why 1 has no test and 2 has two answers.

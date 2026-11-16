@@ -1,0 +1,25 @@
+I wrote the P5 record at /data/review-run/P5.md. Every critical or high finding I checked matches the code at 9e9312b06. "VERIFIED" here means I read the cited lines and they do what the claim says. I ran no tests, so no failure scenario was reproduced.
+
+Only two of the six reports exist. Round 1 has opus (position 1) and sonnet (position 3). Round 2 has fable (position 2). The other three sessions failed on the head 74 / daemon 78 protocol skew, so no position answered another's case in round 2. The two round 2 failure notes name the same session, s-1794816224886705855. The record notes all this in its header.
+
+Some severities below are mine, where the positions disagreed: A2 medium (positions 1 and 3 said high, position 2 said low), A3 medium (position 1 said high).
+
+high | tools/src/lifecycle.rs:460, tools/src/lifecycle/reap.rs:159-163 | A reopen keeps `created_ms`, so the hard TTL closes a reopened package whatever it is doing. docs/lifecycle.md:585 says the TTL counts from the last reopen | VERIFIED
+high | tools/src/lifecycle/reap.rs:749-771, 1175-1179, harnessd/src/reap_pass.rs:91-101 | When a package's own daemon idle-closes it, `end_daemon` returns Kept ("never reaps itself") and no Close is written. The row stays Closing and `end_processes` kills its new jobs on every pass. The only daemon test uses repo /tmp and misses this branch | VERIFIED by reading. End state not run. Open question: d.3 says a finished package's daemon exits on its own, which may limit how long this lasts
+medium | harnessd/src/mergequeue/git.rs:846-863, harnessd/src/mergequeue/serve.rs:1627, harnessd/src/harness/children.rs:3555 | `retire_if_empty` checks no liveness. The queue path asks only this daemon's registry, while `settle_tree` calls `why_kept` (serve.rs:1455). `--force` also drops ignored files | VERIFIED
+medium | tools/src/lifecycle/remote.rs:173, tools/src/lifecycle/reap/disks.rs:609 | No reaper runs on the remote host. The only caller of `host_pass` is on the home box, although d.3 (docs/lifecycle.md:587) promises a host-local reaper | VERIFIED
+medium | tools/src/lifecycle/in_use.rs:58, :64-66 | `cwd_inside` reports "not in use" when /proc is unreadable and skips any cwd it cannot read | VERIFIED. The proposed fix ("treat unreadable as kept") would keep every tree, because other users' cwd links are always unreadable. Proposed decision: keep the tree only when /proc itself cannot be read
+medium | harnessd/src/reap_pass.rs:152-170 vs tools/src/lifecycle/reap.rs:433-451 | `renew_held` and `busy()` use different tests for busy (process rows vs cgroup) | VERIFIED
+high (disputed) | tools/src/lifecycle/reap.rs:150-157 | The parent-closed check runs before the busy check | VERIFIED as described. d.3 documents this order (docs/lifecycle.md:583, :598-599). Proposed decision: rewrite I22 to match d.3, no code change
+high (disputed) | tools/src/lifecycle/reap.rs:717, :755 | `keep_jobs = !owns_open_job` means a hard or parent close ends the owner's own jobs | VERIFIED as described. Documented at docs/lifecycle.md:601-604 and reap.rs:1189-1191. Proposed decision: rewrite I23 to match d.3, fix the own-daemon idle-close finding
+high (disputed) | tools/src/lifecycle/reap.rs:146 | Position 3's argument: a close decision built from seven scattered inputs is wrong by design | VERIFIED that the inputs are as listed. Proposed decision: no stamp rewrite now. Check removals inside `retire_if_empty` with `why_kept` and have `renew_held` call `busy()`. The stamp goes to follow-ups
+
+Proposed order of work, for the operator to decide:
+1. TTL from last reopen
+2. Own-daemon idle close
+3. `why_kept` inside `retire_if_empty`
+4. Keep the tree when /proc is unreadable
+5. `renew_held` uses `busy()`
+6. Rewrite I22/I23 to match d.3
+7. Host-side lease timer
+8. Process-tree stamp to follow-ups

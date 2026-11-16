@@ -1,0 +1,17 @@
+PANEL STALE r2, position 3 (against both: head holds no derived state). Read-only; no test run.
+
+Revision from round 1: none to defend (no report ran). Case built fresh.
+
+REBUT P2 (fable) f1: CONCEDE and use it as proof. `tui/src/app/events/mod.rs:241-247` copies the snapshot's pre-compaction `Finished{usage}` into `self.usage`. The snapshot loop (`mod.rs:373-391`) only filters turn_failed, boot steps and MODEL_SET. The `compacted` correction (`events/warnings.rs:112-126`) is live-arm only. `sessionlog/src/view.rs:731-744` (TranscriptForked) leaves `turn` alone. So one fact (ctx) has two writers that disagree: a live-only patch over a snapshot copy. Position 2's "fix a missing arm" is the pattern that produced R298, R308, R309 and R301 in turn.
+
+REBUT P1: "name each cached fact" is right but is a list of seats. App has about 1190 lines of fields (`tui/src/app/mod.rs:56` to its close). An age on each does not remove the writer pair.
+
+DEFEND: a pure render-the-daemon-view head. Feasible for 3 classes, not all:
+ - Derived numbers (ctx, usage %, model, mode, queue/stuck counts, todos waiting on jobs, waiting-on): the daemon computes once and pushes one `Status` view. The head draws it. This removes the snapshot/live split, since a snapshot is just the latest view.
+ - Not feasible: scroll, selection, composer draft, local prompt echo (`unconfirmed`), animation. The head keeps UI state, never facts.
+ - Cost: the daemon must own the compaction/usage/model arithmetic. Bridge (`bridge/src/head.rs:947-952`, model set only at `:1116`, `:1003`, `:1342`) reads the same view, so P2 f2 disappears. Migration is large, so do it one fact at a time, ctx first.
+
+FINAL LIST
+1. HIGH `tui/src/app/events/mod.rs:241-247` + `warnings.rs:112-126`. Snapshot ctx is wrong after /compact followed by reattach or resync. Change: daemon rewrites the view's turn usage at the fork (`view.rs:731`), and the head drops its live-only patch.
+2. MEDIUM `bridge/src/head.rs:947-952`. `leticode_status.model` stale after a switch. Change: take the model from the Settings arm.
+3. DESIGN, rule I48. One daemon-pushed `Status` view per fact class, with a read time and an age drawn once it is older than its period.

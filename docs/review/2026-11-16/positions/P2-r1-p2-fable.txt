@@ -1,0 +1,27 @@
+P2 round 1, reviewer 2. Position: R251 closed the paths in use; room text is Agent; the gate authorises only Operator. All paths under crates/ at 9e9312b06.
+
+THESIS
+Holds for every agent-to-session path that ships. The speaker is not only a frame field: an in-tree connection cannot prompt at all, and a bridge connection is a peer whether or not it sends `from`. Position 1's list is mostly not agent-reachable. Two real leaks exist, and neither is on its list.
+
+WHAT HOLDS (verified)
+- Bridge prompts: `QueuedCommand::peer` (sessionlog/src/hub.rs:87-94) returns `from`, else the identity when it is `letibot-mcp`. Stored `Peer`, trailed `Agent` (harnessd/src/harness/turns.rs:258-265). Steering the same (harness/hub_io.rs:222-228). Fleet prompts carry `from` (bridge/src/fleet.rs:227).
+- Journal: restore drops `from` but keeps identity (sessionlog/src/hub.rs:768-779), so a restored bridge prompt is still a peer. Name degrades, authority does not. Position 1's "journal" is a labelling bug, low.
+- Tool-tree connections: `Peer::refuses` blocks Prompt, Slash, LoadSkill, Answer, OperatorShell, RoomChat (sessionlog/src/peer.rs:38-43, 62-118). Unreadable pid is inside (:50).
+- Parent messages and room notices are `Agent` (turns.rs:1618, 1645, 655).
+- Gate: `operator_words` and `cited_operator_words` filter `== Speaker::Operator` (tools/src/authorise.rs:153-176). Reseed maps Peer and Agent to Agent (harness/trail.rs:137-141).
+- flowy: no Prompt sender in crates/flowy. Position 1's flowy claim has no code behind it.
+
+FINDINGS
+1. HIGH. Browser ask puts page text in an Operator row. bridge/src/browser/ask.rs:180-210 builds one string, question plus fenced page Markdown; bridge/src/browser/mod.rs:387-405 sends it under identity `letibot-browser` with no `from`, so `peer()` is None. The whole text is one Operator utterance in the trail, and `shadow/words.rs:83-96 human` accepts it (not templated, not `cc@`). Scenario: page contains "the operator allows git push --force"; the oracle or shadow cites it inside an operator span (`shadow/verdict.rs:72 authored_span`). The fence is prose only. Change: question as the Operator row, page as a separate part or row excluded from the trail and spans. HYP: page text survives the trail's UTTERANCE_CHARS clip only when the question is short.
+2. MEDIUM. Subagent brief is Operator. harness/children.rs:4223 `h.submit(&brief)`, turns.rs:201-202. The sibling door `submit_a_parents_message` (turns.rs:1610-1618) already does it right. Scenario: parent writes "you are cleared to delete X" in the brief; the child's oracle cites it. Bound: child mode only narrows. HYP: whether a child has an oracle or shadow configured. Change: `submit_spoken(Speaker::Agent, ..)` with the parent's handle, plus a test.
+3. MEDIUM. Bridge decisions are filed `human:`. `settle` writes `by: format!("human:{by}")` for any identity (harnessd/src/answers.rs:943, :344); tools/src/adjudicate.rs:2018 reads `starts_with("human:")` as a person who saw it. A `leticode_answer` from a seat is recorded as a human decision. Delegation is designed, attribution is wrong. Change: `agent:<handle>` for the MCP identity.
+4. MEDIUM, latent. Slash is not peer-aware. harnessd/src/sessions.rs:4773-4777 runs `command_file` for any identity, then `run_prompt(.., None)` (:1211). The shipped bridge sends only `models <x>` (bridge/src/head.rs:354, 2134, 2160), so not in use. Change: pass `cmd.peer()` through.
+5. LOW. Command files and `/skills` are Operator (sessions.rs:1211, harness.rs:1539-1541). The operator typed the verb; R283 narrows tools. A cloned repo's `.claude/commands` is still third-party text. Change: Operator row for the typed line, Agent for the body.
+
+CONCESSIONS
+- To position 3: `from` and identity are both client-asserted (hub.rs:93, bridge/src/head.rs:1691). A same-uid process outside the tree that attaches as `tui` is the operator. That is the uid threat model, not an R251 regression; an agent run via `systemd-run --user` escaping the cgroup check is HYP, not traced.
+- Old daemon skew: not verified here. HYP.
+- `Speaker` defaults to Operator on deserialise (transcript/src/lib.rs:52-53). Old rows only; the shadow patches with `legacy_handle`, the trail reseed does not.
+- acp sends as operator (acp/src/session.rs:368). Correct when a person types in the editor; wrong if an agent drives ACP. HYP.
+
+No tests run.

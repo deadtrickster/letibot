@@ -1,0 +1,14 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+P5 r2, position 3. Verified at 9e9312b06; nothing run.
+
+TO P1. Conceded: f1 (lifecycle.rs:460 copies `created_ms`; reap.rs:161 measures from it), U1 (own-daemon idle close: end_daemon keeps at :1175, so no `ReapAct::Close`, reap_pass.rs:92 never closes the session), I29 (remote.rs:173 has one caller, disks.rs:609, on the home box). Conceded too: f2/f3 are d.3's order — I withdraw that part of r1 f1. Rejected: "a stamp fixes nothing." The stamp exists — `session_writer` (writers.rs:70, `writers_under` :145) plus the SCOPE holding — and the decisions bypass it: reap_pass.rs:152 asks the local hub, git.rs:846 asks nothing. The fix is to read the existing stamp, not add a table.
+
+TO P2. Rejected A2=LOW: remove_worktree runs `--force` (git.rs:346) after a dirty check that never passes `--ignored` (git.rs:284-291), so gitignored files go silently and the live session's cwd becomes ENOENT. Two of three queue removals already ask `why_kept` (serve.rs:1455, :3481); :1627 is an oversight, not policy. Your SIGKILL objection fails: the stamp is written by the live process, read after it dies — the cgroup already works that way. And U1 is worse than you allowed: a stuck `Closing` owner never reaches `Closed`, so `past_compute` (disks.rs:51) never fires — caches and work are never reaped either.
+
+FINAL
+1. HIGH lifecycle.rs:460, reap.rs:161 — measure hard TTL from max(created, reopened).
+2. HIGH reap.rs:1175 + reap_pass.rs:92 — a self-owned close must write `Close`.
+3. MEDIUM git.rs:846 — ask `why_kept` inside `retire_if_empty`, before `--force`.
+4. MEDIUM reap_pass.rs:152 — renew through `busy()`/`session_writer`, not the hub alone.
+5. MEDIUM remote.rs:173 — host-side lease timer, or strike d.3's row.
+6. LOW in_use.rs:58 — an unreadable `/proc` must read as kept.

@@ -1,0 +1,14 @@
+[model: glm-coding (the preset's default model)]
+VERIFIED SINCE R1 (all at 9e9312b06): `warnings.rs:343` → `note` → `file_note` → `Placed::Seam` (`notes.rs:62-64`), drawn between rows (`ui/transcript/window.rs:805-840`); snapshot drops `ProviderTrouble` and `ModelRetry` (`sessionlog/src/view.rs:782,859`); guard test feeds `provider_quota` as a `Warning` (`app/tests/onevent.rs:172-190`) which routes to `note_beside` (`warnings.rs:303`); `limit_returned` is in STATUS (`warning.rs:1244`) and in `LIMIT_NOTICES` (`limit_notice.rs:13`), `limit_resumed` missing from `limit_words` (`:48-53`); fit ladder un-HYP'd — read at the pinned rev `c07e8ea`: `fit.rs:83` counts `link`, `:96-118` sacrifices everything else before `content_rows` (`:115`), never `link`.
+
+P2 (deepseek): concede F1 — `Surface::ALL` is not a match, so a new pane silently skips every walk; F2–F4 are coverage gaps by their own admission and prove frame↔head, never frame↔wire, which is where my findings sit. No rebuttal of mine survives theirs; their concessions are accurate.
+
+P3 (sonnet): concede the 116k→39k correction and the stale-manifest finding (verified `tui/Cargo.toml:41-51`: "absolute path" comment over a git rev). Pin sprawl and editor stacks are hygiene/structure, not display defects; adopt as LOW, out of my list.
+
+FINAL FINDINGS
+
+1. MEDIUM `warnings.rs:343` — spent-account row is operator-only and live-only (snapshot drops the event); `failed` never incremented. Route through `note_beside` + counter; test per real event.
+2. MEDIUM `warnings.rs:407` — retry series same class; make it a live line only.
+3. LOW `warning.rs:1244` — `limit_returned` drawn twice (STATUS `say()` + resident notice); drop from STATUS; add `limit_resumed` to `limit_words:48`.
+4. LOW-MED `screen.rs:362-368` — dismissible limit notice counted as never-sacrificed `link`, squeezes the decision card (`fit.rs:115`); give it its own `FitInput` field dropped after `show_status`.
+5. LOW `ui/transcript/offer_card.rs:16-35` — shadow grant row untested against I2.

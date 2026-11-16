@@ -1,0 +1,53 @@
+A3 round 1, reviewer 3 (position 3: against both).
+
+THESIS
+The boundary is real for a tight child. The wide (top-level) seat is the operator's host with a short deny list, and the evidence that the boundary works skips by default. Position 1 is right that secrets leak, but mostly by design, not by gate bypass. Position 2 is right about the mechanism and wrong about how well it is evidenced. "Three places" is half stale. The credential stores are now one list (`tools/src/secrets.rs:33-70`, read by `adjudicate.rs:1356 never_write`, `intent.rs:1554 secret_dirs` and `seatbelt.rs:111 deny_under_home`), pinned by one test (`secrets.rs:107`). What still drifts is everything beside that list.
+
+FINDINGS
+
+1. HIGH (HYP, not run). The daemon's operator doors rest on process ancestry, and the wide seat can start processes outside that ancestry.
+- `sessionlog/src/peer.rs:47-290` refuses a peer only if its pid descends from the daemon or sits in a `letibot.<pid>.*` cgroup.
+- The wide seat keeps `LETIBOT_SOCKET` and the sockets (`confine.rs:688-700`, "the wide seat keeps them") and keeps the host `/tmp`.
+- Scenario: a command runs `tmux new -d`, `systemd-run --user`, `at` or `ssh localhost`. The new process descends from the operator's own tmux, user manager or sshd, not from the daemon. It connects to the socket as the operator and gets submit, approve and mode doors. The tool-tree check was written for tools that stay in the tree.
+- Change: put operator doors on a socket path that is masked in every view, and serve only the sudo askpass door on the path a view can see. Add a test that spawns through a foreign parent.
+
+2. MEDIUM. The `GH_TOKEN` mask covers only bash output.
+- `.mask(` is called only in `exec/jobs.rs:1024` and `exec/host.rs:2867`. It matches an exact byte needle of 8 or more bytes.
+- `read`, `grep` and `glob` have no mask. `read` goes through `Backend::file_refusal` (`backend.rs:928`) and the fence, which only checks paths.
+- Scenario: `env > x.txt`, then `read x.txt`. The token is now in the transcript and goes to the model provider. `base64`, `rev` or `${T:0:4}` also defeat the needle.
+- `.config/gh` is `Seat::TightOnly` (`secrets.rs:44`), so the wide seat reads `hosts.yml` directly anyway. The mask is cosmetic for a hostile prompt.
+- Change: run the same masker over file-tool results, or stop calling it a protection. Add a test where the token is written to a file and read back.
+
+3. MEDIUM. Read-side secret lists beyond `STORES` are not in the fence, and no test pins them.
+- Only `STORES` is shared with the fence, which is built from `masked_under_home` (`seat.rs:460`).
+- `intent.rs:1558-1566` adds `.config/flowy`, `/etc/shadow`, `/etc/sudoers` and `/etc/ssl/private`. `SECRET_FILE_NAMES` (`intent.rs:1571`) and `SECRET_EXTENSIONS` are separate again.
+- The comment says the whole `.docker` is secret, but the shared list holds only `.docker/config.json`.
+- The wide `fence.inside` is `None` (`fence.rs:45`), so only the masked paths are denied. `read ~/.config/flowy/*` is accepted by the fence, and `/etc/ssl/private` is stopped only by file permissions.
+- Missing from `STORES` (verified by reading the list): `.pgpass`, `.vault-token`, `.config/rclone`, `.config/sops`, `.config/hub`, `.my.cnf`, `.s3cfg`.
+- The test `every_store_is_denied...` iterates `STORES` only. The extras in `secret_dirs` can rot unseen.
+- Change: derive the extras from `secrets.rs` (a `Flow` kind) and extend the test to `secret_dirs()`. Add the missing names.
+
+4. MEDIUM. The confinement tests prove strings, and the real ones skip unless asked.
+- `exec/confine/tests.rs` asserts on `build_argv` text and never runs bwrap.
+- The integration tests (`tools/tests/confine.rs:20-26`) return after `no_boundary()` when there is no userns or cgroup. `apparatus::absent` fails only if `LETIBOT_REQUIRE_APPARATUS` is set.
+- `docs/gate.md:112` says `gate-at.sh` runs `cargo test` without that variable (`gate-at.sh:55` confirms). `docs/remote-hosts.md:544` has the merge gate drop the demand on a host that cannot meet it.
+- Result: a lead's stack gate can be green with every bwrap test skipped. Inside an agent sandbox the tests skip every time.
+- Change: have `gate-at.sh` print a count of SKIPPED lines and refuse GREEN when the confine suites skipped. Run the real-bwrap tests with the variable set on lab2x1.
+
+5. LOW (HYP). Egress is all or nothing.
+- `seat.rs:160 network_rule` gives `Egress::Host` whenever the mode seats network. A tight child then shares the host netns. It can reach loopback services such as llama-server, and the daemon's TCP listener if one is enabled.
+- Change: use a netns with an allowlist, or deny loopback for tight seats.
+
+CONCESSIONS
+- Position 1's "R315 own-view grants widen a tight seat" is wrong. `own_view` is called with `cfg.session_id` (`harnessd/src/harness/open.rs:1161`), so the dirs are per-session. Children's spills are read-only (`confine/tests.rs:609`).
+- Position 2 is right on these points:
+  - `--clearenv` with a keep-list (`confine.rs:2944`).
+  - Secrets travel on an fd, not in argv (`host.rs:2305-2330`).
+  - The fence resolves symlinks (`fence.rs:84`).
+  - Absent protected paths get placeholders.
+  - The runtime probe measures the deny (`seatbelt.rs:642`).
+- Position 3's own "three places" claim covers `SECRET_FILE_NAMES`, the `secret_dirs` extras and the mask. The store list itself is now one list.
+
+ANTICIPATED REBUTTALS
+- "The wide seat is the operator's own session by ruling." Then finding 1 is the one that matters, because the guard assumes tools stay in the tree.
+- "Token exposure is accepted." Then say so in the docs, and remove the mask's implied promise.

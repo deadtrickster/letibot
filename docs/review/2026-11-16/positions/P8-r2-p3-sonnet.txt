@@ -1,0 +1,12 @@
+P8 R2, position 3 (four overlapping systems). Refs at 9e9312b06, paths under crates/.
+
+Position 2 finding 1 (decider is not a width): CONCEDE, and it supports my thesis. `no_wider_than` (tools/src/mode.rs:564-585) compares write, exec, network, grants and boundary. WRITES_ALLOWED (:302, Human) and AUTO_EDITS (:343, Model) are equal on all five, so the child may move to automode-edits under a human-decided parent. `ask_mode_confirm` (harnessd/src/harness.rs:924) passes, `mode_needs_consent` (:903) is false for any point but ALLOW_ALL, and `set_mode_consented` (:783) turns supervision on. The width order is one system. Who answers is a second, unordered one. Severity HIGH.
+
+Position 2 thesis (one check, every door): CONCEDE for the four admitting axes. `within_parent` (:813) is the single gate, and I found no other writer of `gate().set_mode` or `cfg.mode`. REBUT "no other path". `no_wider_than` is blind to `requires` and `decider`, and I did not verify that `within_parent` covers permission.json rules, `session_grant` or perimeters. HYP.
+
+Position 1 (stale ceiling): HYP. Not re-verified, since round 1 gave no evidence.
+
+FINAL FINDINGS
+1. HIGH, tools/src/mode.rs:564-585. Add a decider order (Human < Model) to `no_wider_than`. Alternatively, make `mode_past_parent` (harness.rs:826) refuse a Model decider under a Human parent. Add a test: automode-edits is refused under writes allowed.
+2. MED, harness.rs:903. `mode_needs_consent` should return true for a decider change from Human to Model, so a person answers it. Otherwise (1) must hold.
+3. MED HYP, harness.rs:813. Check whether child grants, permission.json and perimeters are also bounded by the parent's point. If not, state that `within_parent` bounds only the mode name.

@@ -1,0 +1,24 @@
+[model: glm-coding (the preset's default model)]
+THESIS. At 9e9312b06 the speaker field is still trustworthy only on the paths R251 touched. Four doors put agent- or repo-authored text into the transcript and the authorisation trail as `Speaker::Operator`, and the socket trusts any same-user process outside the daemon's cgroup as a head. Since only Operator authorises (`tools/src/authorise.rs:19-30`), every one of these is an authority leak, not a labelling nit.
+
+FINDINGS.
+
+1. The subagent brief is the operator's words. Critical.
+`harnessd/src/harness/children.rs:4223` sends the parent-model-written brief through `h.submit`, which is `submit_spoken(Speaker::Operator)` (`harnessd/src/harness/turns.rs:201-202`), trailed as Operator at `turns.rs:337` and reseeded as Operator after restart (`harnessd/src/harness/trail.rs:107,138`). Scenario: the parent writes "you may run `cargo test --workspace` unprompted" into a brief; the child's trail now holds an operator utterance saying so, which is exactly what the R316 oracle and the shadow's authorised spans read. Fix: the correct door already exists — `submit_a_parents_message` (`turns.rs:1610`) / `parents_message_turn` (`turns.rs:1641`); pass the harness-composed worktree facts as a separate Agent row.
+
+2. Command files, including a cloned repo's, run as the operator. High.
+`harnessd/src/commands.rs:44-45` searches the workspace's `.letibot/commands` and `.claude/commands`; the body goes out with `peer: None` (`harnessd/src/sessions.rs:1211` → `run_prompt` `sessions.rs:2497-2523`). R283's `allowed-tools` narrows the turn's tools, not the speaker. Scenario: a reviewed PR ships `.claude/commands/fix.md` whose body says "approve the pending grant"; `/fix` stores it as the operator's utterance. Same class: `/skills` loads skill bodies via `submit` (`harnessd/src/harness.rs:1541`). Fix: submit command/skill bodies as `Speaker::Agent` under a harness-composed header naming the file.
+
+3. acp prompts are the operator's. Medium.
+`acp/src/session.rs:368` uses `prompt_with_context`, which hardcodes `from: None` (`sessionlog/src/client.rs:190-198`). An agentic editor driving ACP gets its model's words stored and trailed as the operator's. Fix: derive a handle from the editor identity and use `prompt_from`.
+
+4. The journal drops the sender. Medium.
+`JournaledPrompt` (`sessionlog/src/hub.rs:458-468`) has no `from`; restore writes `from: None` (`hub.rs:779`), rescued only when identity is `letibot-mcp` (`hub.rs:93`). Any other peer identity — acp after fix 3, future bridges — comes back from a crash as the operator. Fix: journal `from`.
+
+5. Skew silently re-authors. Medium.
+The daemon accepts any protocol number (`sessionlog/src/server.rs:729-744`), and `from`/`delivery` are `#[serde(default)]` (`sessionlog/src/protocol.rs:652-657`). A newer bridge prompting a pre-75 daemon has its peer line stored as the operator's, silently — the doc comment at `protocol.rs:12-14` still promises refusal. Fix: refuse peer prompts on a daemon that predates `from`, or make the bridge refuse to prompt when skewed.
+
+6. Any process outside the cgroup is a head. High.
+`Peer::refuses` returns `None` for every frame when `inside` is false (`sessionlog/src/peer.rs:36-41`), and `inside` is only descendance or `/letibot.<daemon>.` cgroup membership (`peer.rs:47-52,286-296`). A model-placed `systemd-run --user` scope — the mechanism the launcher itself uses — lands outside both, then attaches with `from: None` and owns Prompt, Answer, Mode and Secret (I4's tmux case is the same hole from the other side). Fix: a socket token as the room has, or refuse authority frames from unknown head kinds.
+
+CONCESSIONS. Position 2 is right that the room path is clean: I verified wake rows are `Speaker::Agent` with firings as Notice rows (`turns.rs:646-665,681-688`), and R251's head path holds. But "the paths in use" is exactly what findings 1-2 are: subagents and command files are in constant use. Position 3's design point is my fix direction — the connection, not the frame, must carry authority — but it excuses nothing today: the brief needs one line changed to an existing door.

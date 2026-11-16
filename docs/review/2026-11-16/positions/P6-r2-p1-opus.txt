@@ -1,0 +1,15 @@
+Position 1, round 2. Refs at 9e9312b06, crates/ unless noted.
+
+Rebuttals and concessions:
+- P2 thesis. I concede it for scripts/gate-at.sh only. It moves HOME and XDG (:54-55), and providers.toml is not linked (:40). But the merge queue is the gate that lands code, and gate-at.sh plays no part in it. P2's finding 1 is my case.
+- sudo_ask. I concede it. It sets a private XDG_RUNTIME_DIR (letibot/tests/sudo_ask.rs:75) and a scratch socket (:115). It opens no store, because `store_at` returns None at config.rs:1662.
+- Keys link (gate-at.sh:41). Low. A test runs as the operator's uid, so it could read ~ directly anyway. This isolation guards against accidents, not against hostile tests.
+- P3. No report was produced. Its claim of seven config resolvers is HYP and I do not use it.
+
+Final findings:
+1. HIGH - harnessd/src/mergequeue/gate.rs:474-479 and :1219. `StepEnv::apply` sets only the target dir, TMPDIR and jobs, and `sh -c` inherits the daemon's HOME, XDG dirs and LETIBOT_SOCKET. Under the queue gate:
+   - `the_box_publishes_which_providers_it_holds_a_key_for` (harnessd/src/config/tests.rs:380/407) runs `keys::resolve` against the real providers.toml and the env keys (provider/src/keys.rs:194).
+   - Every fixture's `Harness::open` runs `Places::here()` (tools/src/lifecycle.rs:162, from open.rs:1129). That reads the operator's settings and makes session dirs under the real gc root.
+   - restart_notice.rs:102 `for_this_box` gets the live `default_socket_path()` (sessionlog server:36). open.rs:1368 then exports it as LETIBOT_SOCKET.
+   Change: `apply` puts the same scratch HOME and XDG dirs on the step that gate-at.sh uses, unsets XDG_CONFIG_HOME, and removes LETIBOT_SOCKET.
+2. LOW - tokencore/src/apparatus.rs:20-25. The GLM GGUF falls back to the literal path /home/dead/models even when HOME has been moved. It only reads. Change: drop the literal fallback, or put it behind LETIBOT_VOCAB_GGUF.

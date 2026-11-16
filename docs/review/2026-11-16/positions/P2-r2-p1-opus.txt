@@ -1,0 +1,16 @@
+Round 1 for position 1 produced no report, so I rebuilt the case from the code at 9e9312b06.
+
+Rebuttal of position 2: the frame checks hold (hub.rs:87-94, peer.rs:62-118, authorise.rs:153-176), but the gate only sees what is stored as `Speaker::Operator`, and two in-tree paths store agent text as exactly that.
+
+Conceded:
+- flowy has no Prompt sender.
+- The journal loses only the name - hub.rs:768-779 keeps identity, so `peer()` still holds.
+- ACP is an editor seat (identity `acp`, session.rs:34), so operator is the right default.
+
+Against position 3: it is right that authority comes from the connection, but the connection test is itself loose (finding 3).
+
+FINAL
+1. children.rs:4223, HIGH. The child's first turn is `h.submit(&brief)`, which is Speaker::Operator (turns.rs:201-202). The brief is the parent model's task prompt (children.rs:3716). The child's gate then counts it as operator words, so the parent authorises itself through its child. Change: speak it as Agent, as `submit_a_parents_message` does (turns.rs:1610-1618).
+2. sessions.rs:1210, MEDIUM. Command-file bodies from the workspace's `.letibot/commands` and `.claude/commands` (commands.rs:514, 556) run through `run_prompt(.., None)` as Operator. An agent can write those files. Same pattern: harness.rs:1541, where the skill body is Operator. Change: the body as Agent-labelled context, and only the operator's typed `rest` as Operator.
+3. peer.rs:286-296, MEDIUM. On Linux, an unreadable `/proc/pid/cgroup` returns false, so the connection counts as outside and is served. It only matches this daemon's pid, so another daemon's tool is also outside. Its Prompt with no `from` from a non-mcp identity lands as Operator (hub.rs:91-93). Change: fail inside on unreadable, and match any `/letibot.` cgroup.
+4. server.rs:731 and head.rs:822, LOW, HYP. A version skew is warned about and then served. A pre-`from` daemon would store bridge prompts as Operator. Change: the bridge refuses prompt_from on a daemon older than the protocol version that added `from`.

@@ -1,0 +1,17 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+P4 R2, position 2. Read at 9e9312b06; `bash` is gate-blocked here, so no test run.
+
+CONCEDE / REBUT
+- P1 F1 (prompt pop): concede. `pop_front` syncs (`hub.rs:482-485`); the row lands only at `turns.rs:1713`. My R1 #1 said the same; adopt P1's severity.
+- P1 F2 / D1: my MEDIUM was wrong. `run_journal` re-saves the same snapshot every second (`hub.rs:441-451`) and `journal_settled` (`:809`) has test callers only, so on a locked store the window is the lock's life → HIGH.
+- D2: concede MEDIUM on room fsync. One shared board file; `write`+`rename` unfsynced (`room/src/store.rs:414-416`).
+- P3: concede. `Offer` is appended (`turns.rs:3865`), stored, and dropped only by a renderer arm (`provider/src/messages.rs:377`); I verified nothing stops it. Out of the loss argument, not refuted. The other two are test gaps; accept LOW.
+- P1 R1 #4 was dropped by P1 R2 and verified here: `open` never repairs a missing final newline and `append` writes no leading one (`room/src/store.rs:345-357`), so the first record after a restart glues onto the torn fragment and both vanish at the next open.
+- Still holds: triggers `store.rs:526-552`, `pragmas` `:1605-1611`, carve's trigger drop inside one transaction after `verify_chains` (`migrate_split.rs:274-352`).
+
+FINAL
+1. HIGH `sessionlog/src/hub.rs:483` — popped prompt leaves the journal before `turns.rs:1713`. Keep it journaled until `opened`; dedupe on `client_request_id`.
+2. HIGH `harnessd/src/harness/turns.rs:4507` — `Leave` returns Ok, `:1713-1714` runs `opened`, `deliveries.rs:1051-1057` durably marks delivered/acked rows never committed. Return not-stored.
+3. HIGH `hub.rs:528-537` — ack before save; wait `journal_settled`, bounded, and in `Hub::close` (`:2368`).
+4. MEDIUM `room/src/store.rs:92` — unreadable file → empty shadow, `:123` skips silently, `compact` `:373-416` rewrites from it. Lossy read; never compact after a bad load; `.bad` copy; newline repair.
+5. MEDIUM `room/src/store.rs:345-368` — no fsync on append.

@@ -1,0 +1,18 @@
+[model: glm-coding (the preset's default model)]
+All key claims verified at `9e9312b06` in this worktree. Writing the report.
+
+vs P2 R2 (fable): Concede "loud" — attach fails named at `sessionlog/src/client.rs:79-86`; I drop "silent" from my #2. But loud-and-total: this run lost two seats, bridges at 74/70 failing *every* attach on the 78 daemon's `Hello` (`unknown variant peer` — `TodoBy::Peer`, `event.rs:74`). Your own #3 (translate the snapshot) concedes the policy cannot stand without it; a floor makes the refusal name both builds instead of a decoder complaint. Also `protocol.rs:252-258` promises frames from a newer daemon are "reported and skipped" — but `Hello` is read at attach, not by the pump (`client.rs:1066`), so the promise cannot hold for the first frame. Your #2 send-gate finding: verified, `may_write` (`bridge/src/head.rs:2360`) checks only `watch_only`.
+
+vs P2 R1 (deepseek file): your snapshot-not-translated core is my #2; your eprintln-only say and dead launcher arm stand, minor.
+
+vs P3: golden frames — taken, but they catch nothing in A1/A3/A5-live; corpus-first is wrong order, the crash goes first. Your #2 (`decision: None` → "ungated") is NOT-REPRODUCED (`tui/src/app/events/transcript.rs:152-168`) — drop.
+
+FINAL
+1. HIGH `sessionlog/src/wire.rs:62` — unbounded `read_line`, read at `server.rs:712` before the peer refusal `:747`. Port the room's bounded reader (`room/src/server.rs:4992-5002`), `Bye` on over-long.
+2. HIGH `sessionlog/src/compat.rs:13-84`, `server.rs:2211-2219` — `Hello` snapshot sent raw; `Parked` (`view.rs:180`) and `TodoBy::Peer` defeat pre-75/77 heads, observed this run. Add `OLDEST_HEAD` floor + snapshot translation in `OlderHead`.
+3. MED `sessionlog/src/protocol.rs:655` — `delivery` added under 76; queued prompt silently steers (`protocol_skew` None at `:246`). Bump on meaning change.
+4. MED `bridge/src/head.rs:816,2252,2360`, `fleet.rs:216` — no send gate; per-frame minimum version.
+5. MED `bridge/src/head.rs:836` — acks past an `Unreadable` event; hold the ack or `Resync`.
+6. LOW-MED `room/src/wire.rs:261,167` — `MayPrompt`/`family` under 12; bump 13, keep `OLDEST_CLIENT=11`, v11 replay.
+7. LOW `protocol.rs:12-14` — doc says refuse; `server.rs:729-744` accepts.
+8. TEST golden frames per tagged version (P3, accepted).

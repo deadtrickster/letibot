@@ -1,0 +1,20 @@
+[model: kimi-code-global (the preset's default model)]
+THESIS
+Both other positions argue about outcomes (mail lost / mail settled). The defect is upstream of outcome: the bridge is a second, untyped room client that re-derives the room's own facts — reach, host key, socket path — and the only tests that exercise its verb surface talk to a coordinator the tests wrote. Divergences are therefore structural, and neither acking (P1's fix) nor test-count (P2's defence) touches them.
+
+F1 — `fyi` reach diverges from the room's own rule. HIGH.
+`crates/bridge/src/rooms.rs:409`: `SayKind::Fyi => "passing"`, unconditional. `crates/room/src/chat.rs:396`: `SayKind::Fyi if !names_you => Passing` — an fyi that names you is `Addressed`. `names_you` is exactly that (`crates/room/src/wire.rs:678`). The bridge's value is handed to `push_channel` as the `event` (`crates/bridge/src/push.rs:299`). Scenario: a peer says `kind: fyi, to: cc@x` carrying work; the coordinator pushes `names_you=true`; the bridge tells the layer "passing"; a layer written against `letibot_room::Reach` ("passing ⇒ silence") drops a message the sender addressed. The bridge contradicts itself: `rooms.rs:23` and the tool schema at `rooms.rs:1438` both say "`fyi` wakes only whom it names". Fix: delete `reach()` and take the reach from the room crate — either compute it from a typed `Message` (as `chat.rs:388` does) or carry it on the wire.
+
+F2 — the box key and the socket path are derived twice. MEDIUM.
+`crates/bridge/src/rooms.rs:270` is a verbatim copy of `letibot_room::lease::host_key_of` (`lease.rs:321-347`, FNV-1a included), and `box_key()` (`:297`) calls the copy, not the crate's. `socket_path()` (`:341`) re-spells `room-<key>.sock` over its own `data_dir()` (`:117`), while `letibot_room::socket_path` (`lease.rs:442`) and `harnessd/src/room/mod.rs:38` already own that spelling. Scenario: the room crate narrows or widens the key (24 → 32, hash to u64) — the coordinator serves `room-<new>.sock`, every bridge dials `room-<old>.sock` and reports "the room is not there" while sessions keep working; an ENOENT is indistinguishable from "no coordinator". No test can fail, because every bridge room test passes `RoomLink::at(path)` a literal (`tests/room_tools.rs:390`). Also `data_dir()` falls back to `.` with no HOME, where harnessd refuses ("nowhere to put a socket"). Fix: call `letibot_room::{host_key, socket_path}` and take the directory from the one owner.
+
+F3 — the verb surface is proved against a fake. MEDIUM-HIGH.
+`crates/bridge/tests/room_tools.rs:1` says it plainly: "a fake coordinator". `:123` binds a listener, `:265` hand-writes `welcome`, and `:173` invents `names_you = to == Some("claude-code") || text.contains("@claude-code")` — a two-line approximation of a rule the server computes. `room_say`, `room_inbox`, `room_ask`, `put_blob`, `asks` are asserted against this, so a renamed wire field or a changed `refused` shape leaves the suite green: the test proves the bridge agrees with the test. Fix: drive those verbs through `Server::serve` + `Client::connect_as`, as `tests/room_share.rs:18` already does.
+
+F4 — two parsers of one wire. MEDIUM.
+The room crate has a typed door, `Client::request(&Request) -> Response` (`client.rs:269`); the bridge never constructs `Request`, reading `m["kind"]`, `m["refs"]`, `f["protocol"]` off `Value` (whole of `rooms.rs`, ~1.7k lines against `client.rs`'s 606). F1 is what an untyped second parser costs: the compiler cannot see the missing `names_you` arm.
+
+CONCESSIONS
+`room_share.rs:18`, `room_nick.rs:42` and `prompt_unheld.rs:324` do use a real `Server`, so connect/share/nick/reconnect are genuinely covered — I withdraw "its main room test" as the strongest form. P1 is right that misdelivery exists, but ack/replay work leaves F1. P2 is right that R259 settled acking; it is not the reach rule.
+
+HYP: F2's blast radius assumes the coordinator's key changes; I found no divergence today.

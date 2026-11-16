@@ -1,0 +1,23 @@
+A9 R1, position 1 (head shows what the model was not sent, or draws it twice). Read at 9e9312b06, paths under crates/. No test run.
+
+THESIS: I2 is only held on the head for `SessionEvent::Warning`. Two other event types file conversation rows the model never got. Neither row is in the snapshot, so a live head and a reattached head draw different conversations. The guard test feeds the wrong event, so it passes over the breach. Chrome has a second-writer problem too: one limit fact can be drawn twice, and a dismissible notice is ranked "never given up".
+
+FINDINGS
+
+1. MEDIUM. A spent-account failure is an operator-only conversation row, and only on a live head. `tui/src/app/events/warnings.rs:343` files `provider_quota` with `self.note`, which is `Placed::Seam` (`app/notes.rs:62-64`). `ui/transcript/window.rs:805-835` draws a Seam note between transcript rows. Every other warning takes `note_beside` (`warnings.rs:303`). The snapshot drops `ProviderTrouble` (`sessionlog/src/view.rs:782`), and the same failure also goes out as `turn_failed` on the status line. Failure: the account runs dry mid-turn. The live head shows a red row in the conversation plus a status notice for the same event. A head attached afterwards shows no row. `self.failed` is never incremented on this path, so the edge count is missing too. `no_warning_is_a_row_of_the_conversation` (`app/tests/onevent.rs:172`) sends `provider_quota` as a `Warning`, which the daemon never emits for it. The test is green while `app/tests/retryrow.rs:81-89` asserts the row exists. Change: route quota through `note_beside` with the failure count. Extend the onevent test to also send each code through its real event (`ProviderTrouble`, `ModelRetry`).
+
+2. MEDIUM. A retry series is a live-only conversation row. `warnings.rs:407` `file_retry` uses `file_note` (Seam), and `view.rs:859-862` does not fold `ModelRetry`. A recovered series is withdrawn. A series that ends in failure stays as a row the model never saw and a late head never gets. Change: make it a status or progress row (the code comment at `sessionlog/src/warning.rs:331-333` already calls it "one LIVE line and no row at all"), and leave the durable fact to `turn_failed`.
+
+3. LOW. `limit_returned` can be drawn twice. It is in `STATUS` (`sessionlog/src/warning.rs` STATUS list), so `warnings.rs:275` calls `say()`, which puts the transient notice in the status row. It is also in `LIMIT_NOTICES` (`tui/src/app/limit_notice.rs:9-14`), which draws the same sentence above the composer until dismissed (`ui/screen.rs:312,383`). For `NOTICE_MS` both are on screen. Change: drop `limit_returned` from `STATUS`, since the resident line is its destination. Also `limit_resumed` has no reader in `limit_words` (`limit_notice.rs:47-52`), so it falls back to the first clause.
+
+4. LOW-MEDIUM. The fit ladder ranks dismissible news above the decision card. `screen.rs:362-368` adds `limit_notice`, `nag_pause`, `waiting` and `reseat_strip` into `FitInput.link`. rano `src/agent/fit.rs:83-87` counts `link` as never given up and shrinks `content_rows` (the card) before it (`:115`). Failure: a short pane with a permission card up and a limit notice wrapped over two lines. The card's options are squeezed away while a ctrl-n-dismissable notice stays. Change: give dismissible resident lines their own `FitInput` field, dropped after `show_status` and before `content_rows`.
+
+5. LOW (adds head evidence to P4 U2). The head draws `TranscriptItem::Offer` in place from the record (`ui/transcript/offer_card.rs:1-3,16-35`), including the shadow grant row (`OfferKind::Shadow`, `:21,25`). Whichever way P4 D4 is decided, there is no head test that limits it to Offer.
+
+The compaction phases are clean. `compacting` and `compaction_pending` are state only (`warnings.rs:78-100`), and `compacted` is a TWIN with nothing drawn (`:274`). The ctx double writer is STALE F1, not repeated here.
+
+CONCESSIONS
+- The limit notice reads `/notes` and adds no transcript row (`limit_notice.rs:18-27`), so 6e31b27f7 itself is I2-clean.
+- `on_provider_trouble` correctly drops the typed twin of a move (`warnings.rs:325-329`).
+- Position 2 will say screen tests already hold this. They hold it for the event the test sends. Finding 1 shows a passing test over a real breach, which argues for per-event tests, not more pictures.
+- Position 3 has a real point. `fit_ladder` lives in rano, and this build reads `/home/dead/Projects/rano/rano` by absolute path (`tui/Cargo.toml:41-50`). Finding 4 is cross-repo and not pinned to 9e9312b06 (HYP that the live rano matches the snapshot build). That supports pinning rano, not dropping the fix.

@@ -1,0 +1,11 @@
+[model: claude-opus-5-5] A6 r2, position 1. r1 (glm) defended, two items cut.
+
+To P2/deepseek: concede install-off-box is a refused config, not a false "installed" - install-gate-build.sh refuses the host's src.git worktree and the row says the install did not complete (serve.rs:3370). Down to LOW. Concede retire_an_empty_tree (children.rs:3537): both callers (:4149, :4265) retire the child's own just-minted tree on its failed start. Dropped, HYP only for a resumed tree. Fable F1/F2 (bridge approve, Withdrawn restart) out of my position, not re-verified, not disputed.
+To P3/kimi: the env inheritance and the gate_host apparatus strip are theirs and fit "reports wrongly". Rebut sonnet's "all downstream of size": no fetch and the serve.rs retire are missing calls, not split rules. One table fixes neither.
+
+FINAL
+1. serve.rs:2175 / git.rs:687, HIGH. No fetch anywhere in mergequeue (grep). Local CAS on a stale tip, push refused, row `landed_local`, local main now ahead, every later row fails the same way. Change: fetch target before the tip read; on refusal fetch, reset, requeue.
+2. serve.rs:1627-1635, MED-HIGH. Superseded retire asks `door.session_live` only; the default door answers false (serve.rs:125-128) and sees no other daemon or host. Change: route through `in_use::why_kept` like settle_tree.
+3. scripts/gate-at.sh:58-64, MED. Green = >=140 `ok` lines, cargo exit discarded (:55), no clippy, no apparatus demand. Change: run the AGENTS.md gate via parse_merge_gate, judge by exit code.
+4. gate.rs:21 + no queue flock (only gate-at.sh:48-50), MED. Fixed 30 min deadline across bisect re-gates, beside a lead's gate. Change: take /build/gate.lock; deadline in [queue].
+5. serve.rs:3026, LOW. `Pushed::NoRemote` installs. Change: no install without a push.

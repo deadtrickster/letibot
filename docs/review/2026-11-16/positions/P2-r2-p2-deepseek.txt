@@ -1,0 +1,13 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Concede p1's brief (HIGH); rebut its journal and acp items. Rebut p3's CRITICAL, adopt only its cheap additive piece.
+
+To p1: children.rs:4223 conceded at HIGH — `h.submit(&brief)` stores the parent model's task prompt as `Speaker::Operator` (turns.rs:201-202), citable at turns_ago 0; children.rs:678-680 says in so many words that answering a parent's message as a prompt "would put the parent's words in the operator's mouth", and `parents_message_turn` (turns.rs:1640) is the door already there. Command files and `/skills` conceded MEDIUM (sessions.rs:1211, harness.rs:1541) — R283 narrows the turn, not the trail row. Legacy default conceded LOW. Journal rebutted: no in-tree sender sets `from` under a non-mcp identity (`speaks_as: (identity == IDENTITY)` head.rs:1691 == hub.rs:93's constant), so restore loses the label, never authority. acp stays HYP.
+
+To p3: the ancestry check is conceded (peer.rs:28-46), but "a same-uid process outside the tree is the operator" is the head door itself (server.rs:742-750; 0600 socket), and nothing can authenticate a head — p3's own fix needs a credential the tree has not got, and tmux typing (I4) defeats it. One additive piece survives: `in_daemon_tree` matches `/letibot.<this daemon>.` only (peer.rs:283-292), so another daemon's tool reads as a head.
+
+FINAL
+1. harnessd/src/harness/children.rs:4223 — HIGH. Speak the brief as Agent (`parents_message_turn`) with `Facts::Parent`; add the test `message_between_turns.rs` has for the sibling door.
+2. harnessd/src/sessions.rs:1211, harness.rs:1541 — MEDIUM. Body as Agent, typed verb Operator.
+3. bridge/src/browser/mod.rs:404 with ask.rs:196 — MEDIUM. Page markdown rides the Operator prompt: trail keeps 600 chars (harness.rs:79), the shadow 6000 as `Author::Operator` (feed.rs:16, words.rs:83) though its own doc calls a fetched page Tool. Page as its own part, excluded from trail and spans.
+4. sessionlog/src/peer.rs:283 — MEDIUM. Match any `/letibot.` cgroup.
+5. harnessd/src/answers.rs:943 — LOW. `human:` for a bridge identity; `adjudicate.rs:2018` then claims a person saw it.

@@ -1,0 +1,23 @@
+P8 round 1, reviewer 2 (position 2). All refs at 9e9312b06, paths under crates/.
+
+THESIS
+The width check is one function and every live `/mode` door reaches it. `set_mode_consented` calls `within_parent` at harnessd/src/harness.rs:765 before the gate, `cfg.mode` or `point_cell` move (:766-794). The three doors pre-check with `mode_past_parent` before any row: worker sessions.rs:4888, in-turn turns.rs:3294, bridge harness.rs:924. Refusal is by name (:814-819), never a clamp. No other writer exists: grep finds `gate().set_mode` only at harness.rs:766, and `cfg.mode =` outside open only at :790. Consent is handled: `mode_past_parent` compares ALLOW_ALL_HERE when consented and unconfined (:835-840). So position 2 holds for the four admitting axes on a live spawned child. It does not hold as worded. Findings below.
+
+FINDINGS
+
+1. HIGH - the decider is not a width. tools/src/mode.rs:564-585 compares write/exec/network/grants/boundary, and says `decider` "only names". WRITES_ALLOWED (:302, Human) vs AUTO_EDITS (:343, Model) are equal on all five, so `AUTO_EDITS.no_wider_than(WRITES_ALLOWED)` is true. Scenario: parent at `writes allowed`. The bridge calls `leticode_mode automode-edits` on the child. `ask_mode_confirm` passes :924, `mode_needs_consent` is false (:903), applied at :937 with no person. harness.rs:783-788 turns the guard model on. The child's exec and network asks are now answered by a model while the parent's go to the operator. Needs an oracle endpoint in the child's supplies. Change: rank decider (Human < Model) in `no_wider_than`, add the pair to child_mode.rs.
+
+2. HIGH - a reopened child takes the daemon's base point, not its parent's. sessions.rs:2156-2165 builds the config from `self.base.clone()` with `parent_session_id` set. open.rs:669-673 skips the child's own row, :696-700 skips the project row, so `cfg.mode` is the daemon flag or default (config.rs:1785, always-ask). open.rs:2214-2217 then makes that the ceiling. Parent narrowed to read-only, child followed (row written harness.rs:875, never read back for a child), daemon restarts, child reopens at always-ask and may `/mode` up to the daemon's point. Worse than the backbone's wording ("the point it reopened at"). Seat tools at reopen HYP. Change: read the child's own row at reopen, and resolve the parent's row for the ceiling.
+
+3. MEDIUM - "tests fail with the check removed" is true for two of three doors. child_mode.rs:66 covers turns.rs:3294 (row asserts :99-108), harness.rs:924 (:111-114) and :765 (:118). Nothing drives sessions.rs:4888: the refusal string appears in no other test. With 4888 removed, sessions.rs:4909 writes the wider PROJECT row, then :4935 refuses. Session stays put, every later root session in that project opens wider. Suite stays green. Change: a worker-door test asserting no project row.
+
+4. MEDIUM - both tests pass vacuously without a GGUF. child_mode.rs:70-72 and :127-129 `return` when `vocab_gguf()` is None (lib.rs:137-146: no `local` feature or no loadable file). On such a box the check can be deleted and the tests are green. Not run here. Change: build the child without a vocabulary, or fail loudly.
+
+5. MEDIUM - "a refused one writes no row" covers only the parent refusal. sessions.rs:4909 writes the project row before `check` runs at :4935; turns.rs:3301-3312 calls `record`, and modes.rs:291 sets the project row even when `session_moved` is false. A child asking `automode` with no oracle, under a wide parent, rewrites the project row and stays put. Also a child's legal narrowing rewrites the project's row for every later root session. Change: a child's `/mode` writes its session row only; write the project row after the move succeeds.
+
+6. LOW - `/supervise` on a child (sessions.rs:1513, harness.rs:1189) has no parent check. Same decider swap as 1 without a mode change. Gate effect HYP.
+
+7. LOW - `narrow_to_parent` failure leaves the child wider with a warning only (harness.rs:890-897).
+
+CONCESSIONS
+To position 1: restart (finding 2) and the batch-boundary lag (turns.rs:1826, :2652) are real; a running call keeps its point. To position 3: grants are compared as one bit (mode.rs:580); standing grants, permission.json and perimeters are outside `no_wider_than`, and 1 and 6 are that overlap showing through. What stands: on the admitting axes, for a live spawned child, no door widens and each refusal names the parent's point.

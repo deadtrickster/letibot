@@ -1,0 +1,21 @@
+A2 round 1, reviewer 2 (position 2: the ladder holds). Paths under /home/dead/Projects/letibot/wt-review-snap/crates/tools/src unless said.
+
+THESIS
+For tool calls the ladder is one function (`adjudicate.rs:3179 admit`), and every admitting arm re-checks the tier itself: permission (:3362), mode (`mode.rs:486`), reviewer (:1551), shape (:3493), grant (`covers(&req.tier…)` :3507), model (:3558), and both recording sites (:3609, :3640). The always-ask card has no standing rung (`always_ask_options` :483, chosen first at :2413) and an unoffered option is NotRun (:3676; tests `gate.rs:387`, `card.rs:62`, `boundary.rs:664`). R305's gate test discriminates: I ran `an_allow_rule_does_not_beat_always_ask` (passes). Without the :3362 arm, `rm -rf /home/dead/x` reaches the allow arm at :3363 and `assert_ne!(…, Admit)` fails. So the structure holds. What is wrong is the doc and the tables feeding the ladder.
+
+FINDINGS
+1. MEDIUM. The doc's order is stale in three places. `docs/boundary-and-adjudication.md:1139` says "`allow` admits" with no always-ask or project-code fall-through (code :3362, :3384). No step for the reviewer arm (:3466, `gate:reviewer`). Lines 1144 and 1255 say `admits_unasked` "governs MayApprove and nothing else" and "refuses AlwaysAsk at every point"; `mode.rs:492` admits AlwaysAsk wherever boundary != Operator. Scenario: a reviewer of this panel reads 4l, concludes allow-all asks on `sudo`. Change: rewrite 4l from the code, number the arms the same in both.
+2. MEDIUM. `mode.rs:492` ignores the access disposition. Harmless at the two named points (both Admit everything), but `Mode` is a value ("others are legal", :199): Structural with exec=Ask would ask `ls` and admit `sudo`. Change: `&& self.disposition(access) == Admit`.
+3. HIGH (HYP end-to-end, read not executed). The R305 seed test proves five programs, not the seed. `write_or_exec_flag` (`permission.rs:506`) knows sed, sort, git, tree, xxd -r. Seed rows `uniq*`, `xxd*`, `rg*`, `ugrep*` (`config/permission.json`) are not covered: `uniq in OUT` and `xxd in OUT` write, `rg --pre CMD` execs. `intent.rs:1078-1080` names all three ReadFile; no `--pre` anywhere in intent.rs. So `judged_access` (:2064) gives Read, which skips `never_hit` (:3287 runs only for Write|Exec) and `runs_project_code_unconfined` (:2090). Scenario: `rg --pre ./x.sh foo` or `uniq payload ~/.config/autostart/x.desktop` admitted by `gate:permission`, no card. Change: rows in both tables, and make `the_seed_admits_no_write_or_exec_flag` iterate every seed row against a per-program write/exec fixture so a new row without one fails.
+4. LOW. "One function" is true for tool calls only. Three sibling `decide` sites (:2789 `ask_to_see`, :2976 `grant_memory`, :3080 `grant_perimeter`) skip breaker and `record`. P9 D3/A5 covers the view one; memory and perimeter hardcode AlwaysAsk (:2968, :3070), which is right.
+5. LOW. `permission_options` (:533) and `once_only_options` (:596) are byte-identical in output, so the `mode.grants` branch at :2417 selects nothing; the comment at :2406 claims a guard the recording site (:3640) lacks. Change: delete one builder and the branch, fix the comment.
+6. LOW. All `gh *` seed rows are dead: `gh` is in `AUTHENTICATES` (`intent.rs:2475`), so tier is AlwaysAsk and :3362 falls through. The file's "$comment" says "what never asks". HYP: whether `gh --version` is exempted as a probe. Change: drop the rows or say so.
+
+ANTICIPATING
+Position 1: approved shapes and `Once` are operator decisions bounded by MayApprove, no Destroy, no unconfined code (:3493-3497); the real leak is finding 3, and it is upstream of the ladder. Position 3: finding 3 is their best evidence (two hand-kept tables). I answer that the fix is one fixture test tying the tables, not new primitives; the tier re-check per arm is what made R305 a three-line fix. Finding 5 concedes the duplicate builder, not the two guard sets: `Offer` already feeds both.
+
+CONCESSIONS
+- "Order is documented" is PARTLY (finding 1).
+- "R305 tests fail without the fix" holds for :3362 and `exact_rule_for`; the seed test is narrower than its name (finding 3).
+- I did not mutate code; "fails without the fix" is by reading plus one green run.
+- Ladder correctness rests on `baseline.reads_only()`; a normaliser miss downgrades three arms at once.

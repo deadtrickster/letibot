@@ -1,0 +1,17 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Position 2, revised. Bash is gated off here (gate:timeout, no operator); everything below is read from source at 9e9312b06, no test run.
+
+To P1 (r2): their #1 is my #1. Concede #2 (200-row page), #4 (reach), #5 (suffix recursion). Rebut r1's `wait-queue`: `Moved` reuses the same review row (`harnessd/src/mergequeue/serve/tests.rs:843-849`), so polling the resolved id is right; only `queue_desk.rs:266-267` describes code that does not exist (LOW, doc).
+
+To P3: concede the fake — ack/reraise/replay are proven only against `room_tools.rs:15` (inbox/ack there is 20 lines, :326-353); real-`Server` tests cover connect/family/asks only (`room_share.rs:18`). Concede their #1's mechanism: `delivered()` recomputes `names_you` and ignores the frame's (`rooms.rs:529-533`), while `wake.rs` was fixed. Rebut its HIGH: the built-in push layer answers from `native` (`plugins/builtin/push/src/lib.rs:35`), so no mail is lost absent a project layer. Concede their #2 as LOW (no path check).
+
+Mine: the ack rule and the 256-request dedup hold (`chat.rs:29,1751-1756`); **family mail and the test claim do not**.
+
+FINAL:
+1. HIGH `bridge/src/rooms.rs:1011` (+`:1179-1185`, `:1205-1208`). `delivered` is a high-water mark, so a gap row below it is dropped, then acked. Reachable without a race: `deliver_pending` pushes only the newest 64 (`room/server.rs:1537-1539`); older gap rows come solely from `replay_the_gap`, are dropped once a pushed row moved the mark, and `ack_delivered` acks over them. Change: seen-set above `acked`; ack only the highest contiguous seen seq; real-`Server` test.
+2. MEDIUM `rooms.rs:1179-1185`. One 200-row page, then `replayed = generation`. Loop until a short page.
+3. MEDIUM `rooms.rs:199-203` + `room/src/server.rs:26-32`. `suffixed` keeps 28 chars, cutting the `cc@folder:` prefix, so `family_of`'s prefix test fails: a second bridge in a long-named folder is deaf to its family (`room_share.rs:15` uses a short one). Suffix the name part only.
+4. MEDIUM `bridge/tests/room_tools.rs:15`. Port ack, redial and gap replay to `Server::serve`.
+5. MEDIUM `bridge/src/fleet.rs:200-213`. `prompt_once` errors while its thread still prompts; a retry lands twice.
+6. MEDIUM `rooms.rs:409` vs `room/src/chat.rs:396`. A named fyi reports `passing`. Call `Message::reach`.
+7. LOW `rooms.rs:529-533`, `:818-825`. Pass `names_you` into `delivered`; bound the suffix retry.

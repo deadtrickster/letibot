@@ -1,0 +1,9 @@
+I wrote /data/review-run/P6.md. Only 3 of the 6 report slots produced a report: P2 R1 (fable), P1 R2 (opus) and P3 R2 (sonnet). The other three failed on relay infrastructure. The record copies all six reports verbatim, with the indent the harness added removed.
+
+HIGH | crates/harnessd/src/mergequeue/gate.rs:474-479, :1219-1230 | StepEnv::apply sets only the target dir, TMPDIR and jobs, and the `sh` step has no env_clear. Queue-gate tests inherit the daemon's real HOME, XDG dirs and LETIBOT_SOCKET. Under it, config/tests.rs:407 reads the real providers.toml, Places::here() reads the real settings and gc root, and restart_notice gets the live socket. No Rust code calls gate-at.sh. | VERIFIED
+MED | scripts/gate-at.sh:54 | LETIBOT_SOCKET and LETIBOT_SESSION are not removed. The script relies on the caller's env -i. | not spot-checked (not high)
+MED | scripts/gate-at.sh:56-61 | A leaked store does not change the exit code, and the ISOLATED and LEAKED labels overlap under $G/home. | not spot-checked (not high)
+LOW-MED | crates/provider/src/keys.rs:195 and 5 other resolvers | An empty XDG_CONFIG_HOME is taken as a cwd-relative path. Resolvers disagree on this. A shared config_dir() is the proposed fix (D2). | not spot-checked (not high)
+LOW | crates/harnessd/src/config/tests.rs:380-413 | The result depends on the host's providers.toml. The HOME_ENV race was traced by reading, not reproduced. | not spot-checked (not high)
+LOW | crates/tokencore/src/apparatus.rs:20-25 | Literal /home/dead/models fallback, which ignores a moved HOME. | not spot-checked (not high)
+LOW | harnessd/tests/* (sudo_ask_live, stop_ends_runs, continue_picks, ...) | Per-test env isolation is uneven outside the gate. | not spot-checked (not high)

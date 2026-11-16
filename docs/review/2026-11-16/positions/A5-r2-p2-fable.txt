@@ -1,0 +1,17 @@
+A5 R2, position 2 (fable). Read at 9e9312b06, paths under crates/tokencore/src. No test run. Round 1 for this position never ran, so this is a fresh case.
+
+REBUTTALS
+- P1#1 carve: conceded, VERIFIED. Claims checked once (`migrate_split.rs:227`), deleting tx is deferred (`:274`), no seq or claim re-check before `delete_key_rows` (`:299`). `open_transition` hands an uncarved key `sessions.db` (`store/split.rs:584-585`). Triggers are dropped inside that tx (`:314-317`), so the append-only defence is off exactly there.
+- P1#2 migration: half conceded. No tx (`store.rs:1867-1874`). But arms 6-51 are guarded by `pragma_table_info`, and v51 guards each column (`:2633-2654`). The only row-deleting arm is v23 (`:2329-2342`), unreachable from a v50 store. A box-wide 50->51 upgrade costs a failed open at worst, not rows. MEDIUM, not HIGH.
+- P3#1: conceded. `migrate` (`store.rs:1895-1913`) never calls `batches()` (`split.rs:160`).
+- P3#2: not verified, HYP.
+
+HOLDS
+WAL+FULL on every connection (`store.rs:1605-1611`), triggers (`:526-545`), floor declared per arm (`floor.rs:39-90`), v51 arm.
+
+FINDINGS
+1. HIGH `migrate_split.rs:274` - BEGIN IMMEDIATE on `from` before staging, re-check claims inside it.
+2. MEDIUM `store.rs:1867-1874` - one IMMEDIATE tx over re-read version, `migrate_from`, stamp. The comment at `:1875-1877` treats holding the lock as a cost. It is the fix.
+3. MEDIUM `store.rs:2027-2036`, `:2264-2272`, `:2282-2289` - guard tests the first column of a multi-column batch. A kill between statements leaves the rest missing forever. Fixed by 2.
+4. MEDIUM `store/split_coverage_tests.rs:12-30` - `SOURCES` omits `grants.rs`, which holds `session_grant` (`split.rs:82`). Routed today (`grants.rs:91`, `store.rs:4325`), unscanned. Build `SOURCES` from the `mod` list.
+5. MEDIUM `split.rs:160` - P3#1, one const list.

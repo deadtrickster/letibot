@@ -1,0 +1,16 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+A9 pos 3, round 2. I re-measured the round-1 numbers; one reframed, one dropped, one new finding added.
+
+Concessions/refutations
+- P1 f1, f2, f5: conceded, verified. `warnings.rs:343` files `provider_quota` via `note`→`Placed::Seam` (`notes.rs:62-64`); `view.rs:782`/`:862` drop `ProviderTrouble`/`ModelRetry` from the snapshot, so a live head draws rows a reattached head never gets. `onevent.rs:172` sends only `Warning`.
+- P1 f3: conceded. `warning.rs:1244` plus `limit_notice.rs:9-14`, `warnings.rs:275`. `limit_resumed` has no reader (`limit_notice.rs:48-53`).
+- P1 f4: conceded, now pinned. rano `c07e8ea` `fit.rs:25,83` count `link`, `:115` shrinks the card; give-up order is hint, notice, rows, stuck, pane, status, boxed, card. My round-1 HYP about which rano was read is resolved — the cargo checkout holds `c07e8ea`.
+- P2 F1-F4: conceded as coverage only, no product defect. `hits.rs:19` does fix `x: 12`.
+- My round-1 f1 revised: 116,013 is correct as a directory count; the finding is 76,967 test lines against 39,046 code, `impl App` across 93 files/104 blocks, largest file 1,863.
+- My round-1 f5 dropped: `rano::letibot`'s only consumer is a test (`tui/tests/rano_editor_head.rs:16`); the 72-vs-78 skew ships nothing.
+
+FINAL
+1. MEDIUM `tui/src/app/keys/mod.rs:213-215` — head binds alt-d to the permission card's diff while `/help`/bar print rano's row "next mark or diagnostic" (rano `c07e8ea` `agent/keys.rs:81-86`); alt-s/alt-k printed (`shared_keys.rs:33`) but never decoded (`keys/input.rs:39-63`). Change: assert the head's map against every `Scope::Editor` row.
+2. MEDIUM `tui/src/app/events/warnings.rs:343` — quota row is operator-only; use `note_beside`, count `failed`, extend the test to real events.
+3. LOW `sessionlog/src/warning.rs:1244` — drop `limit_returned` from `STATUS`.
+4. LOW `Cargo.toml:150` — no `rano` workspace entry; six hand-written pins.

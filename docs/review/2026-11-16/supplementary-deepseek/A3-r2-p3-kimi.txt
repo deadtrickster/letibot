@@ -1,0 +1,10 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Fence, peer and store read verified at 9e9312b06 (no test run).
+
+**Rebuttals.** P1-F1/F4: conceded, with one correction — P1's "the tight shell never mounts the store" is wrong. `confine.rs:2837-2843` binds the store's data into *any* view that holds it, wide included, so wide-seat `read sessions.db` matches the shell. The bug is tight-only (below). P1-F2: right to withdraw nothing, wrong reason. P1-F3: conceded; `seat.rs:160` is mode-only, so the netns is decorative in every mode that runs. P2's "masks are void under `--dev-bind / /`": false — masks render at `confine.rs:2826`, after the dev-bind at `:2725`, and win. P2's "tests assert the refusal branch": true in-tree, but `scripts/gate-at.sh:55` runs without `LETIBOT_REQUIRE_APPARATUS`, so the stack gate returns GREEN having skipped every bwrap test (AGENTS.md:77 and `rrun:111` do set it — the documented shortcut is the hole). P2's fence fix (finding 3): agreed, keep.
+
+**Final list.**
+1. HIGH `sessionlog/src/peer.rs:36-41` — `!inside ⇒ refuses None`: any process that leaves the daemon's cgroup (`systemd-run --user`, `tmux new -d`, `ssh localhost`) is indistinguishable from the operator's head and gets Prompt/Mode/OperatorCall. `confine.rs:687-689` keeps the socket in the wide seat. Change: fail closed; require a per-head capability absent from a tool's env.
+2. HIGH `tools/src/exec/fence.rs:98-105` — store data is admitted before the tight root check at `:115`, so a tight child's `read` returns `sessions.db`/`panes/**` its shell cannot see. Change: gate the store branch on `inside`.
+3. MEDIUM `fence.rs:58` — deny list is `seat.masked` alone; `intent.rs:1554-1567`, `:1571` (`.config/flowy`, whole `.docker`, `/etc/shadow`, key names) are unfenced. One table, one equality test.
+4. MEDIUM `scripts/gate-at.sh:55` — the variable is missing; GREEN must refuse a skipped suite.

@@ -1,0 +1,15 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Round 2, position 1 (succeeding opus's round-1 report). Verified at 9e9312b06.
+
+CONCEDED to P2: role comes from the daemon's asker table (queue_asks.rs:141-176); the ask is one `path`, Read class, MayApprove, `grant_ro` offered (answers.rs:432-440); no deny (verdict.rs:443-450); no store, no grant; the grant is kept at `Scope::Session` (escalate_tests.rs:997-1065). Strict adds nothing to the grant — `acting_rule` rechecks `self.rules` (permission.rs:341-345). So I REVISE P1.2 high→low: the residue is only `task: None` (permission.rs:312).
+CONCEDED to P3: my withdrawal stands — authorship is structural (feed.rs:49-58, words.rs:83-95), so no model text becomes the operator. P3.1 is my 1; its `evaluate` remedy is right.
+REBUT P3.3: `replay.rs` has published no numbers; don't delete on cost.
+REBUT P2.4: `secret_hit`'s segment test (intent.rs:2288-2295) is HOME-independent, so `.ssh`/`.aws` survive an empty HOME; only `OWN_CONFIG` (guard.rs:159) goes inert. Low.
+REBUT P3.2: harm unproven (the backend resolves the read) — HYP, low.
+
+FINAL:
+1. high — permission.rs:272-283,341-345. `acting_rule` never sees the path, so any listed allow rule (bash, edit, …) licenses any read passing the denylist. Change: gate on `letibot_tools::permission::evaluate("read", path, ..)` and act only on Allow; add the cross-rule test.
+2. med-high — guard.rs:134-166, secrets.rs:37-73, intent.rs:1571-1582. `~/.claude/.credentials.json`, `~/.codex/auth.json`, `~/.local/share/letibot/sessions.db` all pass. Change: allow-list roots; add those stores.
+3. med — config.rs:83-86, open.rs:3607-3608. Enabling the observe-only permission job arms acting. Default `answer_reads` off.
+4. med — permission.rs:174-199,417-437. Breaker and `asked` are in-memory, re-armed each open, while grants persist.
+5. low — permission.rs:304-323, verdict.rs:415. Stateless acting path: no task, and `during` offers act unchecked.

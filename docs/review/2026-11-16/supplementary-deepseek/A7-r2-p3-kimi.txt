@@ -1,0 +1,17 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Position 3, round 2. Round 1's two absent-backstop findings verify; I keep them and narrow the third.
+
+CONCEDE P1-1, verified: `scripts/letibot:2668` interrupts, then `:2672` -> `kill` (`:2590`). `SubagentRecord::killed` (`subagent_record.rs:385`) guards on `registry.is_stopping()`, set only by `Registry::close`, after the signal; a `killed` row is `Decision::Leave` (`:471`), so `--restart` drops a mid-turn child. That is my round-1 thesis in one line: one fact, two spellings - a socket frame and an in-process flag. P1-2 (R313 window) folds into it. Concede P1-4/U1, P1-5, P1-6, P2-F1, P2-F2.
+
+REBUT P2-F3's fix: "unreadable cwd is kept" keeps every tree, since every other uid's `/proc/<pid>/cwd` is unreadable to a non-root reader. Keep only the real fail-open: `in_use.rs:57` `.ok()?` answers "free" when `/proc` itself cannot be read. P2-F4 is the same class; low.
+
+P2-r2's "`why_kept` has four call sites" is the defect, not the defence.
+
+FINAL
+1. HIGH `scripts/letibot:2668` - set stopping before the interrupt (a frame, or skip the record when the opener is stop-force).
+2. HIGH nothing reaps or bounds a daemon from outside: `docs/lifecycle.md:807` promises `letibot-gc.timer`, absent from tree and tests; `scripts/letibot:323` applies `RuntimeMaxSec` only when a caller exports `LETIBOT_SCOPE_RUNTIME_MAX`, and no code does (`tests/launcher.sh:1679` sets it itself, proving the flag, not the caller). A SIGKILLed or wedged daemon is unreaped and unbounded.
+3. HIGH `tools/src/lifecycle.rs:460` + `reap.rs:161` - measure the hard TTL from the last reopen.
+4. HIGH `reap.rs:1175` - an own-daemon idle close never reaches `Close`.
+5. MEDIUM `mergequeue/git.rs:846` - `why_kept` inside `retire_if_empty`, not in its callers.
+
+No test run; every line read at 9e9312b06.

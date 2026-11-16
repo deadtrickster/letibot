@@ -1,0 +1,19 @@
+[model: glm-coding (the preset's default model)]
+P9 r2, reviewer 1 (Against), 9e9312b06.
+
+**P2-r1:** concede your F1 (`/proc` etc. reach `read_passes`, guard.rs:143-164 checks neither `Region::Device` nor `~/.claude`) and F2/F3/F4 — all merge into mine. Your "always-ask blocks the model" is correct mechanics and was never my claim.
+
+**P3-r1:** I CONCEDE finding 3, and it kills my F4. Verified: the shadow's `Note::Answer` returns early (answers.rs:157-168) before the only insert into `Answers.relayed` (:224-230); `decide_as` copies `take_relayed` (:1182-1183) → false → `view_relayed=false` (adjudicate.rs:2790) → `keep_grant` takes `Scope::Session` (:1736-1738). Shadow grants are session-scoped; the "for that session" row (permission.rs:367) is accurate. Queue scope applies only to the operator's relayed-card answer. Your f8 stays HYP. Rebut "retire Relay first": F1-F3 are local; the seam rewrite can follow, not precede.
+
+**P2-r2:** your finding-4 HYP is resolved above. Your rebuts of "always-ask reaches" and "shadow can deny" attack claims I never made. "Stage 1 blocked on 1 and 2 only" — wrong: no tier derivation and no trail (F3) also gate honest measurement.
+
+FINAL FINDINGS
+
+1. HIGH permission.rs:272-282 — quote never matched to the path or a read permission. Parse to one `Rule`, require read + glob cover, else ask.
+2. HIGH guard.rs:138-165 — check `view::key(path)`, deny `/proc`,`/dev`,`/sys`, `~/.claude`, letibot data dir; allow-by-list.
+3. HIGH adjudicate.rs:2784,2787 — literal `MayApprove`, `Trail::default()`; classify with `Surroundings`, carry the trail.
+4. MED permission.rs:174-240 — persist the breaker beside the grants.
+5. MED grants.rs:85-106 — revoke leaves running binds; unbind at exec start.
+6. MED adjudicate.rs:2789-2804 — shadow rows unrecorded (doc at :2830 false); record them, exclude `shadow:` from replay scoring.
+7. LOW adjudicate.rs:1559 — drop `Intent::Unknown` from `a_reviewers_probe`.
+8. LOW answers.rs:178,226 — grant scope rides a side-channel boolean; put scope in the note.

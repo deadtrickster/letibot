@@ -1,0 +1,10 @@
+Record written to /data/review-run/P1.md. It has the header, the round 1 and round 2 reports copied verbatim, a synthesis with agreed findings A1-A6, disagreements D1-D3 each with a proposed decision, the order of work, and the spot-checks. 3 of the 6 seats failed. 2 of those failures were the panel's own subject: bridges at protocols 74 and 70 could not read the 78 daemon's Hello (`TodoBy::Peer`, no compat arm).
+
+HIGH | crates/sessionlog/src/wire.rs:62 | unbounded read_line on session socket, first frame read at server.rs:712 before inside-peer check at :742, OOM kills daemon | VERIFIED
+HIGH | crates/sessionlog/src/server.rs:729-744, :2211-2219; compat.rs:18-45 | daemon serves heads that cannot decode Hello snapshot (Parked at 75, TodoBy::Peer at 77), no compat arm, attach fails | VERIFIED (lost attach, observed in this run); "silent" NOT-REPRODUCED - client.rs:79-86 names the skew
+HIGH | crates/sessionlog/src/protocol/tests.rs:6, :598 | no recorded old-build frames, tests only self-round-trip current types | VERIFIED
+HIGH | crates/sessionlog/src/protocol.rs (serde defaults), tui/src/app/events/transcript.rs:152-168 | absent `decision` may render as "ungated" | NOT-REPRODUCED - absent decision shows no approval card, same as pre-78. General no-semantic-test point folded into A4
+HIGH | crates/sessionlog/src/compat.rs:122,142; .github/workflows/release.yml | no two-build test, compat tests emulate old head with TURN_ENDED_SINCE - 1 | VERIFIED
+MED | crates/bridge/src/head.rs:823-830, :2252, :2360; bridge/src/fleet.rs:216 | bridge records daemon_protocol but has no send gate. DriverTodos to a v76 daemon gets Bye and closes the held head | agreed, not HIGH, not spot-checked (cited lines read and consistent)
+MED | crates/sessionlog/src/protocol.rs:653-657 | Prompt.delivery added under unchanged 76 (6f538d24a), Queue silently becomes Steer on an older 76 daemon | agreed, not HIGH (version history confirmed by git)
+LOW | crates/sessionlog/src/protocol.rs:12-14 | doc says refuse mismatch, code accepts | agreed, not HIGH (lines read and consistent)

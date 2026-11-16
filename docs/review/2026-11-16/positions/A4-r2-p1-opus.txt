@@ -1,0 +1,13 @@
+A4 R2, position 1. All paths under crates/harnessd/src at 9e9312b06.
+
+REBUT/CONCEDE P2
+1. Restored mid-task child follows the live parent: CONCEDE. resume_run (harness/children.rs:2267) -> spawn_child (:2308) -> follow_parent (:4114). STALE F4 is wrong for this path. The gap is narrower but still real. A settled child (Settled marks the slot exited, :2380-2388) or an abandoned one, when a head or the bridge reopens it, goes through the worker open (sessions.rs:2155-2165, `..self.base.clone()`). open.rs:669-673 skips its own row and :695 reads nothing. Its ceiling is a fresh cell of the base point (open.rs:2214-2217). follow_parent is never called.
+2. parent_session_id survives a restart: CONCEDE (open.rs:740). It makes no difference, because the point still comes from base.
+3. Restore window and R311: CONCEDE. A pause from an earlier daemon is dropped and the operator is told (harness/nags.rs:626-660).
+Journal `from`: CONCEDE LOW (P2 record). R313: defer to P4 A2 (persist_rows Ok on Leave).
+P3: no report, nothing to rebut.
+
+FINAL
+1. HIGH harness/children.rs:4223. The brief goes through `h.submit`, which records it as Speaker::Operator (turns.rs:201-202), so a parent can authorise itself through its child. Change: speak it as Agent, as turns.rs:1610-1618 does.
+2. MEDIUM sessions.rs:2164 + open.rs:695,2214. A settled or abandoned child reopened after a restart gets the daemon's base point as its ceiling. Change: when a child opens without a spawn, resolve the parent's live cell, or its row, and clamp with inherited_by. Add a restart test.
+3. LOW HYP harness/fork.rs:111. A fork of a child opens as a root at the project row. Change: carry parent_session_id into the forked row.

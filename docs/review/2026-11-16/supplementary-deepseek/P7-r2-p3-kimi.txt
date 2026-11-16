@@ -1,0 +1,11 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+POSITION 1 (r2 relay died; judging r1). #1 hold/release/where: CONCEDE, worse — :2737 arm is `stats|boundary|fb|holds|gc`; main.rs:299-311 implements all three; :931 advertises `where`; reap.rs:680 tells the operator to type `letibot hold`. #2 XDG store: CONCEDE and upgrade to HIGH — :374 ignores XDG while :1948 honours it; the daemon gets --store "$STORE" (:3061) but LETIBOT_STORE is never exported, so `holds` (:2708) and the gc arm (:2739) resolve lifecycle.rs:343 XDG instead: with XDG_DATA_HOME set a sandboxed run's daemon writes the operator's ~/.local/share. #3 CONCEDE: LETIBOT_PROVIDERS appears only in scripts/letibot (935,1093,1095). #4 HALF: daemon path is backgrounded and bounded (:3066, 300 s at :3085); the one-shot `exec ${SCOPE_RUN[@]}` (:2999-3006) is unbounded. #5 mechanism holds (Interrupt never sets Registry.stopping, only registry.rs:2566; read turns.rs:440); lost-job end HYP.
+
+POSITION 2. #1 CONCEDE, but a whitelist a test walks is still two tables — Rust must publish its verb list. #2 concede. #3 wrong function: model_home strips `#` (:1140); the break is `default_provider` (:1102-1111), where `gsub(/^"|"[[:space:]]*$/` yields `deepseek" # main` and `[default] # x` never opens the block (:1103); parse_file:855 strips first. #4/#5 unverified, theirs. Your "a port would still be a whitelist" is right, so I want one list, not 3k lines first.
+
+FINAL
+1. HIGH scripts/letibot:2737 — publish verbs from Rust (`letibot-multi --verbs`); default arm executes them.
+2. HIGH scripts/letibot:374 — `export LETIBOT_STORE="$STORE"`; pass --store as :2745 does.
+3. MEDIUM :1095,1124-1170 vs keys.rs:194,850-873,1059 — awk and Rust disagree on malformed lines (Rust: empty fleet), duplicate blocks (Rust merges); delete awk.
+4. MEDIUM :2999-3006 unbounded scope; :235 sweep keeps unanswered probe dirs forever.
+5. LOW :371 key vs bridge/daemon.rs:58 — trailing-newline/symlink skew, untested.

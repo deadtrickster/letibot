@@ -1,0 +1,45 @@
+P5 r1, reviewer 3 (position 3). Commit 9e9312b06, paths under crates/.
+
+THESIS
+The reaper is wrong by construction. It does not read one fact, "this process tree is owned and alive". It reconstructs liveness from seven loosely coupled inputs held in four stores: store rows, a cgroup, /proc cwd scans and a pid record. Every gap in I22, I25 and I29 is two of those inputs disagreeing, or a caller that asked fewer than all of them. The same predicate exists three times and the copies diverge. The fix is structural: one stamp per process tree, written at spawn and inherited by children, with one liveness query over it. Patching the holes one at a time is what R201, R225, R241, R266 and R307 have each done in turn.
+
+FINDINGS
+
+1. HIGH. Seven inputs decide one yes or no, and they are not read atomically.
+`tools/src/lifecycle/reap.rs:146 close_due` reads:
+- the owner row (`state`, `held(now)`, `hard_ttl_ms`, `idle_ttl_ms`, `lease_ms`)
+- `Activity.busy`, `.parent`, `.daemon`, `.kept`, `.served_by`, `.starting` (`reap.rs:111-129`)
+- the kind, which exempts sessions
+Their order is itself the policy: parent gone, then TTL, then `starting`, then daemon-gone, then busy, then idle. The first two fire before `busy` is read.
+Failure: a package reopened after its TTL is closed at the next pass even with a running job (`now_ms - o.created_ms >= ttl`, `reap.rs:159-163`). The invariants doc cites the same reopen-copies-`created_ms` path at `lifecycle.rs:460`; I did not re-read that line, so that part is HYP.
+Change: one `tree_stamp` row per process tree, with the owning daemon's start time and a lease. Busy-ness is the cgroup, as `busy()` (`reap.rs:433`) already does for scopes.
+
+2. HIGH. I25: `retire_if_empty` has no liveness check, and the check it does get is a different one.
+- `harnessd/src/mergequeue/git.rs:846` calls `commit_on` and then `retire_branch`, which calls `remove_worktree`. A grep of `git.rs` shows `in_use` appears only in the sweep (`:916-990`), not in `retire_if_empty`.
+- The child cleanup `harnessd/src/harness/children.rs:3540-3555` (`retire_an_empty_tree`) calls it with no liveness check at all.
+- The queue caller (`mergequeue/serve.rs:1627`) asks `door.session_live`. `session_is_live` (`mergequeue.rs:416`) answers only for this daemon's registry (`registry.get || registry.opening`).
+Failure: daemon A serves package P and holds the writer row. Its tree is clean with no commits, which is the normal state before the first edit. The queue in daemon B withdraws a superseded row naming P's branch. `session_live` is false in B, so `retire_if_empty` removes the worktree under A's live session. `why_kept` (`in_use.rs:13`) would have caught it through `writers_under`, but nothing calls it.
+Change: make `retire_branch` itself consult `why_kept`. Safety belongs in the destructive primitive, not in each caller's courtesy check.
+
+3. MEDIUM. Another user's cwd is invisible (I25).
+`in_use.rs:55-58`: `read_link(cwd)` fails with EACCES for another uid's process and the loop does `continue`. The doc comment calls it "not one of ours". The `live_session` branch only helps if that process is a letibot daemon that wrote a `session_writer` row. A shell or editor of another user in a shared worktree is not seen, so a tree can be removed under it.
+Failure: user B has a shell in a tree user A's queue reaps.
+Change: treat an unreadable cwd as "kept", the rule d.4 rule 8 already applies to an unreadable store. Or use the stamp from finding 1.
+
+4. MEDIUM. `renew_held` splits "held" three ways.
+`harnessd/src/reap_pass.rs:152-170`: head (excluding landed), `turn_in_flight`, and open processes. `busy()` in `reap.rs` uses the cgroup first and the process rows second. The renewer and the judge therefore disagree about what busy means. A job whose supervisor row is stale but whose cgroup is populated is busy to the judge and not renewed. The judge's `served_by` guard makes this mostly safe, but only because a second input patches the first.
+
+5. MEDIUM. I29, remote hosts: there is no host-local reaper.
+It is `host_pass` run from the home box over ssh (S17). If the home box is gone the lease never expires on the host. A per-tree stamp with a host-side TTL check fixes this. The seven-input design cannot, because most of its inputs live on the home box.
+
+CONCESSIONS
+- The ordering in `close_due` is documented and deliberate. A backstop TTL has to fire regardless of busy-ness, and the code does this.
+- `busy()` using the cgroup rather than rows is the right direction. The stamp design extends it.
+- `why_kept` is correct as far as it goes, and I27 holds.
+
+ANTICIPATED OBJECTIONS
+- Position 1 will list individual violations. Findings 2 and 3 count among them, but I say the whole class recurs for as long as the predicate is scattered, so each is a symptom.
+- Position 2 will say the gaps are documented or unreachable. Finding 2 is reachable in normal operation because multiple daemons share one box. The `children.rs:3555` caller has no check, so "documented" does not cover it.
+- Both may say a stamp is a big rewrite. The cost is one table and one spawn hook. The reaper already has `holding` rows and a scope handle, so the stamp can be the scope path plus a start time.
+
+Not run: no test. Everything above is from reading.

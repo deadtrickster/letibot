@@ -1,0 +1,23 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+A9 r2, position 1. Read at 9e9312b06; no test run (bash refused by gate:timeout, so line counts are unverifiable here).
+
+**Position 1, revised.**
+
+Finding 1 STANDS, and is the panel's only product-level I2 breach. `on_provider_trouble` files `provider_quota` through `self.note` (warnings.rs:343) → `file_note` → `Placed::Seam` (notes.rs:62-64), which window.rs:818-838 draws *inside the transcript*, blank line and click card included. The model got no such row (`TurnFailed` is status-only, events/turn.rs:311). The snapshot drops `ProviderTrouble` (view.rs:782), so a reattached head draws nothing and `/notes` lacks it; `failed` is never incremented (warnings.rs:343-348). The guard test feeds `Warning` for that code (onevent.rs:176-191), which takes the `note_beside` arm and passes—green test over a real breach.
+
+Finding 2 REVISED, downgraded. Its premise is refuted: every ending calls `end_outage` → `withdraw_series` (turns.rs:3469-3501), so a live head never keeps a failed series. The residue is a head that missed `gone`: `ModelRetry` is neither snapshotted (view.rs:862) nor scrubbed into the snapshot, and a reattach keeps this head's Seam notes (events/mod.rs:358-365), so one stale operator-only row survives a reconnect.
+
+Finding 3 STANDS. `limit_returned` is in STATUS (warning.rs:1244) → `say` (warnings.rs:275) *and* in LIMIT_NOTICES (limit_notice.rs:13) → chrome (screen.rs:383); both visible for NOTICE_MS. `limit_resumed` has no reader in `limit_words` (limit_notice.rs:48-53).
+
+Finding 4 remains HYP: `fit_ladder` is rano's (ui/mod.rs:34-35), outside this snapshot. I concede it cannot be asserted at this commit.
+
+Finding 5 STANDS as a test gap only.
+
+**Other positions.**
+P2 F1: confirmed—`Surface::ALL` is a hand-written 19-array (surface.rs:80-100) and every walk iterates it (bindings.rs:13,83,406). Conceded; their ring fix is right. F2: confirmed—`is_list` is filter and rule (bindings.rs:410,453; bindings.rs:644-665). Conceded. F3: not verified. F4: overlaps my HYP. Their concession settles it: click facts prove frame↔head, never frame↔wire.
+P3 1: a count, not a defect; unverifiable here. Rejected as evidence. 2: confirmed (app/mod.rs:9, app/editor.rs:7, ui/screen.rs:8, ui/editor.rs:116) — real coupling, but no behaviour bug. 3: confirmed; six hand-written pins (bridge:67, code:31, harnessd:80, plugins-rano:18, tui:51, ui:52) and one lock entry (Cargo.lock:2419-2421), so skew is a loud resolve, not silent corruption—LOW. 4: confirmed (tui:41-43, ui:27, plugins/examples/plan-dashboard:18). 5: unverified; P1's.
+
+**Final list.**
+1. MEDIUM — warnings.rs:343: quota through `note`/Seam, drawn as a row, absent from the snapshot, uncounted. Change: `note_beside` + failure count; test `ProviderTrouble` itself.
+2. LOW — warning.rs:1244 + limit_notice.rs:13: `limit_returned` drawn twice; `limit_resumed` unread. Change: drop from STATUS; add a `resumed` reader.
+3. LOW — warnings.rs:407: live-only retry note survives a reconnect. Change: file `Placed::Before`, draw from state.

@@ -1,0 +1,14 @@
+[model: kimi-code-global (the preset's default model)]
+CONCEDE / REBUT
+
+- P1 F1 VERIFIED and it is my #1: warnings.rs:343 `self.note(...)` is the only Seam-placed note in `tui/src/app` (16 other warned sites use `note_beside`); `view.rs:782` drops `ProviderTrouble`, so the row is live-only; `onevent.rs:172` drives every code through `Warning`, never the real event. F2 same class (view.rs:862). F3 VERIFIED: `limit_returned` is in STATUS (warning.rs:1244) and LIMIT_NOTICES (limit_notice.rs:13). F4 is rano's `fit.rs`, absent from this commit — HYP, drop.
+- P2 F1 VERIFIED (surface.rs:80 is a literal; settings.rs:1979 claims the opposite); F2 VERIFIED (bindings.rs:410,453 ask `is_list` twice). F3/F4 unverified here. All test scaffolding, not product.
+- Predecessor: F3 kept; F2 revised to two editors (ui/composer.rs:5 vs app/editor.rs:7); F1's 116k unverifiable — the real number is 104 `impl App` blocks in 93 files; F5 (rano proto 72) is outside this tree — HYP, drop.
+
+FINDINGS
+
+1. MEDIUM — tui/src/app/events/warnings.rs:343 files `provider_quota` at a Seam, a drawn row the model was never sent and a reattached head never gets. Change: `note_beside` + `count_edge_note`; drive `ProviderTrouble` from onevent.rs:172.
+2. MEDIUM — sessionlog/src/warning.rs:1209 `Go::Notes` cannot say inline-vs-beside, so `every_code_has_exactly_one_destination` (warning.rs:1555) is green over #1. Add the placement to the table.
+3. MEDIUM — six hand-pinned rano revs: tui:51, ui:52, code:31, bridge:67, harnessd:80, plugins-rano:18; absent from Cargo.toml:150. Add a workspace dependency.
+4. LOW — stale comments: tui/Cargo.toml:41, ui/Cargo.toml:32 ("absolute path", it is a rev), settings.rs:1979.
+5. LOW — `limit_returned` drawn twice (warning.rs:1244 + limit_notice.rs:13).

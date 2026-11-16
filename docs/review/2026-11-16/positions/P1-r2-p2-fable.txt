@@ -1,0 +1,17 @@
+P1 R2, reviewer 2 (position 2: accept-and-say is right; head locks read-only). Round 1 produced no report, so this is a fresh case. Paths are under crates/.
+
+REBUTTALS
+- Pos 1 thesis: partly conceded. Refusing on the number would not catch a meaning change under an unchanged number, which is the worst case named. Accepting is deliberate (sessionlog/src/server.rs:729-744) and the head does say it (tui/src/app/events/hello.rs:85,138; sessionlog/src/protocol.rs:245-266). The stale doc at protocol.rs:12-14 is conceded.
+- Pos 1 #1 (unbounded line): conceded, and independent of policy. sessionlog/src/wire.rs:62, read at server.rs:712 before the peer check at :742.
+- Pos 1 #2 (old head cannot decode `Hello`): conceded as a lost attach, but loud, not silent - sessionlog/src/client.rs:79-86 names the skew.
+- Pos 3: conceded. "Everything this head reads is fine" (protocol.rs:260) is unmeasured, and the policy rests on it.
+
+WHERE MY OWN POSITION IS WEAKER THAN STATED
+The lock is the TUI's only, and one-directional: `skew_locked` requires daemon < head (tui/src/app/session.rs:585-591), enforced at composer.rs:14 and driver.rs:629. The bridge records skew (bridge/src/head.rs:823) but uses it only for `is_readable` (:593-607). I found no send gate there by grep. HYP: bridge sends to an older daemon unlocked.
+
+FINAL FINDINGS
+1. HIGH. sessionlog/src/wire.rs:62 - bound the line, refuse over-long.
+2. MED. bridge/src/head.rs:823 - apply the TUI's send lock, or refuse sends when daemon < head.
+3. MED. sessionlog/src/compat.rs:18-80 - translate or omit `Hello` snapshot states an older head cannot decode; server.rs:731 knows the head's number.
+4. MED. Golden frames per version (pos 3) - the test this policy requires.
+5. LOW. protocol.rs:12-14 - doc says refuse; code accepts.

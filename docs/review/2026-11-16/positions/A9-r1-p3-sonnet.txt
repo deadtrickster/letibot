@@ -1,0 +1,46 @@
+A9 pos 3 (against both), round 1, 9e9312b06.
+
+THESIS
+The TUI is split along the wrong seam. The "116k" `tui/src/app` figure is mostly tests, which weakens the "brain too big" half of the claim. The real cost is the split of rendering and editing code across three places, pinned by a git rev that must be hand-edited in six manifests. Pos 1 (show/draw defects) and pos 2 (screen tests) both assume that split is fine. It is why neither can be closed cheaply.
+
+FINDINGS
+
+1. MEDIUM. The "116k lines of brain" is wrong by 2x.
+ - `crates/tui/src/app` non-test source is 39,046 lines. `app/tests` is 76,967 (`transcript.rs` 7.6k, `scroll.rs` 5.9k).
+ - Largest source file is `app/mod.rs` at 1,863. No other source file passes 1,846.
+ - What is real is the surface. `impl App` appears in 93 files (104 blocks). The `App` struct has 379 field-like lines in a 1,192-line definition (`app/mod.rs:56`). Every pane mutates shared `App` state, so tests drive whole-`App` fixtures.
+ - Failure: any state change needs the matching test in `tests/*.rs`, found by grep only.
+ - Change: split the state into per-pane structs the way `queue_pane/` and `chat_nav/` already are, and stop quoting the 116k.
+
+2. MEDIUM. Three composer/editor stacks, and the dependency crosses repos.
+ - `letibot_ui::editor::Editor` (`crates/ui/src/editor.rs`, 1,147 lines, adapted from grok-build/opencode) drives the chat composer (`tui/src/ui/composer.rs:5`, `app/composer.rs:260`).
+ - `rano::editor::{Area, Editor}` plus `rano::buffer` drive the file editor (`app/editor.rs:7,183`, `app/mod.rs:82`).
+ - `rano::agent::composer` supplies box edges and completions (`ui/screen.rs:8,885`, `ui/editor.rs:116`).
+ - Failure: a word-motion or paste fix lands in one stack and not the others. It also needs a rano commit, a rev bump in 6 manifests, and a letibot gate.
+ - Change: pick one owner for text editing. Either move `letibot_ui::editor` into rano, or vendor the `agent` widgets back.
+
+3. MEDIUM. Rev bumps touch 6 manifests with no check that they agree.
+ - The same rev `c07e8eab` is written by hand in `crates/{tui,ui,code,bridge,harnessd,plugins-rano}/Cargo.toml` (tui:51, ui:52, and so on).
+ - Usage is heavy and mixed: `rano::agent` 204 refs in 124 files, `term` 135, `style` 129, `render` 97.
+ - I found no test or script that checks the pins agree (a grep for the rev outside manifests found nothing). Cargo.lock holds one rano entry, so a skewed pin should fail resolution loudly (HYP, not run).
+ - Failure: a widget API change in rano breaks `tui` while the other crates are still on the old rev.
+ - Change: add `rano` to `[workspace.dependencies]` and have every crate inherit it.
+
+4. LOW. Stale manifest comments.
+ - `tui/Cargo.toml:41-43` and `ui/Cargo.toml:32` say "the same deliberate absolute path" and "operator-local". The dependency is a pinned GitHub rev.
+ - `plugins/examples/plan-dashboard/Cargo.toml:18` has a real absolute path, `/Users/dead/...`, which cannot build on this box.
+ - Failure: a newcomer edits a rano checkout and expects letibot to pick it up. It will not.
+ - Change: fix or delete the comments.
+
+5. LOW. rano's own socket client is drift-prone (P1 #7).
+ - rano copies the letibot head client and declares protocol 72 (~/Projects/rano/rano/src/letibot.rs:26). The head and daemon are at 78.
+ - Any head/rendering change that needs a new frame has to land twice.
+
+CONCESSIONS TO THE OTHER POSITIONS
+- Pos 2 is largely right. 77k lines of tests is real coverage, and recorded screen tests do catch regressions. My objection is that those tests are costly and pinned to `App` internals, which is finding 1.
+- Pos 1's concerns (display-only rows against I2, double draws) are legitimate. I did not examine them. The cross-repo split makes them hard to audit, because the draw path runs through `rano::render::Line` (97 refs) and `rano::agent::*`, which live outside this snapshot.
+- Pos 1 and pos 2 do not need a rewrite. Items 1-3 are mechanical.
+
+NOT VERIFIED (HYP)
+- I ran no test.
+- I did not read `rano/src/agent/*` (13.9k lines), so I cannot say whether any widget carries letibot semantics.

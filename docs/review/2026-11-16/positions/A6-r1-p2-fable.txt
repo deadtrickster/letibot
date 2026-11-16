@@ -1,0 +1,22 @@
+A6 round 1, reviewer 2 (position 2). Paths under /home/dead/Projects/letibot/wt-review-snap/crates/.
+
+THESIS
+The queue's core holds, and I verified it in code, not comments: approval and merge-row birth are one transaction bound to the judged head (tokencore/src/store/queues.rs:993-1075); landing is gated on Green at the current tip, fix rows only while red (harnessd/src/mergequeue/serve.rs:2171-2182); red sends every queued non-fix row back to review, including ones approved while red (serve.rs:2072, :2171); finish_land re-reads the row, re-asks the lease, then CAS (serve.rs:2860, :2968, :2983); settle_tree asks registry, why_kept, branch proof, tree-HEAD proof, dirty check, in that order (serve.rs:1440-1520). Tests use real git repos and cover each (serve/tests.rs:832, :1228, :1516, :4466-4525). The defects are at the doors around that core, not in it.
+
+FINDINGS
+
+1. HIGH - an agent can approve its own branch. `leticode_queue_verb` is listed unconditionally (bridge/src/tools.rs:1855, :1949) and routes `approve` to `verbs::approve_by` (bridge/src/queue_desk.rs:190), the operator's "over the reviewer" verb (harnessd/src/mergequeue/verbs.rs:155-207). The same bridge has `queue` (enqueue). bridge/tests/queue_enqueue.rs:170-177 asserts exactly this: enqueue, approve, `approved_by` starts `bridge:`. Scenario: a cc seat enqueues its branch, approves it, it lands unreviewed once the gate passes. Review/merge separation then rests on Claude Code's MCP prompt alone. Change: drop `approve` from the bridge verbs, or require an operator card (queue_asks) for it.
+
+2. HIGH - an agent can undo the operator's veto of a landing. Veto/rm on a merge row is `Withdrawn` (verbs.rs:384, :421). `restart_by` accepts `Withdrawn` for any mover (verbs.rs:289-303), and the agent `queue` tool calls it as `agent:<session>` (desk.rs:81, :140-141), unscoped. Scenario: operator vetoes m-X; the author restarts it; it is Queued with the old approval and lands. Change: `Withdrawn` restartable only by `operator:`; an agent restarts only rows of its own session.
+
+3. MEDIUM - the approved-sha binding ignores whitespace. `change_id` uses `git patch-id --stable` (git.rs:20-47); a head with an equal id lands as-is (serve.rs:2363-2386, train :2547). I ran it: `rm -rf "$D"/tmp` and `rm -rf "$D"/ tmp` give the same id (git 2.53). Scenario: post-approval whitespace edit in a script, YAML or string literal lands unreviewed. Change: compare `git diff` bytes hash (or range-diff equality), not patch-id. Add the test beside serve/tests.rs:832.
+
+4. MEDIUM - "approval is spent" covers only `Queued`. halt_landings filters `state != Queued` (serve.rs:2076). A row parked Conflict/Failed/TimedOut/Blocked before the red keeps its approval; `restart` after green lands it (verbs.rs:289). Change: on red, mark parked non-fix rows so restart sends them back to review.
+
+5. MEDIUM - reap_worktrees overrides git's lock. For any registered path where `dir.exists()` is false it unlocks, then `prune --expire now` (git.rs:943-955); the test asserts it (git/tests.rs:834-905). `exists()` is false for an unmounted /build or /data too. Scenario: a worktree on an absent mount loses its registration, index and detached HEAD. Under a worktrees home, the returned tree is then `RegistrationGone` and `remove_dir_all`'d with uncommitted files after a top-dir-mtime grace (git.rs:980-993). Second step HYP (needs the home on such a mount). Change: never unlock; skip paths whose mount point is missing; move orphans to a trash dir.
+
+CONCESSIONS
+- To position 1: retire_if_empty (P5 A2), the gate's real HOME (P6 A1), no fetch (I40) stand; I add nothing.
+- Findings 1-2 mean the separation is enforced in the worker and not at the verb doors. Position 1 is right there.
+- To position 3: findings 1, 2 and 4 are one cause - who may move which state lives in verbs.rs, desk.rs and queue_desk.rs with no single table. A verb x actor x state table with one test would fix all three. That is consolidation, not a rewrite; the 35k is half tests (serve/tests.rs 5839 lines) and they are the reason the core holds.
+- Not checked: land_the_train's CAS and red_train bisection (HYP they mirror finish_land); `send_back_to_review` returns true when the review row was not reopened (queues.rs:1180-1193), reachability HYP.

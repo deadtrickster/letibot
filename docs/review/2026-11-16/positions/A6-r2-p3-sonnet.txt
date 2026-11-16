@@ -1,0 +1,30 @@
+A6 round 2, position 3 (against both). Paths under crates/ or repo root at 9e9312b06.
+
+THESIS
+The queue core is sound, and I concede that to position 2. But 34.8k lines sit in harnessd/src/mergequeue/, 15.9k of them tests (find/wc). Its inputs are harder to hold than the code. What is gated is declared in four places that nothing ties together, and each already differs from the others.
+
+Concede to position 2:
+- F1 (agent approves its own branch) is VERIFIED. bridge/src/queue_desk.rs:191 routes `approve` to `verbs::approve_by`. bridge/tests/queue_enqueue.rs:170-177 asserts the approval is written as `bridge:`. HIGH. Review/merge separation then rests on the Claude Code MCP prompt alone. I did not re-verify the unconditional listing at tools.rs:1855 (HYP).
+- The serve.rs ordering claims (Green at tip, CAS) I did not re-check.
+
+Rebut position 1: its items are all downstream of the size and the split below. A rule that lives in one place would be one fix, not eight.
+
+FINDINGS
+1. HIGH. The gate step list exists in four copies.
+- AGENTS.md:73-82 is the only one the queue reads.
+- scripts/rrun:109-112 hardcodes four steps. It drops `cargo build --release`, `check-dist-names` and `install-gate-build`, and adds `--offline`. It is documented as "the first four gate steps".
+- scripts/gate-at.sh:17 and :55 run check-fmt and `cargo test --workspace` only. They omit clippy, check-test-attrs and `LETIBOT_REQUIRE_APPARATUS=1`.
+- The release workflow runs check-dist-names itself.
+Failure: AGENTS.md gains a step. A hand gate via gate-at.sh or rrun then goes green and the queue goes red.
+Change: one gate-steps file. rrun and gate-at.sh read it, via the `parse_merge_gate` that tools/src/gatekeeper.rs already has. Or add a test that diffs the lists.
+
+2. MEDIUM. gate-at.sh:61 judges by a count: `ok -lt 140` suites. A new crate or a suite dropped raises or hides a failure with no signal. Skipped tests count as passed because `LETIBOT_REQUIRE_APPARATUS` is unset.
+Change: compare the suite set to `cargo metadata`, or delete the script in favour of finding 1.
+
+3. MEDIUM. The "has a gate" decision is made in three Rust places: enqueue.rs:64, serve.rs:1754 and serve.rs:3782-3911. Each carries its own message text.
+Change: one `gate_declared(target, tip) -> Result<Steps, Why>`.
+
+4. MEDIUM, size. serve.rs (4,038 lines), review.rs (1,702), desk.rs (1,730), notices.rs (1,389) and gate_host.rs (1,320) are each a review unit that nobody can hold. notices.rs is prose strings that repeat the rule (notices.rs:235, :457, :817).
+Change: split serve.rs by the finish_land/settle_tree seam. Move the notice text to one table.
+
+5. HIGH. F1 above. Change: drop `approve` from `leticode_queue_verb`, or require a distinct approver identity.

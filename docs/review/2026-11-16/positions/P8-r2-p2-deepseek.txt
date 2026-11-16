@@ -1,0 +1,14 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Taking over position 2. Verdict: the thesis holds only for the admitting axes, and I withdraw two of its findings.
+
+To P1: concede the restart gap — and it is worse than you wrote: `registry.parent_for` (registry.rs:1644-1651) falls back to the store row, open.rs:1882 writes `parent_session_id` into it, and a resumed hub is Worker-owned (hub.rs:670-673, 832-837), so sessions.rs:2141 does not block the reopen. Concede the batch-boundary lag (turns.rs:1826, 2652).
+
+To P3: concede the mechanism. `set_mode` clears grants/memory/ledger but not `approved_shapes` (adjudicate.rs:3098-3110), which still admits at :3493-3504 after the mode says Ask — a narrowing that does not narrow. But your "a child cannot send `/mode`" (children.rs:691-701) also kills my v1 findings 5 (child half) and 6 (wholly): `/supervise` and `Mode` both reach `ChildCommand::Leave`. Withdrawn.
+
+FINAL
+
+1. HIGH tools/src/mode.rs:564-587. `decider` unranked: `AUTO_EDITS.no_wider_than(WRITES_ALLOWED)` is true, so harness.rs:924→933→937 moves a Human-decided child to a Model decider with nobody asked; only the Oracle prereq (:756) gates it. Rank `decider`; test the pair.
+2. HIGH harnessd/src/harness/open.rs:669-673, 2214-2217, 2874. A reopened child takes `base.mode` as point *and* ceiling; the row `narrow_to_parent` writes (harness.rs:875) is written and never read. Resolve the parent's point; take the narrower.
+3. HIGH harnessd/src/sessions.rs:4910, modes.rs:291. The project row is written before the move and regardless of it; an uncarryable point (e.g. `automode`, no oracle) becomes the project's, and every later session then dies at open.rs:2887. Write the row after the move.
+4. MED harnessd/src/harness/tests/child_mode.rs:37, 69-71, 127-129. Early return without a GGUF; sessions.rs:4888 untested (refusal string only at :95, :114). Add the worker-door test; panic, do not return.
+5. LOW harness.rs:890-896. A failed narrowing leaves the child wider, warning only.

@@ -1,0 +1,46 @@
+A1 round 1, reviewer 3 (position 3: limit logic is scattered, two transports, `http` has no TLS, turn code too large). Commit 9e9312b06, paths under crates/. Read-only. I ran no test.
+
+THESIS
+Rate-limit handling is one concept spread over five places: classification in `http/src/retry.rs`, prose parsing in `http/src/reset.rs`, the ladder in `harnessd/src/harness/limit.rs`, the plugin hook in `limit_hook.rs`, and the usage poll in `provider`. Only part of its state survives a restart. The ladder works in the tested path, but the state around it is neither unified nor persisted. The tests in `harnessd/tests/limits.rs` cover only the first-order park.
+
+FINDINGS
+
+1. MEDIUM. A restart strands a session on its fallback model.
+- A limit-driven switch is persisted on the session row: `fall_back_from` -> `switch_on_a_refusal` -> `pend_switch` (`harness/turns.rs:3571-3640`), then `persist_provider_choice` (`harness/models.rs:1162`).
+- The way back is held only in memory. `limit_return` and `limited` are `None`/default at `harness/open.rs:3739-3740`, and I found no code that rebuilds them.
+- Scenario: GLM limits, the session moves to deepseek, the daemon restarts, GLM's limit lifts. `return_from_a_limit` (`limit.rs:397`) never fires, and the status row loses "glm limited until ...".
+- The session stays on the fallback until the operator types `/models`. `limits.rs:1139` covers only a restart mid-park, which re-asks the provider.
+- Change: write `limit_return {model, at_ms}` to the session row next to the provider choice, and restore it with `restore_provider_choice`.
+
+2. MEDIUM. `flowy` sends its bearer token in cleartext.
+- `http` has no TLS dependency (`http/Cargo.toml`). `flowy/src/creds.rs:387-395` refuses `https://` by name.
+- The docs example is `FLOWY_ADDR=http://192.168.1.55:8787` (`creds.rs:455`), so a LAN-wide bearer travels in the clear.
+- The model path (`provider`) uses ureq with rustls (`provider/Cargo.toml:23`), so there are two transports with two framings: a hand-rolled chunked/SSE parser in `http/src/lib.rs:416-444` and ureq.
+- Change: a loopback-only check in `parse_addr`, or a rustls option. At minimum, refuse a non-loopback host unless the operator explicitly opts in.
+
+3. MEDIUM, HYP on real provider bodies. `Policy::states_a_refusal` (`http/src/retry.rs:296-318`) substring-matches the whole error body for "billing", "credit balance" and similar.
+- Any `Status` body containing one of those words becomes `Trouble::Quota` (`retry.rs:216`), whatever the status code.
+- A 400 that quotes the user's content (code or docs mentioning billing), or a 429 TPM message that links a billing page, is classified as a spent account.
+- `limit_answer` then returns `GiveUp` (`limit.rs:213`), so the turn fails instead of retrying or parking.
+- Change: match only on the provider's structured error code field, or restrict the substring match to 402 and 429 bodies, with a test per provider.
+
+4. LOW. `Trouble::RateLimit` includes 408 (`retry.rs:220`), a request timeout. That is a client-side or network fault, and it can park a session on a prose-derived reset. Change: map 408 to `Timeout`.
+
+5. LOW. Park state (`limit_park`, `limit_probing`, `limited`) is all in memory (`harness.rs:510-515`).
+- After a restart, `mid_turn` re-asks the provider, which costs one refused request per session. Many parked sessions mean a thundering herd at the restart.
+- Change: persist `reset_ms` with the provider choice and skip the re-ask until then.
+
+6. LOW. A parked session blocks daemon idle-exit for up to 6 h (`sessions.rs:888`, `LONGEST` at `http/src/reset.rs:11`). That may be intended. Document it, or let idle-exit proceed since the park is resumable.
+
+7. Structure (position 3's core).
+- `harness/turns.rs` is 5997 lines and `turn/src/engine.rs` is 1986. The limit logic is split over `limit.rs`, `limit_hook.rs`, `turns.rs:3571-3640` (the fallback), `usage.rs`, `wall.rs` and `provider/src/usage_poll.rs`.
+- `after_the_ladder` calls the hook first (`limit.rs:472`), then `limit_answer`, then the fallback. The hook's `ep.fell_back` flag (`limit_hook.rs:117`) is a second state machine beside `limit_park`, `limit_return` and `limited`.
+- Change: one `LimitState` struct, persisted as a unit (this fixes 1 and 5), with `limit_hook`'s episodes as a field. Move the fallback into `limit.rs`.
+
+CONCESSIONS
+- To position 2: the ladder is well tested for park, switch and return within one daemon life (`limits.rs`, 20+ scenarios). Per-session hook state is correctly keyed (`daemon_logs` includes the session id; I checked a possible cross-session clobber and it does not exist). A restart mid-park resumes the owed turn (`limits.rs:1138`). The Kimi/GLM parsing, including GLM China time, is deliberate and tested.
+- To position 1: show-before-store and the lost-prompt window are real, but P4 already covers them (A1/A2) and I add nothing. The `on_limit` default of Wait is conservative and safe.
+- On TLS: the `http` crate is deliberately local and LAN plaintext (`embeddings` uses curl for https). It is a boundary issue only for `flowy`.
+
+ANTICIPATED REBUTTAL
+"Large files are not bugs." The size is what let findings 1 and 5 hide: the persisted half (provider choice) and the in-memory half (return, limited) of one decision sit in different files and are never read together. The `LimitState` unification above is the concrete fix, not a style preference.

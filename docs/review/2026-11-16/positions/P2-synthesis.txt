@@ -1,0 +1,28 @@
+I wrote the P2 record to /data/review-run/P2.md (snapshot 9e9312b06). The repo was not edited.
+
+Half the relays failed, so each position has one report, not two:
+- **Round 1:** glm (position 1) and kimi (position 3) produced no report.
+- **Round 2:** deepseek (position 2) produced no report.
+- **Cause:** the relays running in parallel shared one workspace daemon, which holds one session, and the head speaks protocol 74 while the daemon speaks 78.
+- **Retry:** give each reviewer its own daemon, then rerun position 1 round 1, position 2 round 2 and position 3 round 1.
+
+The failure notes and the three real reports are copied verbatim into the round sections. The synthesis gives a proposed decision for each disagreement (D1-D4). The operator decides.
+- **D1:** keep the fall-through and treat it as the uid threat model, or fix the role per connection at Attach. I propose the per-connection role, at medium.
+- **D2:** the subagent brief (A1) is high, not medium.
+- **D3:** command-file and skill bodies (A2) are medium, not low.
+- **D4:** leave the transcript default for now and patch the legacy rows in the trail reseed first.
+
+Every critical and high finding checked out against the code. The list below also includes the medium findings I read and confirmed, and two that were not checked.
+
+HIGH | harnessd/src/harness/children.rs:4223 | subagent brief is submitted as Speaker::Operator (`submit` at turns.rs:201-202), so the parent authorises itself through its child | VERIFIED
+HIGH | bridge/src/browser/ask.rs:180, bridge/src/browser/mod.rs:387-405 | question and fenced page text are one string sent as `letibot-browser` with no `from`, so `peer()` is None and the whole row is Operator (turns.rs:267-270) | VERIFIED
+HIGH->MEDIUM (proposed) | sessionlog/src/protocol.rs:650, harnessd/src/harness/turns.rs:258, sessionlog/src/hub.rs:93 | missing `from` plus any non-`letibot-mcp` identity falls through to Operator, and authority is set by the client, not the connection | VERIFIED (cgroup escape not traced)
+MEDIUM | harnessd/src/sessions.rs:1211, harnessd/src/harness.rs:1541 | command-file and skill bodies are spoken as Operator | VERIFIED (read)
+MEDIUM | harnessd/src/answers.rs:943, tools/src/adjudicate.rs:2018 | bridge decisions are filed `human:{by}` for any identity | VERIFIED (read)
+MEDIUM latent | harnessd/src/sessions.rs:4773-4777 | slash -> command_file runs for any identity, not peer-aware | VERIFIED (read)
+MEDIUM | sessionlog/src/peer.rs:286-296 | unreadable /proc/pid/cgroup counts as outside, and only this daemon's pid is matched | VERIFIED (read)
+LOW | sessionlog/src/hub.rs:768-779 | journal restore loses the sender's name only, not its authority | AGREED, not spot-checked
+LOW HYP | server.rs:731, bridge/src/head.rs:822 | version skew is warned about and then served, so a pre-`from` daemon would store bridge prompts as Operator | NOT CHECKED
+LOW | transcript/src/lib.rs:52 | Speaker #[default] is Operator, and the trail reseed does not patch legacy rows | VERIFIED (read)
+
+Order of work: subagent brief as Agent, browser ask split, command-file and skill bodies as Agent, per-connection role (slash fix goes with it), cgroup check fails inside, `agent:` attribution, version-skew refuse, then legacy rows and the serde default.

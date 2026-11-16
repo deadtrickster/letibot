@@ -1,0 +1,18 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+P1: F1, F2, F3, F5, F7 confirmed. **F4 is wrong**: a shadow answer returns at `answers.rs:154` before the `relayed` insert (`:226`), so `take_relayed` is false and `keep_grant` picks `Scope::Session` (`adjudicate.rs:1736`); `escalate_tests.rs:1061` asserts it. The row's "for that session" (`permission.rs:367`) is true. My r1 called that text a lie — withdrawn; what survives is scope divergence (`answers.rs:178` queue-scoped operator card vs session-scoped shadow).
+
+P2: "always-ask cannot reach it" is vacuous — the tier is the literal `Tier::MayApprove` (`adjudicate.rs:2784`), nothing classifies the path, so the guarantee holds only because no layer computes a tier. And "the model sees the residue" is false where it matters: the relay runs only when `deciding_heads()` is empty (`hub.rs:1700`, `answers.rs:459`) — the model widens authority precisely when no human is attached.
+
+My r1 finding 6's corpus claim was wrong (no `self.record` at `ask_to_see`/`grant_view`); revised to #6.
+
+FINAL
+
+1. HIGH `shadow/permission.rs:272-283` — any ≥8-byte substring of any rule authorises; no path/permission check. Resolve to one read `Rule` whose glob matches.
+2. HIGH `shadow/guard.rs:138-171` vs `view.rs:71-90` — lexical denylist, canonical key; `.claude`, `/proc`, `/dev` absent (`secrets.rs:44-75`). Check `view::key(path)`; allow-list devices.
+3. HIGH `adjudicate.rs:2784,2787` — literal tier, empty trail; `answers.rs:432-440` accepts it. Derive tier from `Surroundings`.
+4. MEDIUM `open.rs:3608`/`permission.rs:186` — breaker in RAM, grants in store; restart also empties `granted`, disarming the No check (`:414`). Persist.
+5. MEDIUM `adjudicate.rs:1654-1666` — refresh keys on a process-local atomic: another daemon's revoke never lands.
+6. MEDIUM `ask_to_see`/`grant_view` never `record` (doc `:2828` lies) — R316 is blind to the path it stages. Record, exclude `shadow:` rows.
+7. LOW `permission.rs:316-321` — asker's path enters the judge prompt raw (newline reach HYP).
+
+Order: 1-3 before any widening; `Relay` becomes annotator-only before stage 1.

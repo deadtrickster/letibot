@@ -1,0 +1,22 @@
+A4 R2, position 3 (against both). Paths under crates/harnessd/src at 9e9312b06. The kimi R1 produced no report, so this is a fresh case.
+
+Rebuttal of position 2:
+- Its "restore follows the live parent" is true only for the parent-driven path (`resume_run` -> `spawn_child` -> `follow_parent`, children.rs:4114). That is the only non-test `follow_parent` call in the crate.
+- The worker door is a second open path. `Sessions::open_as` builds the config from `..self.base.clone()` (sessions.rs:2156-2165) and only sets `parent_session_id`.
+- `open_the_stored` skips the child's own row (open.rs:669-673) and reads no project row, so `cfg.mode` is the daemon base.
+- `parent_ceiling` is then a fresh cell of that same point (open.rs:2214-2217). The clamp at open.rs:2874 is seat-only.
+- So I concede P8's HYP on `parent_session_id` surviving, but a worker-reopened child still sits at the daemon base. This is STALE F4 and P8 A2, and position 2 rebutted it with the wrong path.
+- Position 2's "one width check" covers the mode name only (P8 A1, `decider`).
+
+The structural case, which the two defenders never answer:
+- open.rs is 6032 lines, turns.rs 5997 lines with 180 fns, children.rs 4814, sessions.rs 6790.
+- There are at least three seating routes: `spawn_child`, `open_as`, and `reopen_parked` (children.rs:1990) / `reopen` (:2633).
+- Each re-derives point, ceiling and parent cell by hand. Only one calls `follow_parent`, which is exactly the F4 bug class.
+- The invariant "a child's ceiling is its parent's live cell" is enforced by caller discipline, not by construction.
+
+FINAL findings:
+1. HIGH, open.rs:669-698 and 2214-2217, sessions.rs:2156-2165. Resolve the parent's point (live cell or row) on every child open, and add a restart test.
+2. MED, harness.rs:846 and children.rs:4114. Make the parent cell a required argument of `open_with` for any child, so no path can skip it.
+3. MED, tools/src/mode.rs:582-586. Rank `decider` in `no_wider_than`.
+4. LOW, harness.rs:890-897. A failed `narrow_to_parent` should stop the child, not only warn.
+5. TRACK. Split turns.rs and open.rs along the three seating routes. This is not a finding to fix now.

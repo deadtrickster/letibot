@@ -1,0 +1,12 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+REBUTTALS
+
+P2 (position 2): conceded, narrowed — the park keeps the turn only inside one daemon life. Their R2 already concedes my #1. Their #1 stands (`retry.rs:19,:196`, `Retry-After` capped at 60 s). Their #3 stands (`config.rs:1583-1588` vs `wall.rs:294`) but costs a refused call, not work. Their #4 stays HYP.
+P3: #1 confirmed (`open.rs:3739-3740`) but LOW, not MEDIUM — needs `on_limit=Switch`, loses nothing, cured by the persisted park. #3 real as written (`retry.rs:288-318`, `trouble` :216 maps any body containing "billing" to Quota) but still HYP on real bodies. #4 confirmed (`retry.rs:220`: 408 is RateLimit), LOW. #7 rejected as the defect: the split that matters is persisted provider choice beside an unpersisted park — my #1. Cleartext bearer (`flowy/creds.rs:387`) out of this panel's scope.
+
+FINAL
+1. HIGH `restart.rs:491-502` + `open.rs:3738`: `limit_park` is None at open and `mid_turn` returns false on the probe's persisted `User{Agent}` notice (`limit.rs:371-380`), so a restart during a park never re-owes the turn (restart.rs has no park code at all). Persist (model, until, reset) on the session row; treat harness notices like `display_only`.
+2. HIGH `hub.rs:487-490,780` + `hub_io.rs:425` + `open.rs:3675`: a prompt taken as steering is journal-removed, then held only in `handed_back`; `JournaledPrompt` (`hub.rs:456-468`) keeps no `delivery`, so restore also turns Tab-queued prompts into Steer. Journal both.
+3. LOW `open.rs:3739-3740`: `limit_return`/`limited` unpersisted; session sticks on the fallback after restart.
+4. LOW `turns.rs:3089-3091`: `Again` rebuilds the ladder without `.offline_for`; the 1 h no-network budget is lost after an `ask_user` answer.
+5. LOW `limit.rs:355-380`: every refused probe appends another permanent `[limit]` row; replace it.

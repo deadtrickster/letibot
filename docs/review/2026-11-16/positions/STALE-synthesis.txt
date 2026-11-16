@@ -1,0 +1,13 @@
+Record written: /data/review-run/STALE.md. Snapshot 9e9312b06. Repo not edited.
+
+The reviews themselves did not all run. Three of six seats produced no report: R1 P1 (glm), R1 P3 (kimi, which fell back to deepseek and was stopped after 24 rounds) and R2 P2 (deepseek). Cause: the leticode daemon for wt-review-snap is shared by relays and holds one session at a time, and the head is on protocol 74 while the daemon is on 78. So the "for" position never got a round 2. The order of work ends with rerunning it once each relay has its own daemon.
+
+The synthesis covers 7 findings (F1-F7), 3 disagreements (D1 age policy, D2 bridge model source, D3 fix-the-arm vs daemon Status view) with a proposed decision on each, and a 9-step order of work. Every critical or high finding was spot-checked, and I read the cited lines for most of the medium and low ones too. No test was run.
+
+HIGH | sessionlog/src/view.rs:731-745 + tui/src/app/events/mod.rs:241-247 | header ctx shows the pre-compaction size after any snapshot load (reattach, switch, resync). TranscriptForked keeps turn, load copies Finished{usage}, and the compacted correction exists only on the live arm (warnings.rs:112-126) | VERIFIED - turn is set only at TurnStarted (view.rs:433), and compaction_after is called only from warnings.rs:120
+MEDIUM | bridge/src/head.rs:947-952 | leticode_status.model is stale after a model switch, because the Settings arm reads only idle_exit | VERIFIED
+MEDIUM | tools/src/builtins/todo.rs:731-733 | R301 handles job waits only. Child, pid and monitor waits are kept after a restart | VERIFIED (I did not read the pane rendering)
+MEDIUM | harnessd/src/harness/open.rs:2214-2217 | R306: a reopened child's ceiling is a fresh cell holding its own point, and only a spawn calls follow_parent | VERIFIED
+MEDIUM | tui/src/app/events/frames.rs:243 | seat boards are written only by a Todos reply, have no live event, and SeatBoard has no read time | VERIFIED
+LOW | harnessd/src/shadow/permission.rs:176,188,233 | R317: the breaker is an in-process atomic and resets on restart | VERIFIED (grant persistence R314 not traced)
+LOW | tui/src/app/events/frames.rs:289-292 | asks_setting is a copy from attach time | already mostly handled (frames.rs:293-297 queues a board read, todos.rs:108 ignores it once the board is read) - only the window before the board reply is left; not reproduced further

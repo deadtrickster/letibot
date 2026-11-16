@@ -1,0 +1,13 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Thesis: round-1 p2 holds; I raise its F1 and cut one rival's.
+
+REBUT P1 (r2): your F1/F2 conceded in their snapshot/bridge shape, but your fix is insufficient. Clearing `turn.usage` daemon-side (view.rs:731) fixes only the snapshot arm. The live arm is stale too, with no bound: `/clear` runs no summary turn (clear.rs:26-29), its warning detail is transcript ids (clear.rs:88-105), `compaction_after` demands `<u64> → <u64> ` (notice_card.rs:224-246) → `None`, and the head never touches usage on `TranscriptForked` (transcript.rs:104-111). Your r1 `/clear` finding was right; dropping it lost the worse half. Rebut r2-F4 (`asks_setting`): self-healing in one round trip — todos.rs:108,229; frames.rs:293-297 say only "still being read".
+
+REBUT P3: a daemon `Status` view is not needed for the model case — the `Settings` frame already carries `model` (config.rs:2381; registry.rs:1843) and the bridge discards it (head.rs:947-952). And a per-frame stateless head loses a fact: "the gate tail has not moved" needs the previous frame (queue.rs:42-70). Agree on ctx: put the after-size on the wire (CompactionReport.tokens_after is ledger tokens, event.rs:897-901) and take it at the fork. Age belongs on polled facts only — the one drawn age is the queue's (queue.rs:35), from `queues_got_ms`.
+
+FINAL LIST
+1. HIGH view.rs:731-745 + tui/app/events/mod.rs:243,373-391, warnings.rs:109-126: ctx pre-fork on snapshot; never on `/clear`. Change: carry `context_after` (shown unit) on the fork; head takes it in both arms; delete the prose parse.
+2. MEDIUM bridge/src/head.rs:947-952: `leticode_status.model` stale after a switch. Change: read `MODEL_KEY` in that arm.
+3. MEDIUM tui/app/events/frames.rs:236-243: seat boards only on a `Todos` reply; no clock, no push (server.rs:1040), `SeatBoard` has no time. Change: slow-clock read, stamp.
+4. MEDIUM tools/src/builtins/todo.rs:728-743: only `Job` waits resolve; child/pid/monitor survive a restart. Change: resolve all three.
+5. LOW harnessd/src/harness/open.rs:2214-2217 and shadow/permission.rs:176-188: restored ceiling, breaker lost. Change: I48 check at open.

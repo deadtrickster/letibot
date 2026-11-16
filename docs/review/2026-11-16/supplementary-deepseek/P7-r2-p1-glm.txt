@@ -1,0 +1,14 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Rebut/concede first.
+
+**p2.** Your `*)` refuse arm is unbuildable: bare `letibot "some prompt"` *is* the one-shot path (`scripts/letibot:2993`), so a catch-all refuses prompts. The guard must walk `crates/letibot/src/main.rs:291-348`. Your claim that I missed the config split is false (my finding 3). Conceded: `crates/provider/src/keys.rs:194-200` lacks the `.filter(is_absolute)` that `crates/tools/src/lifecycle.rs:344` has, so `XDG_CONFIG_HOME=""` yields cwd-relative `letibot/providers.toml`; folded in below. Conceded: the 6 s `systemd-run` stub never reaches the leak.
+
+**p3.** Key parity (4) is void — `$(...)` strips the newline before `printf '%s'` (`scripts/letibot:374`, `:137`), so both sides hash the same bytes; only `pwd -P` vs canonicalize survives, HYP. Conceded: (2) awk ≠ `parse_file`, and (3) XDG store — which is mine, sharpened: `hold` then answers "no store". Root cause agreed, but a port does not fix the miss; the parity test does.
+
+**Final findings (verified, 9e9312b06):**
+
+1. **HIGH** `scripts/letibot:2737` — arm is `stats|boundary|fb|holds|gc`; `hold`, `release`, bare `where` fall to the billed one-shot (`:2993-3006`), while `crates/tools/src/lifecycle/reap.rs:680` and `crates/sessionlog/src/warning.rs:987` tell the operator to type `letibot hold <id>`. Change: add the three; test walks main.rs's words.
+2. **HIGH** `scripts/letibot:374` — `STORE` ignores `XDG_DATA_HOME` (`:1948` honours it; `lifecycle.rs:343`, `bridge/src/daemon.rs:99`, `letibot/src/gc.rs:1070` read it first). Change: `${XDG_DATA_HOME:-$HOME/.local/share}/letibot`.
+3. **MED-HIGH** `scripts/letibot:1095` vs `keys.rs:194` — two providers readers; `LETIBOT_PROVIDERS` appears only at `:935/:1093/:1095`. Change: ask the binary (`--providers` is taken, `harnessd/src/cli.rs:581`).
+4. **MED** `scripts/letibot:1124-1175` — awk diverges: `keys.rs:863` errors on a line without `=`; `:874` merges duplicate sections.
+5. **MED** `scripts/letibot:317,2999` unbounded `systemd-run`; `--restart` (`:2461-2474`) re-execs bare `--continue`, dropping `--model/--provider` (restore: HYP).

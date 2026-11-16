@@ -1,0 +1,14 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+P5 r2, position 1 (taking over the opus r1 report). I keep f1, f4, f8 and revise f2, f3, f6, f7.
+
+Rebut P2 (fable). f1 (`tools/src/lifecycle.rs:460`, `reap.rs:159-168`) and f8 (`tools/src/lifecycle/remote.rs:173`) conceded — accepted. f3 is rejected only for a Live owner: under my f4 — `reap.rs:717` → `end_daemon` Kept at `:1175-1179` → `left>=1`, so no `Close` at `:756-773` — the row stays Closing and `reap_pass.rs:160-162` renews only Live rows, so `end_processes` (`:755`, `:779`) kills every job the still-served session starts. That was not answered. "Empty and clean" understates it: `uncommitted_work` is checked (`crates/tools/src/git.rs:336-343`) but `worktree remove --force` (`:344-347`) drops ignored files and the seat's cwd — medium, not low. `children.rs:3555` unreachable: conceded; `serve.rs:1627` stands, because `mergequeue.rs:416-421` is this daemon's registry while `in_use::writers_under` (`in_use.rs:29`) already answers cross-daemon. Other-uid cwd: conceded.
+
+Rebut P3. The scattered-input reading is right; a per-tree stamp fixes neither `reap.rs:159` running before `:181` nor "a reaper never reaps itself" (`:1175`). Take your two narrow fixes; stamp as follow-up.
+
+FINAL
+1. high — `tools/src/lifecycle.rs:460` + `reap.rs:159-168`: TTL from `max(created, reopened)`; test beside `reap/tests.rs:163`.
+2. high — `reap.rs:717,749,1175-1179` + `reap_pass.rs:92-103,160`: own-daemon idle close never writes Close and kills new jobs. Write Close when the only compute left is self.
+3. medium — `mergequeue/git.rs:846-863`→`tools/src/git.rs:344-347`: call `in_use::why_kept` inside `retire_branch`.
+4. medium — `remote.rs:173`: host-side reaper, or strike `docs/lifecycle.md:587`.
+5. low — `in_use.rs:58`: unreadable `/proc` answers "not in use".
+Doc — reword I22/I23 to d.3.

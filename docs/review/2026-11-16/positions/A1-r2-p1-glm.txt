@@ -1,0 +1,19 @@
+[model: glm-coding (the preset's default model)]
+A1 R2, position 1 (defending the r1 report at 9e9312b06).
+
+P2-r2 (fable): Your verification of my #1 holds; I accept the Owed narrowing (restart.rs:596-603) — still HIGH, a parked session is usually boardless. Your #2 CONCEDE, verified: each refused probe appends another User{Agent} row (limit.rs:355-383 → turns.rs:1711) and the re-park removes nothing (turns.rs:3073-3085). Your #3 = P3 #1.
+
+P2-r1 (deepseek): #1 CONCEDE LOW — retry.rs:196 `min(LONGEST_WAIT)` caps a longer Retry-After at 60 s against its own comment (:189-191). #3 fact CONCEDE (config.rs:1583-1588 vs wall.rs:294-306) but LOW: the comment states the trade; the refusal door folds it. #4 HYP, drop. #2 is my #1.
+
+P3-r1 (sonnet): #1 fact CONCEDE, agree LOW — limit_return is set only on on_limit=Switch (limit.rs:492; default Wait, config.rs:1733); the default-config fallback (turns.rs:3142-3148) promises no return. Residual: `limited` lost at restart also voids fall_back_from's skip (turns.rs:3594). #2 fact CONCEDE (creds.rs:382-396), A8's scope. #3 CONCEDE MEDIUM-HYP (retry.rs:167-171, 296-318: any status, one substring → GiveUp). #4 LOW CONCEDE (retry.rs:12, 220). #5 dup. #6 intended, drop. #7 the fix (persisted LimitState) is right.
+
+FINAL
+1. HIGH restart.rs:491-502 + open.rs:3738 + limit.rs:355: restart after a refused probe drops the parked turn. Persist the park; skip Agent harness rows in mid_turn.
+2. MED open.rs:3675, hub_io.rs:425: handed-back steering lost on restart. Re-queue at the front.
+3. MED hub.rs:458-461/780 + protocol.rs:608-612: journaled prompts restore as Steer; journal `delivery`.
+4. LOW turns.rs:3089-3091: Again ladder omits offline_for (cf. :3117-3120).
+5. LOW limit.rs:11,240-249: park jitter constant; use Ladder::spread.
+6. LOW probe-row accumulation (P2-r2 #2).
+7. LOW open.rs:3739-3740: limited/limit_return unrestored.
+8. LOW retry.rs:196: Retry-After cap.
+9. MED-HYP retry.rs:296-318: money substring over any body.

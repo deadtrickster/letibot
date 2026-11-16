@@ -1,0 +1,26 @@
+A3 R1, reviewer 1 (position 1: secrets leak). Refs at 9e9312b06, paths under crates/.
+
+THESIS
+The boundary checks the shell with one list and the file tools with another. The file tools are never gated, egress is open in every mode that can run a command, and nothing scrubs what reaches the transcript. A secret read by any route goes to the model provider and stays readable in an append-only store.
+
+FINDINGS
+
+F1 HIGH. The file tools are fenced by a smaller list than the one the shell is classified by. The gate runs only when `!effective.is_unattended()` (`tools/src/runtime.rs:2264`). `read`, `grep` and `glob` declare `Access::Read` (`builtins/read.rs:55`, `grep.rs:68`, `glob.rs:35`, `schema.rs:129`), so the fence is their only check. The fence is `seat.masked` (`exec/fence.rs:58`), which is `STORES` plus `SEAT_UNDER_HOME` (`exec/seatbelt.rs:110-113`, `:85-104`). It has no `.config/flowy`, no `.docker` beyond `config.json`, and no `/etc/ssl/private`, which `intent.rs:1554-1567` adds for the shell. It has none of `SECRET_FILE_NAMES` or `SECRET_EXTENSIONS` (`intent.rs:1571-1584`). Nothing covers `.claude`. Scenario: a wide seat holds the whole filesystem (`fence.rs:39`, `inside` is `None`). The model calls `read ~/.config/flowy/<token>`, `read ~/.claude/.credentials.json` or `read ~/proj/deploy.pem`. No card is shown and the bytes go to the provider. `cat` of the same paths would be classified Secret by `secret_hit` (`intent.rs:2273-2305`) and asked. Change: build the fence from `intent::secret_dirs()` plus a name and extension check in `FileFence::refusal`, add `.claude`, and have a test hold the fence and `secret_hit` equal. The existing three-reader test (`secrets.rs:105-130`) checks STORES only.
+
+F2 HIGH. A tight child's file tools read every session's history. `FileFence::refusal` returns `None` for readable store data (`fence.rs:96-103`) before it checks the tight `inside` roots (`:119`). `is_readable` admits `sessions.db*`, `logs/**`, `panes/**` and `room-*.chat` (`exec/store.rs:50-67`). The tight shell never mounts the store unless the view reaches it (`confine.rs:2826`). So `fence.rs:1-3`'s rule that the tools see what a command sees is broken in the direction that widens. Scenario: a child runs `grep -r token ~/.local/share/letibot/panes` or reads `sessions.db`. `read` returns lossy text for binary files (`read.rs:534`), so the child gets the operator's and other projects' transcripts. Change: in a tight view, refuse the store outside `own` unless the view's roots hold it.
+
+F3 HIGH. Egress is open for every mode that executes. `network_rule` gives `Egress::Host` whenever `mode.seats(Network)` (`exec/seat.rs:160-173`). Every built-in mode with exec Ask or Admit also has network Ask or Admit (`mode.rs:287-394`), so `Egress::Denied` is reachable only in read-only mode, which runs nothing. Tight children get the same rule (`seat.rs:493`). The network control is therefore the command classifier alone. A `build.rs`, an npm postinstall or a script written by the write tool opens a socket the classifier never sees. HYP: automode's adjudicator admits `cargo test` in the workspace without a card. Change: a tight seat gets `Denied` unless the operator grants egress, or a proxy with an allowlist.
+
+F4 MEDIUM. The secret mask covers job capture only. `SecretEnv::mask` is an exact-substring match (`seat.rs:23-40`), applied at `jobs.rs:1024` and `host.rs:2867`. The file tools and `Store::append_item` (`tokencore/src/store.rs:3046-3070`) write unmasked text. Scenario: in the wide seat (`seat.rs:150`, `GH_TOKEN`), `env > x` then `read x`, or `echo $GH_TOKEN | base64`. The token reaches the provider and `sessions.db`, which the append-only triggers keep (P4), and per F2 every child can read it. Change: mask in the runtime's tool-result path before `append_item`, for every tool. Encoded copies remain a gap, which is a reason to keep the token out of tight seats (already true, `seat.rs:583`).
+
+F5 LOW. Daemon sockets are hidden only in the tight view (`backend.rs:556-563`). The wide seat reaches harnessd directly. HYP that this widens anything beyond D12.
+
+CONCESSIONS
+- PID namespace is unshared (`confine.rs:2699`), so `/proc/<daemon>/environ` is not reachable from a confined shell.
+- R315 own-view dirs are per session (`lifecycle.rs:265-275`, owner = session id), so they do not widen across sessions.
+- Wide `.config/gh` is readable by an operator ruling (`secrets.rs:44`).
+- P9 A2 (lexical `read_passes`) is a separate leak in the shadow path.
+- To position 2: bwrap holds for what it masks, but F1 and F2 are what it does not mask, and F3 makes the network namespace decorative.
+- To position 3: agreed that the lists are in three places. F1 is the leak that results, not only untidiness.
+
+No test was run.

@@ -1,0 +1,22 @@
+[model: glm-coding (the preset's default model)]
+P4 · Position 1 · A crash loses rows or prompts
+
+THESIS
+The durability machinery (WAL+FULL, append-only triggers, journal) protects only what reaches the store. Four verified paths publish or accept conversation ahead of the write that makes it durable, and the restore paths rebuild from the store, so the loss is silent: after a restart the operator's screen and the record disagree and nothing says so.
+
+FINDINGS
+
+F1 Show-before-store, minutes wide at the round seam — high.
+`turn/src/engine.rs:487` emits `TranscriptAppended` inside `append_items`; `CapturingSink` forwards live ("Forwards everything", `harnessd/src/harness/turns.rs:92-95`). At a round boundary the rows are appended and reconciled at `turns.rs:2582-2584`, then `serve_reviews` (`:2604`, runs reviewer gates), `apply_queued_head_run` (`:2600`, runs operator tools), jobs and mode application run, and only then `persist()` at `:2611`. Scenario: daemon SIGKILLed (reaper grace is 5 s, `tools/src/lifecycle/reap.rs:52`) during a review in that gap — the head drew the whole round, the store has none of it, and `republish_after` (`harnessd/src/harness/open.rs:4269`) re-announces from the store, so the row vanishes without a warning. Untested (invariants I1). Change: persist before the side work, and on open warn when a head's last seen item_id is absent from the store.
+
+F2 `Accepted` before the journal write; nobody waits — high.
+`push_back`→`sync()` posts to the journal thread ("Never waits on the store", `sessionlog/src/hub.rs:527-537`), then `Accepted` returns at `:1994`. The thread's `save` (`:431`) can sit out the 90 s busy ladder (`tokencore/src/store/busy.rs:12`) while the reaper kills at 5 s. `journal_settled` is called only by tests (`harnessd/src/restart.rs:2066,2078`); the surviving-prompt test settles *before* killing (`hub.rs:2521-2524`), so the real window is untested by construction. Change: settle (bounded) before `Accepted`, or before `pop_front` hands a prompt to a turn.
+
+F3 Room items store: skip-then-compact erases; closed-segment failure drops — medium.
+`room/src/store.rs:100-127` skips unparseable lines to stderr; `compact` (`:373-416`) rewrites the file from the shadow, permanently erasing every skipped row. The JSONL has no version (S4), so one record-shape change makes every old line unparseable — a restart drops the room's whole item history. `close` (`:299`) ignores a failed append while the rows are already trimmed from the ring: gone after the next compaction. Change: version records; quarantine bad lines to a sidecar; retry failed closes.
+
+F4 Migration: no transaction, no cross-process lock — medium.
+`tokencore/src/store.rs:1848-1922`: arms are separate autocommits; v2/v4 ALTERs (`:1932-1933`, `:1951-1952`) have no existence check, unlike v45+ (`:2539-2559`). A crash between an old ALTER and the stamp re-runs it → "duplicate column name" → every daemon's open fails: record intact, unreachable. Between the stamp's DELETE (`:1870`) and INSERT (`:1871`) a concurrent opener reads an empty version table as a fresh store and skips `migrate_from`/`repair_queue_mute`. Change: wrap arms+stamp in one `BEGIN IMMEDIATE`; SQLite DDL is transactional.
+
+CONCESSIONS
+Position 2: FULL sync plus the no-UPDATE/no-DELETE triggers (`store.rs:526-538`, verified) do make stored bytes durable, recent arms are idempotent, SCHEMA_SQL is `IF NOT EXISTS` (so the concurrent fresh-path is table-benign), and per-round persist bounds most loss — F1/F2 need a kill inside the window. Position 3: agreed that only warnings have a destination table; F1's silent divergence is exactly the structural gap you name, and the journal dropping `from` (`hub.rs:773-779`) also mutates the restored record.

@@ -1,0 +1,15 @@
+[model: glm-coding (the preset's default model)]
+A3 R2, reviewer 1 (position 1: secrets leak). All refs verified at 9e9312b06 except HYP.
+
+TO P2 (deepseek r1): concede the shell door holds — `--clearenv` with a 5-name keep list (confine.rs:771,2944), secrets on fd not argv (:2984), agent socket (:2802). Your 1-3 are my F1/F4 with better scenarios; I adopt `.config/gh` (secrets.rs:43 TightOnly, test :122 pins the wide mask omits it) as the lead instance. Your 4 (gate omission) is real but P6's (fable agrees).
+
+TO P3 (sonnet r1): your 1 — mechanism verified: peer.rs:47,286 (ancestry + `/letibot.<pid>.` cgroup), wide `--dev-bind / /` confine.rs:2722, sockets kept :688 and hidden only tight (backend.rs:556). Worse than you said: a tmux fork inherits the letibot cgroup, so even the cgroup half passes. HYP, unexecuted. Your 2=my F4, 3=my F1 (verified: no `.pgpass/.vault-token/.config/rclone/.config/sops/.config/hub/.my.cnf/.s3cfg` in STORES), 5=my F3, 4=P6's.
+
+TO P2 (fable r2): concessions accepted; your "holds" all verified; your #2 folds into my 5.
+
+FINAL
+1. HIGH exec/fence.rs:96-103 — store `is_readable` (store.rs:50, `logs/panes` whole, sessions.db) returns before the `inside` check (:119); tight child's fence has `.owning` (harnessd/src/harness/open.rs:1190) while its shell never mounts the store (confine.rs:2826). Refuse store outside `own` unless a root holds it.
+2. HIGH exec/fence.rs:58 — fence is `seat.masked` alone: no `.config/gh` wide, `.config/flowy`, `.docker`, `/etc/ssl/private`, `.claude`/`.codex`, SECRET_FILE_NAMES/EXT (intent.rs:1554,1571). Build from `secret_dirs()`+names; one equality test.
+3. MEDIUM-HYP confine.rs:2722 + peer.rs:47 — wide mask advisory; foreign-parent socket client reaches operator doors.
+4. MEDIUM exec/seat.rs:160,493 — `Egress::Host` in every exec mode; `Denied` only in READ_ONLY.
+5. MEDIUM seat.rs:23 — exact-substring mask on job capture only (host.rs:2867, jobs.rs:1024); `env > x; read x` stores the token (store.rs:3046).

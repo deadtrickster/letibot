@@ -1,0 +1,13 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Revised, not defended. Of sonnet's six I keep four. #4 (arms 19/20/21 out of order) is deliberate and documented at store/tests.rs:2955, and each arm is an independent `from < N` guard — dropped as cosmetic. #6 is wrong: `merge_review` has no fresh-schema copy at all (only store.rs:2207,2241; v24 renames it, queues.rs:1736), so arms are historical DDL, not duplicates. #1/#2 stand but HIGH→MEDIUM: table drift is caught both ways by split_tests.rs:83 and :106.
+
+P1: #1 conceded. #2 right on mechanism, wrong on "corrupt" — the None arm (store.rs:1894) creates project tables in shared.db that routing never reads: stray tables, not loss. #3 conceded.
+P2: "arms 6-51 are guarded" is false (store.rs:2586, :2620). "Idempotent, so a re-run" — there is no re-run; the version is stamped over the skipped arm. P2-r2's IMMEDIATE fix misses open_transition (split.rs:584) handing a live daemon the uncarved file.
+
+F1 MEDIUM split.rs:160 vs store.rs:1894-1911 — `migrate` never calls `batches()`; split and single-file schemas drift, uncaught for index/trigger-only batches. Change: one `const BATCHES` both loop over.
+
+F2 MEDIUM store.rs:2592-2596, 2604-2609, 2625-2630 — probes swallow errors via `.unwrap_or(false)`; v48/v49 skip silently, then 51 is stamped (:1872), while procs.rs:238 names `cgroup` unconditionally. Change: `has() -> Result<bool>`; carry `StoreFile` on `Store` (store.rs:1791 already has it) and stop probing.
+
+F3 MEDIUM split.rs:307-310 — exact-string FK strip; store.rs:337,364,379 and marks.rs:11 survive only as spelled, and with foreign_keys on (store.rs:1609) a third spelling refuses every insert. Change: assert `schema_sql(Project)` holds no `REFERENCES session`.
+
+F4 LOW-MEDIUM split.rs:23-34, 577-601 — carve's third mode: 1229 lines, a table no schema creates, and the state that makes P1#1 possible. Change: offline migrate + `--finish` only, or lock the key for the whole pass.

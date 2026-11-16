@@ -1,0 +1,19 @@
+[model: kimi-code-global (the preset's default model)]
+REBUTTALS
+P1#1 carve: CONCEDE, verified — claims read once (`migrate_split.rs:227`), raw connection (`:236`), deferred deleting tx (`:274`) with no seq re-check.
+P1#2: CONCEDE as MEDIUM, not HIGH — arms and stamp run outside a tx (`store.rs:1867-1874`), but every `None`-arm CREATE is `IF NOT EXISTS`, so rows survive; `:1895-1907` would still run unfiltered `SCHEMA_SQL` on a populated file in that window.
+P1#3: CONCEDE, and my R1 had the direction backwards — a project file legitimately holds `recall_unit`/`session_grant`; it is `shared.db` that gains them, because `:2561` (v47) and `:2617` (v50) are unguarded.
+P1#4: CONCEDE (`split_coverage_tests.rs:12-30`; `grants.rs:91` is routed today).
+P1#5: CONCEDE — the one genuine cross-file gap (`transfer.rs:312-338`); orphan-retry behaviour HYP.
+P1#6, #7: HYP / minor, not traced.
+P2#2: REVISE. v19 guards the FIRST of two columns (`store.rs:2276-2289`): a kill after the first ALTER loses `auto_compact_after` forever, no arm re-adds it (v20, `:2245`, guards the last column and is loud). Probing is the defect.
+P2 "complexity is cosmetic": rebut — five unlinked lists (migrate call order, `batches()`, `place_of`, `READER_ARMS`, per-arm probes); one is tested.
+
+FINAL
+1. HIGH `store.rs:1895-1913` / `split.rs:160-181` — `migrate()` calls `execute_batch` 18× and never iterates `batches()`; `split_tests.rs:243` walks `batches()` only. One `const BATCHES`.
+2. HIGH `store.rs:2276-2289` — guard tests column 1 of 2; missing column, silently. Guard the last, or take a tx.
+3. MEDIUM `store.rs:2588-2599` — `.unwrap_or(false)`; a failed `sqlite_master` read skips `OWNERS_SQL` and still stamps 51. Make it `Result<bool>`; guard v47/v50.
+4. MEDIUM `split.rs:307-310` — `String::replace` on FK spelling; assert Project DDL holds no `REFERENCES session`.
+5. MEDIUM `split_coverage_tests.rs:12-30` — omits `grants.rs`.
+6. LOW `store.rs` arms 18,21,20,19.
+Retracted: R1#6 (v18/v20 copies are historical, dropped `:2329`).

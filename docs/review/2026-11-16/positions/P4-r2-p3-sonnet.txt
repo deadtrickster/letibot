@@ -1,0 +1,15 @@
+P4 R2, position 3 (no test run, read at 9e9312b06). Positions 1 and 2 produced no usable report beyond position 2's partial list. Position 2's store claims (FULL sync, append-only triggers, no migration arm touching transcript rows) I do not contest, and they are irrelevant to my point. Position 2's finding 1 (the prompt leaves the journal before the transcript holds it) I leave to them.
+
+THESIS: I2 is enforced for warnings only. Structurally, operator-only rows exist and nothing stops more.
+
+Verified:
+- The one-destination guard covers only codes in `warning::TABLE` (`sessionlog/src/warning.rs:1269-1281`). `destination` defaults to `Go::Notes`, and `class` defaults to Routine for an unknown code. An unregistered code is silently accepted and never reaches the conversation. This protects warnings and nothing else.
+- `tui/src/app/tests/onevent.rs:172` `no_warning_is_a_row_of_the_conversation` walks `TABLE` only. It skips 10 codes by `continue` (`:190-202`: compacting, turn_failed, model_switch_pending, daemon_started, slash_listing and others), so their absence from the record is untested.
+- A typed operator-only row exists. `TranscriptItem::Offer` is stored in the transcript (`tokencore/src/store.rs:698`) and appended by `append_offer_rows` (`harnessd/src/harness/turns.rs:3865`). Every renderer drops it: `provider/src/messages.rs:377`, `anthropic/request.rs:269`, `responses.rs:358`, `gemini.rs:836`, `dialect-glm/src/render.rs:226,480`, `dialect-qwen/src/render.rs:276`.
+- The row's own docstring says "the operator sees it, the model does not" (`shadow/turn_end.rs:123`). Producers are the shadow grant row (`harness/shadow_seat.rs:36-48`) and the note-suggestion row (`turn_end.rs:127`).
+- No test asserts that every stored non-Offer item kind reaches the model, and none asserts the Offer exception is bounded.
+
+FINAL FINDINGS
+1. MEDIUM. `turns.rs:3865`, `shadow_seat.rs:44` and `turn_end.rs:127` store operator-only rows, which breaks I2 as written. Either state the Offer exception in I2, or send the offers to the status line, notes or shadow session and not the main transcript.
+2. LOW. `onevent.rs:190-202` skips 10 codes without a stated reason. Test them or name why each is exempt.
+3. LOW. No general row-kind to model-visibility test exists. Add one over `TranscriptItem` variants, with Offer, SegmentMark and any other exempt kind listed explicitly.

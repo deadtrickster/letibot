@@ -1,0 +1,15 @@
+[model: glm-coding (the preset's default model)]
+Round-1 stance: defended, one revision — finding 4's daemon half is bounded (600×0.5s, scripts/letibot:3083) but nothing kills the orphaned systemd-run; only the one-shot exec (:2998) is unbounded. All five re-verified: verb arm :2737 lacks hold/release/where; reap.rs:680 tells the operator to type exactly them; :374 STORE; :1095 plus keys.rs:194; Interrupt frame (server.rs:1910-1921) calls hub.submit, never registry.close (only close sets stopping, registry.rs:2566-2569), so Harness::wake (turns.rs:440-443) opens turns in the window; --restart drops model/provider (:2461, :2474).
+
+Position 2 (fable r2): #1 concede — :1531-1540 tests stats/fb/boundary only. #2 half — the stub sleeps 6, it does not hang (no_hang.rs:106), but the gap is real and verified at :2998. #3 concede — reproduced: awk keeps `#`, parse_file strips (keys.rs:855). #4 concede — fallback/usage_warn/subagents/keys hand-read (lib.rs:880,884,2366,2537) and absent from the :83-97 list. #5 concede, LOW.
+
+Position 3 (sonnet r1): #1=#mine. #2 verified with a correction — model_home does strip comments (:1140); the real divergences are parse_file's Err on a stray line (keys.rs:866) vs awk's `eq==0 next` (:1158) and duplicate-section merging. #3=#mine. #4 stays HYP/LOW. #5=#mine. #6 defer.
+
+FINAL
+1. scripts/letibot:2737 HIGH — add hold|release|where; verb-chain parity loop in tests/launcher.sh.
+2. scripts/letibot:1095,1093 HIGH (concede D2) — LETIBOT_PROVIDERS unread in Rust, XDG_CONFIG_HOME ignored; one resolver; fix the comment.
+3. scripts/letibot:374 MED-HIGH — honour XDG_DATA_HOME.
+4. scripts/letibot:1101,1124 MEDIUM — delete both awk readers for letibot-multi queries (D4); keep P2's cases as tests.
+5. scripts/letibot:317,2998,3083 MEDIUM — bound the real systemd-run, kill the orphan on give-up, extend no_hang.rs.
+6. sessionlog/server.rs:1910 MEDIUM — interrupt sets stopping before SIGTERM; --restart carries model/provider.
+7. leticode-config reference_tests.rs:83 LOW — add the five tables; check-dist-names.sh:157 stale should fail.

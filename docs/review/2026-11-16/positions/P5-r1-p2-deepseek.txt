@@ -1,0 +1,23 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+I am position 2: the named gaps are d.3's own rule or unreachable in practice. I hold that for I22/I23 and fail on two, and I can name a sharper path than position 1 will.
+
+**Thesis.** `close_due` implements the operator's order (`crates/tools/src/lifecycle/reap.rs:146-196`) and the two gaps position 1 will quote are that order (`docs/lifecycle.md:585`, "Any one is enough"). Where my position fails it is not where P1 says.
+
+**1. I22's "violations" are d.3 — the invariant's absolute wording is the stale artefact. Low.**
+`reap.rs:150-166` closes a child of a closed parent and a hard-TTL owner before the busy check at `:181`; `docs/lifecycle.md:585` says exactly that, and `crates/tools/src/lifecycle/reap.rs/tests.rs` (`:132`, `:163`, `:182`) pins it. Idle never wins over work: `busy` reads the cgroup (`reap.rs:433-455`) and `renew_held` keeps the lease for a head on an unlanded owner, a turn or a job (`crates/harnessd/src/reap_pass.rs:152-172`), and `LeaseBeat` beats during a turn (`:290-330`). Fix: rewrite I22 to quote d.3; no code change.
+
+**2. I25 — `retire_if_empty`'s guard is per-process, and the file knows it. High.**
+`serve.rs:1627` keeps a tree on `door.session_live`, which is registry-only (`crates/harnessd/src/mergequeue.rs:416-421`). Nine lines up, `settle_tree` adds `in_use::why_kept` with the comment "the queue's own registry above sees only this daemon's sessions" (`serve.rs:1453-1471`). Scenario: a seat in worktree A is served by daemon A; the repo's queue runs in the main-checkout daemon Q; the target moves, A's row is withdrawn, `registry.get` in Q answers false, and `git::retire_if_empty` (`crates/harnessd/src/mergequeue/git.rs:846`) removes the live seat's cwd. `children.rs:3555` calls it with no check at all. Fix: pass the same `why_kept` predicate into `retire_if_empty`.
+
+**3. I22 hard TTL's clock — the code contradicts d.3. Medium.**
+`docs/lifecycle.md:585` says "since creation **or last reopen**"; `owner_for_open` copies `created_ms` (`crates/tools/src/lifecycle.rs:449-461`) and `reopen_owner` touches only state and lease (`crates/tokencore/src/store/owners.rs:593`). A package older than 24 h resumed by `leticode_send` (`crates/bridge/src/tools.rs:543`) is closed at the next sweep with a head attached and a turn in flight. Fix: reset the clock on a `Closed → Live` reopen.
+
+**4. I29 — the doc names a component and a backstop that do not exist. Medium.**
+`docs/lifecycle.md:587` says "host-local reaper"; the pass is driven from home over ssh (`crates/tools/src/lifecycle/remote.rs:173`), so a dead home box leaves remote compute running. The stated backstop, `RuntimeMaxSec=` (`docs/lifecycle.md:585`, `:856`), is never set: `scripts/letibot:323` only reads `LETIBOT_SCOPE_RUNTIME_MAX` and nothing in `crates/` exports it. Fix: a timer on the declared remote host that reads `owner.json` expiry, and export the runtime bound.
+
+**5. I53 — the launcher's window is real. Medium.**
+`scripts/letibot:2668` interrupts, `:2590` sends SIGTERM; `Interrupt` is a queued command (`crates/sessionlog/src/server.rs:1911`) and `is_stopping` is set only in `close` (`:1905`, `registry.rs:2635`), so a wake passes `turns.rs:440` and `:668` in the gap, its batch row is already stored (`harness.rs:1405`), and the SIGTERM kills the turn. Fix: mark stopping when the interrupt carries the stop reason.
+
+**Concessions.** 2, 4, 5 stand; 3 is reachable but rare. I do not concede the cwd half: a *live package* is seen cross-daemon through `writers_under` (`in_use.rs:13-50`), so "another user's process" (`:56`) is outside I25's scope; and the self-reap linger (`reap.rs:1175`) heals on the next pass by any box daemon.
+
+**Anticipating.** P1 should not score d.3's table as a defect, and should use my #2 path rather than "clean tree could be removed". P3's "seven inputs" is two witnesses, store and kernel, forced by the pass running when the owner daemon is SIGKILLed (`reap.rs:1-13`); one stamp per tree must be written by the process that is gone.

@@ -1,0 +1,9 @@
+Rebuttals
+- P2 thesis (every live `/mode` door is checked): conceded for a live spawned child. `within_parent` runs at harnessd/src/harness.rs:765, and `mode_past_parent` runs at :924. But "every widening" is wrong. The check only covers a child whose `parent_point` is the parent's live cell (children.rs:4114). See F1.
+- P2 finding 1 (decider): conceded and adopted. tools/src/mode.rs:582-586 compares five axes and not `decider`. A Human-to-Model move passes `within_parent` and turns on supervision (harness.rs:783-788). That is a widening.
+- P3: no report. Its overlap claim is unargued, so I do not rebut it.
+
+FINAL findings
+1. HIGH, harnessd/src/harness/open.rs:669-698, 2214-2217, 2874. A child reopened through the worker (sessions.rs:2155-2159) gets `cfg.mode` from `..self.base`, the daemon default. The child branch (:695) skips its own row, so the row `narrow_to_parent` writes (harness.rs:866) is never read back. The clamp at :2874 is by seat only. `parent_ceiling` is that same point. Result: a parent narrowed to read-only, then a restart, and the child reopens at the daemon default. That point is wider than the parent's, and the child's ceiling is the wider point. Change: on a non-spawn open of a child, read the parent's point (its live cell, or its session row) and clamp with `inherited_by`. Then take the narrower of that and the child's own row. Add a restart test. HYP: that the registry entry keeps `parent_session_id` across a restart. If it does not, the root path (:676) reads the project row, which is also not the parent's point.
+2. MEDIUM, tools/src/mode.rs:582. Add a `decider` rank (Human < Model) to `no_wider_than`.
+3. LOW, harnessd/src/harness/turns.rs:2652, 1826. Narrowing only happens at batch boundaries. A call that is already running keeps the wider point. Document it as the guarantee, or read `parent_point` once per call in the gate.

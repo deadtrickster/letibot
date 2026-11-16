@@ -1,0 +1,13 @@
+Record written: /data/review-run/P4.md (round sections verbatim, synthesis, spot-check). Repo untouched.
+
+HIGH | crates/sessionlog/src/hub.rs:482-485 + crates/harnessd/src/harness/turns.rs:1713 | popped prompt leaves the journal before the transcript stores it. A restart during a busy persist (up to 30 min) loses it | VERIFIED
+HIGH | crates/harnessd/src/harness/turns.rs:4507 + :1714 | on Esc during a busy store, persist_rows returns Ok with rows unwritten. opened then runs the_batch_stored, which acks results and room lines that were never stored | VERIFIED
+HIGH (P1) / MEDIUM (P2), proposed HIGH | crates/sessionlog/src/hub.rs:528-537, :809 | journal sync only sends and the accept never waits for the save. journal_settled has test callers only | VERIFIED
+MEDIUM (P1) / LOW (P2), proposed MEDIUM | crates/room/src/store.rs:345-368, :414-416 | room append and compact never fsync the file or the dir. Power loss can empty the shared board | read, no fsync present (not high, spot-check not required)
+MEDIUM | crates/room/src/store.rs:92 | read_to_string().unwrap_or_default() turns bad UTF-8 or EIO into an empty store. Compaction then rewrites the file from it | read, as described (unopposed, P2 only)
+MEDIUM | crates/harnessd/src/harness/turns.rs:3865, crates/tokencore/src/store.rs:698 | TranscriptItem::Offer is an operator-only stored row and breaks I2 as written | read, as described (unopposed, P3 only)
+LOW | crates/tui/src/app/tests/onevent.rs:190-202 | warning test skips about 10 codes. A one-line general reason exists at :194-195, so "no stated reason" overstates it. Per-code justification is missing | partly reproduced (unopposed)
+LOW | none | no test checks which TranscriptItem variants the model sees | unopposed
+LOW | crates/turn/src/engine.rs:487 vs turns.rs:1713 | the row is shown before it is stored. Harmful only through the first two HIGHs | unopposed
+
+No critical findings. Process note recorded in the file: 4 of 6 slots failed. All relays shared one daemon and one worktree, with a protocol 74 bridge against a protocol 78 daemon. Proposed: one relay per daemon or worktree, and optionally rerun R2 position 2.

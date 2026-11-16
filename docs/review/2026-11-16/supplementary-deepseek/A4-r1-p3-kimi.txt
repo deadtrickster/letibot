@@ -1,0 +1,24 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+THESIS
+
+Positions 1 and 2 are not answerable from this code, and that is the finding. The session is built by one 1,763-line function; its state is a ~125-field struct with no privacy boundary; and the rule "what a newly opened session must have" is written three times and has already drifted. Nobody can certify authority or restart because no single place states either.
+
+FINDINGS
+
+1. `open_with_registry` is one function of 1,763 lines — `harnessd/src/harness/open.rs:1994-3756` — ending in a struct literal of ~150 fields (`:3735-3752`) for a struct of ~125 fields (`harnessd/src/harness.rs:178-539`). Failure: a new field (R313's owed-delivery mark) is threaded by hand through one function; a door that omits one line yields a session that reports itself open and is silently unwired — the harness's default is a value, not a compile error. Change: typed per-concern builders (`Stored`, `Placed`, `Seated`) composed by a short `open`, so an unset part fails to construct.
+
+2. The post-open sequence exists three times and differs. `harness_as` (`sessions.rs:2130-2233`, steps `:2224-2230`), `open_as` (`:2012-2082`, steps `:2050-2072`), `open_first_with_seat` (`:699-811`, steps `:761-809`). `rearm_todo_nag` is at `:801` and `:2067` and absent from `harness_as`; `arm_park` is only in `open_as` (`:2069`); origin's shadow arm only at `:2054`, and "is this a child" is read from the registry in one path (`:2155`) and from `base.parent_seat` in another (`:765`). Scenario: a shadow-seat or child session opened as the daemon's first is recorded with another origin — it lands in the operator's list — and never parks; no test crosses the doors because the code does not. Change: one `SessionOpened` step list called by all three, plus a test that opens each door and compares origin, nag and park.
+
+3. The restoring act is five functions in one file: `reopen_parked` `children.rs:1990`, `resume_run` `:2267`, `resume_recorded` `:2572`, `resume` `:2582`, `reopen` `:2633`; plus `restart.rs` (2,087 lines) and `turns.rs:920-1300`. Scenario: R313's "mark delivery when the carrying row is stored" must be right five times; a fix in one leaves the others replaying a settlement the store already holds. This is exactly what position 2 says is solved.
+
+4. `compacting` (`harness.rs:254`) is set from five files (`clear.rs:61`, `models.rs:334,963`, `prune.rs:81`, `wall.rs:729,929,1066`) and cleared by hand in three spellings: closure (`wall.rs:1067/1130`), bind-then-`?` (`prune.rs:93-94`), bind-then-`map_err` (`models.rs:975-980`). One early `?` leaves the session permanently mid-compaction. All five are correct today; that is a coincidence maintained four times.
+
+5. `turns.rs` is 5,997 lines and 131 functions, holding `rounds` (`:2057-2572`, 516 lines), `restore_after_restart` (`:920-1300`), `take_the_round` (`:2917-3212`). Privacy gives no boundary: every file under `harness/` descends from module `harness`, so all 32 can write every private field — `prompt_in_flight`/`turn_began_ms` (`turns.rs:380-411`) are touched from six others.
+
+CONCESSIONS
+
+The three paths currently agree on the steps that carry the most weight; the shared tail re-arms the nag after every turn (`sessions.rs:5055`), so the missing open-time rearm costs one window, not a nag; every `compacting` site is correct today. A 125-field struct with no broken invariant is not a bug. That is the argument: nothing here is safe to change and no test distinguishes a miss from a decision.
+
+OTHERS
+
+Position 1 will blame children and restarts; I agree, and note the trace must go through `rounds`, the 516-line loop. Position 2 will cite the restore tests; they cover `Harness::open`, not the lazily opened door at `sessions.rs:2507`, which no test exercises.

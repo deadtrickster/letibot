@@ -1,0 +1,46 @@
+A5 R1, position 3 (read at 9e9312b06, no test run). Not a position-1 or position-2 finding: both come out of the same smell.
+
+Thesis: the store's safety rests on hand-kept parallel lists and text surgery, each guarded by a test that checks only part of the list. WAL+FULL and the triggers are fine (conceded). The cost is that every schema change needs five edits that must agree, and nothing makes them agree.
+
+Findings
+
+1. HIGH. Two hand-kept batch lists.
+- `Store::migrate` runs 18 `execute_batch(X_SQL)` calls (`tokencore/src/store.rs:1895-1913`).
+- `split::batches()` (`store/split.rs:160-181`) lists the same batches by hand, with a hard-coded `[&str; 19]`.
+- Its doc says "One list, so a batch added there is routed or refused here". That is false: the fresh path never calls `batches()`.
+- Failure: someone adds `FOO_SQL` to `migrate` and forgets `batches()`. Single-file stores get the table, but `schema_sql(Shared/Project)` omits it. A split set has no table, and the first write fails at runtime. `every_statement_the_schema_is_built_from_names_its_table` (`split_tests.rs:240`) iterates `batches()` only, so it cannot see the omission.
+- Change: one `const BATCHES: &[&str]` that `migrate` loops over. Delete the array.
+
+2. HIGH. A project file's schema is the shared DDL with text deleted from it.
+- `without_cross_file_keys` (`split.rs:307-310`) does two `String::replace` calls on exact spellings.
+- Failure: any new column written `REFERENCES session (id)`, `REFERENCES session(id) ON DELETE SET NULL`, or on a new line leaves a dangling foreign key in the project file. With `foreign_keys` on, every append to that table is refused. No test asserts that a project file has no `REFERENCES session`.
+- Change: drop the FKs from the DDL source (`session_id` is a plain column everywhere, as v48 already treats it), or add the one-line test `schema_sql(Project)` contains no `REFERENCES session`.
+- `statements()` (`split.rs:186-201`) splits SQL on lines that start with `CREATE `. This is also text parsing. The `table_of` test covers it only for current text.
+
+3. MEDIUM. Migration arms probe the schema to guess which file they are in, and a failed probe passes silently.
+- v48 (`store.rs:2588-2599`) runs `OWNERS_SQL` only if `sqlite_master` has `session`. v49 and v51 check `process` and `session` the same way.
+- The probe is `.and_then(|st| st.exists([])).unwrap_or(false)`. There are 25 `unwrap_or(false)` in `store.rs`.
+- Failure: a probe that errors (SQLITE_BUSY from a second daemon, I/O error) reads as "no session table". v48 is skipped, `migrate_from` returns Ok, and the version is stamped 51 (`store.rs:1867-1875`). `owner`/`holding` never exist, and nothing retries.
+- v50 (`:2617-2620`) is unguarded, so a project file at v49 gains a stray `session_grant`. `session_grant` is shared per `split.rs:82`. v48 shows the author knew the guard was needed.
+- Change: a `fn has(&self, sql) -> Result<bool>` that propagates errors, and pass the file kind into `migrate_from` instead of probing for it.
+
+4. MEDIUM. The arms are out of numeric order: v21 at `store.rs:2225`, then v20 at 2241, then v19 at 2276, then v22.
+- This is harmless today because they touch separate things. Nothing enforces that, and the version is the only sequencing.
+- Change: renumber the arms into order, or add a test that scans `migrate_from` and asserts the `from <` guards are ascending.
+
+5. MEDIUM. The carve-in-progress state needs a third mode.
+- A directory can be a single file, a set, or mid-carve. Mid-carve has its own table (`CARVED_TABLE`, a table created by no schema, `split.rs:23-34`) and its own handle rules (`:574-650`).
+- The state machine is spread over `carved_keys`, `refuse_unsplit` and `carve_into` (`migrate_split.rs:120-262`).
+- P4 left check-then-act against a daemon starting mid-carve as HYP. I did not trace it either (HYP).
+- Change: carve-by-key is operator tooling for a box with a handful of projects. Cut it to the offline `migrate` plus `--finish`. That removes `carved_project`, the key checks, and roughly 600 lines of `migrate_split.rs` (1229 lines total).
+
+6. LOW. The v18, v20 and v22 arms each carry a full copy of `CREATE TABLE merge_review`/`merge_queue` beside the fresh-schema copy. I found no test that diffs a migrated store's schema against a fresh one. Only per-version tests exist (`store/tests.rs:614`, 723, 865, ...).
+
+Concessions
+- Transcript rows are safe: WAL+FULL (`store.rs:1608`), append-only triggers (`:527-541`), and no arm deletes rows (P4).
+- The split coverage test (`split_coverage_tests.rs`) is a real guard for routing. It does not cover the schema text in findings 1-2.
+- Per-arm idempotence makes the missing migration transaction survivable (position 1's ground).
+
+Anticipated replies
+- Position 1 will say these are hygiene, not corruption. Finding 3 is silent loss of a table behind a stamped version, so it is corruption by omission.
+- Position 2 will say tests exist. They cover the current text, not the next edit. Findings 1 and 2 each need a one-line test or a deleted duplicate.

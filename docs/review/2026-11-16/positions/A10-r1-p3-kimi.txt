@@ -1,0 +1,22 @@
+[model: kimi-code-global (the preset's default model)]
+THESIS
+
+The A10 hook surface is 19 served hook kinds plus one unserved (`crates/plugins/src/lib.rs:118-169`), and the daemon's dispatcher for all of them is one file, `crates/harnessd/src/plugins/hook.rs`, 1005 lines, **zero `#[test]`**. The surface is not uniformly untested, but coverage is wildly uneven and falls to zero exactly where an answer changes authority or rendering. So neither position 1 ("untrusted content gets authority") nor position 2 ("it is capped") can be settled from the tests: several of the doors they argue about have no test that would fail if the door moved.
+
+FINDINGS
+
+1. The narrowing rule is untested. `hook.rs:841` `only_smaller` decides whether a layer's `on_tool_call` rewrite may add an argument; its only call site is `hook.rs:530`; tree-wide grep for it finds those two lines and nothing else — no test, no test fixture. High. Scenario: a rewrite that adds a key nested one level down (`was: {"a":{"x":1}}`, `now: {"a":{"x":1,"y":2}}`) passes the top-level `keys().find` check and widens the call; nothing in `crates/` observes it. Proposed: a table test on `only_smaller` (added key, nested object, null, array shrink) plus one host test asserting the refusal sentence reaches the model.
+
+2. Two served kinds have no host test at all: `card_item` and `card_call`. The entire head side is `crates/tui/src/app/cards_plugin.rs`, no `#[test]` in the file; outside `plugin-sdk` the names appear only there and as a scaffold string assertion (`harnessd/src/plugins/scaffold.rs:1096`). `Cards::verb` (`cards_plugin.rs:156-165`) lets a layer's answer choose the verb a tool row is drawn as, and `answered` (`:190-205`) feeds the layer `parts.len()`. High. Scenario: a layer answering three cards for two parts falls to `.ok()` and is silently ignored, or answers `verb: "read"` for a write the head then draws as a read — no test draws a plugin card. Proposed: a tui test over a table-backed host, the pattern `bridge/src/push.rs:811` already uses for `push_`.
+
+3. `limit_decide`'s chain is untested while its host file is nearly so. `PluginHost::limit` (`hook.rs:289-352`) implements `Do::Call` recursion, `LIMIT_CHAIN_CALLS` and `LIMIT_CHAIN_FUEL`; `crates/harnessd/src/harness/limit_hook.rs` holds one test, and it is `window_of`, a prose parser (`:413`). The three host tests (`tests/limits.rs:1578, 1671, 1725`) cover wait/ask/switch, a trapping module's fallback, and `new_session` — not the chain. Medium. Scenario: a layer answering `{"do":"call","function":"x"}` that returns to itself spins inside a turn; the bound is the only stop and no test asserts it. Proposed: one two-layer chain test plus one cycle test asserting fallback to the fixed rules.
+
+4. MCP: I concede the client. `crates/mcp` carries 8+5 integration tests (`tests/fake_server.rs`, `tests/http_server.rs`) and 3 unit tests; `bridge/src/mcp.rs` has 12; `tools/.../external/mcp.rs` 5. What is thin is the daemon: `crates/harnessd/src/mcp.rs` is 254 lines with 3 tests, and no file under `crates/harnessd/tests/` builds a session with an MCP server (only `session_lifecycle.rs` mentions mcp). Medium. Scenario: the trust decision at `harness/open.rs:2120-2143` — user table wins a name, untrusted checkout skipped, project `[mcp]` named not started — is proven only per-function, never as a session's tool list. Proposed: one integration test asserting the mounted tool names for trusted/untrusted/`[mcp]` cases.
+
+CONCESSIONS
+
+Trust is well covered (`crates/plugins/src/trust.rs:771-1028`), `push_` likewise (`bridge/src/push.rs`, 14 tests), and each SDK parser has 3-10 tests. This is three named kinds at zero-to-four tests and one authority rule at zero — not a blanket claim.
+
+ANTICIPATION
+
+Position 1 will cite `tests/limits.rs:1518` (`with_limit_hook`), where an unpinned project layer decides the park. I grant it: the tests encode that as intended, so their "authority" claim is a tested design fact. What no test bounds is the authority (`capabilities_for`, `hook.rs:407`, against the answer's acts; `only_smaller`). Position 2 will cite fuel caps; fuel is 5 in every fixture (`limits.rs:1471`) and pane fuel exhaustion is checked in two tests (`tests/builtin_panes.rs`), so a cap that is raised is invisible.

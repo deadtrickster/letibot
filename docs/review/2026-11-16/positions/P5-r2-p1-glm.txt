@@ -1,0 +1,15 @@
+[model: glm-coding (the preset's default model)]
+REBUTTALS
+
+To fable (r2). You never answered my finding 4, and it is the panel's worst. Verified again: `served_elsewhere` excludes this process (reap.rs:389), so an owner's own daemon is the only one that can idle-close it; `end_daemon` then returns Kept "a reaper never reaps itself" (reap.rs:1175); the Kept DAEMON holding makes `left>=1`, so no `ReapAct::Close` and `registry.close_session` never runs (reap_pass.rs:91). "Heals on the next pass by any box daemon" is wrong: healing needs this daemon gone, and its idle exit refuses while a head is attached (session_lifecycle.rs, `idle_exit_refusal`). Meanwhile `renew_held` skips the non-Live row (reap_pass.rs:160) and every 60 s sweep re-runs `end_processes` (reap.rs:645, :749). A landed package with an attached bridge head goes Closing 30 min after its last act, is never told, and has every later job killed. Your LOW on retire_if_empty confuses empty with unused: a live package's tree is clean and commitless before its first edit; settle_tree's own comment (serve.rs:1453-54) concedes the registry sees only this daemon.
+
+To deepseek/sonnet (r1). I concede parent-before-busy and jobs-die-on-hard-close are d.3's written order (lifecycle.md:583, :598-604) and the landed-head lease (lifecycle.md:588). Their only bite is via the TTL bug. P3's stamp: the failures I verified are check order and caller-local liveness, not input count.
+
+FINAL
+
+1. HIGH tools/src/lifecycle/reap.rs:1175, :389, harnessd/src/reap_pass.rs:160 — self-served close never finishes; jobs killed per sweep. Emit Close on self-close.
+2. HIGH tools/src/lifecycle.rs:460, reap.rs:161 — TTL from last reopen.
+3. MEDIUM harnessd/src/mergequeue/git.rs:846 (serve.rs:1627) — `why_kept` inside `retire_if_empty`.
+4. MEDIUM tools/src/lifecycle/remote.rs:173, scripts/letibot:323 — host lease timer; RuntimeMaxSec is opt-in env only.
+5. LOW tools/src/lifecycle/in_use.rs:57 — keep the tree when /proc is unreadable (not per-cwd: kernel threads).
+6. DOC — rewrite I22/I23 to match d.3.

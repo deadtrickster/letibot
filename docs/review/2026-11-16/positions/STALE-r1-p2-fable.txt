@@ -1,0 +1,42 @@
+PANEL STALE, round 1, reviewer 2 (position 2: for). All paths under /home/dead/Projects/letibot/wt-review-snap/crates at 9e9312b06. No test run; everything is from reading code.
+
+THESIS
+The event paths mostly hold. Of nine seeds, four hold as built, one was never a stale fact, and four really go stale. I add two new ones. Each is a missing arm of a few lines, not an architecture problem.
+
+FINDINGS
+
+1. HIGH - R298 holds only for a head attached live. `sessionlog/src/view.rs:731-744` (TranscriptForked) keeps `turn`, so the snapshot still carries the pre-compaction `Finished{usage}`. `tui/src/app/events/mod.rs:241-247` copies it into `self.usage`. The snapshot's warning loop (`mod.rs:373-391`) never applies the `compacted` correction, which exists only on the live arm (`events/warnings.rs:112-126`).
+Scenario: `/compact` on an idle session, then switch away and back, reattach, or resync (same path, `mod.rs:95-97`). Header shows the old ctx until the next turn ends. HYP: a compaction republish overrunning the head queue triggers that resync by itself.
+Change: fix the daemon's view at the fork (drop or rewrite the turn's usage). The store row is already rewritten there (`harnessd/src/harness/wall.rs:1950-1973`).
+
+2. MEDIUM - bridge `leticode_status.model` goes stale after a switch. The bridge head's Settings arm reads only `idle_exit` (`bridge/src/head.rs:947-952`). `model` is written only at TurnStarted (`:1116`), the snapshot's turn (`:1003`) and ProviderTrouble (`:1342`). `set_model` promises "`leticode_status` names the model it is on" (`bridge/src/tools.rs:1173`).
+Scenario: `leticode_model` then `leticode_status` before a turn returns the old model or null. An orchestrator decides on it.
+Change: read the `model` settings row in that arm.
+
+3. MEDIUM - R301 is job-only. `tools/src/builtins/todo.rs:728-731` retains every non-Job need. The pane prints child, pid and monitor needs verbatim (`tui/src/ui/panes/todos.rs:360-367`, `:489-496`). Daemon readers judge them live (`todo.rs:1464-1481`), so the nag is right and the pane is not. Monitors live in the process (`harnessd/src/harness/nags.rs:139-146`).
+Scenario: a row waits on `monitor ci`, the daemon restarts, the pane shows the wait indefinitely. HYP: pane not rendered.
+Change: generalise `resolve_job_waits` to the three kinds.
+
+4. MEDIUM - R306 left, confirmed. A reopened child's ceiling is a fresh cell of its own point (`harnessd/src/harness/open.rs:2214-2217`). Only a spawn hands over the live cell (`harness.rs:846-849`).
+Scenario: restart, then narrow the parent with `/mode`. The child keeps its wider point.
+Change: resolve the parent's cell from the registry at open.
+
+5. LOW - R317 breaker. The count is an in-process atomic (`harnessd/src/shadow/permission.rs:176,188`), "observe-only until restart" (`:233`). After a restart the shadow answers again, and grants from the tripped judge are still applied.
+Change: store the trip beside the grants.
+
+HOLDS (verified)
+- R310: every round tells, a failed one with its time (`provider/src/usage_poll.rs:370-390`), the row is replaced per reading (`harnessd/src/harness/usage.rs:126-140`), and a session leaving the door drops the row at republish (`harness.rs:1146`). The `usages` vs `limits[]` gap was not seen live. Not counted.
+- R311: `nags.rs:626-654`.
+- R309: one predicate (`tui/src/ui/panes/queue.rs:418-437`), re-read on QueueMoved (`tui/src/app/events/todos.rs:36-43`) and on attach (`tui/src/app/session.rs:801-818`).
+- R301 for jobs: `nags.rs:198-225`.
+- R308 was not stale. Activity is re-derived on every touching event (`sessionlog/src/hub.rs:1144-1146`, `:2014`; `harnessd/src/sessions.rs:551`). "delivery" was true. The worker was wrong.
+- Header model in the TUI: both copies stamped (`tui/src/ui/header.rs:76-84`, `events/frames.rs:301`, `events/turn.rs:105`), and every switch republishes (`harnessd/src/harness/models.rs:377,604,796,871`). HYP: an unopened session has no rows and draws `wiring.model`. This is the likely qwen-next case, not traced.
+
+AGAINST THE OTHER POSITIONS
+- Position 1: an age on every field is noise where an event already fires on change (activity, settings, todos, queue). Age belongs only on polled facts, and usage has it.
+- Position 3: in finding 1 the stale copy is in the daemon's own view. A stateless head would draw the same wrong number. `load` is already the single replace path.
+
+CONCESSIONS
+- The usage age is text baked at tell time, with 2-minute resolution.
+- There is no general mechanism. Findings 1 to 3 are the same class found one at a time, which supports I48 as an audit list.
+- Seat boards, the jobs and subagents panes, and the `/config` grants row were not traced.

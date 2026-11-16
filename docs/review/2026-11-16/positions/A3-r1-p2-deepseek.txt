@@ -1,0 +1,22 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Thesis: the boundary is the strongest thing in this area and it is enforced, not asserted: `confine.rs:1954` probes and `:2580` refuses a boundary that is not complete, `NoConfinement` (`:1884`) cannot produce a runnable argv, and `adjudicate.rs:1578` makes the no-card admit conditional on `encloses()`, so an unverified seal or a shared network costs a card, not a pass. Its weak side is not the shell but the second door: the file tools read through a *different, narrower* secret list, and nothing gates them (`runtime.rs:2264`).
+
+Findings
+
+1. HIGH — `.config/gh` is refused to `bash` and readable to `read`. `secrets.rs:43` marks it `TightOnly` and `:128` pins that the wide seat's mask omits it; the fence's whole deny list is that mask (`fence.rs:58`), and `backend.rs:928` asks it with `write=false`. So in a top-level seat `read ~/.config/gh/hosts.yml` returns `oauth_token:` into a stored, model-sent row, while `bash cat` on the same path is refused by the flow rule (`intent.rs:1554`, `:3093`). Scenario: "why is gh failing" in a session that has push rights. Change: build `FileFence::denied` from `intent::secret_dirs()`, add `SECRET_FILE_NAMES` (`intent.rs:1571`) as a name rule in `FileFence::refusal`, and extend `secrets.rs:108` to hold the fence to the same table.
+
+2. MEDIUM — four stores and every key name are the flow rule's alone. `.docker`, `.config/flowy`, `/etc/{shadow,sudoers,ssl/private}` (`intent.rs:1558-1565`) and name-matched `id_rsa`/`credentials` (`:1571`, `:2299`) are blocked to `cat` and open to `read`. Scenario: a repo cloned with a deploy key, or a flowy token. Same change as 1.
+
+3. MEDIUM — a secret is masked on the way out of a job, not at rest. `SecretEnv::mask` (`seat.rs:25`) is applied to capture (`host.rs:2377`) and to slices (`:2864`), never to bytes a command wrote. `bash: printf %s "$GH_TOKEN" > w/t` then `read w/t` lands the token in a row, defeating the masking that `:909`/`:971` measure. Change: mask in `HostBackend`'s read/grep result path when `secret_env` is non-empty, or refuse a read whose first block holds a secret value.
+
+4. LOW — on a box that cannot confine, the suite is green having measured only the refusal. `tests/confine.rs:58` accepts any refusal containing "was NOT run" **or** "nothing would reap it" — the second is the cgroup refusal — and `:81` only proves the require-switch fails a run. With no writable cgroup v2, every `confined!` test takes that branch. Change: separate the two skip names so `LETIBOT_REQUIRE_APPARATUS` can demand the one the test is about.
+
+Concessions
+
+- Egress follows the mode (`seat.rs:160`), and in any mode that seats network the boundary is not an exfiltration boundary; it is a read/secrets boundary. That is defendable because `adjudicate.rs:1578` then denies the free admit, but it does not stop a command that was already carded.
+- A child's `gh` fence is env-only (`seat.rs:486` empties `credential.helper`); if a granted git dir carries a `credential.<url>.helper` in another scope, the child's push story deserves an adversarial test. HYP.
+
+Anticipating the others
+
+- To position 1 (secrets leak): grants 1–3, denies the shell door — `:772`/`:2943` clear the env to five names, `:2984` carries a secret on a descriptor not argv (`host.rs:2190`), `:2802` binds an agent socket rather than a key (`confine.rs:470`), and `:1313-1345` has a positive control before it proves the coordinator is unreachable.
+- To position 3 (vacuous tests, three lists): `secrets.rs:107-135` holds the gate, the flow rule and both seat renderings to one table; the confinement suite asserts the refusal branch rather than skipping (`tests/confine.rs:1-3`, `:58-73`); and `confine.rs:1089` vs `:1110` is a deliberate two-verdict design, with the strict one wired into the gate. Only finding 4 is his.

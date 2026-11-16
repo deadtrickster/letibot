@@ -1,0 +1,11 @@
+[model: kimi-code-global (the preset's default model)]
+P1: F2 conceded, and stronger than written — `owning()` is given to every session (`harnessd/src/harness/open.rs:1190`), so a tight child reaches every `sessions.db`, `logs/`, `panes/` through `read`/`grep`, while its bwrap view mounts none of them (`confine.rs:2827-2834`, `classify`→Outside). F1 verified (`fence.rs:58` `denied = seat.masked`; the `intent.rs:1560-1584` extras and `SECRET_FILE_NAMES`/`EXTENSIONS` are absent). F3 overstated: egress is Host in every exec-capable mode, so `encloses()` (`confine.rs:1132`) is false and every command is still carded — a gate control, not a bare classifier. F4 folds into F1. F5 is real but wide-seat only.
+
+P2: "the boundary is real" holds only on the tight read side. Concede `tests/confine.rs:20-28,60-73` asserts the refusal branch — but a sentence is not a boundary, and `gate-at.sh:54-64` sets no `LETIBOT_REQUIRE_APPARATUS` and passes on `ok>=140`, so GREEN can mean nothing was measured. P2's #2 conceded. #1 is LOW: the wide seat is *given* `GH_TOKEN` (`seat.rs:151`). P2's `encloses()` defence is the defect: the production boundary is probed with the seat's egress (`backend.rs:578`), which is never Denied in a mode that runs, so the free admission never fires; the test uses a fixture boundary (`adjudicate/tests/boundary.rs:22-23,134`).
+
+FINAL
+1. HIGH `tools/src/exec/fence.rs:98-103` — move the store branch below the `inside` check; only `own`.
+2. HIGH `exec/fence.rs:58` — build `denied` from `intent::secret_dirs()` plus names/extensions, add `.claude`; extend `secrets.rs:107`.
+3. MEDIUM `exec/seat.rs:160` (`backend.rs:578`, `confine.rs:1132`) — free admit unreachable; withdraw it or separate structural egress. Test via `seat_view`.
+4. MEDIUM `scripts/gate-at.sh:54-64` — set `LETIBOT_REQUIRE_APPARATUS=1` or count SKIPPED.
+5. LOW (HYP) `sessionlog/src/peer.rs:47-59` + `confine.rs:2721-2726` — wide `/` lets tmux/systemd/ssh indirection present an outside "head"; overlap P2.md:88.

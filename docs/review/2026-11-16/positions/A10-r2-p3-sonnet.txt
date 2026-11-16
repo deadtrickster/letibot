@@ -1,0 +1,18 @@
+A10 R2, position 3 (test thinness). Round 1 produced nothing, so this is a fresh case. Paths are under crates/ at 9e9312b06.
+
+REVISED. The count claim is partly wrong, so I concede it:
+- MCP is not thin. mcp has 16 tests: fake_server.rs covers crash mid-call restart (:156), backoff wait (:180), start failure isolation (:120), cwd (:244) and an ungranted call reaching the gate (:261). http_server.rs covers session re-init, 401 and TLS. lib.rs:437 tests the ladder.
+- Plugins are not thin either: harnessd/src/plugins has 138 tests, plugins 99, plugin-sdk 94.
+- This concedes to position 2 that the claimed MCP behaviours are tested.
+
+HELD. The thin spots sit exactly where position 1 says authority leaks:
+- plugins-rano has 4 tests for 312 lines. It is the sandbox boundary: Capabilities::default(), the fuel and memory caps, and a fresh Store per call. I found no test that a plugin importing a host function is refused, or that fuel exhaustion traps (HYP, I grepped counts only). Position 2's "holds" rests on rano plugin.rs, which this crate does not test.
+- harnessd/src/mcp.rs has 3 tests for 254 lines. tools/src/builtins/external/mcp.rs has 5 for 565. The Network gate class and the trust-gated project [mcp] sit in those two files. I did not check what the 8 tests cover.
+- commands.rs has 7 tests for 653 lines. It is the path where command files are sent as the operator.
+
+FINDINGS (my final list):
+1. mcp/src/wire.rs:80-90, medium. The stdio spawn uses .envs(env) with no env_clear. The server inherits the full harness environment, credentials included. It has no sandbox, no setsid and no pgroup. The Drop at :240 kills only the direct child, so grandchildren are orphaned. Change: clear the env and pass an allowlist. Spawn in a process group and kill the group. Add a test that checks both.
+2. mcp/src/wire.rs:97-103, low-medium. BufReader::lines() has no line-length cap, so one huge line from a server grows memory without bound. Change: cap the line length and drop the server when it is exceeded.
+3. plugins-rano/src/lib.rs, medium (test gap). Add tests for an unknown import being refused, fuel exhaustion, the memory cap, and no state carrying over between calls.
+4. harnessd/src/commands.rs, medium (test gap). Add tests that allowed-tools and model from a command file cannot widen the gate, and that the speaker is not Operator.
+5. harnessd/src/mcp.rs, medium (test gap). Add a test that an untrusted project [mcp] is refused.

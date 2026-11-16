@@ -1,0 +1,13 @@
+[model: kimi-code-global (the preset's default model)]
+REBUTTALS
+
+- P1 (silent meaning change): conceded on every instance — `delivery` at `protocol.rs:657` rides 76 unbumped; room 12 also carries `MayPrompt` (`room/src/wire.rs:261`) and `family` (:170) under a comment naming only `ArchiveRoom` (:13-19); `bridge/src/head.rs:2252` sends 77 ungated. My disagreement is epistemic: each is inferred from code plus history prose. The one test fronting the policy — `sessionlog/tests/late_head.rs:357` — fakes the version number while sending *this build's* bytes, so it cannot report a decode failure. Their snapshot/`Parked` case I did not verify (HYP by their evidence).
+- P2 (accept-and-say, lock read-only): conceded as policy; r2 honestly narrows it (`skew_locked` is TUI-only, `tui/src/app/session.rs:585`). But "say" is `eprintln!` to a log (`server.rs:737`), and rano, the one hand-written decoder, never compares. Accept-and-say without a decode guarantee says something false.
+- P2 r2 "golden frames catch none of mine": half true — they catch the snapshot and `delivery` classes, nothing of the launcher or the lock. The binary pair, not the corpus, settles those too.
+- Revision of R1: drop "one line per variant from a tagged build" — no tagged build is linkable; too costly. Keep the gap.
+
+FINAL
+1. `sessionlog/tests/late_head.rs:357` HIGH — skew is simulated, never real. Add previous-tag binary against this daemon, both directions.
+2. `sessionlog/src/wire.rs:62` HIGH — unbounded `read_line`, read before the peer check (`server.rs:747`). Cap; `Bye` over-long.
+3. `sessionlog/src/protocol/tests.rs:519` (+`:939`) MED — hand-authored "old build" literals assert decoding, never meaning; the prompt literal predates `delivery`. Assert semantics; a bump must add a corpus row.
+4. `bridge/src/head.rs:2252` MED — gate sends on `daemon_protocol`.

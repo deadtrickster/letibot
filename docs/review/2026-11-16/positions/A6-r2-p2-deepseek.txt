@@ -1,0 +1,13 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+A6-r2, position 2. r1 defended, amended.
+
+To P1 — concede F1: install steps ride the gate runner (serve.rs:3026-3040), a host tree is a worktree of `{dir}/src.git` (gate_host.rs:393,1104), install-gate-build.sh:37-43 refuses it, AGENTS.md:71 blesses the pairing; but the row does print "The install did not complete" (serve.rs:3370), so the defect is the unrefused config, not a false landing. Concede F3, F4 (gate-at.sh:56-64, 47-50). Concede F2 and take it as mine (F3 below). Rebut F5 down: a lost half tag only re-splits the whole train (serve.rs:2793-2836, 2196-2216) — wasted gates, nothing left unisolated.
+
+To P3 — concede the four gate lists and the count judge (gate-at.sh:56-61, rrun:108-111), and that a branch runs its own scripts (text from the tip, gate.rs:2056-2075; `sh -c` in the branch tree, :1206-1225). Its prose-count, empty-fence and three-sites claims: HYP, unverified; consolidation, not escape.
+
+FINDINGS
+1 HIGH — separation has no door: the bridge exposes `approve` (queue_desk.rs:151-156, 191; tools.rs:1854, 1948) beside enqueue (desk.rs:109-125); nothing compares approver to author (verbs.rs:155-190); the test asserts it (queue_enqueue.rs:177). Change: operator card, or drop it.
+2 HIGH — `restart` takes Withdrawn from any mover, unscoped (verbs.rs:288-303; desk.rs:140-141): an agent undoes the operator's veto. Change: Withdrawn operator-only.
+3 MED-HIGH — R307 misses the deleting paths: serve.rs:1626-1635 asks only its own registry, children.rs:3555 asks nothing. Change: pass `in_use` there too.
+4 MED — `change_id` is patch-id (git.rs:20-49), whitespace-blind: a post-approval re-indent lands unreviewed (r1 measured; I could not re-run). Change: compare diff bytes.
+5 MED — red halts landings right (serve.rs:2163-2182) but also holds the red target's branch reviews (:1091-1117, 1138), against invariants.md:280; halt_landings reaches only Queued (:2076). Change: state the rule once.

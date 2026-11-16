@@ -1,0 +1,18 @@
+A8 R2, position 1 (mail lost or misdelivered). Paths under crates/ at 9e9312b06. Read only, no test run. The R1 p1 seat never ran, so I argue the position fresh.
+
+Rebuttals and concessions:
+- P2 #1 (gap replay): verified, and it is my core finding. `deliver_once` drops `seq <= delivered` (bridge/src/rooms.rs:1011). `replay` returns on false (:1146). `ack_delivered` acks `delivered` when nothing is pending (:1205-1208). Concede HIGH.
+- P2 "reply matching by arrival order": conceded LOW. `call` serialises round trips.
+- P2 #3 `prompt_once`: verified at bridge/src/fleet.rs:208-212. The thread keeps sending after the timeout error, so a retry lands twice.
+- P2/P3 fyi `reach` (rooms.rs:409): P3 calls it HIGH. I rebut that. A line the rules silence still counts as taken and goes into pending when owed (:1015-1027), so it is shown again, not lost. MEDIUM.
+- P3 #3 (200-row gap): plausible. Same path as finding 1.
+- P3 #2 duplicated paths: conceded as LOW-MEDIUM drift. It is not mail loss.
+- `wait-queue`: no finding. On Moved, the same review row goes back to Waiting (harnessd/src/mergequeue/serve/tests.rs:843-849), so `ended` keeps following it.
+- Room 12 changing under one protocol number: already covered in P1. Not repeated.
+
+FINAL:
+1. rooms.rs:1011/:1146/:1205, HIGH. The gap replay drops rows below a live push and then acks them. Change: replay marks rows by a seen-set above `acked`, or hold live delivery until the gap is replayed. Add a real-`Server` test.
+2. rooms.rs:1170, MEDIUM, HYP. Replay reads one page of 200 rows and then marks the generation replayed. Change: keep paging until a short page.
+3. fleet.rs:208, MEDIUM. `prompt_once` can deliver twice. Change: say "may still land", or dedup by prompt id.
+4. rooms.rs:409, MEDIUM. A fyi that names this seat goes to the push rules as "passing". Change: use `letibot_room::Message::reach`.
+5. rooms.rs:818-825, LOW. Recursion on a name collision is unbounded. Change: retry at most 3 times with a fresh salt.

@@ -1,0 +1,27 @@
+Thesis: I22, I23, I25 and I29 are each violated by a concrete path at 9e9312b06. The fault is the same in all four. Liveness is asked late or asked locally. `close_due` fires its two hard triggers before it reads activity. Cleanup asks only this daemon's registry. Remote hosts have no reaper of their own. The backbone also misreads one point: `close_due`'s early return is the operator HOLD (`held_until_ms`, tokencore/src/store/owners.rs:326), not the lease. A head or turn renews only `lease_ms` (owners.rs:573), and the lease only feeds the idle branch.
+
+Findings
+
+1. high, I22/I24. `owner_for_open` copies `created_ms` on resume (crates/tools/src/lifecycle.rs:460). The hard TTL is checked before `starting`, busy and served_by (crates/tools/src/lifecycle/reap.rs:158-164 vs :181). Scenario: a package is reopened by id 25 h after creation (bridge/src/tools.rs:543, harnessd/src/harness/open.rs:1982) and its turn is closed within one SWEEP (60 s). The test `a_hard_ttl_does_not_care_what_the_owner_is_doing` (reap/tests.rs:163) locks this in. d.3 says "since creation or last reopen" (docs/lifecycle.md:585). Fix: stamp `reopened_ms` on resume and measure the TTL from max(created, reopened).
+
+2. high, I22. The parent-closed check (reap.rs:149-157) also comes before busy. A subagent mid-turn dies as soon as its parent row reaches `Closed`, for example through finding 1. Fix: a busy child goes to drain, not close.
+
+3. high, I23. `keep_jobs = !owns_open_job` (reap.rs:717). So the restart marker never keeps the closing owner's own jobs, only other owners' jobs. Then `end_processes` (reap.rs:779) kills every open job of the owner whatever `end_daemon` returned. Any hard-TTL or parent close of an owner with a running job kills that job. Fix: detach to the next daemon, or refuse until the job ends.
+
+4. high, I22/I23/I26 (traced, end state HYP). The daemon for package W is the record whose workspace is W (lifecycle.rs:860). Another daemon gets `served_by` and leaves W alone (reap.rs:181), so only W's own daemon can idle-close it. Its `end_daemon` returns Kept, "never reaps itself" (reap.rs:1175). So `left>=1` (:749) and no `ReapAct::Close` is written. `registry.close_session` never runs (harnessd/src/reap_pass.rs:91-101). The row stays `Closing` while the session is still served. `renew_held` skips non-Live rows (reap_pass.rs:160). Each later pass reruns `end_processes`, so any job that session starts is killed within 60 s. The test `an_attached_head_holds_a_package...` (harnessd/tests/session_lifecycle.rs:973) uses repo "/tmp", which no daemon record matches, so this branch is never exercised. Fix: on a self-owned close, emit Close and let the registry close the session. Add a test whose owner repo equals the daemon's workspace.
+
+5. medium, I22. The head of a landed package does not renew the lease (reap_pass.rs:163). An attached operator head is detached by an idle close.
+
+6. high, I25. `retire_if_empty` (crates/harnessd/src/mergequeue/git.rs:846) proves only "no commits, clean". It then runs `git worktree remove --force` (tools/src/git.rs:344-347). The supersede path asks only `door.session_live`, which is this daemon's registry (mergequeue.rs:416-421, serve.rs:1627). The child path asks nothing (harness/children.rs:3555). Compare `settle_tree`, which calls `in_use::why_kept` (serve.rs:1453). Scenario: a superseded branch's tree is reopened through the bridge in another daemon, or a shell sits in it, and the tree is deleted under it. Fix: call `why_kept` inside `retire_if_empty` itself.
+
+7. medium, I25. `cwd_inside` skips a process whose cwd link cannot be read (in_use.rs:60-62). It also returns None when `/proc` cannot be read (`.ok()?`, :57). Both fail open. A root-owned container or another uid working in the tree is not seen (HYP: gate containers bind-mount trees). Fix: treat an unreadable cwd under a candidate tree as kept, or check open fds through `fuser`.
+
+8. high, I29. The only caller of `host_pass` is the home box's disk half (tools/src/lifecycle/reap/disks.rs:609). It is driven by home-store holdings and runs only in a daemon that holds `DiskTurn`. Nothing is installed on the host. When the home box or its store is gone, the remote compute runs on with no limit. Fix: a host-side timer that runs `reap_script` on `owner.json`.
+
+Concessions
+- The disk half runs in one daemon per box (`DiskTurn`), and in_use runs on the settle and sweep paths.
+- `DAEMON_GRACE` interrupting a detach stays HYP.
+
+Anticipating position 2 (intended or unreachable): docs/lifecycle.md:604 does accept that the closing owner's job ends on a hard close. But :585 contradicts finding 1, and finding 4 is reached on every idle close of a package served by its own daemon. Nothing documents that a superseded tree may be removed under a live session in another daemon.
+
+Anticipating position 3 (seven inputs): agreed that the inputs are scattered. But one stamp per process tree would not fix the order of checks in findings 1-3. A single `why_kept` gate before every removal would fix findings 6 and 7.

@@ -1,0 +1,14 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Verified at 9e9312b06. I keep my round-1 case; two claims shrink, one grows.
+
+CONCEDE: deepseek-p2 #1 and fable-p2 #3 — the snapshot is untranslated (`server.rs:2219` sends it raw; `compat.rs:30 seed` reads it only for `open_round`). But shrink it: rano parses `state` as text (rano `src/letibot.rs:1104`), so only the typed clients die (`client.rs:79-90`), and only while a turn is parked. Concede deepseek-p2 #2 (`:737` eprintln vs `hub.warn` at `:2199`) and #4: `scripts/letibot:1625` matches a phrase nothing emits — no Bye reason contains it. My round-1 #5 (ack past an unreadable line) I drop: that frame is undecodable anyway.
+
+REBUT deepseek-p2 #3 / fable-p2 #2: a number lock cannot fix the case that bites — 76 against 76 (below) — and would refuse the safe send with the unsafe one. Gate what a head may *send* on an echoed cap, not on a lock. Concede sonnet-p3's corpus and two-build job; neither catches the dead launcher arm or the missing floor.
+
+FINAL
+1. HIGH `sessionlog/src/wire.rs:62` — unbounded `read_line`, read at `server.rs:712` before the peer refusal at `:742`; same at `room/src/client.rs:595`. Cap and refuse (the room server does, `server.rs:4992`).
+2. HIGH `sessionlog/src/server.rs:729` — accepts any number, then sends a `Hello` a pre-75 head cannot decode. Add `OLDEST_HEAD=75` (room's `wire.rs:19` precedent) and translate `Parked` in `compat.rs:30`.
+3. MED `protocol/tests.rs:172` — `delivery` (`protocol.rs:657`) rode 76: 8d4943a7a set it, 6f538d24a added the field. Bump, or echo caps; `tui/src/app/session.rs:585` locks only on `<`.
+4. MED `bridge/src/head.rs:2252` — `DriverTodos` unguarded; `server.rs:2144` answers Bye and drops the connection.
+5. MED `room/src/wire.rs:167` — `family` rode 12; go to 13.
+6. LOW `protocol.rs:12-14` — doc says refuse; code accepts.

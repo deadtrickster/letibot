@@ -1,0 +1,15 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+A5 R2, position 1.
+
+REBUTTALS
+- P2r1: "benign window" — no: the None arm (store.rs:1892-1894) is unfiltered, so an empty schema_version in shared.db creates 16 project tables. "Coverage catches it by construction" — no: SOURCES omits grants.rs. Floor holds; transfer conceded; the carve drops the triggers.
+- P2r2: #1 conceded; their #3 (a guard that tests one column of a multi-statement batch) adopted; "#2 costs a failed open" understates a stamp over missing columns.
+- P3r1: #1 MEDIUM and #2/#6 LOW conceded; #3 partial (a WAL read takes no write lock); #4 conceded, no finding; #5 rebutted — keep the carve, take a lock.
+- P3r2 and my predecessor's run: no report (bridge 74, daemon 78).
+
+FINDINGS
+1 HIGH migrate_split.rs:227-299: claims read once, then a DEFERRED delete on an unpragma'd connection (:241) after the copy. A daemon starting during a second or later carve appends to sessions.db (`at()` routes a project table there when project is None, store.rs:1770), and a row landing after verify_tables (:242) but before the tx's first read (:281) is deleted, copied nowhere. The whole pass (:109-153) checks no claims. Change: BEGIN IMMEDIATE before staging; re-check claims and MAX(seq) inside.
+2 MEDIUM store.rs:1868-1875: no transaction across migrate_from and the version DELETE/INSERT; a racing opener reads an empty schema_version, takes None — unfiltered SCHEMA_SQL into shared.db — and stamps 51 over a file lacking v51's columns. Change: one IMMEDIATE tx, re-read inside, one UPDATE; tables plus empty version = corrupt.
+3 MEDIUM store.rs:2582-2586, 2617-2620: v47/v50 create project tables unguarded, so a shared.db opened below either gains recall_unit/session_grant permanently; v48 shows the guard. Change: pass StoreFile into migrate_from.
+4 MEDIUM split_coverage_tests.rs:13-31: SOURCES omits grants.rs; no grant call in EXERCISED. Change: derive SOURCES from `mod`.
+5 LOW letibot/src/migrate.rs:1805-1819: opens sessions.db by path, so a split box gets a stray full-schema file (store.rs:1694 permits it) and "no session". Change: StoreAt/open_set_existing.

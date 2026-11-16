@@ -1,0 +1,18 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+Position 1, round 2. r1 holds, with one revision and two additions.
+
+REBUTTALS
+- P2-r2 #1 (my F2): revise. The mechanism is real (`exec/fence.rs:96-103` precedes the tight check at `:115`), but unreachable from a confined child: its backend root is the workspace and `resolve` answers `Outside` first (`tools/src/backend.rs:701-706`, `:1097-1111`). Only root-`/` fence seats reach it, and store data is readable by design. LOW, not panel-top.
+- P2-r2 #2: conceded and verified — wide is the machine (`backend.rs:558-560`, `exec/confine.rs:2721`), so `/run/user/*/bus` and the daemon socket sit inside the model's reach.
+- P2-r2 #3 = my F1: upheld, #1. #4 conceded. #6 conceded; "document it" is wrong — fix it.
+- P3-1: conceded and verified, the panel's most serious: `sessionlog/src/peer.rs:47-56` treats any pid outside the daemon tree as a head, and `refuses()` returns None for it, while `daemon_sockets()` are hidden only when tight (`confine.rs:556-566`, `:690`).
+- P3-2 = my F4. P3-3 = my F1, plus seven stores absent from `STORES` (verified). P3-4, P3-5 conceded, not mine.
+- P3 is right that `STORES` is one list now; the drift is the two lists beside it.
+
+FINAL
+1 HIGH `exec/fence.rs:58` — build `denied` from `intent::secret_dirs()` (`intent.rs:1554`) plus `SECRET_FILE_NAMES`/`SECRET_EXTENSIONS` (`:1571`,`:1584`); add `.claude`/`.codex`. One test holding fence to `secret_hit`.
+2 HIGH `exec/fence.rs:17-70` — the struct has no `protected`: `seat.rs:271-284` makes `.git/hooks`, `.git/config` read-only in the view (`confine.rs:2870`), yet `write`/`edit` write them (`backend.rs:863`). A child in writes-allowed lands a hook in the shared common dir.
+3 HIGH `peer.rs:47-56` — mask daemon sockets in every view; only askpass reachable.
+4 MEDIUM `exec/seat.rs:160` — tight seats: `Egress::Denied` unless granted.
+5 MEDIUM `exec/host.rs:2867`, `jobs.rs:1024` — mask in the tool-result path before `append_item`.
+6 LOW `exec/fence.rs:96` — store carve-out contradicts `store.rs`'s own sentence.

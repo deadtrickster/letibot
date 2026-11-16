@@ -1,0 +1,19 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+CONCEDE P1-1 / P3's brief point (children.rs:4223 → turns.rs:201-202, `Speaker::Operator`): HIGH; my R1 conceded it, fix is turns.rs:1610's door.
+
+CONCEDE P1-2 / P3-F1, and revise my own F3 upward — it is reachable on an ordinary action and worse than I wrote. `ResumeSession` rebuilds the registry entry with the parent link (sessionlog/src/server.rs:1197-1203), so `parent_of` is Some, open.rs:669-673 skips the child's own row, :695-698 only names the source, :2213-2217 seeds `parent_point` (:3712) with a cell of the base point, so `within_parent` (harness.rs:813) admits all a base point admits. The composed child perimeter is lost too (`..self.base.clone()`, sessions.rs:2155-2165 → open.rs:825-838). Heads do resume children (tui/src/app/tests/taskcard.rs:191).
+
+REBUT P3-F2: a worker-door open has no parent cell to require — the parent may be closed. The required input must be the parent's row, else the child's own `narrow_to_parent` row (harness.rs:866), which open never reads for a child.
+
+REBUT P3-F3: `no_wider_than` (tools/src/mode.rs:582-586) compares write/exec/network/boundary; `decider` names, it does not admit. Out of A4 scope.
+
+REBUT P1-3's cite: fork.rs:111 is the caller; the drop is store.rs:2880-2882. Finding stands, LOW. I withdraw my R1's cites 1308-1315 (that is `say_restore_unavailable`).
+
+REVISE: turns.rs:1044-1046 and :1245-1249 mark delivered at restore time; same root defect as A4-3 — `opened` (:1714) after `persist()` (:4298) that returns Ok on `BusyWait::Leave` (:4507).
+
+FINAL
+1 HIGH children.rs:4223 — speak the brief as Agent (turns.rs:1610).
+2 HIGH sessions.rs:2155-2165, open.rs:669-673/2213-2217 — resolve the child's point on every open; test a resumed child.
+3 HIGH turns.rs:1714, :4507 — `opened` only when every row is stored.
+4 MED turns.rs:1046, :1249 — route through `restart_owed` (:1259, :903).
+5 LOW store.rs:2880; harness.rs:890-897 (a refused narrowing should stop the child); nag_pause.rs:102-105.

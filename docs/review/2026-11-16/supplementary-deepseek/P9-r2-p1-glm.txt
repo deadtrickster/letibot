@@ -1,0 +1,13 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+R2 P1 (Against). Conceded: P2-r2-1/3, P3-1/4/5/6/7 stand as mine. P3-3 is right and my R1 F4 is withdrawn: the shadow returns at `answers.rs:154-162`, so `relayed` is never inserted (`:225-230` is the card path), `last_relayed` is false (`adjudicate.rs:2790`) and `keep_grant` picks `Scope::Session` (`:1736`). The queue scope belongs to the operator's card (`answers.rs:178-180`) — the opposite direction, and `permission.rs:367` is true by accident, not by design. P2-r2-4 is therefore verified, not HYP.
+
+Rebuts: P2-r2-2 understates it — `allow_passes` returns `Ok` without examining a read call (`guard.rs:37`, `:43-44`), so `read_passes` is the *only* guard on a relayed read. P3-7 is verified, not probable: `view_read` requires `MayApprove` (`answers.rs:435`) and `ask_to_see` hardcodes it (`adjudicate.rs:2784`), so the always-ask list is excluded by a literal, not a classification. P3-8 unverified (HYP). Against “retire Relay first”: the rung is one function; fix it.
+
+Final:
+1 HIGH `permission.rs:280-282` — quote is any listed-rule substring, never parsed to one `Rule`, never a read rule, never matched to the path. Require `Access::Read` + glob match on `view::key(path)`.
+2 HIGH `guard.rs:138-165` vs `adjudicate.rs:1719` — lexical check, canonical key; `.claude/.credentials.json`, `.local/share/letibot/sessions.db`, `/proc/<pid>/environ` pass. Run the check on the key; refuse `Region::Device`.
+3 MED `adjudicate.rs:2784,2787` — literal tier, empty trail. Derive from `Surroundings`; `AlwaysAsk` for a secret path.
+4 MED `answers.rs:151-180`, `adjudicate.rs:1736` — scope fixed by a side-channel boolean. Put it in `Note::Answer`.
+5 MED `permission.rs:174-240` — breaker in memory, grants in the store. Persist the trip.
+6 MED `adjudicate.rs:2678-2805` — view asks never `record`ed; the doc at `:2830` says otherwise. Record, exclude `shadow:` rows from replay.
+7 LOW `adjudicate.rs:1552-1561` — `Intent::Unknown` admitted. Drop it.

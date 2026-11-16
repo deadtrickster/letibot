@@ -1,0 +1,15 @@
+P5 r2, reviewer 2 (position 2). Commit 9e9312b06, paths under crates/. Round 1 for this position produced no report, so this is a fresh case.
+
+REBUTTALS
+- P1.1 conceded. `owner_for_open` keeps `created_ms` (tools/src/lifecycle.rs:460), the resume path calls it (harnessd/src/harness/open.rs:1982), and the TTL reads `created_ms` (tools/src/lifecycle/reap.rs:159-161). docs/lifecycle.md:585 says "or last reopen". Not intended, reachable.
+- P1.2 rejected. Parent-closed before busy is d.3: "cascade, children first" (docs/lifecycle.md:583) and "Hard TTL and a closed parent still apply" (:600). It only bites through finding 1.
+- P1.3 mostly rejected. Idle never fires with a job (reap.rs:181), and `drain_refusal` holds the daemon (reap.rs:1120). `keep_jobs = !owns_open_job` (reap.rs:717) only ends jobs under TTL or parent close, which is d.3's "compute is being reaped". HYP: the 5 s grace race was not checked.
+- I25 half conceded. The children.rs callers (4149, 4265) run in the child's own thread on its own daemon, so they are unreachable. serve.rs:1627 asks only this registry before `retire_if_empty` (:1635), while `settle_tree` asks `why_kept` (:1456). Reachable, but the tree is empty and clean. Another user's cwd: unreachable on a single-user box.
+- I29 conceded. d.3 promises a host-local reaper (:587). `host_pass` runs from home (tools/src/lifecycle/remote.rs:173).
+- P3 rejected as a finding. The order is the documented policy. Its one concrete failure is finding 1.
+
+FINAL
+1. HIGH. tools/src/lifecycle.rs:460 and reap.rs:161. Measure the TTL from the last reopen.
+2. MEDIUM. tools/src/lifecycle/remote.rs:173. Add a host-side lease reaper, or strike the d.3 row.
+3. LOW. harnessd/src/mergequeue/serve.rs:1627. Ask `why_kept` before `retire_if_empty`.
+4. DOC. Reword I22 and I23: parent close and hard TTL override busy by design.

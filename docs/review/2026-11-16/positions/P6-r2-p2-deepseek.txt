@@ -1,0 +1,15 @@
+[model: deepseek/deepseek-flash (the default; the one-shot ignored --model)]
+P6 R2, position 2. Refs at 9e9312b06.
+
+To P1: your #1 is now mine, but the fix is under-scoped — `apply` must also strip `LETIBOT_STORE`, `LETIBOT_PERMISSION` and `LETIBOT_GC_ROOT` (bridge/src/daemon.rs:91, harnessd/src/config.rs:1648, tools/src/lifecycle.rs:165). Your instance is wrong: restart_notice never serves, so its exported socket is inert (grep finds no `serve` in harness/tests/restart_notice.rs); the live read is config/tests.rs:407 *and* `Config::for_this_box` at config.rs:1786/1792, which 110 test files use and which reads the operator's permission.json and Brave key. Keys symlink LOW — agreed.
+
+To P3: conceded the resolvers disagree (provider/src/keys.rs:194-200 takes empty `XDG_CONFIG_HOME` as a path; bridge/src/plugins.rs:286-311 treats it as unset). Not MED: nothing but a test exports `XDG_CONFIG_HOME=` empty, and each pins its own answer — a filter line, not a crate. Your "the queue gate is not the script" is my finding 1.
+
+My round 1: 1 stands; its scenario was wrong — letibot/tests/sudo_ask.rs sets its own runtime dir and socket (:75, :115) and discards the ruleset (:87-88). #4 drops to LOW: only a same-binary HOME swap between config.rs:381 and tests.rs:407 fails it.
+
+FINAL
+1. HIGH `crates/harnessd/src/mergequeue/gate.rs:474-479`, `:1219` — `sh -c` inherits the daemon's HOME/XDG/LETIBOT_*, and AGENTS.md:77 runs through it. Change: scratch HOME, XDG_DATA/STATE/RUNTIME, remove XDG_CONFIG_HOME/XDG_CACHE_HOME and every LETIBOT_* door; test a step's HOME differs.
+2. MED `scripts/gate-at.sh:54` — scrubs two XDG vars only; isolation of LETIBOT_* is the caller's `env -i` (docs/gate.md:110; AGENTS.md:131 omits it). Change: explicit `-u` list.
+3. MED `gate-at.sh:56-61` — leak lines are advisory and overlap (`$G/home` is both ISOLATED and LEAKED). Change: a store under `$G/data`/`$G/state` exits 3.
+4. LOW `crates/provider/src/keys.rs:194` — empty XDG becomes cwd-relative. Filter empty.
+5. LOW `crates/tokencore/src/apparatus.rs:20-25`, `:35` — literal `/home/dead/models` survives a HOME move.

@@ -1,0 +1,21 @@
+[model: Fable 5.2 (claude-fable-5-2)]
+A9 R2, position 2. Read at 9e9312b06, paths under crates/tui/src. No test run.
+
+PREDECESSOR (deepseek R1)
+- F1 defended. `app/surface.rs:80` is a literal `[Surface; 19]`; no match ties it to the enum. `app/tests/settings.rs:1979` claims the opposite.
+- F2 defended, LOW. `app/tests/bindings.rs:410,453` filter by `is_list` (`app/keys/bindings.rs:644`).
+- F3 RETRACTED. Pane hit rects are `x: 0, w: term_w` (`app/hits.rs:161-166`); rows resolve by y (`stop_at`, `hits.rs:120`). A gutter shift cannot move the rect, so x=12 proves what there is to prove.
+- F4 revised. "One widget" was wrong: `app/tests/panes_ux.rs:190-295` holds four panes to 80/120, `rooms_render.rs:514` to 80/40. Still no walk over every surface.
+
+OTHERS
+- P1 F1/F2: concede, and it is my leg's failure: `app/tests/onevent.rs:172-190` sends every code as `Warning`, never its real event.
+- P1 F4: concede, against kimi's drop. `ui/screen.rs:362-368` sums `limit_notice` into `link`. `fit_ladder` (`screen.rs:350`) is named in no head test; `app/tests/limit_notice.rs:34-82` draws only 140x30+. No short-pane card+notice test: HYP.
+- P1 F3: concede.
+- P3 pins/editors: real, not screen-test defects. Out of my list.
+
+FINAL
+1. MEDIUM `app/surface.rs:80` - build ALL from an exhaustive match so a new variant fails to compile; fix `settings.rs:1979`.
+2. MEDIUM `app/tests/onevent.rs:172` - drive each code through its real event (`ProviderTrouble`, `ModelRetry`).
+3. LOW-MED `ui/screen.rs:350` - test: short pane, decision card plus two-line limit notice, card options stay.
+4. LOW `app/tests/settings.rs:1983` - draw every surface at 40/80/120, assert row widths (`panes_ux.rs:190`).
+5. LOW `app/tests/bindings.rs:410` - list the reading surfaces in the test.

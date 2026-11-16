@@ -1,0 +1,11 @@
+A1 R2, reviewer 2, position 2 (long sessions survive limits, compaction, restarts). Round 1 of this position produced no report; nothing to defend. Read at 9e9312b06, paths under crates/. No test run.
+
+REBUTTALS
+P1 #1: CONCEDE, VERIFIED. A probe stores a `User{Agent}` notice (harnessd/src/harness/limit.rs:355-378, turns.rs:1711-1713); the refusal re-parks without removing it (turns.rs:3073-3085); `mid_turn` is false on that row (harnessd/src/restart.rs:496-499); `limit_park` is `None` at open (harness/open.rs:3738). The only restart assert, tests/limits.rs:1139, is taken before any probe. Narrowing: `Owed::any` also wakes on plan rows, promise, settlements (restart.rs:596-603), so a session with an open board is still woken. The owed turn is lost only for a boardless session. Still HIGH: default probes (leticode-config/src/lib.rs:537, last step repeats, limit.rs:117-120) make the safe window 2 minutes.
+P3 #1: CONCEDE fact, VERIFIED (switch persisted models.rs:1135; `limit_return` only set at limit.rs:389, `None` at open.rs:3740). Downgrade to LOW: needs `on_limit = Switch`, default is Wait (config.rs:1733); no work lost.
+P3 thesis (scattered logic): not a defect by itself. The ladder decides in one function (limit.rs:466-506).
+
+FINAL FINDINGS
+1. HIGH. restart.rs:496-499 + open.rs:3738. Restart after a refused probe drops the parked turn. Change: `mid_turn` reads past `[limit]` harness rows, or persist the park. Test: park, one refused probe, assert `mid_turn`.
+2. LOW. limit.rs:355-378. Every refused probe appends one more `[limit]` row; a weekly park adds about 170. Change: replace the previous notice instead of appending. Provider handling of consecutive user rows: HYP.
+3. LOW. open.rs:3739-3740. `limited` and `limit_return` not restored. Change: persist with the provider choice.

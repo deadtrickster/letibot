@@ -1,0 +1,16 @@
+I wrote the panel record to /data/review-run/A4.md. Only three of the six seats produced a report: fable (P2, round 1), opus (P1, round 2) and sonnet (P3, round 2). The other three failed because of the review rig: sibling relays shared one daemon per worktree, and the bridge speaks protocol 74 while the daemon speaks 78. I did not edit the repo.
+
+HIGH | crates/harnessd/src/harness/children.rs:4224 (cited as :4223), turns.rs:201-202 | The child's spawn brief goes through `submit` and is recorded as `Speaker::Operator`, so a parent can authorise itself through its child | VERIFIED
+HIGH | crates/harnessd/src/sessions.rs:2156-2165, harness/open.rs:669-699, :2214-2217 | A child reopened through the worker door seats at the daemon base, its own row is skipped and its ceiling is a fresh cell of that same point; the only non-test `follow_parent` call is children.rs:4114 | VERIFIED
+HIGH | crates/harnessd/src/harness/turns.rs:1713-1714, :4507 | `opened` runs after `persist()` returns Ok, and `persist_rows` returns Ok on `BusyWait::Leave`, so delivery is marked before the rows are stored | VERIFIED
+MEDIUM | crates/harnessd/src/harness/turns.rs:1244-1249, :1042-1047 (cited as :1308-1315, which is `say_restore_unavailable`) | Lost and relic jobs call `deliver_job` before the notice row is stored; the settled branch uses `restart_owed` instead | VERIFIED (code shape only; the outcome after two restarts in a row was not reproduced)
+LOW | crates/harnessd/src/harness.rs:890-896 | A refused `narrow_to_parent` only warns, so the child keeps working wider than its parent | VERIFIED
+LOW | docs: invariants.md:76, STALE F4 | Both say a restored child does not follow its parent, which is wrong for `resume_run` -> `spawn_child` -> `follow_parent` | VERIFIED
+
+Proposed decisions for the operator:
+- D1: the reopened-child gap (second HIGH line) is HIGH and fixed now; P1 and P2 rated it MEDIUM.
+- D2: that fix makes the parent cell a required input of every child open (P3's construction argument). Splitting turns.rs and open.rs is tracked, not done now.
+- D3: ranking `decider` in `no_wider_than` goes to the mode panel (P8 A1), not A4.
+- D4: the brief as an operator row stays HIGH.
+
+Order of work: fix the brief, then the persist Ok-on-Leave marking, then the lost-job delivery, then the child ceiling fix with invariants.md and STALE updated, then the narrowing refusal. LOW items go to follow-ups. Before any rerun, give each relay its own worktree or daemon and rebuild the bridge at protocol 78.

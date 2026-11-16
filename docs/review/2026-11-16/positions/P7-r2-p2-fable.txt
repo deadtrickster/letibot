@@ -1,0 +1,14 @@
+P7 position 2, round 2 (fable; round 1 produced no report). The checks exist. Each one pins the case it was written for and misses the neighbouring one.
+
+REBUTTALS
+P1#1 (hold/release/where billed): concede. `scripts/letibot:2737` lacks them, and `tests/launcher.sh:1528-1540` cases only stats, fb, boundary. `holds` and `gc` are routed but have no case either.
+P1 unbounded systemd-run: half. The daemon path is bounded at 300s (`scripts/letibot:3080`). The one-shot `exec` (`:2999-3005`) is truly unbounded.
+P3#1 (providers resolvers): concede the drift. The suite runs under `env -i` and has no `XDG_CONFIG_HOME` or `LETIBOT_PROVIDERS` case.
+P3 thesis (move to Rust): reject as the P7 fix. Findings 1-3 below close the same holes in about 60 lines.
+
+FINDINGS
+1. HIGH. `tests/launcher.sh:1528`: no case walks the `crates/letibot/src/main.rs:291-339` verb chain. Change: loop over every verb, assert `^letibot-multi <verb>`.
+2. MEDIUM. `crates/letibot/tests/no_hang.rs:106`: the stub hangs every call, so "probe answers, real scope hangs" is untested. Change: stub fast only for `true`, assert `--new` and a one-shot return; bound `:2999` and `:346`.
+3. MEDIUM. `scripts/letibot:1102-1111` keeps `#` comments, `crates/provider/src/keys.rs:855` strips them. I ran the awk: `provider = "deepseek" # main` gives `deepseek" # main`, and `[default] # x` gives an empty answer. Change: strip comments, add both cases.
+4. MEDIUM. `crates/leticode-config/src/reference_tests.rs:83-97`: the reverse probe covers 13 tables. `subagents`, `keys`, `fallback`, `provider.<name>` and `usage_warn` are hand-read in `lib.rs` (`:880-907`, `:2366`, `:2537`) and absent. Change: add them.
+5. LOW. `scripts/check-dist-names.sh:157-160`: an ELF `letibot` older than `letibot-multi` exits 0, pinned by `tests/install.sh:203-207`. Change: fail.

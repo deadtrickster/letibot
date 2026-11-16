@@ -1,0 +1,13 @@
+[model: kimi-code-global (the preset's default model)]
+P1-F1 conceded: permission.rs:281 is a substring test; rules_of (:476) admits exec/write rules. P1-F4 REFUTED: answers.rs:154 returns before the :225 insert, so HeadAdjudicator::last_relayed (:1222) is false for a shadow answer and keep_grant (:1736) picks Session — ":367 for that session" is true, and queue scope (:178) is the operator's card. P1-F2 conceded, and worse than stated: read_passes (:143) is lexical while the grant is keyed at view::key, so a symlink in the clone grants the canonical target (view.rs:78, adjudicate.rs:1719). P1-F3: scenario right, mechanism wrong — the default trail is NotCollected, so ModelAdjudicator returns Unavailable (authorise.rs:1842); the empty trail, not the tier, keeps the oracle out. Injection HYP adds nothing past F1.
+P2: findings 1-3 conceded; its 4 is false for shadow answers.
+P2-r2's "rebutted, fix in place": the new item is why this seam cannot wait for a rewrite.
+
+New, verified: ask_to_see maps by option-id literal. The oracle answers `allow_once` (authorise.rs:1943), not a view option (view_grant_options :438), so `Selected{..}` becomes ViewGrant::Refused (adjudicate.rs:2799) and EscalateOnTimeout (:1318) escalates nothing. Wiring R316's trail in today turns an oracle allow into a refused read.
+
+FINAL
+1 HIGH permission.rs:281 — require permission read + glob match on the canonical path.
+2 HIGH guard.rs:143,266 with view.rs:78 — check key(path); add `.claude`, letibot data dir, /proc.
+3 MED adjudicate.rs:2799 — bridge the two answer vocabularies before stage 1.
+4 MED permission.rs:176,231 + grants.rs:114 — persist the breaker; revoke must unbind.
+5 MED adjudicate.rs:2678-2888 — view asks are never recorded, though :2830 says otherwise.

@@ -1,0 +1,16 @@
+[model: kimi-code-global (the preset's default model)]
+POSITION 3 — defend, with two revisions.
+
+P1: P1.1 conceded and verified (`permission.rs:272` takes no path; `:281` is a substring test). P1.2's fact conceded, its harm absorbed by P1.1: under strict, `verdict.rs:482` rechecks the same substring against `self.rules`, so statelessness adds no authority. P1.3 stands — `secrets.rs:37-74` has no `.claude`/`.codex`; `intent.rs:1571` matches "credentials" exactly.
+
+P2: concede 1, 2, 4. Dispute "the bug, not proof of redundancy": their fix — bind path to rule, evaluate it — *is* my remedy, and `tools/src/permission.rs:113` already does it with last-match precedence, Deny included. After it the model is one card sentence.
+
+Revising r1: (2) now verified — `adjudicate.rs:1719` keeps the grant at `view::key(path)`, resolved, so a lexical pass through a symlink widens to the secret dir itself. (3) permission deadline is 2.5 s (`shadow.rs:60`), and `ask` always builds a stateless Request (`runner.rs:882-885`): full price, no prefix cache. New: `rules_of:476` keeps Allow only, so the acting path never sees a Deny.
+
+1. HIGH `permission.rs:272,281,476` — quote is not coverage; Deny invisible. Change: `permission::evaluate("read", path, rulesets)`, no match → ask; model only labels the card.
+2. MED `guard.rs:138-165` — lexical; `adjudicate.rs:1719` un-lexicals it. Canonical key in `read_passes`.
+3. MED `config.rs:84` — observing arms acting; default `answer_reads` off.
+4. MED `secrets.rs:37-74`,`intent.rs:1571` — allow-list roots, not a deny-list.
+5. LOW `shadow.rs:72,189` — "Permission is observe-only" is false; delete.
+6. LOW `permission.rs:170-194` — breaker in memory, grants persist; persist it.
+7. LOW `shadow_seat.rs:346-350` vs `turn_end.rs:165` — two implementations of one turn-end decision; publish replay numbers or delete the model path.

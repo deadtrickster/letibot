@@ -1,0 +1,57 @@
+Thesis: the reaper and the restart still lose live work at 9e9312b06. P5 settled the reaper's ordering faults. The bigger loss in this area is newer and has not been filed. The launcher interrupts every turn before it sends SIGTERM, so the daemon judges its own restart as a person's stop. It then records every running subagent as killed. R313 "left" names only the wake window, which is the smaller half.
+
+Findings
+
+1. HIGH. `--restart` and `--stop` record live subagents as killed, so the next daemon does not resume them.
+- `scripts/letibot:2669` calls `interrupt "$SOCKET"` before `stop_one` (`kill "$pid"`, :2590).
+- `interrupt_turns` (`tui/src/head.rs:714-723`) interrupts every running session. `Registry::list` includes children (`sessionlog/src/registry.rs:2271-2272`, keep-all filter).
+- The parent's Interrupt runs `stop_children_first` (`harnessd/src/harness/hub_io.rs:262`). That calls `stop_all`, then `kill` (`children.rs:3215-3222`, :2866), then `TaskSlot::kill` (:360-366), then `SubagentRecord::killed` (`subagent_record.rs:385-395`).
+- `is_stopping()` is false at that point. It is set only inside `Registry::close` (`registry.rs:2566`), which runs after the signal. So the record is written as `settle_subagent_run(child, "killed", "stopped")`. The `interrupt_subagent_run` keep-running branch (:271-278, :362-366) is never taken.
+- Failure: `letibot --restart` with a subagent mid-turn. The new daemon reads a killed row and does not resume the child. The parent's `task_result` says stopped, and the child's work is lost.
+- The tests miss it. `restart_restore.rs:152-153` stops through `registry.close()` first, so the resume tests (:359, :568) prove an order the launcher never uses.
+- Change: one of these two.
+  - (a) The launcher sends SIGTERM first. `Registry::close` already interrupts turns before runs (`registry.rs:2590-2605`).
+  - (b) Add a frame that sets `stopping` before `--interrupt-all`.
+- Either way, add a test that interrupts through the socket and then closes.
+- HYP: the reason the launcher comment gives at :2662-2665 (a worker finishes its turn after the listener is gone). (a) has to answer it.
+
+2. MEDIUM. R313 left: a wake can open a turn after the interrupt.
+- The window is up to `INTERRUPT_WAIT` (30 s, `head.rs:559`) plus the wait before the signal.
+- `wake` checks `is_stopping` at `turns.rs:440` and :668, and both read false.
+- Failure: a room line or a job end opens a turn that `close` then kills mid-tool. It costs a generation, and it reproduces the rano incident in the R313 TODO (`TODO.md:2245`).
+- Change: the same fix as 1.
+
+3. HIGH, with area evidence added to P5 A1 and D2.
+- P5 accepted D2 (a hard close ends the owner's own jobs, `reap.rs:717`, :779) only because a hard TTL is a backstop.
+- With A1 unfixed (`lifecycle.rs:460`, `reap.rs:159-163`), the backstop fires on any package reopened more than the TTL after it was created, within one sweep. Its jobs are killed and no restart marker is left for them.
+- D2 can be accepted only after A1 lands, so A1 has to stay first in the order.
+
+4. HIGH. U1 stands and is unrebutted.
+- When a package's own daemon idle-closes it, the owner stays `Closing` for good: `reap.rs:1175-1179` and :749-771, `reap_pass.rs:91-101`.
+- `end_processes` kills each new job on every pass.
+- Change: write `Close` when the only compute left is this process's own daemon.
+
+5. MEDIUM. `retire_if_empty` force-removes a tree without `why_kept`.
+- Sites: `serve.rs:1627`, `mergequeue/git.rs:846`, `tools/src/git.rs:344-347`. This is P5 A2.
+- I keep the severity at medium, not low. `--force` deletes ignored `target/` and scratch files under a live session in another daemon.
+
+6. MEDIUM. There is no reaper on the host side: `remote.rs:173` has one caller, `disks.rs:609`. This is P5 A3. Build the timer that d.3 promises.
+
+Against position 2
+- Restart markers and R313 marking protect host jobs and deliveries. They do not protect subagent rows.
+- `why_kept` guards `settle_tree` but not `retire_if_empty`.
+- The mechanisms are real, but finding 1 goes around them all through the one fact they trust, `is_stopping`.
+
+Against position 3
+- Finding 1 is a split fact. The launcher acts over the socket, and the "we are stopping" flag lives only inside the process.
+- The fix is one flag set earlier or one reordered signal, not a per-tree stamp.
+- Agreed that the design doc and tests describe the close-first order while the launcher does the opposite.
+
+Concessions
+- `autoarchive::refusal` checks writer, pid, jobs and asks before archiving (`autoarchive.rs:290-315`).
+- An idle close never fires with busy work (`reap.rs:181`).
+- `wake` does check `is_stopping` twice.
+- Restore after `registry.close` is well tested (`restart_restore.rs:359`, :568).
+- The parent-before-busy order (D1) is documented policy.
+
+No test was run. Every claim above was checked by reading the code.

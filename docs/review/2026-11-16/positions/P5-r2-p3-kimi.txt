@@ -1,0 +1,24 @@
+[model: kimi-code-global (the preset's default model)]
+ROUND 2, position 3 (sonnet's r1 defended, revised).
+
+Against position 1:
+- f1 conceded and adopted; verified `lifecycle.rs:460`, `reap.rs:159-161`.
+- f2 conceded to P2: `docs/lifecycle.md:598-600` says a closed parent overrides busy. No change beyond f1.
+- f3 conceded as documented for hard/parent close; it survives only through f4's sink (below).
+- f4 adopted; P2 never answered it. Verified `reap.rs:1177`, `reap_pass.rs:91-101`, `:160`.
+- f5 conceded to P2: documented `docs/lifecycle.md:592-593`.
+- f6 upheld at MEDIUM, against P2's LOW: `serve.rs:1454` states the same registry check is insufficient, and `git.rs:846` -> `--force` (`tools/src/git.rs:344`) drops ignored `target/`.
+- f7 revised: P2 is right on other uid (unreadable and indistinguishable from system daemons); only the `/proc` fail-open survives, `in_use.rs:58`.
+- f8 conceded to P2: real.
+
+Against position 2:
+- Its parent-close and job-keep rejections accepted; its LOW on f6 rejected; its rejection of my stamp conceded in part. No rewrite: the minimal structural fix is two rules, not seven inputs — the destructive primitive asks `why_kept`, and "self" is an action, not a `Kept`.
+- I53 was examined by no position in either round.
+
+FINAL
+
+1. HIGH `tools/src/lifecycle/reap.rs:1177` + `harnessd/src/reap_pass.rs:160`: on a one-daemon box the owner's idle close is a sink — `end_daemon` refuses itself, no `Close` is written, the row stays `Closing`, `renew_held` skips non-Live, and every pass reruns `end_processes`, killing the still-served session's jobs. Change: emit `Close` when only self is left; don't skip a served owner. Test with the owner's repo being the daemon's workspace.
+2. HIGH `tools/src/lifecycle.rs:460` / `reap.rs:159`: stamp `reopened_ms`, measure hard TTL from `max(created, reopened)`.
+3. MEDIUM `crates/harnessd/src/mergequeue/git.rs:846`: call `why_kept` inside `retire_if_empty`.
+4. MEDIUM `crates/tools/src/lifecycle/remote.rs:173`: host-side lease timer, or strike d.3's promise.
+5. LOW `crates/tools/src/lifecycle/in_use.rs:58`: unreadable `/proc` must answer kept.

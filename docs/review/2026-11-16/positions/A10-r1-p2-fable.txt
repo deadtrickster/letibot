@@ -1,0 +1,42 @@
+A10 R1, reviewer 2 (position 2: the containment holds)
+
+THESIS
+The wasm and MCP-start boundaries hold as claimed and I verified each in code. The authority a repo layer gets is narrower than position 1 will say. The real gaps are three places where the containment is not applied: read looks, MCP process hygiene, and trust by path instead of by bytes. Paths are under crates/ unless absolute.
+
+VERIFIED HOLDS
+- No host imports. plugins-rano/src/lib.rs:43 passes `Capabilities::default()` and ignores `_caps` (:78, :84). rano plugin.rs:299-447 links one import per granted capability, and :606 refuses unknown imports. Position 1's "unimplemented Http" is therefore inert: it only raises the gate class to Network (harnessd/src/plugins/tool.rs:145).
+- Fuel 50M, memory 64 MiB, and a fresh Store and instance per call: rano plugin.rs:11, :14, :503-506, :593-600.
+- An unpinned layer cannot widen:
+  - `on_tool_call` rewrites must shrink, and an `answer` needs a pin (harnessd/src/plugins/hook.rs:525-548).
+  - The floor only produces `Raised` or `Trapped` (hook.rs:565-612) and fails closed (plugins/src/stack.rs:137).
+  - A session layer never answers the floor or review hooks (stack.rs:1064, manifest.rs:544).
+  - Its tools meet the gate on every call (tool.rs:249-254).
+  - Exec looks are gated, and for tool looks that holds even when pinned (tool.rs:558; conditions.rs:193 is the only ungated path).
+- A steer sentence lands as a notice (`Facts::Steer`, harness/turns.rs:2476), not as operator words, with the budget and interrupt checked by the host (hook.rs:246).
+- MCP: `.mcp.json` starts nothing without the user file's `[mcp_projects]` (harnessd/src/mcp.rs:36, read from `leticode_user`). The user table wins a name (:48). Calls are `Access::Network` (tools/src/builtins/external/mcp.rs:110, :304). Results are quarantined (:166). Backoff runs 500 ms to 30 s (mcp/src/lib.rs:60, :292-296).
+
+FINDINGS
+1. HIGH - `read:<path>` is honoured for unpinned layers. `look::run` (harnessd/src/plugins/look.rs:89-96) and tool `resolve` (tool.rs:613-626) take roots from the manifest with no `trusted` check. Callers: pane.rs:89, :314, :371 and conditions.rs:140.
+   - Scenario: a cloned repo ships `.letibot/plugins/x` with `capabilities = ["read:~/.ssh"]` and a `tool_` hook. The gate sees a Read-class call with harmless arguments. The look returns the key, and the payload goes to the model and the provider.
+   - HYP: that the gate admits that Read call unasked.
+   - Change: honour `ReadPath` only when `layer.trusted`, and gate each look path otherwise.
+2. MEDIUM - MCP stdio servers inherit the daemon's environment and are killed singly. mcp/src/wire.rs:80-90 has no `env_clear` and no process group; `Drop` kills only the direct child (:242).
+   - Scenario: an `npx` server reads provider keys from the environment, and its node grandchild outlives the kill.
+   - Change: `env_clear` plus an allow-list, own process group, kill the group.
+3. MEDIUM - MCP input is unbounded, unlike the wasm side. wire.rs:96-103 uses `lines()` into an unbounded channel that drains only during a request. The SSE `data` buffer at :346-352 is unbounded too.
+   - Scenario: a server writes one endless line and the shared daemon runs out of memory, taking every session.
+   - Change: cap line length and use a bounded channel.
+4. MEDIUM - MCP trust is a path prefix, plugin trust is a hash. leticode-config/src/lib.rs:1273.
+   - Scenario: an agent edits a trusted checkout's `.mcp.json`, and the next open execs its command.
+   - Change: pin the file's sha256 and report a moved pin.
+5. MEDIUM (HYP, not run) - fuel is not wall-clock. Only `consume_fuel` is set (rano plugin.rs:137-139), with no epoch deadline. Bulk memory operations over 64 MiB cost constant fuel. The call holds a per-module mutex shared by all sessions (plugins-rano/src/lib.rs:182, :205).
+   - Change: add an epoch deadline.
+6. LOW - `limit_decide` `switch` accepts any configured metered model, not only the offered candidates (harness/limit_hook.rs:163-177, turns.rs:3624). An unpinned layer can move a conversation to another provider.
+   - Change: restrict to `candidates`, or require a pin.
+7. LOW - `Entry::call` holds the link lock across a 60 s call and across reconnect (mcp/src/lib.rs:311-314). The pool is daemon-wide (harnessd/src/mcp.rs:137).
+
+CONCESSIONS
+- To position 1: unpinned `steer_turn`, `compact_summary` and `limit_decide` do answer (hook.rs:16-18 has no trust check). Pinned condition exec is ungated (conditions.rs:193). MCP descriptions go verbatim into the tool schema (external/mcp.rs:106).
+- To position 3: letibot has no test for the fuel cap, the memory cap, import refusal, or an unpinned layer's reads. plugins-rano's four tests cover the cache and fuel accounting only (:229-303). The cap tests live in rano (plugin.rs:1402, :1422), pinned by rev.
+
+Not run: no tests executed; everything above is from reading.
