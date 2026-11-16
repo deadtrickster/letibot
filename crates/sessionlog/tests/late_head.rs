@@ -358,7 +358,7 @@ fn a_version_mismatch_is_served_not_refused() {
     let (_hub, server) = start("version");
     for (label, version) in [
         ("newer", PROTOCOL_VERSION + 99),
-        ("older", PROTOCOL_VERSION.saturating_sub(14)),
+        ("older", letibot_sessionlog::OLDEST_HEAD),
     ] {
         let stream = std::os::unix::net::UnixStream::connect(server.path()).unwrap();
         let mut w = FrameWriter::new(stream.try_clone().unwrap());
@@ -763,5 +763,134 @@ fn an_overlong_first_frame_is_refused_not_buffered() {
             ) => {}
         other => panic!("the daemon kept reading a line with no end: {other:?}"),
     }
+    server.shutdown();
+}
+
+/// The `Hello` a pre-75 head is sent decodes against that head's own enums: a peer's row and a
+/// parked turn are the two values it has no arm for, and either one failed the whole attach.
+#[test]
+fn old_head_hello_snapshot_decodes_with_peer_speaker() {
+    use letibot_sessionlog::event::TurnPark;
+    use letibot_transcript::{Speaker, TranscriptItem, UserPart};
+
+    // The pre-75 spellings, frozen: no `peer`, no `parked`, no catch-all.
+    #[derive(serde::Deserialize, Debug)]
+    #[serde(rename_all = "snake_case")]
+    #[allow(dead_code)]
+    enum OldSpeaker {
+        Operator,
+        Agent,
+    }
+    #[derive(serde::Deserialize, Debug)]
+    #[serde(tag = "state", rename_all = "snake_case")]
+    #[allow(dead_code)]
+    enum OldTurnState {
+        Running,
+        Finished {},
+        Interrupted { reason: String, partial_kept: bool },
+        Failed { error: String, partial_kept: bool },
+    }
+
+    let (hub, server) = start("old-hello");
+    hub.publish(SessionEvent::TranscriptAppended {
+        item_id: "p1".into(),
+        kind: "user".into(),
+        ledger_head: "beef".into(),
+        item: Some(Box::new(TranscriptItem::User {
+            parts: vec![UserPart::Text {
+                text: "from a peer".into(),
+            }],
+            speaker: Speaker::Peer {
+                from: "cc@rano".into(),
+            },
+        })),
+        body_bytes: 0,
+    });
+    hub.publish(turn_started("t1"));
+    hub.publish(SessionEvent::TurnInterrupted {
+        turn_id: "t1".into(),
+        reason: "usage limit".into(),
+        partial_kept: true,
+        park: Some(TurnPark {
+            model: "glm".into(),
+            until_ms: 1,
+            retry_at_ms: None,
+        }),
+    });
+
+    let hello = |version: u32| -> serde_json::Value {
+        let stream = UnixStream::connect(server.path()).unwrap();
+        let mut w = FrameWriter::new(stream.try_clone().unwrap());
+        w.write(&ClientFrame::Attach {
+            protocol_version: version,
+            session_id: "s".into(),
+            since_seq: 0,
+            kind: "tui".into(),
+            identity: "old".into(),
+            caps: Caps::default(),
+        })
+        .unwrap();
+        let mut r = FrameReader::new(stream);
+        let v: serde_json::Value = r.read().unwrap();
+        let _ = w.write(&ClientFrame::Detach);
+        v
+    };
+
+    let current = hello(PROTOCOL_VERSION);
+    let snap = &current["snapshot"];
+    assert_eq!(
+        snap["items"][0]["item"]["speaker"]["peer"]["from"],
+        "cc@rano"
+    );
+    assert_eq!(snap["turn"]["state"]["state"], "parked", "{snap}");
+
+    let old = hello(70);
+    let snap = &old["snapshot"];
+    let speaker: OldSpeaker = serde_json::from_value(snap["items"][0]["item"]["speaker"].clone())
+        .expect("a pre-75 head decodes the row's speaker");
+    assert!(
+        matches!(speaker, OldSpeaker::Agent),
+        "a peer is never the operator"
+    );
+    let state: OldTurnState = serde_json::from_value(snap["turn"]["state"].clone())
+        .expect("a pre-75 head decodes the turn's state");
+    assert!(
+        matches!(
+            state,
+            OldTurnState::Interrupted {
+                partial_kept: true,
+                ..
+            }
+        ),
+        "{state:?}"
+    );
+    server.shutdown();
+}
+
+/// Below the oldest head `compat` translates for, the attach is refused by name, not served a
+/// snapshot that fails the head's decoder.
+#[test]
+fn a_head_below_the_translated_floor_is_refused_by_name() {
+    let (_hub, server) = start("floor");
+    let stream = UnixStream::connect(server.path()).unwrap();
+    let mut w = FrameWriter::new(stream.try_clone().unwrap());
+    w.write(&ClientFrame::Attach {
+        protocol_version: letibot_sessionlog::OLDEST_HEAD - 1,
+        session_id: "s".into(),
+        since_seq: 0,
+        kind: "tui".into(),
+        identity: "ancient".into(),
+        caps: Caps::default(),
+    })
+    .unwrap();
+    let f: ServerFrame = FrameReader::new(stream).read().unwrap();
+    let ServerFrame::Bye { reason } = f else {
+        panic!("expected a refusal, got {f:?}");
+    };
+    assert!(
+        reason.contains(&PROTOCOL_VERSION.to_string())
+            && reason.contains(&(letibot_sessionlog::OLDEST_HEAD - 1).to_string()),
+        "the refusal names both builds: {reason}"
+    );
     server.shutdown();
 }

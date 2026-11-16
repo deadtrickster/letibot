@@ -735,8 +735,25 @@ pub fn serve_conn_rooted(
         return Ok(());
     };
 
-    // A differing protocol version is ACCEPTED, and said, never refused on the number alone.
-    // This side cannot decide which of the two is wrong.
+    // Below the oldest head `compat` translates for, the Hello itself would fail the head's
+    // decoder, so the refusal is said instead, naming both builds.
+    if protocol_version < crate::compat::OLDEST_HEAD {
+        let mut w = writer.lock().unwrap();
+        w.write(&ServerFrame::Bye {
+            reason: format!(
+                "this head speaks protocol {protocol_version} and this daemon speaks \
+                 {PROTOCOL_VERSION}; the oldest head it can serve is {} ({} is not \
+                 translated for older heads). Restart the head from the same build as the \
+                 daemon.",
+                crate::compat::OLDEST_HEAD,
+                crate::compat::floor_change(),
+            ),
+        })?;
+        return Ok(());
+    }
+
+    // Any other differing version is accepted and said: `compat` sends an older head what it
+    // can decode, and a newer head judges the skew itself.
     if protocol_version != PROTOCOL_VERSION {
         let which = if protocol_version > PROTOCOL_VERSION {
             "newer"
@@ -1046,12 +1063,18 @@ pub fn serve_conn_rooted(
                 // The bootstrap read: the snapshot carries items, not events, so a head
                 // attaching fresh has nothing to replay. From here the `TodosUpdated` events
                 // carry every change.
+                let mut todos = registry.todos(&seat.hub.session_id());
+                crate::compat::todos_for(protocol_version, &mut todos);
+                let mut seats = registry.seat_boards();
+                for board in &mut seats {
+                    crate::compat::todos_for(protocol_version, &mut board.todos);
+                }
                 let f = ServerFrame::Todos {
                     session_id: seat.hub.session_id().to_string(),
-                    todos: registry.todos(&seat.hub.session_id()),
+                    todos,
                     // The seats' boards are the store's, not this connection's: a seat is not a
                     // session (`docs/seat-todo.md`), so the daemon answers them with the same read.
-                    seats: registry.seat_boards(),
+                    seats,
                 };
                 writer.lock().unwrap().write(&f)?;
             }
@@ -1606,12 +1629,20 @@ pub fn serve_conn_rooted(
                 // answer is the session's scrollback.
                 match registry.resolve(&session_id) {
                     Some(hub) => {
+                        let head = protocol_version;
                         let (events, snapshot) = match shape {
-                            PeekShape::Rows => (Vec::new(), Some(Box::new(hub.snapshot()))),
+                            PeekShape::Rows => (
+                                Vec::new(),
+                                Some(Box::new(crate::compat::snapshot_for(head, hub.snapshot()))),
+                            ),
                             PeekShape::Events => {
                                 let retained = hub.retained();
                                 let (kept, _) =
                                     crate::scrub::scrub_replay(retained.iter(), &retained);
+                                let kept = kept
+                                    .iter()
+                                    .map(|e| crate::compat::event_for(head, e).into_owned())
+                                    .collect();
                                 (kept, None)
                             }
                         };
@@ -2225,7 +2256,8 @@ fn seat_in(
                 snapshot: if inside {
                     None
                 } else {
-                    a.snapshot.map(Box::new)
+                    a.snapshot
+                        .map(|s| Box::new(crate::compat::snapshot_for(head_protocol, s)))
                 },
                 resumed_from: a.resumed_from,
                 scrubbed: a.scrubbed,
@@ -2311,7 +2343,10 @@ fn seat_in(
                             w.write(&ServerFrame::Resync {
                                 reason,
                                 dropped,
-                                snapshot,
+                                snapshot: Box::new(crate::compat::snapshot_for(
+                                    head_protocol,
+                                    *snapshot,
+                                )),
                                 scrubbed,
                             })
                         }

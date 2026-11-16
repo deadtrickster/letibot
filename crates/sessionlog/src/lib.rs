@@ -83,6 +83,7 @@ pub mod lift;
 pub mod lift_tools;
 
 pub use activity::{Activity, Waiting};
+pub use compat::{OLDEST_HEAD, SINCE, Since};
 pub use cursor::{Batch, ReadMark};
 pub use event::{
     COMPACTION_SECTIONS_KEY, COMPACTION_TEMPLATE, Citation, CitationKind, CompactionBudget,
