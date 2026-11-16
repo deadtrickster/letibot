@@ -199,15 +199,20 @@ type Sweep = crate::detect::Sweep;
 /// sink, so bytes this session's own command wrote do not read as a second writer's later.
 fn attach_changes(
     inv: &mut Invocation,
+    command: &str,
     sweep: &Sweep,
     files: &crate::files::FileLedger,
     writes_with: crate::runtime::WritesWith,
     wrote: &dyn Fn(&str, &[u8]),
 ) {
-    // Names first, and only names: one `git status` and a read of the files whose old bytes were
-    // already held. The diffs below are computed for the files a card is actually drawn for.
     let found = sweep.found();
-    if found.changed.is_empty() {
+    let vcs = crate::intent::vcs_verbs(command);
+    let moved = if vcs.is_empty() {
+        0
+    } else {
+        crate::detect::moved(&sweep.tree, &sweep.base, &found.changed)
+    };
+    if found.changed.is_empty() && moved == 0 {
         return;
     }
     for (edit, spelling) in found.edits.iter().zip(&found.spelled) {
@@ -215,50 +220,99 @@ fn attach_changes(
         wrote(spelling, edit.after.as_bytes());
         inv.edits.push(edit.clone());
     }
-    let changed = changed_note(&found.changed, inv.edits.len());
-    inv.notes.push(match writes_with.after_a_command() {
-        Some(advice) => format!("{changed}. {advice}"),
-        None => changed,
-    });
+    let changed = if vcs.is_empty() {
+        changed_note(&found.changed, inv.edits.len())
+    } else {
+        vcs_note(&vcs, moved, &found.changed)
+    };
+    let note = match writes_with.after_a_command() {
+        Some(advice) if vcs.is_empty() => format!("{changed}. {advice}"),
+        _ => changed,
+    };
+    // First, so a folded row, which shows one line, shows this one.
+    inv.notes.insert(0, note);
 }
 
 /// How many changed files are drawn - the sweep's own cap, named here because the note below speaks of
 /// it.
 pub const MAX_DRAWN_DIFFS: usize = crate::detect::MAX_DRAWN_DIFFS;
 
-/// What the command changed, in the model's own reading: the files whose diff it is handed, and the
-/// ones it is not - with the denominator, because "and N more" with no total is a number nobody can
-/// act on. Provenance is said every time: a detected change was not adjudicated as an edit.
-fn changed_note(changed: &[String], drawn: usize) -> String {
+/// The changed files, one line after the sentence that counts them, with the denominator: "and N
+/// more" with no total is a number nobody can act on.
+fn listed(changed: &[String]) -> String {
     let names: Vec<&str> = changed
         .iter()
         .take(MAX_DRAWN_DIFFS)
         .map(String::as_str)
         .collect();
-    let more = changed.len().saturating_sub(names.len());
-    let listed = match more {
+    match changed.len().saturating_sub(names.len()) {
         0 => names.join(", "),
         more => format!("{}, and {more} more files", names.join(", ")),
-    };
+    }
+}
+
+/// What the command changed, in the model's own reading: a count on the first line, the paths on
+/// the next. Provenance is said every time: a detected change was not adjudicated as an edit.
+fn changed_note(changed: &[String], drawn: usize) -> String {
     let n = changed.len();
+    let list = listed(changed);
     match (drawn, n) {
-        (0, 1) => format!("this command changed `{listed}`, and no diff could be read back for it"),
+        (0, 1) => format!("this command changed `{list}`, and no diff could be read back for it"),
         (0, _) => format!(
-            "this command changed {n} files: {listed}. No diff could be read back for any of \
-             them; `git diff` is the one to read"
+            "this command changed {n} files, and no diff could be read back for any of them - \
+             `git diff` is the one to read\n{list}"
         ),
-        (1, 1) => format!(
-            "this command changed `{listed}` — the diff beside it was detected afterwards, \
-             not made by `edit`"
-        ),
-        (d, n) if d == n => format!(
-            "this command changed {n} files: {listed} — a diff is drawn for each, and each one \
-             was detected afterwards, not made by `edit`"
-        ),
+        (1, 1) => {
+            format!("this command changed `{list}` - diff detected afterwards, not made by `edit`")
+        }
+        (d, n) if d == n => {
+            format!(
+                "this command changed {n} files - diffs detected afterwards, not made by `edit`\n{list}"
+            )
+        }
         (d, n) => format!(
-            "this command changed {n} files: {listed}. A diff is drawn for the first {d}; \
-             `git diff` is the one to read for the rest. None of them was made by `edit`"
+            "this command changed {n} files - diffs detected afterwards for the first {d}, not made \
+             by `edit`; `git diff` is the one to read for the rest\n{list}"
         ),
+    }
+}
+
+/// A VCS command's change in one line: what ran, how many files it moved on its way, and what is
+/// left changed. The paths of the net change follow on the next line, since those are its diffs.
+fn vcs_note(vcs: &[(&'static str, String)], moved: usize, net: &[String]) -> String {
+    let tool = vcs.first().map(|v| v.0).unwrap_or("git");
+    let mut verbs: Vec<(String, usize)> = Vec::new();
+    for (_, v) in vcs {
+        match verbs.iter_mut().find(|(w, _)| w == v) {
+            Some((_, n)) => *n += 1,
+            None => verbs.push((v.clone(), 1)),
+        }
+    }
+    let verbs: Vec<String> = verbs
+        .into_iter()
+        .map(|(v, n)| if n > 1 { format!("{v} ×{n}") } else { v })
+        .collect();
+    let files = |n: usize| {
+        if n == 1 {
+            "1 file".to_string()
+        } else {
+            format!("{n} files")
+        }
+    };
+    let head = format!(
+        "{tool}: {} · {} moved · net change: {}",
+        verbs.join(", "),
+        files(moved),
+        if net.is_empty() {
+            "none".to_string()
+        } else {
+            files(net.len())
+        }
+    );
+    if net.is_empty() {
+        head
+    } else {
+        format!("{head}\n{}", listed(net))
     }
 }
 
@@ -1246,9 +1300,14 @@ impl Tool for Bash {
         if let Some(sweep) = &sweep {
             let files = ctx.files;
             let writes_with = ctx.writes_with;
-            attach_changes(&mut inv, sweep, files, writes_with, &|path, bytes| {
-                ctx.wrote(path, bytes)
-            });
+            attach_changes(
+                &mut inv,
+                command,
+                sweep,
+                files,
+                writes_with,
+                &|path, bytes| ctx.wrote(path, bytes),
+            );
             if sweep.base.skipped > 0
                 && !self
                     .snapshot_budget_said
