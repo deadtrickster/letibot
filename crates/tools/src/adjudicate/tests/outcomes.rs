@@ -1061,6 +1061,7 @@ fn a_reviewers_probe_runs_at_allow_all_and_anything_beyond_still_asks() {
 
     for cmd in [
         "clippy-driver --version",
+        "python3 /tmp/probe.py",
         "python3 -c \"open('/tmp/mc.rs','w').write('fn main() {}')\"",
         "python3 -c \"open('src/mc.rs','w').write('fn main() {}')\"",
     ] {
@@ -1073,7 +1074,8 @@ fn a_reviewers_probe_runs_at_allow_all_and_anything_beyond_still_asks() {
         // A write the shell only redirects is judged as a write, which the point admits itself.
         assert!(log[0].decision.by.starts_with("gate:"), "`{cmd}`");
     }
-    let (_, _, log) = runs(Mode::ALLOW_ALL_HERE, true, "clippy-driver --version");
+    // A version query reads as inspect and the point admits it; the reviewer arm is for exec.
+    let (_, _, log) = runs(Mode::ALLOW_ALL_HERE, true, "python3 /tmp/probe.py");
     assert_eq!(log[0].decision.by, "gate:reviewer");
     for cmd in [
         "python3 -c \"open('/home/dead/mc.rs','w').write('fn main() {}')\"",
@@ -1088,12 +1090,12 @@ fn a_reviewers_probe_runs_at_allow_all_and_anything_beyond_still_asks() {
         );
     }
     // The point is the operator's: a narrower one asks, and a seat without the limits is unchanged.
-    let (admitted, asked, _) = runs(Mode::WRITES_ALLOWED, true, "clippy-driver --version");
+    let (admitted, asked, _) = runs(Mode::WRITES_ALLOWED, true, "python3 /tmp/probe.py");
     assert!(
         !admitted && asked == 1,
         "writes-allowed does not admit exec"
     );
-    let (admitted, asked, _) = runs(Mode::ALLOW_ALL_HERE, false, "clippy-driver --version");
+    let (admitted, asked, _) = runs(Mode::ALLOW_ALL_HERE, false, "python3 /tmp/probe.py");
     assert!(
         !admitted && asked == 1,
         "a confined seat without limits asks"
