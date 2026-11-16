@@ -1203,6 +1203,18 @@ impl Harness {
     }
 
     pub fn set_supervision(&mut self, on: bool) -> Result<String, String> {
+        // The guard answering is a model-decided point by another door, so it is held to the
+        // parent's decider as `/mode` is.
+        if on
+            && let Some(parent) = self.parent_mode()
+            && parent.decider == letibot_tools::mode::Decider::Human
+        {
+            return Err(format!(
+                "this session's parent is at `{}`, where a person answers: a child cannot hand \
+                 its asks to the guard model. Nothing was changed",
+                parent.name
+            ));
+        }
         // Attach on demand: `/supervise` on a session opened with no `--oracle` is the ordinary case,
         // since nobody types daemon flags. If an address is known from anywhere, use it rather than
         // sending the operator to restart a daemon.

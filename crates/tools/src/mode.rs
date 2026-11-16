@@ -559,8 +559,8 @@ impl Mode {
     }
 
     /// Whether this point is no wider than `other` - the clamp's rule, written once. The axes
-    /// that admit are compared; `role`, `decider` and `requires` only name, and `requires` is
-    /// [`Mode::check`]'s question rather than a width.
+    /// that admit are compared, and so is who answers: a model in place of a person is wider.
+    /// `role` and `requires` only name, and `requires` is [`Mode::check`]'s question.
     pub fn no_wider_than(self, other: Mode) -> bool {
         fn rank(d: Disposition) -> u8 {
             match d {
@@ -584,6 +584,8 @@ impl Mode {
             && rank(self.exec) <= rank(other.exec)
             && rank(self.network) <= rank(other.network)
             && licence(self.boundary) <= licence(other.boundary)
+            // `None` is ranked by the dispositions: nothing asks at such a point.
+            && !(self.decider == Decider::Model && other.decider == Decider::Human)
     }
 
     /// The point a child of a session at this point opens at, given that child's own seat.

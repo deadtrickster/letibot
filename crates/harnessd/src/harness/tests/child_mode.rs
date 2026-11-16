@@ -156,6 +156,34 @@ fn a_parent_that_narrows_narrows_its_child() {
     assert!(h.set_mode(Mode::WRITES_ALLOWED).is_err());
 }
 
+#[test]
+fn child_cannot_move_human_to_model_decider() {
+    let dir = Scratch::new("child-mode-decider");
+    let Some((mut h, _parent, _path)) =
+        child_with(&dir, "s-parent-sub-3", Mode::WRITES_ALLOWED, |cfg| {
+            cfg.oracle = Some(letibot_turn::Endpoint::parse("127.0.0.1:9").unwrap());
+        })
+    else {
+        return;
+    };
+    let e = h
+        .set_mode_consented(Mode::AUTO_EDITS, false)
+        .expect_err("a person answers the parent's asks, so the child's may not go to a model");
+    assert!(e.contains("wider than this session's parent"), "{e}");
+    assert!(h.set_mode(Mode::AUTO).is_err());
+    assert!(
+        h.ask_mode_confirm("automode-edits", "head-bridge", "bridge", "r1")
+            .is_err(),
+        "nor through the bridge's door"
+    );
+    assert!(
+        h.set_supervision(true).is_err(),
+        "nor by turning the guard on"
+    );
+    assert_eq!(h.config().mode, Mode::WRITES_ALLOWED);
+    assert!(!h.supervising());
+}
+
 /// A daemon's `Sessions` at `base`, holding one unrelated root, with the store at `path`.
 fn daemon_at(
     dir: &Scratch,

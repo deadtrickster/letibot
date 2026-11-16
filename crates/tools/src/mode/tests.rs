@@ -715,3 +715,11 @@ fn a_point_cannot_hand_a_seat_a_tool_it_does_not_have() {
         .expect_err("a writing seat needs somewhere to write");
     assert!(e.contains("writable backend"), "{e}");
 }
+
+#[test]
+fn a_model_decider_is_wider_than_a_human_one() {
+    assert!(!Mode::AUTO_EDITS.no_wider_than(Mode::WRITES_ALLOWED));
+    assert!(!Mode::AUTO.no_wider_than(Mode::WRITES_ALLOWED));
+    assert!(Mode::WRITES_ALLOWED.no_wider_than(Mode::AUTO_EDITS));
+    assert!(Mode::AUTO.no_wider_than(Mode::ALLOW_ALL));
+}
