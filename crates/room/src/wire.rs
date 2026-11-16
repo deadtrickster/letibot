@@ -9,13 +9,9 @@ use crate::room::{
     ABANDON_THRESHOLD, DEFAULT_BEAT_EVERY_MS, Decision, Holding, Question, Refused, Reminder, Room,
 };
 
-/// The room's protocol version, and the room's alone - see the module header. The number moves at
-/// RELEASE POINTS: a frame added mid-series rides the next number with whatever else lands first.
-/// 10 is the ask: a version-9 coordinator knows no `Ask`, and would answer one with a refusal a
-/// session would read as *this peer cannot be asked*. 11 is the ask by SCOPE: a version-10
-/// coordinator knows no `path` or `topic`, and would read the asker's scope as a session name.
-/// 12 is the archive: a version-11 coordinator knows no `ArchiveRoom`, and would take a put-away
-/// room for one it cannot see.
+/// The room's protocol version, and the room's alone. The number moves at release points: a frame
+/// added mid-series rides the next number. 10 added `Ask`, 11 the ask by scope (`path`, `topic`),
+/// 12 `ArchiveRoom`; an older coordinator would misread each.
 pub const ROOM_PROTOCOL_VERSION: u16 = 12;
 
 /// The oldest client this coordinator still serves. 12 only added frames a client must ask for, so
@@ -66,8 +62,7 @@ pub fn upgrade_hint(why: &str) -> Option<&'static str> {
     }
 }
 
-/// What a `say` is. `post` is a room line and the default every frame written before this decodes
-/// to; the other words are what the line asks of its readers, so they change who is woken.
+/// What a `say` is. `post` is a room line and the default a frame without a kind decodes to; the other words are what the line asks of its readers, so they change who is woken.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SayKind {
@@ -286,7 +281,7 @@ pub enum Request {
     /// The signal scorecard: what followed each sender's and each kind's messages.
     Signals,
     /// Something followed message `seq` (a todo row naming it, an ownership claim). The caller is
-    /// the actor. Also the hook R163 calls when a claim comes of a message.
+    /// the actor. Also the hook for a claim that comes of a message.
     Acted { seq: u64, act: crate::signal::Act },
     /// A wake caused by these messages ended: whether it said or did anything, and the tokens the
     /// turn spent. Reported by the session's daemon, which is the only one that knows.

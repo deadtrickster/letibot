@@ -47,10 +47,9 @@ pub const DEFAULT_SWEEP_EVERY_MS: u64 = 5_000;
 /// How often a manager-held listener's accept loop looks at the stop flag.
 const ACCEPT_TICK_MS: libc::c_int = 200;
 
-/// How long an ask's other end may be gone before the operator is asked to restart it. Five
-/// minutes: a restart inside the grace is invisible, and a longer wait would leave a plan blocked
-/// on a machine nobody was told to fix. It never settles anything - only the explicit verbs and a
-/// deleted session do that.
+/// How long an ask's other end may be gone before the operator is asked to restart it. A restart
+/// inside the grace is invisible; a longer wait leaves a plan blocked unannounced. It never
+/// settles anything - only the explicit verbs and a deleted session do that.
 pub const ASK_GRACE_MS: u64 = 300_000;
 
 /// How many frames one connection may have waiting for its writer thread: roughly a megabyte at a
@@ -457,7 +456,7 @@ impl Server {
     }
 
     /// Something followed message `seq`: the hook for parts that learn of an action the room does
-    /// not see itself (R163's ownership claim).
+    /// not see itself, such as an ownership claim.
     pub fn note_act(&self, seq: u64, act: crate::signal::Act, by: &str) {
         self.inner
             .signals
@@ -1753,8 +1752,7 @@ impl Server {
 
     /// The refs a dm to `to` is stored with, or the refusal when `to` is a queue seat that takes no
     /// such line from `name`. Another project may send a `decision` or an `ask`, or relay an
-    /// operator's message it names by `thread`; plain chatter stays out, which is why the seats
-    /// left the rooms.
+    /// operator's message it names by `thread`; plain chatter stays out.
     #[allow(clippy::too_many_arguments)]
     fn queue_seat_gate(
         &self,
@@ -2675,7 +2673,7 @@ impl Server {
                     .filter(|m| chat.is_record(m.seq))
                     .count();
                 drop(chat);
-                // The measurement R164 needs: a record filed is only worth filing if it is opened.
+                // A record filed is only worth filing if it is opened, so opens are counted.
                 if opened > 0 {
                     let mut ledger = self.inner.signals.lock().expect("the signals lock");
                     for _ in 0..opened {
@@ -4032,7 +4030,7 @@ impl Server {
     }
 
     /// The edits this project's sessions reported, newest last: the last-edit rule's facts, which
-    /// the room already keeps to renew a path claim (R163's working-on).
+    /// the room already keeps to renew a path claim.
     fn edits_in(&self, project: &str) -> Vec<(String, String, u64)> {
         let here: Vec<String> = self
             .conn_list()

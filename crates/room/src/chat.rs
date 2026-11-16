@@ -163,7 +163,7 @@ pub struct Ref {
 }
 
 /// The ref kind that says what backs a message's claim about the world. It rides `refs` rather
-/// than a field of its own, so a message from before this reads unchanged and every rendering
+/// than a field of its own, so an older message reads unchanged and every rendering
 /// shows it without a second writer.
 pub const EVIDENCE: &str = "evidence";
 
@@ -331,8 +331,7 @@ impl Message {
         self.refs.iter().filter(|r| r.kind != SAY)
     }
 
-    /// What this line asks of its readers. A message from before this, and one whose kind needed
-    /// no saying, is an ordinary post.
+    /// What this line asks of its readers. A message with no kind ref is an ordinary post.
     pub fn say_kind(&self) -> crate::SayKind {
         self.refs
             .iter()
@@ -383,11 +382,9 @@ impl Message {
         out
     }
 
-    /// Why this message reached a reader, from the room's `names_you`: the fact a model needs to
-    /// stay quiet without reasoning about it. The kind decides the two cases a room line cannot:
-    /// an `fyi` is a note to everyone it only passes, and an address to the reader it NAMES (a
-    /// mention or a dm, both of which it is the reader's to answer), and a `blocker` is never a
-    /// cheap turn whatever it names.
+    /// Why this message reached a reader, from the room's `names_you`, so a model can stay quiet
+    /// without reasoning about it. An `fyi` is a note to everyone it only passes and an address to
+    /// the reader it NAMES; a `blocker` is never a cheap turn whatever it names.
     pub fn reach(&self, names_you: bool) -> Reach {
         if self.kind == Seat::Operator {
             return Reach::Operator;
@@ -485,13 +482,10 @@ impl Message {
         self.to.as_deref() == Some(who) || names_in_text(&self.text, who)
     }
 
-    /// Does this message reach `who` at all? `named` is the room's own answer to *does it name
-    /// you* (which counts a reply to your own message). The operator wakes wherever they speak; a
-    /// room line wakes that room's own sessions; talk between two others wakes nobody else.
-    /// An `fyi` reaches its room and whoever it names: the room takes it as a note (`reach` is
-    /// `Passing` there) and the one it names takes it as an address, because being named IS the
-    /// address. A `blocker` rings its target and the room it was said in, because the room is
-    /// blocked on it.
+    /// Does this message reach `who` at all? `named` counts a reply to your own message. The
+    /// operator wakes wherever they speak; a room line wakes that room's own sessions; talk between
+    /// two others wakes nobody else. An `fyi` reaches its room as a note (`Passing`) and whoever
+    /// it names as an address. A `blocker` rings its target and the room, which is blocked on it.
     pub fn wakes(&self, who: &str, named: bool, sits_in: impl Fn(&str) -> bool) -> bool {
         if self.author == who {
             return false;
@@ -1184,11 +1178,9 @@ impl AskState {
     }
 }
 
-/// One line of the log or of the state file beside it. A segment holds messages and nothing else,
-/// is append-only and is never rewritten; the state - the cursors, the seen marks, the guests, the
-/// asks, each room's log floor and the whole text of a filed record - is `<path>.state`, rewritten
-/// whole when it outgrows what is live. Replaying both rebuilds the rings, the dedup window and
-/// the cursors.
+/// One line of the log or of the state file beside it. A segment holds only messages and is never
+/// rewritten; the state (cursors, seen marks, guests, asks, log floors, filed records) is
+/// `<path>.state`, rewritten whole when it outgrows what is live. Replaying both rebuilds memory.
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum Record {
@@ -1854,7 +1846,7 @@ impl Chat {
         }
     }
 
-    /// Is the message `seq` one the room filed as a record? The read of one is what R164 counts.
+    /// Is the message `seq` one the room filed as a record? Reads of records are counted.
     pub fn is_record(&self, seq: u64) -> bool {
         self.whole.contains_key(&seq)
     }

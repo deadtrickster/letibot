@@ -1,6 +1,6 @@
 //! An ask by SCOPE on a real coordinator socket: a live lease, the last editor, an `OWNERS` line,
 //! and the project room when nothing owns it - each with the reason the asker is told. Each rule is
-//! counted, because the share of asks an owner answered is the measure R165 is judged by.
+//! counted, because the share of asks an owner answered is what scope asks are judged by.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};

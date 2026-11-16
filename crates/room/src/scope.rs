@@ -52,7 +52,7 @@ impl Scope {
 /// Which rule put the question on a session.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Rule {
-    /// A live ownership lease covering the scope (R163).
+    /// A live ownership lease covering the scope.
     Lease,
     /// The last session to edit the path in this project.
     Edit,

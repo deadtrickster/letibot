@@ -23,7 +23,7 @@ pub enum Act {
     AskSettled,
     /// A todo row names it.
     Todo,
-    /// An ownership claim followed from it (R163 calls this).
+    /// An ownership claim followed from it.
     Claim,
     /// Someone else read its thread.
     Read,

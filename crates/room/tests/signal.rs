@@ -99,7 +99,7 @@ fn the_scorecard_counts_what_followed() {
         before: None,
     })
     .unwrap();
-    // A claim reported for a message (R163's hook) counts like the rest.
+    // A claim reported for a message counts like the rest.
     let claimed = seq(say(&a, "8", None, "cache is mine now"));
     b.request(&Request::Acted {
         seq: claimed,

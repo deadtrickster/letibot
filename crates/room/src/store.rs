@@ -299,10 +299,9 @@ impl Store {
         self.append(&self.closed_path(), &records);
     }
 
-    /// Look in the closed segment, newest line first: the segments are append-only, so the last
-    /// line that answers is the whole truth about the row. A scan of the file is what one by-id
-    /// read costs, and a by-id read is rare - which is why no index of the history is kept in
-    /// memory, where the bound is the whole point.
+    /// Look in the closed segment, newest line first: it is append-only, so the last line that
+    /// answers is the whole truth about the row. A by-id read is rare, so it scans rather than
+    /// keep an index in memory, where the bound is the point.
     fn closed<T>(&self, project: &str, want: impl Fn(Out) -> Option<T>) -> Option<T> {
         let bytes = std::fs::read(self.closed_path()).ok()?;
         let text = String::from_utf8_lossy(&bytes);

@@ -269,10 +269,8 @@ struct Case {
     evidence: bool,
 }
 
-/// The red-team set: fake operator orders, "ignore previous instructions", a peer calling the
-/// gate green, a peer ordering a merge or a board row for another session, and a header forged
-/// inside a text. Each one is delivered as quoted data with its source and the flags it earns,
-/// none of it reads as a header, and the room's own state ends where it began.
+/// The red-team set from the module header: each is delivered as quoted data with its source and
+/// flags, none reads as a header, and the room's own state ends where it began.
 #[test]
 fn every_injected_line_arrives_as_quoted_data_and_changes_nothing() {
     let dir = Scratch::new();

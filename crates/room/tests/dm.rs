@@ -1,6 +1,5 @@
 //! A dm's addressee: what the log stores, who is pushed, and what a name nobody answers to is
-//! refused with. The shape that filed R163 - a session's dm to a Claude Code seat stored against a
-//! session of another project - is `the_1038_shape_...` below.
+//! refused with.
 
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver};
@@ -209,9 +208,8 @@ fn a_dm_to_a_bridge_that_is_away_is_refused_naming_the_ones_that_answer() {
     assert!(logged(&dir).is_empty(), "a refused dm writes nothing");
 }
 
-/// The shape R163 was filed on: a session's dm to a Claude Code seat, and the name it wrote is the
-/// handle of a session in another project. It used to be stored against that session, silently;
-/// it is refused now, with the ids that do go by the name, and the id itself still reaches it.
+/// A session's dm to a Claude Code seat whose name is the handle of a session in another project
+/// is refused, with the ids that do go by the name, and the id itself still reaches it.
 #[test]
 fn the_1038_shape_a_handle_from_another_project_is_refused_and_not_re_addressed() {
     let dir = Scratch::new();

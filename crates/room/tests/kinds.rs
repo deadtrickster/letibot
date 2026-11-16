@@ -342,9 +342,8 @@ fn an_fyi_wakes_only_the_reader_it_names_and_a_blocker_wakes_its_room_and_its_ta
 
 /// A dm is answered in the dm. A seat that answers one with a plain room line that names the
 /// sender - no `to`, no `thread`, no room named - has the answer delivered privately, hanging from
-/// the dm it answers, and its tool result says so. The live case: a dm about a full tmpfs was
-/// answered in the host room as `@sender ...` with kind `fyi`, and the session it was for was
-/// never woken, because in a room an `fyi` is a note to everyone it only passes.
+/// the dm it answers, and its tool result says so. In a room an `fyi` only passes everyone it
+/// does not name, so the sender would never be woken.
 #[test]
 fn a_dm_is_answered_in_the_dm() {
     let dir = Scratch::new();
@@ -355,8 +354,7 @@ fn a_dm_is_answered_in_the_dm() {
     let dm = said(a.say("d1", SayKind::Post, "the tmpfs is full", Some("s-b")));
     assert_eq!(dm.room, chat::DM_ROOM);
 
-    // The answer, spelled the way the live case spelled it: a line that names the sender and asks
-    // for no room of its own.
+    // A line that names the sender and asks for no room of its own.
     let (answer, note) = match b.call(Request::Say {
         id: "a1".into(),
         room: String::new(),
