@@ -371,7 +371,13 @@ rundir() {
 KEY="$(printf '%s' "$WORKSPACE" | sha12)"
 SOCKET="${LETIBOT_SOCKET:-$RUNDIR/$KEY.sock}"
 RECORD="$RUNDIR/$KEY.json"
-STORE="${LETIBOT_STORE:-$HOME/.local/share/letibot}"
+# The data home as `lifecycle::data_dir` reads it: XDG_DATA_HOME only when absolute. The verbs,
+# the bridge and the room resolve the same, so the daemon's store is the one they act on.
+case "${XDG_DATA_HOME:-}" in
+  /*) DATA_HOME="$XDG_DATA_HOME" ;;
+  *) DATA_HOME="$HOME/.local/share" ;;
+esac
+STORE="${LETIBOT_STORE:-$DATA_HOME/letibot}"
 # An exported LETIBOT_STORE=.../sessions.db outlives the split: once shared.db is beside it, the
 # directory is the store, and the daemon refuses the old file by name.
 if [ "$(basename "$STORE")" = sessions.db ] && [ -f "$(dirname "$STORE")/shared.db" ]; then
@@ -2710,7 +2716,7 @@ SESSIONS_EOF
     # owner, read from the store and the kernel rather than from the daemon, so it answers while
     # the daemon is wedged or gone. Read-only; a box with no store yet prints nothing.
     if [ -x "$BIN/letibot-multi" ]; then
-      "$BIN/letibot-multi" holds --folder "$WORKSPACE" --line 2>/dev/null || true
+      LETIBOT_STORE="$STORE" "$BIN/letibot-multi" holds --folder "$WORKSPACE" --line 2>/dev/null || true
     fi
     # The local model server is reported separately from what answers the turns, and labelled
     # for what it is, not as `model` (see `daemon_line`).
@@ -2740,7 +2746,8 @@ SESSIONS_EOF
   # through to a billed one-shot prompt; the verb's parser refuses what it does not know.
   stats | boundary | fb | holds | gc | hold | release)
     [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the metrics, boundary and lifecycle verbs live there)"
-    exec "$BIN/letibot-multi" "$@"
+    # The store the daemon was handed, folding included, so a hold lands where the daemon reads.
+    LETIBOT_STORE="$STORE" exec "$BIN/letibot-multi" "$@"
     ;;
   migrate)
     # `--store` is appended as the `--migrate` arm does, because the move needs the store this

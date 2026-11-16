@@ -104,6 +104,7 @@ run() {
   printf '%s' "$toml" > "$T/home/.config/letibot/providers.toml"
   (cd "${RUN_WS:-$T/ws}" && env -i PATH="${RUN_PATH_EXTRA:-}$RUN_PATH" HOME="$T/home" XDG_RUNTIME_DIR="$T/run" \
     LETIBOT_BIN="$T/bin" LETIBOT_ENDPOINT= STUB_ARGV="$T/argv.log" \
+    XDG_DATA_HOME="${RUN_XDG_DATA_HOME:-}" \
     LETIBOT_ROOM_SOCKET="${ROOM_SOCK_OVERRIDE-$ROOM_SOCK}" ROOM_ARGV="$T/room-argv.log" \
     LETIBOT_SCOPE_RUNTIME_MAX="${LETIBOT_SCOPE_RUNTIME_MAX:-}" \
     "$(command -v bash)" "$LAUNCHER" "$@" 2>&1 < /dev/null)
@@ -1296,6 +1297,7 @@ fi
 cat > "$T/bin/letibot-multi" << 'STUB'
 #!/usr/bin/env bash
 printf 'letibot-multi'; printf ' %q' "$@"; printf '\n'
+[ -z "${LETIBOT_STORE:-}" ] || printf 'store=%s\n' "$LETIBOT_STORE"
 STUB
 chmod +x "$T/bin/letibot-multi"
 
@@ -1580,6 +1582,16 @@ for spec in "holds --json" "gc --log" "where" "hold s-123" "release s-123" "note
   expect "$spec is the multicall's $v verb" "$out" "^letibot-multi $v( |$)"
   refuse "  ...and $v is not sent as a prompt" "$out" "--prompt"
 done
+
+# The store follows XDG_DATA_HOME, as gc, hold and the bridge do: one store for the daemon and
+# the verbs that act on its owners.
+out="$(RUN_XDG_DATA_HOME="$T/xdgdata" run "$DEFAULT_ONLY" "q")"
+expect "a one-shot's --store is under XDG_DATA_HOME" "$out" "--store $T/xdgdata/letibot( |$)"
+out="$(RUN_XDG_DATA_HOME="$T/xdgdata" run "$DEFAULT_ONLY" hold s-123)"
+expect "  ...and hold is handed that store" "$out" "^store=$T/xdgdata/letibot$"
+out="$(RUN_XDG_DATA_HOME="relative" run "$DEFAULT_ONLY" "q")"
+expect "  ...and a relative XDG_DATA_HOME is unset, as lifecycle::data_dir has it" "$out" \
+  "--store $T/home/.local/share/letibot( |$)"
 
 out="$(run "$DEFAULT_ONLY" --config-reference --markdown providers.toml)"
 expect "--config-reference is the multicall's" "$out" "^letibot-multi --config-reference --markdown providers.toml$"
