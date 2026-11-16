@@ -49,6 +49,11 @@ pub enum McpError {
     Transport(String),
     /// The server answered with a protocol-level error.
     Protocol(String),
+    /// The call was sent and no answer came back: it may have run. Separate from `Transport`
+    /// because a retry here is a second run and not a second attempt at an unsent call.
+    MayHaveRun {
+        why: String,
+    },
 }
 
 /// The seam an MCP client attaches through. The client lives in `letibot-mcp`, so this crate
@@ -154,6 +159,15 @@ fn call_through(
         Err(McpError::Protocol(e)) => Invocation::failed(
             format!("`{server}` answered with an error: {e}"),
             "the call reached the server and it did not produce a result.".to_string(),
+        ),
+        // It was sent and not answered: the one failure that is neither *nothing ran* nor *it
+        // failed*, so it says the tool may have run and the next step is to look, not to repeat.
+        Err(McpError::MayHaveRun { why }) => Invocation::failed(
+            format!("`{tool}` on `{server}` may have run: {why}"),
+            "The server was asked to cancel and may not have heard yet, so the call may have \
+             finished. Do not send it again as though it had not run: check what it was asked to \
+             do first."
+                .to_string(),
         ),
         // The transport succeeded, so everything here looks like success unless `isError` is kept.
         Ok(r) if r.is_error => Invocation::failed(

@@ -161,6 +161,23 @@ impl Client {
                 self.dead = Some(why.clone());
                 return Err(McpError::Transport(why));
             }
+            // The request is out and unanswered. It may have run, so this says so rather than
+            // *nothing happened* - and the server is told to stop in the protocol's own words,
+            // because a client that walks away leaves it working on a call nobody will read.
+            Err(WireError::Timeout(timeout)) => {
+                let _ = self.wire.notify(&json!({
+                    "jsonrpc": "2.0",
+                    "method": "notifications/cancelled",
+                    "params": {"requestId": id, "reason": format!("no answer within {}s", timeout.as_secs_f32())},
+                }));
+                return Err(McpError::MayHaveRun {
+                    why: format!(
+                        "request {id} (`{method}`) got no answer within {}s, and cancellation is a \
+                         request the server may not have read",
+                        timeout.as_secs_f32()
+                    ),
+                });
+            }
             Err(e) => return Err(McpError::Transport(e.to_string())),
         };
         if let Some(err) = answer.get("error") {
@@ -240,6 +257,7 @@ fn render_content(result: &Value) -> String {
 fn err_text(e: &McpError) -> String {
     match e {
         McpError::Transport(s) | McpError::Protocol(s) => s.clone(),
+        McpError::MayHaveRun { why } => why.clone(),
         McpError::NotAttached(_) => "not attached".into(),
     }
 }

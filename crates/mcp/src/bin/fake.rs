@@ -1,7 +1,9 @@
 //! A stdio MCP server for tests. `--die-at-start` exits before answering, `--once FILE` only when
-//! FILE exists, `--endless` writes 64 MiB with no newline and then waits. Tools: `echo`, `big`, `fail` (`isError`), `crash` (exits mid-call), `pwd`, and
-//! `grow`, which adds `extra` and sends `notifications/tools/list_changed`, `env` (one variable's
-//! value, empty when unset), and `spawn`, which starts a `sleep` grandchild and says its pid.
+//! FILE exists, `--endless` writes 64 MiB with no newline and then waits, and `--cancel-log FILE`
+//! appends the request id of every `notifications/cancelled` it is told. Tools: `echo`, `big`,
+//! `slow` (answers after a pause), `fail` (`isError`), `crash` (exits mid-call), `pwd`, `grow`,
+//! which adds `extra` and sends `notifications/tools/list_changed`, `env` (one variable's value,
+//! empty when unset), and `spawn`, which starts a `sleep` grandchild and says its pid.
 
 use std::io::{BufRead, Write};
 
@@ -34,6 +36,10 @@ fn main() {
         std::fs::write(marker, b"").unwrap();
     }
     let mut grown = false;
+    let cancel_log = args
+        .iter()
+        .position(|a| a == "--cancel-log")
+        .map(|i| args[i + 1].clone());
     let stdin = std::io::stdin();
     let mut out = std::io::stdout().lock();
     // A log line on stdout, which a client must skip.
@@ -43,6 +49,24 @@ fn main() {
         let Ok(msg) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        // A client that gave up says so; the id it names is logged so a test can see it arrived.
+        // Read between calls, because this loop answers one request at a time like a busy server.
+        if msg.get("method").and_then(Value::as_str) == Some("notifications/cancelled") {
+            if let Some(store) = cancel_log.as_deref() {
+                let id = msg
+                    .pointer("/params/requestId")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(store)
+                {
+                    let _ = writeln!(f, "{id}");
+                }
+            }
+            continue;
+        }
         let Some(id) = msg.get("id").cloned() else {
             continue;
         };
@@ -67,6 +91,8 @@ fn main() {
                  "inputSchema": {"type": "object"}},
                 {"name": "pwd", "description": "Say the working directory.",
                  "inputSchema": {"type": "object"}},
+                {"name": "slow", "description": "Answer after a pause.",
+                 "inputSchema": {"type": "object", "properties": {"ms": {"type": "integer"}}}},
                 {"name": "env", "description": "Say one environment variable.",
                  "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}}},
                 {"name": "spawn", "description": "Start a grandchild and say its pid.",
@@ -99,6 +125,11 @@ fn main() {
                     }
                     Some("extra") => text("extra ran"),
                     Some("pwd") => text(&std::env::current_dir().unwrap().display().to_string()),
+                    Some("slow") => {
+                        let ms = args.get("ms").and_then(Value::as_u64).unwrap_or(500);
+                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                        text("slow done")
+                    }
                     Some("env") => {
                         let name = args.get("name").and_then(Value::as_str).unwrap_or("");
                         text(&std::env::var(name).unwrap_or_default())
