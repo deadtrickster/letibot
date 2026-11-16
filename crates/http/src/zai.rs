@@ -1,7 +1,6 @@
-//! Z.ai / Zhipu (GLM) business codes on a refusal, read off the `(NNNN)` the provider crate appends
-//! to the message. The table is the vendor's own:
-//! <https://docs.z.ai/api-reference/api-code> and <https://docs.bigmodel.cn/cn/faq/api-code>.
-//! Every limit there is a `429`, so the status cannot tell a rate limit from a spent window.
+//! Z.ai / Zhipu (GLM) business codes on a refusal, read off the `(NNNN)` the provider crate appends.
+//! Every limit is a `429`, so the status alone cannot tell a rate limit from a spent window.
+//! Table: <https://docs.z.ai/api-reference/api-code>.
 
 /// What a GLM limit code means to a retry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,9 +15,7 @@ pub enum Limit {
     Refused,
 }
 
-/// `next_flush_time` is written in China Standard Time with no zone. Measured: 2026-11-07's
-/// "reset at 2026-11-07 21:02:27" lifted at 13:02 UTC, and 2026-11-15's window reset matched the
-/// console's 07:15 (UTC+8).
+/// `next_flush_time` is written in China Standard Time (UTC+8) with no zone.
 pub const FLUSH_TIME_OFFSET_MS: u64 = 8 * 3_600_000;
 
 /// The GLM business code in `body`, when it carries one from the table.

@@ -1,10 +1,6 @@
-//! When a provider says its limit lifts: the two machine-readable forms, and nothing else.
-//!
-//! `Retry-After` (RFC 9110) is a delay in seconds or an HTTP-date; a `429` body is prose that
-//! sometimes names a wall clock and sometimes the width of the window it closed. A caller that
-//! parks a session on an invented instant is worse off than one that gives up, so every reading
-//! here is bounded and the earlier of two readings wins: coming back too soon costs one refused
-//! call, coming back hours late costs the session.
+//! When a provider says its limit lifts: `Retry-After` (seconds or an HTTP-date) and a 429's prose.
+//! Every reading is bounded and the earlier of two wins: too soon costs one refused call, too late
+//! costs the session.
 
 /// The shortest a park may be. A wall clock already past is a reading in a zone this box does not
 /// know, so it is not a reason to call again at once.
@@ -25,14 +21,9 @@ pub fn from_retry_after(value: &str, now_ms: u64) -> Option<u64> {
     Some(at.saturating_sub(now_ms) / 1000)
 }
 
-/// The instant a 429's prose names, Unix millis, reading whichever of the two facts it carries:
-/// a wall clock (`Your limit will reset at 2026-11-07 21:02:27`) and the window it closed
-/// (`Usage limit reached for 5 hour`). The earlier wins - see the module header - and the result
-/// is bounded by [`LONGEST`], the park's bound; [`from_prose_unbounded`] is the instant itself.
-///
-/// The wall clock names no zone. It is read as UTC, which is the reading that makes it the latest
-/// plausible instant in the world's offsets, and the window beside it is what keeps a wrong guess
-/// from parking a session for a day.
+/// The instant a 429's prose names, Unix millis, from a wall clock or the window it closed; the
+/// earlier wins, bounded by [`LONGEST`]. A zoneless clock is read as UTC, the latest plausible
+/// reading, and the window keeps a wrong guess from parking a session for a day.
 pub fn from_prose(body: &str, now_ms: u64) -> Option<u64> {
     from_prose_unbounded(body, now_ms).map(|at| at.min(now_ms + LONGEST))
 }
@@ -246,7 +237,7 @@ fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
 mod tests {
     use super::*;
 
-    /// The operator's own refusal, verbatim: the text a session died of on 2026-11-07.
+    /// A real GLM refusal, verbatim.
     const GLM: &str = "http 429: Usage limit reached for 5 hour. Your limit will reset at \
                        2026-11-07 21:02:27";
 
@@ -262,9 +253,8 @@ mod tests {
         assert_eq!(from_prose(GLM, now), Some(RESET));
     }
 
-    /// GLM's `next_flush_time` is China time. 2026-11-15: a `1308` at 18:08 UTC whose window
-    /// started 13:11 UTC; read as UTC it was 02:11 next day, the window beat it, and the session
-    /// parked until 23:08 for a limit that lifted at 18:11.
+    /// GLM's `next_flush_time` is China time. Read as UTC, the window would win and park the
+    /// session hours past the real reset.
     #[test]
     fn a_glm_coded_wall_clock_is_china_time() {
         let body = "Usage limit reached for 5 hour. Your limit will reset at 2026-11-16 \

@@ -6,11 +6,9 @@ use std::time::Duration;
 
 use crate::HttpError;
 
-/// The statuses a provider uses to say not now, and the whole of the list. `408` is
-/// here with the 5xx and the `429` because the server is saying the request did not
-/// get through this time; a `429` naming money is [`Policy::states_a_refusal`]'s. `529`
-/// is Anthropic's `overloaded_error` - the same fact as a `429` and, unlike the 5xx it is
-/// grouped with, it lifts on its own (<https://platform.claude.com/docs/en/api/errors>).
+/// The statuses a provider uses to say not now. `408` is here because the request did not get
+/// through this time; a `429` naming money is [`Policy::states_a_refusal`]'s. `529` is Anthropic's
+/// `overloaded_error`, which lifts on its own like a `429`.
 pub const TRY_AGAIN: &[u16] = &[408, 429, 500, 502, 503, 504, 529];
 
 /// The default number of retries - calls after the first. See [`Policy::standard`].
@@ -700,7 +698,7 @@ mod tests {
         );
     }
 
-    /// The three classes, over the statuses the brief names.
+    /// The three classes, over the retryable statuses.
     #[test]
     fn the_classes_are_the_statuses_the_policy_states() {
         let p = Policy::standard();
@@ -736,8 +734,6 @@ mod tests {
 
     /// GLM's codes decide what a 429 is: rate and concurrency retry and never park, a spent window
     /// parks on its China-time reset, and a plan that cannot serve the call is refused at once.
-    /// Bodies are the vendor's templates (docs.z.ai/api-reference/api-code) as the provider crate
-    /// renders them, the code appended.
     #[test]
     fn a_glm_code_decides_between_a_rate_limit_a_window_and_a_refusal() {
         let p = Policy::standard();
