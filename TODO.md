@@ -73,7 +73,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R344 | wire meaning and visible skew | Code work | I68, I69, I70, I71; M; after B1 (R320) |
 | R345 | facts with no read time: status lag, todo waits, undated polls, repeated usage rows, the triple park line | Code work | built on branch `r345-facts`: I73, I74, I75 (F8-F13, F15), lead 52, one commit each; L21 not reproduced on w4-base; F14 and R319's left moved to R345a; left: gate and land |
 | R345a | R345 remainder: ctrl-p holds only the body, a lost side frame resyncs, R319's freed-at-delivery grace | Code work | F14, F11's resync half, R319 left; S-M; after R345 |
-| R346 | launcher twins: unbounded scope join, socket hash, binary locations, dist checks | Code work | I82, I83; M; after B11 (R331) |
+| R346 | launcher twins: unbounded scope join, socket hash, binary locations, dist checks | Code work | built on `r346-launcher` (I82, I83 F14-F17, L25, L26, each with its proving test, failing on w4-base); left: one full gate and the landing, F18 (the shim) is R350's |
 | R347 | gate-at, queue doors, queue structure, tests reading live state | Code work | I89, I90, I91, I92; L; after B10 (R330) |
 | R348 | plugin looks, runtime bounds, the bridge as an untyped room client | Code work | I96, I97, I99; A8-F11/F13/F14 closed on `r349-leftovers`; M; after B13 (R333), B14 (R334) |
 | R349 | extensions and policy remainder: queue briefing, flowy cleartext, provider error classes, rano heredoc edits | Code work | I101, I102, I103, I105; A1-F10 closed on `r349-leftovers`; M; after - |
@@ -1946,7 +1946,20 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 ## R346 - launcher twins: unbounded scope join, socket hash, binary locations, dist checks
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I82, I83. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built 2026-11-16 on `r346-launcher`, one commit per finding, not gated. Filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I82, I83. Record: `docs/review/2026-11-16/INTEGRATION.md`. No schema, wire or room change.
+
+**Built.**
+- I82 (`160175ff3`): `scope_join` starts the command in the scope behind a gate directory and gives it 5 s, then kills the join and runs unscoped, said once. The one-shot and `detach` both go through it; `detach` execs, so a daemon that does not come up is killed on give-up. The late probe is bounded at 600 s and every `scope-probe-*`/`scope-join-*` dir older than an hour is swept. Tests (`no_hang.rs`): `a_hanging_real_scope_does_not_hang_the_one_shot` and `a_hanging_real_scope_does_not_hang_the_daemon_start` (both fail on w4-base: the first hangs, the second times out), `a_scope_that_joins_runs_the_one_shot_in_it_with_its_status`, `a_probe_that_never_answers_does_not_hang_the_one_shot` (guards, pass on both).
+- I83 F14 (`8843954d3`): `folder_where` takes folder, key and socket from `letibot-multi where DIR --json`; `sha12` is gone. Verbs that touch no folder's daemon (`--ls`, `--help`, `--stop --all`) run without the multicall, the rest refuse by name. Test: `where.rs` `the_launcher_socket_equals_where_json` (a `LETIBOT_WORKSPACE` in a checkout's subdirectory; fails on w4-base, which hashed the subdirectory).
+- I83 L25 (`d30d389fa`): binaries beside the launcher as typed first, then beside the script it resolves to, then that checkout's target/release; the choice is exported as `LETIBOT_BIN`, which `bridge::daemon` reads first. Test: `tests/launcher.sh` `install_and_launcher_name_the_same_binary` (fails on w4-base: the linked launcher ran the checkout's build).
+- I83 F16, F17 (`002472623`): `check-dist-names.sh --built` fails on a stale ELF `letibot` (decision 15), and an interpolated `triple:` is refused, not dropped. Tests: `tests/install.sh` (both fail on w4-base).
+- I83 F15 (`53d913ab7`): the reverse probe covers `subagents`, `keys`, `fallback`, `provider.<name>` and both `usage_warn` tables. It found `[provider.NAME]` accepting any key and `[keys]` refusing a surfaceless name in words the probe did not read; both refuse by name now. Test: `hand_read_keys_are_listed` (fails on w4-base).
+- I83 L26 (`c47326b64`): the acp tests read `CARGO_BIN_EXE_letibot-acp` with `env!`, not at run time; `hyphen_env.rs` refuses a run-time read anywhere (fails on w4-base). Audit: none of the 13 tracked `#!/bin/sh` scripts sits between cargo and rustc or relays a parent's hyphenated names.
+
+**Residue.**
+- F18, the launcher as a whole a second copy of Rust placement: the shim is R350's (decision 17).
+- `~/Projects/letibot/letibot/target/release/letibot` is a stale pre-rename ELF; that box's `check-dist-names.sh --built` fails until it is deleted.
+- `tests/launcher.sh` is not shfmt-clean on w4-base (34 hunks, none in this branch's lines).
 
 **Scope.** Decision 15: a stale ELF fails `check-dist-names.sh`. Decision 17: bash with twins deleted one by one now, the Rust shim after the phase.
 
