@@ -1,6 +1,7 @@
 #!/bin/sh
-# gate-at.sh WORKTREE TARGET_DIR BASE: check-fmt against BASE, then the full workspace test run.
-# The local landing gate the lead runs on a stack of branches; docs/gate.md has the rest.
+# gate-at.sh WORKTREE TARGET_DIR BASE: the merge gate BASE's AGENTS.md declares, run on WORKTREE.
+# Every step but the install (that one runs after the push), each in gate-env.sh's env, judged by
+# its exit status; `check-fmt.sh main` compares against BASE. docs/gate.md has the rest.
 set -u
 [ $# -eq 3 ] || {
   echo "usage: gate-at.sh WORKTREE TARGET_DIR BASE" >&2
@@ -14,12 +15,11 @@ L=${LETIBOT_GATE_LOGS:-${TMPDIR:-/tmp}/letibot-gate}
 N=$(basename "$W")
 mkdir -p "$L" || exit 2
 cd "$W" || exit 2
-sh scripts/check-fmt.sh "$B" >"$L/$N.fmt.log" 2>&1 || {
-  cat "$L/$N.fmt.log"
-  echo "FMT FAILED"
-  exit 4
+# Read from BASE, as the queue reads it from the target: a stack cannot change its own gate.
+steps=$(git show "$B:AGENTS.md" | sh scripts/gate-steps.sh) || {
+  echo "gate: $B:AGENTS.md declares no merge gate" >&2
+  exit 2
 }
-tail -1 "$L/$N.fmt.log"
 # The built-in guests' build script watches absolute paths; in a target shared across worktrees
 # it would keep another tree's wasm. Drop any whose watch list is not this tree.
 for o in "$TD"/debug/build/letibot-builtins-*/output; do
@@ -40,17 +40,42 @@ exec 9>"$LOCK"
 echo "gate: waiting for $LOCK" >&2
 flock 9
 echo "gate: lock held" >&2
-# A skip is not a pass: a test whose apparatus is missing fails instead of skipping.
-sh scripts/gate-env.sh "$G" XDG_RUNTIME_DIR="$R" CARGO_TARGET_DIR="$TD" LETIBOT_REQUIRE_APPARATUS=1 \
-  cargo test --workspace --no-fail-fast >"$L/$N.test.log" 2>&1
-find "$G/home" "$R" \( -name 'sessions.db' -o -name 'shared.db' \) 2>/dev/null | sed 's/^/ISOLATED: /' | head -3
-find "$G" -name 'sessions.db' | sed 's/^/LEAKED: /'
-ok=$(grep -cE '^test result: ok\.' "$L/$N.test.log" || true)
-bad=$(grep -cE '^test result: FAILED|^error(\[|:)' "$L/$N.test.log" || true)
-skips=$(grep -c 'THIS IS NOT A PASS' "$L/$N.test.log" || true)
-echo "suites ok=$ok bad=$bad; skip lines (live services, opt-ins): $skips"
-if [ "$bad" != 0 ] || [ "$ok" -lt 140 ]; then
-  grep -E '^test result: FAILED|^error|FAILED$|panicked' "$L/$N.test.log" | head -20
+i=0
+while IFS= read -r step <&3; do
+  i=$((i + 1))
+  case $step in
+    *install-gate-build*)
+      echo "gate: not run before the push: $step"
+      continue
+      ;;
+    *"check-fmt.sh main")
+      step="${step%main}$B"
+      ;;
+  esac
+  log="$L/$N.step$i.log"
+  refused="$L/$N.step$i.refusals"
+  rm -f "$refused"
+  echo "gate: step $i: $step"
+  # A skip is not a pass: a test whose apparatus is missing fails instead of skipping.
+  sh scripts/gate-env.sh "$G" XDG_RUNTIME_DIR="$R" CARGO_TARGET_DIR="$TD" LETIBOT_REQUIRE_APPARATUS=1 \
+    LETIBOT_APPARATUS_REFUSALS="$refused" sh -c "$step" >"$log" 2>&1 </dev/null
+  rc=$?
+  ok=$(grep -cE '^test result: ok\.' "$log")
+  [ "$ok" = 0 ] || echo "gate: suites ok=$ok; skip lines: $(grep -c 'THIS IS NOT A PASS' "$log")"
+  if [ "$rc" != 0 ]; then
+    grep -E '^test result: FAILED|^error|FAILED$|panicked' "$log" | head -20
+    tail -5 "$log"
+    [ -s "$refused" ] && sed 's/^/REFUSED: /' "$refused"
+    echo "gate: step $i exited $rc: $step (log: $log)"
+    exit 3
+  fi
+done 3<<EOF
+$steps
+EOF
+# Any store under the scratch is a test that wrote where the operator's store lives.
+leaks=$(find "$G" "$R" \( -name 'sessions.db' -o -name 'shared.db' \) 2>/dev/null)
+if [ -n "$leaks" ]; then
+  printf '%s\n' "$leaks" | sed 's/^/LEAKED: /'
   exit 3
 fi
 echo GREEN

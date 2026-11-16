@@ -197,7 +197,7 @@ refuse() { # refuse NAME OUTPUT PATTERN -- the output must not match
 # an empty array under `set -u` — `EXTRA_ARGS[@]: unbound variable`, which killed the first
 # macOS start — and no grep can see that, so the `--help` run at the end is what covers it.
 BASH32="scripts/letibot scripts/leticode scripts/etalon-snapshot scripts/headwatch.sh scripts/migrate-notes.sh scripts/rrun scripts/wire-skew.sh tests/launcher.sh tests/rrun.sh tests/claude-plugin.sh"
-POSIX_SH="scripts/check-dist-names.sh scripts/check-fmt.sh scripts/check-host-runtime.sh scripts/check-provider-models.sh scripts/check-tag.sh scripts/check-test-attrs.sh scripts/clippy-gate.sh scripts/gate-at.sh scripts/gate-env.sh scripts/install-gate-build.sh scripts/make-dist.sh scripts/refresh-models-snapshot.sh install.sh"
+POSIX_SH="scripts/check-dist-names.sh scripts/check-fmt.sh scripts/check-host-runtime.sh scripts/check-provider-models.sh scripts/check-tag.sh scripts/check-test-attrs.sh scripts/clippy-gate.sh scripts/gate-at.sh scripts/gate-env.sh scripts/gate-steps.sh scripts/install-gate-build.sh scripts/make-dist.sh scripts/refresh-models-snapshot.sh install.sh"
 # The bash-4 spellings as one extended regex: associative arrays (`declare`/`local`/`typeset`
 # `-A`), namerefs (`-n`), `declare -g`, `mapfile`/`readarray`, `coproc`, `wait -n`, `[[ -v ]]`,
 # case fallthrough (`;;&`, `;&`), `&>>`, `|&`, and the case-modifying expansions

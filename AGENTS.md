@@ -128,9 +128,9 @@ sh scripts/install-gate-build.sh
   wait-queue <repository> <id>` in the background: 0 landed, 10 rejected, 20 red) and report its
   tip. They never run a full gate and never push `main`. The queue gates approved branches as one
   stack (`[queue] gate_train`, `docs/gate.md`). Where it does not, the lead stacks them and runs
-  `scripts/gate-at.sh` once, because parallel workspace runs choke the box. That script is not the
-  merge gate: it runs `check-fmt.sh` and `cargo test --workspace` only. `scripts/rrun NAME WORKTREE
-  --host H [--target DIR] --gate` runs the first four gate steps on a fleet host (default lab2x1).
+  `scripts/gate-at.sh` once, because parallel workspace runs choke the box. That script runs the
+  merge gate below but the install, judged by exit status. `scripts/rrun NAME WORKTREE --host H
+  [--target DIR] --gate` runs it through `cargo test` on a fleet host (default lab2x1).
   The Mac runs only platform-touching tests.
 - Agents never type into a session's head over tmux (`tmux send-keys`). A head cannot tell typed
   text from the operator, so it is stored as the operator's words. Use the bridge (`leticode_send`)
