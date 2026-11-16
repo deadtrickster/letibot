@@ -34,6 +34,16 @@ fn child_at(
     id: &str,
     at: Mode,
 ) -> Option<(Harness, Arc<std::sync::Mutex<Mode>>, std::path::PathBuf)> {
+    child_with(dir, id, at, |_| {})
+}
+
+/// [`child_at`], with the config touched before the open.
+fn child_with(
+    dir: &Scratch,
+    id: &str,
+    at: Mode,
+    touch: impl FnOnce(&mut Config),
+) -> Option<(Harness, Arc<std::sync::Mutex<Mode>>, std::path::PathBuf)> {
     let gguf = crate::vocab_gguf()?;
     let path = dir.0.join("sessions.db");
     let mut cfg = Config::for_this_box(&dir.0);
@@ -43,6 +53,7 @@ fn child_at(
     cfg.vocab_gguf = Some(gguf);
     cfg.parent_session_id = Some("s-parent".into());
     cfg.mode = at;
+    touch(&mut cfg);
     let parts = Parts::load(&cfg).expect("the vocabulary loads");
     let mut h = Harness::open(&parts, cfg, Hub::new(id)).expect("the session opens");
     let parent = Arc::new(std::sync::Mutex::new(at));
@@ -143,4 +154,103 @@ fn a_parent_that_narrows_narrows_its_child() {
     );
     // And it cannot go back up past the parent.
     assert!(h.set_mode(Mode::WRITES_ALLOWED).is_err());
+}
+
+/// A daemon's `Sessions` at `base`, holding one unrelated root, with the store at `path`.
+fn daemon_at(
+    dir: &Scratch,
+    base: Mode,
+) -> Option<(
+    Parts,
+    Config,
+    Arc<letibot_sessionlog::registry::Registry>,
+    std::path::PathBuf,
+)> {
+    let gguf = crate::vocab_gguf()?;
+    let path = dir.0.join("sessions.db");
+    let mut cfg = Config::for_this_box(&dir.0);
+    cfg.dialect = crate::Dialect::Qwen;
+    cfg.store = Some(path.clone());
+    cfg.session_id = "s-first".into();
+    cfg.vocab_gguf = Some(gguf);
+    cfg.mode = base;
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    let registry = letibot_sessionlog::registry::Registry::new();
+    for (id, parent) in [
+        ("s-first", None),
+        ("s-root", None),
+        ("s-root-sub-1", Some("s-root".to_string())),
+    ] {
+        registry
+            .create_under(
+                id,
+                "",
+                letibot_sessionlog::registry::SessionWiring {
+                    model: cfg.model.clone(),
+                    dialect: "qwen".into(),
+                    endpoint: "127.0.0.1:1".into(),
+                    workspace: cfg.workspace.display().to_string(),
+                },
+                parent,
+            )
+            .expect("the entry a door makes");
+    }
+    Some((parts, cfg, registry, path))
+}
+
+/// R306: after a restart the parent is not open, and the child is reopened by a door that is not
+/// the spawn. It comes back at its own narrowed row, held under its parent's stored point.
+#[test]
+fn a_reopened_child_keeps_its_narrowed_point_and_ceiling() {
+    let dir = Scratch::new("child-mode-reopen");
+    let Some((parts, cfg, registry, path)) = daemon_at(&dir, Mode::WRITES_ALLOWED) else {
+        return;
+    };
+    let rows = crate::modes::ModeStore::load(&path);
+    rows.set_session("s-root", Mode::READ_ONLY, None).unwrap();
+    rows.set_session("s-root-sub-1", Mode::READ_ONLY, None)
+        .unwrap();
+    let mut sessions = crate::sessions::Sessions::open_first(&parts, cfg, registry)
+        .expect("the first session opens");
+    sessions.open("s-root-sub-1").expect("the child reopens");
+    let h = sessions.held("s-root-sub-1").expect("held");
+    assert_eq!(
+        h.config().mode,
+        Mode::READ_ONLY,
+        "its own row, not the base"
+    );
+    assert_eq!(h.parent_mode(), Some(Mode::READ_ONLY), "the parent's row");
+    let e = h
+        .set_mode(Mode::WRITES_ALLOWED)
+        .expect_err("the ceiling is the parent's point");
+    assert!(e.contains("wider than this session's parent"), "{e}");
+}
+
+/// A child reopened while its parent was closed follows the parent once it opens and narrows.
+#[test]
+fn a_reopened_child_follows_its_parent_once_the_parent_opens() {
+    let dir = Scratch::new("child-mode-follow");
+    let Some((parts, cfg, registry, _path)) = daemon_at(&dir, Mode::WRITES_ALLOWED) else {
+        return;
+    };
+    let mut sessions = crate::sessions::Sessions::open_first(&parts, cfg, registry)
+        .expect("the first session opens");
+    sessions.open("s-root-sub-1").expect("the child reopens");
+    assert_eq!(
+        sessions.held("s-root-sub-1").unwrap().config().mode,
+        Mode::WRITES_ALLOWED
+    );
+    sessions.open("s-root").expect("the parent opens");
+    sessions
+        .held("s-root")
+        .unwrap()
+        .set_mode(Mode::READ_ONLY)
+        .expect("a root narrows");
+    let h = sessions.held("s-root-sub-1").unwrap();
+    h.narrow_to_parent();
+    assert!(
+        h.config().mode.no_wider_than(Mode::READ_ONLY),
+        "the child follows the live parent down, at {}",
+        h.config().mode.name
+    );
 }

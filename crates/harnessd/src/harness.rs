@@ -466,9 +466,9 @@ pub struct Harness {
     /// runner holds a clone of this config taken at open, and `/mode` moves the point without touching
     /// that clone, so a child spawned after a move would come up at the old point.
     point_cell: Arc<std::sync::Mutex<letibot_tools::mode::Mode>>,
-    /// The ceiling a child's point is held under: its parent's `point_cell` once the spawn hands it
-    /// over, else the point it opened at. `None` for a root session.
-    parent_point: Option<Arc<std::sync::Mutex<letibot_tools::mode::Mode>>>,
+    /// The ceiling a child's point is held under: its parent's live point, resolved at every open of
+    /// a child. `None` for a root session.
+    parent_point: Option<trees::Ceiling>,
     /// The model this session switched away from, kept until a round proves the new one works, so a
     /// switch that fails says how to go back. Without it the operator had to remember what the session
     /// had been on and type it back by hand.
@@ -813,9 +813,7 @@ impl Harness {
 
     /// The parent's point as it stands now, for a child; `None` for a root session.
     pub fn parent_mode(&self) -> Option<letibot_tools::mode::Mode> {
-        self.parent_point
-            .as_ref()
-            .map(|c| *c.lock().unwrap_or_else(|e| e.into_inner()))
+        self.parent_point.as_ref().map(trees::Ceiling::mode)
     }
 
     /// Refuse a point wider than the parent's: a child's point only narrows, and it is refused by
@@ -854,7 +852,15 @@ impl Harness {
     /// Hold this child under its parent's live point from now on, and narrow it at once if the
     /// parent already moved.
     pub(crate) fn follow_parent(&mut self, cell: Arc<std::sync::Mutex<letibot_tools::mode::Mode>>) {
-        self.parent_point = Some(cell);
+        match &mut self.parent_point {
+            Some(ceiling) => ceiling.follow(cell),
+            None => {
+                let at = *cell.lock().unwrap_or_else(|e| e.into_inner());
+                let mut ceiling = trees::Ceiling::new(String::new(), trees::Trees::default(), at);
+                ceiling.follow(cell);
+                self.parent_point = Some(ceiling);
+            }
+        }
         self.narrow_to_parent();
     }
 

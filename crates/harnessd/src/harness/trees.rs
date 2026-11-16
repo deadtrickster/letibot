@@ -5,6 +5,8 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+use letibot_tools::mode::Mode;
+
 use super::children::{TaskSlot, TaskSlots};
 use crate::jobwatch::JobWatchers;
 
@@ -14,6 +16,9 @@ use crate::jobwatch::JobWatchers;
 pub(crate) struct Tree {
     pub(crate) watch: Arc<JobWatchers>,
     pub(crate) slots: TaskSlots,
+    /// The session's point as it stands now: the ceiling of every child it has, whichever door
+    /// opened the child.
+    pub(crate) point: Arc<Mutex<Mode>>,
 }
 
 impl Tree {
@@ -56,11 +61,51 @@ impl Trees {
             .remove(session);
     }
 
+    /// The live point of an open session, for a child's ceiling.
+    pub(crate) fn point_of(&self, session: &str) -> Option<Mode> {
+        let tree = self.of(session)?;
+        let point = *tree.point.lock().unwrap_or_else(|e| e.into_inner());
+        Some(point)
+    }
+
     pub(crate) fn of(&self, session: &str) -> Option<Tree> {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .get(session)
             .cloned()
+    }
+}
+
+/// What a child's point is held under: its parent's live point while the parent is open in this
+/// daemon, else the last one seen. The open resolves the first value, so no door can skip it.
+pub(crate) struct Ceiling {
+    parent: String,
+    trees: Trees,
+    last: Arc<Mutex<Mode>>,
+}
+
+impl Ceiling {
+    pub(crate) fn new(parent: String, trees: Trees, at: Mode) -> Ceiling {
+        Ceiling {
+            parent,
+            trees,
+            last: Arc::new(Mutex::new(at)),
+        }
+    }
+
+    /// The spawn's own handle onto the parent's cell, which stands in for the table's entry.
+    pub(crate) fn follow(&mut self, cell: Arc<Mutex<Mode>>) {
+        self.last = cell;
+    }
+
+    pub(crate) fn mode(&self) -> Mode {
+        // Read before `last` is locked: after `follow`, `last` is the parent's own cell.
+        let live = self.trees.point_of(&self.parent);
+        let mut last = self.last.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(live) = live {
+            *last = live;
+        }
+        *last
     }
 }

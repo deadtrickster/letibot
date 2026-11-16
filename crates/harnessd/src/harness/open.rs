@@ -452,6 +452,56 @@ struct Placed {
     whole_host: bool,
 }
 
+/// A session's point from its rows, for a parent that is not open here: its own row, held under its
+/// own parent's, else its project's row, else `base`. The chain stops at a depth no spawn reaches.
+fn stored_point(
+    store: &crate::modes::ModeStore,
+    registry: &letibot_sessionlog::registry::Registry,
+    session: &str,
+    base: letibot_tools::mode::Mode,
+    workspace: &std::path::Path,
+) -> letibot_tools::mode::Mode {
+    use letibot_tools::mode::Mode;
+    let own = |id: &str| {
+        store.session(id).map(|(m, when)| match when {
+            Some(_) if m.name == Mode::ALLOW_ALL.name => Mode::ALLOW_ALL_HERE,
+            _ => m,
+        })
+    };
+    let mut chain = vec![session.to_string()];
+    while chain.len() < 16 {
+        let Some(up) = registry.parent_of(chain.last().expect("never empty")) else {
+            break;
+        };
+        if chain.contains(&up) {
+            break;
+        }
+        chain.push(up);
+    }
+    let root = chain.pop().expect("never empty");
+    let ws = registry.wiring(&root).workspace;
+    let ws = if ws.is_empty() {
+        workspace.to_path_buf()
+    } else {
+        std::path::PathBuf::from(ws)
+    };
+    let mut point = own(&root).unwrap_or_else(|| {
+        if !store.is_set(&ws) {
+            return base;
+        }
+        match (store.for_project(&ws), store.consent(&ws)) {
+            (m, Some(_)) if m.name == Mode::ALLOW_ALL.name => Mode::ALLOW_ALL_HERE,
+            (m, _) => m,
+        }
+    });
+    for id in chain.iter().rev() {
+        if let Some(m) = own(id).filter(|m| m.no_wider_than(point)) {
+            point = m;
+        }
+    }
+    point
+}
+
 impl Harness {
     /// Open a session: resolve the dialect against the vocabulary, seat the tools, render the
     /// stable prefix and record it. Every failure raised here is one that would otherwise be silent
@@ -653,7 +703,15 @@ impl Harness {
         stored: Option<&letibot_tokencore::store::StoredSession>,
         session_registry: &Arc<letibot_sessionlog::registry::Registry>,
         notes: &mut Vec<String>,
-    ) -> String {
+    ) -> (String, Option<letibot_tools::mode::Mode>) {
+        // Whose child this is, first: every open of a child resolves its ceiling here, and the
+        // spawn is only one of the doors that opens one.
+        cfg.parent_session_id = session_registry.parent_for(
+            &cfg.session_id,
+            cfg.parent_session_id.clone(),
+            stored.as_ref().and_then(|s| s.parent_session_id.as_deref()),
+        );
+        let mut parent_point = None;
         // The mode is a session property, resolved after the workspace is final: the per-project
         // point is looked up now (longest ancestor wins), so a project with no row keeps the
         // daemon's default and one with a row takes its own.
@@ -666,14 +724,21 @@ impl Harness {
             // The session's own point first - the one it was put at, which a restart or
             // a reseat must bring back whatever the project row says now. The operator:
             // *"and again peerdb allow-all lost after restart/reseat"*.
-            let own = cfg
-                .parent_session_id
-                .is_none()
-                .then(|| store.session(&cfg.session_id))
-                .flatten();
-            // A subagent keeps its parent's point and never re-reads the row: it must not differ
-            // from its parent in either direction, and a row naming a point the child cannot carry
-            // killed it before its first turn. The row is for a session somebody opened there.
+            let own = store.session(&cfg.session_id);
+            // A child's ceiling is its parent's point: live when the parent is open in this daemon,
+            // else the one its rows give. Its own row counts only when no wider than that; the
+            // seat's clamp comes later, where the seat's supplies exist.
+            let own = match &cfg.parent_session_id {
+                Some(parent) => {
+                    let ceiling = parts.trees.point_of(parent).unwrap_or_else(|| {
+                        stored_point(store, session_registry, parent, cfg.mode, &cfg.workspace)
+                    });
+                    parent_point = Some(ceiling);
+                    cfg.mode = ceiling;
+                    own.filter(|(m, _)| m.no_wider_than(ceiling))
+                }
+                None => own,
+            };
             if let Some((own, when)) = own {
                 cfg.mode = own;
                 mode_source = "this session's own (set with /mode)".into();
@@ -693,9 +758,6 @@ impl Harness {
                     ));
                 }
             } else if cfg.parent_session_id.is_some() {
-                // The point itself is the parent's, read live by the spawn and carried in
-                // `cfg.mode`; whether this seat can carry it is decided below, where the
-                // seat's own supplies exist. Here is where the row says where it came from.
                 mode_source = child_mode_source(None);
             } else if store.is_set(&cfg.workspace) {
                 let before = cfg.mode.name;
@@ -733,16 +795,7 @@ impl Harness {
                 (Some(store), Some(st)) => unconfined_by_inheritance(store, st),
                 _ => false,
             };
-
-        // A session a session started has that session as its parent: every open passes through
-        // here, and only here are the caller's word, the registry's entry and the row in one hand.
-        // After the mode block, which asks whether this session inherits a LIVE parent's point.
-        cfg.parent_session_id = session_registry.parent_for(
-            &cfg.session_id,
-            cfg.parent_session_id.clone(),
-            stored.as_ref().and_then(|s| s.parent_session_id.as_deref()),
-        );
-        mode_source
+        (mode_source, parent_point)
     }
 
     /// A session whose tools run over the whole host says so, on the hub the head draws and in
@@ -2034,7 +2087,7 @@ impl Harness {
             None => Vec::new(),
         };
 
-        let mut mode_source = Self::resolve_the_point(
+        let (mut mode_source, parent_point) = Self::resolve_the_point(
             parts,
             &mut cfg,
             &store,
@@ -2214,12 +2267,15 @@ impl Harness {
         // is AT rather than the one it opened at. Built here, after the mode is final.
         let point_cell: Arc<std::sync::Mutex<letibot_tools::mode::Mode>> =
             Arc::new(std::sync::Mutex::new(cfg.mode));
-        // A child's ceiling until its spawn hands over the parent's live cell: the point it opened
-        // at, which the open already clamped to the parent's.
-        let parent_ceiling = cfg
-            .parent_session_id
-            .as_ref()
-            .map(|_| Arc::new(std::sync::Mutex::new(cfg.mode)));
+        // A child's ceiling: the parent's point as `resolve_the_point` found it, followed live
+        // through the tree table for as long as the parent is open in this daemon.
+        let parent_ceiling = cfg.parent_session_id.as_ref().map(|parent| {
+            crate::harness::trees::Ceiling::new(
+                parent.clone(),
+                parts.trees.clone(),
+                parent_point.unwrap_or(cfg.mode),
+            )
+        });
         // The slot a child of this session hands its survivors to - this session's process host,
         // filled once the backend has one, `tree_watch_slot`'s reason: a child's estate is settled
         // against the session that outlives it, and a leftover with nowhere to go is an orphan.
@@ -3167,6 +3223,7 @@ impl Harness {
                 crate::harness::trees::Tree {
                     watch: Arc::clone(w),
                     slots: tree_slots.clone(),
+                    point: point_cell.clone(),
                 },
             );
             // Where a settlement gets written down: the watcher threads cannot be handed this harness's `Store`, so
