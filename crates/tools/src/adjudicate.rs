@@ -3482,6 +3482,7 @@ impl Gate for AdjudicatedGate {
                 by: "gate:mode".into(),
                 basis: why.clone(),
                 latency_ms: 0,
+                grant_at: None,
             };
             let tell = self.surface(&req, &d, "not_run", breaker_state.clone());
             self.record(req, d, "refuse", direction.key());
