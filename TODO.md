@@ -190,7 +190,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R352 | A subagent's role is a profile, in a file | Code work | `leticode status` and the head's subagent pane read the role off the `Subagent` event, not the session's row (the bridge head drops it, `role: _`) - a profile's `access:` is not re-read by `/config` |
 | R354 | A skill handed to a session names no folder, so its scripts are not found | Code work | built on `skill-shadow`; lead #42's journal and "queued: NAME" row built on `b7-followup` (R327); left: the shadow's offers carry no body, so they reach the folder through the `skill` load |
 | R355 | The shadow session is invisible to the operator | Code work | built on `skill-shadow`; left: the brief is republished at each tend, so a breaker that trips between turns shows at the next one - a shadow whose harness is not open yet is drawn from its stored title as `not running` - the unboxed (short-screen) composer has no marker |
-| R356 | A credential belongs to its program, not to the session: the credential broker | Parked | design only, a feature - after the stability phase, beside automode (both need the gate judging subcommands); order: `gh` broker, egress proxy, known-value redaction |
+| R358 | A credential belongs to its program, not to the session: the credential broker | Parked | design only, a feature - after the stability phase, beside automode (both need the gate judging subcommands); order: `gh` broker, egress proxy, known-value redaction |
 | R356 | A package session got a shadow when its daemon was not its own | Code work | built on `pkg-noshadow`; left: `Config::is_child` and `owner_kind` still read only `parent_seat`, so such a session is still offered skills and owned as a `Session` |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | `trees/<key>` landed (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | firecode's package image: the wasm32 target, a cargo cache warmed from the workspace's locks, shfmt and shellcheck - the guest's memory said in the brief (the overlay half is done, 99166493d) |
@@ -3500,7 +3500,7 @@ Seen live in rano (`s-1794057745451974498`): the record held `s-…-shadow`, ori
 
 Tests. `crates/tui/src/app/tests/tree.rs`: `a_shadow_is_drawn_under_the_projects_shadows_group` (on the list with no fold, at depth 3, named `shadow of the habr article`, `not running`), `a_running_shadow_lists_its_facts_and_the_watched_sessions_bar_says_so` (the facts line and `shadow: tripped` on the edge), `a_session_with_no_shadow_draws_no_shadow_marker`. `crates/harnessd/src/harness/tests/shadow_turn_end.rs`: `the_watched_sessions_brief_carries_its_shadow` (jobs, model, `armed`, then `turn_end: owed` after a verdict), `a_shadow_seat_refuses_a_prompt`.
 
-## R356 - A credential belongs to its program, not to the session: the credential broker
+## R358 - A credential belongs to its program, not to the session: the credential broker
 
 A credential file exists for its own software to use. That is its only purpose. So that software uses it, and nothing else in a session can read it, print it or send it.
 
