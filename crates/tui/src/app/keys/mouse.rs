@@ -112,10 +112,9 @@ impl App {
             self.open_marker(m);
             return ControlFlow::Break(None);
         }
-        // The conversation's row acts, through the table the hover reads (`App::conversation_act`).
-        // A click on the open run's rows unfolds them, as `/t` does while it is up. A click on a
-        // settled row is the pointer's `ctrl-v` on THAT row: the keyboard has no cursor, so it opens
-        // the newest row a seam offers; the pointer says which row it means.
+        // The conversation's row acts through `App::conversation_act`, the table the hover reads. A
+        // click on a settled row is `ctrl-v` on THAT row: the pointer names the row the keyboard
+        // cannot.
         if target == Target::Conversation {
             match self.conversation_act(&hit, y) {
                 Some(crate::app::pointer::ConvAct::Run) => {
@@ -138,11 +137,9 @@ impl App {
                 let _ = self.command("repo");
                 return ControlFlow::Break(None);
             }
-            // The corner's repository is the tree, so a click asks the queue for THAT tree through
-            // the verb a person would type (`/queue /PATH`): the pane and the word cannot disagree
-            // about what a scope is.
-            // It scopes by `header_workspace()`, the tree the row draws (a pin or the followed
-            // repository when the workspace holds several), not by `wiring.workspace`.
+            // A click on the corner's repository runs `/queue /PATH`, so the pane and the verb
+            // agree on scope. Scoped by `header_workspace()`, the tree the row draws, not
+            // `wiring.workspace`.
             (Target::HeaderRepo, _) => {
                 let Some(repo) = crate::gitfield::repo_of(&self.header_workspace()) else {
                     return ControlFlow::Break(None);
@@ -152,9 +149,7 @@ impl App {
                 );
             }
             (Target::CountLabel(l), _) => {
-                // The label's chord, through the one door - the operator's ask: *"make so that
-                // when i click on running subagents or jobs count labels i get to respective
-                // panes"*.
+                // A count label opens its pane through the label's chord.
                 return ControlFlow::Break(self.toggle_surface(match l {
                     CountLabel::Subagents => Surface::Subagents,
                     CountLabel::Jobs => Surface::Jobs,
@@ -188,8 +183,7 @@ impl App {
                 }
                 return ControlFlow::Break(None);
             }
-            // A job's completion notice opens whole - the operator: *"click behaves similar
-            // to diff click - popup with full card"*.
+            // A job's completion notice opens whole in a popup, like a diff click.
             (Target::Notice, Some(k)) => {
                 self.open_notice_popup(k);
                 return ControlFlow::Break(None);
@@ -212,8 +206,7 @@ impl App {
                 };
                 return ControlFlow::Break(self.switch_to(session));
             }
-            // And a red target's warning opens whole - the operator: *"a one-line similar
-            // to job - with a popup"*.
+            // A red target's warning opens whole in a popup, like a job's notice.
             (Target::NoteCard, Some(i)) => {
                 self.open_card_popup(i);
                 return ControlFlow::Break(None);

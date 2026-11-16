@@ -73,13 +73,12 @@ impl App {
                 Disposition::Filtered
             }
             SessionEvent::JobSettled { job, edits, .. } => {
-                // The daemon owns the table: the settlement only says to ask again.
-                // And the count drops by one, so the row above the composer re-asks: a job
-                // settled in a turn this head never watched has no row to fold into, which is
-                // the case a count taken from the pane's rows would get wrong.
+                // The daemon owns the table: the settlement only says to ask again. The count drops
+                // by one here, because a job settled in an unwatched turn has no pane row to count
+                // from.
                 self.queued.push(Action::ListJobs);
-                // And what it changed while it ran: the daemon measured it between the spawn and
-                // this settlement, and the completion's row is where a diff can be drawn (R161).
+                // What it changed while it ran, measured by the daemon between spawn and
+                // settlement; the completion's row draws the diff.
                 if !edits.is_empty() {
                     self.job_edits.insert(job, edits);
                     // Bounded like the completed handles: a session that settled a hundred jobs

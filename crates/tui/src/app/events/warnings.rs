@@ -72,11 +72,9 @@ impl App {
                     self.store_newer = Some(detail.to_string());
                     return Disposition::Filtered;
                 }
-                // The fork has two halves: this warning precedes it, `compacted` and `reseated` follow. Resolving at the first
-                // stops an echo saying `queued` for ever over a row the fork summarised away. An announcement is state, not a
-                // row: it says why the fold is running, which the progress line's click shows.
-                // The pending phase: a compaction asked for mid-turn, waiting on that turn. State,
-                // drawn on the status row until the running phase or the report replaces it.
+                // Resolving at this warning, which precedes `compacted` and `reseated`, stops an
+                // echo saying `queued` over a row the fork summarised away. An announcement or a
+                // pending compaction is state drawn on the status row, not a conversation row.
                 if code == "compaction_pending" {
                     self.compaction_pending = Some((detail.clone(), self.now_ms));
                     return Disposition::Filtered;
@@ -270,12 +268,9 @@ impl App {
                     v.polling = false;
                     v.error = Some(detail.clone());
                 }
-                // One record: EVERY warning's sentence goes where the table says, and nowhere near
-                // the conversation. `Go::Notes` is `/notes` plus - for a fault - a count on the
-                // edge; `Go::Status` is live state and is also said on the status line;
-                // `Go::Model` means the model was sent the same event, so its own row is the row
-                // drawn. See `warning::Go`, `warning::STATUS` and `warning::TWIN`: a code that
-                // lands here unclassified goes to `/notes` and draws nothing.
+                // Every warning's sentence goes where `warning::Go` says, never into the
+                // conversation. A code that lands here unclassified goes to `/notes` and draws
+                // nothing.
                 match letibot_sessionlog::warning::destination(&code) {
                     letibot_sessionlog::warning::Go::Status => self.say(&detail),
                     letibot_sessionlog::warning::Go::Model => {}
@@ -353,10 +348,8 @@ impl App {
         Disposition::Rendered
     }
 
-    /// The model not answering, as ONE live line whatever the attempt: the wire sends the line's whole
-    /// value, so it is rewritten rather than added to. A count that goes DOWN is a second outage; a
-    /// late head must not fold two series into one line. `gone` takes the line down and leaves nothing
-    /// behind - a recovered retry is not a finding, and a spent ladder has one row of its own.
+    /// The model not answering, as one live line rewritten on each attempt. A count that goes down
+    /// is a second outage. `gone` removes the line: a recovered retry is not a finding.
     pub(crate) fn on_model_retry(&mut self, e: SessionEvent, ts: u64) -> Disposition {
         let SessionEvent::ModelRetry {
             host,

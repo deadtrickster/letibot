@@ -1,7 +1,5 @@
-//! `Ctrl+K`: one list of the channels and the DM peers, fuzzy over their names, unread first, and
-//! Enter switches to the row under the cursor. A channel is a row here, not a stream entry, because
-//! the list is the HEAD's: it is the same list the channel column draws, and a plugin's stream is
-//! what one of these rows holds.
+//! `Ctrl+K`: the channels and DM peers, fuzzy over names, unread first; Enter switches. A channel
+//! is a row here, not a stream entry, because this is the head's own channel list.
 
 use super::*;
 use crate::app::rooms::Chan;

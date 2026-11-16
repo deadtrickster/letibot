@@ -152,22 +152,22 @@ pub(crate) enum Act {
     /// undo an archive has to have if a wrong one is not to cost a walk to the store.
     Undo,
     /// The rooms view's `ctrl-k`: the channel switcher - fuzzy over the channel labels and the DM
-    /// peers, unread first. P4 fills [`App::rooms_switcher`].
+    /// peers, unread first. See [`App::rooms_switcher`].
     RoomSwitcher,
     /// The rooms view's `tab`: put the cursor on the newest message, so the arrows walk messages
-    /// rather than channels from then on. P4 fills [`App::rooms_cursor_move`].
+    /// rather than channels from then on. See [`App::rooms_cursor_move`].
     RoomCursor,
-    /// The rooms view's `R`: answer the message under the cursor. P3 fills the reply target.
+    /// The rooms view's `R`: answer the message under the cursor, as the reply target.
     RoomReply,
-    /// The rooms view's `y`: copy the message under the cursor. P4 fills it.
+    /// The rooms view's `y`: copy the message under the cursor.
     RoomCopy,
-    /// The rooms view's `t`: show the thread of the message under the cursor. P4 fills it.
+    /// The rooms view's `t`: show the thread of the message under the cursor.
     RoomThread,
-    /// The rooms view's `u`: the unread divider. P4 fills the jump.
+    /// The rooms view's `u`: jump to the unread divider.
     RoomUnread,
-    /// The rooms view's `G` and `end`: the newest message. P4 fills the jump.
+    /// The rooms view's `G` and `end`: jump to the newest message.
     RoomTail,
-    /// The rooms view's `n` and `N`: the next or the previous search hit. P4 fills it.
+    /// The rooms view's `n` and `N`: the next or the previous search hit.
     RoomSearchStep(bool),
 }
 
@@ -514,9 +514,8 @@ const ROOMS: &[Binding] = &[
         Act::ResendSend,
         Text("resends the failed line; on a session, switches to it"),
     ),
-    // The chat keys of `docs/room-tui.md`. Tab puts a cursor on a message and the arrows walk the
-    // messages from then on; each of the rest acts on the message under that cursor, and with no
-    // cursor it declines and the key is the composer's, exactly as it was before P4.
+    // The chat keys. Tab puts a cursor on a message and the arrows walk messages; the rest act on
+    // the message under that cursor, and with no cursor they decline to the composer.
     b(
         &[On::KillToEnd],
         Empty,
@@ -691,10 +690,8 @@ impl Surface {
         }
     }
 
-    /// The surface's name in `leticode.toml`'s `[keys]`: one word, because a key in a TOML table
-    /// is `"todos.d" = "f"` and `short_name`'s "subagent's output" is prose. `letter_says`'s
-    /// article test and the bar's own words are unaffected; this is the config's vocabulary and
-    /// the refusal a bad surface name gets lists every one of them.
+    /// The surface's one-word name in `leticode.toml`'s `[keys]` (`"todos.d" = "f"`). A bad surface
+    /// name's refusal lists every one of them.
     pub(crate) fn key_name(self) -> &'static str {
         match self {
             Surface::Help => "help",
@@ -847,7 +844,7 @@ impl App {
 
     /// The keys of one binding as the bar and the help say them, with `[keys]`'s moves applied: a
     /// rebound key the bar still spelled the old way would advertise a press that does nothing,
-    /// which is the one thing W8's rule exists to prevent.
+    /// which is the one thing the rebinding rule exists to prevent.
     pub(crate) fn keys_label(&self, s: Surface, on: &[On]) -> String {
         let moved: Vec<On> = on.iter().map(|o| self.key_overrides.moved(s, *o)).collect();
         keys_label(&moved)
@@ -1073,11 +1070,9 @@ pub(crate) struct KeyOverrides {
 }
 
 impl KeyOverrides {
-    /// Resolve each `[keys]` line: the name is `SURFACE.KEY` - the surface's [`Surface::key_name`]
-    /// and a key as [`word_of`] spells it - and the value is the key it becomes. Refused with the
-    /// line it was written on: a surface this head has not got, a word that is no key, a word the
-    /// head claims GLOBALLY (W8: a binding is rebound within its surface and never the escape), a
-    /// key the surface does not bind, and a target another binding of that surface already takes.
+    /// Resolve each `[keys]` line `SURFACE.KEY = KEY`. Refused with its line number: an unknown
+    /// surface, a word that is no key, a globally claimed chord, a key the surface does not bind,
+    /// or a target another binding of that surface already takes.
     pub(crate) fn resolve(keys: &leticode_config::KeyKeys) -> (KeyOverrides, Vec<String>) {
         let mut moves = Vec::new();
         let mut problems = Vec::new();
@@ -1161,16 +1156,15 @@ impl KeyOverrides {
 
 /// The words of the keys the head claims whatever is open: `key_dispatch`'s Esc and ctrl-c, the
 /// two `Show` chords, and every arm of `key_chords`. A rebinding may not target one - a surface
-/// never sees it, so the key would be advertised and do nothing (W8).
+/// never sees it, so the key would be advertised and do nothing.
 pub(crate) const GLOBAL_CHORDS: &[&str] = &[
     "esc", "ctrl-c", "ctrl-^", "ctrl-]", "ctrl-e", "ctrl-g", "ctrl-l", "ctrl-n", "ctrl-o",
     "ctrl-p", "ctrl-q", "ctrl-r", "ctrl-s", "ctrl-t", "ctrl-v", "ctrl-x",
 ];
 
-/// The head chord a key is, and what it opens. A press inside the editor pane is the one place a
-/// head chord is refused, and a refusal nobody explains reads as a key that does nothing - so the
-/// pane names the chord and where it works. Read from the tables the dispatch reads, so a hint
-/// cannot name a key nothing acts on.
+/// The head chord a key is, and what it opens, for the editor pane's refusal: an unexplained
+/// refusal reads as a dead key. Read from the dispatch tables, so a hint cannot name a key nothing
+/// acts on.
 pub(crate) fn head_chord(k: &Key) -> Option<(&'static str, &'static str)> {
     if let Some(s) = Surface::of_chord(k) {
         return s.chord().map(|(word, _)| (word, s.short_name()));
@@ -1262,7 +1256,7 @@ fn clash_words(b: &Binding) -> String {
     }
 }
 
-/// The new key, or the refusal - W8's half, said on its own because a rebind TOWARDS a chord is
+/// The new key, or the refusal - said on its own because a rebind TOWARDS a chord is
 /// the mistake that would take a surface key and make it a key nothing reaches.
 fn target_word(key: &str, r: &leticode_config::Rebind, problems: &mut Vec<String>) -> Option<On> {
     match word_of(key) {

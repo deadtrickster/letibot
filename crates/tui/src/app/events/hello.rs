@@ -130,9 +130,8 @@ impl App {
                 // read before the gap may be one whose zero it never saw; the daemon says the
                 // count again after every attach.
                 self.held = None;
-                // Now it can be said. Filed BESIDE the conversation - `/notes` lists it and
-                // `/status` counts it - because it is this head's reading, not a row any model was
-                // ever sent. `note_beside` dedupes on `(code, detail, ts)`, so a `Switch`'s second
+                // Filed beside the conversation, because it is this head's reading and no model was
+                // sent it. `note_beside` dedupes on `(code, detail, ts)`, so a `Switch`'s second
                 // `Hello` says it once.
                 if let Some(said) = skew_said {
                     self.note_beside(Note::Warned(Warned {

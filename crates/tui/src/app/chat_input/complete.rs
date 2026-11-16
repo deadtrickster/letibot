@@ -1,8 +1,5 @@
-//! Where a composer's candidates come from: one trait, and the room's implementation of it - the
-//! selected room's roster first (connected before away), the other rooms' members marked
-//! `elsewhere`, then the bridge's aliases; a prefix match beats a substring match, and six go in
-//! the row. The host owns the editor and hands a line and a caret over, which is exactly what a
-//! plugin's `complete_` hook is handed, so one row serves both.
+//! Where a composer's candidates come from: one trait and the room's implementation. The host hands
+//! over a line and a caret, exactly what a plugin's `complete_` hook gets, so one row serves both.
 
 use letibot_plugin::complete::{Candidate, Completion};
 use letibot_plugin::pane::HUES;
@@ -19,8 +16,8 @@ pub(crate) trait Complete {
     fn complete(&self, text: &str, cursor: usize) -> Completion;
 }
 
-/// The verbs a room's composer offers before the head's own: the room's own four, then the two
-/// P4 gives the chat, and `/me` - the address the server already reads.
+/// The verbs a room's composer offers before the head's own: the room's four, the chat's two, and
+/// `/me`, which the server already reads.
 pub(crate) const ROOM_VERBS: &[(&str, &str)] = &[
     ("dm", "NAME TEXT — a direct message"),
     ("invite", "WHO — a guest in this room"),

@@ -1,10 +1,6 @@
-//! Moving through the chat rather than through the channels: the message cursor, the jump to the
-//! tail or to the unread divider, the `Ctrl+K` switcher and `/search`.
-//!
-//! Everything here walks the chat's STOPS - one stop is one entry of a stream, never one screen
-//! row - so a pane whose entries a plugin answers (`Block::Stream`, H0) gets the same cursor, the
-//! same jumps and the same search for free. In `/rooms` the entries are the channel's messages,
-//! addressed by their `seq`; in a plugin pane they are `StreamEntry`s addressed by their `id`.
+//! Moving through the chat: the message cursor, jumps to the tail or unread divider, `Ctrl+K` and
+//! `/search`. Everything walks stream entries, not screen rows, so a plugin's `Block::Stream` gets
+//! the same cursor, jumps and search.
 
 #![allow(dead_code)] // A few readers are P2's: the pane draws the cursor, the footer and the needle.
 
@@ -28,7 +24,7 @@ pub(crate) enum Jump {
     Unread,
 }
 
-/// What P4 keeps between two keys: where the cursor is, what is being searched for, what the
+/// What chat navigation keeps between two keys: where the cursor is, what is being searched for, what the
 /// switcher has typed, and how far the reader had read at the tail.
 #[derive(Debug, Default)]
 pub(crate) struct Nav {

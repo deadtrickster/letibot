@@ -124,9 +124,8 @@ impl App {
                 ControlFlow::Break(r) => ControlFlow::Break(r),
                 ControlFlow::Continue(()) => self.rooms_resend_send(),
             },
-            // The room's chat keys (`docs/room-tui.md`): each acts on the message under the cursor,
-            // and with no cursor there is nothing to act on - so it declines and the key is the
-            // composer's, exactly as it was before P0 wired it.
+            // The room's chat keys act on the message under the cursor. With no cursor they
+            // decline and the key is the composer's.
             Act::RoomCursor => {
                 // Tab puts the cursor on the newest message; a channel with nothing in it has none to
                 // put it on, and the key is not the composer's even then.
@@ -230,10 +229,9 @@ impl App {
         self.cursor_by(s, upward(k), Some(by))
     }
 
-    /// Up/down on a list: the cursor moves through the list's ONE enumeration of stops - the same
-    /// list the drawn `▸`, Enter and a click read - wrapping at the ends, with the window
-    /// following it so the cursor is never walked out of the window. An empty list declines.
-    /// `by` is a page: that many stops, clamped instead of wrapped.
+    /// Up/down on a list walks its one enumeration of stops, the same one `▸`, Enter and a click
+    /// read, wrapping at the ends with the window following. `by` is a page, clamped instead of
+    /// wrapped.
     fn cursor_by(
         &mut self,
         s: Surface,
@@ -417,11 +415,9 @@ impl App {
         }
     }
 
-    /// `→` and `←` on the session picker, the gesture a tree uses everywhere. `→` expands the row
-    /// under the cursor and, on a row already expanded, walks into its first row under it; `←`
-    /// collapses the row the cursor is on - the row stays, so the cursor stays with it - and, on a
-    /// collapsed row or a leaf, walks out to the row it is drawn under. Neither closes any row but
-    /// the one under the cursor, which is what keeps `←` from throwing the person out of a tree.
+    /// `→` and `←` on the session picker. `→` expands the row, or walks into its first child when
+    /// already expanded; `←` collapses it, or walks out to its parent. Only the row under the
+    /// cursor ever closes.
     fn picker_fold(&mut self, open: bool) -> ControlFlow<Option<Action>> {
         let rows = self.picker_rows();
         if rows.is_empty() {
@@ -698,10 +694,8 @@ impl App {
     }
 }
 
-/// Where a tree key lands: the first row drawn under `at` for `→`, and the row `at` is drawn under
-/// for `←`. The indent is the answer, and a session's own parent edge is the answer where the
-/// indent cannot give one - it stops at three steps, so a grandchild's parent can be drawn at the
-/// child's own column with no shallower row between them.
+/// Where a tree key lands: the first row under `at` for `→`, the row `at` sits under for `←`. The
+/// indent answers, and the parent edge where the indent stops at three steps.
 fn tree_step(
     sessions: &[SessionBrief],
     rows: &[crate::app::sessions_pane::Listed],

@@ -28,11 +28,9 @@ impl App {
                     self.invalidate_history();
                     return ControlFlow::Break(None);
                 }
-                // An open run has no window to page (see [`App::run_is_open`]): Esc above folds it,
-                // and the arrows move the conversation it is drawn in by the same step, while the
-                // page keys and the wheel go on to the conversation's own scroll.
-                // A permission card under an open run is the question on screen, so it keeps the
-                // arrows; the conversation still scrolls with the page keys and the wheel.
+                // An open run has no window to page (see [`App::run_is_open`]): the arrows move the
+                // conversation, the page keys and wheel scroll it. A permission card under an open
+                // run keeps the arrows.
                 Key::Up | Key::Down if self.run_is_open() && !self.open.is_empty() => {}
                 Key::Up if self.run_is_open() => {
                     self.scroll_up(BY);

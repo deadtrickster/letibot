@@ -81,8 +81,8 @@ impl App {
                     None => None,
                 };
             }
-            // Esc drops a selection first - the operator: *"and cancel selection on esc"*  -
-            // and that Esc is spent on it: a pane, a popup, a running turn stay as they were.
+            // Esc drops a selection first, and that Esc is spent on it: a pane, a popup, a
+            // running turn stay as they were.
             Key::Esc if self.selection.is_some() => {
                 self.drop_selection();
                 return None;
@@ -177,7 +177,7 @@ impl App {
                 return None;
             }
             // alt-h folds the questions waiting on you away, and back - not Esc, which already
-            // means "stop" and "back to the bottom" (the operator: *"esc is ambigous here"*).
+            // means "stop" and "back to the bottom".
             Key::AltH => {
                 self.toggle_asks_folded();
                 return None;
@@ -337,7 +337,7 @@ impl App {
         // from what this session ran. The composer's keys run after, since Tab means nothing to the editor, and
         // every other key leaves a running cycle alone.
         if let Key::Tab = k {
-            // A chat layer's input asks its own completion first (`X6`): the roster it ranks and
+            // A chat layer's input asks its own completion first: the roster it ranks and
             // the verbs it knows are the layer's, and a slash verb is only one of its shapes.
             if self.chat_complete() {
                 return None;
@@ -495,14 +495,10 @@ impl App {
         }
     }
 
-    /// The marked row is the answer: the marker is what Enter takes, the contract the pickers keep. A permission's
-    /// row is an option id and goes as `Action::Answer`; a question's is an index into the model's choices and goes
-    /// as `Action::AnswerQuestion`. `None` when the row is not an answer.
-    ///
-    /// The words in the composer ride the answer where the marked rung has a use for them - the reason a refusal is
-    /// sent with, the glob an always-allow is written with - and are spent with it. A rung with no use for them
-    /// answers nothing while they are there: words somebody typed meant something, and an answer that dropped them
-    /// is an answer they did not give.
+    /// The marked row is the answer: a permission's row goes as `Action::Answer`, a question's as
+    /// `Action::AnswerQuestion`. Composer words ride a rung that uses them (refusal reason,
+    /// always-allow glob); a rung with no use for them answers nothing, so typed words are never
+    /// dropped.
     pub(crate) fn answer_marked(&mut self) -> Option<Action> {
         // A card in its first moments does not take the Enter: it may be the keystroke that sent
         // the line the operator was typing. See `DEC_ARM_MS`.

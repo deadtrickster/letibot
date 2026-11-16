@@ -1,7 +1,5 @@
-//! `/search TEXT`: a substring over the messages this channel has loaded, and a request to the
-//! room for the ones it has not - the ring is only the window, and the log behind it is the
-//! history. The hits are what `n` and `N` step through, and the needle is what the renderer picks
-//! them out with.
+//! `/search TEXT`: a substring over the messages this channel has loaded, and a request to the room
+//! for the rest. `n` and `N` step through the hits.
 
 use serde_json::json;
 

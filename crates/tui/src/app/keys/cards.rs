@@ -474,10 +474,9 @@ impl App {
         ControlFlow::Continue(())
     }
 
-    /// An open picker owns Up/Down, Enter and the digits while it is the card in the slot: one in
-    /// front hides it, and a digit typed there is that card's answer. The composer keeps its own
-    /// rule - a half-typed line's Enter means the line, which lands in `pick_mode`. The model card
-    /// is its own key handling: its line is a search field and not the composer.
+    /// An open picker owns Up/Down, Enter and the digits while it is the card in the slot. A
+    /// half-typed line's Enter means the line, handled in `pick_mode`. The model card handles its
+    /// own keys.
     pub(crate) fn key_pick(&mut self, k: &Key) -> ControlFlow<Option<Action>> {
         if !self.pick_card_up() {
             return ControlFlow::Continue(());

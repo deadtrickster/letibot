@@ -1,12 +1,6 @@
-//! The composer while `/rooms` is focused: `@` completion and the room's `/` verbs, the history
-//! and drafts of an input, the reply target, and what a submitted line becomes once it may carry
-//! a picture.
-//!
-//! Everything here is keyed by the input's `key` - `RoomsView::key` for a room, `View.input.key`
-//! for a plugin's chat pane - so a layer's input gets the same history, drafts and cycle without
-//! this module knowing what a channel is. The table that routes keys lives in `keys/` and the
-//! composer's dispatch in `composer.rs`, so every entry point here answers `false` for *not
-//! ours*: the dispatch calls it and the key falls through when it declines.
+//! The composer while `/rooms` is focused: `@` completion, the room's `/` verbs, history, drafts,
+//! the reply target and outgoing pictures. Everything is keyed by the input's `key`, so a plugin
+//! chat pane gets the same behaviour. Every entry point answers `false` when the key is not ours.
 
 #![allow(dead_code)] // The seam is P0's, its caller is the key table's, and its proof is `rooms_compose`.
 
@@ -31,7 +25,7 @@ pub(crate) const NO_CHANNEL: &str = "rooms";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Chip {
     pub text: String,
-    /// `None` until P4's upload answers with an id. A chip whose bytes are not a blob yet stays in
+    /// `None` until the upload answers with an id. A chip whose bytes are not a blob yet stays in
     /// the line and is named by no `say`, which is what an upload that has not happened looks like.
     pub blob: Option<String>,
     pub name: String,
@@ -184,11 +178,9 @@ impl App {
         }
     }
 
-    /// A submitted line as it goes out: the reply target as the `>N` prefix `rooms_say` threads,
-    /// each chip's `![name](blob:ID)` in the chip's place, and the blob ids the say carries.
-    ///
-    /// The line is remembered for Up as it went out rather than as it was typed: a recall is a
-    /// resend, and a resend that lost its references would post the words and not the picture.
+    /// A submitted line as it goes out: the reply `>N` prefix, each chip's `![name](blob:ID)`, and
+    /// the blob ids. Up recalls the line as sent, because a resend without its references loses the
+    /// picture.
     pub(crate) fn rooms_outgoing(&mut self, text: &str) -> (String, Vec<String>) {
         let mut out = match self.compose.reply {
             Some(seq) if !text.trim_start().starts_with('>') => format!(">{seq} {text}"),
@@ -214,7 +206,7 @@ impl App {
     }
 
     /// A chip in the line: the words the composer shows, the blob the send will name, and the
-    /// picture's name for the markdown reference. P4's `room_upload` is where the first two come
+    /// picture's name for the markdown reference. `room_upload` is where the first two come
     /// from; a caller that has no blob yet leaves it `None` and the line keeps the chip's words.
     pub(crate) fn rooms_chip(&mut self, chip: &str, blob: Option<&str>, name: &str) {
         if chip.is_empty() {
@@ -234,7 +226,7 @@ impl App {
         });
     }
 
-    /// A pasted or dropped picture. P4's `room_upload` answers the chip's words and uploads the
+    /// A pasted or dropped picture. `room_upload` answers the chip's words and uploads the
     /// parts; until that lands it answers nothing, so a paste here adds no chip and the line goes
     /// out unchanged.
     pub(crate) fn rooms_paste_picture(&mut self, png: Vec<u8>, name: &str) -> bool {
@@ -314,7 +306,7 @@ impl App {
         aliases
     }
 
-    /// The `/` verbs the room's composer offers: P3's own table, then every head verb it does not
+    /// The `/` verbs the room's composer offers: the room's own table, then every head verb it does not
     /// already name. One list, because the native completion and the chat feed a layer ranks must
     /// not drift into two sets of verbs.
     pub(crate) fn rooms_verbs(&self) -> Vec<(String, String)> {
