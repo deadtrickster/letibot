@@ -195,6 +195,26 @@ impl Harness {
         out.reverse();
         out
     }
+
+    /// Install the `models.limits` row, built at each read so a picker's `Settings` gets every
+    /// door's newest reading.
+    pub(super) fn install_limits_source(&self) {
+        let leticode = self.cfg.leticode.clone();
+        self.session_registry.set_live_rows_source(
+            &self.cfg.session_id,
+            std::sync::Arc::new(move || {
+                super::door_limits::limits_row(
+                    &letibot_provider::usage_poll::door_readings(),
+                    &super::door_limits::snapshot(),
+                    &|door| leticode.usage_warn(door),
+                    now_ms(),
+                    &local_offset_s,
+                )
+                .into_iter()
+                .collect()
+            }),
+        );
+    }
 }
 
 /// What the poll hands this session each round: the row is replaced on every reading, crossing or

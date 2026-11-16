@@ -1139,6 +1139,48 @@ fn a_put_row_replaces_its_key_and_keeps_the_rest() {
     assert!(!r.put_setting("s-gone", row("x", "y")));
 }
 
+/// Read-time rows are built on every read, replace a stored row of their key, and go with the
+/// session.
+#[test]
+fn live_rows_are_built_at_each_read() {
+    let r = reg();
+    r.create("s-1", "", SessionWiring::default()).unwrap();
+    let row = |k: &str, v: &str| crate::protocol::SettingRow {
+        key: k.into(),
+        value: v.into(),
+        source: String::new(),
+        editable: String::new(),
+        choices: Vec::new(),
+        tools: Vec::new(),
+    };
+    r.set_settings(
+        "s-1",
+        vec![
+            row("model", "glm/x"),
+            row(crate::protocol::MODEL_LIMITS_KEY, "old"),
+        ],
+    );
+    let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let k = n.clone();
+    r.set_live_rows_source(
+        "s-1",
+        Arc::new(move || {
+            let i = k.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            vec![row(crate::protocol::MODEL_LIMITS_KEY, &i.to_string())]
+        }),
+    );
+    let limits = |rows: Vec<crate::protocol::SettingRow>| -> Vec<String> {
+        rows.into_iter()
+            .filter(|x| x.key == crate::protocol::MODEL_LIMITS_KEY)
+            .map(|x| x.value)
+            .collect()
+    };
+    assert_eq!(limits(r.settings("s-1")), ["0"]);
+    assert_eq!(limits(r.settings("s-1")), ["1"]);
+    r.remove("s-1");
+    assert!(limits(r.settings("s-1")).is_empty());
+}
+
 /// The launcher's interrupt marks the stop for the turns and the children, and not for the
 /// background loops: those end only on the close, since the signal may never come.
 #[test]

@@ -1210,6 +1210,7 @@ impl Harness {
             tools: Vec::new(),
         });
         rows.extend(self.usage_row());
+        self.install_limits_source();
         // The list row's model follows the seat: a resume reseats before any turn.
         self.session_registry
             .set_model(&self.cfg.session_id, &self.cfg.prompt_model_name());
@@ -1914,6 +1915,7 @@ pub use fork::{ForkOutcome, fork_reply};
 mod deliveries;
 mod error;
 // A subagent's per-directory `AGENTS.md`, handed over the first time a tool touches it.
+mod door_limits;
 pub(crate) mod guidance;
 mod hub_io;
 mod job_window;

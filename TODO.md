@@ -193,6 +193,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R356 | A package session got a shadow when its daemon was not its own | Code work | built on `pkg-noshadow`; left: `Config::is_child` and `owner_kind` still read only `parent_seat`, so such a session is still offered skills and owned as a `Session` |
 | R357 | The two halves no door can see: rano's protocol, and a plugin binary left running | Code work | R344's residue: rano compares no protocol (a branch for `cc@rano`) - a running plugin's older `letibot-mcp` says no skew |
 | R358 | A credential belongs to its program, not to the session: the credential broker | Parked | design only, a feature - after the stability phase, beside automode (both need the gate judging subcommands); order: `gh` broker, egress proxy, known-value redaction |
+| R359 | The model picker hides which providers have headroom | Code work | built on `picker-limits`; left: no `balance $X` (no preset's usage endpoint reports a balance, deepseek has none), a refusal or limit is daemon-wide per door and forgotten at restart - a door no session has watched has no reading (no poll when the picker opens: a head's `Settings` comes from 13 places and tests, and a poll there would send real keys from test runs) |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | `trees/<key>` landed (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | firecode's package image: the wasm32 target, a cargo cache warmed from the workspace's locks, shfmt and shellcheck - the guest's memory said in the brief (the overlay half is done, 99166493d) |
 | R201 | Nothing letibot starts is ever torn down | Code work | G6 unjoined (`docker::seat_env` has no caller, so no socket or `DOCKER_HOST` at open) - G5 (memory) not built - compute reservations not built - G3's `--adopt` run is the operator's - `--restore --worktree` makes one tree. Lifecycle findings are R329, R343 |
@@ -3724,6 +3725,18 @@ A credential file exists for its own software to use. That is its only purpose. 
 - Installs: `a_postinstall_script_sees_no_credential_and_no_open_egress`.
 
 **Size.** L. **After:** the stability bar; the broker after B4 (R324), whose gate rules judge the subcommand.
+
+## R359 - The model picker hides which providers have headroom
+
+**Status:** built, 2026-11-16, on `picker-limits`. left: no `balance $X` - no preset's usage endpoint reports a balance, and deepseek declares none; a door's refusal or limit is held in the daemon's memory, per door, and is forgotten at restart; a door no session has watched since the daemon started has no reading. A poll when the picker opens was left out: the head's `Settings` request is sent from many places, including tests, and a poll there would send this box's real keys from a test run.
+
+The operator asked for usage limits in `/models`, so a model with headroom is picked before a limit is hit. Only the session's own door showed its plan use (`models.usage`). Lead 47: `glm` (metered) had no balance and failed with 1113 on the first call, while `glm-coding` (plan) was fine, and the picker said nothing about either.
+
+**Built.** A `models.limits` settings row (`MODEL_LIMITS_KEY`) with one `<door> <level> <words>` choice per door the daemon knows anything of. The words are, in order: `no balance (1113) - will refuse` (or `plan expired (1309)`, ... by GLM code; `no balance` for a money refusal with no code) after a `Trouble::Quota` refusal, `limited until HH:MM` while a named reset or a spent window is in force, else every window (`5h 81% · resets 00:07 · week 40%`, the shown window first with its reset). Times are the daemon's local time; a reading or refusal older than the poll period carries `(30m ago)`. `level` is thresholds reached (R232), 2 for limited or refused, and the head colours by it as the status row does. A door with nothing known has no choice.
+
+The row is built at read time: a session's harness installs a `LiveRowsSource` (`Registry::set_live_rows_source`), and `Registry::settings` and both pushes (`set_settings`, `put_setting`) replace a stored row of the same key with it. The picker's `/models` already sends `Settings`, so it reads the row fresh. Readings come from `usage_poll::door_readings`, a copy of each endpoint's newest reading kept out of the `POLLS` lock so it can be read inside a watcher's telling. Refusals and limits are noted per door in `harness/door_limits.rs` (`record_refusal`, `note_limited`) and cleared when a round on the door answers. No wire bump: a new row in the existing `Settings` frame, which older heads ignore.
+
+Tests. `crates/tui/src/app/tests/model_card.rs`: `the_picker_draws_each_doors_reading_and_a_limited_one`, `a_billing_refusal_shows_no_balance`, `a_provider_with_no_reading_shows_nothing`, `a_stale_reading_shows_its_age`. `crates/harnessd/src/harness/door_limits.rs`: the words for windows, age, limits, spent windows and refusals, and no row when nothing is known. `crates/sessionlog/src/registry/tests.rs`: `live_rows_are_built_at_each_read`. `crates/provider/src/usage_poll/tests.rs`: `a_door_reading_is_listed_and_readable_inside_a_tell`.
 
 ## R212 - An ACP client cannot hold a letibot session
 

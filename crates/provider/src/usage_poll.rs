@@ -146,11 +146,16 @@ pub fn label(w: &Window, now_ms: u64, offset_s: i64) -> String {
     let Some(at) = w.reset_ms else {
         return format!("{} {pct}%", w.name);
     };
+    format!("{} {pct}% · resets {}", w.name, clock(at, now_ms, offset_s))
+}
+
+/// `at` in the zone `offset_s` east of UTC, as [`label`] writes a reset.
+pub fn clock(at: u64, now_ms: u64, offset_s: i64) -> String {
     let local = (at / 1000) as i64 + offset_s;
     let s = local.rem_euclid(86_400);
     let clock = format!("{:02}:{:02}", s / 3600, s % 3600 / 60);
     let ahead = at.saturating_sub(now_ms);
-    let when = if ahead < 24 * 3_600_000 {
+    if ahead < 24 * 3_600_000 {
         clock
     } else if ahead < 7 * 24 * 3_600_000 {
         format!(
@@ -160,8 +165,7 @@ pub fn label(w: &Window, now_ms: u64, offset_s: i64) -> String {
     } else {
         let (_, m, d) = civil(local.div_euclid(86_400));
         format!("{} {d}", MONTHS[(m - 1) as usize])
-    };
-    format!("{} {pct}% · resets {when}", w.name)
+    }
 }
 
 // 1970-01-01 was a Thursday.
@@ -317,6 +321,13 @@ fn now_ms() -> u64 {
 
 static POLLS: Mutex<BTreeMap<String, Poll>> = Mutex::new(BTreeMap::new());
 
+/// The endpoint each door was last watched or polled on.
+static DOORS: Mutex<BTreeMap<String, String>> = Mutex::new(BTreeMap::new());
+
+/// The newest reading per endpoint, copied out of [`POLLS`] so a reader never takes that lock: a
+/// watcher is told under it, and a settings read can run inside the telling.
+static LATEST: Mutex<BTreeMap<String, (Vec<Window>, u64)>> = Mutex::new(BTreeMap::new());
+
 /// One request at a time per endpoint, so a caller arriving while one is out reads its answer.
 static GATES: Mutex<BTreeMap<String, Arc<Mutex<()>>>> = Mutex::new(BTreeMap::new());
 
@@ -338,6 +349,7 @@ pub fn watch(
         unwatch(who);
         return None;
     };
+    note_door(preset.name, &url);
     let mut g = polls();
     for (u, p) in g.iter_mut() {
         if *u != url {
@@ -367,6 +379,27 @@ pub fn reading(url: &str) -> Option<(Vec<Window>, u64)> {
         .get(url)
         .and_then(|p| p.reading.as_ref())
         .map(|r| (r.windows.clone(), r.at_ms))
+}
+
+fn note_door(door: &str, url: &str) {
+    DOORS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(door.to_string(), url.to_string());
+}
+
+/// Each door's newest reading and when it was taken, for every door watched or polled since the
+/// daemon started. Takes no lock a watcher is told under, so a [`Tell`] may call it.
+pub fn door_readings() -> Vec<(String, Vec<Window>, u64)> {
+    let doors = DOORS.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    let latest = LATEST.lock().unwrap_or_else(|e| e.into_inner());
+    doors
+        .into_iter()
+        .filter_map(|(door, url)| {
+            let (w, at) = latest.get(&url)?;
+            Some((door, w.clone(), *at))
+        })
+        .collect()
 }
 
 /// The latest reset among the spent windows of a reading of `url`: the poll's own when it is
@@ -401,6 +434,10 @@ fn read(url: &str, creds: &Credentials, fresh: Duration, spent: bool) -> Option<
         return Some(r);
     }
     let mut g = polls();
+    LATEST
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(url.to_string(), (r.windows.clone(), r.at_ms));
     let p = g.entry(url.to_string()).or_default();
     for watcher in p.watchers.values() {
         (watcher.tell)(&r.windows, r.at_ms);
