@@ -3655,6 +3655,10 @@ struct LeticodeConfigFile {
     #[serde(default)]
     #[allow(dead_code)]
     embeddings: Option<toml::Value>,
+    /// The `[wordfreq]` table, read with `[embeddings]` by harnessd: accepted for its reason.
+    #[serde(default)]
+    #[allow(dead_code)]
+    wordfreq: Option<toml::Value>,
     /// The `[bridge]` table, read by `letibot_bridge::settings` from this same file: the Claude
     /// Code MCP bridge's own key. Accepted and not interpreted for `[embeddings]`' reason - it
     /// starts no model and seats no tool - and because a refusal here would make the daemon reject
