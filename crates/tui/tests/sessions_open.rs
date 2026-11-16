@@ -14,6 +14,8 @@ const EMPTY: &str = "none listed yet";
 
 #[test]
 fn the_picker_says_it_is_building_and_never_swaps_one_list_for_another() {
+    // The head runs under the screen tool, out of reach of a spawn helper.
+    letibot_testenv::isolate();
     let Ok(mut h) = runner_harness() else {
         letibot_tokencore::apparatus::absent("a process host this user may use");
         return;

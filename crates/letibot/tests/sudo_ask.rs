@@ -64,10 +64,12 @@ unsafe extern "C" {
 }
 
 /// The harness runs in this process and its runs inherit the environment, so the binary gets its
-/// own runtime dir instead of the box's `/run/user/<uid>/letibot`.
+/// own runtime dir instead of the box's `/run/user/<uid>/letibot`, its own XDG config and data
+/// dirs instead of the operator's providers.toml and store, and none of the session's doors.
 fn private_runtime_dir() {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {
+        letibot_testenv::isolate();
         let run = letibot_sessionlog::testing::scratch("letibot-sudo-ask-run");
         std::fs::create_dir_all(&run).expect("the runtime dir");
         // SAFETY: both harness tests wait on this Once before they build a config, and the

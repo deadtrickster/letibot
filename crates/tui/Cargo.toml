@@ -62,6 +62,7 @@ letibot-builtins.workspace = true
 letibot-plugins-rano.workspace = true
 
 [dev-dependencies]
+letibot-testenv.workspace = true
 # **The real tool runtime, for the one test that has to drive one.** A change detected
 # after a command is produced by `bash` and by nothing else, so a test that hand-built the
 # excerpt would be asserting about a fixture rather than about the feature: it is the tool

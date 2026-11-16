@@ -17,6 +17,8 @@ members = [
     "crates/activation",
     # Where the config lives: one resolver, no dependencies, below every reader.
     "crates/paths",
+    # Tests kept off the box: the env guard and the door-free spawn every test file uses.
+    "crates/testenv",
     # The event table's type and its non-blocking channel (and, behind `store`, the writer
     # thread and the `letibot stats` reader) — docs/metrics.md, TODO R81.
     "crates/metrics",
@@ -199,3 +201,4 @@ letibot-claude = { path = "crates/claude" }
 letibot-bridge = { path = "crates/bridge" }
 letibot-activation = { path = "crates/activation" }
 letibot-paths = { path = "crates/paths" }
+letibot-testenv = { path = "crates/testenv" }

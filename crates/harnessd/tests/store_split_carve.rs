@@ -5,7 +5,6 @@
 //! Every path is under `$TMPDIR`: the carve deletes rows, so it only ever sees a test's store.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use letibot_harnessd::config::{Config, StoreAt};
 use letibot_tokencore::ledger::TokenLedger;
@@ -131,7 +130,7 @@ fn carved_rows(fixture: &Fixture) -> Vec<String> {
 /// `harnessd --store DATA --list-sessions`, as the launcher runs it: the real binary, so the answer
 /// a person gets is what this asserts.
 fn listing(fixture: &Fixture) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_harnessd"))
+    let out = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
         .arg("--store")
         .arg(&fixture.data)
         .arg("--workspace")

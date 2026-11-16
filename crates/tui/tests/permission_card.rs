@@ -40,7 +40,7 @@ impl Head {
     fn start(socket: &Path, home: &Path) -> Head {
         let pty = letibot_tools::exec::pty::Pty::open().expect("a pty");
         set_size(pty.slave_fd(), SIZE);
-        let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_letibot-tui"));
+        let mut cmd = letibot_testenv::command(env!("CARGO_BIN_EXE_letibot-tui"));
         cmd.arg("--socket")
             .arg(socket)
             .env("HOME", home)

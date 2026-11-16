@@ -3,7 +3,6 @@
 //! a directory still holding a single `sessions.db` is refused with the migration's name.
 
 use std::path::PathBuf;
-use std::process::Command;
 
 use letibot_harnessd::config::{Config, ProviderConfig, Seat};
 use letibot_harnessd::sessions::{Sessions, StoreSessions};
@@ -123,7 +122,7 @@ fn has_table(path: &std::path::Path, table: &str) -> bool {
 /// `harnessd --store DIR --list-sessions`, as the launcher runs it: the real binary, so the
 /// answer a person gets is what this asserts.
 fn listing(fixture: &Fixture) -> std::process::Output {
-    Command::new(env!("CARGO_BIN_EXE_harnessd"))
+    letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
         .arg("--store")
         .arg(&fixture.data)
         .arg("--workspace")
@@ -257,7 +256,7 @@ fn the_legacy_file_inside_a_split_directory_is_refused_by_name() {
     StoreSessions::open(&cfg).expect("the set is created");
     assert!(fixture.data.join(SHARED_FILE).is_file());
     Store::open(&fixture.data.join("sessions.db")).expect("an old store beside it");
-    let out = Command::new(env!("CARGO_BIN_EXE_harnessd"))
+    let out = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
         .arg("--store")
         .arg(fixture.data.join("sessions.db"))
         .arg("--workspace")

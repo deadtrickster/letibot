@@ -6,6 +6,8 @@ use letibot_tools::testing::runner_harness;
 
 #[test]
 fn a_head_in_a_screen_shows_its_status_line() {
+    // The head runs under the screen tool, out of reach of a spawn helper.
+    letibot_testenv::isolate();
     let Ok(mut h) = runner_harness() else {
         letibot_tokencore::apparatus::absent("a process host this user may use");
         return;

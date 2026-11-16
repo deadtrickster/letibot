@@ -1458,6 +1458,7 @@ dependencies = [
  "letibot-paths",
  "letibot-room",
  "letibot-sessionlog",
+ "letibot-testenv",
  "letibot-tokencore",
  "letibot-tools",
  "letibot-transcript",
@@ -1476,6 +1477,7 @@ dependencies = [
  "letibot-bridge",
  "letibot-harnessd",
  "letibot-sessionlog",
+ "letibot-testenv",
  "letibot-tools",
  "letibot-transcript",
  "serde",
@@ -1645,6 +1647,7 @@ dependencies = [
  "letibot-provider",
  "letibot-room",
  "letibot-sessionlog",
+ "letibot-testenv",
  "letibot-tokencore",
  "letibot-tools",
  "letibot-transcript",
@@ -1785,6 +1788,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "letibot-testenv"
+version = "0.6.0"
+
+[[package]]
 name = "letibot-tokencore"
 version = "0.6.0"
 dependencies = [
@@ -1847,6 +1854,7 @@ dependencies = [
  "letibot-plugins",
  "letibot-plugins-rano",
  "letibot-sessionlog",
+ "letibot-testenv",
  "letibot-tokencore",
  "letibot-tools",
  "letibot-transcript",

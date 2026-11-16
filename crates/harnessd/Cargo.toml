@@ -110,6 +110,7 @@ name = "reprefill_feasibility"
 required-features = ["local"]
 
 [dev-dependencies]
+letibot-testenv.workspace = true
 letibot-config-ref.workspace = true
 letibot-tools = { workspace = true, features = ["testing"] }
 # The fixture tier: a caller's test says which texts mean the same thing, with no model.

@@ -35,7 +35,7 @@ fn home() -> std::path::PathBuf {
 /// The binary, in the temp home, with no session and no socket: a role that would attach must not
 /// find one.
 fn cmd(args: &[&str]) -> std::process::Command {
-    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_letibot-multi"));
+    let mut cmd = letibot_testenv::command(env!("CARGO_BIN_EXE_letibot-multi"));
     cmd.args(args)
         .env("HOME", home())
         .env("XDG_CONFIG_HOME", home().join(".config"))
@@ -294,7 +294,7 @@ fn a_store_query_writes_nothing_into_the_config_dir() {
         std::fs::create_dir_all(d).expect("a temp dir");
     }
     let store = store_dir.join("sessions.db").to_string_lossy().into_owned();
-    let out = std::process::Command::new(env!("CARGO_BIN_EXE_letibot-multi"))
+    let out = letibot_testenv::command(env!("CARGO_BIN_EXE_letibot-multi"))
         .args(["daemon", "--store", &store, "--delete", "s-nope"])
         .env("HOME", &home)
         .env("XDG_CONFIG_HOME", &config)
@@ -408,7 +408,7 @@ fn each_role_is_reachable_through_a_symlink_of_its_own_name() {
         let link = dir.join(name);
         let _ = std::fs::remove_file(&link);
         std::os::unix::fs::symlink(exe, &link).expect("a symlink");
-        let out = std::process::Command::new(&link)
+        let out = letibot_testenv::command(&link)
             .args(&args)
             .env("HOME", home())
             .env("XDG_CONFIG_HOME", home().join(".config"))

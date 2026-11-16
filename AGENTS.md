@@ -161,11 +161,12 @@ sh scripts/install-gate-build.sh
 - One mechanism per job (invariant I36). A change that adds a second mechanism for a job deletes
   the old one in the same branch, or adds an equality test that holds the two together (the fence
   against `secret_hit` is the model). Review asks "what else does this job" first.
-- Tests do not read live box state. Spawn letibot binaries through the shared env guard and spawn
-  helper, which clear `LETIBOT_*`, HOME and XDG unless the test opts in. A lint refuses a `tests/`
-  file that spawns a letibot binary without the helper (both are TODO R347, not built yet; until
-  then clear the env by hand). A test that needs the box declares it as
-  apparatus. A missing apparatus is Blocked, never a pass, never an early return.
+- Tests do not read live box state. `letibot-testenv` (a dev-dependency) holds the rule:
+  `command` spawns without the session's `LETIBOT_*` doors (apparatus paths kept), `isolate` takes
+  them off the whole test process and moves its XDG dirs to a scratch, and `EnvGuard` is the one
+  lock a test holds to change the environment. A lint refuses a `tests/` file that names a letibot
+  binary without it. A test that needs the box declares it as apparatus. A missing apparatus is
+  Blocked, never a pass, never an early return.
 - An accepted flag or field applies or refuses. "Warn and continue" is not an outcome. A timeout
   says "may have run", never "did not". A fan-out checks each child's actual model, mode and exit
   against what it asked for before it uses the result.

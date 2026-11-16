@@ -111,7 +111,7 @@ impl Fixture {
     /// The verb, run the way a person's shell runs it: a clean environment that names only this
     /// fixture, so nothing here can reach the operator's own store, cache or runtime directory.
     fn run(&self, args: &[&str]) -> (bool, String, String) {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_letibot-multi"))
+        let out = letibot_testenv::command(env!("CARGO_BIN_EXE_letibot-multi"))
             .args(args)
             .current_dir(&self.root)
             .env_clear()
@@ -346,7 +346,7 @@ fn adopting_worktrees_nothing_recorded_plans_them_and_removes_nothing() {
     let store = f.root.join("data.db");
     drop(Store::open(&store).expect("a store"));
     let run = |args: &[&str]| -> (bool, String, String) {
-        let out = std::process::Command::new(env!("CARGO_BIN_EXE_letibot-multi"))
+        let out = letibot_testenv::command(env!("CARGO_BIN_EXE_letibot-multi"))
             .args(args)
             .current_dir(&f.root)
             .env_clear()

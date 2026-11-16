@@ -68,7 +68,7 @@ fn run(
         .join("../../scripts/letibot")
         .canonicalize()
         .expect("the launcher script is in this repository");
-    let out = std::process::Command::new("bash")
+    let out = letibot_testenv::command("bash")
         .arg(&script)
         .args(args)
         .current_dir(worktree)

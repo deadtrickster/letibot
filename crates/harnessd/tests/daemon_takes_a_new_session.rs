@@ -85,7 +85,7 @@ impl Drop for Daemon {
 fn start(home: &Path) -> Daemon {
     let socket = home.join("d.sock");
     let _ = std::fs::remove_file(&socket);
-    let child = std::process::Command::new(env!("CARGO_BIN_EXE_harnessd"))
+    let child = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
         .args([
             "--provider",
             "deepseek",

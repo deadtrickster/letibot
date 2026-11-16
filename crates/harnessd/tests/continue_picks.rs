@@ -3,7 +3,6 @@
 //! spawns its reviewers as sessions - subagents of the session that enqueued the entry.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 use letibot_tokencore::ledger::LedgerRow;
 use letibot_tokencore::store::{SessionRecord, StablePrefixRecord, Store};
@@ -144,7 +143,7 @@ fn runtime_beside(store: &Path) -> PathBuf {
 
 /// The store query the launcher runs, as the launcher runs it: exit code, stdout, stderr.
 fn latest(store: &Path) -> (i32, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_harnessd"))
+    let out = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
         .arg("--store")
         .arg(store)
         .arg("--latest-session")
@@ -164,7 +163,7 @@ fn latest(store: &Path) -> (i32, String, String) {
 
 /// `letibot --sessions`: the listing the person reads, which the resolution must agree with.
 fn listing(store: &Path) -> String {
-    let out = Command::new(env!("CARGO_BIN_EXE_harnessd"))
+    let out = letibot_testenv::command(env!("CARGO_BIN_EXE_harnessd"))
         .arg("--store")
         .arg(store)
         .arg("--list-sessions")
