@@ -1673,8 +1673,8 @@ pub fn list() -> Value {
         tool(
             "leticode_answer",
             "Answer an open ask. A PERMISSION ask takes one of the option ids it offered, sent \
-              as the protocol's Answer frame, so the decision lands in the corpus attributed to \
-              this bridge exactly as the operator's own. A QUESTION ask (the model's own \
+              as the protocol's Answer frame, and only on a session this bridge started: the \
+              decision lands in the corpus as this agent's, never as the operator's. A QUESTION ask (the model's own \
               ask_user_question) takes one of its `choices` by exact text or 1-based number, \
               `free:<words>` for a typed reply, or `abstain`; `note` qualifies a chosen option.",
             json!({

@@ -978,6 +978,13 @@ impl Inner {
         self.index.get(id).map(|&i| &self.entries[i].1)
     }
 
+    /// A child is in its parent's tree, so it inherits whether a package started that tree.
+    fn started_by_a_package(&self, parent: Option<&str>) -> bool {
+        parent
+            .and_then(|p| self.entry(p))
+            .is_some_and(|e| e.hub.started_by_a_package())
+    }
+
     fn entry_mut(&mut self, id: &str) -> Option<&mut Entry> {
         match self.index.get(id) {
             Some(&i) => Some(&mut self.entries[i].1),
@@ -1179,6 +1186,7 @@ impl Registry {
         }
         let hub = Hub::with_bounds(id.clone(), g.log_bounds, g.view_bounds);
         hub.set_bell(self.bell.clone());
+        hub.set_started_by_a_package(g.started_by_a_package(parent.as_deref()));
         if g.default_id.is_empty() {
             g.default_id = id.clone();
         }
@@ -1234,6 +1242,7 @@ impl Registry {
         if g.has(&id) {
             return Err(CreateError::Exists(id));
         }
+        hub.set_started_by_a_package(g.started_by_a_package(parent.as_deref()));
         if g.default_id.is_empty() {
             g.default_id = id.clone();
         }
@@ -1696,6 +1705,8 @@ impl Registry {
             g.roster_changes += 1;
             if let Some(e) = g.entry_mut(session_id) {
                 e.origin = origin;
+                e.hub
+                    .set_started_by_a_package(origin == SessionOrigin::Package);
             }
         }
         if let Some(src) = self.source() {

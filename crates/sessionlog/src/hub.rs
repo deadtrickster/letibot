@@ -704,6 +704,9 @@ pub struct Hub {
     /// How the daemon above this hub says what the HARNESS holds - see [`FootprintSource`].
     /// Registered once, by the session's own harness at open.
     footprint_source: Mutex<Option<FootprintSource>>,
+    /// A package started this session's tree, so a bridge seat may answer its permission cards.
+    /// Set by the registry from the session's origin; false until somebody says so.
+    started_by_a_package: std::sync::atomic::AtomicBool,
 }
 
 impl Hub {
@@ -743,6 +746,7 @@ impl Hub {
                 tap: Default::default(),
             }),
             cv: Condvar::new(),
+            started_by_a_package: std::sync::atomic::AtomicBool::new(false),
             owner: std::sync::atomic::AtomicU8::new(0),
             promote: Arc::new(Mutex::new(None)),
             activity: Mutex::new(crate::activity::Activity::Quiet),
@@ -1712,6 +1716,18 @@ impl Hub {
         self.lock().closed
     }
 
+    /// Whether a package started this session's tree - see [`Hub::submit`]'s permission rule.
+    pub fn started_by_a_package(&self) -> bool {
+        self.started_by_a_package
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Set from the session's origin by the registry, and inherited by a child from its parent.
+    pub fn set_started_by_a_package(&self, yes: bool) {
+        self.started_by_a_package
+            .store(yes, std::sync::atomic::Ordering::SeqCst);
+    }
+
     /// Validate and enqueue a mutating command. A prompt on a stale `expected_seq` is accepted
     /// with a note, because a second head's prompt must not be lost to a race.
     pub fn submit(
@@ -1781,6 +1797,19 @@ impl Hub {
                     return ServerFrame::Rejected {
                         client_request_id,
                         reason: REJECT_READ_ONLY.into(),
+                        expected_seq,
+                        actual_seq: actual,
+                    };
+                }
+                // A program's answer to a permission is consent only on a tree a package started:
+                // the operator's own sessions are decided by the operator.
+                if matches!(reply, Reply::Permission { .. })
+                    && crate::is_agent_identity(&identity)
+                    && !self.started_by_a_package()
+                {
+                    return ServerFrame::Rejected {
+                        client_request_id,
+                        reason: crate::protocol::REJECT_NOT_A_PACKAGE.into(),
                         expected_seq,
                         actual_seq: actual,
                     };

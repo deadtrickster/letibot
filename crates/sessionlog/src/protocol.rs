@@ -1400,6 +1400,10 @@ pub const NOTE_STOPPING: &str = "stopping";
 pub const NOTE_SESSION_CLOSED: &str = "session closed";
 pub const REJECT_UNKNOWN_DECISION: &str = "no such open decision";
 pub const REJECT_READ_ONLY: &str = "this head declared can_decide: false";
+/// A bridge seat answered a permission card of a session no package started. A seat may answer
+/// cards only for the sessions it started; the operator's own sessions are theirs to decide.
+pub const REJECT_NOT_A_PACKAGE: &str =
+    "a bridge seat answers permission cards only for sessions it started";
 /// A `Switch` or an `Attach` named a session this daemon does not hold. Refused by name rather
 /// than answered with the default session: a typo that seats you in somebody else's conversation
 /// looks exactly like a working attach to an empty one, and you find out by prompting into it.

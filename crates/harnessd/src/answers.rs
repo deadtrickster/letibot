@@ -341,7 +341,12 @@ impl Answers {
                 close(
                     WireOutcome::Cancelled,
                     Decider {
-                        kind: "human".into(),
+                        // A bridge seat's answer is an agent's, as a permission's is in `settle`.
+                        kind: if letibot_sessionlog::is_agent_identity(&by) {
+                            "agent".into()
+                        } else {
+                            "human".into()
+                        },
                         identity: by.clone(),
                     },
                     basis,
@@ -935,26 +940,40 @@ fn settle(
         // writes one, and `Answers::take_pattern` is where it is picked up.
         Reply::Permission {
             option_id, note, ..
-        } => AdjudicationDecision {
-            request_id: req.id.clone(),
-            outcome: DecisionOutcome::Selected {
-                option_id: option_id.clone(),
-            },
-            by: format!("human:{by}"),
-            // The operator's own words reach the model: `deny_and_tell` promises to tell the model
-            // why, so the basis carries the note and not only which button was pressed.
-            basis: match note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
-                Some(why) => format!("{by} chose `{option_id}` at the head: \"{why}\""),
-                // A `deny_and_tell` with nothing typed is a denial with no reason given, and
-                // says so rather than implying one was.
-                None if option_id == "deny_and_tell" => format!(
-                    "{by} chose `{option_id}` at the head, without saying why — the \
-                     reason is typed after the option id, as `deny_and_tell <why>`"
-                ),
-                None => format!("{by} chose `{option_id}` at the head"),
-            },
-            latency_ms,
-        },
+        } => {
+            // A program's answer is filed as an agent's: `human:` is read downstream as a person
+            // having seen the card, and a bridge seat is not one.
+            let agent = letibot_sessionlog::is_agent_identity(by);
+            let who = if agent {
+                format!("the agent seat `{by}` (not the operator)")
+            } else {
+                by.to_string()
+            };
+            AdjudicationDecision {
+                request_id: req.id.clone(),
+                outcome: DecisionOutcome::Selected {
+                    option_id: option_id.clone(),
+                },
+                by: if agent {
+                    format!("agent:{}", by.trim_start_matches("agent:"))
+                } else {
+                    format!("human:{by}")
+                },
+                // The operator's own words reach the model: `deny_and_tell` promises to tell the model
+                // why, so the basis carries the note and not only which button was pressed.
+                basis: match note.as_deref().map(str::trim).filter(|n| !n.is_empty()) {
+                    Some(why) => format!("{who} chose `{option_id}` at the head: \"{why}\""),
+                    // A `deny_and_tell` with nothing typed is a denial with no reason given, and
+                    // says so rather than implying one was.
+                    None if option_id == "deny_and_tell" => format!(
+                        "{who} chose `{option_id}` at the head, without saying why — the \
+                         reason is typed after the option id, as `deny_and_tell <why>`"
+                    ),
+                    None => format!("{who} chose `{option_id}` at the head"),
+                },
+                latency_ms,
+            }
+        }
         // Not the person's decision: nobody chose an option. `by` says who decided, and here
         // nothing did.
         Reply::Question(_) => AdjudicationDecision {
