@@ -190,6 +190,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R352 | A subagent's role is a profile, in a file | Code work | `leticode status` and the head's subagent pane read the role off the `Subagent` event, not the session's row (the bridge head drops it, `role: _`) - a profile's `access:` is not re-read by `/config` |
 | R354 | A skill handed to a session names no folder, so its scripts are not found | Code work | built on `skill-shadow`; lead #42's journal and "queued: NAME" row built on `b7-followup` (R327); left: the shadow's offers carry no body, so they reach the folder through the `skill` load |
 | R355 | The shadow session is invisible to the operator | Code work | built on `skill-shadow`; left: the brief is republished at each tend, so a breaker that trips between turns shows at the next one - a shadow whose harness is not open yet is drawn from its stored title as `not running` - the unboxed (short-screen) composer has no marker |
+| R356 | A credential belongs to its program, not to the session: the credential broker | Parked | design only, a feature - after the stability phase, beside automode (both need the gate judging subcommands); order: `gh` broker, egress proxy, known-value redaction |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | `trees/<key>` landed (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | firecode's package image: the wasm32 target, a cargo cache warmed from the workspace's locks, shfmt and shellcheck - the guest's memory said in the brief (the overlay half is done, 99166493d) |
 | R201 | Nothing letibot starts is ever torn down | Code work | G6 unjoined (`docker::seat_env` has no caller, so no socket or `DOCKER_HOST` at open) - G5 (memory) not built - compute reservations not built - G3's `--adopt` run is the operator's - `--restore --worktree` makes one tree. Lifecycle findings are R329, R343 |
@@ -3476,6 +3477,30 @@ Seen live in rano (`s-1794057745451974498`): the record held `s-…-shadow`, ori
 **Built.** The watched session's harness publishes a `ShadowBrief` (`crates/sessionlog/src/registry.rs`) on its `SessionBrief`: the shadow's id, each job with its mode (`turn_end on`, `during paused`), the judge's model, the breaker (`tripped` while a job's breaker has it paused or the reads' answering tripped, else `armed`) and the newest verdict (`turn_end: owed`, from `JobRunner::said`). `Harness::publish_shadow` sends it at every `tend_shadow`, after `shadow_notices` and after `/shadow arm`; `Registry::set_shadow` counts a roster change only when it moved. In the head, a shadow row is named `shadow of <watched session>` (`App::session_label`, so the header says it too) and its facts are the brief's line, or the stored title's job states and `not running` when its harness has not published. The sessions layer opens `system` and `system/shadows` when the session `here` has a shadow, and the feed's cap never drops the shadow of the session here. The watched session's composer edge draws `shadow: armed` (info) or `shadow: tripped` (warning) while a shadow runs. Enter on the row switches to it, and a shadow seat refuses every turn at `submit_said` (`SHADOW_READ_ONLY`), so it opens read-only.
 
 Tests. `crates/tui/src/app/tests/tree.rs`: `a_shadow_is_drawn_under_the_projects_shadows_group` (on the list with no fold, at depth 3, named `shadow of the habr article`, `not running`), `a_running_shadow_lists_its_facts_and_the_watched_sessions_bar_says_so` (the facts line and `shadow: tripped` on the edge), `a_session_with_no_shadow_draws_no_shadow_marker`. `crates/harnessd/src/harness/tests/shadow_turn_end.rs`: `the_watched_sessions_brief_carries_its_shadow` (jobs, model, `armed`, then `turn_end: owed` after a verdict), `a_shadow_seat_refuses_a_prompt`.
+
+## R356 - A credential belongs to its program, not to the session: the credential broker
+
+A credential file exists for its own software to use. That is its only purpose. So that software uses it, and nothing else in a session can read it, print it or send it.
+
+**Status:** open, filed 2026-11-16 by the operator's decision on B5 (R325). Design only, a feature after the stability phase. It sits beside automode in `docs/PLAN.md`, because both rely on the gate judging a command's subcommand and not only its program.
+
+**Why.** B5 masks the stores of the operator's own CLIs (`gh`, `hub`, `.pgpass`, `.my.cnf`, `.s3cfg`, `.vault-token`, rclone, sops, the Claude and Codex logins) in a child's view only (`Seat::TightOnly`), so a top-level seat still runs those CLIs. That top-level seat can also `cat` the file, and a test it wrote or an npm postinstall can send it anywhere. `gh` must use its token, but an agent, its test or a package script must never read it, print it into the transcript or send it.
+
+**Design, layered.**
+- Brokered CLIs. Inside the sandbox `gh` (then `vault`, `rclone`, ...) is a shim that forwards argv, cwd and stdio to a host-side broker, which runs the real binary with the real credential. The gate judges the subcommand first. Reads go through. Commands that exist to reveal the secret (`gh auth token`, `gh auth status --show-token`, `vault read` of a secret value, `rclone config show`) are refused. Destructive ones (`gh repo delete`) always ask. The credential file never exists inside the sandbox, in any seat. Prior art: aws-vault exec, 1Password `op run`, git credential helpers.
+- An egress proxy that injects credentials for HTTP tools. The sandbox holds a dummy value. The proxy swaps in the real one only on requests to that credential's allowed hosts. A dummy sent anywhere else is worth nothing.
+- Known-value redaction. letibot knows the secret values it loaded, so every tool result and every stored row is scrubbed of exact matches, and of their base64 and URL-encoded forms, before the model or the store sees them.
+- Package installs. `npm install` and friends run with no secrets and limited egress, and an install step is judged as a package change.
+
+**Order.** The `gh` broker first, then the proxy, then redaction. Once the broker holds a store, that store moves from `TightOnly` to `Both` in `crates/tools/src/secrets.rs`.
+
+**Proving tests, one per layer.**
+- Broker: `an_agent_cannot_read_gh_token_but_gh_pr_view_works`, `gh_auth_token_is_refused_by_the_gate`, `gh_repo_delete_always_asks`.
+- Proxy: `a_script_sending_the_dummy_elsewhere_sends_nothing_of_value`, `the_proxy_injects_the_credential_only_for_its_hosts`.
+- Redaction: `a_secret_echoed_by_a_test_never_reaches_the_transcript`, `a_base64_encoded_secret_is_scrubbed_from_a_stored_row`.
+- Installs: `a_postinstall_script_sees_no_credential_and_no_open_egress`.
+
+**Size.** L. **After:** the stability bar; the broker after B4 (R324), whose gate rules judge the subcommand.
 
 ## R212 - An ACP client cannot hold a letibot session
 
