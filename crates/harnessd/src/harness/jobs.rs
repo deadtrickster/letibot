@@ -181,9 +181,6 @@ impl Harness {
         out
     }
 
-    /// A background job's retained output, for the operator and not the model: the same read
-    /// `job_output` does, reached by a slash reply rather than a tool call, so it needs no new
-    /// protocol frame and no version bump.
     /// End a running job for the operator. Its completion reaches the model like any other kill,
     /// with the operator named as who did it.
     pub fn kill_job_for_operator(&self, job: &str) -> crate::slash::SlashReply {
@@ -366,11 +363,9 @@ impl Harness {
         out
     }
 
-    /// The jobs still running in this session's VM as it is closed, which die with it: a VM child's backend closes right
-    /// after its first turn, so a job it backgrounded had its watcher stopped first and its row read `running` for ever.
-    /// Called just before `close_backend`, writing each row as lost and delivered so no restart reminds anyone -
-    /// and telling the watchers first, because the settle that races this close is the one that would
-    /// otherwise write its client's exit over the kill (R173).
+    /// The jobs still running in this session's VM as it closes, which die with it. Called just
+    /// before `close_backend`: each row is written lost and delivered so no restart reminds anyone,
+    /// and watchers are told first so a racing settle cannot write its client's exit over the kill.
     pub fn jobs_lost_with_the_vm(&self) -> Vec<letibot_tools::exec::JobView> {
         let Some(host) = self.runtime.backend.processes() else {
             return Vec::new();

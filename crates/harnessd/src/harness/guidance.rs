@@ -1,15 +1,8 @@
-//! A directory's own `AGENTS.md`, handed to a SUBAGENT the first time a tool touches it.
+//! A directory's own `AGENTS.md`, handed to a subagent the first time a tool touches it.
 //!
-//! The operator's ruling: the tree's instructions are gold for subagents. A root session already
-//! reads the workspace's `AGENTS.md` into its standing notes at open, and its prompt is frozen - but
-//! a child is opened to do one thing in one directory, and a file that arrived with message zero
-//! would be a file about a directory it may never enter.
-//!
-//! So: at the round boundary after a call named a path, every directory between the workspace root
-//! and that path that carries an `AGENTS.md` and has not been handed over yet is injected, once, as
-//! a `[guidance]` notice. Nothing is appended between a tool call and its result - the sentence goes
-//! through the mid-turn queue, which the loop drains at its own step boundary - and nothing about a
-//! MAIN session changes: `on` is false for a root.
+//! A root session reads the workspace's `AGENTS.md` at open, but a child works in one directory,
+//! so each `AGENTS.md` between the root and a touched path is injected once as a `[guidance]`
+//! notice at the round boundary, through the mid-turn queue. `on` is false for a root.
 
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -40,11 +33,8 @@ impl Guidance {
     }
 
     /// The files this round's calls touched and nobody has handed over yet, as (path as the model
-    /// spells it, the file's text). Marks them seen, so a second call in the same directory says
-    /// nothing: an instruction file read twice is prompt bytes for nothing.
-    ///
-    /// `root` is the workspace as the BACKEND spells it, because a placed session's tree is on that
-    /// host and the daemon's own path is a tree the session cannot see.
+    /// spells it, text). Marks them seen, so a second call in the same directory says nothing.
+    /// `root` is the workspace as the backend spells it: a placed session's tree is on that host.
     pub fn take(
         &mut self,
         backend: &dyn ExecBackend,
@@ -178,7 +168,7 @@ mod tests {
         );
     }
 
-    /// A MAIN session reads none of this: the operator's ruling is *gold for subagents*.
+    /// A MAIN session reads none of this: the instructions are for subagents.
     #[test]
     fn a_root_session_is_told_nothing() {
         let (_d, root) = tree();

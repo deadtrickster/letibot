@@ -1,4 +1,4 @@
-//! A `limit_decide` layer decides a rate limit in place of the fixed rules (R233). The layer's
+//! A `limit_decide` layer decides a rate limit in place of the fixed rules. The layer's
 //! opaque state is kept per episode, keyed by the limited model, in a file beside the session's
 //! logs so a restart does not lose it, and destroyed on the first request that succeeds.
 
@@ -329,7 +329,7 @@ impl Harness {
     }
 
     /// `new_session`: this conversation is forked into a new session, as `/fork` does, and the
-    /// turn continues there on the target. Operator's ruling (R233): fork, never a cold brief.
+    /// turn continues there on the target. Fork, never a cold brief.
     /// This session ends its turn with a row naming the fork.
     fn limit_new_session(
         &mut self,

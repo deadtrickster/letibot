@@ -163,10 +163,9 @@ pub(crate) fn tool_names(tools_json: &[String]) -> std::collections::BTreeSet<St
     tool_schemas(tools_json).into_keys().collect()
 }
 
-/// The capabilities a skill's `requires`/`unless` is checked against: this session's tool names,
-/// minus the doors that have nothing behind them. `flowy` is seated on every root session as a
-/// door so a `/flowy login` has somewhere to land, and only a session the daemon gave a fabric
-/// seat to can use it - a skill that says it needs `flowy` means the seat, not the door.
+/// The capabilities a skill's `requires`/`unless` is checked against: this session's tool names
+/// minus doors with nothing behind them. `flowy` is a door on every root session, but a skill
+/// needing `flowy` means the fabric seat, which only some sessions are given.
 pub(crate) fn skill_seat(
     cfg: &Config,
     tools_json: &[String],
@@ -492,10 +491,9 @@ impl Harness {
                  session makes is the words alone: {why}"
             ));
         }
-        // The store opens before anything else, because it may change the configuration: a session
-        // already in it carries its own workspace root, and its tools must be confined to THAT tree
-        // rather than to the directory this daemon happened to start in. One handle onto both files
-        // of a split set, so no call below has to say which one it wants.
+        // The store opens first because it may change the configuration: a stored session carries its
+        // own workspace root, and its tools must be confined to that tree, not the daemon's cwd. One
+        // handle covers both files of a split set.
         let at = cfg.store_at();
         let store = match &at {
             None => None,
@@ -764,10 +762,8 @@ impl Harness {
         hub.warn(UNCONFINED_SESSION, said);
     }
 
-    /// Whether this daemon must withhold the shell seat, saying so once when it does.
-    ///
-    /// No cgroup means no command with a lifetime, and refusing the whole session over a tool it
-    /// has not reached yet is what R192 reports: it opens without `bash` and says why.
+    /// Whether this daemon must withhold the shell seat, saying so once when it does. No cgroup
+    /// means no command with a lifetime, so the session opens without `bash` rather than refused.
     fn withhold_shell_without_scope(cfg: &mut Config, hub: &Arc<Hub>) -> bool {
         // The tree's own measurement - a real `mkdir` in this daemon's cgroup - and its root is
         // taken back before the answer is read, so opening a session leaves no directory behind.
@@ -813,8 +809,8 @@ impl Harness {
     }
 
     /// The seat a session's FILE TOOLS are held to where no substrate measured a view for its
-    /// commands: a `leticode` seat asks for no boundary and seats no shell, so before R121 its file
-    /// tools had the whole host and no table could reach them. The perimeter is the view instead.
+    /// commands: a `leticode` seat asks for no boundary and seats no shell, so its file tools
+    /// would otherwise reach the whole host. The perimeter is the view instead.
     fn fence_seat(cfg: &Config) -> Result<letibot_tools::exec::seat::SeatView, HarnessError> {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
@@ -882,10 +878,9 @@ impl Harness {
         Ok(letibot_tools::exec::boundary::apply(view, &r))
     }
 
-    /// The default local seat for a `leticode` session: commands inside the seat's boundary over
-    /// the checkout, file tools still rooted at `/`. `None` where the seat asks for no command, and
-    /// a machine with no boundary fails closed on Linux and falls back to unconfined on a Mac.
-    /// The seat comes back with the backend because the file tools obey the same fence.
+    /// The default local seat for a `leticode` session: commands inside the seat's boundary over the
+    /// checkout, file tools rooted at `/`. `None` where the seat asks for no command; with no boundary
+    /// Linux fails closed and a Mac runs unconfined. Returned with the backend: file tools obey it.
     fn wide_seat(
         cfg: &Config,
         hub: &Arc<Hub>,
@@ -972,10 +967,9 @@ impl Harness {
             hub.warn(WORKSPACE_GONE, said.clone());
             return Err(HarnessError::Setup(said));
         }
-        // The perimeter's own `env` pairs, for the two substrates that are ANOTHER machine: a local
-        // backend reads them off its seat, and a remote or VM one has no seat on this box, so the
-        // pairs are asked for here and handed over. Only `env`: a named `secrets` grant stays the
-        // seat's injection. A value that could not be read is said, not dropped in silence.
+        // The perimeter's `env` pairs, for remote and VM substrates, which have no seat on this box to
+        // read them from. Only `env`: a `secrets` grant stays the seat's injection. A value that could
+        // not be read is said, not dropped.
         let (placement_env, placement_secrets) = if local_vm || remote.is_some() {
             let home = std::env::var_os("HOME")
                 .map(std::path::PathBuf::from)
@@ -995,10 +989,9 @@ impl Harness {
         } else {
             (Vec::new(), Vec::new())
         };
-        // And the paths it grants, which are the operator's `[boundary]` and `[perimeter.<name>]`
-        // ones: a remote placement builds its own view there, so what this box's view holds has to
-        // travel with the spec. `[boundary]` grants are READ on both machines; the probe says which
-        // exist, and one that does not is a line on the notes rather than a failed open.
+        // And the `[boundary]` and `[perimeter.<name>]` paths it grants, since a remote placement builds
+        // its own view. `[boundary]` grants are read on both machines; one the probe finds missing is a
+        // line on the notes, not a failed open.
         let placement_grants = if remote.is_some() {
             let home = std::env::var_os("HOME")
                 .map(std::path::PathBuf::from)
@@ -1014,7 +1007,7 @@ impl Harness {
         // fence was built from, so the file tools are fenced with the same one.
         let mut seat: Option<letibot_tools::exec::seat::SeatView> = None;
         // A shell that cannot be given a cgroup is a shell this daemon does not seat: the session
-        // opens without one rather than being refused over a tool (TODO.md R192). Asked before the
+        // opens without one rather than being refused over a tool. Asked before the
         // wide seat is built, because the seat's own failure would name bubblewrap either way.
         let withheld =
             if cfg.unconfined && cfg.allow_bash && may_exec && !local_vm && remote.is_none() {
@@ -1048,7 +1041,7 @@ impl Harness {
             if cfg.parent_session_id.is_none() && !(cfg.allow_bash && may_exec) && !withheld {
                 Self::say_no_boundary(hub);
             }
-            // R121: the file tools are still this session's, so they are held to its perimeter -
+            // The file tools are still this session's, so they are held to its perimeter -
             // what `read`, `write`, `edit`, `grep` and `glob` reach is the view its commands would
             // have had, taken from the table rather than from a substrate nothing asked to build.
             seat = Some(Self::fence_seat(cfg)?);
@@ -1130,12 +1123,9 @@ impl Harness {
         // The owner's memory share, on the cgroup this session's commands join: one throttle for
         // everything the owner runs, chosen once at open so a job's cap is not the only bound.
         let backend = backend.with_owner_memory_high(crate::memory_high::owner_high());
-        // The session's scratch directory, where tools put working artifacts too big for the
-        // transcript, and the `/tmp` a confined command gets: both under this owner's root ON DISK
-        // (`docs/lifecycle.md` d.4). Not the runtime dir, which is RAM: a Go fuzz job's 54 323
-        // worker temp dirs under `$XDG_RUNTIME_DIR/letibot/scratch-*/tmp/<session>` filled this
-        // box's 19 GiB tmpfs on 2026-11-13 and broke every other session's gate. The runtime dir
-        // keeps sockets and records.
+        // The session's scratch directory and the `/tmp` a confined command gets, both under this
+        // owner's root on disk. Not the runtime dir: it is RAM, and job temp dirs there can fill it for
+        // every session. The runtime dir keeps sockets and records.
         let places = letibot_tools::lifecycle::Places::here();
         let (scratch, session_tmp) =
             letibot_tools::lifecycle::session_dirs(&places, &cfg.session_id).unwrap_or_else(|e| {
@@ -1175,11 +1165,9 @@ impl Harness {
         let backend = backend
             .with_own_view(&session_tmp, own)
             .map_err(|e| HarnessError::Setup(format!("this session's /tmp: {e}")))?;
-        // R121 item 8: the file tools obey the perimeter the shell's view draws, so a path a
-        // command cannot reach is refused to `read` and `write` in the same words. The letibot
-        // store is reachable only where this session's own `sessions/<id>/` is. A seat whose view
-        // nobody measured - no shell to put a boundary in front of - gets the same fence rendered
-        // from its own perimeter, so the two arms cannot say different things about one table.
+        // The file tools obey the perimeter the shell's view draws, so a path a command cannot reach is
+        // refused to `read` and `write` in the same words. A seat with no measured view gets the same
+        // fence from its perimeter. The store is reachable only at this session's `sessions/<id>/`.
         let backend = match (&seat, backend.boundary()) {
             (Some(seat_of), measured) => {
                 let view = match measured {
@@ -1247,7 +1235,7 @@ impl Harness {
                 spec.up_args = cfg.vm_args.clone();
                 spec.verify = cfg.vm_verify.clone();
                 // The owner stamp firecode's run directory carries, so a discovery pass can say
-                // whose a VM is with no store (`docs/lifecycle.md` d.4).
+                // whose a VM is with no store.
                 spec.owner = Some(cfg.session_id.clone());
                 letibot_tools::firecode::FirecodeBackend::up(&spec).map_err(|e| {
                     HarnessError::Setup(format!("placing this session in a firecode VM: {e}"))
@@ -1732,7 +1720,7 @@ impl Harness {
                     let mut stale: Option<String> = None;
                     let mut stale_for_model: Option<String> = None;
                     // The same facts as a LIST, for a lifecycle layer: a layer that names the tool
-                    // that arrived cannot get it out of a sentence (X21, G4).
+                    // that arrived cannot get it out of a sentence.
                     let mut stale_facts = letibot_plugin::lifecycle::Stale::default();
 
                     // The prefix the session's own tokens came from - the store's
@@ -1764,10 +1752,9 @@ impl Harness {
                             .and_then(|r| r.prefix_fingerprint.clone())
                             .unwrap_or_else(|| own_fingerprint.clone()),
                     };
-                    // A shadow's record is display-only, with no model loop and no tools, so a
-                    // prompt that moved under it is no finding and there is nothing to reseat.
-                    // The pins are compared on their own: they are frozen in message 0 too and
-                    // the column above hashes them out. A note alone waits for a base rebuild.
+                    // A shadow's record is display-only (no model loop, no tools), so a moved prompt is no finding
+                    // and nothing reseats. Pins are compared on their own: frozen in message 0 too, the column above
+                    // hashes them out. A note alone waits for a base rebuild.
                     let pins_moved = pins_fingerprint(&own_prefix) != pins_fingerprint(prefix);
                     if cfg.seat != Seat::Shadow
                         && (seated != prefix_fingerprint(cfg.seat, prefix) || pins_moved)
@@ -1968,7 +1955,7 @@ impl Harness {
         }
     }
 
-    /// What kind of owner this session is (`docs/lifecycle.md` d.1): a child is a subagent, a
+    /// What kind of owner this session is: a child is a subagent, a
     /// daemon the bridge started for a brief is a package, the merge queue's reviewer is a gate run,
     /// and anything else is an interactive session nothing closes for idleness.
     fn owner_kind(cfg: &Config) -> letibot_tokencore::store::OwnerKind {
@@ -2024,10 +2011,9 @@ impl Harness {
             writer,
         } = Self::open_the_stored(&mut cfg, &mut notes)?;
         Self::say_the_embedder(&hub, &cfg);
-        // The owner row and its root, before anything this session creates: a row with no resource
-        // is harmless, a resource with no row is the leak every reap has to guess at. A store that
-        // refuses this leaves a note rather than failing the open - a session that cannot record
-        // itself is still a session somebody can talk to.
+        // The owner row and its root, before anything this session creates: a row with no resource is
+        // harmless, a resource with no row is a leak. A store that refuses leaves a note rather than
+        // failing the open.
         if let Some(store) = &store
             && let Err(e) = Self::record_owner(store, &cfg)
         {
@@ -2328,7 +2314,7 @@ impl Harness {
                 ))
             })
             .map_err(|e| HarnessError::Setup(format!("registering the plugin tools: {e}")))?;
-        // The model's own verbs on its own session (X24): each one lands in this session's own queue,
+        // The model's own verbs on its own session: each one lands in this session's own queue,
         // so a re-seat happens at the end of the turn that asked for it with no head and no tmux.
         let self_desk: std::sync::Arc<dyn letibot_tools::builtins::session_self::SessionSelf> =
             std::sync::Arc::new(crate::selfverbs::SessionAsks::new(
@@ -3330,7 +3316,7 @@ impl Harness {
             ))
             // The snapshot a background job's `bash` call takes at the spawn, handed to the set that
             // settles it: only the watcher sees both ends of a job, so only it can read the change
-            // back (R161). `None` when the backend cannot start processes, and then nothing is kept.
+            // back. `None` when the backend cannot start processes, and then nothing is kept.
             .with_job_sweeps(sweeping.as_ref().map(|w| w.sweeps()))
             // The operator's own run can be ANSWERED: the object is installed on the registry here because this is
             // the half that has the pipe, the write end of the operator's stdin having come out of the job the tool
@@ -3683,10 +3669,8 @@ impl Harness {
             meter: Default::default(),
             intent,
             injected,
-            // A SUBAGENT'S per-directory `AGENTS.md`, and never a root's: the operator's ruling is
-            // that the tree's instructions are gold for the children. What the role already put in
-            // the prompt is closed over here, so a tool call in one of those directories says
-            // nothing twice.
+            // A subagent's per-directory `AGENTS.md`, never a root's. What the role already put in the
+            // prompt is closed over, so a call in one of those directories says nothing twice.
             guidance: crate::harness::guidance::Guidance::new(reads_guidance, named_guidance),
             handed_back: Default::default(),
             stopped: Default::default(),
@@ -3824,21 +3808,18 @@ impl Harness {
             let before = self.ancestor_tail();
             self.republish_after(letibot_sessionlog::RESTORING_ROWS, before);
         }
-        // What a head attaching to this session should be told, left in the registry for `seat_in`: a session no
-        // harness has opened has no entry, and this is a no-op. HERE, after the republish, because a live note is filed
-        // at the seam it arrives at, and said before the rows it would be drawn above the whole conversation.
-        // A session that reseats before its turn is not told the update is the person's call.
+        // What a head attaching here should be told, left in the registry for `seat_in`. After the
+        // republish, so the note is filed at its seam, not above the whole conversation. A session set
+        // to reseat is not told; otherwise the update is the person's call.
         let stale_for_model =
             stale_for_model.filter(|_| self.cfg.on_stale() != crate::config::OnStale::Reseat);
         self.session_registry
             .set_stale_prefix(&self.cfg.session_id, stale, stale_for_model);
     }
 
-    /// X21's `open` - or `reseat`, because a resume IS one: the prompt the conversation speaks may
-    /// have moved under it, and that is the fact this event exists to hand over. Asked when the
-    /// session's layers first exist (`Sessions::open_plugins`, which runs after the harness is
-    /// built), and by then everything about the open has happened - so nothing a layer answers can be
-    /// the difference between a session that opened and one that did not.
+    /// The `open` lifecycle event, or `reseat`, since a resume may have moved the prompt under the
+    /// conversation. Asked once the layers exist (`Sessions::open_plugins`), after the open has
+    /// happened, so no answer can decide whether the session opened.
     pub(crate) fn announce_lifecycle(&mut self) {
         let event = if self.resumed.is_some() {
             "reseat"
@@ -3849,10 +3830,9 @@ impl Harness {
         self.lifecycle(event, facts);
     }
 
-    /// One lifecycle event (X21), asked with the facts this session has and its acts performed: a
-    /// sentence the model must see (`say`), a board row (`add_todo`), a monitor (`arm`), a message in
-    /// the session's room (`room_say`). Each is the host's own door, and an act it has not got is said
-    /// by name rather than dropped.
+    /// One lifecycle event, asked with this session's facts and its acts performed: `say` (a
+    /// sentence the model sees), `add_todo`, `arm` and `room_say`. Each is the host's own door; an
+    /// act it lacks is said by name, not dropped.
     pub(crate) fn lifecycle(&mut self, event: &str, stale: letibot_plugin::lifecycle::Stale) {
         let Some(host) = self.plugin_host() else {
             return;
@@ -3895,7 +3875,7 @@ impl Harness {
                         continue;
                     }
                     // Both doors: the log, so a person watching the session sees it, and the model,
-                    // because a `say` is the sentence a release's own wording used to be.
+                    // because a `say` is a sentence for it.
                     self.hub.warn(format!("lifecycle_{event}"), text.clone());
                     let _ = self.note_to_model(&text);
                 }
@@ -4397,12 +4377,9 @@ pub(crate) fn render_sampling(s: &serde_json::Map<String, serde_json::Value>) ->
         .join(" ")
 }
 
-/// A provider backend from its config: preset, key (missing is a refusal naming variable and file), model, switches.
-/// `notes` is passed in because the provider must stay below this crate's session log. `deadlines` are the first-byte and answer budgets, resolved from the config by [`crate::config::Config::deadlines_for`]. `effort` is the operator's `--effort`, which only a protocol with a reasoning switch of its own has a use for.
-///
-/// The ONE place a protocol is chosen: a preset says which wire its door speaks, and this hands the
-/// session the client that speaks it. Every client carries the same switches, so a session's config
-/// means the same thing whichever protocol it lands on.
+/// A provider backend from its config; a missing key is refused naming variable and file. The
+/// one place a protocol is chosen: the preset names the wire, and every client takes the same
+/// switches. `notes` keeps the provider below the session log; `effort` is `--effort`.
 pub fn build_provider(
     pc: &crate::config::ProviderConfig,
     profiles: Option<&std::path::Path>,
@@ -4596,10 +4573,9 @@ pub(crate) fn downgraded_ruleset(
     rules
 }
 
-/// Opening a session BY ID is the way back from an archive: it is out of sight, not out of reach.
-/// The row is cleared here, at the one door every opening takes, so a resume from the CLI and a
-/// `ResumeSession` from a head both count. A store that refuses is said, not swallowed: the next
-/// listing would otherwise put it away again with nobody told.
+/// Opening a session by id brings it back from the archive. The row is cleared at the one door
+/// every open takes, so a CLI resume and a head's `ResumeSession` both count. A refusing store is
+/// said, or the next listing would archive it again unseen.
 pub(crate) fn unarchive_on_open(
     store: Option<&Store>,
     stored: &StoredSession,
@@ -4774,10 +4750,8 @@ pub(crate) fn role_for(cfg: &Config) -> Role {
 /// which is a daemon-wide flag and deliberately not per session: a shell is not the session's to record.
 pub(crate) fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
     let mut r = base_role_for_seat(seat, cfg);
-    // A role profile NARROWS the seat's own table and nothing else - never the harness's universal
-    // doors added below, which are the session's own verbs and not the role's. The parent's table
-    // is a second ceiling, so a profile cannot hand a child a tool its parent lacks: the spawn
-    // closed over what its parent had, and that is what `parent_tools` is.
+    // A role profile narrows the seat's own table only, never the universal doors added below. The
+    // parent's table is a second ceiling, so a profile cannot hand a child a tool its parent lacks.
     if let Some(profile) = cfg.seat_overlay.as_ref().and_then(|o| o.profile.as_ref()) {
         let ceiling = cfg
             .seat_overlay
@@ -4788,10 +4762,8 @@ pub(crate) fn role_for_seat(seat: Seat, cfg: &Config) -> Role {
             r.max_tools = r.tools.len();
         }
     }
-    // The model's own verbs on its own session (X24), on every seat that runs a conversation -
-    // a child's included, since a subagent that overran its window is the case the operator named.
-    // Native, so no seat can be without them: a session told its prompt moved with no verb to act on
-    // it is the tmux `send-keys` the doc measured (G3).
+    // The model's own verbs on its own session, on every seat that runs a conversation, children
+    // included. Native, so no seat lacks them: a session told its prompt moved needs a verb to act.
     if !matches!(seat, Seat::Runner | Seat::NotesKeeper) {
         for verb in letibot_plugin::command::SELF_VERBS {
             r.tools.push((*verb).to_string());
@@ -5004,7 +4976,7 @@ pub fn confined_grants(
     out
 }
 
-/// The view the prompt states, taken from the boundary the backend MEASURED and never from a
+/// The view the prompt states, taken from the boundary the backend measured and never from a
 /// canned sentence: a session that lost its confinement is told nothing about a view.
 pub(crate) fn view_brief(boundary: Option<&letibot_tools::exec::Boundary>) -> Option<String> {
     boundary.map(|b| b.model_brief())
@@ -5523,10 +5495,9 @@ mod no_boundary_tests {
         assert_eq!(view_brief(None), None);
     }
 
-    /// R121: this session seats no shell, so no substrate measured a view for its commands - but its
-    /// FILE TOOLS are still this session's, and they are held to its `[perimeter.<name>]` table.
-    /// The credential stores and letibot's own store are refused with a command's own sentence, a
-    /// `[perimeter] hide` names the key that wrote it, and the workspace is untouched.
+    /// A session with no shell still holds its file tools to its `[perimeter.<name>]` table: the
+    /// credential stores and letibot's store are refused in a command's sentence, a `[perimeter]
+    /// hide` names its key, and the workspace is untouched.
     #[test]
     fn a_session_with_no_shell_has_its_file_tools_held_to_its_perimeter() {
         use letibot_tools::exec::boundary::{Entry, Origin};
@@ -5661,12 +5632,9 @@ mod linux_wide_seat_tests {
             .collect()
     }
 
-    /// A `leticode` session with a shell on Linux is bounded by the wide seat, or REFUSED: what it
-    /// must never be is this user's rights over the whole host with a warning. Every ending is
-    /// asserted, because a box can only measure the one it gives.
-    ///
-    /// R192 adds a third: a daemon with no delegated cgroup WITHHOLDS the shell and opens the
-    /// session, with one line naming the cause and the fix.
+    /// A `leticode` session with a shell on Linux is bounded by the wide seat or refused, never given
+    /// this user's rights over the whole host. A daemon with no delegated cgroup withholds the shell
+    /// and opens with one line naming cause and fix. Every ending is asserted.
     #[test]
     fn a_leticode_session_with_a_shell_is_bounded_or_refused_and_never_whole_host() {
         let dir = std::env::temp_dir().join(format!("letibot-linuxwide-{}", std::process::id()));
@@ -5687,7 +5655,7 @@ mod linux_wide_seat_tests {
 
         match placed {
             Ok(p) if !cfg.allow_bash => {
-                // R192: this daemon could make no cgroup, so no command of its could have a
+                // This daemon could make no cgroup, so no command of its could have a
                 // lifetime - so it seated no shell and said why, once.
                 assert_eq!(
                     withheld.len(),
@@ -5716,7 +5684,7 @@ mod linux_wide_seat_tests {
                         seat.tools
                     );
                 }
-                // And it opened: the whole host by design, which is what R192 asks for - the
+                // And it opened: the whole host by design - the
                 // session can be talked to, and the file tools have their fence.
                 assert!(p.whole_host, "{}", p.described);
                 assert!(p.backend.boundary().is_none(), "{}", p.described);
@@ -6030,10 +5998,9 @@ mod floor_layer_tests {
     }
 }
 
-/// `[boundary] firecode_only` as a route, for a session whose commands run on this machine. A
-/// session already inside a VM has nothing to route to, and one with no such key has no route.
-/// A reviewer's seat refuses whole-suite runs: the gate runs the suite. A project opts back in
-/// with `[queue] reviewers_run_suites = true`; a `[queue]` that does not parse keeps the refusal.
+/// `[boundary] firecode_only` as a route for a session whose commands run on this machine; one in
+/// a VM or without the key has none. A reviewer's seat refuses whole-suite runs (the gate runs
+/// them) unless `[queue] reviewers_run_suites = true`; an unparsable `[queue]` keeps the refusal.
 pub(crate) fn refuses_whole_suites(cfg: &Config) -> bool {
     if !is_review_seat(cfg) {
         return false;

@@ -1,6 +1,6 @@
-//! `/prune`: §4's first rung on its own. The oldest tool-call bodies leave the conversation as
+//! `/prune`: the first compaction rung on its own. The oldest tool-call bodies leave the conversation as
 //! stubs, every row is carried, and each body is kept in the spill store under the id `recall`
-//! opens - no model anywhere, so a re-prefill is its entire cost (`docs/compaction.md` §6).
+//! opens - no model anywhere, so a re-prefill is its entire cost.
 
 use letibot_transcript::{SystemOrigin, TranscriptItem};
 use letibot_turn::CompactionOutcome;

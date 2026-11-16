@@ -161,9 +161,9 @@ const BOUNDARY_NEEDS: &str = "a delegated cgroup v2 subtree and a usable unprivi
     boundary (bwrap: `apt install bubblewrap`, or point `LETIBOT_BWRAP` at it).";
 
 /// The warning code for a session whose tools run on another machine - where its tree is,
-/// the branch that comes back, and what stayed here (`docs/remote-hosts.md`).
+/// the branch that comes back, and what stayed here.
 const REMOTE_PLACEMENT: &str = "remote_placement";
-/// A VM boot that queued for a slot, or was given a load-scaled deadline (R234).
+/// A VM boot that queued for a slot, or was given a load-scaled deadline.
 const VM_BOOT: &str = "vm_boot";
 
 /// "workspace gone", in one sentence - said when a session opens or wakes on a workspace that
@@ -255,7 +255,7 @@ pub struct Harness {
     /// context-wall check in `run_rounds` for why that turn must be exempt.
     compacting: bool,
     /// Whether the conversation was just folded into a record, so the next turn begins on one. Read
-    /// at the turn's end as the `steer_` input's `after` (X14) and taken there, so it describes one
+    /// at the turn's end as the `steer_` input's `after` and taken there, so it describes one
     /// turn rather than the rest of the session.
     folded: bool,
     /// Where the abandoned-call sweep stopped last time, so it reads the turn that was added rather
@@ -367,10 +367,9 @@ pub struct Harness {
     /// Whether the turn in flight was stopped by an interrupt, shared with every `HubSteering` for
     /// `handed_back`'s reason and read once, when the turn ends: a stopped turn rings no wake.
     stopped: Arc<AtomicBool>,
-    /// The unsaved buffers the prompt in flight carried, shared with every `HubSteering` because a
-    /// prompt typed into a running turn carries them too. A mark this turn's reply makes is
-    /// anchored to this text - the file on disk has not got the lines the model was shown - and it
-    /// is cleared when the turn ends, so a later reply is read from the disk again.
+    /// The unsaved buffers the prompt in flight carried, shared with every `HubSteering`. A mark
+    /// this turn's reply makes is anchored to this text, not the file on disk, and it is cleared
+    /// when the turn ends.
     unsaved: Arc<Mutex<Vec<crate::citations::Buffer>>>,
     /// This session's monitors, when the backend can start processes.
     monitors: Option<Arc<Monitors>>,
@@ -407,7 +406,7 @@ pub struct Harness {
     /// The child's verdict arrives HERE and not in its prose, since a child that answers without calling
     /// `review_verdict` has judged nothing and leaves the row for the queue to ask again.
     reviews: Arc<letibot_tools::builtins::verdict::ReviewDesk>,
-    /// The daemon's Claude Code reviewers (`claude -p`, R116) - what the review pool polls instead
+    /// The daemon's Claude Code reviewers (`claude -p`) - what the review pool polls instead
     /// of a session runner when a project's `[queue.claude]` says its reviewers are those runs.
     claude: Arc<crate::mergequeue::review::claude::Runs>,
     /// Every gatekeeper child this session has started: a settlement naming one is the review's, not
@@ -526,17 +525,17 @@ pub struct Harness {
     limit_episodes: limit_hook::Episodes,
     /// The head `ask_user_question` reaches, shared so the limit hook asks the same person.
     question_slot: limit_hook::QuestionSlot,
-    /// The shadow watching this session (R243): off unless providers.toml `[shadow]` turns a job on.
+    /// The shadow watching this session: off unless providers.toml `[shadow]` turns a job on.
     shadow: crate::shadow::Slot,
     /// The regex nudge a turn end held back for the shadow's turn_end verdict.
     shadow_held: Option<String>,
     /// How far the shadow's position count has read: the index reached and the rows counted.
     shadow_counted: (usize, u64),
-    /// How far a persistent shadow has been fed the rows (R257): the next index to feed.
+    /// How far a persistent shadow has been fed the rows: the next index to feed.
     shadow_fed: usize,
     /// The shadow as the gate's corpus sink reaches it, filled once the shadow opens.
     shadow_cell: crate::shadow::permission::Cell,
-    /// Whether the shadow answers relayed reads for this (main) session, and its breaker (R317).
+    /// Whether the shadow answers relayed reads for this (main) session, and its breaker.
     shadow_answering: Arc<crate::shadow::permission::Answering>,
     /// What the during job's trigger has seen.
     shadow_during: crate::shadow::during::Clock,
@@ -598,7 +597,7 @@ pub fn skill_message(skill: &letibot_tools::builtins::skill::Skill, then: &str) 
 
 impl Harness {
     /// This session's store, or `None` for one opened with no durable half. The door `Sessions`
-    /// needs to move the owner's lease on every turn (`docs/lifecycle.md` d.3): the lease is what
+    /// needs to move the owner's lease on every turn: the lease is what
     /// an idle TTL is measured from, and a turn is the activity it is measured by.
     pub(crate) fn store(&self) -> Option<&Store> {
         self.store.as_ref()
@@ -1349,14 +1348,14 @@ impl Harness {
     }
 
     /// The whole submitted token vector, for a caller that wants to check the
-    /// prefix relation itself (C1).
+    /// prefix relation itself.
     pub fn tokens(&self) -> &[letibot_tokencore::TokenId] {
         self.session.ledger.tokens()
     }
 
-    /// The stable prefix's tokens, which the ledger keeps apart from the item rows. C9 compares against
-    /// exactly this: a system change that appended left these bytes untouched, one that rewrote the head
-    /// did not.
+    /// The stable prefix's tokens, which the ledger keeps apart from the item rows. The prefix check
+    /// compares against exactly this: a system change that appended left these bytes untouched, one
+    /// that rewrote the head did not.
     pub fn prefix_tokens(&self) -> &[letibot_tokencore::TokenId] {
         self.session.ledger.prefix_tokens()
     }
@@ -1375,7 +1374,7 @@ impl Harness {
 
     /// How many tokens item `i` owns. Zero would mean an item that renders to
     /// nothing, which for an assistant turn is the `content: null` defect one layer
-    /// down (C6).
+    /// down.
     pub fn row_len(&self, i: usize) -> u32 {
         self.session
             .ledger
@@ -1848,7 +1847,7 @@ mod trail;
 mod turns;
 mod usage;
 // `/prune`: the fork that carries every row with the oldest bodies stubbed - the one fork with
-// no model behind it. See the module's header for §6's three rulings it keeps.
+// no model behind it. See the module's header for the rules it keeps.
 mod prune;
 pub use prune::{PruneReport, prune_reply};
 mod wall;

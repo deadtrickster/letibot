@@ -43,7 +43,7 @@ pub struct Parts {
     /// [`Parts`] because a review has two sides in two sessions, and one `Arc` is what makes them one
     /// act. Not a store: the durable row is the queue's own.
     pub reviews: std::sync::Arc<letibot_tools::builtins::verdict::ReviewDesk>,
-    /// The daemon's Claude Code reviewers (`claude -p`, R116), when a project's `[queue.claude]`
+    /// The daemon's Claude Code reviewers (`claude -p`), when a project's `[queue.claude]`
     /// makes one. Here for [`Parts::reviews`]'s reason: the queue's thread starts a run and the
     /// review pool polls it in a later pass, so both have to hold the same table of processes.
     pub claude: std::sync::Arc<crate::mergequeue::review::claude::Runs>,

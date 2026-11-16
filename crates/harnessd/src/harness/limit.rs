@@ -1,5 +1,5 @@
 //! A usage limit is not a failure: what a session does when its provider puts a time on one.
-//! The operator's ruling - *never fail on a limit with a known reset* - and the two answers to it:
+//! The rule - never fail on a limit with a known reset - and the two answers to it:
 //! park the session until the reset, or move it to a model that is not limited and move back after.
 
 use std::collections::BTreeMap;

@@ -545,7 +545,7 @@ impl Harness {
             letibot_tools::builtins::task::TaskRunner::send(&*runner, to, text)
         };
         let host = self.hub.session_id();
-        // The queue's own `review_` layers, if the daemon opened them (X18): the reviewer's brief
+        // The queue's own `review_` layers, if the daemon opened them: the reviewer's brief
         // and the verdict's floor are the queue session's answers, never the branch's.
         let layers = self
             .plugin_host()

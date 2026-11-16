@@ -727,7 +727,7 @@ impl Harness {
         let before = self.measure_resident().tokens;
         self.compacting = true;
         // A compaction forks, so the turn that follows begins on a record: the `steer_` input's
-        // `after` says so (X14), and a `compact_` layer's `wait` takes it back inside.
+        // `after` says so, and a `compact_` layer's `wait` takes it back inside.
         self.folded = true;
         let out = self.compact_inner(fold);
         self.compacting = false;
@@ -1084,7 +1084,7 @@ impl Harness {
                         self.session.ledger.len() as u64,
                     ),
                     carried: "",
-                    // A re-seat that summarises is not a compaction: X15's hook is not asked, so
+                    // A re-seat that summarises is not a compaction: the `compact_` hook is not asked, so
                     // the record is written on the harness's own template.
                     template: None,
                 });
@@ -1163,7 +1163,7 @@ impl Harness {
 
     /// What this compaction could pin, as the host scores it: the project's `AGENTS.md` first, then the
     /// rows still open. The text rides beside the candidate because only the host reads it - a layer pins
-    /// an id, and `compact::Answer::validate` refuses one this list does not hold (X15).
+    /// an id, and `compact::Answer::validate` refuses one this list does not hold.
     fn compaction_candidates(&self) -> Vec<(letibot_plugin::compact::Candidate, String)> {
         let mut out = Vec::new();
         // Through the session's own backend: a placed session's `AGENTS.md` is on that host, and the
@@ -1199,10 +1199,9 @@ impl Harness {
         out
     }
 
-    /// The record's template, when a `compact_` layer answers (X15), and whether the session goes on
-    /// after the record. `None` is the harness's own: nothing here decides WHEN to compact or how big
-    /// the record is - those stay the wall's - and a pin past the pin budget is cut, with the cut said
-    /// so a record that lost `AGENTS.md` is not silent.
+    /// The record's template when a `compact_` layer answers, and whether the session goes on after
+    /// it. `None` is the harness's own. When and how big stay the wall's; a pin past the pin budget
+    /// is cut and the cut said.
     fn ask_the_compactor(
         &self,
         budget: &letibot_turn::SummaryBudget,
@@ -1452,9 +1451,9 @@ impl Harness {
                     prefix_tokens + per_item.iter().sum::<u64>(),
                 );
                 let carried = letibot_turn::carried_text(&tail);
-                // X15: a layer chooses what the record carries, before the summary turn is asked. A
+                // A layer chooses what the record carries, before the summary turn is asked. A
                 // `wait` takes back the mark the fork would otherwise leave - the session does not go
-                // on by itself, so the turn that follows is not one after a compaction (X14).
+                // on by itself, so the turn that follows is not one after a compaction.
                 let asked = self.ask_the_compactor(&budget);
                 self.folded = asked
                     .as_ref()

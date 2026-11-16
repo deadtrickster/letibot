@@ -33,8 +33,8 @@ impl Harness {
     }
 
     /// The background jobs this session started that are still running, as its own process host
-    /// lists them: whether this session may be parked, and whether a VM child's turn may end
-    /// (R173). Not `running_jobs`, which is the plan-check's question about a board's rows.
+    /// lists them: whether this session may be parked, and whether a VM child's turn may end.
+    /// Not `running_jobs`, which is the plan-check's question about a board's rows.
     pub fn live_jobs(&self) -> usize {
         self.runtime
             .backend
@@ -437,10 +437,9 @@ impl TaskSlot {
         self.free_place();
     }
 
-    /// What a settlement becomes on this slot: the kill rule, on its own so `say` can apply it before it
-    /// adds the dirty-worktree line. A killed child's `Done` is replaced wholesale, and a line added first
-    /// would go with it. A `Killed` is not replaced: it already says what died under the turn, and a
-    /// stop that arrives once the child has answered is not the child's answer going away (R173).
+    /// What a settlement becomes on this slot: the kill rule alone, so `say` applies it before adding
+    /// the dirty-worktree line, which a replaced `Done` would lose. A `Killed` is not replaced: it
+    /// already says what died under the turn.
     pub(crate) fn as_settled(
         &self,
         status: letibot_tools::builtins::task::TaskStatus,
@@ -516,9 +515,6 @@ impl TaskSlot {
     }
 }
 
-/// What a child's thread leaves behind when `run_to_completion` returns: a refusal that came
-/// before the child's own [`AnswerOnce`] existed becomes the slot's answer, because nothing else
-/// will ever settle it. A slot already settled keeps what it has.
 /// How a child stopped while it was opening settles: it never ran a turn.
 pub(crate) const STOPPED_BEFORE_ITS_TURN: &str =
     "stopped by `job_kill` while it was opening, before its first turn ran — this is not an answer";
@@ -871,14 +867,14 @@ pub enum ChildHold {
     /// Its own children, until none is left unsettled.
     Children,
     /// The jobs it backgrounded in its VM, until none is running: the VM goes down with the
-    /// turn, so a job left in it dies there unread and unreported (R173).
+    /// turn, so a job left in it dies there unread and unreported.
     Jobs,
 }
 
 impl ChildHold {
     /// Whether the hold is over, from the three facts it is about. The jobs half asks what is still
     /// OWED as well: a settlement queued, held or rung is the turn that names the job's exit, and
-    /// the VM must not close over an ending the child never read (R173).
+    /// the VM must not close over an ending the child never read.
     fn over(self, sub: &Harness, hub: &Hub) -> bool {
         let children = sub.unsettled_children();
         let jobs = sub.live_jobs();
@@ -1105,8 +1101,8 @@ pub(crate) fn serve_child_with(
     // whose last turn left work open.
     turns.rearm(sub, true);
     loop {
-        // Holding its answer for what is still under it (the operator: a child with live children
-        // is not done; R173: nor is one with a job in a VM that dies with its turn): back to the
+        // Holding its answer for what is still under it (a child with live children
+        // is not done, nor one with a job in a VM that dies with its turn): back to the
         // caller the moment nothing is left, which is when its newest answer is the one to give.
         if hold.is_some_and(|h| h.over(sub, hub)) {
             return ChildExit::Settled;
@@ -1138,10 +1134,9 @@ pub(crate) fn serve_child_with(
             && let (Some(at), Some(window)) = (park_at, park_after)
             && at <= now_after
         {
-            // Nothing armed, the window spent: park unless something the harness owns, or a head
-            // watching it, says the session is still in use - then look again a window later.
-            // A jobs hold never parks: parking closes the VM, and a job that has just exited is
-            // still owed the turn that says so. The hold's own end is the way out.
+            // Nothing armed, the window spent: park unless the harness or a watching head still uses the
+            // session. A jobs hold never parks: parking closes the VM, and a job that just exited is still
+            // owed the turn that says so.
             if turns.nag.due_at().is_none()
                 && hub.attached_heads() == 0
                 && sub.park_refusal().is_none()
@@ -1547,7 +1542,7 @@ pub(crate) struct HarnessTaskRunner {
     /// desk this session opens its reviews on: that is what makes a reviewer's `review_verdict` reach the
     /// queue that asked it.
     pub(crate) reviews: Arc<letibot_tools::builtins::verdict::ReviewDesk>,
-    /// The daemon's Claude Code reviewers (`claude -p`, R116), carried into a child's `Parts` for the
+    /// The daemon's Claude Code reviewers (`claude -p`), carried into a child's `Parts` for the
     /// desk's reason: a session that serves the queue polls the runs another session started.
     pub(crate) claude: Arc<crate::mergequeue::review::claude::Runs>,
     /// The subagents this session has started, in the order it started them.
@@ -1588,7 +1583,7 @@ pub(crate) struct HarnessTaskRunner {
     pub(crate) merge_store: Arc<std::sync::Mutex<Option<Store>>>,
     /// This session's plugin host, for what a child of it inherits: a slot because the runner is built
     /// before the daemon opens the session's layers (`tree_watch`'s reason). `None` is a session nobody
-    /// gave a host, and then a child inherits nothing and answers no hook, as it did before K1.
+    /// gave a host, and then a child inherits nothing and answers no hook.
     pub(crate) plugin_slot: Arc<std::sync::Mutex<Option<Arc<crate::plugins::PluginHost>>>>,
 }
 
@@ -1797,9 +1792,6 @@ pub(crate) fn child_mode_source(why: Option<&str>) -> String {
     }
 }
 
-/// The depth refusal, as one pure function: `Some` refuses a `task` call past `max`, `None` is go. It
-/// refuses by NAME, so the model sees the tool and learns which knob moves, and it is assessed at the CALL
-/// because a seat can only say always or never. A `max` of 0 refuses every call, which is no nesting.
 /// What a queued child's slot says until it gets a place.
 pub(crate) const QUEUED_NOTE: &str = "queued: the `[subagents]` running cap is full; it starts \
      when a running child finishes";
@@ -2024,9 +2016,6 @@ impl HarnessTaskRunner {
         }
     }
 
-    /// This session, as the heir of its children's estates - the process host a child hands its
-    /// survivors to. Cloned out of the slot rather than borrowed, so the caller owns it for the
-    /// call and no lock is held across a hand-over.
     /// The duplicate rule and the caps, decided before anything is minted or recorded. The review
     /// queue's reviewers are outside the caps: `[queue] reviewers_at_once` is theirs.
     fn admit_spawn(&self, prompt: &str) -> Result<super::admission::Admit, String> {
@@ -2538,12 +2527,9 @@ impl letibot_tools::builtins::task::TaskRunner for HarnessTaskRunner {
                 .iter()
                 .any(|(h, _)| h == id)
         });
-        // The role is checked NOW: a role this build does not know, or one this seat's profile does
-        // not let it start, is a fact about the call - answering it from a thread would report
-        // "started" for something that never could. The same list `task`'s description carries is
-        // the one enforced here (`crate::profiles::reach`), and this is the door every spawn takes,
-        // the tool's own check or not: `task_start`, a resume and the queue's reviewers all land
-        // here.
+        // The role is checked here, the door every spawn takes (`task_start`, a resume, the queue's
+        // reviewers): an unknown role, or one this seat's profile forbids, would otherwise report
+        // "started" from a thread. The list is `crate::profiles::reach`, the one `task` describes.
         let role = spec.role.as_str();
         {
             let name = if role.is_empty() { "coder" } else { role };
@@ -3622,7 +3608,7 @@ impl HarnessTaskRunner {
             None => reply.text,
         };
         // A job killed with the VM is not a job that finished, and neither is the turn that
-        // left it running in a substrate it then closed (R173). The status carries the lost line
+        // left it running in a substrate it then closed. The status carries the lost line
         // itself, so the answer it is given must not.
         let status = vm_child_finish(&lost, said.clone());
         if let Some(line) = vm_jobs_lost_line(&lost) {
@@ -3739,10 +3725,8 @@ impl HarnessTaskRunner {
             return Err(STOPPED_BEFORE_ITS_TURN.into());
         }
         let role = spec.role.as_str();
-        // The downgrade is a union: whatever this session was denied, its
-        // children are denied, plus what this call asks, plus what the ROLE itself refuses
-        // (`access:` in its file). A downgraded session cannot spawn a wider child by naming a
-        // wider role.
+        // The downgrade is a union of what this session was denied, what this call asks and what the
+        // role's `access:` refuses, so a downgraded session cannot spawn a wider child by naming a role.
         let profile = crate::profiles::resolve(
             &crate::profiles::table(&self.base),
             if role.is_empty() { "coder" } else { role },
@@ -3758,18 +3742,14 @@ impl HarnessTaskRunner {
         let spawned = std::time::Instant::now();
         let sub_id = sub_id.to_string();
         let title = subagent_title(prompt);
-        // The subagent seats the seat its PROFILE names, and coder when no role was named. The
-        // name has already been checked against this seat's own list by `start`, and a name this
-        // build does not know is refused rather than seated as coder, since that would be a
-        // subagent with more than it was meant to have.
+        // The subagent seats the seat its profile names, coder when none was named. An unknown name is
+        // refused rather than seated as coder, which would give it more than it was meant to have.
         let seat = Seat::parse(profile.seat())?;
         let parent = self.base.session_id.clone();
 
-        // Publish the state on the parent's hub, so a head attached there sees the spawn and the finish. Every
-        // spawn goes through the model door, the absent `model:` case included, which must not keep the PARENT's
-        // window while the daemon's own server answered: the call's word, then the ROLE's, then the
-        // seat's, then the parent's - a profile may name the model its work runs on, and a call that
-        // names one has said what it wants.
+        // Publish the state on the parent's hub so a head attached there sees the spawn and finish. The
+        // model is the call's, then the role's, the seat's, the parent's; an absent `model:` must not
+        // keep the parent's window while the daemon's own server answered.
         let named = spec
             .model
             .as_deref()
@@ -3954,7 +3934,7 @@ impl HarnessTaskRunner {
         // a command off its queue. See `letibot_sessionlog::hub::Owner`.
         sub_hub.owned_by_its_own_thread();
 
-        // X19: this session's `brief_worktree` layer says what a worktree child is told and may drop
+        // This session's `brief_worktree` layer says what a worktree child is told and may drop
         // a class of its tools. Asked before the config is built, because a seat narrowed after the
         // seat is seated is a child that has already answered with what it should not have.
         let shaped = self.child_brief(&sub_hub, spec, the_deliverable.as_ref());
@@ -3998,12 +3978,9 @@ impl HarnessTaskRunner {
         if !spec.skills.is_empty() {
             sub_cfg.skills = spec.skills.clone();
         }
-        // The child's prompt is composed for ITS seat at its open, not inherited: the parent's finished prompt
-        // carried its own-session paragraph and named doors a child does not hold. A parent running on a prompt
-        // it was GIVEN hands that prompt down as before. What rides in instead is the child's ROLE: its overlay,
-        // and the parent's own tool table closed over it, so a profile can only narrow what this session holds.
-        // A config with no overlay composes no prompt (a fixture's own `system`), and gets no role overlay for
-        // the same reason: there is no message zero to put one in.
+        // The child's prompt is composed for its own seat, not inherited: the parent's names doors a
+        // child lacks. A parent on a given prompt hands that down. The role adds its overlay over the
+        // parent's tool table, so a profile only narrows; a config with no overlay composes no prompt.
         if sub_cfg.seat_overlay.is_some() {
             sub_cfg.seat_overlay = crate::profiles::overlay(
                 Some(profile),
@@ -4172,9 +4149,8 @@ impl HarnessTaskRunner {
             self.retire_an_empty_tree(&sub_id);
             return Err(fail(STOPPED_BEFORE_ITS_TURN.into()));
         }
-        // THE CHILD'S OWN STACK, installed before its first turn can call a tool. Without a host every
-        // hook in a child was a no-op, so a reviewer's `review_verdict` could not be guarded
-        // (`docs/plugin-extension-points-wide.md` §1.1, X11).
+        // The child's own stack, installed before its first turn can call a tool: without a host
+        // every hook in a child is a no-op, and a reviewer's `review_verdict` cannot be guarded.
         open_the_childs_plugins(self, &sub, &sub_id);
         self.tasks.record(crate::tasks::TaskEntry {
             name: sub_id.clone(),
@@ -4274,10 +4250,9 @@ impl HarnessTaskRunner {
                 if let Some(said) = said {
                     why.push_str(&format!("\n\n[estate] {said}"));
                 }
-                // The backend is closed on this exit too - the other two close it below - so a
-                // child whose first turn failed does not leave its watchers and cgroups behind.
-                // And what it had running in a VM dies with that VM, said here because this exit
-                // has no answer to carry the line (R173).
+                // The backend is closed on this exit too, so a child whose first turn failed leaves no watchers
+                // or cgroups behind. Jobs it had in a VM die with that VM, said here because this exit has no
+                // answer to carry the line.
                 if placement != Placement::Host
                     && let Some(line) = vm_jobs_lost_line(&sub.jobs_lost_with_the_vm())
                 {
@@ -4421,10 +4396,9 @@ pub(crate) fn run_place(run: &letibot_tokencore::store::SubagentRun) -> String {
         .unwrap_or_default()
 }
 
-/// Install the child's plugin host on the cell its runtime was built with - the one door both hooks
-/// and the trap notices read. A parent the daemon never gave a host hands nothing down, which is the
-/// old behaviour: a child with no layers answers no hook. The child's host is not ticked, so its
-/// layers are the bytes it was spawned with; a running session's hot reload is the parent's.
+/// Install the child's plugin host on the cell its runtime was built with, the one door hooks and
+/// trap notices read. No parent host means no layers. The child's host is not ticked, so its
+/// layers stay the bytes it was spawned with; hot reload is the parent's.
 fn open_the_childs_plugins(parent: &HarnessTaskRunner, sub: &Harness, sub_id: &str) {
     let parent_host = parent
         .plugin_slot
@@ -4439,7 +4413,7 @@ fn open_the_childs_plugins(parent: &HarnessTaskRunner, sub: &Harness, sub_id: &s
     *sub.plugin_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(host));
 }
 
-/// What a `brief_worktree` layer said about one child (`docs/plugin-extension-points-wide.md` X19):
+/// What a `brief_worktree` layer said about one child:
 /// words appended to its brief, and the classes dropped from its seat. The drop is a [`Downgrade`],
 /// which only ever unions denials - so a layer can take a tool from a child and never give it one.
 pub(crate) struct BriefShape {
@@ -4448,9 +4422,8 @@ pub(crate) struct BriefShape {
 }
 
 impl HarnessTaskRunner {
-    /// This session's `brief_worktree` answer for a child it is about to open, or `None` when
-    /// nobody here answers or the child is in no worktree (there is no worktree brief to shape).
-    /// The facts are the host's: the placement the runner made, the seat the caller asked for, and
+    /// This session's `brief_worktree` answer for a child it is about to open, or `None` when nobody
+    /// answers or the child is in no worktree. The facts are the placement, the requested seat and
     /// the native brief the layer may add to.
     fn child_brief(
         &self,
@@ -4782,7 +4755,7 @@ mod opening_kill_tests {
         ))
     }
 
-    /// The merge queue kills a reviewer whose row moved before the child registered (R276).
+    /// The merge queue kills a reviewer whose row moved before the child registered.
     /// The kill is recorded on the slot, and the spawn reads it and ends with no turn run.
     #[test]
     fn a_kill_between_spawn_and_registration_ends_the_child_with_no_turn() {

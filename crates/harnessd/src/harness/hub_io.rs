@@ -215,10 +215,9 @@ impl SteeringSource for HubSteering {
                     context,
                     ..
                 } => {
-                    // The operator, typing into a running turn: the one utterance that can authorise the
-                    // action it is racing. An agent's line through a head is context and never that.
-                    // The chips are read HERE and not by the engine, because a turn's library has no
-                    // business opening the operator's files.
+                    // The operator typing into a running turn: the one utterance that can authorise the action it
+                    // races; an agent's line through a head never is. Chips are read here, not by the engine, which
+                    // has no business opening the operator's files.
                     if let Some(t) = &self.trail {
                         let who = if peer.is_some() {
                             Speaker::Agent
@@ -332,10 +331,9 @@ impl SteeringSource for HubSteering {
             }
             return Some(SteeringMessage::normal(text));
         }
-        // Then the one door: the room's lines and the results, taken together and said in the order
-        // they arrived, so nothing jumps the queue and no ring arrives before the line it follows.
-        // The room's lines are taken at every boundary (nothing else holds them); the results only at
-        // a step boundary, and never into a cheap turn, which leaves them for the full one after it.
+        // One door: the room's lines and the results together, in arrival order, so no ring arrives
+        // before the line it follows. Room lines are taken at every boundary; results only at a step
+        // boundary, and never into a cheap turn.
         let boundary = std::mem::take(&mut self.at_boundary);
         if let Some(d) = &self.deliveries {
             let now = d.at_round_boundary(boundary, self.cheap);

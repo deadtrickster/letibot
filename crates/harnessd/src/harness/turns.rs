@@ -462,11 +462,9 @@ impl Harness {
         // the joined text, so the facts a layer is handed are the ones its sentence was composed from.
         let queue = self.queue_notices();
         let mut notices = self.say_all(&Facts::MergeQueue { rows: queue.len() }, queue);
-        // The room's lines are NOT said here: they are one queue with the results now, and the door
-        // below says them in arrival order - see [`Deliveries::between_turns_unread`].
-        // And the children a restart brought back, one line each, saying which came back and which could not.
-        // Counted with the queue's notices, since both are facts the daemon found in the store rather than
-        // settlements that arrived.
+        // The room's lines are not said here: they share a queue with the results, said in arrival
+        // order below ([`Deliveries::between_turns_unread`]). Restored children get one line each,
+        // counted with the queue's notices since both are store facts, not settlements.
         let board_taken = std::mem::take(&mut self.board_notices);
         notices.extend(self.say_all(&Facts::Steer, board_taken.clone()));
         let restart_taken = self.restart_notices.clone();
@@ -715,10 +713,9 @@ impl Harness {
             };
             crate::room::link::wake_ended(&self.cfg.session_id, room_seqs, cheap, silent, tokens);
         }
-        // Told only once the turn has opened: opened means the notice is in the transcript and in the store, so
-        // the model reads it whatever its rounds come to. A turn that never opened put nothing in front of
-        // anybody, so everything the door took - the results and the room's lines, unacked - goes back and the
-        // next wake says it.
+        // Told only once the turn has opened, i.e. the notice is in the transcript and the store. A
+        // turn that never opened showed nobody anything, so everything the door took goes back unacked
+        // for the next wake.
         if opened {
             if let Some(d) = &deliveries
                 && let Some(now) = door.take()
@@ -1367,10 +1364,9 @@ impl Harness {
         // stays the row below and no generation is spent on working out there was nothing to do.
         owed.promise = self.last_words_wait_on_a_restart();
         let owed = &owed;
-        // The same sentence, and one clause when the session owes work - a model woken to
-        // *nothing was running* alone could not know why it is reading it now. Composed in `restart`
-        // because a lifecycle layer's `say` is part of it, and a layer may reword the restart without
-        // being able to cancel it (X21).
+        // The same sentence, plus a clause when the session owes work, so a woken model knows why.
+        // Composed in `restart` because a lifecycle layer's `say` is part of it; a layer may reword the
+        // restart but not cancel it.
         let host = self.plugin_host();
         let text = crate::restart::wake_text(
             host.as_deref(),
@@ -1439,10 +1435,9 @@ impl Harness {
         })
     }
 
-    /// What this session still owes, as `restart::Owed`: the facts that decide whether an otherwise empty
-    /// restart is a turn, each with the row's own words where it is a row. The board is read twice on
-    /// purpose, since `due` is the wake's own predicate and `plan` is every row still owed. A postponed
-    /// or cancelled row is the operator's act.
+    /// What this session still owes, as `restart::Owed`, each with the row's own words. The board is
+    /// read twice on purpose: `due` is the wake's predicate, `plan` every row still owed. Postponed or
+    /// cancelled rows are the operator's act.
     fn owed_after_a_restart(
         &self,
         last: Option<&TranscriptItem>,
@@ -1704,10 +1699,9 @@ impl Harness {
         items: Vec<TranscriptItem>,
         opened: impl FnOnce(&mut Self),
     ) -> Result<Reply, HarnessError> {
-        // The prompt's clock starts before the rows go in: from the moment a turn has words it is in flight, and
-        // the append below publishes, so a waiting head reads `turn` rather than a gap. Idempotent, since a
-        // wall-continuation comes back with the clock already running.
-        // Between turns, before the clock: the reseat forks the conversation the rows go into.
+        // Between turns, before the clock: the reseat forks the conversation the rows go into. The clock
+        // then starts before the rows, since the append publishes and a waiting head should read `turn`.
+        // Idempotent: a wall-continuation arrives with the clock running.
         let mut items = items;
         if let Some(said) = self.auto_reseat_before_turn() {
             items.insert(0, said);
@@ -2076,7 +2070,7 @@ impl Harness {
         // the model. One is the error signal, two is the harness insisting, and an explanation is a real answer.
         let mut nudges_left = 1usize;
         // The `steer_` input's `after`, taken once per turn: the mark a compaction's fork leaves
-        // describes the TURN that follows it, not one round of that turn (X14).
+        // describes the TURN that follows it, not one round of that turn.
         let mut after_a_record: Option<letibot_plugin::steer::After> = None;
         // And a worktree child about to finish with its work outside its branch: the same budget of one, told
         // what is uncommitted once, and then its answer stands, with the parent's completion carrying the line if
@@ -2121,10 +2115,9 @@ impl Harness {
             true => crate::done_offer::records(&self.cfg.workspace),
             false => Vec::new(),
         };
-        // And what this project already talked about, for the person who asks "remember we did
-        // that?": the index of turns the prompt no longer carries, and the two tools that reach
-        // them. Built once per turn, and not at all when the seat has not got `transcript` - a
-        // hint naming a tool the session cannot call is a round spent on a refusal.
+        // And the index of turns the prompt no longer carries, for "remember we did that?", with the
+        // two tools that reach them. Built once per turn, and not without `transcript`: a hint naming
+        // a tool the seat lacks costs a round on a refusal.
         let mut recall = crate::recall_offer::Offers::new()
             .with_tier(self.cfg.tier())
             .with_tools(seat_tools.iter());
@@ -2377,10 +2370,9 @@ impl Harness {
             self.meter_round(&ok.metrics, rendered_at);
             metrics.push(ok.metrics);
 
-            // The context claim, checked against what the daemon measured: judged once per round whichever way it went,
-            // so the log has every claim. And the reasoning in front of it, since a model that budgets by a percentage
-            // says it there and nowhere the operator reads. A claim found only there is told, never forced.
-            // A round that asks to compact says why in these words; it is judged, logged and quiet.
+            // The context claim, judged once per round against what the daemon measured, so the log has
+            // every claim, and in the reasoning too. A claim found only there is told, never forced; a round
+            // that asks to compact is judged, logged and quiet.
             let compacting = calls.iter().any(|c| {
                 use letibot_tools::builtins::session_self::{COMPACT, RESEAT};
                 c.name == COMPACT || c.name == RESEAT
@@ -2408,7 +2400,7 @@ impl Harness {
             if calls.is_empty() {
                 self.append_offer_rows(&mut staged)?;
                 // Taken rather than read: `after` describes THIS turn, and a later turn begins on a
-                // record only if something folded again between them (X14).
+                // record only if something folded again between them.
                 let after = *after_a_record.get_or_insert_with(|| self.after_the_fold());
                 // A model that stopped because the context is full when it is not: first, ahead of the intent check,
                 // since the excuse is usually why a promise was not kept. It goes through `append_notice`, because the
@@ -2418,14 +2410,9 @@ impl Harness {
                 if context_claim.is_some() {
                     goes_on = !claim_in_reasoning;
                 }
-                // The turn's end, as one decision (X14). The harness's own two detectors are
-                // computed first and as they always were - their budgets are per turn, so a layer
-                // that overrules them has not taken one from anybody - and a `steer_` layer's answer
-                // replaces what they said. The claim's correction above and a queued operator
-                // message below are not continue-or-stop decisions: a false sentence is corrected
-                // and a person's message is answered whoever is on the stack. A cheap wake is not
-                // offered to a layer at all: silence is the expected end of a turn woken by
-                // passing-by room talk, and no layer may put that noise back.
+                // The turn's end, as one decision. The harness's two detectors run first, with per-turn budgets,
+                // and a `steer_` layer's answer replaces theirs. The claim correction and a queued operator
+                // message are not continue-or-stop decisions, and a cheap wake is never offered to a layer.
                 if !goes_on && !self.cheap_turn {
                     let here = letibot_plugin::steer::Here {
                         continues_left: nudges_left,
@@ -2436,10 +2423,9 @@ impl Harness {
                     let mut native: Option<String> = None;
                     let mut intent = None;
                     if !ok.truncated {
-                        // The turn boundary, and the one the error signal is about: a turn that ends
-                        // with no tool call is exactly a model that says it will start something and
-                        // forgets. The diff runs before the reply leaves, reading the assistant's text
-                        // out of the rows just appended.
+                        // The turn boundary the error signal is about: a turn ending with no tool call is a model that
+                        // said it would start something and forgot. The diff runs before the reply leaves, on the rows
+                        // just appended.
                         intent = (nudges_left > 0)
                             .then(|| self.close_the_turn(&ok.turn_id, &appended))
                             .flatten();
@@ -2731,7 +2717,7 @@ impl Harness {
         if call.name == ASK_USER_QUESTION {
             asked.extend(self.settle_asked(&mut item));
         }
-        // A plugin layer sees the result before the model does (`docs/plugins-plan.md`),
+        // A plugin layer sees the result before the model does ,
         // and before the harness's own intercept below: the layer is about what the
         // CALL produced, and `pr_watch`'s sentence is the harness's own reading of it.
         if let TranscriptItem::ToolResult {
@@ -2776,10 +2762,9 @@ impl Harness {
         item
     }
 
-    /// The `AGENTS.md` of every directory this round's calls touched, for a SUBAGENT and once -
-    /// `crate::harness::guidance` says why it is a child's and what it costs. Said through the
-    /// mid-turn queue, which the loop drains at its own step boundary: a row appended here would
-    /// land between a tool call and its result.
+    /// The `AGENTS.md` of every directory this round's calls touched, for a subagent and once (see
+    /// `crate::harness::guidance`). Said through the mid-turn queue: a row appended here would land
+    /// between a tool call and its result.
     fn hand_over_guidance(&mut self, calls: &[letibot_transcript::ToolCall]) {
         if calls.is_empty() {
             return;
@@ -2935,11 +2920,9 @@ impl Harness {
         tail: &[TranscriptItem],
         key_asks: &mut usize,
     ) -> Result<(Result<TurnOk, TurnFailure>, letibot_http::retry::Ladder), HarnessError> {
-        // A prompt that arrives while the session is parked WAITS, and nothing is sent: the
-        // provider's own clock has not reached the reset, and one more call would only meet the
-        // same refusal. The prompt is already a row, so the turn the reset opens answers it.
-        // A session moved off the parked model owes nothing to that model's clock, so this
-        // round is the parked turn's continuation and the park is lifted here.
+        // A prompt arriving while parked waits unsent: the provider's clock has not reached the reset,
+        // and the prompt is already a row the reset's turn answers. A session moved off the parked model
+        // owes nothing to its clock, so this round continues the parked turn and the park is lifted.
         let unparked = self.unpark_after_a_switch().is_some();
         if !unparked
             && let Some(park) = self.limit_park.clone()
@@ -3081,8 +3064,8 @@ impl Harness {
             // key arm, since a refused key is that card's news and not the endpoint's weather.
             self.outage_failed(&e);
             let Some(wait) = ladder.failed(&e) else {
-                // The ladder is spent, and what comes next is the limit rule's to say: the operator's
-                // ruling is that a provider which named its reset never costs a session its turn.
+                // The ladder is spent, and what comes next is the limit rule's to say: the rule is
+                // that a provider which named its reset never costs a session its turn.
                 self.record_refusal(&e);
                 let e = self.with_the_plans_reset(e);
                 let here = self.model_name();
@@ -3503,10 +3486,8 @@ impl Harness {
             .warn("model_endpoint_retry", outage.did_not_answer());
     }
 
-    /// The outage is over and something else is the news - the session parked, the session moved, a
-    /// different endpoint failed: the count goes to `metrics.db` and the line goes off the screen.
-    /// One function because `settle_outage` is not the only ending, and a copy of these two lines
-    /// somewhere else is a count that goes missing on that path.
+    /// The outage is over and something else is the news: the count goes to `metrics.db` and the
+    /// line leaves the screen. One function because `settle_outage` is not the only ending.
     fn end_outage(&mut self, outage: &Outage, answered: bool) {
         self.meter.retry(
             &self.cfg.session_id,
@@ -3519,9 +3500,6 @@ impl Harness {
         self.withdraw_series(outage);
     }
 
-    /// The provider's trouble, as the type an automation branches on. Called where the daemon knows
-    /// the round is over for good, not per attempt: a ladder of five calls against one 429 is one fact.
-    /// The count is the run of this kind, so a caller can tell the first timeout from the fourth.
     /// A limit's or a refusal's own words, kept where a later diagnosis can read them: the
     /// warning is a developer code, so it lands in the daemon log as well as on the session.
     fn record_refusal(&self, e: &letibot_turn::HttpError) {
@@ -3608,11 +3586,8 @@ impl Harness {
             return None;
         }
         for name in list {
-            // Once each, and never the model that just refused the round. A name
-            // already spent is skipped; a name that IS what is answering would be a
-            // no-op switch and the same failure one attempt later. A name the provider has
-            // already PUT A TIME ON is skipped too - a fallback that is limited as well is not a
-            // fallback, and landing there would spend the turn to learn what this session knows.
+            // Once each, never the model that just refused. Skipped: a spent name, the one answering (a
+            // no-op switch), and one the provider has put a time on - a limited fallback is no fallback.
             if tried.contains(&name) || name == here {
                 continue;
             }
@@ -3664,10 +3639,9 @@ impl Harness {
         // `fallback_notice`'s, said by the caller with the provider's own refusal in it.
         let target = model_name_of(&Some(pc.clone()));
         self.pend_switch(Some(pc), target.clone());
-        // And the work goes on by itself: `run_turn` opens this turn when the one that met the refusal has
-        // ended, with the notice as its user item. Not when THIS turn is already a continuation, or a fallback
-        // chain would ping-pong between two names for ever - which a limit chain would too, one turn later:
-        // the next turn finds the model it moved to limited as well and moves on from there.
+        // The work goes on: `run_turn` opens this turn after the refused one ends, with the notice as
+        // its user item. Not when this turn is already a continuation, or a fallback chain would
+        // ping-pong between two names for ever.
         if !self.in_fallback_continuation() {
             // The sentence goes through the one door HERE, where the two models it names are in
             // hand: `continue_after_fallback` says what this decided, and the turn opens with it.
@@ -3737,7 +3711,7 @@ impl Harness {
         }
     }
 
-    /// The turn's end offered to a `steer_` layer (X14), with the harness's own detectors as the facts
+    /// The turn's end offered to a `steer_` layer, with the harness's own detectors as the facts
     /// it reads to overrule them. `None` is *no layer decided* - no layer on the stack, a trap, or an
     /// answer the host refused - and the harness's own answer then stands.
     fn steer_at_the_turn_end(
@@ -3911,10 +3885,8 @@ impl Harness {
         self.record_notice(text)
     }
 
-    /// The one door a model-facing sentence goes through: the harness's words offered to the
-    /// `notice_<kind>` layer for the facts' kind, and `None` when a layer dropped a kind that may be
-    /// dropped. A session with no layer answers at once, so its sentence is byte-identical to the
-    /// one it said before this door existed.
+    /// The one door a model-facing sentence goes through: offered to the `notice_<kind>` layer, and
+    /// `None` when a layer dropped a droppable kind. With no layer the sentence is the harness's own.
     pub(crate) fn say(&self, facts: &Facts, text: &str) -> Option<String> {
         say(self.plugin_host().as_deref(), &self.hub, facts, text)
     }
@@ -4041,10 +4013,9 @@ impl Harness {
         }
     }
 
-    /// The lines a reply cites, published after its row: the stored snapshot when there is one, since a reply
-    /// restored or carried by a fork shows what it cited when it was written, and otherwise the file as it is now -
-    /// or the unsaved buffer this turn's prompt carried, which is what the model was reading. Silent for a row
-    /// that cites nothing.
+    /// The lines a reply cites, published after its row: the stored snapshot if any (a restored or
+    /// forked reply shows what it cited when written), else the file now or this turn's unsaved
+    /// buffer, which is what the model read. Silent for a row that cites nothing.
     pub(crate) fn publish_citations(&self, item_id: &str, item: &TranscriptItem) {
         let TranscriptItem::Assistant { text, .. } = item else {
             return;
@@ -4745,7 +4716,7 @@ fn limit_fallback_notice(why: &str, opens_a_turn: bool) -> String {
 }
 
 /// What the harness's own detectors saw at a turn's end, gathered for the `steer_` layer that may
-/// overrule them (X14). Borrowed rather than owned: every field is something the loop already holds.
+/// overrule them. Borrowed rather than owned: every field is something the loop already holds.
 struct TurnEnd<'a> {
     reply: &'a str,
     claim: &'a Option<(String, Facts)>,
@@ -5771,10 +5742,8 @@ mod endpoint_retry {
         assert_eq!((d.first_byte.as_secs(), d.answer.as_secs()), (30, 30));
     }
 
-    /// The protocol fork, seen from the daemon: `gemini` gets the GenAI client, which refuses a tool
-    /// schema Gemini cannot read BEFORE any request goes out. The OpenAI-shaped client would have
-    /// posted it — it passes a schema through untouched — so this is the one observable that tells
-    /// the two apart without a network.
+    /// `gemini` gets the GenAI client, which refuses a schema Gemini cannot read before any request;
+    /// the OpenAI-shaped client would pass it through. The one offline observable telling them apart.
     #[test]
     fn a_gemini_provider_is_the_genai_client_and_not_the_chat_completions_one() {
         use letibot_backend::{BackendError, StreamFlow};

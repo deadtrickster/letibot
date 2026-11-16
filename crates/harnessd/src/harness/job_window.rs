@@ -483,7 +483,7 @@ pub(crate) fn vm_jobs_lost_line(lost: &[letibot_tools::exec::JobView]) -> Option
 
 /// A VM child's settlement over the jobs that died with its VM: its answer when nothing did, and
 /// a `Killed` carrying both when something did - a finish over a killed job is not a finish, so
-/// it is its own status and not a `Done` (R173). Pure, so the rule is asserted without a VM.
+/// it is its own status and not a `Done`. Pure, so the rule is asserted without a VM.
 pub(crate) fn vm_child_finish(
     lost: &[letibot_tools::exec::JobView],
     answer: String,

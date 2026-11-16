@@ -653,10 +653,9 @@ impl Harness {
         self.turn_tools = rules;
     }
 
-    /// Put a command file's `model` on for the one turn it starts, without writing the session
-    /// row. `Ok(None)` is that model already answering; `Ok(Some(back))` is what
-    /// [`Harness::end_turn_model`] restores. A fleet model is refused: its switch re-renders the
-    /// conversation, and doing that twice for one turn costs more than the turn.
+    /// Put a command file's `model` on for the turn it starts, without writing the session row.
+    /// `Ok(None)` is that model already answering; `Ok(Some(back))` is what
+    /// [`Harness::end_turn_model`] restores. A fleet model is refused: it re-renders the conversation.
     pub fn turn_model(&mut self, spec: &str) -> Result<Option<TurnModelBack>, String> {
         if self.prompt_in_flight.load(Ordering::SeqCst) {
             return Err("a turn is already running on this session".into());
@@ -1059,9 +1058,8 @@ impl Harness {
     }
 
     /// The models this box's sessions were last switched to, newest first, at most
-    /// [`RECENT_MODELS`] - the card's own group above the providers. The row the store keeps is a
-    /// session's LATEST choice and can be a bare preset, so each is resolved to a switch name here
-    /// rather than by every head that reads the row.
+    /// [`RECENT_MODELS`]. The stored row is a session's latest choice and can be a bare preset, so
+    /// each is resolved to a switch name here rather than by every head.
     pub fn recent_models(&self) -> Vec<String> {
         let Some(store) = &self.store else {
             return Vec::new();
@@ -1110,7 +1108,7 @@ impl Harness {
     pub fn close_backend(&self) -> Option<String> {
         // A VM going down takes what was running in it, and this is the one door it goes down
         // through: a stop, a failed turn and a shutdown all reach here. Recorded as the kill it
-        // was before the guest is gone, so no reader guesses it from the client's exit (R173).
+        // was before the guest is gone, so no reader guesses it from the client's exit.
         if self.cfg.placement.is_vm() {
             let _ = self.jobs_lost_with_the_vm();
         }

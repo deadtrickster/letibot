@@ -73,10 +73,9 @@ pub(crate) fn monitor_notice(fired: &[letibot_tools::exec::monitor::Firing]) -> 
     (!lines.is_empty()).then(|| lines.join("\n"))
 }
 
-/// The row a delivery becomes: a `Notice`, so nothing has to remember to attribute it. A `User`
-/// row's `speaker` defaults to the operator, and a row written without one reads as their words.
-/// The facts the sentence was composed from ride the row: a head draws the card from them, so a
-/// `notice_` layer that rewords the sentence cannot take the card with it (X22).
+/// The row a delivery becomes: a `Notice`, because a `User` row with no `speaker` reads as the
+/// operator's words. The facts ride the row so a head draws the card from them, and a `notice_`
+/// layer that rewords the sentence cannot take the card with it.
 pub(crate) fn notice_row(
     kind: letibot_transcript::NoticeKind,
     text: impl Into<String>,
@@ -446,8 +445,8 @@ pub(crate) fn handles_as(field: &str, done: &[JobCompletion]) -> String {
         .join(", ")
 }
 /// One channel, two nouns: a job and a subagent arrive through the same queue and ring the same bell,
-/// and are told apart here rather than in two queues, because two queues would be the second mechanism
-/// the ruling avoided. `owner != me` is what says whose a settlement was.
+/// and are told apart here rather than in two queues, because two queues would be a second mechanism
+/// for one thing. `owner != me` is what says whose a settlement was.
 pub(crate) fn completion_notices(
     done: Vec<JobCompletion>,
     me: &str,
@@ -822,10 +821,9 @@ impl Deliveries {
         }
     }
 
-    /// The sentences, in the order the items arrived: a run of results keeps
-    /// `completion_notices`' grouping, and a room line is its own sentence. `digest` is a turn that
-    /// exists because these lines were held, so the ones nothing rang for open with one
-    /// `[meanwhile]` heading and are each their own line under it.
+    /// The sentences, in arrival order: a run of results keeps `completion_notices`' grouping, a
+    /// room line is its own sentence. Under `digest`, lines nothing rang for open with one
+    /// `[meanwhile]` heading, one line each.
     fn render(&self, owed: Vec<Owed>, rows: &[TodoItem], digest: bool) -> Vec<Said> {
         let mut out: Vec<Said> = Vec::new();
         let mut headed = false;

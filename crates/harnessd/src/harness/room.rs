@@ -43,11 +43,9 @@ impl Harness {
         true
     }
 
-    /// The room's reminders and its asks, onto this session's own board: one row per item it holds,
-    /// one per question it owes an answer to, and the settles of its own asks applied to the rows
-    /// that were waiting. Carried by the idle check, so a holder is reminded and an asker is
-    /// released without a model call. A subagent returns 0 first, because the room's rule is
-    /// top-level sessions only. A room that does not answer clears the rows.
+    /// The room's reminders and asks onto this session's board: a row per held item and per owed
+    /// answer, with settled asks applied. Carried by the idle check, so no model call is needed. A
+    /// subagent returns 0 (top-level only); a room that does not answer clears the rows.
     pub fn fill_room_board(&mut self) -> usize {
         // The room's rule, said here as well as at the door. See this function's own doc.
         if self.cfg.parent_session_id.is_some() {
@@ -69,10 +67,8 @@ impl Harness {
     }
 
     /// The ask half of the room pass: what this session owes, what settled, what to take back, and
-    /// the operator's card for a peer that has been gone too long.
-    ///
-    /// One read answers all four, and it is the read that makes the pass idempotent: the room holds
-    /// the ask, so a daemon that restarted applies what settled while it was away on its first pass.
+    /// the card for a peer gone too long. One read answers all four, which keeps the pass idempotent
+    /// across a restart: the room holds the ask.
     fn apply_asks(&mut self, room: &Arc<crate::room::link::SessionRoom>, me: &str) -> usize {
         let Ok((by_me, of_me)) = room.asks() else {
             return 0;

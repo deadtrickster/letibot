@@ -241,12 +241,9 @@ impl Harness {
         resolved.len()
     }
 
-    /// The `[todo check]` text, or nothing, and a row the operator postponed is not part of it. The rows are read
-    /// through `the_plan_as_checked`, the same reading the arming decision takes, so clock and sentence cannot disagree.
-    /// Reading it does not remember what it named: `nag_turn` commits it, where a check is delivered.
-    ///
-    /// **Ask-free**, and that is what the daemon's due clock needs: it reads this to know whether a
-    /// check is worth a turn, and the layer is asked once, inside the turn.
+    /// The `[todo check]` text, or nothing; a postponed row is not part of it. Read through
+    /// `the_plan_as_checked`, as the arming decision is, so clock and sentence agree. Asks no layer,
+    /// so the due clock can call it; `nag_turn` commits what it named.
     pub fn nag_notice(&self) -> Option<String> {
         let plan = self.the_plans_nag_written().map(|(text, _)| text);
         self.with_the_stale(plan)
@@ -255,10 +252,9 @@ impl Harness {
     /// The plan's sentence with the stale-prompt one folded in, whichever of the two there is: the
     /// stale sentence is a fact of its own, so a plan a layer held back still reaches the model.
     fn with_the_stale(&self, plan: Option<String>) -> Option<String> {
-        // The prompt this session speaks when it is not this daemon's: the sentence is composed once
-        // at open for the attach path and the model cannot see it, so a session can run long on a
-        // prompt its daemon would not compose. Told once, as information; the person has the choice
-        // on screen.
+        // The prompt this session speaks when it is not this daemon's: composed once at open for the
+        // attach path and unseen by the model, so a session can run long on a stale one. Told once, as
+        // information; the person decides.
         let stale = self.stale_untold();
         match (plan, stale) {
             (None, None) => None,
@@ -291,10 +287,9 @@ impl Harness {
         unfinished_plan(&askable, &board, &children, &jobs)
     }
 
-    /// [`Harness::nag_notice`] and the row it named - `None` for the second half when the notice is
-    /// only the stale-prompt sentence, which names no row. The plan's words are the `nag_` layer's
-    /// to choose: it is asked here, and no layer means the harness's own sentence, which is what a
-    /// session without layers has always read.
+    /// [`Harness::nag_notice`] and the row it named, `None` for the row when the notice is only the
+    /// stale-prompt sentence. The `nag_` layer chooses the plan's words; with no layer it is the
+    /// harness's own sentence.
     fn nag_notice_naming(&self) -> Option<TheNag> {
         // The board, the narrowed rows the check may speak about (the ONE predicate), the children
         // and the jobs. All four are taken here rather than remembered, because a need is met by a
@@ -625,10 +620,9 @@ impl Harness {
             })
     }
 
-    /// The pause at open, from the session's own row. A pause made by this daemon (a session closed
-    /// and opened again) is kept. One from an earlier daemon is dropped, the row cleared and said:
-    /// a pause never survives a restart. The row is read even when empty, since a child's config
-    /// is a clone of its parent's and a parent's pause must not ride into it.
+    /// The pause at open, from the session's own row. A pause made by this daemon is kept; one from
+    /// an earlier daemon is dropped and said, since a pause never survives a restart. The row is read
+    /// even when empty because a child's config clones its parent's, pause included.
     pub fn restore_nag_pause(&mut self) {
         use crate::nag_pause::{NagBy, PausedBy};
         self.cfg.nags_paused = None;
