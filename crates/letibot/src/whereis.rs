@@ -20,7 +20,8 @@ letibot where [FOLDER] [--ensure] [--json]
 
   FOLDER     the folder (default: this one); its git toplevel, as the launcher resolves it
   --ensure   start the folder's daemon when none is running, then answer
-  --json     one object: socket, live, project (the key), folder
+  --json     one object: socket, live, project (the key), folder, protocol (what the daemon
+             says it speaks; null when nothing is up), this_build
 
   The plain form is two lines: the socket, then `up` or `down`.
 
@@ -92,12 +93,21 @@ fn answer(folder: &Path, ensure: bool, json: bool) -> Result<(), String> {
     }
     // Asked after the start, so a daemon that did not come up says `down` rather than lying.
     let live = daemon::is_up(&d.socket);
+    // What the daemon itself speaks, for the one caller that has to decide whether it can be
+    // attached to: a daemon accepts a differing head and says nothing in its text about it.
+    let speaks = if live {
+        letibot_sessionlog::placement::protocol(&d.socket)
+    } else {
+        None
+    };
     if json {
         let object = serde_json::json!({
             "socket": d.socket.display().to_string(),
             "live": live,
             "project": d.key,
             "folder": d.workspace.display().to_string(),
+            "protocol": speaks,
+            "this_build": letibot_sessionlog::PROTOCOL_VERSION,
         });
         println!("{object}");
     } else {

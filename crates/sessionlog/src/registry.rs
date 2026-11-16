@@ -978,6 +978,10 @@ pub struct Registry {
     /// serves, or `None` - the ordinary case. A fact about the PROCESS, so it is set once at
     /// startup and said on every attach: a head that arrives later was not there for the once.
     store_older: Mutex<Option<String>>,
+    /// Which `(session, identity)` pairs have already been told their daemon is on another
+    /// protocol. A skew is a fact about a head's own connection, so one attachment says it once:
+    /// a head that reconnects on every keystroke must not fill the transcript with it.
+    skew_said: Mutex<std::collections::BTreeSet<String>>,
 }
 
 /// What the worker was woken for. A second variant rather than a second loop:
@@ -1128,6 +1132,7 @@ impl Registry {
             restarting: std::sync::atomic::AtomicBool::new(false),
             slugs: Mutex::new(std::collections::HashMap::new()),
             store_older: Mutex::new(None),
+            skew_said: Mutex::new(std::collections::BTreeSet::new()),
         })
     }
 
@@ -2020,6 +2025,15 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
+    }
+
+    /// Whether this `(session, identity)` still owes its protocol skew: `true` the first time, and
+    /// `false` on every later attachment of the same head.
+    pub fn first_skew_for(&self, session_id: &str, identity: &str) -> bool {
+        self.skew_said
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(format!("{session_id}\0{identity}"))
     }
 
     /// The jobs a session's harness last published: the answer for a session that installed no

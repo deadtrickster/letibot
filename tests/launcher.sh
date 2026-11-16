@@ -647,16 +647,25 @@ time.sleep(120)' "$SOCK_P" &
     echo "     NOTHING WAS CHECKED — this is a fact about the harness, not a pass."
     kill "$_listener" 2> /dev/null || true
   else
+    # The number the refusal quotes is ASKED of the resolver (`letibot where --json`), because a
+    # daemon that accepts a differing head says nothing about a version in its prose.
+    cat > "$T/bin/letibot-multi" << 'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '{"socket":"/tmp/s.sock","live":true,"project":"ws","folder":"/tmp/ws","protocol":22,"this_build":36}'
+STUB
+    chmod +x "$T/bin/letibot-multi"
     out="$(run "$DEFAULT_ONLY")"
-    expect "a daemon speaking another protocol is refused, not attached to" "$out" "does not speak this build's protocol"
+    expect "a daemon speaking another protocol is refused, not attached to" "$out" "speaks protocol 22 and this build speaks 36"
     expect "  ...and the sentence names the way out" "$out" "letibot --stop"
     expect "  ...and says nothing is lost" "$out" "on disk"
     refuse "  ...and no head is handed to it" "$out" "THE HEAD RAN"
 
     out="$(run "$DEFAULT_ONLY" --attach)"
-    expect "--attach refuses in the same words" "$out" "does not speak this build's protocol"
+    expect "--attach refuses in the same words" "$out" "speaks protocol 22 and this build speaks 36"
     refuse "  ...and does not claim to have attached" "$out" "attached to harnessd"
 
+    # Gone again: the cases below stub their own, with the argv they are checking.
+    rm -f "$T/bin/letibot-multi"
     kill "$_listener" 2> /dev/null || true
   fi
 else

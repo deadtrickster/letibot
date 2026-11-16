@@ -20,21 +20,37 @@ pub fn write(socket: &Path, spelling: &str) -> std::io::Result<()> {
     std::fs::write(
         &tmp,
         format!(
-            "socket {dev}:{ino}\nstamp {secs}.{nsec}\nplacement {}\n",
-            spelling.trim()
+            "socket {dev}:{ino}\nstamp {secs}.{nsec}\nplacement {}\nprotocol {}\n",
+            spelling.trim(),
+            crate::protocol::PROTOCOL_VERSION
         ),
     )?;
     std::fs::rename(&tmp, &target)
+}
+
+/// What the daemon beside this socket says it speaks, or `None` when there is no record or it is
+/// not this socket's. The daemon's own statement: a head cannot read it off a refusal's prose,
+/// which says nothing about a version the daemon accepts and serves.
+pub fn protocol(socket: &Path) -> Option<u32> {
+    let (_, protocol) = parse(socket)?;
+    protocol
 }
 
 /// Where the daemon holding this socket says its tools run, or `None` when there is no record or
 /// the record is not this socket's. `None` is *nothing is known*, never *local*: a caller that has to
 /// decide something from this must fail closed on it.
 pub fn read(socket: &Path) -> Option<String> {
+    let (spelling, _) = parse(socket)?;
+    spelling
+}
+
+/// The record at this socket, when it is this socket's: the placement spelling and the protocol.
+fn parse(socket: &Path) -> Option<(Option<String>, Option<u32>)> {
     let text = std::fs::read_to_string(path(socket)).ok()?;
     let mut recorded: Option<(u64, u64)> = None;
     let mut stamp: Option<(i64, u64)> = None;
     let mut spelling: Option<String> = None;
+    let mut protocol: Option<u32> = None;
     for line in text.lines() {
         let Some((key, value)) = line.split_once(' ') else {
             continue;
@@ -58,6 +74,7 @@ pub fn read(socket: &Path) -> Option<String> {
                     spelling = Some(value.to_string());
                 }
             }
+            "protocol" => protocol = value.trim().parse().ok(),
             // A key this build does not know is not a fault: the record is a fact of the build
             // that wrote it, and a reader that refused the whole file over a line it does not
             // use would break on the next field added.
@@ -69,7 +86,7 @@ pub fn read(socket: &Path) -> Option<String> {
     // daemon that is gone (see this module's doc). The stamp is the half a reused inode
     // cannot fake: a rebind that takes the inode back still binds later than the record.
     let stamp = stamp?;
-    (socket_identity(socket).ok()? == (recorded, stamp)).then_some(spelling)?
+    (socket_identity(socket).ok()? == (recorded, stamp)).then_some((spelling, protocol))
 }
 
 /// The identity of a socket: `(dev, ino)` - the pair that says *this file, not another one at the
@@ -113,6 +130,12 @@ mod tests {
         // And a daemon on this box records `host`, which is a placement and not an absence.
         write(&socket, "host").expect("the record is rewritten");
         assert_eq!(read(&socket).as_deref(), Some("host"));
+        // And the number it speaks, which is what a launcher compares before it attaches.
+        assert_eq!(
+            protocol(&socket),
+            Some(crate::protocol::PROTOCOL_VERSION),
+            "the daemon's own protocol, beside its own socket"
+        );
         let _ = std::fs::remove_dir_all(socket.parent().expect("a parent"));
     }
 
