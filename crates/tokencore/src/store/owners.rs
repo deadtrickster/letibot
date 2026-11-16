@@ -38,7 +38,11 @@ CREATE TABLE IF NOT EXISTS owner (
     -- the last return to live, which the hard TTL is measured from (schema 54); NULL = creation
     live_since_ms INTEGER,
     -- the latest close, which the work grace is measured from (schema 58); NULL = the first close
-    last_closed_ms INTEGER
+    last_closed_ms INTEGER,
+    -- this owner's own daemon, when it recorded itself: pid and /proc start time (schema 59),
+    -- so the daemon-gone trigger never reads another repo's daemon as this one's
+    daemon_pid   INTEGER,
+    daemon_start INTEGER
 );
 CREATE INDEX IF NOT EXISTS owner_by_state ON owner (state);
 CREATE INDEX IF NOT EXISTS owner_by_parent ON owner (parent_id);
@@ -306,6 +310,10 @@ pub struct OwnerRow {
     pub live_since_ms: Option<i64>,
     /// The latest close. The work grace runs from it; `closed_ms` keeps the first one.
     pub last_closed_ms: Option<i64>,
+    /// This owner's own daemon, stamped by the daemon that opened it: pid and its /proc start
+    /// time, which together name one process and refuse a reused pid.
+    pub daemon_pid: Option<u32>,
+    pub daemon_start: Option<u64>,
 }
 
 impl OwnerRow {
@@ -329,6 +337,8 @@ impl OwnerRow {
             created_ms: now_ms,
             live_since_ms: Some(now_ms),
             last_closed_ms: None,
+            daemon_pid: None,
+            daemon_start: None,
         }
     }
 
@@ -462,7 +472,7 @@ pub struct ReapEvent {
 
 const OWNER_COLUMNS: &str = "id, kind, parent_id, repo, state, held_until_ms, lease_ms, idle_ttl_ms, \
                              hard_ttl_ms, closed_ms, closed_why, landed_sha, settled_ms, created_ms, \
-                             live_since_ms, last_closed_ms";
+                             live_since_ms, last_closed_ms, daemon_pid, daemon_start";
 
 fn owner_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<OwnerRow> {
     let kind: String = r.get(1)?;
@@ -486,6 +496,8 @@ fn owner_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<OwnerRow> {
         created_ms: r.get(13)?,
         live_since_ms: r.get(14)?,
         last_closed_ms: r.get(15)?,
+        daemon_pid: r.get::<_, Option<i64>>(16)?.map(|p| p as u32),
+        daemon_start: r.get::<_, Option<i64>>(17)?.map(|s| s as u64),
     })
 }
 
@@ -522,8 +534,9 @@ impl Store {
         self.exec(
             "INSERT INTO owner (id, kind, parent_id, repo, state, held_until_ms, lease_ms,
                                 idle_ttl_ms, hard_ttl_ms, closed_ms, closed_why, landed_sha,
-                                settled_ms, created_ms, live_since_ms, last_closed_ms)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+                                settled_ms, created_ms, live_since_ms, last_closed_ms,
+                                daemon_pid, daemon_start)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
              ON CONFLICT(id) DO UPDATE SET
                kind = excluded.kind, parent_id = excluded.parent_id, repo = excluded.repo,
                state = excluded.state, held_until_ms = excluded.held_until_ms,
@@ -531,7 +544,8 @@ impl Store {
                hard_ttl_ms = excluded.hard_ttl_ms, closed_ms = excluded.closed_ms,
                closed_why = excluded.closed_why, landed_sha = excluded.landed_sha,
                settled_ms = excluded.settled_ms, live_since_ms = excluded.live_since_ms,
-               last_closed_ms = excluded.last_closed_ms",
+               last_closed_ms = excluded.last_closed_ms, daemon_pid = excluded.daemon_pid,
+               daemon_start = excluded.daemon_start",
             params![
                 o.id,
                 o.kind.word(),
@@ -549,6 +563,8 @@ impl Store {
                 o.created_ms,
                 o.live_since_ms,
                 o.last_closed_ms,
+                o.daemon_pid,
+                o.daemon_start.map(|s| s as i64),
             ],
         )?;
         Ok(())

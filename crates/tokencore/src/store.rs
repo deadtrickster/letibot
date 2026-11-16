@@ -204,7 +204,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 58;
+pub const SCHEMA_VERSION: i64 = 59;
 
 /// A session's plan-check pause as its row holds it: `until` is `0` for until resumed, else the
 /// unix ms it ends at. `at_ms` and `by` are `None` on a row written before v51.
@@ -2753,6 +2753,21 @@ impl Store {
             {
                 self.conn()
                     .execute_batch("ALTER TABLE owner ADD COLUMN last_closed_ms INTEGER")?;
+            }
+        }
+        if from < 59 {
+            // v59: this owner's own daemon, pid and start time, so the daemon-gone trigger never
+            // reads another repo's daemon as this one's. NULL = no daemon recorded itself.
+            if self.probe("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'owner'")? {
+                for col in ["daemon_pid", "daemon_start"] {
+                    if !self.probe(&format!(
+                        "SELECT 1 FROM pragma_table_info('owner') WHERE name = '{col}'"
+                    ))? {
+                        self.conn().execute_batch(&format!(
+                            "ALTER TABLE owner ADD COLUMN {col} INTEGER"
+                        ))?;
+                    }
+                }
             }
         }
         Ok(())
