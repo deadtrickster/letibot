@@ -895,7 +895,7 @@ already up, then attaches the TUI head to it.
                               the model, remote hosts, the room, the VM
   letibot session list        what is on disk; also show, rename, archive, unarchive, delete
   letibot <verb> --help       a verb's own page: session, stats, boundary, notes, browser,
-                              rooms, holds, gc, where, migrate, fb, attach
+                              rooms, holds, hold, release, gc, where, migrate, fb, attach
   letibot --help removed      what this release took away, and what replaced it
 
 Every setting that lives in a file stays in a file: ~/.config/letibot/providers.toml for
@@ -928,7 +928,8 @@ EOF
 
 VERBS
   session list|show|rename|archive|unarchive|delete   the stored sessions
-  stats, boundary, notes, browser, rooms, holds, gc, where, migrate, fb, attach, doctor
+  stats, boundary, notes, browser, rooms, holds, hold, release, gc, where, migrate, fb,
+  attach, doctor
   `letibot <verb> --help` is that verb's own page; a verb with no page prints this list.
 
 Env overrides: LETIBOT_BIN LETIBOT_SOCKET LETIBOT_WORKSPACE LETIBOT_STORE
@@ -1215,7 +1216,7 @@ fi
 
 # `--ensure` and `--json` belong to `--where` alone — the same rule one verb over: a flag
 # that does nothing is a flag the operator cannot trust.
-if [ "${1:-}" != "--where" ]; then
+if [ "${1:-}" != "--where" ] && [ "${1:-}" != where ]; then
   for a in "$@"; do
     case "$a" in
       --ensure | --json) die "$a only means something with --where" ;;
@@ -2305,7 +2306,7 @@ case "${1:-}" in
     [ $# -ge 3 ] || need "TRANSCRIPT BACKUP" --revert
     exec "${NOGPU[@]}" "$BIN/harnessd" --revert "$2" "$3"
     ;;
-  --where)
+  --where | where)
     # Which socket this folder's daemon listens on, and whether it is up, for a program that
     # drives letibot. The bridge's resolver answers (`$BIN/letibot-multi where`), the same one
     # `--ensure` uses; no second copy of the hash. The folder is passed so `LETIBOT_WORKSPACE`
@@ -2735,10 +2736,9 @@ SESSIONS_EOF
     fi
     exit 0
     ;;
-  # The binary's own verbs (`stats`, `fb`, `boundary`, `migrate`), which take words after them.
-  # Without an arm the first word would fall through to a one-shot prompt. Each hands its line
-  # on unchanged; the verb's parser refuses what it does not know.
-  stats | boundary | fb | holds | gc)
+  # The binary's own verbs, which take words after them. Without an arm the first word falls
+  # through to a billed one-shot prompt; the verb's parser refuses what it does not know.
+  stats | boundary | fb | holds | gc | hold | release)
     [ -x "$BIN/letibot-multi" ] || die "no letibot-multi at $BIN (the metrics, boundary and lifecycle verbs live there)"
     exec "$BIN/letibot-multi" "$@"
     ;;
