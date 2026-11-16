@@ -33,6 +33,10 @@ pub(crate) trait Wire: Send {
     fn notify(&mut self, msg: &Value) -> Result<(), WireError>;
     /// The methods of the notifications seen since the last call, pending ones drained first.
     fn take_notices(&mut self) -> Vec<String>;
+    /// The child's pid, for a stdio server.
+    fn pid(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// The one notification acted on: the server's tool list changed, so it is listed again.
@@ -292,6 +296,10 @@ impl Wire for StdioWire {
             }
         }
         std::mem::take(&mut self.notices)
+    }
+
+    fn pid(&self) -> Option<u32> {
+        Some(self.child.id())
     }
 }
 

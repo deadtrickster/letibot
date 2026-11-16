@@ -68,7 +68,7 @@ fn tools_are_listed_searched_and_called() {
     assert_eq!(
         tools,
         [
-            "echo", "big", "fail", "crash", "grow", "pwd", "env", "spawn"
+            "echo", "big", "fail", "crash", "grow", "pwd", "env", "spawn", "pid"
         ]
     );
     let mut h = harness(Arc::new(cat), allow_all_mcp());
@@ -137,7 +137,8 @@ fn a_server_that_fails_to_start_is_reported_and_the_rest_start() {
             timeout: Duration::from_secs(5),
         },
     ]);
-    let failed: Vec<&str> = cat.failures().iter().map(|f| f.server.as_str()).collect();
+    let failures = cat.failures();
+    let failed: Vec<&str> = failures.iter().map(|f| f.server.as_str()).collect();
     assert_eq!(failed, ["dead", "missing"]);
     assert!(
         cat.failures()[0].why.contains("refusing to start"),

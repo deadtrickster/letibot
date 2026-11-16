@@ -15,6 +15,10 @@ serde_json.workspace = true
 # `killpg` on drop: a server's own process group dies with it.
 libc = "0.2"
 
+[features]
+# The fake server as a module, for another crate's tests to run in its own test binary.
+fake = []
+
 # The fake stdio server the tests drive. A bin so `CARGO_BIN_EXE_` names it; nothing installs it.
 [[bin]]
 name = "letibot-mcp-fake"
