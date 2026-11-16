@@ -709,7 +709,16 @@ pub fn serve_conn_rooted(
     let mut reader = FrameReader::new(stream);
     let writer = Arc::new(Mutex::new(FrameWriter::new(out)));
 
-    let first: ClientFrame = reader.read()?;
+    let first: ClientFrame = match reader.read() {
+        Ok(f) => f,
+        // Said before the socket goes, so a peer past the limit learns which limit.
+        Err(e @ WireError::TooLong { .. }) => {
+            let reason = format!("the first frame was refused: {e}");
+            let _ = writer.lock().unwrap().write(&ServerFrame::Bye { reason });
+            return Err(e);
+        }
+        Err(e) => return Err(e),
+    };
     let ClientFrame::Attach {
         protocol_version,
         session_id,

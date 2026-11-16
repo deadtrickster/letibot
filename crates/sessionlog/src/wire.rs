@@ -4,6 +4,13 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 
+/// The longest line a daemon reads from a connection. Prompts carry attachments by path, so a
+/// frame past this is a peer holding the daemon's memory, not a request.
+pub const MAX_FRAME_BYTES: usize = 16 << 20;
+
+/// The longest line a head reads from its daemon: a Hello carries a whole snapshot.
+pub const MAX_DAEMON_FRAME_BYTES: usize = 256 << 20;
+
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
@@ -19,6 +26,10 @@ pub enum WireError {
     },
     /// The peer closed. Not an error in itself: for a head, this is detach.
     Eof,
+    /// A line ran past `limit` with no newline. The stream is mid-line, so the connection is over.
+    TooLong {
+        limit: usize,
+    },
 }
 
 impl std::fmt::Display for WireError {
@@ -30,6 +41,11 @@ impl std::fmt::Display for WireError {
                 write!(f, "malformed frame ({detail}): {shown}")
             }
             WireError::Eof => write!(f, "peer closed"),
+            WireError::TooLong { limit } => write!(
+                f,
+                "a line longer than {limit} bytes with no newline: a frame is one line of JSON, \
+                 and nothing past the limit is read"
+            ),
         }
     }
 }
@@ -45,25 +61,40 @@ impl From<std::io::Error> for WireError {
 /// Frame reader.
 pub struct FrameReader<R: Read> {
     inner: BufReader<R>,
-    line: String,
+    line: Vec<u8>,
+    limit: usize,
 }
 
 impl<R: Read> FrameReader<R> {
+    /// Bounded by [`MAX_FRAME_BYTES`], the daemon's side.
     pub fn new(r: R) -> Self {
+        Self::with_limit(r, MAX_FRAME_BYTES)
+    }
+
+    pub fn with_limit(r: R, limit: usize) -> Self {
         FrameReader {
             inner: BufReader::new(r),
-            line: String::new(),
+            line: Vec::new(),
+            limit,
         }
     }
 
     pub fn read<T: DeserializeOwned>(&mut self) -> Result<T, WireError> {
         loop {
             self.line.clear();
-            let n = self.inner.read_line(&mut self.line)?;
+            // One byte past the limit tells a line of exactly the limit from one too long.
+            let window = self.limit as u64 + 1;
+            let n = (&mut self.inner)
+                .take(window)
+                .read_until(b'\n', &mut self.line)?;
             if n == 0 {
                 return Err(WireError::Eof);
             }
-            let trimmed = self.line.trim();
+            if self.line.last() != Some(&b'\n') && n as u64 == window {
+                return Err(WireError::TooLong { limit: self.limit });
+            }
+            let text = String::from_utf8_lossy(&self.line);
+            let trimmed = text.trim();
             if trimmed.is_empty() {
                 continue;
             }
@@ -208,6 +239,17 @@ mod tests {
             }
         }
         assert!(matches!(r.read::<ClientFrame>(), Err(WireError::Eof)));
+    }
+
+    #[test]
+    fn a_line_past_the_limit_is_refused_and_one_at_it_is_read() {
+        let frame = serde_json::to_string(&ClientFrame::Detach).unwrap();
+        let at = format!("{frame}\n");
+        let mut r = FrameReader::with_limit(at.as_bytes(), frame.len() + 1);
+        assert!(matches!(r.read::<ClientFrame>(), Ok(ClientFrame::Detach)));
+        let mut r = FrameReader::with_limit(at.as_bytes(), frame.len() - 1);
+        let e = r.read::<ClientFrame>().unwrap_err();
+        assert!(matches!(e, WireError::TooLong { .. }), "{e}");
     }
 
     #[test]

@@ -721,3 +721,47 @@ fn settings_are_answered_from_what_the_harness_published() {
         ServerFrame::Event(_)
     ));
 }
+
+/// A peer that never sends a newline must not grow the daemon's buffer: the first frame is read
+/// before any other check, so this is the cheapest way to take the daemon's memory.
+#[test]
+fn an_overlong_first_frame_is_refused_not_buffered() {
+    use std::io::Write;
+    let (_hub, server) = start("overlong");
+    let stream = UnixStream::connect(server.path()).unwrap();
+    let mut flood = stream.try_clone().unwrap();
+    let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+    let writer = std::thread::spawn(move || {
+        let chunk = vec![b'x'; 1 << 20];
+        for _ in 0..64 {
+            if flood.write_all(&chunk).is_err() {
+                break;
+            }
+        }
+        // Holds the socket open, so only the daemon can end the exchange.
+        let _ = stop_rx.recv_timeout(PATIENCE);
+    });
+    stream
+        .set_read_timeout(Some(Duration::from_secs(30)))
+        .unwrap();
+    let mut r = FrameReader::new(stream);
+    let got = r.read::<ServerFrame>();
+    let _ = stop_tx.send(());
+    let _ = writer.join();
+    match got {
+        Ok(ServerFrame::Bye { reason }) => {
+            assert!(
+                reason.contains("bytes"),
+                "the Bye names the limit: {reason}"
+            )
+        }
+        Err(letibot_sessionlog::wire::WireError::Eof) => {}
+        Err(letibot_sessionlog::wire::WireError::Io(e))
+            if matches!(
+                e.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+            ) => {}
+        other => panic!("the daemon kept reading a line with no end: {other:?}"),
+    }
+    server.shutdown();
+}

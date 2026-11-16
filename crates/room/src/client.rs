@@ -590,12 +590,29 @@ fn write_frame(w: &mut impl Write, request: &Request) -> Result<(), ClientError>
         .map_err(|e| ClientError(format!("writing to the room: {e}")))
 }
 
+/// The longest line read from the coordinator. Its answers are pages, not trees, so a line past
+/// this is a coordinator that is wrong, and the client must not hold it.
+pub const MAX_RESPONSE_BYTES: usize = 64 << 20;
+
 fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Response>> {
-    let mut line = String::new();
-    let n = reader.read_line(&mut line)?;
+    read_frame_within(reader, MAX_RESPONSE_BYTES)
+}
+
+fn read_frame_within(reader: &mut impl BufRead, limit: usize) -> std::io::Result<Option<Response>> {
+    use std::io::Read;
+    let mut line = Vec::new();
+    let window = limit as u64 + 1;
+    let n = reader.take(window).read_until(b'\n', &mut line)?;
     if n == 0 {
         return Ok(None);
     }
+    if line.last() != Some(&b'\n') && n as u64 == window {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("the room sent a line longer than {limit} bytes with no newline"),
+        ));
+    }
+    let line = String::from_utf8_lossy(&line);
     let line = line.trim();
     if line.is_empty() {
         return Ok(None);
@@ -603,4 +620,20 @@ fn read_frame(reader: &mut BufReader<UnixStream>) -> std::io::Result<Option<Resp
     serde_json::from_str(line)
         .map(Some)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_coordinator_line_past_the_limit_is_an_error_not_a_buffer() {
+        let frame = serde_json::to_string(&Response::Bye { why: "x".into() }).unwrap();
+        let at = format!("{frame}\n");
+        let got = read_frame_within(&mut at.as_bytes(), frame.len() + 1).unwrap();
+        assert!(matches!(got, Some(Response::Bye { .. })));
+        let endless = vec![b'x'; 4096];
+        let e = read_frame_within(&mut &endless[..], 1024).unwrap_err();
+        assert_eq!(e.kind(), std::io::ErrorKind::InvalidData, "{e}");
+    }
 }

@@ -7,7 +7,7 @@ use std::path::Path;
 use std::sync::mpsc::Sender;
 
 use crate::protocol::{Ack, Caps, ClientFrame, PROTOCOL_VERSION, PeekShape, ServerFrame};
-use crate::wire::{FrameReader, FrameWriter, WireError};
+use crate::wire::{FrameReader, FrameWriter, MAX_DAEMON_FRAME_BYTES, WireError};
 
 #[derive(Debug)]
 pub enum ClientError {
@@ -66,7 +66,7 @@ impl HeadClient {
         caps: Caps,
     ) -> Result<(HeadClient, ServerFrame, FrameReader<UnixStream>), ClientError> {
         let stream = UnixStream::connect(path.as_ref())?;
-        let mut reader = FrameReader::new(stream.try_clone()?);
+        let mut reader = FrameReader::with_limit(stream.try_clone()?, MAX_DAEMON_FRAME_BYTES);
         let mut writer = FrameWriter::new(stream);
         writer.write(&ClientFrame::Attach {
             protocol_version: PROTOCOL_VERSION,
@@ -117,7 +117,7 @@ impl HeadClient {
         caps: Caps,
     ) -> Result<(HeadClient, FrameReader<UnixStream>), ClientError> {
         let stream = UnixStream::connect(path.as_ref())?;
-        let reader = FrameReader::new(stream.try_clone()?);
+        let reader = FrameReader::with_limit(stream.try_clone()?, MAX_DAEMON_FRAME_BYTES);
         let mut writer = FrameWriter::new(stream);
         writer.write(&ClientFrame::Attach {
             protocol_version: PROTOCOL_VERSION,
@@ -1075,6 +1075,14 @@ pub fn pump(mut reader: FrameReader<UnixStream>, tx: Sender<Inbound>) {
             // The stream is over. `Eof` is detach and says nothing; an io error is
             // the socket, not a frame, and there is nothing left to read either way.
             Err(WireError::Eof) | Err(WireError::Io(_)) => return,
+            // The stream is mid-line, so nothing after it can be framed; said once, then over.
+            Err(e @ WireError::TooLong { .. }) => {
+                let _ = tx.send(Inbound::Unreadable(Unreadable {
+                    line: String::new(),
+                    detail: e.to_string(),
+                }));
+                return;
+            }
         }
     }
 }
