@@ -443,6 +443,25 @@ fn a_perimeter_widening_is_a_row() {
     );
 }
 
+/// A point that does not seat an access refuses it before any rule or answer, so a session held at
+/// `read-only` cannot be talked into a write by an adjudicator, a grant or a rule.
+#[test]
+fn a_point_that_does_not_seat_an_access_refuses_it() {
+    let mut g = AdjudicatedGate::closed()
+        .with_mode(crate::mode::Mode::READ_ONLY)
+        .with_surroundings(pinned());
+    match g.admit(&call("write", &json!({"path": "src/lib.rs"}))) {
+        GateDecision::Refuse {
+            outcome: ToolOutcome::NotRun { why },
+            ..
+        } => assert!(
+            why.contains("seats no write"),
+            "the refusal says which seat is missing: {why}"
+        ),
+        other => panic!("a point that seats no write ran one: {other:?}"),
+    }
+}
+
 /// An admission nobody was consulted about is the kind that stops appearing in an audit, so the
 /// row has to survive a mode that admits on its own.
 #[test]
