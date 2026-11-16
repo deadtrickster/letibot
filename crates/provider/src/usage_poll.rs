@@ -25,8 +25,9 @@ pub struct Window {
     pub reset_ms: Option<u64>,
 }
 
-/// Every window in a usage answer: Kimi's `usages` map (else its `limits[]`), or z.ai's
-/// `data.limits[]`. Two windows reporting the same use and reset are one, under the shorter name.
+/// Every window in a usage answer: Kimi's `usages` map and its `limits[]`, or z.ai's
+/// `data.limits[]`. Kimi's two shapes of one window are one, at the greater use: either can lag.
+/// Two windows reporting the same use and reset are one, under the shorter name.
 pub fn windows(body: &Value) -> Vec<Window> {
     let mut out: Vec<Window> = Vec::new();
     for (k, w) in body["usages"].as_object().into_iter().flatten() {
@@ -47,8 +48,12 @@ pub fn windows(body: &Value) -> Vec<Window> {
             reset_ms,
         });
     }
-    if out.is_empty() {
-        out.extend(kimi_limits(body));
+    for l in kimi_limits(body) {
+        match out.iter_mut().find(|w| w.name == l.name) {
+            Some(w) if l.used > w.used => *w = l,
+            Some(_) => {}
+            None => out.push(l),
+        }
     }
     out.extend(zai_limits(body));
     let mut kept: Vec<Window> = Vec::new();
