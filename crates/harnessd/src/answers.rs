@@ -1085,11 +1085,18 @@ fn pose(
         }),
         shadow: None,
         deadline: Some(deadline_ms),
-        on_timeout: match req.on_timeout {
-            OnTimeout::Deny => WireOnTimeout::Deny,
-            OnTimeout::Allow => WireOnTimeout::Allow,
-            OnTimeout::AgentDecides => WireOnTimeout::Ask,
-        },
+        on_timeout: wire_timeout(req.on_timeout),
+    }
+}
+
+/// The timeout a head acts on when nobody answers, as the wire's own word. `AgentDecides` is the
+/// head's `Ask`: this build never sets it from `request_for`, and a card that said `Ask` for `Deny`
+/// would wait for somebody who was never asked.
+fn wire_timeout(t: OnTimeout) -> WireOnTimeout {
+    match t {
+        OnTimeout::Deny => WireOnTimeout::Deny,
+        OnTimeout::Allow => WireOnTimeout::Allow,
+        OnTimeout::AgentDecides => WireOnTimeout::Ask,
     }
 }
 

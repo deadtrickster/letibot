@@ -228,7 +228,7 @@ fn a_standing_grant_settles_the_person_and_still_asks_the_model() {
                 if self.allow {
                     o.kind == OptionKind::AllowSession
                 } else {
-                    !o.kind.is_allow()
+                    !o.kind.admits()
                 }
             };
             match req.options.iter().find(want) {
@@ -326,7 +326,7 @@ fn an_exec_call_is_not_covered_by_a_grant_at_a_supervised_point() {
         seen.fetch_add(1, Ordering::SeqCst);
         req.options
             .iter()
-            .find(|o| o.kind.is_allow())
+            .find(|o| o.kind.admits())
             .map(|o| AdjudicationDecision::selected(req, &o.id, "human:op", "ok"))
     });
     let advisor: std::sync::Arc<dyn Adjudicator> =
@@ -499,13 +499,13 @@ fn every_settled_path_still_gives_the_model_its_turn() {
     let path = json!({"path": "src/lib.rs"});
     let secret = json!({"path": "/home/op/.ssh/id_ed25519"});
 
-    // 1. the never-write list
+    // 2. the never-write list
     let (mut g, n) = build(&|g| g);
     let _ = g.admit(&call("edit", &secret));
     assert_eq!(n.load(Ordering::SeqCst), 1, "never-write list: model asked");
     assert_eq!(g.log[0].effect, "refuse", "and the list still refuses");
 
-    // 1.5 a config `deny`, and a config `allow`
+    // 4. a config `deny`, and a config `allow`
     for (cfg, effect) in [("deny", "refuse"), ("allow", "admit")] {
         let (mut g, n) = build(&|g| g.with_permission(rules(json!({ "edit": cfg }))));
         let _ = g.admit(&call("edit", &path));
@@ -513,7 +513,7 @@ fn every_settled_path_still_gives_the_model_its_turn() {
         assert_eq!(g.log[0].effect, effect, "and the rule still decides");
     }
 
-    // 2. the mode admits unasked. `supervised` never does, so this is asserted at a point that
+    // 6. the mode admits unasked. `supervised` never does, so this is asserted at a point that
     //    does: the wiring is shared and the rule is the same.
     let n = std::sync::Arc::new(AtomicUsize::new(0));
     let advisor: std::sync::Arc<dyn Adjudicator> = std::sync::Arc::new(Counting(n.clone()));
@@ -524,7 +524,7 @@ fn every_settled_path_still_gives_the_model_its_turn() {
     let _ = g.admit(&call("edit", &path));
     let before = n.load(Ordering::SeqCst);
 
-    // 3. a standing grant, on the SAME gate: the second call is covered.
+    // 9. a standing grant, on the SAME gate: the second call is covered.
     let _ = g.admit(&call("edit", &path));
     assert!(
         n.load(Ordering::SeqCst) > before,
@@ -606,7 +606,7 @@ fn supervision_changes_who_is_consulted_and_nothing_else() {
         seen.fetch_add(1, Ordering::SeqCst);
         req.options
             .iter()
-            .find(|o| o.kind.is_allow())
+            .find(|o| o.kind.admits())
             .map(|o| AdjudicationDecision::selected(req, &o.id, "human:op", "ok"))
     });
     let mut g = AdjudicatedGate::new(Box::new(human))

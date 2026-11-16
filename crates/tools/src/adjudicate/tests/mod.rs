@@ -44,7 +44,7 @@ impl Fixed {
 impl Adjudicator for Fixed {
     fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
         *self.seen.lock().unwrap() = Some(req.advice.clone());
-        let want = |o: &&DecisionOption| o.kind.is_allow() == self.allow;
+        let want = |o: &&DecisionOption| o.kind.admits() == self.allow;
         match req.options.iter().find(want) {
             Some(o) => AdjudicationDecision::selected(req, &o.id, self.id, "because"),
             None => AdjudicationDecision::unavailable(req, self.id, "no such option"),

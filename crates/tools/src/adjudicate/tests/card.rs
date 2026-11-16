@@ -68,6 +68,33 @@ fn an_allow_session_over_an_unreadable_command_is_not_honoured() {
     );
 }
 
+/// The card and the recording site ask one function whether a grant taken here could cover a later
+/// call, so a rung on the ladder is always a grant that can be kept: the two cannot disagree about
+/// an answer the operator is about to give.
+#[test]
+fn a_session_rung_is_offered_only_where_a_grant_could_be_kept() {
+    let mut g = AdjudicatedGate::closed()
+        .with_surroundings(pinned())
+        .with_mode(crate::mode::Mode::WRITES_ALLOWED);
+    for (command, offered) in [("cat $X", false), ("sed -n 1p /w/a.rs", true)] {
+        let req = g.request_for(&bash_at(&json!({"command": command}), "s#1"));
+        let has = req.options.iter().any(|o| o.id == "allow_session");
+        assert_eq!(has, offered, "{command}");
+        let baseline = req.reading.as_ref().expect("layer A read it");
+        let kept = AdjudicatedGate::session_grant(
+            baseline,
+            req.class,
+            &grant_program(baseline),
+            String::new(),
+        )
+        .is_ok();
+        assert_eq!(
+            kept, has,
+            "the card and the recording site disagree about `{command}`"
+        );
+    }
+}
+
 /// The other side of the same condition, so dropping the rung everywhere fails here rather than
 /// passing quietly: at a point that grants for the session the rung is on the ladder, and a
 /// complete ladder has nothing to explain.

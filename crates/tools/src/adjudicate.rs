@@ -403,17 +403,8 @@ pub enum OptionKind {
 }
 
 impl OptionKind {
-    /// Whether choosing this option lets the call run. The three allow shapes differ
-    /// in how far the answer travels, not in whether it admits.
-    pub fn is_allow(self) -> bool {
-        matches!(
-            self,
-            OptionKind::AllowOnce | OptionKind::AllowSession | OptionKind::AllowAlways
-        )
-    }
-}
-
-impl OptionKind {
+    /// Whether choosing this option lets the call run. The three allow shapes differ in how far
+    /// the answer travels, not in whether it admits, and this is the one predicate that says so.
     pub fn admits(&self) -> bool {
         matches!(
             self,
@@ -2859,8 +2850,7 @@ impl AdjudicatedGate {
             baseline,
             trail: self.trail_for_view(tool, path),
         };
-        let direction =
-            crate::authorise::TaskDirection::of_parts(tool, &reading, req.class.scope).key();
+        let direction = crate::authorise::TaskDirection::of_parts(tool, &reading, req.class.scope);
         self.advice = None;
         self.standing = None;
         let d = match self.view_by_model(&req) {
@@ -2875,12 +2865,21 @@ impl AdjudicatedGate {
         self.view_by = (d.by.clone(), d.basis.clone());
         self.view_answered_by = Some(d.by.clone());
         let answer = self.view_answer(&d);
-        // Recorded like any decision, so a view ask is a corpus row a replay can label.
+        // Recorded like any decision, so a view ask is a corpus row a replay can label, and
+        // counted like one: the same refused path asked for three turns running is the loop the
+        // breaker exists to stop.
         let effect = match answer {
-            ViewGrant::Granted { .. } => "admit",
+            ViewGrant::Granted { .. } => {
+                self.breaker.admitted(&direction);
+                "admit"
+            }
+            ViewGrant::Refused(_) => {
+                self.breaker.refused(&direction);
+                "refuse"
+            }
             _ => "refuse",
         };
-        self.record(req, d, effect, direction);
+        self.record(req, d, effect, direction.key());
         answer
     }
 
@@ -3100,7 +3099,7 @@ impl Gate for AdjudicatedGate {
             trail: crate::authorise::AuthorisationTrail::default(),
         };
         let d = self.adjudicator.decide(&req);
-        match &d.outcome {
+        let answer = match &d.outcome {
             DecisionOutcome::Selected { option_id } if option_id == "grant_memory" => {
                 MemoryGrant::Granted
             }
@@ -3124,7 +3123,28 @@ impl Gate for AdjudicatedGate {
             }
             DecisionOutcome::Selected { .. } => MemoryGrant::Refused(d.basis.clone()),
             _ => MemoryGrant::NotAsked,
-        }
+        };
+        // A memory ask is a decision like any other: it is a row a replay can label, and three
+        // refusals in one direction are the loop the breaker exists to stop.
+        self.file_exchange();
+        let direction = crate::authorise::TaskDirection::of_parts(
+            "bash",
+            &crate::intent::Baseline::of_command(&ask.command, &self.surroundings),
+            req.class.scope,
+        );
+        let effect = match answer {
+            MemoryGrant::Granted => {
+                self.breaker.admitted(&direction);
+                "admit"
+            }
+            MemoryGrant::Refused(_) => {
+                self.breaker.refused(&direction);
+                "refuse"
+            }
+            MemoryGrant::NotAsked => "refuse",
+        };
+        self.record(req, d, effect, direction.key());
+        answer
     }
 
     fn describe(&self) -> String {
@@ -3203,13 +3223,39 @@ impl Gate for AdjudicatedGate {
             trail: crate::authorise::AuthorisationTrail::default(),
         };
         let d = self.adjudicator.decide(&req);
-        match &d.outcome {
+        let answer = match &d.outcome {
             DecisionOutcome::Selected { option_id } if option_id == "allow_once" => {
                 PerimeterGrant::Granted
             }
             DecisionOutcome::Selected { .. } => PerimeterGrant::Refused(d.basis.clone()),
             _ => PerimeterGrant::NotAsked,
-        }
+        };
+        // A widening the operator answered is a decision: a row a replay can label, and a refusal
+        // counted where every other refusal is counted.
+        self.file_exchange();
+        let direction = crate::authorise::TaskDirection::of_parts(
+            "task",
+            &crate::intent::Baseline::of_paths(
+                std::iter::empty::<&str>(),
+                false,
+                false,
+                &self.surroundings,
+            ),
+            req.class.scope,
+        );
+        let effect = match answer {
+            PerimeterGrant::Granted => {
+                self.breaker.admitted(&direction);
+                "admit"
+            }
+            PerimeterGrant::Refused(_) => {
+                self.breaker.refused(&direction);
+                "refuse"
+            }
+            PerimeterGrant::NotAsked => "refuse",
+        };
+        self.record(req, d, effect, direction.key());
+        answer
     }
     fn supervising(&self) -> bool {
         self.supervise && self.advisor.is_some()
@@ -3408,7 +3454,7 @@ impl Gate for AdjudicatedGate {
             return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
         }
 
-        // 1. The `never` rows, overridable by none. Only a call that can WRITE is judged by its
+        // 2. The `never` rows, overridable by none. Only a call that can WRITE is judged by its
         // spelling, or a read of the repository's own HEAD is refused in every mode.
         // `never_hit` asks it of the spelling and [`ssh_resolution_hit`] of the resolved path.
         let refused = matches!(access, Access::Write | Access::Exec)
@@ -3459,8 +3505,8 @@ impl Gate for AdjudicatedGate {
             return GateDecision::refuse_and_tell(ToolOutcome::Denied { req_id: id }, tell);
         }
 
-        // 1.4. An access the point does not seat. A tool kept across a move to `read-only` is
-        //      one a fresh open would not have seated, so no rule, grant or answer admits it.
+        // 3. An access the point does not seat. A tool kept across a move to `read-only` is
+        //    one a fresh open would not have seated, so no rule, grant or answer admits it.
         if !self.mode.seats(call.access) {
             let why = format!(
                 "the `{}` mode seats no {}: this tool is absent at this point, so nothing \
@@ -3481,8 +3527,8 @@ impl Gate for AdjudicatedGate {
             return GateDecision::refuse_and_tell(ToolOutcome::NotRun { why }, tell);
         }
 
-        // 1.5. opencode's permission model, evaluated before the mode: `deny` refuses, `allow`
-        //      admits, `ask` falls through. Last rule wins over the config plus `always`.
+        // 4. opencode's permission model, evaluated before the point: `deny` refuses, `allow`
+        //    admits, `ask` falls through. Last rule wins over the config plus `always`.
         if !self.permission.is_empty() {
             let pattern = permission_pattern(call.name, call.args);
             // A `bash` command is tested segment by segment against the prefix rules, and a
@@ -3546,8 +3592,8 @@ impl Gate for AdjudicatedGate {
             }
         }
 
-        // Inside a measured boundary a command is not asked about: at `writes-allowed`, where
-        // the confinement holds, a per-command ruling protects nothing a write the mode already
+        // 5. Inside a measured boundary a command is not asked about: at `writes-allowed`, where
+        //    the confinement holds, a per-command ruling protects nothing a write the mode already
         // admits could not do. What still asks is what crosses the boundary or widens the view.
         if !self.unasked
             && admits_inside_the_boundary(self.boundary.as_ref(), self.mode, access, &baseline)
@@ -3583,7 +3629,7 @@ impl Gate for AdjudicatedGate {
             return GateDecision::Admit;
         }
 
-        // 2. The point this session sits at. It governs `Tier::MayApprove` and nothing else, so
+        // 6. The point this session sits at. It governs `Tier::MayApprove` and nothing else, so
         //    this arm cannot widen what a point may not. Exec is excepted unless the mode follows
         //    it, and `ran_unread` widens nothing: an unreadable exec asks where a readable one does.
         //    A look that may not ask (`admit_unasked`) is admitted here only as a read: a read is
@@ -3625,7 +3671,7 @@ impl Gate for AdjudicatedGate {
             return GateDecision::Admit;
         }
 
-        // 2b. A review-queue seat at a point that admits exec, inside the reviewer's limits.
+        // 7. A review-queue seat at a point that admits exec, inside the reviewer's limits.
         if self.reviewer_limits
             && !self.exec_follows_mode
             && !self.unasked
@@ -3646,9 +3692,10 @@ impl Gate for AdjudicatedGate {
             return GateDecision::Admit;
         }
 
-        // 3. A standing permission from an earlier `allow_session`, keyed on
-        //    `(program, ActionClass, intents)` and checked per call against the normalisation,
-        //    never against text, so a vehicle flag falls out of a grant taken over `git status`.
+        // 8. An approved shape, then 9. a session grant: standing answers from an earlier
+        //    `allow_session`, keyed on `(program, ActionClass, intents)` and checked per call
+        //    against the normalisation, never against text, so a vehicle flag falls out of a
+        //    grant taken over `git status`.
         let program = grant_program(&baseline);
         // A shape the operator approved for the session, here or under this workspace before. The
         // key holes literals, so a call that runs a holed body never matches, and only a point
@@ -3701,7 +3748,7 @@ impl Gate for AdjudicatedGate {
             return GateDecision::Admit;
         }
 
-        // 4.0 - the call that is adjudicated and may not ask. Everything above is the ladder,
+        // 10. The call that is adjudicated and may not ask. Everything above is the ladder,
         // everything below is the person, and a plugin's look stops here because a card would
         // park the monitor thread. `NotRun`, not `Denied`: nobody decided.
         if self.unasked {
@@ -3714,7 +3761,7 @@ impl Gate for AdjudicatedGate {
             return GateDecision::refuse_and_tell(ToolOutcome::NotRun { why }, tell);
         }
 
-        // 4. Ask - and when supervision is on, ask the model FIRST. A verdict formed after
+        // 11. Ask - and when supervision is on, ask the model FIRST. A verdict formed after
         // seeing which way the operator went is not worth training on, and one they never saw is
         // advice nobody could agree with.
         self.advice = self.ask_the_advisor(&req);
@@ -3747,7 +3794,7 @@ impl Gate for AdjudicatedGate {
             return GateDecision::Admit;
         }
 
-        let decision = self.adjudicator.decide(&req);
+        let mut decision = self.adjudicator.decide(&req);
         self.file_exchange();
         let typed_pattern = self.adjudicator.last_pattern();
 
@@ -3816,22 +3863,35 @@ impl Gate for AdjudicatedGate {
                         {
                             // The grant is scoped, not blanket: keyed on the program and the
                             // class with the intents a subset of what the call was shown to carry,
-                            // and one that could never cover anything is not recorded at all.
+                            // and one that could never cover anything is not recorded at all - and
+                            // the row says so, because the card offered the rung this answer took.
                             let why = format!(
                                 "granted for this session by an answer to {}: {}",
                                 req.id, decision.basis
                             );
-                            if let Ok(grant) =
-                                Self::session_grant(&baseline, req.class, &program, why)
-                            {
-                                self.grants.push(grant.clone());
-                                let why = grant.why.clone();
-                                self.keep_grant(
-                                    crate::grant_ledger::Kept::Allow(grant),
-                                    decision.grant_at,
-                                    &why,
-                                    &decision.by,
-                                );
+                            match Self::session_grant(&baseline, req.class, &program, why) {
+                                Ok(grant) => {
+                                    self.grants.push(grant.clone());
+                                    let why = grant.why.clone();
+                                    self.keep_grant(
+                                        crate::grant_ledger::Kept::Allow(grant),
+                                        decision.grant_at,
+                                        &why,
+                                        &decision.by,
+                                    );
+                                }
+                                Err(not) => {
+                                    // Unreachable from a card this build drew - the same call
+                                    // decides whether the rung is offered - and reachable from an
+                                    // answer replayed against a request built elsewhere, so the
+                                    // row reports a rung that stands for nothing rather than a
+                                    // grant nobody got.
+                                    decision.basis = format!(
+                                        "{}; no session grant was kept: {}",
+                                        decision.basis,
+                                        not.short()
+                                    );
+                                }
                             }
                         }
                         // The loop closed, so the error signal is gone.
