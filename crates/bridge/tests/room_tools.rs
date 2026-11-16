@@ -1137,3 +1137,30 @@ fn a_scope_ask_carries_the_path_and_shows_the_owner() {
     assert!(why.contains("`path`"), "{why}");
     assert_eq!(fake.frames("ask").len(), before);
 }
+
+/// Every frame this bridge puts on the wire is the room's own request type. The bridge reads and
+/// writes untyped `Value`s, so a field renamed on one side of the protocol leaves the other reading
+/// nothing and calling it empty - decoding what the fake recorded is the one check that would say so.
+#[test]
+fn every_frame_the_bridge_sends_is_a_room_request() {
+    let fake = Fake::start("typed");
+    let link = RoomLink::at(&fake.path);
+    let said = call(
+        &link,
+        "room_say",
+        json!({"text": "the build is green", "room": "host"}),
+    )
+    .expect("said");
+    assert!(said["message"]["seq"].is_u64(), "{said}");
+    let _ = call(&link, "room_inbox", json!({}));
+    let frames = fake.frames.lock().unwrap().clone();
+    assert!(!frames.is_empty(), "the fake recorded nothing");
+    for f in &frames {
+        let decoded: Result<letibot_room::Request, _> = serde_json::from_value(f.clone());
+        assert!(
+            decoded.is_ok(),
+            "not a room request: {f} — {:?}",
+            decoded.err()
+        );
+    }
+}
