@@ -51,10 +51,7 @@ impl std::fmt::Display for KeyError {
 
 impl std::error::Error for KeyError {}
 
-/// The guard model's address, from the operator's config: an endpoint is a property of
-/// the box, not of a session, and a flag to remember per invocation is a flag left off.
-/// It lives beside the provider keys because that is already where the box's addresses
-/// are written down, and a second config file is a second thing to find.
+/// The guard model's address: a property of the box, so it lives beside the provider keys.
 ///
 /// ```toml
 /// [gatekeeper]
@@ -63,8 +60,7 @@ impl std::error::Error for KeyError {}
 /// budget_ms = 400         # optional
 /// ```
 ///
-/// Absent is not an error: a box with no guard runs as it did, and `/supervise` refuses
-/// by naming this section rather than reporting a false success.
+/// Absent is not an error; `/supervise` then refuses by naming this section.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Gatekeeper {
     pub endpoint: Option<String>,
@@ -461,10 +457,8 @@ pub fn default_choice(file: Option<&Path>) -> Result<Option<DefaultChoice>, Unre
     }))
 }
 
-/// What answers when the model this session is on is out: `[fallback]` in the same file, in
-/// the order written. A list rather than a chain in code, because what this box may reach is
-/// a fact about the box. Absent or empty is the old behaviour, the turn fails, because a
-/// daemon that moved a conversation on its own initiative is a surprise nobody looks for.
+/// What answers when this session's model is out: `[fallback]`, in the order written. Absent or
+/// empty, the turn fails, since a daemon moving a conversation on its own is a surprise.
 ///
 /// ```toml
 /// [fallback]

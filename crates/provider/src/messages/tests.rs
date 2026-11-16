@@ -237,7 +237,7 @@ fn items_become_the_apis_messages_without_tools() {
     assert_eq!(m[3]["role"], "tool");
     assert_eq!(m[3]["tool_call_id"], "c1");
     // The payload is sent as it was rendered: `ToolResult::render` already names the
-    // outcome, and a second prefix said it twice (R93.F35).
+    // outcome, so no second prefix.
     assert_eq!(m[3]["content"], "nothing");
     // A system prompt with no leading System item is prepended once.
     let m2 = convert("sys", &items[1..2], false);
@@ -245,10 +245,8 @@ fn items_become_the_apis_messages_without_tools() {
     assert_eq!(m2.len(), 2);
 }
 
-/// A transcript written before ids were minted holds the positional `call_0` in every turn.
-/// That history still replays: each turn's call and its result survive with the ids they were
-/// stored under - the pairing window is the assistant message, not a session-wide id index, so a
-/// repeated id must not orphan a result or rewrite a call.
+/// A transcript from before minted ids holds `call_0` in every turn and still replays: the pairing
+/// window is the assistant message, so a repeated id neither orphans a result nor rewrites a call.
 #[test]
 fn a_stored_transcript_with_positional_ids_still_replays() {
     let turn = |text: &str, out: &str| {

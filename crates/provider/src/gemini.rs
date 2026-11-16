@@ -1,45 +1,6 @@
-//! The Google GenAI client: `generateContent`/`streamGenerateContent` with `alt=sse`.
-//!
-//! Every field below is mapped from a page, not from memory. The request body — `contents`,
-//! `systemInstruction`, `tools`, `generationConfig` — is
-//! <https://ai.google.dev/api/generate-content/stream-generate-content#request-body>; the
-//! response types (`Candidate`, `finishReason`, `usageMetadata`, `Part.thoughtSignature`,
-//! `Schema`) are <https://ai.google.dev/api/generate-content>; the key goes in `x-goog-api-key`
-//! (<https://ai.google.dev/gemini-api/docs/function-calling>).
-//!
-//! What this transport refuses, and in whose words:
-//!
-//! - **A tool schema Gemini cannot read.** `Schema` is "a select subset of an OpenAPI 3.0
-//!   schema object" (<https://ai.google.dev/api/generate-content#Resource:Schema>) with no
-//!   `additionalProperties`, no `$ref`, no `oneOf`. Rather than send a request the API will
-//!   reject with `Invalid JSON payload received. Unknown name …`, [`schema`] translates what it
-//!   can, DROPS the annotation keys that only describe, and REFUSES the constructs that change
-//!   which values are accepted — see [`DROPPED`] and [`REFUSED`].
-//! - **A picture it cannot inline.** Every image is an `inlineData` blob, so a `data:` reference
-//!   is the only form that goes; a URL reference is NAMED in the prompt instead, for the reason
-//!   [`crate::messages::picture_fate`] gives — one bad picture refuses every turn after it.
-//! - **A prompt or a candidate the model's own filter blocked.** Gemini answers 200 with no
-//!   candidates and `promptFeedback.blockReason`, or with `finishReason: SAFETY`, and a caller
-//!   that calls that "an empty answer" records a successful turn with nothing in it. It becomes
-//!   [`BackendError::Refused`] carrying the response's own status, so the retry policy does not
-//!   take the round again and the operator is told `SAFETY` rather than nothing.
-//!
-//! Reasoning has no `reasoning_content`. A thinking model returns `thought: true` parts, and
-//! `thinkingConfig` is the only switch; the operator's `--effort` is a *level*
-//! (`LOW`/`MEDIUM`/`HIGH`/`XHIGH`, <https://ai.google.dev/gemini-api/docs/thinking>), and a model
-//! that does not support a level answers an error rather than ignoring it, so nothing is sent
-//! until the operator asks for something.
-//!
-//! Thought signatures are not the reasoning row's: `ReasoningField::Signed` keeps a signature on a
-//! thinking block, and `generateContent` has no thought blocks to put one on (`Completion::thoughts`
-//! stays empty). "Signatures are metadata that can be attached to any part, such as living inside
-//! `functionCall` parts or the final part of a response"
-//! (<https://ai.google.dev/gemini-api/docs/thought-signatures?generate-content=true>), and
-//! **Gemini 4 and Gemini 3 require them back on the current turn's function calls**: "the
-//! **first** `functionCall` part in **each step** of the current turn **must** include its
-//! `thought_signature`", validated on the current turn alone. So they are kept here, in the
-//! provider, by call id — in memory, which is enough because a turn's rounds share one provider
-//! and the validation does not reach back past the current turn.
+//! The Google GenAI client: `streamGenerateContent` with `alt=sse`, key in `x-goog-api-key`. Tool
+//! schemas are translated ([`schema`]), URL pictures named, and a safety block becomes `Refused`.
+//! Thought signatures must return on the current turn's calls, so they are kept here by call id.
 
 use std::io::{BufRead, BufReader};
 use std::sync::{Arc, Mutex};
@@ -57,10 +18,8 @@ use crate::messages::{self, Eyes, Withheld};
 use crate::openai::{DEFAULT_ANSWER_TIMEOUT, DEFAULT_FIRST_BYTE, Notes};
 use crate::presets::Preset;
 
-/// The `Schema` keywords that are DROPPED: they describe rather than constrain, and Gemini's
-/// `Schema` has no room for them. `additionalProperties` is here because the API has no field for
-/// it — an object keeps the `properties` it declares, and the keys it did not name are
-/// unconstrained, which is what the tool's own argument check is for.
+/// `Schema` keywords that are dropped: they describe rather than constrain. `additionalProperties`
+/// has no field in the API; keys an object did not name are left to the tool's own argument check.
 pub const DROPPED: &[&str] = &[
     "$schema",
     "$id",
@@ -292,12 +251,9 @@ impl GeminiProvider {
         self
     }
 
-    /// `…/models/{model}:streamGenerateContent?alt=sse`.
-    ///
-    /// The preset's URL is a BASE (`…/v1beta`) because the model name is part of the path, which
-    /// no other provider's is. An operator's `providers.toml` `url` may be either that base (a
-    /// proxy that mirrors the API) or a whole endpoint; one that already names `:generateContent`
-    /// or `:streamGenerateContent` is used as it stands, so a key file can point at anything.
+    /// `…/models/{model}:streamGenerateContent?alt=sse`. The preset URL is a base because the model
+    /// is in the path. A `providers.toml` `url` that already names `:generateContent` or
+    /// `:streamGenerateContent` is used as it stands.
     pub fn endpoint(&self, stream: bool) -> String {
         let method = if stream {
             "streamGenerateContent"
@@ -399,13 +355,9 @@ impl GeminiProvider {
         Ok(body)
     }
 
-    /// `thinkingConfig`, or `None` when this request says nothing about thinking.
-    ///
-    /// The level is `--effort` in the daemon's own words
-    /// (<https://ai.google.dev/gemini-api/docs/thinking#thinking-levels>): `LOW`, `MEDIUM`, `HIGH`
-    /// and `XHIGH` — `xhigh` on `gemini-4-hydrogen` alone, so a model without it answers an error
-    /// rather than being silently downgraded here. `includeThoughts` is what makes the
-    /// `thought: true` parts arrive at all.
+    /// `thinkingConfig`, or `None` when this request says nothing about thinking. `--effort` maps
+    /// to `LOW`..`XHIGH` and is not downgraded, so a model without a level answers an error.
+    /// `includeThoughts` is what makes `thought: true` parts arrive.
     fn thinking_config(&self, on: bool) -> Option<Value> {
         let level = self.effort.as_deref().and_then(thinking_level);
         if !on && level.is_none() {
@@ -693,18 +645,9 @@ fn io_kind(err: &ureq::Error) -> Option<std::io::ErrorKind> {
     }
 }
 
-/// The provider's refusal, in its own words plus the one machine-readable word it carries.
-///
-/// ```text
-/// {"error": {"code": 429, "message": "You exceeded your current quota…",
-///            "status": "RESOURCE_EXHAUSTED",
-///            "details": [{"@type": "…/google.rpc.RetryInfo", "retryDelay": "17s"}]}}
-/// ```
-///
-/// The status word goes into the sentence for the reason `openai.rs` keeps a code: it is the only
-/// word a caller can match on, and a `429` is `RESOURCE_EXHAUSTED` here
-/// (<https://ai.google.dev/gemini-api/docs/rate-limits>). `RetryInfo.retryDelay` is the provider's
-/// own instant when no `Retry-After` header carried one.
+/// The provider's refusal in its own words, with the status word (`RESOURCE_EXHAUSTED` for a 429)
+/// in the sentence, since it is the only word a caller can match on. `RetryInfo.retryDelay` is the
+/// retry instant when no `Retry-After` header carried one.
 fn refusal_said(header_retry: Option<u64>, text: &str) -> (String, Option<u64>) {
     let parsed: Option<Value> = serde_json::from_str(text).ok();
     let err = parsed.as_ref().and_then(|v| v.get("error"));
@@ -835,12 +778,9 @@ fn system_instruction(req: &TurnRequest<'_>) -> Option<Value> {
     Some(json!({"parts": [{"text": said}]}))
 }
 
-/// The `contents` array: roles `user` and `model`, one `Content` per item.
-///
-/// The walk is the pairing machine [`crate::messages`] documents, in this protocol's shapes: a
-/// model turn's `functionCall` parts are answered by `functionResponse` parts, an unanswered call
-/// is filled rather than sent to be refused, an orphan result is dropped unless the OPERATOR ran
-/// it, and a row that lands between a call and its result is held until the results do.
+/// The `contents` array: roles `user` and `model`, one `Content` per item, paired as
+/// [`crate::messages`] documents: unanswered calls filled, orphan results dropped unless the
+/// operator ran them, rows between a call and its result held until the results.
 fn contents(
     req: &TurnRequest<'_>,
     eyes: Eyes<'_>,
@@ -1057,10 +997,8 @@ fn filler(name: &str) -> Value {
     })
 }
 
-/// The `response` object of a `functionResponse`: `{"result": …}`, or `{"error": …}` for the
-/// outcomes that mean the call did not answer — the key the API documents: "if the function call
-/// failed to execute, the response can have an 'error' key to return error details"
-/// (<https://ai.google.dev/api/generate-content#Resource:FunctionResponse>).
+/// The `response` of a `functionResponse`: `{"result": …}`, or `{"error": …}` for outcomes where
+/// the call did not answer, as the API documents.
 fn response_of(outcome: &ToolOutcome, payload: &str) -> Value {
     match outcome {
         ToolOutcome::Ok | ToolOutcome::Abstained { .. } | ToolOutcome::Backgrounded { .. } => {
@@ -1106,10 +1044,8 @@ fn inline_blob(data_ref: &str) -> Option<(&str, &str)> {
     Some((mime, letibot_transcript::media::wire_payload(data_ref)))
 }
 
-/// A tool call's arguments as the `args` OBJECT: Gemini takes an object, and a transcript holds
-/// the raw text the model emitted. Text that is not a JSON object cannot be sent as one, so the
-/// call goes with no arguments — its result row says it was cut off, which is the truth the `{}`
-/// is not claiming.
+/// A tool call's arguments as the `args` object. Text that is not a JSON object is sent as no
+/// arguments; its result row says it was cut off.
 fn args_of(arguments: &str) -> Value {
     match serde_json::from_str::<Value>(arguments) {
         Ok(v @ Value::Object(_)) => v,
@@ -1162,14 +1098,9 @@ pub fn tools(tools_json: &[String]) -> Result<Vec<Value>, String> {
     Ok(out)
 }
 
-/// One JSON Schema as Gemini's `Schema`, which "represents a select subset of an OpenAPI 3.0
-/// schema object".
-///
-/// Three things happen to a keyword: it is CONVERTED when the name or the spelling differs
-/// (`type: ["boolean","integer"]` becomes `anyOf`; `minItems: 5` becomes `"5"`, because the
-/// reference types those as strings), DROPPED when it only describes ([`DROPPED`]), and REFUSED
-/// when it changes which values are accepted and has no equivalent ([`REFUSED`]). A refusal names
-/// the parameter and the keyword, because the fix is in the tool's own schema.
+/// One JSON Schema as Gemini's `Schema` (an OpenAPI 3.0 subset). A keyword is converted when only
+/// the spelling differs, dropped when it only describes ([`DROPPED`]), and refused when it changes
+/// accepted values ([`REFUSED`]), naming the parameter and keyword.
 pub fn schema(v: &Value, at: &str) -> Result<Value, String> {
     if !v.is_object() {
         return Err(format!(
@@ -1529,11 +1460,8 @@ fn finish_of(word: &str) -> Finish {
     }
 }
 
-/// Whether this finish reason means "not this answer", and the sentence that says why: `None` for
-/// the endings, and `Some` for everything the reference lists that is a refusal —
-/// `SAFETY`, `RECITATION`, `BLOCKLIST`, `PROHIBITED_CONTENT`, `SPII`, `LANGUAGE`, `MALFORMED_FUNCTION_CALL`,
-/// `MISSING_THOUGHT_SIGNATURE`, `UNEXPECTED_TOOL_CALL`, `TOO_MANY_TOOL_CALLS`,
-/// `IMAGE_SAFETY` and the rest.
+/// Whether this finish reason means "not this answer", and why: `None` for the endings, `Some` for
+/// every refusal the reference lists (`SAFETY`, `RECITATION`, `MALFORMED_FUNCTION_CALL`, ...).
 fn blocked_by(candidate: &Value, word: &str) -> Option<String> {
     if matches!(word, "STOP" | "MAX_TOKENS" | "FINISH_REASON_UNSPECIFIED") {
         return None;

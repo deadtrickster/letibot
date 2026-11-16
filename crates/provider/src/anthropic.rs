@@ -1,34 +1,6 @@
-//! The Anthropic Messages client: `POST /v1/messages`, `anthropic-version`, SSE.
-//!
-//! The second protocol this crate speaks, beside the OpenAI-shaped chat completions in
-//! [`crate::openai`]. The two differ in more than spelling, and each difference is a rule the API
-//! enforces rather than a style: the system prompt is a TOP-LEVEL field instead of a message
-//! (<https://platform.claude.com/docs/en/api/messages>), a tool result is a `tool_result` BLOCK in
-//! a user turn that has to answer a `tool_use` in the message directly above it, and a thinking
-//! block carries a `signature` that must go back unmodified or the request is refused
-//! (<https://platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks>).
-//! The transcript already holds all of it: see [`crate::anthropic::request`] for the mapping, row
-//! by row, and [`crate::anthropic::stream`] for the events that build a turn back.
-//!
-//! Three decisions are this module's rather than the API's, and each is the smaller of two losses:
-//!
-//! * `anthropic-version: 2023-06-01`. Every model still answers it, every Anthropic-compatible
-//!   coding endpoint was built against it, and it is the last version where `temperature`, `top_p`
-//!   and `top_k` exist - the operator's sampling is passed through, and `2026-10-21` refuses those
-//!   three outright (<https://platform.claude.com/docs/en/api/versioning>).
-//! * `thinking` is asked for as `{"type": "adaptive"}`, the current mode; a model that only has the
-//!   old manual mode says so in a 400 ("adaptive thinking is not supported on this model") and the
-//!   request goes once more with `{"type": "enabled", "budget_tokens": N}`. The reverse of that
-//!   trade is a hard-coded model-family guess, and this tree does not price a model by its name.
-//! * A turn that asks NOT to think sends no `thinking` field at all. `{"type": "disabled"}` is a
-//!   400 on the models whose thinking is always on, and omitting the field is the only request
-//!   every model reads (<https://platform.claude.com/docs/en/api/errors>).
-//!
-//! Two refusals are answered by retrying the same request once, because the API documents the
-//! remedy and the request is where it is applied: adaptive thinking unsupported (above), and a
-//! thinking block the API will not accept because the history it was signed against has changed -
-//! the documented fix is to strip it and everything after it, which is every block this request
-//! carries (<https://platform.claude.com/docs/en/api/errors>).
+//! The Anthropic Messages client. `anthropic-version: 2023-06-01`, the last that keeps `temperature`,
+//! `top_p`, `top_k`. Thinking is asked as `adaptive` and retried once as `enabled` on a 400; a turn
+//! that must not think sends no `thinking`. A rejected signed thinking block is stripped and retried.
 
 pub mod request;
 pub mod stream;
@@ -459,10 +431,9 @@ fn io_kind(err: &ureq::Error) -> Option<std::io::ErrorKind> {
     }
 }
 
-/// The API's error body as one sentence, with the machine-readable type kept beside the message -
-/// the same projection the OpenAI client makes of `error.code`, for the same reason: a caller
-/// classifies on the word, a person reads the sentence. `request_id` is what a report to the
-/// vendor needs and is useless once dropped.
+/// The API's error body as one sentence, with the machine-readable type beside it, as the OpenAI
+/// client does with `error.code`: a caller classifies on the word, a person reads the sentence.
+/// `request_id` is kept for a report to the vendor.
 fn refusal_text(text: &str, request_id: Option<&str>) -> String {
     let parsed: Option<Value> = serde_json::from_str(text).ok();
     let err = parsed.as_ref().and_then(|v| v.get("error"));
@@ -497,10 +468,9 @@ fn set_path(body: &mut Value, path: &str, value: Value) {
     }
 }
 
-/// The refusal the provider sends INSIDE its stream, which has no status of its own: the response's
-/// is `200` because the headers went out first. `overloaded_error` is a 529 in a non-streaming
-/// context, `rate_limit_error` a 429, and the rest are the status the errors page names for them
-/// (<https://platform.claude.com/docs/en/api/errors>).
+/// A refusal sent inside the stream, whose response status is `200` because the headers went first.
+/// Each error type maps to the status the errors page names: `overloaded_error` 529,
+/// `rate_limit_error` 429 (<https://platform.claude.com/docs/en/api/errors>).
 fn in_band_refusal(event: &Value, retry_after: Option<u64>) -> Option<BackendError> {
     if event.get("type").and_then(Value::as_str) != Some("error") {
         return None;

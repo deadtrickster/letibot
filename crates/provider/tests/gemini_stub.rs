@@ -137,14 +137,8 @@ fn tools() -> Vec<String> {
     ]
 }
 
-/// One streamed answer: a thought, then text, then the ending and the usage — the shape
-/// `streamGenerateContent` sends, where every chunk is a whole `GenerateContentResponse`.
-///
-/// ```text
-/// data: {"candidates":[{"content":{"parts":[{"text":"…","thought":true}]}}]}
-/// data: {"candidates":[{"content":{"parts":[{"text":"…"}]},"finishReason":"STOP"}],
-///        "usageMetadata":{…},"modelVersion":"gemini-4-hydrogen"}
-/// ```
+/// One streamed answer: a thought, then text, then the ending and the usage, each chunk a whole
+/// `GenerateContentResponse`.
 #[test]
 fn a_turn_streams_thoughts_text_usage_and_the_ending() {
     let answer = sse(&[

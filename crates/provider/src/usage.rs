@@ -28,10 +28,8 @@ pub fn url(preset: &Preset, creds: &Credentials) -> Option<String> {
     Some(format!("{scheme}://{host}{usage}"))
 }
 
-/// When the plan's limit lifts, Unix millis: the latest reset among its exhausted windows, since
-/// nothing lifts until every one of them has. `None` when no window is exhausted - the caller then
-/// reads the refusal's own prose. `usages.<window>.used_ratio >= 1` beside its `reset_time`;
-/// `limits[].detail` (`used >= limit`, `resetTime`) is the same fact a second later, read only when
+/// When the plan's limit lifts, Unix millis: the latest reset among its exhausted windows, or `None`
+/// when none is exhausted. Read from `usages.<window>`, and from `limits[].detail` only when
 /// `usages` is silent.
 pub fn reset_of(body: &Value) -> Option<u64> {
     let named = body["usages"]

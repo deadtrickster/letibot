@@ -377,20 +377,8 @@ fn a_refusal_of_the_picture_is_learned_and_the_request_retried_with_placeholders
     assert!(!seen[2].1.contains("image_url"), "{}", seen[2].1);
 }
 
-/// A provider that refuses THE BYTES is learned against the picture, not against the model.
-///
-/// A session died and no restart could revive it: a `read` of a 33-byte PNG header was stored
-/// as a picture and every turn sent it again. The provider said:
-///
-/// ```text
-/// http 400: .messages[1861].image[0]: You have uploaded an unsupported image. Please make sure
-/// your image is valid and has one of the following formats: webp, png, jpeg, and gif.
-/// ```
-///
-/// That sentence is NOT `text_only_refusal`'s: it does not say *this model takes text*, it says
-/// *these bytes are not an image*, and the two facts have different remedies. So the assertions
-/// here are the ones that tell the two apart: the model is NOT marked text-only, the picture IS
-/// marked, the retry is ONE, and the next turn sends no `image_url` without earning the 400 again.
+/// A provider that refuses the bytes is learned against the picture, not the model: the model is
+/// not marked text-only, the picture is, the retry is one, and the next turn sends no `image_url`.
 #[test]
 fn a_provider_that_refuses_the_bytes_is_learned_against_the_picture_and_the_request_retried() {
     let (_marks, _held) = a_session();

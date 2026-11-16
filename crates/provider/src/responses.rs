@@ -1,64 +1,6 @@
-//! OpenAI's own protocol: `POST /v1/responses`, streamed.
-//!
-//! Every field below is off the API reference's OpenAPI document, fetched 2026-11:
-//!
-//! ```text
-//! https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml
-//! ```
-//!
-//! - the create request: `CreateResponse` = `ModelResponseProperties` (`temperature`,
-//!   `top_p`) + `ResponseProperties` + a block of its own (`input`, `include`,
-//!   `instructions`, `store`, `stream`, `stream_options`, `max_output_tokens`,
-//!   `reasoning`, `tools`);
-//! - its `input` items: `InputItem` → `EasyInputMessage` (`user|assistant|system|developer`,
-//!   `input_text|input_image|output_text`), `FunctionToolCall`,
-//!   `FunctionCallOutputItemParam`, `ReasoningItem`;
-//! - the stream: `ResponseTextDeltaEvent`, `ResponseReasoningSummaryTextDeltaEvent`,
-//!   `ResponseFunctionCallArguments{Delta,Done}Event`, `ResponseOutputItem{Done}`,
-//!   `ResponseCompleted|Incomplete|FailedEvent`, `ResponseErrorEvent`, `ResponseUsage`;
-//! - `FunctionTool` (flat, `strict` required) and `ReasoningEffort`
-//!   (`none|minimal|low|medium|high|xhigh|max`).
-//!
-//! The parts a `messages` API does not have at all:
-//!
-//! - `input` is a list of ITEMS, not turns: a message, a `function_call`, a
-//!   `function_call_output`, and a `reasoning` item each stand on their own, and a
-//!   tool result names the call it answers by `call_id` rather than by position.
-//! - A thought comes back as a `reasoning` item carrying `encrypted_content`, which
-//!   only the account that issued it can read. `store: false` means OpenAI keeps
-//!   nothing, so unless letibot hands the item back the next turn has no memory of
-//!   why the call was made: that continuity is the reason this protocol is here.
-//!
-//! ```text
-//! include: ["reasoning.encrypted_content"]   "Includes an encrypted version of reasoning
-//!                                             tokens in reasoning item outputs. This enables
-//!                                             reasoning items to be used in multi-turn
-//!                                             conversations when using the Responses API
-//!                                             statelessly (like when the store parameter is
-//!                                             set to false …)"
-//! ```
-//!
-//! and `ReasoningItem`'s own description: "Be sure to include these items in your `input`
-//! to the Responses API for subsequent turns of a conversation if you are manually managing
-//! context".
-//!
-//! Where the record lives is the one decision this module makes that the transcript
-//! does not: the row's `ReasoningField` keeps an Anthropic signature, which any key for
-//! that door can replay, but this ciphertext is readable by one account only, so it is
-//! not put on the row (`Completion::thoughts` stays empty). This client keeps what it
-//! issued, in THE INSTANCE, paired
-//! back to a row by the summary text the row was written from - see [`Issued`] and
-//! [`pairing`]. It is written nowhere else, so it dies with the provider: after a restart,
-//! or after `/models` switched this session to another door, those thoughts are simply not
-//! replayed (the transcript still has their summary) rather than replayed as a ciphertext
-//! another key would have to read. That is the smaller loss, and it is also why a
-//! `Marks`-style session record would be wrong here: it would outlive the account and the
-//! model that issued the item.
-//!
-//! Two shapes are deliberate and measured elsewhere in this crate: a picture follows
-//! the refusal ladder `messages.rs` documents (send it, hear the refusal, name it from
-//! then on), and a request that would END on an instruction is said as the operator's
-//! turn instead.
+//! OpenAI's Responses protocol: `POST /v1/responses`, streamed. `input` is a list of items, and a
+//! thought returns as encrypted `reasoning` only the issuing account can read, so it is kept in this
+//! instance ([`Issued`], [`pairing`]), never on the row, and dies with the provider.
 
 use std::io::{BufRead, BufReader};
 use std::time::{Duration, Instant};
@@ -82,22 +24,12 @@ pub const DEFAULT_FIRST_BYTE: Duration = Duration::from_secs(60);
 /// The budget for the whole stream once bytes are arriving: a long answer is progress.
 pub const DEFAULT_ANSWER_TIMEOUT: Duration = Duration::from_secs(600);
 
-/// The most reasoning records one conversation keeps here. A record is one round's
-/// ciphertext, so this is the recent tail: an older thought is replayed as nothing
-/// rather than as a wrong blob, and the trim is from the front, which is the turn
-/// compaction drops first anyway.
+/// The most reasoning records one conversation keeps. An older thought replays as nothing rather
+/// than a wrong blob; the trim is from the front, which compaction drops first anyway.
 pub const LEDGER_MAX: usize = 32;
 
-/// One reasoning item this client issued, and what pairs it back to a transcript row.
-///
-/// ```text
-/// {"type": "response.output_item.done", "item": {"type": "reasoning", "id": "rs_07…",
-///   "encrypted_content": "gAAAAAB…", "summary": [{"type": "summary_text", "text": "…"}]}}
-/// ```
-///
-/// The summary is the key because it is the only part of the item the transcript keeps:
-/// the engine writes `done.reasoning` - the summary deltas, joined - into one row, so a
-/// row and the record that answers it say the same words.
+/// One reasoning item this client issued, and what pairs it back to a transcript row: the summary,
+/// the only part the transcript keeps, so a row and its record say the same words.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Issued {
     summary: String,
@@ -214,10 +146,8 @@ impl ResponsesProvider {
         self
     }
 
-    /// What this model gets pictures as: a provider that already refused one, then the
-    /// catalogue's `modalities.input`, and otherwise the pictures are SENT. The same three
-    /// answers as the chat-completions client, off the same table, because it is a fact
-    /// about the model and not about the protocol.
+    /// How this model gets pictures: a provider that already refused one, then the catalogue's
+    /// `modalities.input`, otherwise sent. Same table as chat completions, since it is a model fact.
     fn eyes(&self) -> Eyes<'_> {
         if crate::messages::known_text_only(self.preset.name, &self.model) {
             return Eyes::TextOnly(&self.model);
@@ -288,16 +218,9 @@ impl ResponsesProvider {
         if !tools.is_empty() {
             body["tools"] = Value::Array(tools);
         }
-        // `reasoning.effort` is `none|minimal|low|medium|high|xhigh|max`, and `none` is how a
-        // cheap round asks for no thinking at all. `summary: auto` is what puts
-        // `response.reasoning_summary_text.delta` on the stream: without it a reasoning model
-        // thinks where this build cannot see, and the transcript row that pairs an encrypted
-        // item back would never be written.
-        //
-        // An explicit per-request answer wins, and otherwise the operator's own switch does: a
-        // session started with `--thinking`, or with an `--effort` this API understands, asked to
-        // think. Absent on every other turn, because `reasoning` on a model that does not reason
-        // is a 400 on every turn rather than a setting nobody used.
+        // `none` is how a cheap round asks for no thinking. `summary: auto` puts the reasoning
+        // summary on the stream, without which the encrypted item is never paired back. Sent only
+        // when asked for, since `reasoning` on a model that does not reason is a 400 every turn.
         let thinking = match req.thinking {
             Some(asked) => asked,
             None => self.thinking || self.effort.is_some(),
@@ -311,10 +234,8 @@ impl ResponsesProvider {
         } else if req.thinking == Some(false) {
             body["reasoning"] = json!({"effort": "none"});
         }
-        // The operator's sampling, in this protocol's names. `temperature` and `top_p` are the
-        // two it documents (`ModelResponseProperties`); a chat-completions `max_tokens` is
-        // `max_output_tokens` here, and the rest (`seed`, the penalties) are fields this API
-        // does not have, so they are not sent rather than sent to be refused.
+        // `temperature` and `top_p` are the two sampling fields this API documents, and
+        // `max_tokens` is `max_output_tokens`; the rest are not sent rather than refused.
         if let Some(obj) = self.sampling.as_object() {
             for (k, v) in obj {
                 let field = match k.as_str() {
@@ -351,21 +272,9 @@ fn effort_word(s: &str) -> Option<&'static str> {
     })
 }
 
-/// Tool schemas as this API wants them: flat, where a chat-completions tool nests the
-/// definition under `function`.
-///
-/// ```text
-/// {"type": "function", "name": "read", "description": "…",
-///  "parameters": {"type": "object", …}, "strict": false}
-/// ```
-///
-/// `strict` is required by the schema and is `false` here: strict mode demands that every
-/// object in `parameters` set `additionalProperties: false`, and the harness's schemas do
-/// not, so `true` would be refused for reasons that have nothing to do with the call.
-///
-/// The harness hands over its dialect's rendering, either `{type, function: {...}}` already
-/// or the bare `{name, description, parameters}`; a schema with neither is refused rather
-/// than sent as something the provider would 400 on.
+/// Tool schemas flat, as this API wants them. `strict` is `false` because strict mode demands
+/// `additionalProperties: false` everywhere and the harness's schemas do not set it. A schema in
+/// neither dialect shape is refused rather than sent to be 400'd.
 pub fn tools(tools_json: &[String]) -> Result<Vec<Value>, String> {
     tools_json
         .iter()
@@ -403,14 +312,9 @@ struct Input {
     own_author: bool,
 }
 
-/// The `instructions` string and the `input` array, from the transcript.
-///
-/// `instructions` is the top-level prompt (`CreateResponse.instructions`: "A system (or
-/// developer) message inserted into the model's context"), so a request whose transcript
-/// LEADS with a `System` row keeps that row as a message instead and leaves this empty -
-/// the same rule `messages::convert` applies to its system message, for the same reason:
-/// the prefix cache is keyed on the bytes, and a prompt that moved between the two places
-/// re-prefills every turn.
+/// The `instructions` string and the `input` array, from the transcript. A transcript that leads
+/// with a `System` row keeps it as a message and leaves `instructions` empty, as `messages::convert`
+/// does, because the prefix cache is keyed on the bytes.
 fn input_items(
     req: &TurnRequest<'_>,
     eyes: Eyes<'_>,
@@ -491,10 +395,8 @@ fn input_items(
                     origin,
                     Some(letibot_transcript::CallOrigin::Operator { .. })
                 );
-                // A picture a tool read rides the OUTPUT of the call that read it: this API's
-                // `function_call_output.output` is text or a content list, so the two need no
-                // second message to be attached to (unlike chat completions, which has no
-                // such field and appends a user turn).
+                // A picture a tool read rides the output of the call that read it: this API's
+                // `function_call_output.output` takes a content list, so no extra user turn.
                 let output = match media {
                     Some(m) => match picture_fate(&m.data_ref, eyes, withheld) {
                         None => json!([
@@ -528,14 +430,9 @@ fn input_items(
     (instructions, out)
 }
 
-/// A request may not END on an instruction, and this is the shape that cost this tree hours:
-/// the compaction appends its instruction AFTER the conversation, so the request ends on a
-/// system message - which a provider with tools refuses with an error that names a field
-/// instead of the shape. The record is right and the translation belongs on the transport, so
-/// the last message is the operator's turn.
-///
-/// The lone developer message is the system PROMPT and stays one: translating it would send a
-/// conversation whose only turn is the operator saying the prompt.
+/// A request may not end on an instruction: providers with tools refuse a trailing system message,
+/// and compaction appends one, so the last message becomes the operator's turn. A lone developer
+/// message is the system prompt and stays one.
 fn trailing_developer_becomes_user(out: &mut [Value]) {
     if out.len() < 2 {
         return;
@@ -556,13 +453,9 @@ fn plain(item: Value) -> Input {
     }
 }
 
-/// A user row: a string when it is words, a content list when it carries a picture.
-///
-/// `input_text` and `input_image` are the two part types, and `image_url` on an image part
-/// takes a URL - a `data:` URL, which is what a `UserPart::Image` holds. A model that takes
-/// text only, or bytes a provider already refused, are NAMED instead, by the same rules the
-/// chat-completions client follows: the placeholder is the tree's one answer to a picture
-/// that cannot be sent, and it carries the reason rather than a blank.
+/// A user row: a string when it is words, a content list when it carries a picture (`input_image`
+/// with a `data:` URL). A picture that cannot be sent is named with its reason, by the
+/// chat-completions rules.
 fn user_message(parts: &[UserPart], eyes: Eyes<'_>, withheld: Withheld<'_>) -> Value {
     let mut content: Vec<Value> = Vec::new();
     let mut images = 0usize;
@@ -618,15 +511,9 @@ fn reasoning_item(record: &Issued) -> Value {
     })
 }
 
-/// The records that answer one reasoning row, and move the cursor past them.
-///
-/// A row's text is the summary the stream carried, so it equals one record's `summary` -
-/// or, when a round issued two reasoning items, the concatenation of both. The search
-/// starts at the cursor and skips records that do not match: those belong to rows this
-/// request no longer carries (compaction dropped them, or the round was never committed),
-/// and skipping them is what stops one stale record from hiding every thought after it.
-/// Nothing is ever paired against its order: a record that does not spell the row's text
-/// is not used at all.
+/// The records that answer one reasoning row, and move the cursor past them. A row's text equals
+/// one record's summary or several concatenated. Non-matching records are skipped, so a stale one
+/// cannot hide later thoughts; nothing is paired by order alone.
 fn pairing<'a>(text: &str, ledger: &'a [Issued], cursor: &mut usize) -> Vec<&'a Issued> {
     let mut out = Vec::new();
     let mut rest = text;
@@ -651,17 +538,9 @@ fn pairing<'a>(text: &str, ledger: &'a [Issued], cursor: &mut usize) -> Vec<&'a 
     out
 }
 
-/// Every `function_call` gets its `function_call_output`, and an output that answers
-/// nothing is dropped unless the operator ran it.
-///
-/// The two shapes are the ones `messages.rs` fills for chat completions, for the same
-/// reason: an output the provider will not accept is the smaller loss than a result the
-/// model never sees. A row recorded WHILE the calls were running - a room note, a steering
-/// message - waits behind the results rather than orphaning them, which is also what the
-/// chat-completions path measured.
-///
-/// What a call may not do is go unanswered: an interrupted turn leaves exactly that, and the
-/// gap is filled where its window closed rather than the request being sent to be refused.
+/// Every `function_call` gets its `function_call_output`, and an output that answers nothing is
+/// dropped unless the operator ran it. A row recorded while calls ran waits behind the results, and
+/// an interrupted turn's gap is filled rather than sent to be refused.
 fn pair_outputs(rows: Vec<Input>) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::with_capacity(rows.len());
     // The calls opened and not yet answered, in the order they were made.
@@ -727,10 +606,8 @@ fn unanswered(call_id: &str) -> Value {
     })
 }
 
-/// The SHAPE of a request that was refused: what was in it and how long each item is,
-/// never the content. A log that quoted the conversation would be a second copy of the
-/// transcript, and every diagnosis this is for - a field the provider will not take, an
-/// item it will not accept in that position - is answerable from the shape.
+/// The shape of a refused request: each item's kind and length, never its content, so the log is
+/// not a second copy of the transcript.
 fn shape(body: &Value, bytes: usize) -> String {
     let mut out = String::new();
     let n_tools = body
@@ -818,13 +695,8 @@ fn ask_again(err: &ureq::Error, retried: &mut u32) -> bool {
     false
 }
 
-/// Is this refusal the one that means "not this kind of content" on THIS protocol? The
-/// shared matcher reads a chat-completions refusal (`image_url`, a content type that
-/// names text); this API's validator names the input part type instead.
-///
-/// ```text
-/// Invalid value: 'input_image'. Supported values are: 'input_text'.
-/// ```
+/// Whether this refusal means "not this kind of content" on this protocol, whose validator names
+/// the input part type (`input_image`) instead of `image_url`.
 fn text_only_refusal(body: &str) -> bool {
     let b = body.to_ascii_lowercase();
     let names_a_part = b.contains("input_image") || b.contains("input_image_content");
@@ -839,18 +711,8 @@ fn text_only_refusal(body: &str) -> bool {
     crate::messages::text_only_refusal(body) || (names_a_part && refuses_it)
 }
 
-/// The refusal a stream carries, which has no status of its own: the response's is `200`
-/// because the headers went out before the first event.
-///
-/// ```text
-/// {"type": "error", "code": "rate_limit_exceeded", "param": null, "message": "…"}
-/// {"type": "response.failed", "response": {"error": {"code": "server_error", …}}}
-/// ```
-///
-/// The code is turned into the status this tree's retry policy reads, because that is the
-/// only vocabulary there is: `rate_limit_exceeded` is a 429 (wait and ask again),
-/// `server_error` a 500 (the same), and anything else a 400 (asking again gets the same
-/// answer). The status the wire sent is 200 in all three cases and says nothing.
+/// A refusal inside the stream, whose status is `200`. The code maps to the status the retry policy
+/// reads: `rate_limit_exceeded` 429, `server_error` 500, anything else 400.
 fn in_band_failure(err: &Value, status: u16, retry_after: Option<u64>) -> BackendError {
     let code = err.get("code").and_then(Value::as_str).unwrap_or("");
     let message = err
@@ -1302,10 +1164,8 @@ impl MessagesBackend for ResponsesProvider {
                 Withheld::nothing(),
             );
         }
-        // The second refusal is a different fact: the PICTURE is what it would not take.
-        // Answering it with a text-only mark would withhold every picture this model was
-        // sent, so the marks go against the pictures and nothing is recorded until the retry
-        // answers.
+        // The second refusal is of the picture. A text-only mark would withhold every picture,
+        // so the marks go against the pictures and nothing is recorded until the retry answers.
         if !crate::messages::picture_refusal(why) {
             return first;
         }

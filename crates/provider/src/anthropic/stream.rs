@@ -1,28 +1,6 @@
-//! The Messages SSE stream, as deltas and as a finished answer.
-//!
-//! Every event is `event: <name>` plus one `data: {…}` object whose own `type` repeats the name,
-//! so the reader keys on the payload only and a name it does not know is ignored - the API says new
-//! event types may appear (<https://platform.claude.com/docs/en/api/versioning>).
-//!
-//! The order, and what each event carries
-//! (<https://platform.claude.com/docs/en/build-with-claude/streaming>):
-//!
-//! ```text
-//! message_start        message.model, message.usage (input, cache read/write, output)
-//! content_block_start  the block's kind; tool_use carries id and name, redacted_thinking its data
-//! content_block_delta  text_delta.text | thinking_delta.thinking | signature_delta.signature
-//!                      | input_json_delta.partial_json
-//! content_block_stop
-//! message_delta        delta.stop_reason (and the cumulative usage)
-//! message_stop         the end; without it a closed socket is a fragment, not an answer
-//! error                {type, message}: the refusal a 200 already promised would not come
-//! ```
-//!
-//! Thinking is the one place a delta is not enough: the text arrives in pieces and the `signature`
-//! arrives once at the end, and the pair is what a later request has to send back unmodified
-//! (<https://platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks>).
-//! So each `thinking` block is held whole until its `content_block_stop`, and comes out as one
-//! [`Thought`] - the head still draws it a token at a time, because the deltas are also forwarded.
+//! The Messages SSE stream, as deltas and as a finished answer. The reader keys on the payload's
+//! `type` and ignores names it does not know. A `thinking` block is held whole until its signature
+//! arrives, then comes out as one [`Thought`]; its deltas are still forwarded.
 
 use letibot_backend::{Completion, Delta, Finish, Meter, Thought, TurnCost};
 use letibot_transcript::ReasoningField;
@@ -285,10 +263,8 @@ impl Accumulator {
                 .and_then(Value::as_u64)
                 .unwrap_or(0)
         };
-        // The API's own arithmetic: "Total input tokens in a request is the summation of
-        // `input_tokens`, `cache_creation_input_tokens`, and `cache_read_input_tokens`"
-        // (<https://platform.claude.com/docs/en/api/messages>). A cache WRITE is billed at the
-        // input rate here, because `Prices` has one cached rate and that is the read one.
+        // Total input is `input_tokens` + `cache_creation_input_tokens` + `cache_read_input_tokens`.
+        // A cache write is billed at the input rate, since `Prices` has one cached rate, the read one.
         let fresh = get("input_tokens");
         let cache_read = get("cache_read_input_tokens");
         let cache_write = get("cache_creation_input_tokens");
@@ -338,10 +314,8 @@ impl Accumulator {
     }
 }
 
-/// The API's `stop_reason` in this tree's terms
-/// (<https://platform.claude.com/docs/en/api/messages>): `end_turn` and `stop_sequence` are a
-/// finished answer, `max_tokens` is one cut short, `tool_use` is calls, and the rest are kept
-/// verbatim so a head can say what happened rather than guess.
+/// The API's `stop_reason` in this tree's terms: `end_turn` and `stop_sequence` finish, `max_tokens`
+/// cuts short, `tool_use` is calls, and the rest are kept verbatim.
 pub(super) fn finish_of(stop_reason: &str) -> Finish {
     match stop_reason {
         "end_turn" | "stop_sequence" => Finish::Stop,

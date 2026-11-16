@@ -1,8 +1,5 @@
-//! The things Kimi's coding endpoint needs beyond a plain OpenAI request.
-//!
-//! Each rule is switched on by a [`crate::presets::Compat`] key, never by the preset's name, so a
-//! door declared in providers.toml behaves as the built-in does. The rules are Moonshot's, as published
-//! (`https://www.kimi.com/code/docs/en/`) and as `MoonshotAI/kimi-code`'s own encoder writes them.
+//! What Kimi's coding endpoint needs beyond a plain OpenAI request. Each rule is switched on by a
+//! [`crate::presets::Compat`] key, never the preset's name, so a providers.toml door behaves the same.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -13,14 +10,9 @@ use serde_json::Value;
 /// clients it recognises by this header.
 pub const USER_AGENT: &str = concat!("letibot/", env!("CARGO_PKG_VERSION"));
 
-/// Kimi refuses an assistant tool-call message that carries no `reasoning_content` at all
-/// ("thinking is enabled but reasoning_content is missing in assistant tool call message at
-/// index N"). Its own client sends the empty string there, which is the smallest honest answer:
-/// the thought was empty, and dropping the field is what the server refuses.
-///
-/// Put that empty string on every assistant tool-call message that lacks one. A transcript
-/// imported from another model, or a turn whose model said nothing, is exactly the shape that
-/// earns the 400 — the conversion above is this harness's own choice, so the fix belongs here.
+/// Kimi refuses an assistant tool-call message with no `reasoning_content`. Its own client sends
+/// the empty string, so every such message that lacks one gets it here; imported transcripts and
+/// silent turns are the shape that earns the 400.
 pub fn fill_absent_thoughts(body: &mut Value) {
     let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else {
         return;

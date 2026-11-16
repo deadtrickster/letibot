@@ -387,8 +387,7 @@ fn an_orphan_output_is_dropped_and_the_operators_own_is_their_turn() {
 }
 
 /// A row recorded while a call was running - a room note, a steering message - must not
-/// orphan the result that answers it: the note waits behind the results, which is what the
-/// chat-completions path measured and the same shape here.
+/// orphan the result that answers it: the note waits behind the results, as on chat completions.
 #[test]
 fn a_note_between_a_call_and_its_result_waits_for_the_result() {
     let items = vec![
@@ -470,10 +469,8 @@ fn an_unanswered_call_is_filled_before_whatever_came_next() {
     );
 }
 
-/// A request may not END on an instruction: the compaction's own instruction is appended
-/// after the conversation, and that is the shape that made a head fail every compaction for
-/// hours with an error naming a field instead of the shape. Said as the operator's turn, it
-/// is a message like any other.
+/// A request may not end on an instruction: compaction appends one after the conversation, and it
+/// is sent as the operator's turn.
 #[test]
 fn a_request_that_ends_on_an_instruction_ends_on_a_message() {
     let items = vec![

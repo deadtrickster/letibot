@@ -70,9 +70,7 @@ fn body(items: &[TranscriptItem], tools_json: &[String], system: &str) -> Value 
 const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
 
 /// The two roles, one content per item, the system instruction in its own field, and the key
-/// facts of each part: `contents` of `user`/`model` with `text`/`inlineData`/`functionCall`/
-/// `functionResponse` is the whole of the shape
-/// (<https://ai.google.dev/api/generate-content/stream-generate-content#request-body>).
+/// facts of each part (`text`, `inlineData`, `functionCall`, `functionResponse`).
 #[test]
 fn a_transcript_becomes_contents_with_two_roles_and_a_system_instruction() {
     let items = vec![
@@ -126,9 +124,7 @@ fn a_transcript_becomes_contents_with_two_roles_and_a_system_instruction() {
     );
 }
 
-/// A transcript can end on unanswered calls — an interrupted turn does exactly that — and an
-/// orphan result answers nothing. The first is FILLED (a sentence saying no result was recorded
-/// is better information than the provider's 400), the second dropped, unless the OPERATOR ran
+/// Unanswered calls at the end are filled, and an orphan result is dropped, unless the operator ran
 /// it, in which case it is the person's own turn.
 #[test]
 fn an_unanswered_call_is_filled_and_an_orphan_result_becomes_the_operators_turn() {
@@ -263,10 +259,8 @@ fn a_thought_signature_rides_the_function_call_it_came_on() {
     );
 }
 
-/// A tool's `parameters` is a JSON Schema; Gemini's `Schema` is a SUBSET of OpenAPI 3.0. A union
-/// of types has no spelling there and becomes `anyOf`; the int64 bounds are quoted strings; the
-/// annotation keys are dropped; and the constructs with no equivalent are refused by name rather
-/// than silently widening a tool's contract.
+/// JSON Schema to Gemini's OpenAPI subset: a type union becomes `anyOf`, int64 bounds are quoted
+/// strings, annotations are dropped, and constructs with no equivalent are refused by name.
 #[test]
 fn the_schema_converter_converts_drops_and_refuses() {
     // The two shapes this tree's own tools write.

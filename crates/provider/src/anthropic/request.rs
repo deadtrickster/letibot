@@ -1,35 +1,6 @@
-//! The transcript as a Messages request: `system` at the top level, content blocks inside
-//! `messages`, and the blocks whose bytes have to go back unchanged.
-//!
-//! Field by field, against <https://platform.claude.com/docs/en/api/messages>:
-//!
-//! ```text
-//! system      top level, string or text blocks                     (not a message role)
-//! messages    role: "user" | "assistant"; consecutive same-role turns combine
-//! text        {type: "text", text}
-//! image       {type: "image", source: {type: "base64", media_type, data}}
-//! tool_use    {type: "tool_use", id, name, input}                   (in an assistant turn)
-//! tool_result {type: "tool_result", tool_use_id, content, is_error} (in a user turn)
-//! thinking    {type: "thinking", thinking, signature}               (assistant, unmodified)
-//! redacted    {type: "redacted_thinking", data}                     (assistant, unmodified)
-//! tools       [{name, description, input_schema}]                   (not `{type: function}`)
-//! ```
-//!
-//! Four rules of the protocol shape this file, each cited where it bites:
-//!
-//! * A `tool_result` must answer a `tool_use` in the message directly above it, and the
-//!   results must come FIRST in their user message
-//!   (<https://platform.claude.com/docs/en/agents-and-tools/tool-use/handle-tool-calls>).
-//! * A thinking block that is replayed must be the one the API signed, unmodified and in order
-//!   (<https://platform.claude.com/docs/en/build-with-claude/thinking#preserving-thinking-blocks>);
-//!   within a tool-use turn that is required, across turns it is only recommended, so a block
-//!   whose signature this build does not hold is left out rather than sent unsigned - the API
-//!   rejects an unsigned one, and a dropped block is legal where a modified one is not.
-//! * `system` has no role of its own inside `messages`, so an instruction that arrives after the
-//!   conversation (compaction writes one) is carried as a user turn - the same call `messages.rs`
-//!   makes for a dialect that cannot take a mid-history system message.
-//! * A result the OPERATOR ran has no `tool_use` above it, so it becomes the person's own turn
-//!   rather than a `tool_result`: `messages.rs`'s `person_ran`, for its reason.
+//! The transcript as a Messages request. A `tool_result` must answer the `tool_use` directly above
+//! and come first in its user message; a thinking block goes back signed and unmodified or not at
+//! all; a trailing instruction and an operator-run result become user turns.
 
 use letibot_transcript::{CallOrigin, ToolOutcome, TranscriptItem, UserPart};
 use serde_json::{Value, json};
@@ -101,12 +72,9 @@ pub(super) struct Policy<'a> {
     pub replay_thoughts: bool,
 }
 
-/// The `system` field: the request's own prompt first, then a leading `System` item's text - the
-/// two carriers of a system prompt this tree has (`messages.rs` sends whichever, and an empty
-/// request prompt with a leading item is the shape a bootstrap writes).
-///
-/// A cache breakpoint goes on the LAST block, because the system prompt is the front of the
-/// prefix every request shares: <https://platform.claude.com/docs/en/build-with-claude/prompt-caching>
+/// The `system` field: the request's prompt first, then a leading `System` item's text, the two
+/// carriers this tree has. The cache breakpoint goes on the last block, since the system prompt is
+/// the front of every request's prefix.
 pub(super) fn system(system: &str, items: &[TranscriptItem], cache: bool) -> Option<Value> {
     let mut blocks: Vec<Value> = Vec::new();
     if !system.trim().is_empty() {
@@ -304,10 +272,8 @@ pub(super) fn messages(
     pair(out, &own_author)
 }
 
-/// A cache breakpoint on the last block that can hold one. The API grows a conversation by caching
-/// the prefix up to the breakpoint, and a thinking block cannot be cached directly - it is cached
-/// only as part of a turn - so the walk goes back to the nearest block that can
-/// (<https://platform.claude.com/docs/en/build-with-claude/prompt-caching>).
+/// A cache breakpoint on the last block that can hold one. A thinking block is cached only as part
+/// of a turn, so the walk goes back to the nearest cacheable block.
 fn mark_cache(message: &mut Message) {
     for block in message.blocks.iter_mut().rev() {
         let kind = block["type"].as_str().unwrap_or_default();
@@ -331,10 +297,8 @@ fn image_block(mime: &str, data_ref: &str) -> Value {
     })
 }
 
-/// The model's tool arguments as the object the API validates `input` against. The tree keeps the
-/// raw text so a dialect can replay it byte for byte; this API takes JSON, so a call whose text is
-/// not an object is sent with no arguments rather than dropped - its result still answers it, and
-/// the payload the model reads is the result's.
+/// Tool arguments as the object the API validates `input` against. The tree keeps raw text for
+/// byte replay; text that is not an object is sent as no arguments, and its result still answers it.
 fn input_of(arguments: &str) -> Value {
     match serde_json::from_str::<Value>(arguments) {
         Ok(v @ Value::Object(_)) => v,
@@ -355,16 +319,9 @@ fn is_error(outcome: &ToolOutcome) -> bool {
     )
 }
 
-/// Every `tool_use` gets its `tool_result` in the message directly after it, or the API refuses the
-/// whole conversation ("tool_use ids were found without tool_result blocks immediately after").
-/// A local dialect renders a call that never came back as text and carries on, so a transcript
-/// that is fine on qwen is one this API will not read. The gap is filled rather than the request
-/// being sent to be refused: the filler says no result was recorded, which is better information
-/// than a fabricated success.
-///
-/// A result whose `tool_use` is gone - a call a compaction dropped - is removed for the mirror
-/// reason, unless the OPERATOR ran it, and those become the person's own turn: nothing proposed
-/// them, so a `tool_result` would answer an id that is not there.
+/// Every `tool_use` gets its `tool_result` in the next message, or the API refuses the conversation.
+/// A missing result is filled with a note that none was recorded. An orphan result is removed
+/// unless the operator ran it, in which case it becomes the person's own turn.
 fn pair(out: Vec<Message>, own_author: &[String]) -> Vec<Value> {
     let mut kept: Vec<Message> = Vec::with_capacity(out.len());
     for mut message in out {
@@ -453,11 +410,8 @@ fn unanswered(id: &str) -> Value {
     })
 }
 
-/// The harness hands over its dialect's rendering of a tool schema, either wrapped as
-/// `{type: function, function: {...}}` or bare `{name, description, parameters}`. This API wants
-/// the three fields at the top level and the schema under `input_schema`
-/// (<https://platform.claude.com/docs/en/api/messages>), and anything else is refused here rather
-/// than sent to be 400'd.
+/// A dialect's tool schema, wrapped (`{type: function, function: {...}}`) or bare, as the API's
+/// top-level fields with the schema under `input_schema`. Anything else is refused here, not 400'd.
 pub(super) fn tools(tools_json: &[String]) -> Result<Vec<Value>, String> {
     tools_json
         .iter()

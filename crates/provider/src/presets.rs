@@ -29,16 +29,8 @@ pub struct Preset {
     pub protocol: Protocol,
     /// Other names the same key goes by (a vendor's SDK and its rebrand).
     pub alt_envs: &'static [&'static str],
-    /// The fallback for a box with no catalogue: the API accepts a retired name and
-    /// silently aliases it onto a live model, so this must be one the account offers.
-    ///
-    /// ```text
-    /// GET /models            -> deepseek-flash, deepseek-v4-pro        (offered: 2)
-    /// POST /chat/completions -> accepts deepseek-flash, deepseek-v4-flash,
-    ///                           deepseek-v4-pro, deepseek-chat
-    ///                           and answers with `model: deepseek-flash` for the two
-    ///                           names it does not offer                  (accepted: 4)
-    /// ```
+    /// The fallback for a box with no catalogue. The API silently aliases retired names onto a
+    /// live model, so this must be one the account's `GET /models` offers.
     pub fallback_model: &'static str,
     /// Extra body fields the provider needs to think out loud, if any.
     pub thinking_field: Option<&'static str>,
@@ -247,20 +239,9 @@ pub const GLM: Preset = Preset {
     compat: JSON_COMPAT,
 };
 
-/// The coding plan: same vendor, a different path (`/api/coding/paas/v4`), its own
-/// model list and zero prices. A preset and not a base-URL override, so the window and
-/// the derived default follow it; its key on the metered URL reads as an empty account.
-///
-/// ```text
-/// http 429: 余额不足或无可用资源包,请充值。
-/// ```
-///
-/// ```text
-/// zai                  https://api.z.ai/api/paas/v4              18 models
-/// zai-coding-plan      https://api.z.ai/api/coding/paas/v4        7 models
-/// zhipuai              https://open.bigmodel.cn/api/paas/v4      17 models
-/// zhipuai-coding-plan  https://open.bigmodel.cn/api/coding/paas/v4 4 models
-/// ```
+/// The coding plan: same vendor, a different path (`/api/coding/paas/v4`), its own model list and
+/// zero prices. A preset, not a base-URL override, so the window and default follow it; its key on
+/// the metered URL reads as an empty account (a 429).
 pub const GLM_CODING: Preset = Preset {
     name: "glm-coding",
     url: "https://api.z.ai/api/coding/paas/v4/chat/completions",
@@ -318,15 +299,9 @@ pub const GROK: Preset = Preset {
     compat: JSON_COMPAT,
 };
 
-/// Anthropic's own API, speaking Messages. The key is the console's `x-api-key`, which is the one
-/// header every Anthropic-compatible endpoint reads; `ANTHROPIC_AUTH_TOKEN` is deliberately not an
-/// alias, because that variable carries an OAuth bearer token for a different header.
-///
-/// <https://platform.claude.com/docs/en/api/messages>
-///
-/// The fallback is the model the models overview tells an unsure operator to start with
-/// (<https://platform.claude.com/docs/en/about-claude/models/overview>), and the catalogue may
-/// carry `anthropic` on a box that has refreshed it - this preset is written to work without one.
+/// Anthropic's own API, speaking Messages, keyed by `x-api-key`. `ANTHROPIC_AUTH_TOKEN` is not an
+/// alias: it is an OAuth bearer for a different header. The fallback model is the one the models
+/// overview recommends, so the preset works without a catalogue.
 pub const ANTHROPIC: Preset = Preset {
     name: "anthropic",
     url: "https://api.anthropic.com/v1/messages",
@@ -345,14 +320,9 @@ pub const ANTHROPIC: Preset = Preset {
     compat: Compat::PLAIN,
 };
 
-/// DeepSeek's Anthropic-compatible door: the same models as [`DEEPSEEK`], the Messages wire, and a
-/// base URL of `/anthropic` - the endpoint reads `x-api-key` as well as a bearer token, and ignores
-/// `anthropic-version`.
-///
+/// DeepSeek's Anthropic-compatible door at `/anthropic`: the same models as [`DEEPSEEK`], so the
+/// catalogue id is `deepseek`'s and a turn is priced by model, not URL.
 /// <https://api-docs.deepseek.com/guides/anthropic_api>
-///
-/// Its catalogue id is `deepseek`'s: the door serves the same models, so a turn is priced by the
-/// model's name rather than by the spelling of the URL.
 pub const DEEPSEEK_ANTHROPIC: Preset = Preset {
     name: "deepseek-anthropic",
     url: "https://api.deepseek.com/anthropic/v1/messages",
@@ -371,10 +341,8 @@ pub const DEEPSEEK_ANTHROPIC: Preset = Preset {
     compat: Compat::PLAIN,
 };
 
-/// Z.ai's Anthropic-compatible door, which is the one their Claude Code instructions point at:
-/// same coding-plan models as [`GLM_CODING`], a different wire.
-///
-/// <https://docs.z.ai/scenario-example/develop-tools/claude>
+/// Z.ai's Anthropic-compatible door, the one their Claude Code instructions use: the same
+/// coding-plan models as [`GLM_CODING`]. <https://docs.z.ai/scenario-example/develop-tools/claude>
 pub const GLM_ANTHROPIC: Preset = Preset {
     name: "glm-anthropic",
     url: "https://api.z.ai/api/anthropic/v1/messages",
@@ -393,15 +361,9 @@ pub const GLM_ANTHROPIC: Preset = Preset {
     compat: Compat::PLAIN,
 };
 
-/// Moonshot's Kimi Code plan, whose Claude Code instructions give the base URL
-/// `https://api.kimi.ai/coding/` and let the tool append `/v1/messages`. The path here is the whole
-/// of it, because this client posts the URL it is given rather than a base URL.
-///
-/// <https://www.kimi.com/code/docs/en/third-party-tools/claude-code>
-///
-/// The key variable is not `ANTHROPIC_API_KEY`: a box may hold both doors' keys at once, and one
-/// variable for two providers is one provider's key silently sent to the other. The plan and its
-/// models are [`KIMI_CODE_GLOBAL`]'s, so it is priced and windowed by that catalogue id.
+/// Moonshot's Kimi Code plan on Messages. The URL is the whole endpoint, since this client posts
+/// what it is given. Not `ANTHROPIC_API_KEY`, so one box's two keys never cross; priced and
+/// windowed as [`KIMI_CODE_GLOBAL`].
 pub const KIMI_CODING: Preset = Preset {
     name: "kimi-coding",
     url: "https://api.kimi.ai/coding/v1/messages",
@@ -421,15 +383,8 @@ pub const KIMI_CODING: Preset = Preset {
     compat: KIMI_GATE,
 };
 
-/// OpenAI itself, on its own protocol. `gpt-6-astra` is the id the API reference's own
-/// examples use, and the fallback for the same reason the others carry one: the catalogue
-/// has no `openai` row here, so a box with no operator file has only this to go on.
-///
-/// ```text
-/// POST https://api.openai.com/v1/responses
-/// {"model": "gpt-6-astra", "store": false,
-///  "include": ["reasoning.encrypted_content"], "stream": true}
-/// ```
+/// OpenAI itself, on its own protocol. `gpt-6-astra` is the id the API reference's examples use;
+/// the catalogue has no `openai` row, so a box with no operator file has only this to go on.
 pub const OPENAI: Preset = Preset {
     name: "openai",
     url: "https://api.openai.com/v1/responses",
@@ -450,14 +405,9 @@ pub const OPENAI: Preset = Preset {
     compat: Compat::PLAIN,
 };
 
-/// Google's Gemini, whose wire is nothing like the others: `contents` of `user`/`model` parts,
-/// `systemInstruction`, `functionDeclarations`, and the model in the PATH rather than the body, so
-/// [`Preset::url`] is a base here rather than an endpoint. [`crate::gemini`] is the client.
-///
-/// `fallback_model` is the model Google's own list calls the everyday-coding one
-/// (<https://ai.google.dev/gemini-api/docs/models>). `catalogue_id` is models.dev's id for the
-/// Gemini API; it carries no `google` row in the vendored snapshot yet, so a box with no other
-/// catalogue plans against no window and prices nothing — honest, if stingy.
+/// Google's Gemini: the model is in the path, so [`Preset::url`] is a base; [`crate::gemini`] is
+/// the client. The fallback is Google's everyday-coding model. The vendored catalogue has no
+/// `google` row yet, so without another catalogue nothing is priced or windowed.
 pub const GEMINI: Preset = Preset {
     name: "gemini",
     url: "https://generativelanguage.googleapis.com/v1beta",
@@ -476,17 +426,8 @@ pub const GEMINI: Preset = Preset {
     compat: Compat::PLAIN,
 };
 
-/// Kimi's coding plan (Moonshot): OpenAI chat completions on the plan's own host. Not the
-/// pay-per-token Open Platform (`api.moonshot.ai/v1`, `$MOONSHOT_API_KEY`): the two products'
-/// keys and URLs are not interchangeable.
-///
-/// ```text
-/// POST https://api.kimi.com/coding/v1/chat/completions
-/// Authorization: Bearer sk-kimi-...
-/// {"model":"k3.1-pro", "thinking":{"type":"enabled"}, "reasoning_effort":"high",
-///  "prompt_cache_key":"..."}
-/// ```
-///
+/// Kimi's coding plan (Moonshot): chat completions on the plan's own host. Not the pay-per-token
+/// Open Platform (`api.moonshot.ai/v1`): the two products' keys and URLs are not interchangeable.
 /// <https://www.kimi.com/code/docs/kimi-code/models.html>
 pub const KIMI_CODE: Preset = Preset {
     name: "kimi-code",
@@ -795,14 +736,9 @@ mod tests {
         assert!(pos("glm") < pos("glm-anthropic"), "{order:?}");
     }
 
-    /// Every `fallback_model` must be a name the catalogue carries in its shortest form,
-    /// because a longer alias for the same window and price makes a box with a catalogue
-    /// choose differently from one without. The account's own list is what a script sees.
-    ///
-    /// `openai` is absent on purpose: the vendored snapshot has no `openai` section, so the
-    /// check could only pass by inventing a window and a price for a model nobody measured.
-    /// Its fallback is the id the API reference's own examples send, which is citable; a
-    /// made-up catalogue row would not be.
+    /// Every `fallback_model` is the catalogue's shortest name, so boxes with and without a
+    /// catalogue choose the same. `openai` is absent: the vendored snapshot has no section for it,
+    /// and its fallback is the id the API reference's examples send.
     #[test]
     fn every_fallback_names_a_real_model_and_its_shortest_form() {
         let cat = crate::catalogue::Catalogue::snapshot();

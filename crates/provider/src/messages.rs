@@ -1,86 +1,13 @@
-//! Transcript items to the API's messages, by each provider's documented behaviour.
-//!
-//! A system item becomes a system message; a user item joins its text parts and SENDS an
-//! image until a model refuses it ([`Eyes`]); reasoning rides on its assistant message; an
-//! assistant with calls and no text has `content: null`; a tool result folds its outcome
-//! into the content, so a refusal reads differently from an answer.
-//!
-//! Two shapes are not conversions. A result carrying its own author is one the OPERATOR ran,
-//! with no proposing assistant row above it, so it is carried as a user turn ([`person_ran`]).
-//! A picture goes through [`picture_fate`]: a model that takes text only, bytes that are not a
-//! COMPLETE image, or bytes a provider already refused become a `not sent` placeholder naming
-//! why, because the transcript is append-only and one bad picture refuses every turn after it.
-//!
-//! `reasoning_content` is where this file was wrong twice, and the shape of the mistake is
-//! worth keeping: a refusal names a field the API would accept as a remedy, not the shape
-//! that provokes it.
-//!
-//! ```text
-//! compaction FAILED: http 400: The `reasoning_content` in the thinking mode must
-//! be passed back to the API. (request_id: 5f6e40f5-…)
-//! ```
-//!
-//! The field that refusal names is one the API accepts as a remedy, and it is not the rule
-//! the guide states: whether `reasoning_content` goes back does not depend on `tools`, and
-//! omitting it produces no 400 in any of these shapes.
-//!
-//! ```text
-//! no tools, assistant without reasoning_content                 200
-//! tools,    assistant without reasoning_content                 200
-//! tools,    assistant with tool_calls, no reasoning_content     200
-//! tools,    assistant with tool_calls, with reasoning_content   200
-//! no tools, assistant with tool_calls, no reasoning_content     200
-//! ```
-//!
-//! So the echo is this harness's own switch for how much thinking to send, not a contract
-//! being obeyed: it keeps half a million tokens off a request that does not need them, and a
-//! choice is not evidence about the API.
-//!
-//! The trigger is a TRAILING SYSTEM MESSAGE plus `tools`. The five shapes above all end on a
-//! user message, so the cause sat outside the sampled space: only `run_compaction` appends an
-//! instruction after the conversation, which is why compaction alone failed while short turns
-//! kept working. Size is refuted too.
-//!
-//! ```text
-//! 976,097 provider tokens   200   finish: length (16 of 16 output tokens, all reasoning)
-//! 1,248,039 provider tokens 400   "maximum context length is 1048576 tokens. However, you
-//!                                  requested 1248055 tokens (1248039 in the messages, 16 in
-//!                                  the completion)"  — in 5.6 s
-//! ```
-//!
-//! So a structurally clean request past the window gets the honest complaint, naming exact
-//! counts, in seconds. The rule that follows is what the daemon does, not what it believes: a
-//! refused request logs its own SHAPE once, so the next occurrence is read off the record
-//! rather than argued from a hypothesis.
-//!
-//! Nothing asserted the request SHAPE before, which is why no test caught it: a head near its
-//! limit cannot free context with the call that is being rejected, and short turns keep
-//! working until a conversation has run for hours.
+//! Transcript items to the API's messages. A result the operator ran becomes a user turn
+//! ([`person_ran`]); a picture that cannot go becomes a placeholder ([`picture_fate`]). Echoing
+//! `reasoning_content` is this harness's choice of how much thinking to send, not an API contract.
 
 use letibot_transcript::{TranscriptItem, UserPart};
 use serde_json::{Value, json};
 
-/// Whether the model this request is going to takes pictures: the one fact about the model
-/// that changes the bytes [`convert`] produces.
-///
-/// A parameter rather than a lookup, for the same reason `echo_reasoning` is: the caller is
-/// where the request is assembled and where the provider is known, and a conversion that read
-/// the catalogue itself would be a second place for the answer to come from.
-///
-/// A part is SENT unless something says not to, because a model given a picture describes it,
-/// while a model given a placeholder has quietly turned a chart into a sentence about a
-/// chart. Exactly two things say not to: the catalogue's `modalities.input` naming text and
-/// not image, or a provider refusing an `image_url` with an error naming a content type and
-/// text, which [`mark_text_only`] records for the rest of that session's requests. That refusal
-/// outranks the table, because it is a measurement.
-///
-/// ```text
-/// http 400: messages.content.type is invalid, allowed values: ['text']
-/// ```
-///
-/// The two mistakes are not the same size, so the answer to the larger one is not to stop
-/// sending pictures to everybody: send them, hear the refusal, say so, and send that model
-/// placeholders from then on.
+/// Whether the target model takes pictures. A parameter so the catalogue is read in one place.
+/// Pictures are sent unless the catalogue says text-only or a provider refused an `image_url`
+/// ([`mark_text_only`]); the refusal outranks the table, and a placeholder loses the picture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Eyes<'a> {
     /// The catalogue says this model takes image input.
@@ -126,22 +53,9 @@ pub fn picture_key(data_ref: &str) -> String {
     format!("{h:016x}:{}", data_ref.len())
 }
 
-/// Record that a provider refused these BYTES, with the words it refused them in, and `true` when
-/// it is new. The words go in the placeholder a later request carries, so the model is told why it
-/// has no picture and the reason is the provider's rather than this tree's guess.
-///
-/// Not the same table as the text-only one, which is a fact about the MODEL: a model may see
-/// perfectly well and refuse these bytes, and a mark against the model would withhold every other
-/// picture for a fault none of them has.
-///
-/// ```text
-/// http 400: .messages[1861].image[0]: You have uploaded an unsupported image. Please make sure
-/// your image is valid and has one of the following formats: webp, png, jpeg, and gif.
-/// ```
-///
-/// The table belongs to the SESSION whose marks are in force on this thread (see
-/// [`crate::marks::enter`]), not to the process. With none in force nothing is remembered and the
-/// refusal is this call's alone.
+/// Record that a provider refused these bytes, with its words, and `true` when new. A separate table
+/// from text-only, because a model that sees may still refuse one image. Scoped to the session
+/// whose marks are in force ([`crate::marks::enter`]); with none, nothing is remembered.
 pub fn mark_bad_picture(data_ref: &str, why: &str) -> bool {
     let key = picture_key(data_ref);
     let mut said = why.trim().replace(['\n', '\r'], " ");
@@ -264,19 +178,9 @@ pub fn known_text_only(provider: &str, model: &str) -> bool {
     crate::marks::read(|m| m.has_model(&key)).unwrap_or(false)
 }
 
-/// Is this refusal the one that means "not this kind of content"? The wording differs by
-/// vendor while the fact does not:
-///
-/// ```text
-/// messages.content.type is invalid, allowed values: ['text']            (Zhipu)
-/// Invalid 'messages[1].content[2].type': 'image_url' is not supported   (OpenAI-shaped)
-/// unknown variant `image_url`, expected `text`                          (serde, behind a gateway)
-/// ```
-///
-/// So the matcher reads what the sentence NAMES rather than one vendor's punctuation:
-/// `image_url` anywhere, or a content type complaint naming text. It is only consulted for a
-/// 400 on a request that carried a picture, which keeps it from reading a schema complaint
-/// about something else as this one.
+/// Whether this refusal means "not this kind of content". Vendors word it differently, so it
+/// matches `image_url` anywhere or a content type complaint naming text, and is consulted only for
+/// a 400 on a request that carried a picture.
 pub fn text_only_refusal(body: &str) -> bool {
     let b = body.to_ascii_lowercase();
     // A part type the model does not take, named outright. This is the shape every
@@ -306,11 +210,8 @@ pub fn carries_pictures<'a>(items: impl IntoIterator<Item = &'a TranscriptItem>)
     !pictures(items).is_empty()
 }
 
-/// What one picture becomes: sent, or the reason it is not. The order of the three reasons is
-/// their scope: the model, then the bytes, then what a provider said about this picture.
-///
-/// `pub(crate)` because every protocol in this crate sends pictures and must answer the same way:
-/// two answers would be one model sent an image by one door and a placeholder by another.
+/// What one picture becomes: sent, or the reason not, checked by scope: model, bytes, then what a
+/// provider said. `pub(crate)` so every protocol answers the same way.
 pub(crate) fn picture_fate(
     data_ref: &str,
     eyes: Eyes<'_>,
@@ -524,10 +425,8 @@ pub fn convert_with_tail(
                 ) {
                     own_author.insert(call_id.clone());
                 }
-                // The payload already names its own outcome - `render` wraps a failure, a timeout
-                // and a backgrounding in their own envelope - so a second prefix here said it twice.
-                // An empty string is refused by some servers of this API (Kimi's): a command that
-                // printed nothing says so instead.
+                // The payload already names its outcome in its own envelope, so no prefix here.
+                // Some servers (Kimi's) refuse an empty string, so empty output says so instead.
                 let content = match payload.trim().is_empty() {
                     true => "(no output)".to_string(),
                     false => payload.clone(),
@@ -562,27 +461,9 @@ pub fn convert_with_tail(
     pair_tool_calls(out, &own_author)
 }
 
-/// Every `tool_calls` gets its `tool` message, or the provider refuses the whole conversation.
-///
-/// OpenAI requires one `tool` message per `tool_call_id` after an assistant message carrying
-/// calls. A local dialect does not: it renders a call that never came back as text and the
-/// conversation carries on, so a transcript that is fine on qwen is one a provider will not
-/// accept. Measured the first time a long local conversation was pointed at deepseek:
-///
-/// ```text
-/// provider refused (400): An assistant message with 'tool_calls' must be
-/// followed by tool messages responding to each 'tool_call_id'.
-/// ```
-///
-/// The gap is filled rather than the request being sent to be refused: the synthesised message
-/// says no result was recorded, which is better information than the provider's refusal and
-/// better than a fabricated success. A `tool` message whose id answers nothing is dropped for
-/// the same reason in reverse, since providers reject those too.
-///
-/// One orphan is carried instead of dropped: a result the OPERATOR ran, marked
-/// `CallOrigin::Operator`. Those are calls no model proposed, so a `tool` message would be
-/// refused for having nothing above it to answer; it becomes the person's own turn instead.
-/// See [`person_ran`].
+/// Every `tool_calls` gets its `tool` message, or the provider refuses the conversation. A missing
+/// result is filled with a note that none was recorded; an orphan `tool` message is dropped,
+/// unless the operator ran it, in which case it becomes the person's own turn ([`person_ran`]).
 fn pair_tool_calls(rows: Vec<Value>, own_author: &std::collections::HashSet<String>) -> Vec<Value> {
     let mut out: Vec<Value> = Vec::with_capacity(rows.len());
     // Ids opened by the assistant message being answered right now, in order, so
@@ -650,37 +531,9 @@ fn pair_tool_calls(rows: Vec<Value>, own_author: &std::collections::HashSet<Stri
     out
 }
 
-/// A request may not END on a system message, and that is the trigger this file spent two
-/// wrong theories looking for. One axis at a time, everything else held:
-///
-/// ```text
-///                                                   no tools   with tools
-/// system at the head, ends with a user message        200         200
-/// ends with ONE system message                        200         400
-/// ends with TWO system messages                       200         400
-/// systems interleaved mid-conversation, ends system   200         400
-/// the same, reasoning_content echoed on assistants    200         200
-/// ```
-///
-/// So the refusal needs a trailing system message AND `tools`, and echoing
-/// `reasoning_content` is one way out of it. Every shape the module header tested ended with a
-/// user message, which is why size, structure and the echo were measured away while the cause
-/// stayed hidden.
-///
-/// The error text is literally true and completely misleading: it names a field the API would
-/// accept as a remedy, not the shape that provoked it, and three readers in a row chased the
-/// field.
-///
-/// The translation lives here rather than in the transcript because the record is right:
-/// `compaction::run_compaction` appends its instruction after the cached history rather than
-/// rewriting anything, and the local dialect path renders it that way and reuses the prefix.
-/// Changing the stored item would make the transcript lie about what the daemon did in order to
-/// satisfy one provider's validator.
-///
-/// This function is the layer that already translates the record into one provider's dialect,
-/// so the translation belongs here, on this transport only. Not gated on the vendor's name: a
-/// request that ends on an instruction reads better as a user turn in every case, and the
-/// narrower rule is the one that rots when the next shape appears.
+/// A request may not end on a system message: with `tools`, providers refuse it, naming
+/// `reasoning_content` instead of the shape. The record stays right and the trailing instruction is
+/// sent as a user turn on this transport, for every vendor.
 fn trailing_system_becomes_user(out: &mut [Value]) {
     // A lone system message is the system PROMPT and stays one: translating it would send a
     // conversation whose only turn is the operator saying the prompt. The trigger is a system

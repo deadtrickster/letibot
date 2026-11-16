@@ -343,16 +343,9 @@ impl Catalogue {
         self.providers.get(provider)?.models.get(model).copied()
     }
 
-    /// Whether this model takes pictures: `Some(false)` when the catalogue carries it and
-    /// its `modalities.input` names text and not image, `None` when nothing here knows.
-    ///
-    /// ```text
-    /// http 400: messages.content.type is invalid, allowed values: ['text']
-    /// ```
-    ///
-    /// `None` is an answer, not a reason to guess. The two mistakes are not the same size:
-    /// a placeholder the model can read loses a picture, while an `image_url` sent to a
-    /// text-only model refuses every turn of the conversation.
+    /// Whether this model takes pictures: `Some(false)` when the catalogue's `modalities.input`
+    /// names text and not image, `None` when nothing here knows. `None` is an answer, not a reason
+    /// to guess: an `image_url` sent to a text-only model refuses every later turn.
     pub fn takes_images(&self, provider: &str, model: &str) -> Option<bool> {
         self.model(provider, model)?.inputs.map(|i| i.image)
     }

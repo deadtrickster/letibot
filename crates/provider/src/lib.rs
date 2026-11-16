@@ -1,8 +1,6 @@
-//! Cloud providers - GLM (Zhipu), DeepSeek, Grok (xAI), Anthropic, OpenAI, Gemini and the
-//! compatible coding doors - as a messages backend: one client per PROTOCOL ([`openai`] for chat
-//! completions, [`anthropic`] for Messages, [`responses`] for OpenAI's Responses, [`gemini`] for
-//! Google GenAI) and one preset per door. The seam carries the transcript ([`messages::convert`]).
-//! Cost is `None` for an unpriced model.
+//! Cloud providers as a messages backend: one client per protocol ([`openai`], [`anthropic`],
+//! [`responses`], [`gemini`]) and one preset per door. The seam carries the transcript
+//! ([`messages::convert`]). Cost is `None` for an unpriced model.
 
 pub mod anthropic;
 pub mod catalogue;

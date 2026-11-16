@@ -726,18 +726,9 @@ struct Accumulator {
     calls: Vec<(String, String, String)>, // (id, name, arguments) by index
     finish: Option<Finish>,
     usage: Option<Value>,
-    /// The model the provider says it used, read off the stream. Not the model we asked for, and
-    /// the difference is why this field exists: several names are accepted and some are aliases,
-    /// so the request name is a wish and this is the fact. Cost computed from the wish reports the
-    /// wrong rates for the turn that really ran.
-    ///
-    /// ```text
-    /// asked deepseek-chat    -> every chunk says  "model": "deepseek-flash"
-    /// asked deepseek-flash   -> every chunk says  "model": "deepseek-flash"
-    /// ```
-    ///
-    /// `None` when the provider sends no `model` field at all, and then the requested name is the
-    /// only thing there is to price by.
+    /// The model the provider says it used, read off the stream. Names may be aliases, so the
+    /// request name is a wish and this is the fact that cost is priced by. `None` when the
+    /// provider sends no `model` field, and then the requested name is used.
     model: Option<String>,
 }
 
