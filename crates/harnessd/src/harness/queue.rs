@@ -245,7 +245,7 @@ impl Harness {
         let Some(census) = self.stuck_census() else {
             return crate::sessions::QueueNews::none();
         };
-        let now = letibot_sessionlog::registry::now_ms();
+        let now = crate::mergequeue::gate::now_ms();
         // The project's `[queue] stuck_after_seconds`, or the daemon's own threshold: the clock's
         // arming and the sentence have to read ONE number, or the census arrives early or late.
         let after = crate::mergequeue::stuck::after_ms(self.cfg.leticode.stuck_after_seconds());
@@ -261,7 +261,7 @@ impl Harness {
     /// one whose oldest row is too young to be news. Composed from the store at the moment it is said,
     /// so a row that recovered between arming and delivery is not announced as stuck.
     pub fn stuck_census_text(&self) -> Option<String> {
-        let now = letibot_sessionlog::registry::now_ms();
+        let now = crate::mergequeue::gate::now_ms();
         let census = self.stuck_census()?;
         let after = crate::mergequeue::stuck::after_ms(self.cfg.leticode.stuck_after_seconds());
         census
@@ -399,6 +399,10 @@ impl Harness {
         // Green again: an emergency this session was told about is over - said once,
         // and forgotten, so the next red of the same tip is news again.
         for h in &greens {
+            // Rows behind a target that is green again are told afresh if it goes red again.
+            let behind = format!("behind:{}:{}:", h.repository, h.target);
+            self.gate_told.retain(|k| !k.starts_with(&behind));
+            let _ = store.untell_prefix(&format!("told:{me}:{behind}"));
             if !mine.contains(&h.repository) {
                 continue;
             }
@@ -434,6 +438,18 @@ impl Harness {
                 )
             {
                 out.push(crate::mergequeue::notices::landing_stuck(&m));
+            }
+        }
+        // A target this tree has rows behind is its news too, muted or not: its own rows wait.
+        let now = crate::mergequeue::gate::now_ms();
+        for b in crate::mergequeue::behind::behind(store, None, now).unwrap_or_default() {
+            let mine: Vec<_> = b
+                .waiting
+                .iter()
+                .filter(|w| crate::mergequeue::root_session(store, &w.session) == me)
+                .collect();
+            if !mine.is_empty() && told_once(&mut self.gate_told, store, &me, b.key()) {
+                out.push(crate::mergequeue::behind::told(&b, &mine));
             }
         }
         if healths.is_empty() && parked.is_empty() {

@@ -783,6 +783,20 @@ impl RepoQueue {
                 who,
             ));
         }
+        // A target that cannot land wakes every tree with a row behind it, once per tip and per
+        // stop of its fix: the rows themselves never move, so nothing else would.
+        for b in super::behind::behind(&self.store, Some(&self.key), gate::now_ms())? {
+            let mut roots: Vec<String> = b
+                .waiting
+                .iter()
+                .map(|w| super::root_session(&self.store, &w.session))
+                .collect();
+            roots.sort();
+            roots.dedup();
+            for root in roots {
+                due.push((format!("{}:{root}", b.key()), Some(root)));
+            }
+        }
         for (key, session) in due {
             if !self.first_time(&format!("rung:{}:{key}", self.key))? {
                 continue;
@@ -2242,6 +2256,10 @@ impl RepoQueue {
         }
         let alarms = self.forget(&format!("alarm:{}:{}:", self.key, h.target))?;
         self.forget(&format!("rung:{}:health:{}:", self.key, h.target))?;
+        self.forget(&format!(
+            "rung:{}:behind:{}:{}:",
+            self.key, self.key, h.target
+        ))?;
         self.forget(&killed_key(&self.key, &h.target, ""))?;
         if alarms > 0 {
             self.raise("target_green", super::notices::green_again(h, &self.key));

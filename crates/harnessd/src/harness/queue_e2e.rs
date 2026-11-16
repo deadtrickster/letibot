@@ -1002,6 +1002,84 @@ fn a_stuck_landing_is_told_to_its_root_session_once_with_the_next_step() {
     assert!(project.queue_emergency_notices().is_empty(), "told ONCE");
 }
 
+/// A row of this tree behind a red target of ANOTHER repository is told to its root session once:
+/// the target, why it is red, the fix's state, the row and the next step.
+#[test]
+fn a_row_behind_a_red_target_is_told_to_its_root_session_once_with_the_cause() {
+    use letibot_tokencore::store::{HealthState, MergeGateOutcome, MergeGateStep, TargetHealth};
+    let Some(f) = Fixture::new("behind-told") else {
+        return;
+    };
+    let s = f.store();
+    s.set_target_health(
+        &TargetHealth {
+            repository: "/the/repository".into(),
+            target: "master".into(),
+            sha: "a78a7406ffffffffffffffffffffffffffffffff".into(),
+            state: HealthState::Red,
+            checked_ms: 1,
+            evidence: "the gate failed".into(),
+            gate_steps: vec![MergeGateStep {
+                command: "cargo build".into(),
+                outcome: MergeGateOutcome::Failed,
+                output: "error[E0596]: cannot borrow `fd` as mutable\n".into(),
+                started_ms: 0,
+                elapsed_ms: 0,
+            }],
+        },
+        "test",
+    )
+    .unwrap();
+    s.enqueue_review(
+        &NewReview {
+            id: "r-poll".into(),
+            repository: "/the/repository".into(),
+            target: "master".into(),
+            kind: ReviewKind::Branch,
+            session_id: "s-parent".into(),
+            branch: "agent/poll-pty".into(),
+            worktree: None,
+            base_sha: "base".into(),
+            head_sha: "head".into(),
+            brief: "the ask".into(),
+            priority: MergePriority::Subagent,
+            fixes: None,
+            evidence: String::new(),
+        },
+        "test",
+        1,
+    )
+    .unwrap();
+    let mut sessions = Sessions::open_first(&f.parts, f.cfg.clone(), f.registry.clone())
+        .expect("the session opens");
+    let project = sessions
+        .held("s-parent")
+        .expect("the project's own session");
+    let said: Vec<String> = project
+        .queue_emergency_notices()
+        .into_iter()
+        .filter(|n| n.starts_with("[queue waits]"))
+        .collect();
+    assert_eq!(said.len(), 1, "one row: {said:#?}");
+    for part in [
+        "`master`",
+        "a78a7406",
+        "cannot borrow `fd`",
+        "waits for its reviewer",
+        "`r-poll`",
+        "Next: ",
+    ] {
+        assert!(said[0].contains(part), "`{part}`: {}", said[0]);
+    }
+    assert!(
+        !project
+            .queue_emergency_notices()
+            .iter()
+            .any(|n| n.starts_with("[queue waits]")),
+        "told ONCE"
+    );
+}
+
 /// A red target is told to the project's root session's model once, the failing step and the end of
 /// its output first. The review of the red tip, blocked, is told the same way; a subagent and the
 /// review queue's own session are told nothing.
