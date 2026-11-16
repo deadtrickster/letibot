@@ -15,9 +15,11 @@ Contents: (a) what other harnesses do, (b) what the web says, (c) the proposal r
 2. An owner has three separate lifetimes: compute (ends at close, idle or TTL), work (ends at
    landed or archived, and is always archived first), caches (bounded by quota and by the
    owner's end). "Reap on landed or closed" as one trigger is too coarse.
-3. The reaper is a box-level program run by a systemd user timer and by the daemons. It does
-   not need the session, the agent or the session's daemon. On a remote host a local reaper
-   acts on a lease that the home box renews, so a partition ends in a kill, not in a leak.
+3. The reaper runs inside every live daemon (`reap_pass`), and `letibot gc` runs it by hand. It
+   does not need the session, the agent or the session's daemon. With no live daemon on a box
+   nothing reaps: there is no timer unit and no host-local reaper yet (decision 12, after the
+   stability phase). A package daemon's `RuntimeMaxSec` is the one bound that holds without one.
+   Remote holdings are reaped only from the home box, over ssh.
 4. Letibot already has half of this: cgroup scopes with `cgroup.kill` and a counted result
    (`crates/tools/src/exec/scope.rs`), a `process` table with pid identity
    (`crates/tokencore/src/store/procs.rs`), and a VM reaper for subagent children
@@ -582,9 +584,9 @@ Close triggers. Any one is enough, and none is an agent's action:
 | The queue landed the owner's branch | package, subagent | merge queue, where `commit_proof` answers |
 | Parent closed | subagent, review | cascade, children first |
 | Idle: no turn in flight, no job running, no input from a head, for `idle_ttl` | package 30 min, subagent 30 min (today's `STALL_MS`), gate 10 min after its run, session never | reaper |
-| Hard TTL since creation or last reopen | package 24 h, gate 6 h, session never | reaper, and `RuntimeMaxSec=` on the unit as the backstop |
+| Hard TTL since creation or last reopen (`live_since_ms`) | package 24 h, gate 6 h, session never | reaper, and `RuntimeMaxSec=` on a package daemon's scope as the backstop |
 | Its daemon is gone: `stopped_ms` set, or beat stale and no `harnessd` at that pid | all but an interactive session with a live head elsewhere | box reaper, `vm_reap::daemon_of` reused |
-| Lease not renewed (remote host) | holdings on that host | host-local reaper |
+| Lease not renewed (remote host) | holdings on that host | not built: the home box's reaper, over ssh, while a daemon lives |
 
 What renews a lease: a turn starting or ending, a tool call returning, a message from the
 operator or the caller (`leticode_send`), an explicit `letibot hold`, and, on every sweep of the
@@ -666,7 +668,7 @@ Rules:
 1. **Stamp and row agree** on the owner: reapable when the owner's state says so.
 2. **Row, no resource**: the holding is `gone`. No action.
 3. **Stamp names an owner the store does not know** (a lost store, another box's owner): it
-   is listed as `unrecorded`, never reaped by the timer. `letibot gc --unrecorded --now`
+   is listed as `unrecorded`, never reaped by a pass. `letibot gc --unrecorded --now`
    reaps those older than 7 days, compute and cache only. Work goes to the archive first, as
    always.
 4. **No stamp**: not letibot's. It can appear in the report under "looks like ours" when a
@@ -803,10 +805,10 @@ removed when the job settles.
 
 ### d.6 The orphan sweep
 
-One program, `letibot gc`, run three ways: by a daemon when one of its owners changes state
-(the fast path), by a systemd user timer `letibot-gc.timer` every 10 minutes on every box
-(the path that needs no daemon), and by the operator. One at a time per box
-(`flock` on `$RUNDIR/gc.lock`), and each holding is claimed by a compare-and-set on its
+One program, `letibot gc`, run two ways: by a daemon's `owner-reaper` thread on every sweep
+and when one of its owners changes state, and by the operator (`letibot gc --now`). Nothing
+runs it with no live daemon on the box: `letibot-gc.timer` is not shipped (decision 12).
+One at a time per box (`flock` on `$RUNDIR/gc.lock`), and each holding is claimed by a compare-and-set on its
 `state` and `attempts`, so two reapers cannot both act.
 
 One pass:
@@ -821,7 +823,7 @@ One pass:
    configured patterns (rule 4). Report only.
 4. **Plan.** For each holding, a verdict sentence: reap now, reap at a time, or keep and
    why. This is what `letibot gc` prints.
-5. **Act** (`--now`, and always for the timer and the daemons, limited to rules 1 and 2 of
+5. **Act** (`--now`, and always for the daemons, limited to rules 1 and 2 of
    d.4). In the order of d.5, journal each act.
 
 A daemon's own pass splits in two. The idle half (close what is idle, past its TTL or
@@ -852,9 +854,11 @@ Grace periods, in one place:
   slice gets `MemoryHigh=` (default 60% of RAM, a setting) so letibot as a whole is throttled
   before it starves other projects' workloads. No `MemoryMax=` on the slice by default: a
   hard cap there kills an arbitrary daemon.
-- Each daemon scope keeps `Delegate=yes`, `OOMPolicy=continue`, `--collect`. A package daemon
-  adds `-p RuntimeMaxSec=<hard TTL + 1 h>` and `-p TimeoutStopSec=30`. That bound is enforced
-  by the user manager, so it holds with every letibot process wedged.
+- Each daemon scope keeps `Delegate=yes`, `OOMPolicy=continue`, `--collect`. A package daemon,
+  which the bridge starts (`bridge/src/daemon.rs`), adds `-p RuntimeMaxSec=<hard TTL + 1 h>`
+  when the user manager takes it. That bound is enforced by the user manager, so it holds with
+  every letibot process wedged. The launcher's own daemons are interactive and carry no bound
+  unless `LETIBOT_SCOPE_RUNTIME_MAX` is set.
 - Inside the delegated tree: `memory.high` on `session.<sid>` (the owner's share), and on
   each `job.<n>` the `memory.max` that exists today plus `memory.oom.group=1`, so a job that
   hits its cap dies whole instead of leaving half a test run.
@@ -898,7 +902,7 @@ for networks and volumes. Never `docker system prune` without the label filter.
 prove any of it and does not touch it. `letibot gc --docker-report` prints sizes grouped by
 compose project label and age, and the exact `docker … prune --filter` commands the operator
 could run. An opt-in section in config (`[gc.docker] prune_images_unused_for = "30d"`,
-`prune_label = ["com.docker.compose.project=bench-*"]`) makes the timer run those, box by
+`prune_label = ["com.docker.compose.project=bench-*"]`) makes the daemons' passes run those, box by
 box. Off by default.
 
 ### d.8 How unlanded work is preserved
@@ -938,7 +942,7 @@ uncommitted changes (`git checkout <wip> -- .` over `HEAD`). The journal line of
 removal ends with the restore command.
 
 Archive refs are removed only by `letibot gc --drop-archive OWNER|--older 90d`, which plans
-first and never runs from the timer.
+first and never runs from a daemon's pass.
 
 ### d.9 What the operator sees
 
@@ -966,13 +970,13 @@ first and never runs from the timer.
 |---|---|
 | Reaper dies half way | Every act is journaled and each holding's state is advanced only after absence is verified. The next pass reads `reaping` rows and repeats the step. All steps are idempotent: kill of an empty cgroup, `down` of a VM that is down, `update-ref` to the same sha, remove of a missing path. |
 | Archive step fails (repo locked, disk full) | Holding goes `stuck` after two attempts. Its removal never runs. Compute and caches of the same owner still go. |
-| Daemon crashed or was SIGKILLed | Its owners' compute is found by the timer pass: stale beat, no `harnessd` at the pid, so `closing`. Cgroups are killed by path. The VM by `held::reap`. `Drop` is not relied on anywhere. |
-| Daemon wedged, still beating | The owner's idle and hard TTL still fire in the timer pass, because they are read from the store and the cgroup, not asked of the daemon. `RuntimeMaxSec` is the last bound. |
+| Daemon crashed or was SIGKILLed | Its owners' compute is found by the next live daemon's pass, or `letibot gc --now`: stale beat, no `harnessd` at the pid, so `closing`. Until then a package's `RuntimeMaxSec` is the only bound. Cgroups are killed by path. The VM by `held::reap`. `Drop` is not relied on anywhere. |
+| Daemon wedged, still beating | The owner's idle and hard TTL still fire in another daemon's pass, because they are read from the store and the cgroup, not asked of the daemon. `RuntimeMaxSec` is the last bound. |
 | Store cannot be opened | Fail closed for work and cache: nothing is removed. Compute bounds still hold through `RuntimeMaxSec` and, on the reaper's side, through `owner.json`: an owner root whose lease is past its hard TTL has its cgroup killed. Said in the room. |
 | Two reapers | `flock` per box, compare-and-set per holding. |
 | Pid reuse | Never signal a bare pid. Cgroup first; else `(pid, identity)` as the supervisor does; firecracker's `--id` rechecked (`held.rs:246-256`). |
-| Remote host unreachable | Holdings there become `lost` (the word `process` already uses) and are retried. Meanwhile the host's own timer runs the same binary over `<root>/*/owner.json`: lease older than `idle_ttl + 1 h` kills that owner's processes and removes its caches; work is bundled, never deleted. Leases are compared as "seconds since last renewal by this host's clock", so skew between boxes does not matter. |
-| Remote host has no letibot reaper installed | `letibot gc` on the home box says so per host ("no reaper on lubuntu2: holdings there are reaped only while it is reachable"), and host setup installs the timer. |
+| Remote host unreachable | Holdings there become `lost` (the word `process` already uses) and are retried. Not built: no host-local reaper runs there (decision 12), so a partitioned host keeps its holdings until the home box reaches it again. |
+| Remote host has no letibot reaper installed | `letibot gc` on the home box says so per host ("no reaper on lubuntu2: holdings there are reaped only while it is reachable"). No host setup installs a reaper yet. |
 | The systemd user manager refuses scopes (R191) | Owners are created `unbounded` and say so. The sweep reports unit-table fill. It does not restart the manager. |
 | The reaper would reap itself | Skipped by rule 6. A package cannot run `gc --now` on its ancestors. |
 | An agent moves a tree out of its owner root | It cannot write outside it from a confined seat. In an allow-all host seat it can, and then the thing has no stamp and shows up under "looks like ours". This is the residue the design accepts, and the reason VM placement is the default for packages. |
@@ -1022,7 +1026,7 @@ parent closed, idle TTL, hard TTL, daemon gone); lease renewal points; an attach
 head no longer holds a closed owner or a daemon; a package daemon exits when its last owner
 closes; `vm_reap` judges a top-level session's VM by its `owner` row (closing R193); close
 brings the VM down from the reaper, not from `Drop`; the 5 minute notice row; the
-`letibot-gc.timer` unit and `letibot gc --now` for compute; `RuntimeMaxSec` and
+`letibot gc --now` for compute (the `letibot-gc.timer` unit is decision 12); `RuntimeMaxSec` and
 `letibot.slice` in `scope_run`; `hold` and `release`. R194's tool-call bound is a
 prerequisite row, not part of this package, but the hard TTL covers its absence.
 

@@ -377,10 +377,128 @@ fn is_provider(name: &str) -> bool {
     matches!(name, "deepseek" | "glm" | "grok")
 }
 
+/// A package daemon's wall-clock bound in seconds: the reaper's hard TTL plus an hour. The user
+/// manager enforces it, so it holds with every letibot process wedged (`docs/lifecycle.md` d.7).
+pub const RUNTIME_BOUND_SECS: u64 =
+    (letibot_tools::lifecycle::PACKAGE_HARD_TTL_MS / 1000) as u64 + 3600;
+
+/// How long the probe for a bounded scope may take: a user manager that does not answer must not
+/// hold a package's start.
+const SCOPE_PROBE_WAIT: std::time::Duration = std::time::Duration::from_secs(2);
+
+/// `systemd-run` on `PATH`, on Linux only.
+fn systemd_run() -> Option<PathBuf> {
+    if !cfg!(target_os = "linux") {
+        return None;
+    }
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|d| d.join("systemd-run"))
+        .find(|p| p.is_file())
+}
+
+/// Will this `systemd-run` make a user scope carrying the runtime bound? Asked once per binary
+/// and bounded. A manager that refuses the property leaves the package unbounded, as before.
+fn scope_takes_bound(run: &Path) -> bool {
+    static ASKED: std::sync::Mutex<Vec<(PathBuf, bool)>> = std::sync::Mutex::new(Vec::new());
+    let mut asked = ASKED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((_, ok)) = asked.iter().find(|(p, _)| p == run) {
+        return *ok;
+    }
+    let ok = probe_scope(run);
+    asked.push((run.to_path_buf(), ok));
+    ok
+}
+
+fn probe_scope(run: &Path) -> bool {
+    let Ok(mut child) = Command::new(run)
+        .args([
+            "--user",
+            "--scope",
+            "--quiet",
+            "--collect",
+            "--expand-environment=no",
+            "-p",
+        ])
+        .arg(format!("RuntimeMaxSec={RUNTIME_BOUND_SECS}"))
+        .args(["--", "true"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return false;
+    };
+    let by = std::time::Instant::now() + SCOPE_PROBE_WAIT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => return status.success(),
+            Ok(None) if std::time::Instant::now() < by => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            _ => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return false;
+            }
+        }
+    }
+}
+
+/// The words that start a package daemon in its own scope under `letibot.slice`, with the
+/// runtime bound, ending at `--` so the daemon's own command follows.
+fn scope_args(d: &Daemon) -> Vec<String> {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|t| t.as_nanos())
+        .unwrap_or(0);
+    let mut words: Vec<String> = [
+        "--user",
+        "--scope",
+        "--quiet",
+        "--collect",
+        "--expand-environment=no",
+    ]
+    .map(String::from)
+    .to_vec();
+    words.push("--unit".into());
+    words.push(format!("letibot-package-{}-{nanos}", d.key));
+    for w in [
+        "--slice",
+        "letibot.slice",
+        "-p",
+        "Delegate=yes",
+        "-p",
+        "OOMPolicy=continue",
+        "-p",
+    ] {
+        words.push(w.into());
+    }
+    words.push(format!("RuntimeMaxSec={RUNTIME_BOUND_SECS}"));
+    words.push("--".into());
+    words
+}
+
 /// Start the daemon detached, in its own session, writing to its own log, and hand back the
 /// child. `setsid` rather than a plain spawn: a daemon that died with the MCP process would take
 /// every session it holds with it, which is what the two-process split exists to deny.
 fn start(
+    binary: &Path,
+    d: &Daemon,
+    model: Option<&str>,
+    mode: &str,
+    placement: &Placement,
+    session: Option<&str>,
+) -> Result<std::process::Child, String> {
+    let scope = systemd_run().filter(|run| scope_takes_bound(run));
+    start_with(scope.as_deref(), binary, d, model, mode, placement, session)
+}
+
+/// [`start`], in the bounded scope `systemd_run` makes when there is one. A scope runs the
+/// command in place, so the child's pid is the daemon's.
+#[allow(clippy::too_many_arguments)]
+fn start_with(
+    systemd_run: Option<&Path>,
     binary: &Path,
     d: &Daemon,
     model: Option<&str>,
@@ -402,7 +520,14 @@ fn start(
     let log2 = log
         .try_clone()
         .map_err(|e| format!("{}: {e}", d.log.display()))?;
-    let mut cmd = Command::new(binary);
+    let mut cmd = match systemd_run {
+        Some(run) => {
+            let mut c = Command::new(run);
+            c.args(scope_args(d)).arg(binary);
+            c
+        }
+        None => Command::new(binary),
+    };
     cmd.args(daemon_args(d, model, mode, placement, session))
         // The daemon links libllama for its TOKENIZER, and ggml registers every backend at
         // load - 1.1 GB of a card for ops it never runs. `scripts/letibot` blindfolds it
@@ -982,6 +1107,72 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A package daemon starts in its own scope under `letibot.slice` with the runtime bound, so
+    /// the user manager ends it an hour past the hard TTL even with every letibot process wedged.
+    #[test]
+    fn the_daemon_spawner_exports_a_runtime_bound() {
+        let dir = letibot_sessionlog::testing::scratch_root().join(format!(
+            "letibot-bound-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let said = dir.join("said");
+        let run = dir.join("systemd-run");
+        letibot_tools::testing::write_stub(
+            &run,
+            &format!(
+                "#!/bin/sh\n[ $# -eq 0 ] && exit 0\necho \"$@\" >> {}\n\
+                 while [ $# -gt 0 ] && [ \"$1\" != -- ]; do shift; done\nshift\nexec \"$@\"\n",
+                said.display()
+            ),
+        );
+        let script = dir.join("harnessd");
+        letibot_tools::testing::write_stub(&script, "#!/bin/sh\nexit 0\n");
+        assert!(scope_takes_bound(&run), "the stub manager takes the bound");
+        let d = Daemon {
+            workspace: dir.clone(),
+            key: "bound0000000".into(),
+            socket: dir.join("daemon.sock"),
+            log: dir.join("daemon.log"),
+            store: dir.join("sessions.db"),
+            placement: None,
+            started: false,
+        };
+        let mut child = start_with(
+            Some(&run),
+            &script,
+            &d,
+            None,
+            "writes-allowed",
+            &Placement::Host,
+            None,
+        )
+        .expect("the daemon starts");
+        assert!(
+            child.wait().expect("waited").success(),
+            "the scope ran the daemon"
+        );
+        let said = std::fs::read_to_string(&said).expect("the manager was asked");
+        let start = said
+            .lines()
+            .find(|l| l.contains("--unit"))
+            .expect("a scope for the daemon");
+        assert!(start.contains("--slice letibot.slice"), "{start}");
+        assert!(
+            start.contains(&format!("RuntimeMaxSec={}", 25 * 60 * 60)),
+            "the bound is the hard TTL plus an hour: {start}"
+        );
+        assert!(
+            start.contains("--parent-seat"),
+            "and runs the package daemon: {start}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

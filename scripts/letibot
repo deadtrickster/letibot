@@ -291,9 +291,9 @@ scope_ok() {
 # Sets SCOPE_RUN to the words that start a command in such a scope, or to nothing.
 #
 # Every daemon goes under `letibot.slice` (`docs/lifecycle.md` d.7), so letibot as a whole can
-# be throttled and the sweep can find its units. A package daemon's caller exports
-# `LETIBOT_SCOPE_RUNTIME_MAX` (a systemd timespan) for a wall-clock bound. It is opt-in: the
-# manager refuses a property a unit type lacks. Otherwise the reaper's `owner.hard_ttl_ms` applies.
+# be throttled and the sweep can find its units. The daemons started here are interactive and
+# unbounded; `LETIBOT_SCOPE_RUNTIME_MAX` (a systemd timespan) opts one into a wall-clock bound.
+# Package daemons are the bridge's, which bounds them itself (`bridge/src/daemon.rs`).
 SCOPE_SLICE=letibot.slice
 SCOPE_RUNTIME_WHY=""
 scope_accepts_runtime_max() {
