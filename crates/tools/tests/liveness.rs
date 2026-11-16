@@ -1,7 +1,6 @@
-//! A background job has no wall-clock deadline. It is ended when it is DEAD — no output and no CPU
-//! for the configured window — or when somebody stops it, because a fixed age cannot tell a fuzz
-//! campaign from a wedged `sleep`. Each test here spawns a real run in a real cgroup: the check reads
-//! the kernel's own clock (`cpu.stat`), and a fake would prove a rule about a fake.
+//! A background job has no wall-clock deadline: it ends when dead (no output and no CPU for the
+//! window) or stopped, since a fixed age cannot tell a fuzz campaign from a wedged `sleep`. Each
+//! test runs in a real cgroup because the check reads the kernel's `cpu.stat`.
 
 use std::time::{Duration, Instant};
 

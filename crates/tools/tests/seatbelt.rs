@@ -1187,10 +1187,9 @@ fn a_denied_runtime_cannot_be_run_renamed_copied_or_reached_through_make_or_a_sc
     }
 }
 
-/// What a session in the wide seat needs from macOS itself, run for real inside the profile: a
-/// session temp dir under `~/.cache` it can write (never the store, which the seat hides), the
-/// user temp dir the toolchain's `xcrun` cache asks for, and `top` and `log`, which macOS will
-/// not run inside a profile.
+/// What a wide-seat session needs from macOS, run inside the profile: a writable session temp
+/// dir under `~/.cache` (never the store), the user temp dir `xcrun` caches in, and `top` and
+/// `log`, which macOS will not run inside a profile.
 #[test]
 fn a_wide_seat_writes_its_cache_tmp_finds_the_user_temp_dir_and_runs_top_and_log() {
     let f = Fixture::new("widetools");

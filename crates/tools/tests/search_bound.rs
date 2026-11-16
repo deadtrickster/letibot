@@ -1,9 +1,6 @@
-//! A search is bounded in two ways, and both are about the SUBSTRATE rather than the pattern: the
-//! round trips one call costs, and the wall clock it may spend (R194).
-//!
-//! The fixture is a repository-sized tree - 300 directories, 1 500 files - because the defect is a
-//! count, and no four-file fixture can show one. The backend is a real tree behind a meter, so the
-//! count is of the calls a tool actually made and not of what it meant to make.
+//! A search is bounded by its substrate, not its pattern: the round trips one call costs, and
+//! the wall clock it may spend. The fixture is repository-sized because the defect is a count, and
+//! the backend is a real tree behind a meter so the count is of calls actually made.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -64,7 +61,7 @@ impl Meter {
 }
 
 /// A real tree behind a channel that can be slow, can lose a page, and can lose every read - the
-/// three shapes R194 was filed about - counting every call it answers.
+/// three shapes a slow substrate takes - counting every call it answers.
 struct Channel {
     inner: HostBackend,
     meter: Arc<Meter>,
@@ -377,7 +374,7 @@ fn the_round_trip_census() {
         r#"{"pattern":"quokka_sentinel","path":"d07"}"#,
     );
     assert!(miss.render().contains("relaxations tried"));
-    // The two channels R194 was filed about, at the cost the guest's own channel had: 10 ms a call.
+    // The two failing channels, at the cost a guest's own channel has: 10 ms a call.
     let (sick, sick_meter, sick_spent) = over_a_repository(
         |root| Channel::new(root).failing_page().failing_reads(),
         Limits::default(),

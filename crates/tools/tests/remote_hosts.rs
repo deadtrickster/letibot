@@ -2374,8 +2374,7 @@ fn concurrent_calls_to_one_host_open_one_connection_in_a_private_directory() {
 }
 
 /// A wait whose every status query the host left unanswered says it learnt nothing about the job,
-/// and never says the job is stuck: on 2026-11-07 a loaded host's silence was read as one, and a
-/// turn was stopped for it.
+/// and never says the job is stuck: a loaded host's silence is not a stuck job.
 #[test]
 fn a_wait_no_status_query_answered_does_not_claim_the_job_is_stuck() {
     let bound = Duration::from_secs(2);

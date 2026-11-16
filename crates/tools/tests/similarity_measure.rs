@@ -1,4 +1,4 @@
-//! R114's measurement: what the second tier scores on the cases the take-up logs hold, and
+//! A measurement of what the second tier scores on the cases the take-up logs hold, and
 //! what one round costs against the whole notes and skills corpus. Not a pass/fail test.
 //!
 //! ```text

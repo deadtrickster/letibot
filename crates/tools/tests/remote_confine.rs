@@ -242,10 +242,9 @@ impl Drop for Rig {
     }
 }
 
-/// The fake helper: `--version`, the argv it was handed, a fabricated readback, and otherwise the command
-/// after `--`, run in the environment and directory it was given. The binds and namespaces it does not
-/// implement, and those are asserted as argv because that is where their meaning is. `--args FD` is
-/// implemented, because that is how a secret is meant to arrive: through the descriptor, not an argv.
+/// The fake helper: `--version`, the argv it was handed, a fabricated readback, and otherwise the
+/// command after `--`, run where it was told. Binds and namespaces are asserted as argv, not
+/// implemented. `--args FD` is implemented, since a secret arrives through the descriptor.
 fn bwrap_shim(log: &Path, readback: &str) -> String {
     format!(
         "#!/bin/bash\n\

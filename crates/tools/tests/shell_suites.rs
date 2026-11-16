@@ -1,10 +1,6 @@
-//! **The shell half of the tree is judged by shell, so it is run from here.** `scripts/letibot`
-//! decides where a run's turns go and `scripts/rrun` decides what a host is sent, each before any
-//! Rust executes; `tests/launcher.sh` and `tests/rrun.sh` are what judges them. `install.sh` and the
-//! Claude Code plugin's manifests are the same shape of thing (R117): no `#[test]` reaches a JSON
-//! file or a `/plugin install` line either. Running them inside `cargo test` puts them in the step
-//! every gate already has - four launcher cases drifted unseen for weeks because nothing ran the
-//! file (R152).
+//! The shell half of the tree is judged by shell, so it is run from here: `tests/launcher.sh` and
+//! `tests/rrun.sh` judge `scripts/letibot` and `scripts/rrun`, and likewise `install.sh` and the
+//! plugin manifests. Inside `cargo test` they run in the step every gate already has.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};

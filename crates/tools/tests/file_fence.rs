@@ -1,8 +1,6 @@
-//! R121 items 4 and 8: the file tools obey the perimeter the shell's view draws. A path the view
-//! denies is refused to `read`, `write`, `edit`, `grep` and `glob` in the boundary's own words,
-//! naming the `[boundary]` key that would change it - and a session reaches its own
-//! `sessions/<id>/` in the letibot store and nothing else of it. Every fixture home is a
-//! temporary directory and every secret is a fake.
+//! The file tools obey the perimeter the shell's view draws: a denied path is refused to `read`,
+//! `write`, `edit`, `grep` and `glob` in the boundary's words, naming the `[boundary]` key, and a
+//! session reaches only its own `sessions/<id>/` in the store. Homes are temp dirs, secrets fake.
 
 use std::path::{Path, PathBuf};
 
@@ -104,7 +102,7 @@ fn refused(r: &letibot_tools::result::ToolResult) -> String {
     }
 }
 
-/// The one the row was filed for: the store is the daemon's and every session's, so a file tool
+/// The central case: the store is the daemon's and every session's, so a file tool
 /// reaches `sessions/<id>/` and nothing else of it - by the same words a command gets.
 #[test]
 fn read_write_edit_grep_and_glob_refuse_the_store_outside_the_sessions_own_folder() {
@@ -316,7 +314,7 @@ fn a_tight_seat_refuses_outside_its_view_naming_the_key() {
     let _ = std::fs::remove_dir_all(f.root());
 }
 
-/// R121: a seat with no shell has no MEASURED view, so its perimeter's own words are the view - and
+/// A seat with no shell has no measured view, so its perimeter's own words are the view - and
 /// the five file tools obey it through the same `FileFence::of` the measured arm uses. Nothing here
 /// runs a command, so nothing needs a cgroup: the fence is the whole proof.
 #[test]

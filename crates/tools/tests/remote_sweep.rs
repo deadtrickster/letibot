@@ -219,7 +219,7 @@ fn a_command_that_cleared_its_environment_is_ended_with_its_group() {
     }
     let child = read_pid(&cleared_pid);
     assert!(alive(child), "the env-cleared child is running: {child}");
-    // The mark is what the sweep used to rely on, and this process has none: `sh` sets `PWD` and
+    // The mark is one way the sweep finds work, and this process has none: `sh` sets `PWD` and
     // nothing else, so the absence being measured is the mark's.
     #[cfg(target_os = "linux")]
     {

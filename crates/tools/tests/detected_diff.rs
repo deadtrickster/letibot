@@ -1,7 +1,6 @@
-//! A `bash` call that writes a file is drawn as the edit it is: the sweep reads the git tree the
-//! command ran in, before and after, and attaches both sides of every file the command changed.
-//! Every test drives the real tool and a real shell, because the loss this guards was in the
-//! seam between them and a fixture on either side of it would hide it.
+//! A `bash` call that writes a file is drawn as the edit it is: the sweep reads the git tree
+//! before and after and attaches both sides of every changed file. Tests drive the real tool and a
+//! real shell, because a fixture on either side of the seam would hide a loss in it.
 
 use letibot_tools::testing::{Harness, git, runner_harness, writing_runner_harness};
 
@@ -166,7 +165,7 @@ fn a_workspace_that_is_not_a_git_tree_is_unchanged() {
     assert_eq!(h.read_file("a.txt"), "one\ntwo\nthree\n");
 }
 
-/// The operator's arango shape: the session sits somewhere that is not the repository, and the
+/// The session sits somewhere that is not the repository, and the
 /// command `cd`s into it, so the tree the shell wrote into is not the session's workspace.
 #[test]
 fn a_cd_into_another_checkout_is_the_tree_that_is_swept() {

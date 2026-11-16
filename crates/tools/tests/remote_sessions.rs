@@ -1152,7 +1152,7 @@ fn a_cap_below_the_bound_is_reported_by_name() {
 ///   -- --ignored six_packages_on_a_real_host_at_once_are_never_refused
 /// ```
 ///
-/// `LETIBOT_R99_N` is the number of sessions (six, what the entry measured) and `LETIBOT_R99_SOURCE`
+/// `LETIBOT_R99_N` is the number of sessions (six by default) and `LETIBOT_R99_SOURCE`
 /// the repository they are placed from, this tree by default. Each close leaves its branch here as
 /// `remote/<host>/<short id>`, exactly as a real placement does.
 #[ignore = "live: places six sessions on a real host - LETIBOT_R99_HOST=<name> and --ignored"]
