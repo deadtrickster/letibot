@@ -4611,7 +4611,7 @@ fn a_command_layer_answers_an_unknown_verb() {
     // it is the same function that answered the one above.
     assert_eq!(
         unknown_verb(&layer, &hub, "nonesuch", ""),
-        "/nonesuch is not a daemon verb; /help lists the head's"
+        "unknown command `/nonesuch` - /help lists them"
     );
     let _ = std::fs::remove_dir_all(&root);
 }
@@ -4624,7 +4624,7 @@ fn a_trapping_command_layer_leaves_the_unknown_sentence() {
     let layer = host(&root);
     assert_eq!(
         unknown_verb(&layer, &hub, "standup", "x"),
-        "/standup is not a daemon verb; /help lists the head's"
+        "unknown command `/standup` - /help lists them"
     );
     // The trap is on the session's log rather than swallowed: a broken layer is news the model is
     // owed, and `plugin load` is where it is fixed.

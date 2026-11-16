@@ -1843,3 +1843,35 @@ fn command_files_complete_list_and_send() {
         other => panic!("{other:?}"),
     }
 }
+
+/// A verb neither the head nor its table knows still leaves as the daemon's line, which answers it.
+#[test]
+fn an_unknown_verb_is_sent_to_the_daemon() {
+    let mut a = app();
+    a.apply(hello(
+        "s",
+        vec![brief("s", "one", false)],
+        Hub::new("s").snapshot(),
+    ));
+    a.apply(ServerFrame::Settings {
+        rows: vec![letibot_sessionlog::protocol::SettingRow {
+            key: letibot_sessionlog::protocol::DAEMON_VERBS_KEY.into(),
+            value: "auto-compact,boundary,clear,default-model,effort,flowy,fork,gate,job,listen,login,models,monitor,nag,note,permissions,prune,queue,shadow,supervise,tools".into(),
+            source: "default".into(),
+            editable: String::new(),
+            choices: Vec::new(),
+            tools: Vec::new(),
+        }],
+    });
+    for verb in ["nonesuch", "mcp", "mc", "m"] {
+        typed(&mut a, &format!("/{verb}"));
+        match a.key(Key::Enter) {
+            Some(Action::Slash { line }) => assert_eq!(line, verb),
+            other => panic!(
+                "/{verb}: {other:?} notice {:?} input {:?}",
+                a.notice,
+                a.input()
+            ),
+        }
+    }
+}

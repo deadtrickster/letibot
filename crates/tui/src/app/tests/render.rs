@@ -18,10 +18,7 @@ fn the_three_registers_are_three_marks() {
         // A routine code the head draws: `compacted` twins the fork's own row and is filed
         // beside the conversation, so its register would not be on the screen.
         ("compact_half", "the fold read the first 90 items"),
-        (
-            "slash_refused",
-            "/qwe is not a daemon verb; /help lists the head's",
-        ),
+        ("slash_refused", "unknown command `/qwe` - /help lists them"),
         (
             // A Failure that takes a row: the ledger's codes are developer diagnostics now, filed
             // beside the conversation rather than drawn (`warning::is_developer`).
@@ -1054,4 +1051,26 @@ fn a_light_background_reply_switches_the_palette() {
     a.key(Key::Background { light: false });
     a.screen(80, 24);
     assert_eq!(a.cfg.palette(), rano::style::Palette::Colour);
+}
+
+/// A refused slash line is answered on the status row: the daemon's echo line is not the answer.
+#[test]
+fn an_unknown_slash_answer_is_on_the_status_row() {
+    let mut a = App::new(RenderConfig {
+        width: 100,
+        ..RenderConfig::default()
+    });
+    a.apply(ServerFrame::Event(env(
+        1,
+        SessionEvent::Warning {
+            code: "slash_refused".into(),
+            detail: "/nonesuch\nunknown command `/nonesuch` - /help lists them".into(),
+            compaction: None,
+        },
+    )));
+    let frame = a.screen(100, 30).join("\n");
+    assert!(
+        frame.contains("· unknown command `/nonesuch` - /help lists them"),
+        "the answer leads the notice: {frame}"
+    );
 }
