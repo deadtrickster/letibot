@@ -142,7 +142,7 @@ pub fn seat_for_level<S: AsRef<str>>(
             let masked = masked_under_home(true, operator_home);
             SeatView {
                 grants: Vec::new(),
-                egress: network_rule(mode, place),
+                egress: network_rule(Level::Wide, mode, place),
                 env: Vec::new(),
                 home: Some(operator_home.to_path_buf()),
                 masked,
@@ -154,10 +154,13 @@ pub fn seat_for_level<S: AsRef<str>>(
     }
 }
 
-/// The session's network rule: denied unless the mode seats network calls. `Ask` counts as
-/// seated, because a boundary that refused a call after the card said yes would be a second
-/// decision nobody made.
-pub fn network_rule(mode: &crate::mode::Mode, place: &str) -> Egress {
+/// The network rule, per level: a tight seat is cut off from the machine entirely, and only the
+/// operator's own seat follows the mode. `Ask` counts as seated for the wide seat, because a
+/// boundary that refused a call after the card said yes would be a second decision nobody made.
+pub fn network_rule(level: Level, mode: &crate::mode::Mode, place: &str) -> Egress {
+    if level == Level::Tight {
+        return Egress::Denied;
+    }
     if mode.seats(crate::schema::Access::Network) {
         Egress::Host {
             why: format!(
@@ -490,7 +493,7 @@ pub fn seat_view<S: AsRef<str>>(
     );
     SeatView {
         grants,
-        egress: network_rule(mode, place),
+        egress: network_rule(Level::Tight, mode, place),
         env,
         home: None,
         masked: masked_under_home(false, operator_home),
@@ -516,7 +519,8 @@ mod tests {
             paths,
             ["/h/.cargo", "/h/.rustup", "/h/.gitconfig"].map(PathBuf::from)
         );
-        assert!(a.egress.allowed());
+        // The tight view: no network at all, whatever the mode seats for the wide seat's sake.
+        assert_eq!(a.egress, Egress::Denied);
         assert_eq!(
             a.env,
             vec![

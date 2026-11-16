@@ -176,6 +176,7 @@ What a command's view holds beyond the built-in list.
 | `grants_ro` | list of paths | [] | both, joined | readable in a command's view |
 | `grants_rw` | list of paths | [] | user only, joined | writable in a command's view |
 | `hide` | list of paths | [] | both, joined | denied after every grant |
+| `network` | list of reasons | [] | user only, joined | the seat may reach the network; an entry says why |
 | `firecode_only` | list of programs | [] | both, joined | programs allowed only inside firecode |
 
 ## `[boundary.env]`
@@ -193,6 +194,7 @@ NAME: `top-level`, `subagent`, or a child perimeter `task` names. Lists join per
 | `grants_ro` | list of paths | [] | user only | readable |
 | `grants_rw` | list of paths | [] | user only | writable |
 | `hide` | list of paths | [] | both, joined | masked |
+| `network` | list of reasons | [] | user only | the seat may reach the network; an entry says why |
 | `docker` | bool | false | user only for true; user's value first | the seat gets a docker socket under its owner root |
 | `secrets` | list: github | top-level: github; others: none | user only | secrets the seat carries |
 

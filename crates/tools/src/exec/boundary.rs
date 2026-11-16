@@ -15,7 +15,7 @@
 
 use std::path::{Component, Path, PathBuf};
 
-use super::confine::Grant;
+use super::confine::{Egress, Grant};
 use super::seat::SeatView;
 
 /// Where an entry was written, so a refusal can name the file and line.
@@ -67,7 +67,7 @@ impl HostGrant {
     }
 }
 
-/// The five keys of both levels, unioned. Empty is today's behaviour.
+/// The keys of both levels, unioned. Empty is today's behaviour.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct BoundaryConfig {
     pub grants_ro: Vec<Entry<String>>,
@@ -77,6 +77,10 @@ pub struct BoundaryConfig {
     /// Programs a shell call may run only inside a firecode VM. It narrows what a session may
     /// run, so a project file may set it.
     pub firecode_only: Vec<Entry<String>>,
+    /// Reasons this seat may reach the network. A tight seat has none until an entry here says
+    /// so, because a confined child sharing the host's namespace reaches the daemon's own
+    /// listeners; the entry's text is what a disclosure and an audit row can say.
+    pub network: Vec<Entry<String>>,
 }
 
 impl BoundaryConfig {
@@ -97,6 +101,7 @@ impl BoundaryConfig {
             hide: union(&self.hide, &other.hide),
             env: union(&self.env, &other.env),
             firecode_only: union(&self.firecode_only, &other.firecode_only),
+            network: union(&self.network, &other.network),
         }
     }
 
@@ -208,6 +213,8 @@ pub struct Resolved {
     pub label: String,
     /// Every install of a `firecode_only` program the host holds, denied for read and exec.
     pub firecode_only: Vec<(PathBuf, Origin)>,
+    /// The reason this seat may reach the network, and where it was written. Empty is denied.
+    pub network: Vec<(String, Origin)>,
 }
 
 impl Resolved {
@@ -398,6 +405,25 @@ pub fn resolve(cfg: &BoundaryConfig, home: &Path) -> Result<Resolved, String> {
     for e in &cfg.hide {
         r.hide.push(path_of("hide", e, home, false)?);
     }
+    // Egress is the operator's call like any other widening: a project file a session can edit
+    // may not hand itself the machine's network.
+    for e in &cfg.network {
+        if !e.from.user {
+            return Err(format!(
+                "{}: [boundary] network = \"{}\": a project file may not grant the network. \
+                 Widening is the operator's call, so write it in the user file",
+                e.from, e.value
+            ));
+        }
+        if e.value.trim().is_empty() {
+            return Err(format!(
+                "{}: [boundary] network: an entry says WHY this seat may reach the network, so \
+                 a disclosure and an audit row can say it too",
+                e.from
+            ));
+        }
+        r.network.push((e.value.clone(), e.from.clone()));
+    }
     for e in &cfg.env {
         let (k, v) = &e.value;
         let valid = !k.is_empty()
@@ -448,6 +474,13 @@ pub fn host_grants(cfg: &BoundaryConfig, home: &Path) -> Result<Vec<HostGrant>, 
 /// (a wide view already reads everything). `hide` masks at both levels and beats any grant.
 pub fn apply(mut seat: SeatView, r: &Resolved) -> SeatView {
     let wide = seat.home.is_some();
+    // The operator's grant of egress, and the only way a tight seat reaches the machine's network:
+    // the mode answers for the wide seat, and a child reaches nothing until this says so.
+    if let Some((why, from)) = r.network.first() {
+        seat.egress = Egress::Host {
+            why: format!("`{} network` at {from}: {why}", r.label()),
+        };
+    }
     if !wide {
         for (p, from) in &r.grants_ro {
             if p.exists() && !seat.grants.iter().any(|g| g.path() == p) {
