@@ -1025,3 +1025,35 @@ fn an_external_waits_window_survives_a_restore_and_the_restart_agrees_with_the_n
     );
     assert!(!text.contains("push once CI is green"), "{text}");
 }
+
+/// A session's row waiting on a live process is quiet: the process table is read for it, as a
+/// seat's board reads it. A pid nobody reads is a wait met at once.
+#[test]
+fn a_sessions_wait_on_a_live_process_reads_the_process_table() {
+    use letibot_tokencore::store::TodoNeed;
+    let dir = Scratch::new("pid-wait");
+    let id = "s-pid-wait";
+    let me = std::process::id();
+    let start = letibot_tools::exec::procs::read(me)
+        .expect("this test's own process")
+        .start;
+    let row = TodoItem {
+        needs: vec![TodoNeed::Pid { pid: me, start }],
+        ..a_row("land once the hand gate ends", TodoStatus::InProgress)
+    };
+    let Some(h) = opened_by_a_later_daemon_with(&dir, id, |store| {
+        store
+            .put_todos(id, std::slice::from_ref(&row))
+            .expect("the board");
+    }) else {
+        return;
+    };
+    let board = h.todos.snapshot();
+    let jobs = h.running_jobs(&board);
+    assert!(jobs.is_running_pid(me, start), "the live process is read");
+    assert!(!crate::sessions::the_check_may_ask_about(
+        &board[0],
+        &h.child_sessions(),
+        &jobs
+    ));
+}

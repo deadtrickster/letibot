@@ -1594,6 +1594,22 @@ fn word_at(text: &str, word: &str) -> Option<usize> {
     })
 }
 
+/// How often a row waiting on a process is read again: nothing reports a pid's exit, so the
+/// process table is the only fact and the clock has to come back to it.
+pub const PID_POLL: Duration = Duration::from_secs(60);
+
+/// When to read a waited-on process again, or `None` when no open row waits on one still running.
+pub fn when_a_waited_process_is_read_again(
+    rows: &[TodoItem],
+    jobs: &RunningJobs,
+) -> Option<Duration> {
+    rows.iter()
+        .filter(|row| matches!(row.status, TodoStatus::Pending | TodoStatus::InProgress))
+        .flat_map(|row| row.needs.iter())
+        .any(|n| matches!(n, TodoNeed::Pid { pid, start } if jobs.is_running_pid(*pid, *start)))
+        .then_some(PID_POLL)
+}
+
 /// When the first `external` quiet window among these rows ends, or `None`. The clock half of
 /// [`waits_on_something_external`]: without it the row would stay quiet until something moved.
 pub fn when_an_external_wait_lapses(rows: &[TodoItem], jobs: &RunningJobs) -> Option<Duration> {
