@@ -133,6 +133,20 @@ else
   fail "the steps arrive as shipped, quotes and all" "$(cat "$T/files/steps.json" 2> /dev/null)"
 fi
 
+# --gate ships main's merge gate through `cargo test`, offline: AGENTS.md is the one list.
+printf '## Merge gate\n\n```sh\nsh scripts/check-fmt.sh main\nsh scripts/clippy-gate.sh --workspace -- -D warnings\nLETIBOT_REQUIRE_APPARATUS=1 cargo test --workspace -- --nocapture\ncargo build --release\n```\n' > "$T/repo/AGENTS.md"
+git -C "$T/repo" add AGENTS.md
+git -C "$T/repo" commit -qm gate
+: > "$T/ssh.log"
+want="$(json_steps 'sh scripts/check-fmt.sh main' 'sh scripts/clippy-gate.sh --offline --workspace -- -D warnings' \
+  'LETIBOT_REQUIRE_APPARATUS=1 cargo test --offline --workspace -- --nocapture')"
+out="$(run_rrun gate "$T/repo" --gate)"
+if [ "$(cat "$T/files/steps.json" 2> /dev/null)" = "$want" ]; then
+  note "--gate runs main's merge gate through cargo test, offline"
+else
+  fail "--gate runs main's merge gate through cargo test, offline" "$out $(cat "$T/files/steps.json" 2> /dev/null)"
+fi
+
 # A path that would break the remote command line is refused before anything is sent: the dir is
 # interpolated into an env -i list, where a space would end the assignment.
 : > "$T/ssh.log"

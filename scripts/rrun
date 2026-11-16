@@ -105,10 +105,16 @@ while [ $# -gt 0 ]; do
       shift
       ;;
     --gate)
-      steps=("sh scripts/check-fmt.sh main"
-        "sh scripts/check-test-attrs.sh"
-        "sh scripts/clippy-gate.sh --offline --workspace --all-targets -- -D warnings"
-        "LETIBOT_REQUIRE_APPARATUS=1 cargo test --offline --workspace --no-fail-fast")
+      # main's merge gate through its `cargo test` step, offline, read as the queue reads it.
+      gate=$(git -C "$wt" show main:AGENTS.md | sh "$here/gate-steps.sh") ||
+        die "main:AGENTS.md in $wt declares no merge gate"
+      steps=()
+      while IFS= read -r s; do
+        s=${s/clippy-gate.sh /clippy-gate.sh --offline }
+        s=${s/cargo test /cargo test --offline }
+        steps+=("$s")
+        case $s in *"cargo test "*) break ;; esac
+      done <<<"$gate"
       shift
       ;;
     --)

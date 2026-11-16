@@ -154,3 +154,72 @@ fn the_repository_still_declares_its_gate() {
         "the gate does not run the tests: {steps:?}"
     );
 }
+
+/// What `scripts/gate-steps.sh` prints for `md`, or `None` when it says there is no gate.
+fn gate_steps_sh(md: &str) -> Option<Vec<String>> {
+    use std::io::Write;
+    let mut child = std::process::Command::new("sh")
+        .arg(root().join("scripts/gate-steps.sh"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("sh runs");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(md.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    out.status.success().then(|| {
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .map(str::to_string)
+            .collect()
+    })
+}
+
+/// `gate-at.sh` and `rrun --gate` read AGENTS.md through `gate-steps.sh`; it must read the same
+/// steps the queue's `parse_merge_gate` does, on this repository's file and on the edge cases.
+#[test]
+fn gate_steps_sh_reads_what_the_queue_reads() {
+    let agents = std::fs::read_to_string(root().join("AGENTS.md")).expect("AGENTS.md");
+    let cases = [
+        agents.as_str(),
+        "# Project\n\n```sh\nmake test\n```\n",
+        "## Merge gate\n\n```sh\n# nothing\n```\n",
+        "## Merge gate\n\nTBD\n\n## Other\n\n```sh\nmake test\n```\n",
+        "### merge GATE\n~~~\ngo test ./...\n~~~\n",
+        "## Merge gate ##\n\n  ```sh\n  a\n\n  # c\n  b  \n```\nnot\n```sh\nc\n```\n",
+        "# Top\n## Merge gate\n### Sub\n```\nx\n```\n",
+        "## Merge gate\n```sh\nunclosed\n",
+        "#Merge gate\n```\nx\n```\n",
+        "## Merge gate\r\n```sh\r\nwin\r\n```\r\n",
+    ];
+    for md in cases {
+        assert_eq!(gate_steps_sh(md), parse_merge_gate(md), "for {md:?}");
+    }
+}
+
+/// No script carries its own list of the gate's steps: two of the core steps in one file is a
+/// copy that can drift from AGENTS.md, as `rrun --gate`'s did.
+#[test]
+fn no_script_holds_a_copy_of_the_gate() {
+    const CORE: &[&str] = &[
+        "check-test-attrs.sh",
+        "clippy-gate.sh",
+        "cargo test --workspace",
+    ];
+    for entry in std::fs::read_dir(root().join("scripts")).unwrap().flatten() {
+        let Ok(text) = std::fs::read_to_string(entry.path()) else {
+            continue;
+        };
+        let held: Vec<&&str> = CORE.iter().filter(|s| text.contains(**s)).collect();
+        assert!(
+            held.len() < 2,
+            "scripts/{} holds {held:?} of the merge gate; read AGENTS.md through \
+             scripts/gate-steps.sh instead",
+            entry.file_name().to_string_lossy()
+        );
+    }
+}

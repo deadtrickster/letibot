@@ -112,20 +112,21 @@ the lead stacks the branches on `origin/main` in one worktree and runs:
 env -i HOME=$HOME PATH=$PATH sh scripts/gate-at.sh <worktree> /build/target-<name> origin/main
 ```
 
-It is not the merge gate. It runs `check-fmt.sh` against `BASE` (exit 4 on failure), then
-`cargo test --workspace --no-fail-fast` without `LETIBOT_REQUIRE_APPARATUS`, clippy, the test-attribute
-check or the build. The verdict comes from the log, not cargo's exit code: `GREEN` and exit 0 when no
-suite failed and at least 140 suites reported `ok`, else the failing lines and exit 3.
+It runs the merge gate `BASE:AGENTS.md` declares, read through `scripts/gate-steps.sh` (the
+queue's reading of it), every step but the install. `check-fmt.sh main` is handed `BASE`. Each step
+runs in `scripts/gate-env.sh`'s env with `LETIBOT_REQUIRE_APPARATUS=1`, and the verdict is its exit
+status: the first that exits non-zero prints its failing lines and exits 3. A `sessions.db` or
+`shared.db` anywhere under the scratch is a test that wrote where the operator's store lives, and
+exits 3 too. `GREEN` and exit 0 otherwise.
 
 - One workspace run per box: it takes `flock` on `/build/gate.lock` (`LETIBOT_GATE_LOCK` names
   another) and a second caller waits. Never remove the lock; end the stuck gate.
-- Isolated home: the tests get their own `HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME` and a short
-  `XDG_RUNTIME_DIR`. `hosts.toml`, `keys` and `known_hosts` are linked in; `providers.toml` is not.
-  Cargo and rustup stay at the real `HOME`.
+- Isolated home: `gate-env.sh`, the same builder the queue uses. `hosts.toml`, `known_hosts` and
+  the keys `hosts.toml` names are copied in read-only; `providers.toml` is not.
 - Stale builtins output: `crates/builtins/build.rs` watches absolute paths, so the script deletes
   every `letibot-builtins-*` output whose `rerun-if-changed` is not this worktree.
-- Logs are `<name>.fmt.log` and `<name>.test.log` under `$LETIBOT_GATE_LOGS` (default
-  `$TMPDIR/letibot-gate`).
+- Logs are `<name>.step<N>.log`, with a step's apparatus refusals in `<name>.step<N>.refusals`,
+  under `$LETIBOT_GATE_LOGS` (default `$TMPDIR/letibot-gate`).
 - On red, bisect the stack, fix the failing commit, gate again, then push `main`.
 
 `TARGET_DIR` goes on `/build`, never the root disk, and is deleted after the landing. A link that dies
