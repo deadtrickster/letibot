@@ -150,7 +150,8 @@ pub fn verb_definition() -> Value {
     json!({
         "name": VERB_TOOL,
         "description": "The operator's `/queue` verbs on this folder's repository, recorded as \
-            `bridge:<handle>`. `approve ID` over the reviewer (the merge gate still runs), \
+            `bridge:<handle>`. `approve ID` over the reviewer (the merge gate still runs; not a row a \
+            bridge enqueued, which the operator approves), \
             `restart ID` a parked row, `veto ID why` rejects in your words, `rm ID` withdraws, \
             `reset`/`clean` restart or withdraw every parked row (or the one `id` names), \
             `regate` gates the target's tip again.",

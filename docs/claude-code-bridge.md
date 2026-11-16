@@ -253,7 +253,8 @@ there is none. Tested in `crates/bridge/tests/queue_enqueue.rs`.
 `_by` form recorded as `bridge:<handle>`, so the history says the bridge moved the row and not the
 operator. A row of another repository is refused (`verbs::in_scope`), and `reset`/`clean` without
 `id` sweep this repository's parked rows only. A veto cannot reach the child that wrote the branch,
-so the words stay on the row.
+so the words stay on the row. `verbs::may` is the one verb x actor table: the bridge may not approve a
+row any bridge seat enqueued (the operator approves it with `/queue approve`).
 
 **Built: `letibot-mcp wait-queue <repository> <row> [--timeout 2h]`.** It polls the store of the
 folder's daemon every 5 s and follows the row through its review into its newest landing (a branch
