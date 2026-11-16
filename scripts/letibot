@@ -2251,6 +2251,60 @@ stop_wait() {
   return 0
 }
 
+# **A restart says each step as it happens** (R312): one `restart:` line per step, its clock
+# redrawn in place on a terminal and said once off one. `--restart` sets LETIBOT_RESTART_STEPS
+# for the `--stop` and `--continue` it runs; unset here so no daemon or tool inherits it.
+RESTART_STEPS="${LETIBOT_RESTART_STEPS:-0}"
+unset LETIBOT_RESTART_STEPS
+now_us() {
+  if [ -n "${EPOCHREALTIME:-}" ]; then
+    echo "${EPOCHREALTIME/[.,]/}"
+  else
+    echo $(($(date +%s) * 1000000))
+  fi
+}
+since() { # since T0_US -- `3.2s`
+  local d=$((($(now_us) - $1) / 100000))
+  printf '%d.%ds' $((d / 10)) $((d % 10))
+}
+step_live() { # step_live TEXT -- the step's line, redrawn; nothing off a terminal
+  [ -t 2 ] || return 0
+  printf '\r%s\033[K' "$1" >&2
+}
+step_line() { # step_line TEXT -- a finished line
+  if [ -t 2 ]; then printf '\r%s\033[K\n' "$1" >&2; else printf '%s\n' "$1" >&2; fi
+}
+step_said() { # step_said TEXT -- off a terminal, a step still running is said once, as itself
+  [ -t 2 ] || printf '%s\n' "$1" >&2
+}
+
+# restart_wait PID LOG FROM -- stop_wait's bound, as the restart's step line: what the daemon
+# last said it is waiting on, and the clock. Quiet for its first second, so a quick exit is one line.
+restart_wait() {
+  local pid="$1" log="$2" from="$3" i=0 t0 step said="" line
+  t0="$(now_us)"
+  while [ "$i" -lt "$STOP_TENTHS" ]; do
+    if ! pid_alive "$pid"; then
+      step_line "restart: the daemon exited (pid $pid, $(since "$t0"))"
+      return 0
+    fi
+    sleep 0.5
+    i=$((i + 1))
+    [ "$i" -ge 2 ] || continue
+    step="$(stop_step "$log" "$from" || true)"
+    step="${step#  stopping: }"
+    line="restart: waiting for the daemon to exit (pid $pid)${step:+ - $step}"
+    if [ "$line" != "$said" ]; then
+      said="$line"
+      step_said "$line"
+    fi
+    step_live "$line · $(since "$t0")"
+  done
+  pid_alive "$pid" || return 0
+  [ -t 2 ] && printf '\n' >&2
+  return 1
+}
+
 daemon_pid() {
   # The pid LISTENING on our socket, which is the daemon whatever the record says;
   # the record is a fallback for a box without `ss`.
@@ -2917,7 +2971,7 @@ SESSIONS_EOF
     if daemon_pid >/dev/null; then
       marker="$SOCKET.restart"
       : >"$marker"
-      if ! LETIBOT_STOP_REASON="letibot --restart" "$0" --stop; then
+      if ! LETIBOT_STOP_REASON="letibot --restart" LETIBOT_RESTART_STEPS=1 "$0" --stop; then
         rm -f "$marker"
         exit 1
       fi
@@ -2926,7 +2980,7 @@ SESSIONS_EOF
         echo "letibot: that daemon predates --restart, so it ended its jobs as --stop does" >&2
       fi
     fi
-    exec "$0" --continue
+    LETIBOT_RESTART_STEPS=1 exec "$0" --continue
     ;;
   --stop)
     # `--stop N` and `--stop DIR` reach another folder's daemon; `--stop` alone is
@@ -2960,12 +3014,63 @@ SESSIONS_EOF
     interrupt() {
       local out
       INTR_FAILED=""
+      if [ "$RESTART_STEPS" = 1 ]; then
+        interrupt_steps "$1"
+        return 0
+      fi
       if out="$("$BIN/letibot-tui" --socket "$1" --interrupt-all --reason "$STOP_REASON" 2>&1)"; then
         [ -z "$out" ] || printf '%s\n' "$out"
       else
         INTR_FAILED="$(printf '%s' "$out" | sed 's/^letibot-tui: //' | tail -1)"
         [ -n "$INTR_FAILED" ] || INTR_FAILED="letibot-tui --interrupt-all failed"
         echo "letibot: the interrupt did not go through: $INTR_FAILED" >&2
+      fi
+    }
+    # interrupt_steps SOCKET -- `interrupt` as a restart's step: the turns named as the
+    # interrupt reaches them, and the clock while they wind down. No turns, no line.
+    interrupt_steps() {
+      local out ipid rc t0 ids line="" said="" i=0
+      out="$(mktemp "${TMPDIR:-/tmp}/letibot-intr.XXXXXX")"
+      t0="$(now_us)"
+      "$BIN/letibot-tui" --socket "$1" --interrupt-all --reason "$STOP_REASON" >"$out" 2>&1 &
+      ipid=$!
+      while kill -0 "$ipid" 2>/dev/null; do
+        ids="$(sed -n 's/^  \(.*\) · interrupted$/\1/p' "$out")"
+        if [ -n "$ids" ]; then
+          line="$(turns_line "$ids")"
+          if [ "$i" -ge 5 ] && [ "$line" != "$said" ]; then
+            said="$line"
+            step_said "$line"
+          fi
+          step_live "$line · $(since "$t0")"
+        fi
+        sleep 0.2
+        i=$((i + 1))
+      done
+      rc=0
+      wait "$ipid" || rc=$?
+      ids="$(sed -n 's/^  \(.*\) · interrupted$/\1/p' "$out")"
+      [ -z "$ids" ] || line="$(turns_line "$ids")"
+      if [ "$rc" = 0 ]; then
+        [ -z "$line" ] || step_line "$line · stopped ($(since "$t0"))"
+      else
+        INTR_FAILED="$(sed 's/^letibot-tui: //' "$out" | tail -1)"
+        [ -n "$INTR_FAILED" ] || INTR_FAILED="letibot-tui --interrupt-all failed"
+        [ -z "$line" ] || step_line "$line · not stopped ($(since "$t0"))"
+        echo "letibot: the interrupt did not go through: $INTR_FAILED" >&2
+      fi
+      rm -f "$out"
+    }
+    # turns_line IDS -- `restart: interrupting 2 running turns (s-1, s-2)`, at most two ids named.
+    turns_line() {
+      local n shown
+      n="$(printf '%s\n' "$1" | grep -c .)"
+      shown="$(printf '%s\n' "$1" | head -2 | paste -sd, - | sed 's/,/, /g')"
+      [ "$n" -le 2 ] || shown="$shown, +$((n - 2))"
+      if [ "$n" = 1 ]; then
+        echo "restart: interrupting 1 running turn ($shown)"
+      else
+        echo "restart: interrupting $n running turns ($shown)"
       fi
     }
     # not_stopped LINE PID ADVICE LOG FROM SECONDS -- the sentence for a daemon still there after
@@ -3003,7 +3108,11 @@ SESSIONS_EOF
         fi
       else
         waited=$((STOP_TENTHS / 2))
-        stop_wait "$line" "$pid" "$log" "$from" "$STOP_TENTHS" || true
+        if [ "$RESTART_STEPS" = 1 ]; then
+          restart_wait "$pid" "$log" "$from" || true
+        else
+          stop_wait "$line" "$pid" "$log" "$from" "$STOP_TENTHS" || true
+        fi
       fi
       pid_alive "$pid" || return 0
       not_stopped "$line" "$pid" "$advice" "$log" "$from" "$waited"
@@ -3095,7 +3204,7 @@ SESSIONS_EOF
       # seconds, with the daemon's own `stopping: …` line relayed as it comes.
       line="$(daemon_line)"
       if stop_one "$line" "$p" "$LOG" "letibot --stop --force${STOP_AT:+ $STOP_AT}"; then
-        echo "stopped $line"
+        [ "$RESTART_STEPS" = 1 ] || echo "stopped $line"
         rm -f "$RECORD"
       else
         exit 1
@@ -3614,14 +3723,23 @@ if ! live; then
       >>"$SHARED_LOG" 2>/dev/null || true
   # The banner names what will answer the turns, not the local vocab's model — see
   # `answers_now`.
-  echo "letibot: no harnessd for $WORKSPACE - starting one (role $ROLE, model $(answers_now), pid $DPID)" >&2
+  if [ "$RESTART_STEPS" = 1 ]; then
+    _built="$(file_mtime "$BIN/harnessd")"
+    _start_line="restart: starting harnessd${_built:+ (built $(epoch_fmt "$_built" '+%H:%M'))}"
+    _start_t0="$(now_us)"
+  else
+    echo "letibot: no harnessd for $WORKSPACE - starting one (role $ROLE, model $(answers_now), pid $DPID)" >&2
+  fi
   # Poll the cheap check, not the probe. Wait while the daemon is alive rather than a fixed
   # half minute: a loaded box spends that on store calls alone. A dead daemon fails at once.
   waited=0
   while ! live; do
     kill -0 "$DPID" 2>/dev/null || break
     [ "$waited" -ge 600 ] && break
-    if [ -t 2 ] && [ "$waited" -gt 0 ] && [ $((waited % 2)) -eq 0 ]; then
+    if [ "$RESTART_STEPS" = 1 ]; then
+      [ "$waited" != 2 ] || step_said "$_start_line"
+      step_live "$_start_line · $(since "$_start_t0")"
+    elif [ -t 2 ] && [ "$waited" -gt 0 ] && [ $((waited % 2)) -eq 0 ]; then
       printf '\rletibot: waiting for the daemon to start (%ss)...\033[K' "$((waited / 2))" >&2
     elif [ "$waited" -gt 0 ] && [ $((waited % 20)) -eq 0 ]; then
       echo "letibot: still starting ($((waited / 2))s): $(tail -1 "$LOG" 2>/dev/null | cut -c1-120)" >&2
@@ -3629,7 +3747,15 @@ if ! live; then
     sleep 0.5
     waited=$((waited + 1))
   done
-  if [ -t 2 ] && [ "$waited" -gt 1 ]; then printf '\r\033[K' >&2; fi
+  if [ "$RESTART_STEPS" = 1 ]; then
+    if live; then
+      step_line "$_start_line · up ($(since "$_start_t0"))"
+    else
+      step_line "$_start_line · failed ($(since "$_start_t0"))"
+    fi
+  elif [ -t 2 ] && [ "$waited" -gt 1 ]; then
+    printf '\r\033[K' >&2
+  fi
   live || {
     echo "letibot: daemon did not come up; last lines of $LOG:" >&2
     tail -15 "$LOG" >&2
@@ -3649,6 +3775,7 @@ if ! live; then
   # two — the empty first session, which is what the NEXT plain attach lands on, and the one
   # the operator was in. (That is the shape of the 2026-10-26 report: a `--new` head exited and
   # the folder's daemon was on a session nobody was looking at.)
+  [ "$RESTART_STEPS" = 1 ] && step_line "restart: attaching"
   exec "$HEAD" --socket "$SOCKET"
 fi
 
@@ -3670,7 +3797,11 @@ fi
 if up; then :; else version_skew_or_continue; fi
 # A daemon is already up. Ask it, rather than restarting it: a restart would cost
 # every other session on this box to open one, and one of them may be mid-turn.
-echo "letibot: attached to $(daemon_line)" >&2
+if [ "$RESTART_STEPS" = 1 ]; then
+  step_line "restart: attaching to $(daemon_line)"
+else
+  echo "letibot: attached to $(daemon_line)" >&2
+fi
 
 # **And say whether what is answering is what is on disk**, before anything else is
 # said: a stale daemon makes every other line here describe the wrong build. See

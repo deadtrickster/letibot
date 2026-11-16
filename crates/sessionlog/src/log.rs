@@ -115,11 +115,17 @@ impl SessionLog {
 
     /// Append, stamping `(session_id, seq, ts)`.
     pub fn append(&mut self, event: SessionEvent) -> Envelope {
+        self.append_at(event, now_ms())
+    }
+
+    /// [`Self::append`] with the time the event happened, for a row re-announced from the store:
+    /// its `ts` is when it was written, not when a resume read it back.
+    pub fn append_at(&mut self, event: SessionEvent, ts: u64) -> Envelope {
         self.head_seq += 1;
         let env = Envelope {
             session_id: self.session_id.clone(),
             seq: self.head_seq,
-            ts: now_ms(),
+            ts,
             event,
         };
         // Serialised size is what the *gap* bound is measured in, so measure retention

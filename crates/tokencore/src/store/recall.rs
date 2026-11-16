@@ -109,6 +109,20 @@ impl Store {
         })
     }
 
+    /// When each row of one transcript was written, ms since the epoch, by item id.
+    pub fn item_times(
+        &self,
+        transcript_id: &str,
+    ) -> Result<std::collections::HashMap<String, u64>> {
+        let conn = self.at("transcript_item");
+        let mut stmt = conn
+            .prepare("SELECT item_id, created_at FROM transcript_item WHERE transcript_id = ?1")?;
+        let rows = stmt.query_map(params![transcript_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as u64))
+        })?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// One transcript's rows in `seq` order, as the unit builder reads them.
     pub fn recall_rows(
         &self,

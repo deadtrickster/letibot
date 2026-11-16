@@ -7,7 +7,7 @@
 //! crashed, stop time unknown · reminded: 1 job · click for details
 //! restarted, stopped by operator · down 1s · click for details
 //! session · restarted, stopped by operator · down 4m12s · restored: 2 subagents, 1 monitor · reminded: 1 job · click for details
-//! session · restarted · carrying on: your promise, 2 open todo rows · click for details
+//! session · restarted · down 4s · carrying on: your promise, 2 open todo rows · click for details
 //! ```
 //!
 //! The counts come from the hub warning or the session notice, whichever opened the row; an unrecognised line is `None` and the popup keeps the text.
@@ -112,12 +112,15 @@ impl Restart {
     }
 
     /// `restarted, stopped by operator · down 4m12s` - or the crash's own two words. A restart
-    /// that owes work leads with the work: the operator knows they restarted it.
+    /// that owes work leads with the work: the operator knows they restarted it. The down time
+    /// stays, so two restarts owing the same work are two different lines.
     fn head(&self) -> String {
         if let Some(owed) = &self.owed {
-            return match self.orderly() {
-                true => format!("restarted · carrying on: {owed}"),
-                false => format!("{} · carrying on: {owed}", self.bare_head()),
+            return match &self.down {
+                Down::Known { span, .. } if self.orderly() => {
+                    format!("restarted · down {span} · carrying on: {owed}")
+                }
+                _ => format!("{} · carrying on: {owed}", self.bare_head()),
             };
         }
         self.bare_head()

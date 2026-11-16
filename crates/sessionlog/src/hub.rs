@@ -1116,6 +1116,11 @@ impl Hub {
 
     /// Append an event and fan it out. Never blocks on a head.
     pub fn publish(&self, event: SessionEvent) -> Envelope {
+        self.publish_at(event, None)
+    }
+
+    /// [`Self::publish`], stamped with when the event happened rather than now when `at` is given.
+    fn publish_at(&self, event: SessionEvent, at: Option<u64>) -> Envelope {
         // What the session is waiting on is re-derived after anything that could have moved it,
         // and it costs nothing when nothing did: the comparison is against the last published value.
         let touches = event.touches_activity();
@@ -1131,7 +1136,7 @@ impl Hub {
         };
         let env = {
             let mut g = self.lock();
-            let env = g.append_and_fan(event);
+            let env = g.append_and_fan_at(event, at);
             if let Some(turn_id) = ended {
                 g.append_and_fan(SessionEvent::TurnEnded { turn_id });
             }
@@ -1309,13 +1314,29 @@ impl Hub {
     /// [`Hub::record_item`] supplies it for a row that does not. Every door that publishes a row it
     /// already holds goes through here, so the bound cannot be applied twice and differently.
     pub fn append_row(&self, item_id: &str, kind: &str, ledger_head: &str, item: &TranscriptItem) {
-        self.publish(SessionEvent::TranscriptAppended {
-            item_id: item_id.to_string(),
-            kind: kind.to_string(),
-            ledger_head: ledger_head.to_string(),
-            item: rides_announcement(item).then(|| Box::new(item.clone())),
-            body_bytes: item.bytes() as u64,
-        });
+        self.append_row_at(item_id, kind, ledger_head, item, None);
+    }
+
+    /// [`Self::append_row`] for a row that already happened: `at` is when it was written, so a
+    /// resume re-announcing the conversation does not stamp every row with the resume's clock.
+    pub fn append_row_at(
+        &self,
+        item_id: &str,
+        kind: &str,
+        ledger_head: &str,
+        item: &TranscriptItem,
+        at: Option<u64>,
+    ) {
+        self.publish_at(
+            SessionEvent::TranscriptAppended {
+                item_id: item_id.to_string(),
+                kind: kind.to_string(),
+                ledger_head: ledger_head.to_string(),
+                item: rides_announcement(item).then(|| Box::new(item.clone())),
+                body_bytes: item.bytes() as u64,
+            },
+            at.filter(|t| *t > 0),
+        );
         self.record_item(item_id, item.clone());
     }
 
@@ -2371,6 +2392,10 @@ impl Hub {
 impl Inner {
     /// Append, fold into the view, and push to every head. The whole of fan-out.
     fn append_and_fan(&mut self, event: SessionEvent) -> Envelope {
+        self.append_and_fan_at(event, None)
+    }
+
+    fn append_and_fan_at(&mut self, event: SessionEvent, at: Option<u64>) -> Envelope {
         if matches!(event, SessionEvent::HeldResults { .. }) {
             self.held_now = Some(event.clone());
         }
@@ -2391,7 +2416,10 @@ impl Inner {
             self.retry_now = (ended.is_none() && !*gone).then(|| event.clone());
         }
         self.tap.observe(self.log.session_id(), &event);
-        let env = self.log.append(event);
+        let env = match at {
+            Some(ts) => self.log.append_at(event, ts),
+            None => self.log.append(event),
+        };
         self.view.apply(&env);
         for h in &mut self.heads {
             if h.needs_resync.is_some() {

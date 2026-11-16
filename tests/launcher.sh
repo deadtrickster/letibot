@@ -117,6 +117,21 @@ expect() { # expect NAME OUTPUT PATTERN -- the output must match
                                                                                fails=$((fails + 1))
   fi
 }
+in_order() { # in_order NAME OUTPUT PATTERN... -- each pattern matches a line after the previous one's
+  local name="$1" out="$2" at=0 n
+  shift 2
+  for p in "$@"; do
+    n="$(printf '%s\n' "$out" | tail -n +"$((at + 1))" | grep -nE -m1 -- "$p" | cut -d: -f1)"
+    if [ -z "$n" ]; then
+      echo "FAIL $name: wanted /$p/ after line $at in:"
+      printf '%s\n' "$out" | sed 's/^/     /'
+      fails=$((fails + 1))
+      return
+    fi
+    at=$((at + n))
+  done
+  echo "ok   $name"
+}
 refuse() { # refuse NAME OUTPUT PATTERN -- the output must not match
   if printf '%s' "$2" | grep -qE -- "$3"; then
     echo "FAIL $1: did not want /$3/ in:"
@@ -1085,6 +1100,9 @@ if command -v python3 > /dev/null 2>&1; then
   cat > "$T/bin/harnessd" << 'STUB'
 #!/usr/bin/env python3
 import hashlib, os, signal, socket, sys, time
+if "--latest-session" in sys.argv:
+    print("s-restart-1")
+    sys.exit(0)
 ws = sys.argv[sys.argv.index("--workspace") + 1]
 sock = sys.argv[sys.argv.index("--socket") + 1]
 key = hashlib.sha256(ws.encode()).hexdigest()[:12]
@@ -1098,6 +1116,11 @@ except FileNotFoundError:
 s.bind(sock)
 s.listen(4)
 def bye(_sig, _frm):
+    # A daemon of this build reads the restart marker, which is what keeps its jobs.
+    try:
+        os.unlink(sock + ".restart")
+    except FileNotFoundError:
+        pass
     with open(log, "a") as f:
         f.write("  stopping: the merge queues (a gate in flight is killed, its row put back in line)\n")
         f.write("  stopping: waiting up to 5s for subagent threads to leave\n")
@@ -1188,6 +1211,44 @@ STUB
   kill "$going" 2> /dev/null || true
   kill "$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
     "$T/run/letibot/$key.json" 2> /dev/null | head -1)" 2> /dev/null || true
+  rm -f "$T/run/letibot/"*.json
+
+  # **A restart says each step as it happens** (R312): it looked hung for 40s with nothing on
+  # screen. One line per step, in order, and a slow interrupt and a slow exit each say what they
+  # wait for. Off a terminal, so no live redraws.
+  cat > "$T/bin/letibot-tui" << 'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do
+  case "$a" in
+    --probe) exit 0 ;;
+    --interrupt-all)
+      echo "  s-restart-1 · interrupted"
+      sleep 2
+      echo "all turns stopped"
+      exit 0
+      ;;
+  esac
+done
+echo "letibot-tui: THE HEAD RAN"
+STUB
+  chmod +x "$T/bin/letibot-tui"
+  mkdir -p "$T/restart"
+  restart_pid="$(slow_daemon "$T/restart")"
+  out="$(RUN_WS="$T/restart" run "$DEFAULT_ONLY" --restart)"
+  in_order "--restart says its steps in order" "$out" \
+    "^restart: interrupting 1 running turn \(s-restart-1\)$" \
+    "^restart: interrupting 1 running turn \(s-restart-1\) · stopped \([0-9]+\.[0-9]s\)$" \
+    "^restart: waiting for the daemon to exit \(pid $restart_pid\)" \
+    "^restart: the daemon exited \(pid $restart_pid, [0-9]+\.[0-9]s\)$" \
+    "^restart: starting harnessd \(built [0-9]{2}:[0-9]{2}\) · up \(" \
+    "^restart: attaching$" \
+    "THE HEAD RAN"
+  expect "  ...and the slow exit names what the daemon waits on" "$out" \
+    "^restart: waiting for the daemon to exit \(pid $restart_pid\) - waiting up to 5s for subagent threads"
+  refuse "  ...and none of the plain stop's and start's lines" "$out" \
+    "^stopped |no harnessd for|all turns stopped|predates --restart"
+  kill "$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+    "$T/run/letibot/$(printf '%s' "$(cd "$T/restart" && pwd -P)" | key12).json" 2> /dev/null | head -1)" 2> /dev/null || true
   rm -f "$T/run/letibot/"*.json
 else
   echo "skip the stop and start-wait cases: no python3"

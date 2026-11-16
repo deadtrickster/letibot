@@ -4215,6 +4215,30 @@ impl Harness {
         chunks.into_iter().rev().flatten().collect()
     }
 
+    /// When each re-announced row was written, read from the store: a row id is `<transcript>.<seq>`, so one
+    /// query per transcript. A row the store cannot date is missing and is announced at now.
+    fn rows_written_at(
+        &self,
+        rows: &[(String, TranscriptItem, [u8; 32])],
+    ) -> std::collections::HashMap<String, u64> {
+        let mut out = std::collections::HashMap::new();
+        let Some(store) = self.store.as_ref() else {
+            return out;
+        };
+        let mut seen = std::collections::HashSet::new();
+        for (item_id, _, _) in rows {
+            let Some((transcript, _)) = item_id.rsplit_once('.') else {
+                continue;
+            };
+            if seen.insert(transcript.to_string())
+                && let Ok(times) = store.item_times(transcript)
+            {
+                out.extend(times);
+            }
+        }
+        out
+    }
+
     fn republish_after(&self, what: &str, before: Vec<(String, TranscriptItem, [u8; 32])>) {
         let current = self
             .session
@@ -4231,6 +4255,7 @@ impl Harness {
         let rows: Vec<(String, TranscriptItem, [u8; 32])> =
             before.into_iter().chain(current).collect();
         let total = rows.len() as u64;
+        let written = self.rows_written_at(&rows);
         for (i, (item_id, item, h_k)) in rows.iter().enumerate() {
             // One progress tick per row is a flood, and the flood is what breaks the bar: ~2000 events over a head's
             // capped queue demotes it and the bar freezes at its last tick. So a tick every `FILLING_STRIDE` rows, with
@@ -4238,11 +4263,12 @@ impl Harness {
             if i % FILLING_STRIDE == 0 || (i as u64 + 1) == total {
                 self.filling(what, "rows", i as u64 + 1, total);
             }
-            self.hub.append_row(
+            self.hub.append_row_at(
                 item_id,
                 letibot_tokencore::store::item_kind(item),
                 &hex32(h_k),
                 item,
+                written.get(item_id).copied(),
             );
             self.publish_citations(item_id, item);
         }

@@ -723,7 +723,7 @@ fn an_operators_restart_owing_nothing_is_drawn_only_at_loud() {
         ),
         (
             OWED_PROMISE_NOTICE,
-            "session · restarted · carrying on: your promise · click for details",
+            "session · restarted · down 4s · carrying on: your promise · click for details",
         ),
     ] {
         let mut a = with_notice(notice);
@@ -745,7 +745,7 @@ fn an_owed_restart_names_what_it_asks() {
     );
     assert!(
         r.line()
-            .starts_with("restarted · carrying on: a turn cut off, "),
+            .starts_with("restarted · down 4s · carrying on: a turn cut off, "),
         "{}",
         r.line()
     );

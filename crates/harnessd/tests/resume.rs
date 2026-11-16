@@ -190,6 +190,9 @@ fn a_resumed_session_is_put_back_on_the_log_where_a_head_can_see_it() {
     let cfg = config(&f.store, &f.session_id, elsewhere);
     let parts = empty_modes(Parts::load(&cfg).expect("the wiring must load"));
     let hub = Hub::new(&f.session_id);
+    // The rows were written before this instant, so a row stamped at or after it was stamped by the resume.
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let opened_at = letibot_sessionlog::event::now_ms();
     let h = Harness::open(&parts, cfg, hub.clone()).expect("the session must resume");
 
     let report = h
@@ -226,6 +229,25 @@ fn a_resumed_session_is_put_back_on_the_log_where_a_head_can_see_it() {
         "{} row(s) announced with no body",
         snap.items.iter().filter(|r| r.item.is_none()).count()
     );
+    // Each row keeps the time it was written. Stamped with the resume's clock, every row of the
+    // conversation drew one time, and two restarts' rows read as one row said twice.
+    let written: std::collections::HashMap<String, u64> = {
+        let store = Store::open(&f.store).expect("reopening");
+        let mut t = store
+            .item_times(&format!("{}#t0", f.session_id))
+            .expect("t0");
+        t.extend(store.item_times(&f.current).expect("t1"));
+        t
+    };
+    for row in &snap.items {
+        assert_eq!(
+            Some(&row.ts),
+            written.get(&row.item_id),
+            "{} is drawn at the resume's time, not at its own",
+            row.item_id
+        );
+        assert!(row.ts < opened_at, "{} stamped by the resume", row.item_id);
+    }
     // Ids come off the ledger rows, which is what pairs an announcement with its body. A
     // second minting rule here would go stale against `append_items`. And the session's own
     // rows are the TAIL of the snapshot
