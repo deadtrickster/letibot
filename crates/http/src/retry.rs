@@ -14,10 +14,6 @@ pub const TRY_AGAIN: &[u16] = &[408, 429, 500, 502, 503, 504, 529];
 /// The default number of retries - calls after the first. See [`Policy::standard`].
 pub const STANDARD_RETRIES: u32 = 5;
 
-/// The longest one wait may be, however far ahead the provider puts its own instant: a rate limit
-/// worth respecting is usually a minute, and the stop key ends any wait a person will not sit out.
-pub const LONGEST_WAIT: Duration = Duration::from_secs(60);
-
 /// How far a wait is spread, in percent either way: clients that failed together must not come
 /// back together. A provider's `Retry-After` is only ever lengthened.
 pub const JITTER_PERCENT: u64 = 20;
@@ -68,7 +64,7 @@ impl Class {
 /// timeout, and replaces a provider that keeps stalling.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Trouble {
-    /// The provider said *not now* and, with luck, when: `429` (or a `408`) whose body is not about
+    /// The provider said *not now* and, with luck, when: a `429` whose body is not about
     /// money.
     RateLimit,
     /// The account behind the key cannot pay. No wait lifts it.
@@ -195,12 +191,16 @@ impl Policy {
         let rung = Duration::from_secs(1u64 << failed.min(31));
         // The provider's own instant wins when it is longer: a `429` that says sixty seconds is
         // the only sleep anybody can size, and five calls inside 31 s of it is the whole ladder
-        // spent on a wait that would have lifted.
+        // spent on a wait that would have lifted. A named instant is bounded by the park's own
+        // bound (reset::LONGEST), which is the ceiling the limit machinery already trusts.
+        let longest = Duration::from_millis(crate::reset::LONGEST);
         let asked = match e {
-            HttpError::Status { retry_after, .. } => retry_after.map(Duration::from_secs),
+            HttpError::Status { retry_after, .. } => {
+                retry_after.map(Duration::from_secs).map(|w| w.min(longest))
+            }
             HttpError::Io(_) | HttpError::Malformed(_) => None,
         };
-        Some(rung.max(asked.unwrap_or(Duration::ZERO)).min(LONGEST_WAIT))
+        Some(rung.max(asked.unwrap_or(Duration::ZERO)))
     }
 
     /// Did the MODEL refuse, rather than the wire failing? A connection refused or a
@@ -226,9 +226,11 @@ impl Policy {
                     // two statuses that can be about money - anything else mentioning billing is
                     // about something else (a link, a subsystem) and not a quota.
                     Some(Trouble::Quota)
-                } else if *code == 429 || *code == 408 || *code == 529 {
+                } else if *code == 429 || *code == 529 {
                     // A 529 is Anthropic's `overloaded_error`: not now, and it lifts on its own,
-                    // which is the rate limit's fact rather than a broken server's.
+                    // which is the rate limit's fact rather than a broken server's. A 408 is
+                    // absent on purpose: it is a slow round trip, and the ladder retries it
+                    // without the limit machinery parking or moving a session over it.
                     Some(Trouble::RateLimit)
                 } else {
                     None
@@ -393,8 +395,10 @@ impl Policy {
                     || (glm.is_none() && Self::states_a_refusal(*code, body))
                 {
                     "the account cannot pay".to_string()
-                } else if *code == 429 || *code == 408 {
+                } else if *code == 429 {
                     format!("{code} rate limited")
+                } else if *code == 408 {
+                    format!("{code} timeout")
                 } else {
                     format!("{code} server error")
                 }
@@ -464,11 +468,12 @@ impl Ladder {
         let base = self.policy.after(e, self.failed);
         self.failed += 1;
         let wait = base.map(|b| {
+            let longest = Duration::from_millis(crate::reset::LONGEST);
             let asked = match e {
                 HttpError::Status {
                     retry_after: Some(s),
                     ..
-                } => Duration::from_secs(*s).min(LONGEST_WAIT),
+                } => Duration::from_secs(*s).min(longest),
                 _ => Duration::ZERO,
             };
             self.spread(b).max(asked)
@@ -635,7 +640,9 @@ mod tests {
     fn a_trouble_is_one_of_four_and_nothing_else() {
         // A rate limit names no money, and the same 429 that names money is a quota.
         assert_eq!(Policy::trouble(&status(429)), Some(Trouble::RateLimit));
-        assert_eq!(Policy::trouble(&status(408)), Some(Trouble::RateLimit));
+        // A 408 is a retry, not a limit: nothing about the account is wrong, and the
+        // limit machinery must not park or move a session over a slow round trip.
+        assert_eq!(Policy::trouble(&status(408)), None);
         assert_eq!(
             Policy::trouble(&said(429, "{\"error\":{\"code\":\"insufficient_quota\"}}")),
             Some(Trouble::Quota),
@@ -963,13 +970,25 @@ mod tests {
             Some(Duration::from_secs(8)),
             "8 s is already longer than the 3 the provider asked for"
         );
-        // The cap is a cap: a provider cannot park a turn for an hour.
+        // A named instant is waited as it is, bounded by the park's own bound: an hour-long
+        // Retry-After waited 60 s and then burned the rest of the ladder on a limit that
+        // would have lifted, so the ceiling is reset::LONGEST and not a minute.
         let hour = HttpError::Status {
             code: 503,
             body: String::new(),
             retry_after: Some(3600),
         };
-        assert_eq!(p.after(&hour, 0), Some(LONGEST_WAIT));
+        assert_eq!(p.after(&hour, 0), Some(Duration::from_secs(3600)));
+        let beyond = HttpError::Status {
+            code: 503,
+            body: String::new(),
+            retry_after: Some(60 * 60 * 24 * 7),
+        };
+        assert_eq!(
+            p.after(&beyond, 0),
+            Some(Duration::from_millis(crate::reset::LONGEST)),
+            "a week-long Retry-After is the park's bound, not a week"
+        );
         // And money is still not a wait, whatever instant comes with it.
         let money = HttpError::Status {
             code: 429,
@@ -1051,7 +1070,7 @@ mod tests {
     #[test]
     fn a_brief_names_the_failure_in_the_words_a_retry_row_has_room_for() {
         assert_eq!(Policy::brief(&status(429)), "429 rate limited");
-        assert_eq!(Policy::brief(&status(408)), "408 rate limited");
+        assert_eq!(Policy::brief(&status(408)), "408 timeout");
         assert_eq!(Policy::brief(&status(503)), "503 server error");
         assert_eq!(
             Policy::brief(&said(429, "{\"error\":\"insufficient_quota\"}")),
