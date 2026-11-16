@@ -1655,6 +1655,17 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 **Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I62, I63, I64. Record: `docs/review/2026-11-16/INTEGRATION.md`.
 
+**Built (branch `remote/39860145`, on `ccc95d27`), waiting for the full gate.** One commit per finding, plus R329's residue. Each proving test was run on the base and failed, then passed with the fix. Schema 58 and 59 taken (56 is b8-limit's, 57 is R342's).
+- I63 (`tokencore`, `tools`): schema 58 adds `owner.last_closed_ms`, stamped by `set_owner_state` on each closing/closed move and carried across a reopen; `closed_ms` stays the first close. `OwnerRow::closed_at()` is what `work::due_at` and `plan::judge` measure the grace from. The doc's reopen row said "clears `closed_ms`"; it says what the code does now. Commit `62f244dc`.
+- I62 (`tools`, `harnessd`, `tokencore`): one `why_kept` that also reads open process rows (`Store::session_ids_under` joined to `processes_of` across a split set's project files, pid proved by its `start:` identity), keeps when `/proc` cannot be listed, and keeps an unreadable cwd link only for our own uid (not a zombie, re-read once so a dying process is not believed) or a pid the store names. `judge` takes the same witness (`plan::InUse`) so `gc --plan` cannot promise a removal the settle step refuses; `docker_work` hands it in too. `renew_held` routes through the now-exported `reap::busy`. Commit `18ab7b61`.
+- R329's residue (I59's second half, A7-F12): schema 59 adds `owner.daemon_pid`/`daemon_start`, stamped by harnessd's `record_owner` with the daemon's own pid and `/proc` start time; `daemon_state` answers from the row first, so two owners of one repo are not one daemon. Rows without the pair keep the repo-record fallback. Commit `92c682ed`.
+- I64 (`docs`): d.3 states the close order in one paragraph - a parent's close and the hard TTL fire before the busy check by design, a hard close drains the owner's own jobs, a landed head does not renew the lease - and separates the lease from the hold. Commit `5f2c23a0`.
+
+**Residue.**
+- The backbone `/data/review-prep/invariants.md` is outside this checkout, so its I22/I23 rows were not rewritten in place; the d.3 paragraph is the quotable statement they should copy.
+- `busy`'s cgroup witness (a populated scope) needs cgroup v2, which this seat's boundary has not: `busy_reads_the_owners_open_job_rows` proves the process-row half, and the scope half runs where the gate runs.
+- `served_elsewhere`, `daemon_pids` and `end_daemon` still link by repo path: they need the record's socket to stop a daemon, which the owner row does not carry. Said safe by the record's own pid liveness check.
+
 **Scope.** `why_kept` inside every destructive primitive.
 
 **Proving tests.** the tests named in each entry. Each fails on the snapshot.
