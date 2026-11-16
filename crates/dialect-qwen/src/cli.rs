@@ -1,14 +1,6 @@
-//! `letibot-render-qwen` as a FUNCTION, so more than one binary can be it.
-//!
-//! The fidelity gate execs it by PATH, so this has to be callable from both the binary and the
-//! multicall dispatcher - one implementation, because a renderer that drifted by a byte would
-//! re-prefill every conversation. A second binary rather than a `--dialect` arm on GLM's: the gate
-//! hardcodes GLM's binary, and an arm would make `dialect-glm` depend on `dialect-qwen`. stdout is
-//! a JSON array of cases, one per (fixture, prefix length, generation prompt on/off), each carrying
-//! the render and the `apply_chat_template` request that must produce the same string:
-//! ```text
-//! letibot-render-qwen FIXTURE.json [FIXTURE.json …]   > cases.json
-//! ```
+//! `letibot-render-qwen` as a function, so the binary and the multicall dispatcher share one
+//! implementation. A separate binary because the gate hardcodes GLM's. stdout is a JSON array of
+//! cases, each a render and the `apply_chat_template` request that must produce the same string.
 
 use crate::{QwenRenderer, ReasoningEffort, ends_mid_turn, generation_prompt, qwen_tool_json};
 use letibot_dialect::{RenderSpan, StablePrefix, spans_to_string};
@@ -50,8 +42,7 @@ pub const USAGE: &str = "letibot-render-qwen FIXTURE.json [FIXTURE.json …]   >
 ///
 /// `args` is what followed the program name.
 pub fn run(args: &[String]) -> i32 {
-    // A flag is answered before a path is opened: `--help` used to be read as a fixture's name,
-    // so the question panicked on a file that is not there.
+    // A flag is answered before a path is opened, so `--help` is never read as a fixture's name.
     if let Some(flag) = args.iter().find(|a| a.starts_with('-') && a.len() > 1) {
         if flag == "-h" || flag == "--help" {
             println!("{USAGE}");

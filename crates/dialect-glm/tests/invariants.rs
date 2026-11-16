@@ -149,8 +149,8 @@ fn render_incremental_agrees_with_render() {
 }
 
 /// The token a caller carries, with no history after the first call: the three appends must
-/// build the prompt one render would. `Session::append_items` now takes this path, and the
-/// history it no longer passes is exactly what used to make each append a replay.
+/// build the prompt one render would. `Session::append_items` takes this path, so an append is
+/// never a replay of the history.
 #[test]
 fn a_carried_token_agrees_where_the_history_is_not_passed_again() {
     let r = GlmRenderer::new();

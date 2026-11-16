@@ -1,18 +1,6 @@
-//! Transcript items → `RenderSpan`s, following Qwen3.8's shipped jinja.
-//!
-//! Every string this renderer emits is either LITERAL (template bytes, which [`lit`] splits
-//! out control literals from, because the training runtime tokenized each as one vocab entry)
-//! or DATA (conversation bytes, which [`data`] never splits, so a user who types `<tool_call>`
-//! gets ordinary tokens and cannot produce a turn boundary).
-//!
-//! A run of consecutive tool results is ONE user turn, as the template writes it:
-//! ```text
-//! <|im_start|>user\n<tool_response>\nA\n</tool_response>\n<tool_response>\nB\n</tool_response><|im_end|>\n
-//! ```
-//! The `<|im_end|>` belongs to whichever result has no result after it, so a caller that rendered
-//! one item at a time would write a whole turn per result. [`QwenRenderer::render_incremental_by_item`]
-//! renders the batch and says where each item ends, which is what lets `Session::append_items` keep
-//! one ledger row per item under a prompt that carries one turn per run.
+//! Transcript items to `RenderSpan`s, following Qwen3.8's shipped jinja. Template bytes are split
+//! into control literals by [`lit`]; conversation bytes never are ([`data`]), so a typed
+//! `<tool_call>` cannot make a turn boundary. A run of tool results is one user turn.
 
 use letibot_dialect::{RenderSpan, RenderState, StablePrefix};
 use letibot_transcript::{ToolCall, ToolOutcome, TranscriptItem, UserPart};

@@ -1,12 +1,6 @@
-//! `letibot-render` as a FUNCTION, so more than one binary can be it.
-//!
-//! The fidelity gate execs it by PATH and knows nothing about subcommands, so this has to
-//! be callable from both the binary and the multicall dispatcher. The gate must not know
-//! what a `TranscriptItem` is, so expanding a fixture, mapping items onto OpenAI messages
-//! and deciding whether a generation prompt belongs all happen here, once:
-//! ```text
-//! letibot-render --dialect glm-5.3-flash --profile faithful FIXTURE.json [FIXTURE.json …]
-//! ```
+//! `letibot-render` as a function, shared by the binary and the multicall dispatcher. The fidelity
+//! gate execs it by path knowing nothing of `TranscriptItem`, so fixture expansion happens here:
+//! `letibot-render --dialect glm-5.3-flash --profile faithful FIXTURE.json`
 
 use crate::{GlmRenderer, ReasoningEffort, ends_mid_turn, generation_prompt, glm_tool_json};
 use letibot_dialect::{RenderSpan, StablePrefix, spans_to_string};

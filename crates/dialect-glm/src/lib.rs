@@ -1,11 +1,6 @@
-//! GLM-5.3-Flash as data: [`glm_spec`] carries the shipped jinja, its sha, the control and
-//! stop tokens, the system-update rule and guards, and a prompt is rendered by running
-//! that template, not by code. We render the Jinja2 reading of a turn, which is what the
-//! model was trained against:
-//! ```text
-//! server: …<|assistant|><think>R1</think>one<|user|>b<|assistant|><think>R1</think>two…
-//! jinja2: …<|assistant|><think>R1</think>one<|user|>b<|assistant|><think></think>two…
-//! ```
+//! GLM-5.3-Flash as data: [`glm_spec`] carries the shipped jinja, its sha, control and stop tokens,
+//! the system-update rule and guards, and a prompt is rendered by running that template. We render
+//! the Jinja2 reading, which empties earlier turns' `<think>`, because the model was trained on it.
 
 pub mod cli;
 use std::sync::OnceLock;
