@@ -183,7 +183,9 @@ impl Store {
             trim(rows);
         }
         store.keep_the_wreckage(&read);
-        store.close_the_tear();
+        let closed = store.closed_path();
+        store.bytes += Store::close_the_tear(&store.path);
+        Store::close_the_tear(&closed);
         store
     }
 
@@ -211,24 +213,28 @@ impl Store {
     }
 
     /// A crash between a record's last byte and its newline leaves a line the next append lands on,
-    /// and both are then unreadable: the tear is closed here, once, before anything is appended.
-    fn close_the_tear(&mut self) {
-        let Ok(bytes) = std::fs::read(&self.path) else {
-            return;
+    /// and both are then unreadable: both files have their tear closed here, before anything is
+    /// appended - the live one, and the closed segment a put files into. Answers the bytes added.
+    fn close_the_tear(path: &Path) -> u64 {
+        let Ok(bytes) = std::fs::read(path) else {
+            return 0;
         };
         if bytes.is_empty() || bytes.ends_with(b"\n") {
-            return;
+            return 0;
         }
         let wrote = std::fs::OpenOptions::new()
             .append(true)
-            .open(&self.path)
+            .open(path)
             .and_then(|mut f| f.write_all(b"\n").and_then(|()| f.sync_data()));
         match wrote {
-            Ok(()) => self.bytes += 1,
-            Err(e) => eprintln!(
-                "room: items store {} not terminated ({e}); the next append may join its torn line",
-                self.path.display()
-            ),
+            Ok(()) => 1,
+            Err(e) => {
+                eprintln!(
+                    "room: items store {} not terminated ({e}); the next append may join its torn line",
+                    path.display()
+                );
+                0
+            }
         }
     }
 
@@ -846,6 +852,28 @@ mod tests {
             "the record after the tear is on a line of its own"
         );
         let _ = std::fs::remove_file(&p);
+    }
+
+    /// The closed segment is appended to by the same code, so a tear in it swallows the next row a
+    /// put files there - and that row left the memory on the strength of that append.
+    #[test]
+    fn a_torn_closed_segment_line_does_not_swallow_the_next_row() {
+        let p = path("closed-tear");
+        let closed = p.with_extension("items-closed");
+        std::fs::write(&closed, b"{\"item\":{\"project\":\"\",\"item\":{\"id\":0")
+            .expect("a torn closed line");
+
+        let mut store = Store::open(&p);
+        for id in 1..=(RING as u64 + 1) {
+            store.put_item("", item(id, "8 GB"));
+        }
+        assert_eq!(
+            store.item("", 1).map(|i| i.body),
+            Some("8 GB".into()),
+            "the row filed after the tear is readable"
+        );
+        let _ = std::fs::remove_file(&p);
+        let _ = std::fs::remove_file(&closed);
     }
 
     /// A row leaves the memory only once the closed segment holds it: a filing that fails must not
