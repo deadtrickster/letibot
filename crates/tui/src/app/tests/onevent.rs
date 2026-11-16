@@ -165,6 +165,29 @@ fn the_reseat_card_still_moves_and_draws_nothing() {
     );
 }
 
+/// The codes the head takes as state and files no note for, each with the state it moves.
+const STATE_CODES: &[(&str, &str)] = &[
+    ("compacting", "the fold's progress line"),
+    ("compaction_pending", "the status row's pending compaction"),
+    (
+        "turn_failed",
+        "the turn's own terminal state, from `TurnFailed`",
+    ),
+    (
+        "store_newer",
+        "the header's store-newer state, re-said on every attach",
+    ),
+    ("prefix_current", "the reseat card, which it clears"),
+    (
+        "model_switch_pending",
+        "the status row until the switch lands",
+    ),
+    ("daemon_starting", "the boot line on the tail"),
+    ("daemon_started", "the boot line, which it ends"),
+    ("model_set", "the header's model"),
+    ("slash_listing", "the listing pane it opens"),
+];
+
 /// The whole table, one code at a time: NO warning is a row of the conversation, and each one is
 /// held with its destination's other half - a count on the edge for a fault, the status line for
 /// live state. A code that starts drawing a row, or loses its record, fails here.
@@ -182,21 +205,16 @@ fn no_warning_is_a_row_of_the_conversation() {
         ));
         a.apply(ServerFrame::Event(env_at(1, 11, real_event(code))));
         let _ = screen(&mut a);
-        // A code whose arm took it as STATE (a fold's announcement, a turn's own failure, the
-        // model's switch) files nothing: those return before the head reaches the table.
-        if matches!(
-            *code,
-            "compacting"
-                | "compaction_pending"
-                | "turn_failed"
-                | "store_newer"
-                | "prefix_current"
-                | "model_switch_pending"
-                | "daemon_starting"
-                | "daemon_started"
-                | "model_set"
-                | "slash_listing"
-        ) {
+        // A code whose arm takes it as STATE files nothing, and is held to that here rather
+        // than skipped: each one names the state it moves instead of a note.
+        if let Some((_, why)) = STATE_CODES.iter().find(|(c, _)| c == code) {
+            assert!(
+                !a.notes
+                    .iter()
+                    .any(|(_, n)| matches!(n, Note::Warned(w) if w.code == *code)),
+                "`{code}` is state ({why}) and filed a note: {:?}",
+                a.notes
+            );
             continue;
         }
         let body = a.hist_lines.join("\n");
