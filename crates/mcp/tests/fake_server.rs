@@ -285,3 +285,22 @@ fn a_call_not_preapproved_goes_to_the_gate_and_does_not_run() {
     );
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
 }
+
+#[test]
+fn an_mcp_server_endless_line_is_dropped() {
+    let mut spec = fake("fake", &["--endless"]);
+    spec.timeout = Duration::from_secs(10);
+    let started = std::time::Instant::now();
+    let cat = Catalog::start(&[spec]);
+    assert!(
+        started.elapsed() < Duration::from_secs(5),
+        "waited {:?} on a line with no end",
+        started.elapsed()
+    );
+    let failures = cat.failures();
+    assert_eq!(failures.len(), 1, "{failures:?}");
+    assert!(
+        failures[0].why.contains("bytes with no newline"),
+        "{failures:?}"
+    );
+}

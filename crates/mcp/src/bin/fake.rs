@@ -1,5 +1,5 @@
 //! A stdio MCP server for tests. `--die-at-start` exits before answering, `--once FILE` only when
-//! FILE exists. Tools: `echo`, `big`, `fail` (`isError`), `crash` (exits mid-call), `pwd`, and
+//! FILE exists, `--endless` writes 64 MiB with no newline and then waits. Tools: `echo`, `big`, `fail` (`isError`), `crash` (exits mid-call), `pwd`, and
 //! `grow`, which adds `extra` and sends `notifications/tools/list_changed`, `env` (one variable's
 //! value, empty when unset), and `spawn`, which starts a `sleep` grandchild and says its pid.
 
@@ -12,6 +12,18 @@ fn main() {
     if args.iter().any(|a| a == "--die-at-start") {
         eprintln!("fake: refusing to start");
         std::process::exit(3);
+    }
+    if args.iter().any(|a| a == "--endless") {
+        let mut out = std::io::stdout().lock();
+        let chunk = vec![b'x'; 1 << 20];
+        for _ in 0..64 {
+            if out.write_all(&chunk).is_err() {
+                std::process::exit(0);
+            }
+        }
+        let _ = out.flush();
+        std::thread::sleep(std::time::Duration::from_secs(600));
+        std::process::exit(0);
     }
     if let Some(i) = args.iter().position(|a| a == "--once") {
         let marker = &args[i + 1];

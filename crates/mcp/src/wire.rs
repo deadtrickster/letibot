@@ -2,7 +2,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::process::{Child, ChildStdin, Command, Stdio as Piped};
-use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -62,13 +62,45 @@ const KEPT_ENV: &[&str] = &[
     "PATH", "HOME", "USER", "LOGNAME", "SHELL", "TERM", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
 ];
 
+/// The longest line or SSE event a server may send. Past it the server is dropped: a reader
+/// that buffers whatever arrives lets one server OOM the daemon and every session in it.
+pub(crate) const MAX_LINE_BYTES: usize = 8 << 20;
+
+/// Lines read ahead of the requests waiting for them. Bounded, so a flood blocks the server on
+/// its pipe instead of growing the daemon.
+const READ_AHEAD: usize = 16;
+
+/// One line of at most [`MAX_LINE_BYTES`], its newline stripped. `Ok(None)` is EOF.
+fn bounded_line(r: &mut impl BufRead) -> Result<Option<String>, String> {
+    let mut buf = Vec::new();
+    let n = r
+        .take(MAX_LINE_BYTES as u64 + 1)
+        .read_until(b'\n', &mut buf)
+        .map_err(|e| e.to_string())?;
+    if n == 0 {
+        return Ok(None);
+    }
+    if buf.last() == Some(&b'\n') {
+        buf.pop();
+        if buf.last() == Some(&b'\r') {
+            buf.pop();
+        }
+    } else if buf.len() > MAX_LINE_BYTES {
+        return Err(format!(
+            "the server sent more than {MAX_LINE_BYTES} bytes with no newline"
+        ));
+    }
+    Ok(Some(String::from_utf8_lossy(&buf).into_owned()))
+}
+
 /// Bytes of a server's stderr kept for the report when it dies.
 const STDERR_TAIL: usize = 2048;
 
 struct StdioWire {
     child: Child,
     stdin: ChildStdin,
-    lines: Receiver<String>,
+    /// A line, or why the reader stopped before EOF.
+    lines: Receiver<Result<String, String>>,
     stderr: Arc<Mutex<Vec<u8>>>,
     /// Closed when the stderr drain reaches EOF, so a crash report waits for the last bytes.
     stderr_done: Receiver<()>,
@@ -108,12 +140,21 @@ impl StdioWire {
         let stdin = child.stdin.take().ok_or("no stdin pipe")?;
         let stdout = child.stdout.take().ok_or("no stdout pipe")?;
         let mut err = child.stderr.take().ok_or("no stderr pipe")?;
-        let (tx, lines) = channel();
+        let (tx, lines) = sync_channel(READ_AHEAD);
         std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
-                let Ok(line) = line else { break };
-                if tx.send(line).is_err() {
-                    break;
+            let mut stdout = BufReader::new(stdout);
+            loop {
+                match bounded_line(&mut stdout) {
+                    Ok(Some(line)) => {
+                        if tx.send(Ok(line)).is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(why) => {
+                        let _ = tx.send(Err(why));
+                        break;
+                    }
                 }
             }
         });
@@ -217,7 +258,8 @@ impl Wire for StdioWire {
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.lines.recv_timeout(left) {
-                Ok(line) => {
+                Ok(Err(why)) => return Err(WireError::Gone(why)),
+                Ok(Ok(line)) => {
                     // A line that is not JSON is the server's log on the wrong stream.
                     let Ok(v) = serde_json::from_str::<Value>(&line) else {
                         continue;
@@ -241,7 +283,7 @@ impl Wire for StdioWire {
     }
 
     fn take_notices(&mut self) -> Vec<String> {
-        while let Ok(line) = self.lines.try_recv() {
+        while let Ok(Ok(line)) = self.lines.try_recv() {
             if let Ok(v) = serde_json::from_str::<Value>(&line)
                 && v.get("method").is_some()
             {
@@ -362,19 +404,26 @@ impl Wire for HttpWire {
         let mut body = res.into_body();
         if !sse {
             let text = body
+                .with_config()
+                .limit(MAX_LINE_BYTES as u64)
                 .read_to_string()
                 .map_err(|e| WireError::Other(e.to_string()))?;
             return serde_json::from_str(&text)
                 .map_err(|e| WireError::Other(format!("not a JSON-RPC answer ({e}): {text}")));
         }
         let mut data = String::new();
-        for line in BufReader::new(body.as_reader()).lines() {
-            let line = line.map_err(|e| WireError::Other(e.to_string()))?;
+        let mut stream = BufReader::new(body.as_reader());
+        while let Some(line) = bounded_line(&mut stream).map_err(WireError::Other)? {
             if let Some(d) = line.strip_prefix("data:") {
                 if !data.is_empty() {
                     data.push('\n');
                 }
                 data.push_str(d.strip_prefix(' ').unwrap_or(d));
+                if data.len() > MAX_LINE_BYTES {
+                    return Err(WireError::Other(format!(
+                        "an event of more than {MAX_LINE_BYTES} bytes"
+                    )));
+                }
                 continue;
             }
             if !line.is_empty() || data.is_empty() {
