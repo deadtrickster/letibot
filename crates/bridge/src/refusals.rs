@@ -1,8 +1,6 @@
-//! The bridge's refusals, in one queue per process: nobody draws a bridge, so stderr is where they
-//! go - once per layer, hook and reason, however many pushes and tool calls ask the same layer again.
-//!
-//! The queue is the process's and not a [`Rules`](crate::push::Rules)'s because every push, every
-//! `tools/list` and every `tool_` call asks the same layer the same thing: one identity, one line.
+//! The bridge's refusals on stderr, since nobody draws a bridge: once per layer, hook and reason.
+//! One queue per process, not per [`Rules`](crate::push::Rules), because pushes, `tools/list` and
+//! `tool_` calls all ask the same thing.
 
 use std::sync::OnceLock;
 

@@ -303,9 +303,8 @@ fn snapshot_of(events: Vec<SessionEvent>) -> Snapshot {
     view.snapshot(0, 0)
 }
 
-/// A round's end is not the turn's, and the head no longer has to work that out. The
-/// engine publishes `TurnFinished` per round and the round's calls run after it; what this
-/// reads now is the daemon's `Activity`, quiet only when there is nothing left.
+/// A round's end is not the turn's: the engine publishes `TurnFinished` per round and the
+/// round's calls run after it, so this reads the daemon's `Activity`, quiet only when nothing is left.
 #[test]
 fn the_daemons_activity_says_what_the_rounds_events_cannot() {
     let mut state = State::default();

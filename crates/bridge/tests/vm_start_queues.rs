@@ -1,9 +1,6 @@
-//! `leticode_start` on a session whose tools run somewhere else queues the model, the mode and the
-//! brief and answers at once: a placed session's worker opens a remote tree or boots a guest first,
-//! which on a loaded box is minutes, and a start that waited for it gave up with all three unsent.
-//!
-//! No worker is started here at all, which is that wait taken to its limit: the frames are queued on
-//! the session and nothing applies them, and the point is that the start does not hang.
+//! `leticode_start` on a session whose tools run elsewhere queues the model, mode and brief and
+//! answers at once, since the worker's remote tree or guest boot can take minutes. No worker is
+//! started here, so nothing applies the frames, and the point is that the start does not hang.
 
 use std::path::{Path, PathBuf};
 

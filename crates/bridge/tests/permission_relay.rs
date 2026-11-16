@@ -156,10 +156,9 @@ impl Fake {
         }
     }
 
-    /// The coordinator hangs up on everybody, and then says something only its log has - a
-    /// message a bridge that was still connected would have had pushed to it. The two are one step
-    /// because the log is what every `inbox` answer waits on: a redial cannot ask between them, get
-    /// a log with nothing new, and never be told the row exists.
+    /// The coordinator hangs up on everybody, then logs a message a connected bridge would have
+    /// been pushed. One step because every `inbox` answer waits on the log, so a redial cannot fall
+    /// between them and miss the row.
     fn hang_up_then_say(&self, author: &str, kind: &str, room: &str, to: Option<&str>, text: &str) {
         let mut log = self.log.lock().unwrap();
         for c in self.conns.lock().unwrap().drain(..) {

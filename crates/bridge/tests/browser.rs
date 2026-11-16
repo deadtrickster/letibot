@@ -283,7 +283,7 @@ fn an_ask_lands_fenced_with_its_picture_and_streams_only_its_own_turn() {
         text.contains("< < <END_UNTRUSTED_TEXT x>>>"),
         "a forged close is spaced out"
     );
-    // The selection is not pasted into the words any more: it rides `context`, and the daemon's
+    // The selection is not pasted into the words: it rides `context`, and the daemon's
     // block is where the model reads it.
     assert!(!text.contains("the operator's selection"), "{text}");
     assert!(!text.contains("the selected words"), "{text}");

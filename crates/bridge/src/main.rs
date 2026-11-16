@@ -7,12 +7,9 @@
 //!   letibot-mcp wait-queue <repository> <row> [--timeout 2h]
 //! ```
 //!
-//! Four verbs and no flags beyond the waits' own. The first is the server Claude Code
-//! registers and keeps for the life of the conversation; the second is the background
-//! command whose exit is the notification (`docs/claude-code-bridge.md`), because
-//! Claude Code wakes its model when a background command finishes and has no other door.
-//!
-//! The wait exits:
+//! `letibot-mcp` is the server Claude Code keeps for the conversation; `wait` is a background
+//! command whose exit is the notification, because Claude Code wakes its model when one finishes.
+//! stdout is the MCP wire when serving, and a wait's stdout holds only its payload. The wait exits:
 //!
 //! | code | means | on stdout |
 //! |---|---|---|
@@ -21,9 +18,6 @@
 //! | 20 | the session failed, or could not be reached | why |
 //! | 30 | the timeout passed | nothing (the reason is on stderr) |
 //! | 40 | the provider is in trouble (not a stall, unless `--exit-on-stall`) | the event, as JSON |
-//!
-//! stdout is the MCP wire when serving, and nothing may be printed to it there. The
-//! wait's stdout is its own and holds nothing but the payload above.
 
 use std::time::{Duration, Instant};
 
@@ -143,7 +137,7 @@ fn main() {
 
 /// Serve MCP on stdin/stdout until the client closes it.
 fn serve() -> i32 {
-    // The folder's plugin layers (X25): a `tool_` layer becomes a tool this client can call, and
+    // The folder's plugin layers: a `tool_` layer becomes a tool this client can call, and
     // `push_channel` decides what wakes it. The server's door is the only one that reads them.
     let mut bridge = Bridge::new().streaming_rooms().with_layers_from_disk();
     // Off unless the user's file says `[bridge] permission_relay = true`: the relay approves tool

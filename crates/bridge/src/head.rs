@@ -1,10 +1,7 @@
 //! A session held rather than run - the bridge's half of the head protocol.
 //!
-//! `crates/sessionlog/src/client.rs` states a head's three obligations: attach with a
-//! `since_seq` and accept `Resync` as a normal answer, ack after handling, and send
-//! `expected_seq` on every mutating frame. A screen discharges them while drawing; this
-//! does it while collecting, because what the Claude Code bridge needs from a leticode
-//! session is not a picture of it but five facts and the door to answer it.
+//! The head's obligations (`crates/sessionlog/src/client.rs`), discharged while collecting the few
+//! facts the bridge needs rather than drawing:
 //!
 //! ```text
 //!   socket ──pump──> frame ──fold──> State {turn, last message, asks, todos, usage}
@@ -12,25 +9,12 @@
 //!                        └──ack(seq)              └──Condvar──> a caller waiting
 //! ```
 //!
-//! One `Head` per session, one socket per `Head`, and that is what makes an ask
-//! reach the bridge at all: the daemon posts a permission card to the heads attached to
-//! that session, so a session the bridge is not attached to has nobody to ask - which is
-//! the correct answer (`docs/claude-code-bridge.md`: *"one that is left with no head
-//! attached refuses gated calls as any session does"*).
+//! One `Head` per session and one socket per `Head`: the daemon posts a permission card only to
+//! attached heads, so an unattached session refuses gated calls as any headless session does.
 //!
-//! A head that only watches says so ([`Head::attach_watching`]). The card is
-//! published to every attached head and settled by whichever answers first, so attaching a
-//! watcher steals nothing from the operator's own screen; what it could do is COUNT as
-//! somebody who will answer - `Hub::deciding_heads` is what `Answers::ask` reads before it
-//! posts, and a session whose only head is a watcher would then wait out the whole deadline
-//! and report a timeout about a question nobody was ever asked. So a watcher declares
-//! `can_decide: false`, the daemon refuses any answer from it by name, and this crate
-//! refuses to send it one in the first place.
-//!
-//! Why a condvar and not a poll. `wait` is a blocking verb whose whole value is that
-//! it returns the moment something happens; a loop that slept on the state would turn
-//! every wake-up into a latency the orchestrator pays for nothing. The fold notifies and
-//! the waiter recomputes, which is the same shape the daemon's own hub uses.
+//! A watcher ([`Head::attach_watching`]) declares `can_decide: false`, or `Answers::ask` would
+//! count it as someone who will answer and wait out the deadline on a question nobody saw. A
+//! condvar, not a poll, so `wait` returns the moment the fold changes something.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -517,10 +501,9 @@ pub struct State {
     /// `JobSettled` that names it - `leticode_status`' own list, and nothing else: whether a job
     /// holds the work open is the daemon's [`Activity`] (`waiting_on`), not this set.
     pub jobs_open: std::collections::BTreeSet<String>,
-    /// What each open job's cgroup holds, from the daemon's own frame: `75 processes, 17.0 GiB now
-    /// of a 32.0 GiB cap, 591 OOM kills`. The daemon reads it from the kernel because a seat in a
-    /// sandbox cannot see host pids at all, so `jobs_open` alone answers *is it running* with an
-    /// empty pid. Empty for an older daemon or a host with no cgroup.
+    /// What each open job's cgroup holds, from the daemon's frame: `75 processes, 17.0 GiB now of a
+    /// 32.0 GiB cap, 591 OOM kills`. Read by the daemon because a sandboxed seat cannot see host
+    /// pids. Empty for an older daemon or a host with no cgroup.
     pub jobs_cgroup: std::collections::BTreeMap<String, String>,
     /// Seq of the newest job event folded: a job list stamped older than it is discarded.
     jobs_event_seq: u64,
@@ -2709,10 +2692,9 @@ pub fn create_session_in(d: &Daemon, title: &str, workspace: &str) -> Result<Str
     create_session_as(d, title, workspace, None, "")
 }
 
-/// The same, with the id the caller already wrote down (a package's owner row and the branch
-/// `pk/<sid8>/<name>` are named by it, and both exist before the session does), and with the name
-/// a state that fails says - *it was opened* is a different sentence for a package than for a
-/// review's tree.
+/// The same, with an id the caller already wrote down (a package's owner row and branch
+/// `pk/<sid8>/<name>` exist before the session does), and the name a failed state says, since *it
+/// was opened* reads differently for a package and a review's tree.
 pub fn create_session_as(
     d: &Daemon,
     title: &str,
@@ -2721,7 +2703,7 @@ pub fn create_session_as(
     what: &str,
 ) -> Result<String, String> {
     // A daemon whose last session closed stays up holding none, and serves this bare attach as a
-    // control connection: no seat, and only the frames that give it one (R178). This socket claims
+    // control connection: no seat, and only the frames that give it one. This socket claims
     // no session, so it cannot break the rule that a head's socket is its session's from frame one.
     let (mut client, hello, reader) = HeadClient::attach(
         &d.socket,

@@ -1,10 +1,6 @@
-//! A Claude Code seat's todo board: the board, the waits and the idle nag a session has, held by
-//! the bridge because a seat is not a session any daemon serves (`docs/seat-todo.md`).
-//!
-//! The board is `letibot_tools::builtins::todo`'s own type and the schedule is `TodoNagClock`'s, so
-//! a row, a wait and a notice mean one thing on both sides of the bridge. What is here is only what
-//! the bridge knows and a daemon does not: that the seat is a process talking MCP, that its packages
-//! are its held heads, and that its nag is a channel notification.
+//! A Claude Code seat's todo board, waits and idle nag, held by the bridge because no daemon serves
+//! a seat (`docs/seat-todo.md`). Types and schedule are `letibot_tools::builtins::todo`'s and
+//! `TodoNagClock`'s, so both sides agree.
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -301,9 +297,8 @@ impl Seat {
 }
 
 /// The watcher: the session's schedule over the seat's own idleness. It re-arms when the board or a
-/// package moves, or when the seat has called a tool since the last pass, and it asks the clock
-/// whether the check is due on every pass - `due_now`'s disarm is before the push, so a delivery
-/// that took longer than the window does not fire twice.
+/// package moves or the seat has called a tool, and asks the clock on every pass; `due_now` disarms
+/// before the push, so a slow delivery does not fire twice.
 fn run(seat: &Arc<Seat>, outbox: &Arc<Outbox>) {
     let mut armed_for = String::new();
     loop {
@@ -328,13 +323,9 @@ fn run(seat: &Arc<Seat>, outbox: &Arc<Outbox>) {
     }
 }
 
-/// The packages and their open jobs, out of the heads' snapshots, as the plan check reads them.
-/// Split out of [`Seat::packages`] so a test states a package's reading as a value.
-///
-/// A package is a child WHILE ITS TURN IS IN FLIGHT, which is the daemon's own reading of its
-/// task journal: a child that ended is not in the snapshot, and that is what ends the wait. A head
-/// this bridge could not read is the exception - the frames it skipped include the turn state, so
-/// the package is a child that says `cannot say`, never one that ended.
+/// The packages and their open jobs out of the heads' snapshots, split from [`Seat::packages`] so a
+/// test states a reading as a value. A package is a child while its turn is in flight; one whose
+/// head could not be read says `cannot say`, never that it ended.
 fn read_packages(
     states: &[State],
     working: &mut HashMap<String, Working>,
@@ -616,10 +607,9 @@ fn render(rows: &[TodoItem]) -> String {
     out
 }
 
-/// A package is still the seat's child while its turn runs, while it waits on a job of its own
-/// between turns, while it holds an ask, or while the DAEMON says it is waiting on anything. The
-/// last is not the same as an open job: `waiting_on` is the job watcher's answer and `jobs_open`
-/// the process host's, and a job whose completion is queued is at work and not running.
+/// A package is still the seat's child while its turn runs, it waits on its own job, holds an ask,
+/// or the DAEMON says it waits on anything. `waiting_on` is the job watcher's answer and
+/// `jobs_open` the process host's, and a job whose completion is queued is not running.
 fn still_a_child(
     running: bool,
     jobs_open: &std::collections::BTreeSet<String>,

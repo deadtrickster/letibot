@@ -23,10 +23,9 @@ const ANSWER: &str = "answer-marker: done";
 /// milliseconds, and the assertion is what happened, not how fast.
 const PATIENCE: Duration = Duration::from_secs(60);
 
-/// How long each phase is measured over. Long enough that a full core shows up as seconds
-/// rather than as a rounding error - and not the whole of this file's wall clock: seven windows are
-/// 21 s of sleeping, each opened by two settles of at least [`cpu::SPAN`] around a [`TICK`], so
-/// 56 s is the floor.
+/// How long each phase is measured over: long enough that a full core shows as seconds, not
+/// rounding. Seven windows are 21 s of sleep, each opened by two settles of at least [`cpu::SPAN`]
+/// around a [`TICK`], so 56 s is the floor.
 const WINDOW: Duration = Duration::from_secs(3);
 
 /// Longer than the daemon's idle tick (`plugins::POLL_EVERY`, 2 s), so whatever a tick starts has

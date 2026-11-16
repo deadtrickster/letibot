@@ -89,10 +89,9 @@ fn read_loop<R: BufRead, W: Write>(
                 // legal, so the room's stream may start.
                 if request["method"] == "notifications/initialized" && bridge.stream_rooms() {
                     let tx = push.clone();
-                    // Every pushed line goes through the folder's `push_channel` layer (X25): what
-                    // reaches the client is the rule's answer, and the sentence is its words when it
-                    // has better ones. A line the rule silenced was still SEEN - it is taken, so the
-                    // cursor moves and no replay owes it again.
+                    // Every pushed line goes through the folder's `push_channel` layer: the client
+                    // gets the rule's answer, in its words when it has better ones. A silenced line
+                    // was still seen, so it is taken and the cursor moves past it.
                     let rules = bridge.push_rules();
                     bridge
                         .rooms()
@@ -152,11 +151,9 @@ fn handle(bridge: &Bridge, request: &Value) -> Option<Value> {
     let result = match method {
         "initialize" => Some(json!({
             "protocolVersion": PROTOCOL_VERSION,
-            // `claude/channel` lets Claude Code start a turn on a room message; a client that
-            // was not started with the channel flag ignores it and the tools still work. The
-            // relay's own capability is declared only when the config asked for it: declaring
-            // it is a promise that a verdict will be answered, and anyone who can reply through
-            // the room would be approving tool use in this session.
+            // `claude/channel` lets Claude Code start a turn on a room message; a client without
+            // the flag ignores it. The relay capability is declared only when configured, since it
+            // lets anyone who can reply through the room approve tool use here.
             "capabilities": {
                 "tools": {},
                 "experimental": capabilities(bridge),

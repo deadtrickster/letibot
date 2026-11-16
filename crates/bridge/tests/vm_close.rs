@@ -1,10 +1,6 @@
-//! A session closed while its worker is inside a tool call still holds its VM, and a VM left up is
-//! a machine the next session cannot boot on: the worker is stuck in `firecode in`, so the
-//! `Work::Close` that would bring the guest down is never served.
-//!
-//! So the close is settled off the worker (`letibot_harnessd::close_settle`). This file is that
-//! taken at its limit: there is no worker at all, and the VM is the one this process booted for the
-//! session. A stop through the socket must leave no VM behind.
+//! A session closed while its worker is stuck inside a tool call must not keep its VM, so the close
+//! is settled off the worker (`letibot_harnessd::close_settle`). Here there is no worker at all,
+//! and a stop through the socket must leave no VM behind.
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};

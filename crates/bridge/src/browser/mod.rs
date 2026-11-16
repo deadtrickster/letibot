@@ -4,13 +4,10 @@
 //!   extension worker ──HTTP 127.0.0.1:8790, bearer token──▶ this ──unix socket──▶ the session's daemon
 //! ```
 //!
-//! Three doors are checked on every request, in order: the `Host` header names loopback (a
-//! rebound DNS name is refused), the `Origin` is the extension's, and the bearer token matches
-//! `browser.token`. Only the operator's live top-level sessions can be asked.
-//!
-//! The same doors front `/tab/*`, through which the extension reports the tabs the operator
-//! allowed and runs the commands sessions send on `<rundir>/browser.sock` (`tab`). An ask also
-//! opens a look grant on its own tab for as long as the turn that took it runs.
+//! Every request passes three doors in order: a loopback `Host` (no rebound DNS name), the extension's
+//! `Origin`, and the `browser.token` bearer. Only the operator's live top-level sessions can be asked.
+//! The same doors front `/tab/*`, the tab grants and the commands sessions send on
+//! `<rundir>/browser.sock`.
 
 pub mod ask;
 pub mod http;

@@ -1,7 +1,6 @@
-//! A seat's OWN background jobs: the command's process, its log, and the handle a row's
-//! `wait_on {"job": …}` takes. A seat is not a session, so there is no daemon process host to run
-//! it (`docs/seat-todo.md`); the bridge runs it, keeps the row in the shared store under the seat's
-//! handle, and reports its ending on the seat's channel.
+//! A seat's own background jobs: the process, its log, and the handle a row's `wait_on {"job": …}`
+//! takes. A seat has no daemon process host (`docs/seat-todo.md`), so the bridge runs the job,
+//! keeps its row in the shared store and reports its end on the seat's channel.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -92,11 +91,9 @@ impl SeatJobs {
         }
     }
 
-    /// The jobs still running: what `wait_on {"job": …}` resolves against, and what keeps a row
-    /// that waits on one quiet. A job THIS process holds is read from its own child handle, because
-    /// the process table's answer needs a start time it may disagree about - and a running job read
-    /// as ended is a row asked about work that is still going. The table is the witness only for a
-    /// row a dead bridge left `running`.
+    /// The jobs still running, what `wait_on {"job": …}` resolves against. A job this process holds
+    /// is read from its child handle, since the process table needs a start time it may disagree
+    /// about; the table is the witness only for a row a dead bridge left `running`.
     pub fn open(&self) -> Vec<SeatJob> {
         let live = self.live.lock().unwrap_or_else(|e| e.into_inner());
         let mut out: Vec<SeatJob> = live

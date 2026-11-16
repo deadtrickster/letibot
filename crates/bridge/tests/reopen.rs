@@ -1,5 +1,5 @@
 //! A session whose daemon was stopped is reopened by id: `leticode_attach` starts the folder's
-//! daemon on that session, and refuses an id the store does not have for the folder (R241).
+//! daemon on that session, and refuses an id the store does not have for the folder.
 //! Drives a fake `harnessd` that writes down its arguments and exits.
 
 use std::path::{Path, PathBuf};

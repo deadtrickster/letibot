@@ -1,10 +1,6 @@
-//! `holds` and `gc_plan`: what an owner holds and what would be reaped, for EVERY agent.
-//!
-//! The operator's complaint is that cleanups have to be chased: a Claude Code seat cannot see its
-//! own leftovers and the person ends up asking. So these are bridge tools, served over MCP to
-//! whatever drives this folder, and they read the same index, the same discovery walk and the same
-//! verdicts `letibot holds` and `letibot gc` print. Both are read-only: nothing here removes, stops
-//! or writes anything, which is G1's whole contract (`docs/lifecycle.md` d.6 step 4).
+//! `holds` and `gc_plan`: what an owner holds and what would be reaped, for every agent, served
+//! over MCP so a Claude Code seat can see its own leftovers. Same index, discovery walk and
+//! verdicts as `letibot holds` and `letibot gc`. Read-only: nothing here removes, stops or writes.
 
 use letibot_tools::lifecycle::{self, Places, Plan};
 use serde_json::{Value, json};
@@ -52,7 +48,7 @@ pub fn holds(bridge: &Bridge, owner: Option<&str>) -> Result<Value, String> {
 /// promise in the answer so a caller never has to assume it.
 pub fn gc_plan(bridge: &Bridge, owner: Option<&str>) -> Result<Value, String> {
     let mut plan = plan_of(bridge, owner)?;
-    // The user manager's table, on the same door the CLI's plan uses (G5): the unit count, and
+    // The user manager's table, on the same door the CLI's plan uses: the unit count, and
     // which failed units are letibot's. `holds` does not ask, because a model reads that on every
     // turn and a plan is not worth a `systemctl` call there.
     {

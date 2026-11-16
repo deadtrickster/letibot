@@ -1,8 +1,6 @@
-//! Claude Code's own permission prompts, relayed to the operator through the room: this is the
-//! SESSION's tool approvals, not leticode's asks, which already arrive as channel events. The
-//! terminal dialog stays open, so a forgotten id is decided there and nowhere else.
-//!
-//! Declaring the capability is what turns it on, and that is a config key (see [`crate::settings`]).
+//! Claude Code's own permission prompts, relayed to the operator through the room: the session's
+//! tool approvals, not leticode's asks. The terminal dialog stays open, so a forgotten id is decided
+//! there. Declaring the capability turns it on, which is a config key (see [`crate::settings`]).
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -173,10 +171,9 @@ fn valid_id(id: &str) -> bool {
     id.len() == 5 && id.bytes().all(|b| b.is_ascii_lowercase() && b != b'l')
 }
 
-/// What the operator is told when a prompt arrives: what the call is, whose words each half is,
-/// and the id the verdict must name. The description and the arguments are the model's, so they
-/// are quoted, flattened to one line each, and marked untrusted - a newline in them would forge
-/// the lines this message is read by.
+/// What the operator is told when a prompt arrives: the call, whose words each half is, and the id
+/// the verdict must name. The description and arguments are the model's, so they are quoted,
+/// flattened to one line and marked untrusted, since a newline could forge this message's lines.
 fn ask_text(id: &str, params: &Value) -> String {
     let tool = one_line(params["tool_name"].as_str().unwrap_or("a tool"), 40);
     let description = one_line(params["description"].as_str().unwrap_or(""), 240);

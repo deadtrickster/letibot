@@ -1,7 +1,5 @@
-//! R178: a daemon whose last session closed is still given another one. The live failure was a
-//! bridge on exactly that daemon: `leticode_start` attached with no session in mind, the bare
-//! attach resolved to the closed session, and every package after the first was refused with
-//! "no such session" and a list of thousands of ids from every project.
+//! A daemon whose last session closed is still given another one: the bare attach must not resolve
+//! to the closed session and refuse every later start with "no such session".
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -77,7 +75,7 @@ fn a_daemon_whose_only_session_closed_takes_another_one() {
         std::thread::sleep(Duration::from_millis(20));
     }
 
-    // The next `leticode_start` on this folder: what used to fail here is the attach itself.
+    // The next `leticode_start` on this folder: the attach itself is under test.
     let made = head::create_session(&d, "the next package")
         .expect("a daemon holding no live session still takes a new one");
     assert_ne!(made, SESSION, "the new session is its own");

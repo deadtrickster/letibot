@@ -1,9 +1,6 @@
-//! Driving a tab the operator allowed, or looking at one the session was asked about. A drive
-//! grant is the extension's (a `chrome.debugger` attachment, whose bar Chrome keeps up) and it
-//! tells this table about it. A look grant is this bridge's: an ask opens it on the tab it came
-//! from and the end of the turn that took it closes it. A daemon's `screen tab` call arrives on
-//! `<rundir>/browser.sock`, waits in a queue, and the extension's worker pulls it, runs it on that
-//! tab and posts the result back.
+//! Driving a tab the operator allowed, or looking at one the session was asked about. A drive grant is
+//! the extension's (a `chrome.debugger` attachment); a look grant is this bridge's and lasts for the
+//! turn that took it. A `screen tab` call waits in a queue until the extension's worker pulls it:
 //!
 //! ```text
 //!   screen tab ──unix socket──▶ Tabs ◀──POST /tab/next, /tab/result── extension worker ──CDP──▶ the tab

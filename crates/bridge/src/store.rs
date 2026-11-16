@@ -1,9 +1,6 @@
-//! Which file of the store the bridge reads (`docs/store-split.md`).
-//!
-//! A daemon is handed a DIRECTORY once the store is split and one `sessions.db` while it is not,
-//! and a bridge may be handed either, or a single file by `$LETIBOT_STORE` or a test. This module
-//! is the one place that turns that into a file per table, and it asks tokencore rather than
-//! keeping a second copy of which table lives where.
+//! Which file of the store the bridge reads (`docs/store-split.md`). A store may be a split
+//! directory, an unsplit one or a single file; this is the one place that maps a table to its file,
+//! asking tokencore rather than keeping a second copy of the layout.
 
 use std::path::{Path, PathBuf};
 
@@ -24,13 +21,9 @@ pub fn exists(store: &Path) -> bool {
     store.join(split::SHARED_FILE).is_file() || store.join(split::LEGACY_FILE).is_file()
 }
 
-/// The file `table`'s rows are in, under a store the bridge was handed: the file itself when that
-/// is what it got, a directory's `sessions.db` while the store is unsplit, and a split
-/// directory's `shared.db` or `projects/<key>.db` by [`split::place_of`].
-///
-/// `folder` names the project a per-project table belongs to, and a caller that serves one passes
-/// it. No table this bridge reads is per-project, so a table the assignment has no row for refuses
-/// rather than answering the wrong file.
+/// The file `table`'s rows are in: the file itself, an unsplit directory's `sessions.db`, or a
+/// split one's `shared.db` or `projects/<key>.db` by [`split::place_of`]. A per-project table is
+/// not read here, so one with no assignment refuses rather than answer the wrong file.
 pub fn file_for(store: &Path, table: &str, folder: Option<&Path>) -> Result<PathBuf, String> {
     let store = &current(store);
     if !store.is_dir() {

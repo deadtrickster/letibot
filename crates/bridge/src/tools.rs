@@ -72,7 +72,7 @@ pub struct Bridge {
     /// The relay's observer is on the room link: a client that initializes twice must not leave a
     /// second one reading the same verdicts.
     watching: Mutex<bool>,
-    /// This folder's plugin layers (X25), built on the first call that needs one: the `tool_`
+    /// This folder's plugin layers, built on the first call that needs one: the `tool_`
     /// layers a client may call and the `push_channel` rule. `Layers` remembers that it tried, so a
     /// folder with nothing to load is not scanned again.
     plugins: Mutex<crate::plugins::Layers>,
@@ -360,9 +360,8 @@ impl Bridge {
     }
 
     /// Start leticode on a worktree. A daemon this call started already holds its first
-    /// session, so that is the session the brief runs in: one brief is one conversation. A daemon
-    /// already up belongs to somebody else, so a new session is created and attached by id.
-    // The package argument made this eight; each is one of `leticode_start`'s own schema fields.
+    /// session, so the brief runs there; a daemon already up is somebody else's, so a new
+    /// session is created and attached by id. Each argument is a `leticode_start` schema field.
     #[allow(clippy::too_many_arguments)]
     pub fn start(
         &self,
@@ -379,7 +378,7 @@ impl Bridge {
         }
         // A package is its own worktree and its own branch, made HERE and row first: the owner row
         // and its root are written before anything exists to leak, and the session is opened on
-        // the id already written down (`docs/lifecycle.md` G3).
+        // the id already written down.
         let prepared = match package {
             Some(name) => Some(self.package_worktree(worktree, name)?),
             None => None,
@@ -454,15 +453,9 @@ impl Bridge {
             // move: the model, the store and the gate are this box's.
             "tools_run": tools_run(h.placement.as_ref()),
         });
-        // Each session's model is its own, and this is the half that makes it so: the daemon's
-        // `--provider` is the DEFAULT, so a session joining a running daemon would otherwise answer
-        // every turn on whatever its first session chose. `/models` is per session.
-        //
-        // A session whose tools run somewhere else is QUEUED rather than waited for: its worker
-        // opens the remote tree or boots a guest first, which on a loaded box is minutes, and a
-        // start that waited would give up with the model, the mode and the brief all unsent. The
-        // three go out in that order because the daemon applies one session's commands in the
-        // order they arrived - which is what makes a queued model still the one the brief runs on.
+        // Each session's model is its own: the daemon's `--provider` is only the default. A session
+        // whose tools run elsewhere is QUEUED, not waited for; model, mode and brief go in that
+        // order, which the daemon applies in arrival order.
         let placed = placement.is_vm() || placement.host().is_some();
         let mut queued: Vec<&str> = Vec::new();
         if let Some(m) = model.filter(|m| !m.trim().is_empty()) {
@@ -530,10 +523,9 @@ impl Bridge {
         Ok(answer)
     }
 
-    /// A package's own worktree, row first: the owner row and its root are written, then the branch
-    /// `pk/<sid8>/<name>` and the tree, stamped with both. The id is minted here because the row,
-    /// the tree and the branch are all named by it and all three exist before the session does.
-    /// (`docs/lifecycle.md` G3, d.4's naming table.)
+    /// A package's own worktree, row first: the owner row and root, then branch `pk/<sid8>/<name>`
+    /// and the tree, stamped with both. The id is minted here because all three are named by it and
+    /// exist before the session does.
     fn package_worktree(&self, source: &str, name: &str) -> Result<Prepared, String> {
         use letibot_tokencore::store::OwnerKind;
         let repo = letibot_tools::git::repo_of_worktree(Path::new(source)).ok_or_else(|| {
@@ -1004,9 +996,8 @@ impl Bridge {
             // in a reader's words and `activity` is the value itself, so a caller can branch on it.
             "activity": serde_json::to_value(&s.activity).unwrap_or(Value::Null),
             "waiting_on": s.waiting_on(),
-            // Whether an unfinished todo needs one of the running jobs: `wait` does not hold on
-            // this any more - the daemon's activity does - and the key stays because it is a
-            // question a caller already asks, answered now from the daemon's own list.
+            // Whether an unfinished todo needs one of the running jobs, from the daemon's own list.
+            // `wait` holds on the daemon's activity, not this; the key stays for callers that ask.
             "waiting_on_jobs": s.waiting_on_jobs(),
             "pending_asks": s.asks.iter().map(|a| a.req_id.clone()).collect::<Vec<_>>(),
             // The same asks typed - `approval`, `question`, `other` - with who asked each.
@@ -1236,10 +1227,9 @@ impl Bridge {
         Ok(answer)
     }
 
-    /// Put a session this bridge holds out of sight - `leticode_archive`. The daemon closes it and
-    /// writes the row, so nothing of it is left running here or there; the rows stay in the store,
-    /// and opening the id is what takes it back into the list. The head goes with the session, which
-    /// is why this drops it from the map exactly as `stop` does.
+    /// Put a session this bridge holds out of sight (`leticode_archive`): the daemon closes it and
+    /// writes the row, and opening the id brings it back into the list. The head goes with the
+    /// session, so it is dropped from the map as `stop` does.
     pub fn archive(&self, session: &str, reason: &str) -> Result<Value, String> {
         let h = self.head(session)?;
         h.archive(reason)?;
@@ -1966,7 +1956,7 @@ pub fn names() -> Vec<&'static str> {
 /// that loads this server, because a package's leftovers are the package's to see first.
 pub const LIFECYCLE_TOOLS: [&str; 2] = ["holds", "gc_plan"];
 
-/// The same list with this folder's `tool_` layers after it (X25): what `tools/list` publishes and
+/// The same list with this folder's `tool_` layers after it: what `tools/list` publishes and
 /// `tools/call` checks, so a name a layer declares is in both or neither.
 pub fn names_with(bridge: &Bridge) -> Vec<String> {
     let native: Vec<String> = names().iter().map(|n| n.to_string()).collect();
@@ -2187,7 +2177,7 @@ pub fn call(bridge: &Bridge, name: &str, args: &Value) -> Result<Value, String> 
         room if crate::rooms::TOOLS.contains(&room) => {
             crate::rooms::call(bridge.rooms(), room, args)
         }
-        // A `tool_` layer of this folder's stack (X25): listed after the native tools, and run
+        // A `tool_` layer of this folder's stack: listed after the native tools, and run
         // through the same hook the daemon's runtime calls.
         declared if names_with(bridge).iter().any(|n| n == declared) => {
             let stack = bridge.plugin_stack().ok_or_else(|| {
@@ -2391,10 +2381,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&repo);
     }
 
-    /// Thirty-nine tools (the leticode verbs, `queue` and its verbs, the room verbs, the todo and seat jobs), each with a
-    /// schema and a required list - the count and the names the design's table fixes. A tool added
-    /// to `tools/list` and forgotten in `call` (or the other way round) is the defect this pairs
-    /// against.
+    /// Thirty-nine tools, each with a schema and a required list: the count and names the design's table fixes. Pairs
+    /// `tools/list` against `call`, so a tool added to one and not the other fails.
     #[test]
     fn the_thirty_nine_tools_are_listed_with_schemas() {
         let listed = list();

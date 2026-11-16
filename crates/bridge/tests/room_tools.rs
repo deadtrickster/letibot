@@ -71,10 +71,8 @@ impl Conn {
         }
     }
 
-    /// A message the coordinator pushes. It waits for the welcome, because a coordinator that
-    /// spoke first would hand the bridge a line it reads as its hello's answer - which is how a
-    /// loaded box turned this harness into a link that never opened. Bounded, so a connection
-    /// nobody greets cannot hang a test.
+    /// A message the coordinator pushes, sent after the welcome, because a line before it is read
+    /// as the hello's answer. Bounded, so a connection nobody greets cannot hang a test.
     fn deliver(&self, frame: &Value) {
         let mut out = self.out.lock().unwrap();
         let end = Instant::now() + Duration::from_secs(20);
@@ -182,10 +180,9 @@ impl Fake {
         m
     }
 
-    /// The coordinator hangs up, and then says something only its log has - the message a bridge
-    /// that was still connected would have had pushed to it. The two are one step because the
-    /// log is what every `inbox` answer waits on: a redial cannot ask between them, get a log
-    /// with nothing new, and never be told the row exists.
+    /// The coordinator hangs up, then logs a message a connected bridge would have been pushed. One
+    /// step because every `inbox` answer waits on the log, so a redial cannot fall between them and
+    /// miss the row.
     fn hang_up_then_say(
         &self,
         author: &str,

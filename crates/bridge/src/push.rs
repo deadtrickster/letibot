@@ -894,10 +894,8 @@ mod rules_tests {
         Arc::new(stack)
     }
 
-    /// One broken layer is one line, however many events meet it: this process's stderr is a
-    /// client's log, and a refusal per push about a layer that has not changed is a log nobody
-    /// reads. The identity is the layer, the hook and the reason - which is what makes a second,
-    /// different reason news again.
+    /// One broken layer is one line however many events meet it, since stderr is a client's log.
+    /// The identity is the layer, the hook and the reason, so a different reason is news again.
     #[test]
     fn the_bridge_says_a_repeated_refusal_once() {
         let dir = Dir::new("repeated");

@@ -15,12 +15,9 @@ use serde_json::{Value, json};
 /// The environment variable that names this bridge in the rooms.
 pub const NAME_ENV: &str = "LETIBOT_ROOM_NAME";
 
-/// How `me` behaves in the rooms, said once in the server's instructions: it is in the host room and
-/// in its own project's room, never a third, and the standing rule is the one a letibot session
-/// reads in its `room` tool. Short, because the instructions have a byte budget a test holds.
-///
-/// The two addressing rules ride here because this seat has no `room` tool text of ours to carry
-/// them: an `fyi` wakes exactly whom it names, and a dm is answered in the dm.
+/// How `me` behaves in the rooms, said once in the server's instructions: the host room and its own
+/// project's room, never a third. Short because a test holds the byte budget. The two addressing
+/// rules ride here because this seat has no `room` tool text of ours to carry them.
 pub fn etiquette(me: &str) -> String {
     format!(
         "As `{me}` you see `host`, your project's room, dms. An `fyi` wakes only whom it names; \
@@ -261,10 +258,9 @@ pub const PROTOCOL: u16 = letibot_room::ROOM_PROTOCOL_VERSION;
 const REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 const REDIAL_EVERY: Duration = Duration::from_secs(2);
 
-/// What the stream hands a message to: the bridge's sink, with the coordinator's `names_you` -
-/// which is what the push rule needs to say whether the line was addressed. `false` means it was not
-/// taken, so the message stays undelivered and the next replay offers it again; a line the rule
-/// SILENCED was taken, and the sink says so by answering `true`.
+/// What the stream hands a message to: the bridge's sink, with the coordinator's `names_you` for the
+/// push rule. `false` means not taken, so the next replay offers it again; a line the rule silenced
+/// was taken and answers `true`.
 pub type Deliver = Arc<dyn Fn(&Value, bool) -> bool + Send + Sync>;
 
 /// What one chat frame goes to: the message and the coordinator's `names_you`.
@@ -400,7 +396,7 @@ impl Attention {
 }
 
 /// What a pushed message asks of its readers, in the room crate's own words (`Reach`): the fact a
-/// `push_channel` layer decides on, and the whole of R117's *only addressed* as a rule.
+/// `push_channel` layer decides on, and *only addressed* as a rule.
 pub fn reach(m: &Value, names_you: bool) -> &'static str {
     if m["kind"] == "operator" {
         return "operator";
@@ -982,10 +978,8 @@ impl RoomLink {
     }
 
     /// Start the stream: every pushed message goes to `deliver` once, in order, with the
-    /// coordinator's `names_you`. What passes is no longer a filter here - the bridge's own rule is
-    /// the `push_channel` layer's, and the client's sink asks it (`crate::push::room_push`), which is
-    /// how a project widens `to_me` to *every room message* (X25). A supervisor reopens a dropped
-    /// connection and replays the inbox after the gap.
+    /// coordinator's `names_you`; filtering is the `push_channel` layer's (`crate::push::room_push`).
+    /// A supervisor reopens a dropped connection and replays the inbox after the gap.
     pub fn stream(&self, deliver: Deliver) {
         let weak = Arc::downgrade(&self.inner);
         let hook_weak = weak.clone();
@@ -1174,10 +1168,9 @@ impl RoomLink {
         self.request(&json!({ "type": "ack", "seq": seq }))
     }
 
-    /// What the cursor still holds for this seat, once per connection. Keyed to the connection
-    /// rather than to this call being the one that opened it, because `ack_delivered` and any
-    /// other round trip redial on their own retry - and a gap nobody replays is a message the
-    /// model is never told about.
+    /// What the cursor still holds for this seat, once per connection. Keyed to the connection, not
+    /// to the call that opened it, because other round trips redial on their own retry and a gap
+    /// nobody replays is a message the model never sees.
     fn replay_the_gap(&self, deliver: &Deliver) {
         let generation = self.inner.generation.load(Ordering::SeqCst);
         if self.inner.replayed.load(Ordering::SeqCst) == generation {
@@ -1200,10 +1193,9 @@ impl RoomLink {
             if self.ensure_locked().is_err() {
                 return;
             }
-            // Read AFTER the connection: a welcome that names a new coordinator start resets this
-            // mark, because its log's seqs begin again - and the old number would tell the fresh
-            // log that messages nobody was told about were read, so `replay_the_gap` would then
-            // never fetch them.
+            // Read AFTER the connection: a welcome naming a new coordinator start resets this mark,
+            // since its log's seqs start again and the old number would mark unseen messages read,
+            // so `replay_the_gap` would never fetch them.
             let delivered = *self
                 .inner
                 .delivered
@@ -1990,11 +1982,9 @@ fn dispatch(link: &RoomLink, name: &str, args: &Value, workspace: &Path) -> Resu
     }
 }
 
-/// `room-wait`: block until a message passes `attention` and print it. The waiter keeps its own
-/// mark and never acks: the cursor is the bridge's, and a waiter's ack would hide a message from
-/// the session whose bridge is the one that reports what the model saw.
-/// Exit codes: 0 a message (its lines on stdout), 20 the coordinator could not be reached,
-/// 30 the deadline passed.
+/// `room-wait`: block until a message passes `attention` and print it. Keeps its own mark and never
+/// acks, since the cursor is the bridge's and an ack would hide the message from its session. Exit
+/// 0 a message on stdout, 20 coordinator unreachable, 30 deadline passed.
 pub fn wait(link: &RoomLink, attention: Attention, deadline: Instant) -> (i32, String) {
     wait_marked(link, attention, deadline, &wait_mark_path())
 }

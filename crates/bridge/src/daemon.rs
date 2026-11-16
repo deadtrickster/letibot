@@ -575,7 +575,7 @@ pub fn ensure(
 }
 
 /// [`ensure`], with the id the daemon's own first session must carry: a package's owner row and the
-/// worktree and branch it names exist before the session does (`docs/lifecycle.md` G3), so the id is
+/// worktree and branch it names exist before the session does, so the id is
 /// the caller's to name and the daemon opens the session it is told to.
 pub fn ensure_with(
     worktree: &Path,
