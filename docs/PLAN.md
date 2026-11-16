@@ -32,6 +32,7 @@ broker is part of the same order.
 3. Mediums and lows by theme (R338-R349), then the design follow-ups (R350) after the stability bar
    is met.
 6. After the bar: the credential broker (R358), beside lead 32.
+7. After the bar: job-first tool calls and the flow (R372, R373), then the box daemon (R374-R381).
 
 Section 1 runs beside section 2. A stage waits on its replay evidence, not on code, so batches and
 broker steps land while it collects.
@@ -360,6 +361,35 @@ still reads them. The broker closes that, in layers:
   `a_secret_echoed_by_a_test_never_reaches_the_transcript`.
 - Size L. After the stability bar, and after B4's subcommand rules.
 
+### 7. After the stability bar: the box daemon, the flow, job-first calls (R372-R381)
+
+Design: `docs/design/box-daemon-and-orchestration.md`. It covers leads 52, 32, 31 and 37, and
+R294. No code before the bar is met.
+
+- **Job-first tool calls (R372, lead 31).** A call that can outlive the threshold is a job from its
+  first instant, and the foreground is a wait on it. One loop in the runtime, `bash`'s. The operator
+  typing ends any wait.
+- **The flow (R373, lead 32).** One orchestration primitive: split, map, verify, fold, as a job
+  that settles once. A journal, a resume cache, a backup before resume, a canary first, a worktree
+  per writing child, no silent caps. `digest` is its first script. Lead 37's budget ships here
+  against the daemon's own reading.
+- **The box daemon (R374-R379, lead 52).** One trusted process per box, in the room coordinator's
+  process. It owns accounts (usage, limits, budget), housekeeping (the reaper), placement (R294),
+  the opt-in MCP pool, and hosts the broker and the proxy. Folder daemons keep sessions,
+  transcripts, the gate and heads. A folder daemon with no box daemon behaves as it does today.
+- **Scripts and heads (R380, R381).** Review panels, sweeps and rebases as flow scripts. The `/box`
+  pane, flow rows, and rano's widgets through `cc@rano`.
+- Order: R372, R373, R374, R375, R376, then R377-R381 in any order. R374 lands before the broker's
+  host is built (R358 and its rows on `auto-broker-design`), because the design moves that host
+  from the folder daemon to the box daemon.
+- Each phase deletes what it replaces in the same landing.
+- Tests, by row: `a_slow_web_fetch_becomes_a_job_and_its_body_is_not_in_the_settlement`,
+  `a_digest_past_the_threshold_settles_as_a_flow`, `a_resume_backs_up_before_it_runs`,
+  `a_fan_out_over_a_providers_live_window_refuses_or_splits`,
+  `a_tool_call_is_refused_on_the_box_socket`, `two_daemons_on_one_account_poll_once`,
+  `a_daemon_with_no_box_daemon_runs_as_before`.
+- Size L for R373 and R379, M for the rest.
+
 ## The exit test
 
 The stability bar, measured in this order. None of its four conditions is met at the snapshot.
@@ -376,7 +406,8 @@ The stability bar, measured in this order. None of its four conditions is met at
    a hook or move to `AGENTS.md`.
 
 The phase ends when all four hold. Then the design follow-ups (R350) and the first post-stability
-features start: the orchestration primitive (lead 32) and the credential broker (R358).
+features start: job-first calls and the flow (R372, R373), the credential broker (R358) and the
+box daemon (section 7).
 
 ## Process rules
 

@@ -210,6 +210,16 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R357 | The two halves no door can see: rano's protocol, and a plugin binary left running | Code work | R344's residue: rano compares no protocol (a branch for `cc@rano`) - a running plugin's older `letibot-mcp` says no skew |
 | R358 | A credential belongs to its program, not to the session: the credential broker | Parked | design only, a feature - after the stability phase, beside automode (both need the gate judging subcommands); order: `gh` broker, egress proxy, known-value redaction |
 | R359 | MCP servers need a daemon restart to pick up a config or binary change, and `/mcp` answered nothing | Code work | built on `mcp-live`; left: a session opened with no server has no MCP doors in its prompt until `/reseat`, the turn-start reload is tested on `mcp::Live` and not through a live turn, and the head-side silence was not reproduced |
+| R372 | Past the threshold any tool call is a job: one foreground loop in the runtime | Parked | design only, a feature - after the stability phase; phase G, lead 31; M; after -; design `docs/design/box-daemon-and-orchestration.md` |
+| R373 | The flow: one orchestration primitive that runs as a job, with `digest` as its first script | Parked | design only, a feature - after the stability phase; phase H, leads 32 and 37; L; after R372; design `docs/design/box-daemon-and-orchestration.md` |
+| R374 | The box daemon's skeleton: one trusted process per box, in the room coordinator's process | Parked | design only, a feature - after the stability phase; phase A, lead 52; M; after -; design `docs/design/box-daemon-and-orchestration.md` |
+| R375 | Accounts in the box daemon: one usage poller, a limit ledger, the budget | Parked | design only, a feature - after the stability phase; phase B, leads 52 and 37; M; after R374; design `docs/design/box-daemon-and-orchestration.md` |
+| R376 | Housekeeping in the box daemon: the reaper, with no election | Parked | design only, a feature - after the stability phase; phase C, lead 52; M; after R374; design `docs/design/box-daemon-and-orchestration.md` |
+| R377 | Placement in the box daemon: R294 as a service, the gate as a class, host slots | Parked | design only, a feature - after the stability phase; phase D, lead 52; M; after R374; design `docs/design/box-daemon-and-orchestration.md` |
+| R378 | An MCP pool in the box daemon, for servers the operator marks box-wide | Parked | design only, a feature - after the stability phase; phase E, lead 52; M; after R374, R372; design `docs/design/box-daemon-and-orchestration.md` |
+| R379 | The broker, the proxy and the CA are hosted by the box daemon | Parked | design only, a feature - after the stability phase; phase F, lead 52; L; after R374, and with R364-R366 of `auto-broker-design`; design `docs/design/box-daemon-and-orchestration.md` |
+| R380 | Flow scripts: review panel, sweep, rebase, and a bridge door | Parked | design only, a feature - after the stability phase; phase I, lead 32; M; after R373, R375; design `docs/design/box-daemon-and-orchestration.md` |
+| R381 | Heads and rano: the box pane, flow rows, a usage age | Parked | design only, a feature - after the stability phase; phase J, lead 52; M; after R375, R373; design `docs/design/box-daemon-and-orchestration.md` |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | `trees/<key>` landed (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | firecode's package image: the wasm32 target, a cargo cache warmed from the workspace's locks, shfmt and shellcheck - the guest's memory said in the brief (the overlay half is done, 99166493d) |
 | R201 | Nothing letibot starts is ever torn down | Code work | G6 unjoined (`docker::seat_env` has no caller, so no socket or `DOCKER_HOST` at open) - G5 (memory) not built - compute reservations not built - G3's `--adopt` run is the operator's - `--restore --worktree` makes one tree. Lifecycle findings are R329, R343 |
@@ -4066,6 +4076,146 @@ The unknown-verb sentence is `unknown command `/x` - /help lists them`, with the
 `skills/mcp-servers/SKILL.md`, compiled into the build beside `plugin-hooks`: where `[mcp.NAME]` lives and its keys, the `.mcp.json` pin, proving a server with `/mcp`, `mcp_search` and one cheap `mcp_call`, the guarded leticode.toml edit (propose the diff, the operator approves the card), tokens in env or headers and never echoed, and `/mcp reload` in place of a restart.
 
 Tests. `crates/mcp/tests/reconcile.rs` (6): a changed server restarts, an added one starts, a removed one stops and the unchanged one keeps its pid; a call in flight finishes on its old process; a restart by name; a rebuilt binary is stale until restarted; a reload retries a failed server; two catalogues share one process and it stops when neither holds it. `crates/harnessd/src/mcp.rs` (4, the fake server served by the test binary itself): `/mcp` lists each server with state and source; editing one server's env then `/mcp reload` restarts only it, and an added server starts and a removed one stops; the turn-start reload fires once per change, not on a touch with the same bytes, and once on a file that does not parse; `/mcp restart NAME`. `crates/harnessd/src/slash.rs`: `mcp_parses_its_three_verbs_and_unknowns_answer`. `crates/tui/src/app/tests/render.rs`: `an_unknown_slash_answer_is_on_the_status_row`; `crates/tui/src/app/tests/composer.rs`: `an_unknown_verb_is_sent_to_the_daemon`. `crates/tools/src/builtins/skill.rs`: `the_mcp_servers_skill_is_carried_and_names_its_steps`.
+
+## R372 - Past the threshold any tool call is a job: one foreground loop in the runtime
+
+**Status:** open, filed 2026-11-16. Design only, a feature after the stability phase. Phase G (lead 31), `docs/PLAN.md` section 7. Design: `docs/design/box-daemon-and-orchestration.md` section 7.
+
+**Why.** Today only `bash` moves itself to the background at 60 s (`crates/tools/src/builtins/bash.rs:1464`). Every other tool runs on the turn's thread at `crates/tools/src/runtime.rs:2382`, bounded only by a cooperative 180 s (`runtime.rs:203`). `digest`, `web_fetch` and `mcp_call` hold the turn.
+
+**Scope.** `Tool::start` with a default that calls `invoke`, returning `Done` or `Running(Aggregate)`. `ToolRuntime::run` holds a `Running` aggregate in the session's job table and runs one foreground loop, `bash`'s, moved out of `bash.rs:1417`. At `[exec] foreground_seconds`, or the moment the operator types, the wait ends with `Backgrounding::Promoted` and the completion is marked awaited. Waits (`job_wait`, `task_result`) return at the threshold and never become jobs. `web_fetch` and `web_search` run on a worker thread. A promoted `mcp_call` stays pending and is never cancelled or re-sent. A settlement row carries the job's facts and a bounded report, never payload from outside the box. `edit`, `write`, `todo` and pooled reads are never promoted. The stale 15 s figure in `crates/tools/src/exec/monitor.rs:25` is fixed.
+
+**Proving tests.** `a_slow_web_fetch_becomes_a_job_and_its_body_is_not_in_the_settlement`, `a_promoted_mcp_call_is_not_cancelled_and_not_resent`, `the_operator_typing_ends_a_foreground_wait_and_the_job_goes_on`, `a_wait_past_the_threshold_returns_and_marks_the_job_awaited`, `an_edit_is_never_promoted`, `a_promoted_fetch_lost_to_a_restart_settles_may_have_run`.
+
+**Size and order.** M, after -.
+
+**Done when:** every tool in the design's table behaves as its row says, and `bash` has no loop of its own.
+
+## R373 - The flow: one orchestration primitive that runs as a job, with `digest` as its first script
+
+**Status:** open, filed 2026-11-16. Design only, a feature after the stability phase. Phase H (leads 32 and 37), `docs/PLAN.md` section 7. Design: `docs/design/box-daemon-and-orchestration.md` section 5 and 6.
+
+**Why.** `digest` splits, starts a helper per part and folds inside one call, for up to 24 parts at 300 s each, with no resume (`crates/tools/src/builtins/digest.rs:258`, `:130`). Review panels, sweeps and rebases are run by hand-written workflows outside letibot, and that layer failed five ways on 2026-11-16 (R336). A background `fanout` loses its handle on a restart (`crates/tools/src/builtins/fanout_bg.rs:3`).
+
+**Scope.** A `flow` tool and a `BackgroundKind::Flow` held as an `Aggregate` (`crates/tools/src/exec/host.rs:591`), settling through `JobWatchSink` with a `[flow] ` row. Scripts are TOML stages: `split`, `map`, `fold` (`chain`, `reduce`, `table`), `verify`. Built in: a worktree per writing child or a refusal at plan time, waits on `collect` and `wait_job` only, a canary through the whole pipeline before the rest, every cap in the plan row, children end with the flow. A directory per run with `plan.json`, an append-only journal and `out/`. Resume backs up first, reports hits and misses with the reason, then runs the misses. `SubagentRun` gains the served model, the mode and the exit, checked against what was asked (`AGENTS.md:170`) - a store schema bump. The budget of lead 37 against this daemon's own usage reading. `digest` becomes the first script and keeps its tool as the door. One head-wire bump for the new kind.
+
+**Proving tests.** `a_digest_past_the_threshold_settles_as_a_flow`, `a_flow_runs_its_canary_alone_first`, `a_writing_child_without_a_worktree_is_refused_at_plan_time`, `a_resume_backs_up_before_it_runs`, `a_resume_after_a_template_edit_says_how_many_miss_and_why`, `a_child_that_ran_another_model_fails_verify`, `a_fan_out_over_a_providers_live_window_refuses_or_splits`, `killing_a_flow_ends_every_child`, `a_flow_resumes_from_its_journal_after_a_restart`, `a_cap_that_bites_is_said_in_the_settlement`.
+
+**Size and order.** L, after R372.
+
+**Done when:** `digest.rs` holds no fold loop, a 20-part digest survives a daemon restart, and R336's lead 37 residue is closed.
+
+## R374 - The box daemon's skeleton: one trusted process per box, in the room coordinator's process
+
+**Status:** open, filed 2026-11-16. Design only, a feature after the stability phase. Phase A (lead 52), `docs/PLAN.md` section 7. Design: `docs/design/box-daemon-and-orchestration.md` section 3.
+
+**Why.** There is no process that sees every daemon on a box. The live list is a glob of record files plus `daemon_life` beats, and a reader attaches to every folder's socket (`crates/bridge/src/fleet.rs:1`). The room coordinator is the only box-level process (`crates/room/src/lease.rs:1`).
+
+**Scope.** `harnessd --box`: the coordinator's process serving a second socket, `$XDG_RUNTIME_DIR/letibot/box-<host key>.sock`, `0600`, `LETIBOT_BOX_SOCKET` to override. `BOX_PROTOCOL_VERSION` 1 with the room's range rule and a per-service version list in `welcome`. Peer classes by pid: a folder daemon (holds a `FolderClaim`), the operator's CLI, a tool call (refused by name). The registry: folder, pid, build, protocol. `letibot --status` and `--daemons` read it, and it names folders running a stale build. The launcher ensures it as it ensures the room. `scripts/wire-skew.sh` gains the box pair. No service yet.
+
+**Proving tests.** `a_tool_call_is_refused_on_the_box_socket`, `a_daemon_with_no_box_daemon_runs_as_before`, `a_daemon_newer_than_the_box_daemon_uses_only_announced_services`, `the_registry_names_a_folder_on_a_stale_build`, `a_box_daemon_restart_is_noticed_by_instance_and_state_is_resaid`, `a_test_never_reaches_the_operators_box_socket`.
+
+**Size and order.** M, after -.
+
+**Done when:** the tests are green, rooms are undisturbed by the second socket, and the operator has answered open question 1 (one process or two).
+
+## R375 - Accounts in the box daemon: one usage poller, a limit ledger, the budget
+
+**Status:** open, filed 2026-11-16. Design only, a feature after the stability phase. Phase B (leads 52 and 37), `docs/PLAN.md` section 7. Design: `docs/design/box-daemon-and-orchestration.md` section 4 and 6.
+
+**Why.** Each daemon polls the usage endpoint for the same account every 120 s from a process static (`crates/provider/src/usage_poll.rs:15`, `:318`). A limit is known per session, with 2 s of jitter as the only herd handling (`crates/harnessd/src/harness/limit.rs:214`, `:11`). `/models` is fetched once per daemon (`crates/provider/src/registry.rs:604`). `providers.toml` is written through one fixed tmp name with no lock (`crates/provider/src/keys.rs:804`).
+
+**Scope.** `usage.watch`, `limit.report`, `budget.reserve`, `models.list`, `key.store`. An account is the endpoint plus a fingerprint of the key. The ledger is advisory: it parks a session before it spends a request and staggers the wakes, and never un-parks one. Reservations are leases on the connection with a 60 s grace. `[budget] keep` is the operator's share of a window. With the box daemon away: the last reading with its age, no local poller, the on-refusal read stays local (`crates/harnessd/src/harness/usage.rs:47`). The per-daemon poller start is deleted in the same landing. R373's budget becomes box-wide.
+
+**Proving tests.** `two_daemons_on_one_account_poll_once`, `a_limit_one_session_met_parks_its_neighbour_without_a_request`, `two_keys_on_one_provider_are_two_accounts`, `a_reading_older_than_three_polls_is_shown_stale`, `two_flows_in_two_folders_share_one_window`, `two_daemons_storing_keys_lose_neither`.
+
+**Size and order.** M, after R374.
+
+**Done when:** one poll per account per period on a box with ten daemons, measured.
+
+## R376 - Housekeeping in the box daemon: the reaper, with no election
+
+**Status:** open, filed 2026-11-16. Design only, a feature after the stability phase. Phase C (lead 52), `docs/PLAN.md` section 7. Design: `docs/design/box-daemon-and-orchestration.md` section 4.
+
+**Why.** The disk half of the reaper is one daemon's by `flock` on `reaper.lock` (`crates/harnessd/src/reap_pass.rs:270`, `:283`). The idle half runs in every daemon, and a daemon cannot reap itself (review panel P5, F2). With no live daemon nothing reaps (`docs/lifecycle.md:18`). Each daemon also reaps VMs (`crates/harnessd/src/vm_reap.rs:24`), releases port blocks (`crates/harnessd/src/leases.rs:14`), renews remote leases (`crates/harnessd/src/supervise.rs:136`), prunes `metrics.db` (`crates/metrics/src/store.rs:697`) and sets the slice's `MemoryHigh` (`crates/harnessd/src/cli.rs:475`).
+
+**Scope.** All of it runs once, in the box daemon. `reaper.lock` and `DiskTurn` are deleted. `letibot gc` by hand stays. `docs/lifecycle.md` is rewritten for the one owner, and its `gc.lock` line (`:820`), which no code implements, goes.
+
+**Proving tests.** `an_idle_daemon_is_closed_by_the_box_daemon`, `the_disk_pass_runs_with_no_folder_daemon_up`, `the_disk_period_survives_a_box_daemon_restart`, `metrics_are_pruned_once_per_box`. `one_daemon_per_box_runs_the_disk_half` (lead 44) is deleted with the election.
+
+**Size and order.** M, after R374.
+
+**Done when:** no folder daemon has a reaper thread, and decision 12's `letibot-gc.timer` is closed as not needed.
+
+## R377 - Placement in the box daemon: R294 as a service, the gate as a class, host slots
+
+**Status:** open, filed 2026-11-16. Design only, a feature after the stability phase. Phase D (lead 52), `docs/PLAN.md` section 7. Design: `docs/design/box-daemon-and-orchestration.md` section 4.
+
+**Why.** Target dirs are named in briefs, one full gate at a time is a `flock` in a script (`scripts/gate-at.sh:12`), and per-host bounds are per process (`crates/tools/src/rpc.rs:183`, `crates/harnessd/src/mergequeue/review/hosts.rs:66`). R294 holds the measurements.
+
+**Scope.** `place.acquire {folder, class, cmd}` answers a slot, a target dir and an env. The box daemon places and admits. It does not run the build: the daemon runs it in the session's seat. That is the one change to R294's shape. Admission from `/proc/pressure/io` and per-disk load. The class `gate` has one slot per box and replaces `/build/gate.lock`. `host.acquire {host, class}`: one `suite` per host, and a host marked `ask` places nothing until told. Away: a build runs unplaced after 5 s, with a notice. R294 closes into this row.
+
+**Proving tests.** R294's three, plus `a_second_gate_queues_behind_the_first`, `a_slot_is_freed_when_its_daemon_goes`, `the_box_daemon_never_execs_a_placed_command`.
+
+**Size and order.** M, after R374.
+
+**Done when:** R294's "done when" holds and no brief names a target dir.
+
+## R378 - An MCP pool in the box daemon, for servers the operator marks box-wide
+
+**Status:** open, filed 2026-11-16. Design only, a feature after the stability phase. Phase E (lead 52), `docs/PLAN.md` section 7. Design: `docs/design/box-daemon-and-orchestration.md` section 4.
+
+**Why.** MCP servers are started once per daemon and are its children (`crates/harnessd/src/mcp.rs:1`, `:165`, `crates/mcp/src/wire.rs:117`). Ten daemons with one `[mcp]` list run ten copies.
+
+**Scope.** `scope = "box"` on a server, read from the operator's own `leticode.toml` only. The default stays `folder`. The box daemon holds the server and multiplexes ids. The daemon sees a proxy catalog. Away: `mcp_call` answers not run. A call in flight across a box daemon restart settles may have run.
+
+**Proving tests.** `a_box_scope_server_runs_once_for_two_daemons`, `a_project_file_cannot_name_a_box_scope_server`, `a_pool_that_is_away_answers_not_run`.
+
+**Size and order.** M, after R374, R372.
+
+**Done when:** the tests are green and the operator's own servers are marked.
+
+## R379 - The broker, the proxy and the CA are hosted by the box daemon
+
+**Status:** open, filed 2026-11-16. Design only, a feature after the stability phase. Phase F (lead 52), `docs/PLAN.md` section 7. Design: `docs/design/box-daemon-and-orchestration.md` section 4.
+
+**Why.** `docs/design/automode-and-broker.md` (branch `auto-broker-design`) puts the broker and the proxy in each folder daemon and makes a CA per daemon start. A package daemon that lives an hour would mint a CA and spawn credential seats.
+
+**Scope.** Three sentences of that design change: the host is the box daemon, the proxy is one per box with a listener per session, the CA is per box daemon start. `seat.open {session, cgroup}` answers the socket paths a seat binds. The card: the box daemon reads the peer's cgroup, finds the owning daemon in the registry and sends `ask`. The daemon maps the cgroup to its call id, shows the card and answers. The gate verdict stays in the daemon. An asked restart drains brokered calls first. Away: fail closed, by name. This row is the host for R364-R366, not a second build of them.
+
+**Proving tests.** `a_brokered_call_reaches_the_card_of_the_session_that_made_it`, `a_broker_with_no_box_daemon_fails_closed_and_says_so`, `an_asked_restart_waits_for_a_brokered_call`, `one_ca_serves_two_daemons`.
+
+**Size and order.** L, after R374, and with R364-R366 of `auto-broker-design`.
+
+**Done when:** the operator has answered open question 2, and R364-R366 land against this host.
+
+## R380 - Flow scripts: review panel, sweep, rebase, and a bridge door
+
+**Status:** open, filed 2026-11-16. Design only, a feature after the stability phase. Phase I (lead 32), `docs/PLAN.md` section 7. Design: `docs/design/box-daemon-and-orchestration.md` section 5.
+
+**Why.** The review of 2026-11-16 was run by a hand-written workflow from Claude Code. It spent a Kimi 5 h window (lead 37), left 9 daemons running (lead 29) and ran 60 positions on the wrong model (lead 33).
+
+**Scope.** Three scripts in `flows/`. The panel is two stages for two rounds, positions kept verbatim in `out/` (`~/Projects/hands-off/templates/adversarial-review.md`). The sweep and the rebase give each child a worktree and verify by a command. A bridge tool starts a flow in a session and follows it. `fanout`'s background aggregate and the flow's become one type. If a script cannot be written as stages, that is filed as the evidence for open question 5.
+
+**Proving tests.** `a_panel_of_twenty_positions_fits_its_windows_or_splits`, `a_panels_positions_are_kept_verbatim`, `a_rebase_child_works_in_its_own_worktree`, `a_bridge_started_flow_ends_with_its_caller`.
+
+**Size and order.** M, after R373, R375.
+
+**Done when:** the next review panel runs as a flow, with no workflow outside letibot.
+
+## R381 - Heads and rano: the box pane, flow rows, a usage age
+
+**Status:** open, filed 2026-11-16. Design only, a feature after the stability phase. Phase J (lead 52), `docs/PLAN.md` section 7. Design: `docs/design/box-daemon-and-orchestration.md` section 8.
+
+**Why.** rano's panel compares its protocol with nothing (R357) and drops frames it does not know (`src/letibot.rs:984` in rano). The head's widgets are rano's (`crates/tui/src/ui/panes/jobs.rs:6`), pinned by rev in six manifests (`crates/tui/Cargo.toml:51`). `docs/rano-integration.md:4` names a stale rev.
+
+**Scope.** In rano, each a branch plus a DM to `cc@rano`: R357's comparison first, a usage age in the header widget, a kind and child progress on the jobs row, an `agent::box` pane, `agent::queue` used or deleted. In letibot, behind the rev bump: a `/box` pane filled by ops relayed through the folder daemon as room chat is (`crates/sessionlog/src/server.rs:1118`), `[flow] ` in the settlement groups (`crates/tui/src/ui/transcript/job_card.rs:284`), the fleet reader on the registry, `--where --json` with a `box` field, `docs/rano-integration.md` rewritten. A head keeps one socket.
+
+**Proving tests.** `a_rano_panel_says_a_protocol_skew` (R357's), `the_box_pane_shows_an_account_once_with_its_age`, `a_flow_settles_as_one_card`, and the flow kind in `crates/tui/tests/rano_editor_head.rs`.
+
+**Size and order.** M, after R375, R373.
+
+**Done when:** the rano branches are landed by `cc@rano`, the six manifests name one rev, and the pane is on screen.
 
 ## R212 - An ACP client cannot hold a letibot session
 
