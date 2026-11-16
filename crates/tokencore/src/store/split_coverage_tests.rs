@@ -411,7 +411,8 @@ fn every_project_method_runs_on_a_split_set() {
     s.put_session(&session("s2", Some("s1"))).unwrap();
     s.put_transcript("t4", "s2", &pid).unwrap();
     s.fork_session("s2", "s3", 0).unwrap();
-    assert_eq!(s.children_of("s1").unwrap().len(), 1);
+    // A fork of a child keeps the child's parent.
+    assert_eq!(s.children_of("s1").unwrap().len(), 2);
     assert!(!s.list_sessions().unwrap().is_empty());
     s.list_sessions_archived(Archived::No).unwrap();
     s.recent_models(5).unwrap();

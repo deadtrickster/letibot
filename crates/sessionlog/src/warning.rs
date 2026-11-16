@@ -223,6 +223,17 @@ pub const TABLE: &[(&str, Class, Action)] = &[
         Class::Failure,
         Action::Do("check the session's logs directory"),
     ),
+    // The session row's limit state was not written or not read back, so a restart loses a park.
+    (
+        "limit_state_unsaved",
+        Class::Failure,
+        Action::Do("check the session store"),
+    ),
+    (
+        "limit_state_unread",
+        Class::Failure,
+        Action::Do("check the session store"),
+    ),
     (
         "fork_unstored",
         Class::Failure,
@@ -328,6 +339,8 @@ pub const TABLE: &[(&str, Class, Action)] = &[
     ("limit_hook", Class::Routine, Action::Nothing),
     ("limit_hook_done", Class::Routine, Action::Nothing),
     ("limit_new_session", Class::Routine, Action::Nothing),
+    // A park kept across a daemon restart: the parked turn is owed again at the same reset.
+    ("limit_park_restored", Class::Routine, Action::Nothing),
     // Three of the provider's four troubles, as a type (`SessionEvent::ProviderTrouble`): the wait
     // IS the handling and nothing is at risk. While one is being handled it is one LIVE line and no
     // row at all, so these rows are only what a head reads when one arrives outside a ladder. The
@@ -913,6 +926,12 @@ pub const TABLE: &[(&str, Class, Action)] = &[
         Class::Failure,
         Action::Do("set it again in the next session"),
     ),
+    // A fork's point was not recorded, so reopening the fork re-derives it from its parent.
+    (
+        "fork_point_unpersisted",
+        Class::Failure,
+        Action::Do("`/mode` again in the fork"),
+    ),
     // A seat is attached to this session and nothing said on the fabric can wake it.
     (
         "flowy_not_seated",
@@ -1024,6 +1043,8 @@ pub const TABLE: &[(&str, Class, Action)] = &[
         Action::Do("ask again: the decision is unmade"),
     ),
     ("title_not_stored", Class::Failure, Action::Nothing),
+    // The shadow's offer or verdict rows reached the ledger and not the store.
+    ("offer_rows_not_stored", Class::Failure, Action::Nothing),
     (
         "resume_failed",
         Class::Failure,
@@ -1720,15 +1741,15 @@ mod the_register_census {
     /// without a thought fails here rather than silently changing what a reader is taught by
     /// the colour of the screen.
     #[test]
-    fn the_table_is_98_routine_16_refused_and_111_failures() {
+    fn the_table_is_99_routine_16_refused_and_115_failures() {
         let count = |c: Class| TABLE.iter().filter(|(_, k, _)| *k == c).count();
         // The census, kept where it cannot drift. Each assert below is a register's count;
         // a code moved or added without a thought fails here rather than silently changing what
         // a reader is taught by the colour of the screen.
-        assert_eq!(TABLE.len(), 225, "the table's size");
-        assert_eq!(count(Class::Routine), 98, "the seven limits are routine");
+        assert_eq!(TABLE.len(), 230, "the table's size");
+        assert_eq!(count(Class::Routine), 99, "the seven limits are routine");
         assert_eq!(count(Class::Refused), 16, "the sixteen in READER_INPUT");
-        assert_eq!(count(Class::Failure), 111);
+        assert_eq!(count(Class::Failure), 115);
         // A code with an id is read by its family.
         assert_eq!(class("denied:req-7"), Class::Failure);
         assert_eq!(class("memory_high"), Class::Failure);
