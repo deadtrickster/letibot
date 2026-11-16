@@ -277,7 +277,8 @@ fn on_door(rows: &[letibot_sessionlog::protocol::SettingRow], door: &str) -> boo
 
 /// The row for one reading taken at `at_ms`: the window past most thresholds, else the busiest, its
 /// reset in this box's zone, and its age once older than the poll period. `choices[1]` is how many
-/// of its thresholds it has reached, which the head colours by.
+/// of its thresholds it has reached, which the head colours by; `choices[2]` and `[3]` are the read
+/// time and the period, so a head draws the age as it grows. Each daemon polls on its own.
 pub(crate) fn usage_setting(
     door: &str,
     windows: &[letibot_provider::usage_poll::Window],
@@ -292,9 +293,18 @@ pub(crate) fn usage_setting(
         key: letibot_sessionlog::protocol::MODEL_USAGE_KEY.into(),
         value: usage_poll::label(w, now_ms, offset)
             + &usage_poll::age(at_ms, now_ms, usage_poll::EVERY),
-        source: format!("{door} usage endpoint, polled every few minutes"),
+        source: format!(
+            "{door} usage endpoint, read by this daemon (pid {}) every {}s",
+            std::process::id(),
+            usage_poll::EVERY.as_secs()
+        ),
         editable: String::new(),
-        choices: vec![door.to_string(), level.to_string()],
+        choices: vec![
+            door.to_string(),
+            level.to_string(),
+            at_ms.to_string(),
+            usage_poll::EVERY.as_millis().to_string(),
+        ],
         tools: Vec::new(),
     })
 }
@@ -362,7 +372,13 @@ mod tests {
         let r = usage_setting("kimi-code", &w, &th, now, now).unwrap();
         assert_eq!(r.key, letibot_sessionlog::protocol::MODEL_USAGE_KEY);
         assert!(r.value.starts_with("5h 44% · resets "), "{}", r.value);
-        assert_eq!(r.choices, ["kimi-code", "0"]);
+        let at = now.to_string();
+        assert_eq!(r.choices, ["kimi-code", "0", at.as_str(), "120000"]);
+        assert!(
+            r.source.contains(&format!("pid {}", std::process::id())),
+            "the reading names the daemon that took it: {}",
+            r.source
+        );
         assert!(usage_setting("kimi-code", &[], &th, 0, 0).is_none());
     }
 

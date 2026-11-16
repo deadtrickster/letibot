@@ -73,7 +73,7 @@ impl App {
         let Some((_, used)) = self.plan_usage() else {
             return rano::render::text::truncate_owned(rest, w);
         };
-        let mut line = Line::new(vec![Span::role(used.to_string(), self.plan_usage_role())]);
+        let mut line = Line::new(vec![Span::role(used, self.plan_usage_role())]);
         let room = w.saturating_sub(line.width() + 3);
         if rest.width() > 0 && room > 0 {
             line.spans.push(Span::role(" · ", Role::Faint));

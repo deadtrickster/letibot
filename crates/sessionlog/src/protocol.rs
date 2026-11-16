@@ -71,7 +71,9 @@ pub const MODEL_FACTS_KEY: &str = "models.facts";
 pub const MODEL_DOORS_KEY: &str = "models.doors";
 
 /// The session's plan usage from its preset's usage endpoint, `5h 44% · resets 07:07` in the
-/// daemon's local time; `choices[0]` is the door it was read for. Absent until a first reading.
+/// daemon's local time; `choices[0]` is the door it was read for, `[1]` the thresholds reached,
+/// `[2]` the read time in Unix millis and `[3]` the poll period in millis. The value carries the
+/// age as of the publish. Absent until a first reading.
 pub const MODEL_USAGE_KEY: &str = "models.usage";
 
 /// The switch names the store's sessions were last moved to, newest activity first, comma-joined
