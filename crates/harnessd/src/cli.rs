@@ -362,7 +362,7 @@ fn session_fallback(cfg: &mut Config) {
         cfg.fallback_after_timeouts = n;
     }
     // And what a usage limit does. The file's own word, else switch when a list exists and wait
-    // without one - the operator's ruling is that a limit with a known reset never fails a session.
+    // without one: a limit with a known reset never fails a session.
     cfg.on_limit = cfg.leticode.limit_policy();
     cfg.wait_if_within = cfg.leticode.wait_if_within();
     cfg.limit_probe = cfg.leticode.limit_probe();
@@ -569,13 +569,13 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     let mut it = args.iter().cloned();
     while let Some(arg) = it.next() {
         let mut next = || it.next().ok_or_else(|| format!("{arg} needs a value"));
-        // **THE TABLE IS THE PARSER'S LIST, so the help cannot disagree with it.** A removed
+        // THE TABLE IS THE PARSER'S LIST, so the help cannot disagree with it. A removed
         // flag is refused by name with its replacement, and a config-backed one still works for
         // this release while saying the key it moved to.
         check_known(&arg)?;
         match arg.as_str() {
             "--list-sessions" => query = Some(Query::List),
-            // What Claude Code has on this box (Package H) - the ids `--session cc-<id>` takes
+            // What Claude Code has on this box - the ids `--session cc-<id>` takes
             // with the model, the directory and the first thing that was said.
             "--list-claude" => query = Some(Query::ListClaude),
             "--providers" => query = Some(Query::Providers),
@@ -709,24 +709,19 @@ pub fn run(args: &[String]) -> Result<i32, String> {
             }
             "--vocab" => cfg.vocab_gguf = Some(PathBuf::from(next()?)),
             "--effort" => cfg.effort = Some(effort_flag(&next()?)?),
-            // The four flags that make anything reachable, and all four are
-            // opt-in. Nothing here changes what an invocation without them gets.
             // A role profile by name (`explore`, `coder`), a seat's name, or a seat's alias (`m1`).
-            // Resolved AFTER the loop, because a profile is a file in this session's workspace and
-            // `--workspace` may come after it on the line - and because a profile may name the seat
-            // it is seated on, which is the one table both this flag and `task {role}` read.
+            // Resolved after the loop: a profile is a file in the workspace, and `--workspace` may
+            // come later on the line.
             "--role" => role_name = Some(next()?),
-            // The approval policy, separate from the role. `Config::mode` has existed since the two
-            // were split, but nothing set it, so every session ran at `UNSEEN_PROJECT`.
+            // The approval policy, separate from the role.
             "--mode" => cfg.mode = letibot_tools::mode::Mode::parse(&next()?)?,
             // Bind one path read-only into the confined view. Repeatable. The boundary is hermetic
             // `$HOME` inside is a fresh tmpfs, so `~/.cargo` and `~/.rustup` are absent and `cargo`
             // cannot run.
             "--grant-ro" => cfg.grants_ro.push(PathBuf::from(next()?)),
             "--bash" => cfg.allow_bash = true,
-            // How deep a subagent tree may go. Zero refuses every `task` call by name; the default
-            // is the operator's ruling (3). A flag rather than a hidden constant because it bounds a
-            // whole tree and is the one number an operator reaches for when a run should not fan out.
+            // How deep a subagent tree may go. Zero refuses every `task` call by name; default 3. A
+            // flag because it bounds a whole tree, the number to reach for when a run should not fan out.
             "--max-subagent-depth" => {
                 cfg.max_subagent_depth = next()?
                     .parse()
@@ -998,8 +993,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 let (h, p) = v.rsplit_once(':').ok_or("--endpoint wants HOST:PORT")?;
                 cfg.endpoint = Endpoint::new(h, p.parse().map_err(|e| format!("port: {e}"))?);
             }
-            // `--system` is the prompt; `--system-file` is where to read one from. The string
-            // form exists because the operator expected it: *"wtf is --system FILE? I also want a string"*.
+            // `--system` is the prompt; `--system-file` is where to read one from.
             "--system" => {
                 let v = next()?;
                 if std::path::Path::new(&v).is_file() {
@@ -1102,10 +1096,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         return Err(faults.join("\n"));
     }
 
-    // A fresh box gets the preapproved list to edit on the first daemon that serves. It is here
-    // and not in the config's own read because a store query is a store query: `--delete` on a
-    // box that never ran a daemon used to leave a file in `~/.config/letibot`, and every test
-    // that builds a `Config` wrote the operator's own. The ruleset is already in force by now.
+    // A fresh box gets the preapproved list to edit on the first daemon that serves. Here and not
+    // in the config's read, so a store query and a test that builds a `Config` write nothing to
+    // `~/.config/letibot`. The ruleset is already in force by now.
     if let Some(path) = letibot_tools::permission::file_path() {
         match letibot_tools::permission::install_seed(&path) {
             Ok(true) => eprintln!(
@@ -1276,7 +1269,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     // thread. Their own threads - a supervisor that claims each repository's lease and a
     // worker per lease held - never a session's worker, and the process's one connection to
     let reviews = std::sync::Arc::new(letibot_tools::builtins::verdict::ReviewDesk::new());
-    // And the daemon's Claude Code reviewers (`[queue.claude]`, R116): the table of processes the
+    // And the daemon's Claude Code reviewers (`[queue.claude]`): the table of processes the
     // queue's thread starts and the review pool polls. One `Arc` and both hold it, for the desk's
     // reason - a run one pass started is collected by the next.
     let claude = std::sync::Arc::new(crate::mergequeue::review::claude::Runs::new());
@@ -1408,10 +1401,9 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     cfg.read_embeddings();
     cfg.read_wordfreq();
 
-    // The GitHub reviewer seat (R118), installed on the registry so `letibot attach github <scope>`
-    // reaches it, `/pane github/github` is drawn from it, and the idle pass polls it. `post` off is
-    // the shipped state, and a file that asks to post without a token is said here and then held at
-    // *off*: a daemon that refused to start over a reviewer would take the session down with it.
+    // The GitHub reviewer seat, on the registry for `letibot attach github`, `/pane github/github`
+    // and the idle pass. `post` without a token is said and held off: a daemon that refused to
+    // start over a reviewer would take the session down with it.
     {
         let home = std::env::var("HOME").unwrap_or_default();
         let config = match letibot_github::seat::Config::resolved(
@@ -1543,7 +1535,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
 
     // The guard's model, and the adjudicator's - two words for the ONE oracle this build
     // has, which `load` has already refused to see disagree. The precedence goes through the
-    // one function that states it rather than being spelled out again here
+    // one function that states it.
     if let Some((m, _)) = crate::leticode_config::precedence(
         None,
         cfg.leticode
@@ -1600,8 +1592,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         if cfg.effort.is_none() {
             cfg.effort = profile.effort.clone();
         }
-        // Said, not swallowed. The defect above was a number nobody read; a
-        // misspelled key is the same defect one line lower, so it gets a line.
+        // Said, not swallowed: a misspelled key gets a line.
         for u in &profile.unknown {
             eprintln!(
                 "  providers.toml: [model] carries `{u}`, which nothing here reads. \
@@ -1801,9 +1792,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
         .unwrap_or_default();
 
     eprintln!("harnessd: session {session_id}");
-    // The model, AND where it came from. The operator's own question of the evening -
-    // *"why is my session on deepseek"* - was answered by a file they had to go and read, and
-    // a banner that says `model deepseek` without saying *which level* is the same defect one
+    // The model, and which level chose it, so nobody has to read a file to find out.
     for line in banner_model.lines() {
         eprintln!("{line}");
     }
@@ -2122,9 +2111,6 @@ pub fn run(args: &[String]) -> Result<i32, String> {
     Ok(0)
 }
 
-/// What Claude Code has on this box, one line per transcript - the id `--session
-/// cc-<id>` takes, when it was last written, how big it is, the model that answered, and
-/// the first thing that was said.
 /// `--providers`: every door with its protocol, URL, key variable and where it was defined. A bad
 /// `[provider.NAME]` entry is printed with its reason and makes the exit status 1.
 fn list_providers(file: Option<&std::path::Path>) -> Result<i32, String> {
@@ -2146,6 +2132,9 @@ fn list_providers(file: Option<&std::path::Path>) -> Result<i32, String> {
     Ok(if faults.is_empty() { 0 } else { 1 })
 }
 
+/// What Claude Code has on this box, one line per transcript - the id `--session
+/// cc-<id>` takes, when it was last written, how big it is, the model that answered, and
+/// the first thing that was said.
 fn list_claude(tsv: bool) -> Result<i32, String> {
     let Some(dir) = letibot_claude::default_projects_dir() else {
         return Err("no $HOME, so no Claude Code transcript directory to list".into());
@@ -2715,8 +2704,7 @@ fn run_query(
         }
         Query::EtalonOracle(file) => {
             drop(store);
-            // The best arm `--compare` found: the fullest brief, the verdict
-            // question. Measured at 52/11 on the store's rows.
+            // The best arm `--compare` found: the fullest brief, the verdict question.
             let arm = crate::calibrate::ARMS
                 .iter()
                 .find(|a| {
@@ -2910,10 +2898,8 @@ fn run_query(
         }
         Query::Latest => {
             let latest = newest_conversation(scoped(&store, scope)?, scope);
-            // What the pick walked past is said, not silently dropped. The launcher deliberately
-            // does not capture this stream: it is the announcement of which conversation the next
-            // thing typed lands in, and a pick that skipped ten rows to reach it should say so.
-            // Routine: the operator acts on none of it, so it waits for `letibot -v`.
+            // What the pick walked past is said, not silently dropped: it says which conversation
+            // the next thing typed lands in. Routine, so it waits for `letibot -v`.
             let verbose = std::env::var_os("LETIBOT_VERBOSE").is_some_and(|v| !v.is_empty());
             if verbose && latest.hidden > 0 {
                 eprintln!(
@@ -2952,10 +2938,8 @@ fn run_query(
             }
         }
         Query::List => {
-            // The listing is GROUPED, and it lists everything - the operator: *"in
-            // session view the automatic sessions must be grouped somehow, so my vs auto.
-            // What it does NOT list is a session put out of sight: `--archived` is how a person
-            // asks for those back, and `--archived-only` for them alone.
+            // The listing is grouped, the operator's sessions apart from automatic ones. A session
+            // put out of sight is not listed: `--archived` adds those, `--archived-only` lists them alone.
             let all = scoped_archived(&store, scope, show_archived)?;
             let groups = grouped(&all);
             if tsv {
@@ -3087,11 +3071,9 @@ fn run_query(
     }
 }
 
-/// Every stored session, optionally only those rooted at `scope`. The scope test is a
-/// path prefix, not equality: a session opened in `~/Projects/rano/crates` belongs to
-/// `~/Projects/rano` for the purpose of "what was I doing here". Archived sessions are left out -
-/// a listing is the one place *out of sight* means something, and the filter is
-/// [`scoped_archived`]'s.
+/// Every stored session, optionally only those rooted at `scope` - a path prefix, so a session in
+/// `~/Projects/rano/crates` belongs to `~/Projects/rano`. Archived sessions are left out
+/// ([`scoped_archived`]).
 fn scoped(
     store: &letibot_tokencore::store::Store,
     scope: Option<&std::path::Path>,
@@ -3214,11 +3196,9 @@ enum Found {
     Elsewhere(Vec<letibot_tokencore::store::StoredSession>),
 }
 
-/// A name under `here` first, as `--session` always meant. Only when nothing there matches, the
-/// operator's own top-level sessions in every folder: queue, package and subagent rows never
-/// match, so a name cannot open work the operator did not start.
-/// A session is "here" when its folder is this one, or one of this folder's own worktrees. Not any
-/// folder below it: from `~` that would be every session there is, and nothing would ever move.
+/// A name under `here` first; only when nothing there matches, the operator's own top-level
+/// sessions in every folder - never queue, package or subagent rows. "Here" is this folder or one
+/// of its worktrees, not any folder below it: from `~` that would be every session there is.
 fn same_folder(ws: &std::path::Path, here: &std::path::Path) -> bool {
     ws == here
         || ws.starts_with(here.join("worktrees"))
@@ -3547,8 +3527,7 @@ fn context_line(c: &crate::config::Config) -> String {
     }
 }
 
-/// The banner's `RESUMED` line, its count in the unit the wall is judged in (
-/// follow-up, defect C).
+/// The banner's `RESUMED` line, its count in the unit the wall is judged in.
 fn resumed_line(r: &crate::harness::ResumeReport, counted: Option<(u64, String)>) -> String {
     let ledger = r.tokens as u64;
     let tokens = match counted {

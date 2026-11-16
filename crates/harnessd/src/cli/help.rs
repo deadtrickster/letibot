@@ -1,13 +1,10 @@
-//! **Every flag this daemon parses, in one table, and the help is generated from it.**
+//! Every flag this daemon parses, in one table, and the help is generated from it.
 //!
-//! The parser's `match` and this list are two spellings of one fact, so this table is the one
-//! `parse` consults before dispatching: a word that is not here is an unknown argument. That
-//! makes "the help lists every flag it parses" true by construction instead of by a hand-kept
-//! second copy, which is the disagreement the survey found.
+//! `parse` consults this table before dispatching, so a word that is not here is an unknown
+//! argument and the help lists every flag it parses by construction.
 //!
-//! A [`Flag`] with a `key` is a setting that belongs in a file: using the flag still works for
-//! this release and says the key on stderr, because the flag is going and the file is where
-//! that setting lives from the next one.
+//! A [`Flag`] with a `key` is a setting that belongs in a file: the flag still works for this
+//! release and says the key on stderr.
 
 /// One flag: its spellings, the placeholder for the word it consumes, and its help line.
 pub(super) struct Flag {
@@ -574,7 +571,7 @@ pub(super) const FLAGS: &[Flag] = &[
     ),
 ];
 
-/// **What this release took away, and what replaced it.** A removed flag is refused BY NAME: a
+/// What this release took away, and what replaced it. A removed flag is refused BY NAME: a
 /// flag read as a prompt is a billed turn answering a sentence nobody asked for.
 pub(super) const REMOVED: &[(&str, &str)] = &[
     (
@@ -620,7 +617,7 @@ pub(super) fn config_notice(name: &str) -> Option<String> {
     Some(format!("{name} is a config setting now: {key}"))
 }
 
-/// **The help, generated from the table** — so it cannot list a flag the parser refuses, or
+/// The help, generated from the table — so it cannot list a flag the parser refuses, or
 /// omit one it reads.
 pub(super) fn usage() -> String {
     let mut out = String::from(

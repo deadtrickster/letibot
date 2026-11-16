@@ -202,8 +202,7 @@ pub struct FlowyConfig {
     pub new_reader: bool,
 }
 
-/// A cloud provider for the turns - mode 3. `None` is the local server
-/// which is the default and what every invocation got before this existed.
+/// A cloud provider for the turns - mode 3. `None` is the local server, the default.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProviderConfig {
     /// `deepseek` | `glm` | `grok`.
@@ -395,8 +394,7 @@ pub struct Config {
     /// refusal is answered through [`Config::at_the_wall`], deliberately without it.
     pub auto_compact: bool,
     /// What this session does at its wall - the wall controller's state and the last count a
-    /// provider measured (`crate::wall`). Replaced `auto_compact_stood_down`, the latch that
-    /// judged a fold on an estimate and never released.
+    /// provider measured (`crate::wall`).
     pub wall: crate::wall::WallControl,
     /// The operator's pause of this session's idle plan-check (`/nag pause`), or `None`. On
     /// the config because the store row is written from it and read back at open. Never
@@ -510,10 +508,9 @@ pub struct Config {
     /// inherited by every subagent it spawns and only ever added to. `none` for
     /// a session the operator opened. See `letibot_tools::schema::Downgrade`.
     pub downgrade: letibot_tools::schema::Downgrade,
-    /// What this session's own commands may see, once it is resolved at open: the perimeter the
-    /// config gave it, or the one its parent gave it (narrowed, plus what the operator granted for
-    /// the spawn). `None` before open, and then the level's default table is the answer. Shared, so
-    /// a spawn clones a handle and not a list.
+    /// What this session's own commands may see, resolved at open: the config's perimeter, or its
+    /// parent's (narrowed, plus what the operator granted for the spawn). `None` before open, when
+    /// the level's default table applies. Shared, so a spawn clones a handle and not a list.
     pub perimeter: Option<std::sync::Arc<letibot_tools::exec::perimeter::Perimeter>>,
     /// The paths the operator granted into this session's view mid-session, made at open and
     /// SHARED with every child: a grant on a directory covers what is under it, and one grant
@@ -545,7 +542,7 @@ pub struct Config {
     /// is seated where a person put it, which is not always a repository.
     pub vm_source: Option<PathBuf>,
     /// The VM this session runs in when it is not its own - the project of an ancestor's
-    /// firecode VM, because *"children live in the same vm"*. Set by the spawn; `Harness::open`
+    /// firecode VM, because children live in the same VM. Set by the spawn; `Harness::open`
     /// attaches rather than boots (`FirecodeBackend::attach`).
     pub vm_attach: Option<PathBuf>,
     /// The acceptance check this session's VM runs when it is brought down -
@@ -575,7 +572,7 @@ pub struct Config {
     /// per repository, and then to the placement's own number.
     pub reviewers_at_once: Option<usize>,
     /// Which machines a `host` reviewer may use, from `[queue] reviewer_hosts` or
-    /// `--reviewer-hosts`. `Some(["local"])` is this machine alone (D18, the default). `None` is
+    /// `--reviewer-hosts`. `Some(["local"])` is this machine alone, the default. `None` is
     /// every declared host. A list is exactly those hosts.
     pub reviewer_hosts: Option<Vec<String>>,
     /// The cloud provider the turns go to, when not the local server.
@@ -599,7 +596,7 @@ pub struct Config {
     /// switched away from: `[provider] wait_if_within`. Zero never waits while a fallback is free.
     pub wait_if_within: std::time::Duration,
     /// How long the last resort waits before trying a rate limit that named NO instant again, and
-    /// how many such waits it takes before the turn fails as it used to. Five minutes, three times:
+    /// how many such waits it takes before the turn fails. Five minutes, three times:
     /// a limit somebody else's clock lifts is worth three more calls, and not an afternoon.
     pub limit_retry_wait: std::time::Duration,
     pub limit_retry_rounds: u32,
@@ -667,8 +664,7 @@ pub struct Config {
     /// caution: the invariant is that secret bytes never enter the transcript, the choke point
     /// that would enforce it does not exist yet, and `bash`'s result is an arbitrary byte stream.
     pub allow_bash: bool,
-    /// How deep a subagent tree may go. The operator's ruling: *"subagents are
-    /// absolutely allowed to spawn subagents up to configured nesting level."* Default 3. The seat
+    /// How deep a subagent tree may go; subagents may spawn subagents up to it. Default 3. The seat
     /// names `task`; the limit is enforced at the call and refused by name, not by hiding the tool.
     pub max_subagent_depth: u32,
     /// How long a finished subagent with nothing left to do keeps its thread - ; `None`
@@ -684,8 +680,8 @@ pub struct Config {
     /// reminded instead. Default [`crate::restart::RESTORE_WITHIN`], one hour.
     pub restore_within: std::time::Duration,
     /// How long a daemon with nothing to do stays up - no head, no turn, no job, no live subagent
-    /// no monitor, no queue work - and then it exits (`Sessions::idle_exit_due`). The operator found
-    /// seven of them, days old, each holding a replaced build. Default one hour; `0` keeps it up.
+    /// no monitor, no queue work - and then it exits (`Sessions::idle_exit_due`), so idle daemons do
+    /// not hold replaced builds for days. Default one hour; `0` keeps it up.
     pub idle_exit_after: Option<std::time::Duration>,
     /// Whether this daemon is a one-shot's - started for `letibot "a question"`. It changes one
     /// thing: `bash` refuses `background: true`, because no later head and no daemon would be watching
@@ -1127,10 +1123,9 @@ pub fn default_system(f: &SeatFacts) -> String {
 /// [`Config::seat_overlay`].
 #[derive(Debug, Clone, Default)]
 pub struct SeatOverlay {
-    /// The role profile this session is seated as, when it has one of its own: `--role explore`,
-    /// or a `task {role}` child. Its overlay is appended to the prompt (below), and its `tools`
-    /// narrow the seat's table ([`crate::harness::open::role_for`]). `None` is a session whose
-    /// role is nothing but its seat's own name, which is every session that had none before.
+    /// The role profile this session is seated as, when it has one (`--role explore`, a `task
+    /// {role}` child): its overlay is appended to the prompt and its `tools` narrow the seat's table
+    /// ([`crate::harness::open::role_for`]). `None` is a role that is only the seat's own name.
     pub profile: Option<std::sync::Arc<letibot_tools::Profile>>,
     /// The tools the PARENT of this session had, closed over them and never widened: a profile's
     /// allowlist is applied to this as well, so a role cannot hand a child a tool its parent
@@ -1392,8 +1387,7 @@ pub enum WallBasis<'a> {
 }
 
 /// What still stops at `mode`, said after the mode's own words - the always-ask list and layer A's
-/// `Blocked` tier are not the mode's to move, and this must agree with the summary it follows: on
-/// 2026-10-26 one paragraph said both *"the list included"* and *"reaches you at every one"*.
+/// `Blocked` tier are not the mode's to move, and this must agree with the summary it follows.
 fn mode_beyond_the_mode(mode: &letibot_tools::mode::Mode) -> &'static str {
     use letibot_tools::mode::{Boundary, Disposition};
     match mode.boundary {
@@ -1430,10 +1424,9 @@ fn mode_beyond_the_mode(mode: &letibot_tools::mode::Mode) -> &'static str {
 }
 
 impl Config {
-    /// What THIS session does on a stale prompt: its seat's answer, with `[sessions]
-    /// auto_reseat = false` turning every reseat back into a card. The review queue's session
-    /// sits on the default seat with its own role, and a person's seat in a package, a one-shot
-    /// or under a parent has no person at the card, so those reseat too.
+    /// What this session does on a stale prompt: its seat's answer, with `[sessions] auto_reseat =
+    /// false` turning every reseat into a card. The review queue's session, and a seat in a package,
+    /// a one-shot or under a parent, have no person at the card, so those reseat too.
     pub fn on_stale(&self) -> OnStale {
         let seat = match crate::sessions::gatekeeper::is_the_queue_session(self) {
             true => OnStale::Reseat,
@@ -1536,8 +1529,8 @@ impl Config {
     }
 
     /// A ledger count, in the units the operator's header shows. The ledger holds the reasoning rows
-    /// a messages provider is never sent, so it over-counts: *"1.35 is a lie - that top was shown as
-    /// 900+"* was the other unit. Falls back to the ledger's figure when there is nothing to convert.
+    /// a messages provider is never sent, so it over-counts. Falls back to the ledger's figure when
+    /// there is nothing to convert.
     pub fn shown_tokens(&self, ledger_tokens: u64) -> u64 {
         self.provider_tokens(ledger_tokens).unwrap_or(ledger_tokens)
     }
@@ -1558,7 +1551,7 @@ impl Config {
 
     /// Ledger tokens as the provider would count them, or `None` if nobody has measured the
     /// ratio yet. `None` is load-bearing: a caller must not substitute the ledger's own figure
-    /// which over-counts by a measured 49% - the direction that refuses work which would have fitted.
+    /// which over-counts - the direction that refuses work which would have fitted.
     pub fn provider_tokens(&self, ledger_tokens: u64) -> Option<u64> {
         let (ledger, provider) = self.scale()?;
         if ledger == 0 || provider == 0 {
@@ -1595,7 +1588,8 @@ impl Config {
     }
 
     /// Would a turn starting at `resident` tokens fit, with the headroom reserved? The gate the wall
-    /// continuation reads: *"is there room"*, where [`Config::should_compact`] folds in `auto_compact` - a flag the guard turns off without freeing anything. Measured off the LEDGER.
+    /// continuation reads, where [`Config::should_compact`] folds in `auto_compact` - a flag the
+    /// guard turns off without freeing anything. Measured off the ledger.
     pub fn room_for_next_turn(&self, resident_tokens: u64) -> bool {
         match self.planning_window() {
             Some(w) => resident_tokens + self.headroom() < w,
@@ -1625,22 +1619,18 @@ impl Config {
     }
 }
 
-/// Which search provider `web_search` gets, when the operator has not said. A configured key IS
-/// the opt-in - *"i dont want to do leticode --web-search brave"* - and `--web-search none` turns
-/// it off. No key is still no tool, so an unconfigured box is byte-identical to before this existed.
+/// Which search provider `web_search` gets, when the operator has not said. A configured key is
+/// the opt-in, and `--web-search none` turns it off. No key is no tool.
 fn default_web_search() -> Option<String> {
     letibot_websearch::resolve_key(None)
         .ok()
         .map(|_| "brave".to_string())
 }
 
-/// The permission ruleset, two layers in precedence order (last match wins)
-/// `~/.config/letibot/permission.json` - the seed until the operator's own file is there, and where
-/// an *Always allow* answer appends - then `LETIBOT_PERMISSION`. An unparsable file is reported and
-/// skipped.
-///
-/// Reading only: installing the seed is the daemon's act (`cli::run`, where it has sessions to
-/// serve), because every fixture builds on this and a test must write nothing outside its temp dir.
+/// The permission ruleset, last match wins: `~/.config/letibot/permission.json` (the seed until the
+/// operator's own file exists, and where an Always allow answer appends), then `LETIBOT_PERMISSION`.
+/// An unparsable file is reported and skipped. Reading only: a test must write nothing outside its
+/// temp dir, so installing the seed is the daemon's act (`cli::run`).
 fn parse_permission() -> letibot_tools::permission::Ruleset {
     use letibot_tools::permission;
     let mut rules = Vec::new();
@@ -1671,10 +1661,9 @@ impl Config {
     pub fn store_at(&self) -> Option<StoreAt> {
         let path = self.store.clone()?;
         if path.extension().is_some_and(|e| e == "db") {
-            // A `sessions.db` with a project file beside it is a data directory mid-transition
-            // (§ Carving one project), which is the shape the launcher and the bridge hand a
-            // daemon: opened as ONE file, a carved folder's daemon would write its project rows
-            // into the shared file and no reader would look there.
+            // A `sessions.db` with a project file beside it is a data directory mid-transition.
+            // Opened as one file, a carved folder's daemon would write its project rows into the
+            // shared file and no reader would look there.
             if let Some(dir) = transition_dir(&path) {
                 return Some(StoreAt::Set {
                     dir,
@@ -2207,10 +2196,9 @@ impl Config {
         }
     }
 
-    /// Compose `system` for this session's seat. Once, at session open. The sections from
-    /// `prompts.toml`, then the standing notes, then the role's overlay, the session's own
-    /// paragraph and its fabric block. After it, `system` is message 0 for the session's whole
-    /// life; `/reseat` is the remedy.
+    /// Compose `system` for this session's seat, once, at open: `prompts.toml`'s sections, the
+    /// standing notes, the role's overlay, the session's own paragraph and its fabric block. It is
+    /// message 0 for the session's whole life; `/reseat` is the remedy.
     pub fn compose_for_seat(
         &mut self,
         seat: &SeatFacts,
@@ -2240,10 +2228,9 @@ impl Config {
         self.system = system;
     }
 
-    /// Every setting this session runs under, one row each, for the head's config pane (`/config`)
-    /// `value` rendered and never a secret, `source` where this struct knows it (empty otherwise), and
-    /// `editable` the verb that changes the row now - empty for the rows that take a restart.
-    /// One row per repository of a folder project, `listen.NAME`: see `mergequeue::listen`.
+    /// Every setting this session runs under, one row each, for the head's config pane (`/config`):
+    /// `value` rendered and never a secret, `source` where known, `editable` the verb that changes it
+    /// now (empty for rows that take a restart). Folder projects add `listen.NAME` rows.
     pub fn listen_rows(&self) -> Vec<letibot_sessionlog::protocol::SettingRow> {
         let keys = crate::mergequeue::repositories_of_workspace_cached(&self.workspace);
         if keys.len() < 2 {
@@ -2332,11 +2319,9 @@ impl Config {
                 .map(|m| m.name)
                 .collect::<Vec<_>>(),
         ));
-        // What answers the turns, with every model this box can actually reach. The choices
-        // travel with the row for the `mode` row's reason: a head that kept its own copy of a list
-        // got it wrong, and this list is not even fixed at build time - it comes from the catalogue.
-        // Which presets hold a key here, asked once: the card expands those and shows one row for
-        // the rest, and the `models.keys` row below publishes this same answer rather than a second.
+        // What answers the turns, with every model this box can reach. The choices travel with the
+        // row because they come from the catalogue, not the build. Which presets hold a key is asked
+        // once; the `models.keys` row below publishes this same answer.
         let file = self.providers_file.as_deref();
         let doors = letibot_provider::registry::all(file);
         let keyed: Vec<&str> = doors
@@ -2409,11 +2394,9 @@ impl Config {
                 ),
                 &facts.iter().map(String::as_str).collect::<Vec<_>>(),
             ));
-            // Which doors serve the same models. A card drawing the choices above would list
-            // every model of `deepseek` again under `deepseek-anthropic`, since both carry the
-            // `deepseek` catalogue: the pairing is the daemon's to publish, because a preset's
-            // catalogue id is a fact of the preset table and not of a name.
-            // A door with no catalogue is a group of its own, never merged with another such door.
+            // Which doors serve the same models, so a card does not list `deepseek`'s models again
+            // under `deepseek-anthropic`. The daemon publishes the pairing because a catalogue id is a
+            // fact of the preset table. A door with no catalogue is a group of its own.
             let doors: Vec<String> = doors
                 .iter()
                 .map(|p| match p.catalogue_id {
@@ -2444,10 +2427,9 @@ impl Config {
             ),
             &["on", "off"],
         ));
-        // The idle plan-check, and whether the operator has paused it - `on`, or `paused until
-        // 14:30`. A row because a pause must be findable where every other runtime switch is: a
-        // silent board is otherwise indistinguishable from a broken clock. See `nag_pause`. An
-        // on/off choice, so the config pane can flip it.
+        // The idle plan-check, `on` or `paused until 14:30`. A row, so a pause is findable where
+        // every other runtime switch is and a silent board is not mistaken for a broken clock. An
+        // on/off choice the config pane can flip. See `nag_pause`.
         out.push(choices(
             row(
                 "nags",
@@ -2468,9 +2450,8 @@ impl Config {
         // A folder project's repositories, each a checkbox: muted ones are not told the gate's news.
         // A mute from leticode.toml is locked (no verb), the rest toggle through `/listen`.
         out.extend(self.listen_rows());
-        // And which of those rows this box can actually use - *"model peeker should green models we
-        // have keys for"*. Only the daemon can answer it: a head that guessed would green a row that
-        // refuses at the first turn. `local` is absent on purpose - it needs no credential.
+        // And which of those rows this box can actually use. Only the daemon can answer it: a head
+        // that guessed would green a row that refuses at the first turn. `local` needs no credential.
         {
             out.push(row(
                 letibot_sessionlog::protocol::MODEL_KEYS_KEY,
@@ -2480,8 +2461,7 @@ impl Config {
             ));
         }
         // And the rows that need no credential at all, which is the other half of the same
-        // question and cannot live in the row above - see `MODEL_KEYLESS_KEY`. The operator
-        // *"dense78 needs a key this box does not hold"*, about a box on the LAN that wants none.
+        // question and cannot live in the row above - see `MODEL_KEYLESS_KEY`.
         {
             let mut keyless = vec!["local".to_string()];
             for m in letibot_provider::keys::local_models(None) {
@@ -2971,9 +2951,7 @@ impl Config {
                 ));
             }
         }
-        // Which model answers, and which level said so. *"why is my session on deepseek"*, with
-        // the answer in a file they had to go and find: here it is one line, and the precedence is
-        // the same line rather than a thing to look up.
+        // Which model answers, and which level said so, in one line rather than a file to look up.
         out.push(Disclosure::on(
             "session model",
             self.model_source.render(&self.prompt_model_name()),
@@ -2999,8 +2977,8 @@ impl Config {
             }
         }
         // The stop condition, said out loud. A turn that can only be stopped by a
-        // round count is the state that cut two working sessions, and an operator who
-        // does not know which of the two guards is armed cannot read a stop.
+        // round count cuts working sessions, and an operator who does not know which of the two
+        // guards is armed cannot read a stop.
         let backstop = match self.max_tool_rounds {
             0 => "unlimited".to_string(),
             n => format!("{n} rounds"),
@@ -3044,8 +3022,8 @@ impl Config {
                  Pass --store DIR.",
             ));
         }
-        // , found live 2026-09-10: GLM's end-of-turn token is also the *name* of a thing an agent
-        // may be asked to write, so a turn can stop mid-thought with a normal `stop`. Disclosed as on
+        // GLM's end-of-turn token is also the name of a thing an agent may be asked to write, so a
+        // turn can stop mid-thought with a normal `stop`. Disclosed as on
         // because a list of only the optional checks implies the unconditional ones are absent.
         out.push(Disclosure::on(
             "mid-reasoning check",
@@ -3055,7 +3033,7 @@ impl Config {
         ));
         // Retrieval, the web tools, the forge and MCP: computed from what the session attached and
         // what it seated, never asserted. A constant sentence about `ask_code`
-        // would be true and unchecked - the same defect `GateWiring` exists to make unwriteable.
+        // would be true and unchecked, which `GateWiring` exists to prevent.
         for row in wiring.external.startup_disclosures() {
             out.push(Disclosure {
                 subject: row.subject.into(),
@@ -3208,8 +3186,7 @@ impl Config {
             &wiring.adjudicator,
             wiring.backend_writable,
             // The classes travel, rather than a bool that means "write". The gate is reachable from
-            // any class that is not unattended, so a bool would call a planner (`say`) unattended - and
-            // `true` produced *"Write tools are callable"* about a session with no write tools.
+            // any class that is not unattended, so a bool would call a planner (`say`) unattended.
             &gated_classes(wiring),
             wiring.denials_surfaced,
         );
@@ -3488,9 +3465,8 @@ fn gated_classes(wiring: &GateWiring) -> Vec<&'static str> {
     out
 }
 
-/// What the session actually wired, read from it rather than asserted about it - a type that makes a
-/// defect unwriteable: the banner was a hard-coded sentence, true when written and checked by nothing
-/// so a seat with `write` was told no boundary existed while everything could prompt.
+/// What the session actually wired, read from it rather than asserted about it, so the banner cannot
+/// claim a boundary the session does not have.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GateWiring {
     /// How the adjudicator identifies itself, or a string beginning `none`.
@@ -3919,7 +3895,7 @@ mod compaction_trigger_tests {
             cfg.pre_emptive_compact(ledger, false),
             "a local session's count is its own"
         );
-        // Measured at about four ledger bytes a token: 2.43M bytes is ~600k of a 1M window.
+        // About four ledger bytes a token.
         cfg.ledger_scale = Some((2_400_000, 600_000));
         assert!(
             !cfg.pre_emptive_compact(ledger, true),

@@ -222,10 +222,9 @@ fn the_model_row_offers_every_declared_local_model() {
     );
 }
 
-/// With a key held, a provider's block is every model it can answer with, not the one default a
-/// build-time constant names - which is what the card had, so a DeepSeek account offering twelve
-/// models offered one row. Every other provider is still one row, because that row's job is to
-/// ask for the key. The lines are the window and the meter, which is what a choice is made on.
+/// With a key held, a provider's block is every model it can answer with, not one build-time
+/// default. Every other provider is one row, whose job is to ask for the key. The lines are the
+/// window and the meter, which is what a choice is made on.
 #[test]
 fn a_keyed_provider_lists_every_model_it_answers_with_and_the_others_list_one() {
     let cat = letibot_provider::catalogue::Catalogue::snapshot();
@@ -506,9 +505,8 @@ fn the_planning_window_follows_the_measured_ledger_to_provider_ratio() {
     // provider's number stands.
     assert_eq!(cfg.planning_window(), Some(1_000_000));
 
-    // letibot #t18: the ledger called it 1,072,176; deepseek called it
-    // ~607,000. Planning against 1,000,000 ledger tokens compacted a
-    // conversation with 39% of its window free.
+    // The ledger over-counts the provider; planning against ledger tokens would compact a
+    // conversation with much of its window free.
     cfg.ledger_scale = Some((1_072_176, 607_000));
     let w = cfg.planning_window().expect("a window");
     assert!(
@@ -522,8 +520,8 @@ fn the_planning_window_follows_the_measured_ledger_to_provider_ratio() {
     // And it still compacts when the conversation really is at the wall.
     assert!(cfg.should_compact(w));
 
-    // leticl #t11 thought less, so its ledger runs closer to the provider's
-    // count - the ratio is a measurement, not a constant.
+    // A session that thought less runs closer to the provider's count - the ratio is a
+    // measurement, not a constant.
     cfg.ledger_scale = Some((1_495_702, 1_048_607));
     let w2 = cfg.planning_window().expect("a window");
     assert!((1_400_000..1_500_000).contains(&w2), "got {w2}");
@@ -537,9 +535,7 @@ fn the_planning_window_follows_the_measured_ledger_to_provider_ratio() {
         Some(16_000_000),
         "clamped at sixteen times"
     );
-    // And a real reasoning-heavy session is inside the bound, not cut by it : 3,454,266
-    // ledger tokens counted ~740k by the provider. At the old bound of four this was a 4M window
-    // at the wall with ~860k of the provider's 1M used.
+    // And a reasoning-heavy session's ratio is inside the bound, not cut by it.
     cfg.ledger_scale = Some((3_454_266, 740_000));
     assert!(!cfg.should_compact(3_454_266), "740k of 1M is not the wall");
     let w3 = cfg.planning_window().expect("a window");
@@ -552,8 +548,7 @@ fn the_planning_window_follows_the_measured_ledger_to_provider_ratio() {
 }
 
 /// A session that starts on a metered provider gets a wall. `harnessd` read the window off
-/// `/props` only when there was no provider, and `None` is no window at all. MEASURED: 1,023,545
-/// resident tokens against a model the catalogue puts at 1,000,000, never compacted once.
+/// `/props` only when there is no provider, and `None` is no window at all, which never compacts.
 #[test]
 fn a_metered_provider_takes_its_window_from_the_catalogue() {
     let dir = std::env::temp_dir().join(format!("letibot-cat-{}", std::process::id()));
@@ -1470,8 +1465,8 @@ fn the_stop_is_the_progress_check_and_the_round_count_is_the_backstop() {
 }
 
 /// The mode line's second sentence must agree with the mode's own summary at
-/// `allow-all (this box, consented)`, whose summary admits the always-ask list and which was then
-/// told *"the list reaches you at every one of them"*. The two reasons it can be absent differ.
+/// `allow-all (this box, consented)`, whose summary admits the always-ask list. The two reasons it
+/// can be absent differ.
 #[test]
 fn the_mode_line_says_what_the_mode_itself_says() {
     use letibot_tools::mode::Mode;
@@ -1561,9 +1556,8 @@ fn both_guards_off_is_disclosed_as_its_own_state() {
     assert!(line.contains("--max-tool-rounds"), "{line}");
 }
 
-/// The disclosure says which level won. *"Why is my session on deepseek"* was answered by a file
-/// they had to go and read; the fix is that the model, the level and the file are on the screen. A
-/// disclosure naming only the model would be the same defect one line shorter.
+/// The disclosure says which level won: the model, the level and the file are on the screen, not
+/// only the model.
 #[test]
 fn the_session_model_disclosure_names_the_level_that_won() {
     use crate::config::ModelSource;
@@ -2051,8 +2045,8 @@ fn the_model_adjudicator_parses_now_that_an_oracle_exists() {
 }
 
 /// Every seam this strand wired is disclosed, and each one moves with the wiring rather than being a
-/// sentence - the defect already paid for four times in one night. Nothing here asserts a particular
-/// wording; what it asserts is that the wording is different when the wiring is.
+/// fixed sentence. Nothing here asserts a particular wording; what it asserts is that the wording is
+/// different when the wiring is.
 #[test]
 fn every_new_seam_is_disclosed_and_the_line_moves_with_it() {
     let c = Config::for_this_box("/tmp");
@@ -2167,9 +2161,9 @@ fn every_new_seam_is_disclosed_and_the_line_moves_with_it() {
     );
 }
 
-/// Whether a subagent can be placed in a VM is said at start, not found out at spawn -
-/// FIRECODE-NOTES item 4: *"Resolve the binary and probe capabilities at daemon start, and
-/// publish them in the banner."* Only where a subagent can be started at all.
+/// Whether a subagent can be placed in a VM is said at start, not found out at spawn: the binary
+/// is resolved and probed at daemon start and the banner says so. Only where a subagent can be
+/// started at all.
 #[test]
 fn the_banner_says_whether_a_subagent_can_be_placed_in_a_vm() {
     let c = Config::for_this_box("/tmp");

@@ -196,7 +196,7 @@ fn a_sessions_fallback_list_replaces_the_boxs_and_carries_its_budget() {
     assert_eq!(cfg.fallback_after_timeouts, 2);
 }
 
-/// The Claude Code listing (Package H): the id a person types, then the facts a picker
+/// The Claude Code listing: the id a person types, then the facts a picker
 /// row needs - and the two forms, because a script should not parse a table.
 #[test]
 fn the_claude_listing_names_the_id_the_model_and_the_first_ask() {
@@ -279,9 +279,8 @@ fn the_header_names_the_model_that_answers_and_labels_the_binding() {
     );
 }
 
-/// follow-up, defect C: after a restart the banner printed the reserve in the
-/// planning window's ledger units (2905) beside a 40000 provider window whose
-/// reserve is 2500, and the RESUMED count as the ledger's length with no unit.
+/// After a restart the banner prints the reserve and the RESUMED count in the provider window's
+/// units, not the planning window's ledger units.
 #[test]
 fn the_banner_prints_counts_in_the_windows_units() {
     let mut c = crate::config::Config::for_this_box("/tmp");
@@ -473,7 +472,7 @@ fn a_fixture_and_a_daemon_both_place_reviewers_on_the_host_unless_asked() {
     assert_eq!(asked.reviewers, crate::config::Reviewers::Vm);
 }
 
-/// Reviewers stay on this machine unless `reviewer_hosts` is set (D18): a fixture and a
+/// Reviewers stay on this machine unless `reviewer_hosts` is set: a fixture and a
 /// daemon both start with the pool `["local"]`.
 #[test]
 fn a_fixture_and_a_daemon_keep_reviewers_on_this_machine_unless_hosts_are_named() {
@@ -762,8 +761,7 @@ fn a_put_away_session_is_listed_only_when_it_is_asked_for() {
 }
 
 /// The listing groups the store the way `group_of` says - mine first, then one entry
-/// per automatic kind, each carrying its own members. The operator's ask is one sentence
-/// and it was about both places a session is listed
+/// per automatic kind, each carrying its own members.
 #[test]
 fn the_listing_puts_mine_first_and_the_harnesss_own_work_in_its_groups() {
     let (store, _d) = store_with(&[("s-mine", "/ws"), ("s-sub", "/ws")]);
@@ -825,9 +823,8 @@ fn the_listing_puts_mine_first_and_the_harnesss_own_work_in_its_groups() {
     assert_eq!(grouped[0].0, letibot_sessionlog::SessionGroup::Mine);
 }
 
-/// The operator's report, as a test. Ten reviewers spawned into one workspace by the
-/// merge queue made the newest row in it a reviewer, and `--continue` - which asked only
-/// for the newest row - reopened a review instead of the conversation that enqueued the
+/// Reviewers the merge queue spawned into a workspace make the newest row a reviewer, and
+/// `--continue` must still reopen the conversation, not a review.
 #[test]
 fn a_reviewer_is_never_the_conversation_continue_reopens() {
     let (store, _d) = store_with(&[]);
@@ -1085,7 +1082,7 @@ fn continue_skips_the_queues_own_session_by_id() {
     assert_eq!(latest.hidden, 1, "the queue's session is counted as hidden");
 }
 
-/// **The help is one line per flag, and a line fits a terminal.** A continuation that loses its
+/// The help is one line per flag, and a line fits a terminal. A continuation that loses its
 /// `\n` welds two flags onto one line: `--room`'s sentence ran into `--reviewers`' for as long as it
 /// took somebody to read it.
 #[test]
@@ -1160,11 +1157,9 @@ fn the_queue_session_is_never_the_conversation_to_continue() {
 }
 
 // --- the flag table, and the help generated from it ------------------------------------------
-// The survey's item: `--help` listed fewer flags than the parser read, because one was a
-// hand-kept list and the other was a `match`. Both are now the table, and these are the tests
-// that say so in each direction.
+// `--help` and the parser read one table; these tests hold that in each direction.
 
-/// **Every row the table holds is one this parser reads**, and the help prints it.
+/// Every row the table holds is one this parser reads, and the help prints it.
 #[test]
 fn the_help_lists_every_flag_the_table_holds() {
     let help = help::usage();
@@ -1189,7 +1184,7 @@ fn the_help_lists_every_flag_the_table_holds() {
     );
 }
 
-/// **Every flag the help names reaches an arm of the parser.** The table decides what is
+/// Every flag the help names reaches an arm of the parser. The table decides what is
 /// accepted, so a row with no arm would be accepted here and refused there; asking for `--help`
 /// after each one is what proves the arm exists without opening a store, a socket or a model.
 #[test]
@@ -1213,7 +1208,7 @@ fn every_flag_the_help_names_reaches_an_arm() {
     }
 }
 
-/// **A removed flag is refused BY NAME, with what replaced it** — not read as a prompt, and not
+/// A removed flag is refused BY NAME, with what replaced it — not read as a prompt, and not
 /// left to look like a typo.
 #[test]
 fn a_removed_flag_is_refused_by_name_with_its_replacement() {
