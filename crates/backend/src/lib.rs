@@ -140,10 +140,8 @@ pub struct Completion {
     /// The provider's `usage` object verbatim, for a metrics row somebody reads
     /// later without this crate's model of it.
     pub raw_usage: Option<String>,
-    /// The same thinking as `reasoning`, as the blocks that produced it, when the provider signs
-    /// them: replaying such a block needs the signature, which is opaque bytes on the block rather
-    /// than anything derivable from its text. Empty for a provider whose thinking is plain text,
-    /// and `reasoning` stays the plain concatenation either way.
+    /// The same thinking as `reasoning`, as the signed blocks that produced it, since replay needs
+    /// the opaque signature. Empty for plain-text thinking; `reasoning` stays the concatenation.
     pub thoughts: Vec<Thought>,
 }
 

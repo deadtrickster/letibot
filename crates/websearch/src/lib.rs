@@ -1,36 +1,6 @@
-//! Brave Search behind `web_search`.
-//!
-//! `letibot-tools` ships `web_search` as a tool that refuses: the schema is fixed
-//! (it is prompt bytes in the stable prefix, so the argument names had to be right
-//! before anything cached against them) and [`SearchProvider`] is the seam an
-//! implementation attaches through. This crate is one implementation.
-//!
-//! It lives in its own crate rather than in `letibot-tools` because that crate is
-//! deliberately *a function of a call and a filesystem* - no sockets, no TLS. The
-//! trait is the seam that keeps it that way; putting rustls behind the seam rather
-//! than in front of it is the whole point of the seam existing.
-//!
-//! # What the operator has to do
-//!
-//! ```text
-//! harnessd --web-search brave            # and a key, resolved in this order:
-//!   --brave-key KEY                      #   1. the flag
-//!   $BRAVE_API_KEY                       #   2. the environment
-//!   [brave] key = "…" in providers.toml  #   3. ~/.config/letibot/providers.toml
-//! ```
-//!
-//! A missing key refuses at attach, naming all three, rather than three
-//! seconds into the first search as a 401 that names none of them - the same rule
-//! `letibot-provider` follows for a model key, and for the same reason.
-//!
-//! # What this does not do
-//!
-//! It does not fetch pages: `web_fetch` is a different seam with a different
-//! backend, and a search provider that quietly also fetched would be a second
-//! egress path nobody declared. It does not cache: a cached search result that
-//! looks live is a stale result wearing a timestamp. And it never invents a hit -
-//! Brave's `web.results` is the only thing read, so a query that matched nothing
-//! comes back as nothing rather than as the "did you mean" Brave also returns.
+//! Brave Search behind `web_search`, in its own crate so `letibot-tools` stays free of sockets and
+//! TLS. The key is `--brave-key`, `$BRAVE_API_KEY` or `[brave] key` in providers.toml; a missing one
+//! refuses at attach naming all three. No fetching, no caching, and only `web.results` is read.
 
 use std::time::Duration;
 

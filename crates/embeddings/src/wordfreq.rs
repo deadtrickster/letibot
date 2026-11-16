@@ -1,5 +1,5 @@
-//! Common English, fetched: the 20,000 most frequent words of wordfreq's `large_en`, which
-//! skill offers use to tell a description's distinctive words from plain English.
+//! The 20,000 most frequent words of wordfreq's `large_en`, which skill offers use to tell a
+//! description's distinctive words from plain English.
 //!
 //! ```toml
 //! [wordfreq]
@@ -8,9 +8,8 @@
 //! download = false    # ... use the list on disk, never fetch it
 //! ```
 //!
-//! The data is CC BY-SA 4.0, so nothing is compiled in. One file is fetched from wordfreq's
-//! repository at a pinned commit and checked against a pinned sha-256, and the list is derived
-//! from it on the box; the derived list is pinned too.
+//! The data is CC BY-SA 4.0, so nothing is compiled in: the source is fetched at a pinned commit
+//! and sha-256, and the derived list is pinned too.
 
 use std::collections::HashSet;
 use std::io::Read;

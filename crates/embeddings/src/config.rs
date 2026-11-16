@@ -13,16 +13,8 @@
 //! builtin_sha256 = { "config.json" = "<64 hex>", ... }   # ... a hash per file, all three
 //! ```
 //!
-//! Three values for one key, because they are three answers to one question: who turns
-//! text into a vector. A key that does nothing is refused by name rather than ignored,
-//! because that is the config defect this tree has already paid for once.
-//!
-//! `download` is the fourth key and the only one that is not about the answer: it says whether
-//! a box with `mode = "internal"` and no `model` may fetch the built-in one, and `false` is a
-//! box that must not reach the network.
-//!
-//! The three `builtin_` keys are the pin, and the one rule is that a commit is never written
-//! without its hashes: a new revision with the old ones can never verify.
+//! A key that does nothing is refused by name, never ignored. A `builtin_revision` is never
+//! written without its hashes, since a new revision with the old ones cannot verify.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;

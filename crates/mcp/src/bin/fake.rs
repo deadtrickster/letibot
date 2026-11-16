@@ -1,7 +1,6 @@
-//! A stdio MCP server for tests. `--die-at-start` exits before answering anything, and
-//! `--once FILE` does so when FILE exists, making it otherwise. It serves `echo`, `big` (`bytes`
-//! of text), `fail` (`isError`), `crash` (exits mid-call), `pwd`, and `grow`, which adds `extra` and
-//! sends `notifications/tools/list_changed`.
+//! A stdio MCP server for tests. `--die-at-start` exits before answering, `--once FILE` only when
+//! FILE exists. Tools: `echo`, `big`, `fail` (`isError`), `crash` (exits mid-call), `pwd`, and
+//! `grow`, which adds `extra` and sends `notifications/tools/list_changed`.
 
 use std::io::{BufRead, Write};
 

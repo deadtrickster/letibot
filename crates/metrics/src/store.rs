@@ -254,9 +254,8 @@ pub const MAX_MB: u64 = 2048;
 /// deletes down to this, so the next pass is not a delete of one row.
 pub const SIZE_LOW_PCT: u64 = 80;
 
-/// How often the writer looks at the file's size. Not the prune's day: the measured storm grew
-/// the file ~1 GB an hour, so a day's check would be ~24 GB behind it. Reading the size is two
-/// pragmas off the header, and a pass under the cap does that and returns.
+/// How often the writer looks at the file's size. Not the prune's day: a write storm can grow the
+/// file by gigabytes an hour. Reading the size is two header pragmas, so a pass under the cap is cheap.
 pub const SIZE_EVERY: Duration = Duration::from_secs(10);
 
 /// The most rows one size pass deletes. A pass that hits it stops and the next one continues, so
@@ -671,8 +670,8 @@ impl Writer {
         let gone = self.roll_up_and_delete(0, i64::MAX, cutoff as i64)?;
         self.last_prune = Some(now_ms);
         if gone > 0 {
-            // Bounded: `incremental_vacuum` with no argument gives back EVERY free page, and on
-            // the 89 GB file this cap exists for that is hours on the writer thread.
+            // Bounded: `incremental_vacuum` with no argument gives back every free page, which on a
+            // large file is hours on the writer thread.
             let _ = self.shrink(SIZE_PAGES_PER_PASS);
         }
         Ok(gone)

@@ -1,15 +1,6 @@
-//! The structural half of code search: what is defined in this file, and where.
-//!
-//! A model's structural question spelled as a lexical one cannot be answered by `grep`: drop the
-//! `^` and `fn` matches inside comments and strings, keep it and an indented `pub fn` is
-//! invisible. So this turns source text into a list of definitions, and it does not open files or
-//! list directories - the tool confines every read to an `ExecBackend`, and a parser that walked
-//! the filesystem would route around that confinement. An unknown language is an error naming the
-//! extension and what is supported, never an empty outline. These are the patterns it replaces:
-//! ```text
-//! ^(pub )?(mod|fn|struct|enum|impl|const|static)\s
-//! ^\s*(pub )?fn |^mod |^#\[cfg\(test\)\]|^impl
-//! ```
+//! The structural half of code search: source text to a list of definitions, which a lexical `grep`
+//! cannot answer. It never opens files, since reads are confined to an `ExecBackend`. An unknown
+//! language is an error naming the extension, never an empty outline.
 
 /// Normalise a shell command through the same grammar `outline` uses, for a permission decision:
 /// a decision made on a string the shell has not expanded yet is a decision about a meaning that

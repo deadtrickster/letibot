@@ -1,26 +1,6 @@
-//! The second similarity tier: a text as a vector, and two vectors as a cosine.
-//!
-//! `letibot_tools::similarity` scores two texts on the terms they share, and its own
-//! measurement says where that stops: a paraphrase of a note scored 0.126 under a
-//! docker prompt's 0.133 against an unrelated note, so no floor separates them. This
-//! crate is the tier that answers for meaning rather than for words, and it answers
-//! in three modes read from one key:
-//!
-//! ```toml
-//! [embeddings]
-//! mode = "off"          # lexical only, and the default
-//! mode = "internal"     # candle, in this process, with the built-in model
-//! model = "<dir>"       # ... or a directory with config.json, tokenizer.json, model.safetensors
-//! download = false      # ... and never fetch the built-in model on a box without a network
-//! mode = "http://127.0.0.1:8080"   # an OpenAI-compatible /v1/embeddings
-//! ```
-//!
-//! Nothing is compiled in: the built-in model is fetched once into the data directory, from a
-//! pinned revision and checked against a pinned hash per file, and a box that wrote
-//! `download = false` is never fetched for at all.
-//!
-//! The cache is a cache: `<data dir>/embeddings.db`, keyed by `(model, sha256 of the
-//! text)`, so an edited note is a new key and a deleted file costs time and no more.
+//! The second similarity tier: a text as a vector, and two vectors as a cosine, for meaning where
+//! the lexical tier only matches words. Configured by `[embeddings]` ([`config`]). Nothing is compiled
+//! in, and the cache is `<data dir>/embeddings.db` keyed by `(model, sha256 of the text)`.
 
 pub mod builtin;
 pub mod cache;

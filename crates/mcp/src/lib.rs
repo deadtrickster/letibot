@@ -1,7 +1,6 @@
-//! An MCP client for `letibot-tools`' catalogue seam: stdio and streamable-HTTP JSON-RPC,
-//! blocking, one lock per server. Servers start in parallel at [`Catalog::start`]; one that fails
-//! is kept as a [`Failure`] and the rest serve anyway. One that dies later is restarted on a later
-//! call, with backoff.
+//! An MCP client for `letibot-tools`' catalogue seam: stdio and streamable-HTTP JSON-RPC, blocking,
+//! one lock per server. Servers start in parallel at [`Catalog::start`]; a failure is kept as a
+//! [`Failure`] while the rest serve, and a server that dies later is restarted with backoff.
 
 mod wire;
 

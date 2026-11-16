@@ -1,52 +1,7 @@
-//! Layer 2 of `docs/boundary-and-adjudication.md`: normalise a shell command
-//! through the grammar, and name what the grammar cannot resolve.
-//!
-//! # The vulnerability class this exists for
-//!
-//! Every surveyed harness that gates on a shell command decides on a *string the
-//! shell will reinterpret*. `crates/tools/src/exec/predicate.rs` concedes it in its
-//! own words - *"not a shell parser… `eval`, here-docs, aliases, `$(...)` nesting
-//! past one level are unhandled"* - and calls itself a diagnosis rather than the
-//! mechanism.
-//!
-//! This is not a local worry. GuardFall (Adversa AI) named it as a
-//! structural class and measured it against eleven popular open-source coding
-//! agents: ten of eleven were bypassable, because the agent inspects raw
-//! command text while the shell performs quote removal, expansion and argument
-//! construction *after* that inspection. The one that held up reads the command the
-//! way bash will before deciding, and keeps a hard refuse-list underneath. That is
-//! this module plus `letibot_tools::intent`.
-//!
-//! # The rule that makes it honest, and it is the whole point
-//!
-//! A grammar buys a real decomposition and it buys a real limit. `eval "$X"`,
-//! `$CMD --now`, `cat $FILE` and `<(...)` are not commands whose meaning is
-//! *hidden*; they are commands whose meaning does not exist yet. So:
-//!
-//! > A construct the grammar cannot resolve is reported as
-//! > [`Unresolved`] - naming the construct, what decision it denies, and its
-//! > position - and is never classified as safe.
-//!
-//! [`Normalised::is_resolved`] is the single predicate a gate reads, and
-//! `letibot_tools::adjudicate` maps `false` to `NotRun`: *nobody could decide*.
-//! Never `Admit`, and never `Denied` either, because a construct nobody could read
-//! is not a decision anybody made. A normaliser that answered "looks fine" for text
-//! it could not parse would be the empty-haystack bug with a parse tree attached.
-//!
-//! What that costs is stated rather than hidden: `cat $FILE` is refused, and the
-//! refusal carries the fix
-//! - resolve the variable and pass the literal path. The alternative is deciding
-//! about a target nobody can name, which is the theatre.
-//!
-//! # What it deliberately does NOT do
-//!
-//! It does not out-parse the shell, and it holds no table of programs. Which
-//! token sits in the command-name position is grammar; what that token *means*  -
-//! that `sudo` wraps the next word, that `cat` surfaces its input, that `scp` leaves
-//! the box - is a table about this host's software, and a table is policy. Policy
-//! lives one crate up, in `letibot_tools::intent`, where the deny-list and the
-//! flow rule live with it. This crate keeps the property the rest of it has: it
-//! knows about source text, and nothing about tools, turns or transcripts.
+//! Layer 2 of `docs/boundary-and-adjudication.md`: normalise a shell command through the grammar,
+//! and name what it cannot resolve. A construct the grammar cannot resolve is an [`Unresolved`],
+//! never safe: [`Normalised::is_resolved`] is the one predicate a gate reads. Program meaning is
+//! policy and lives in `letibot_tools::intent`; this crate knows only source text.
 //!
 //! # Reading the output
 //!
