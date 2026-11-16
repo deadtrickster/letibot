@@ -845,6 +845,9 @@ pub struct App {
     /// not a session, so it arrives on the `Todos` read and this head only ever draws it. See
     /// [`App::seat_board_lines`].
     pub(crate) seat_boards: Vec<letibot_sessionlog::event::SeatBoard>,
+    /// When `seat_boards` was read, Unix millis: only a `Todos` reply refreshes it, so the pane
+    /// says its age.
+    pub(crate) seat_boards_at_ms: Option<u64>,
     /// The repo's `TODO.md` as a section map, read once per pane-open. The file
     /// can be longer than the pane and is the operator's to edit; the map is what
     /// a pane can honestly show.
@@ -1571,6 +1574,7 @@ impl App {
             job_out: None,
             todos: Vec::new(),
             seat_boards: Vec::new(),
+            seat_boards_at_ms: None,
             repo_todos: None,
             repo_todos_at: None,
             todos_sel: 0,
@@ -1823,7 +1827,7 @@ mod keys;
 pub(crate) mod limit_notice;
 pub(crate) mod links;
 pub(crate) mod marks;
-mod model_card;
+pub(crate) mod model_card;
 mod notes;
 mod panes;
 mod pick;

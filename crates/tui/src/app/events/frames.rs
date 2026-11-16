@@ -241,6 +241,7 @@ impl App {
                 // `Todos` however the session half of the frame is judged, so a pane opened after
                 // a seat wrote draws it.
                 self.seat_boards = seats;
+                self.seat_boards_at_ms = Some(crate::app::model_card::now_ms());
                 if session_id == self.session_id {
                     self.todos = todos;
                     // The board has been read HERE, and from now on it is the truth about who waits on
