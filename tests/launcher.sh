@@ -1571,6 +1571,16 @@ expect "fb marks the turn through the verb" "$out" "^letibot-multi fb --session 
 out="$(run "$DEFAULT_ONLY" boundary --mode read-only)"
 expect "boundary is the boundary verb's" "$out" "^letibot-multi boundary --mode read-only$"
 
+# launcher_routes_hold_release_where_to_multicall: `letibot hold s-123` is what the idle-close
+# notice tells the operator to type. Every verb the help names reaches the multicall, never harnessd.
+for spec in "holds --json" "gc --log" "where" "hold s-123" "release s-123" "notes path" "doctor --json"; do
+  v="${spec%% *}"
+  # shellcheck disable=SC2086 # each spec is a word list on purpose
+  out="$(run "$DEFAULT_ONLY" $spec)"
+  expect "$spec is the multicall's $v verb" "$out" "^letibot-multi $v( |$)"
+  refuse "  ...and $v is not sent as a prompt" "$out" "--prompt"
+done
+
 out="$(run "$DEFAULT_ONLY" --config-reference --markdown providers.toml)"
 expect "--config-reference is the multicall's" "$out" "^letibot-multi --config-reference --markdown providers.toml$"
 refuse "  ...and no daemon is started for it" "$out" "^harnessd "
