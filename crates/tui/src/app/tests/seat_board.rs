@@ -250,3 +250,34 @@ fn every_seat_in_the_store_is_drawn() {
         );
     }
 }
+
+/// A seat's board is pulled, never pushed: only a `Todos` reply refreshes it, so the pane says how
+/// old the copy it draws is once it is older than a minute.
+#[test]
+fn a_seat_board_says_when_it_was_read() {
+    let mut a = app();
+    a.session_id = "s1".into();
+    board(
+        &mut a,
+        Vec::new(),
+        vec![seat(
+            "cc@proj",
+            vec![row("collect", TodoStatus::Pending, Vec::new())],
+        )],
+    );
+    a.key(Key::CtrlT);
+    let header = |a: &mut App| {
+        a.todos_lines(160)
+            .into_iter()
+            .find(|l| l.contains("cc@proj — a Claude Code seat's board"))
+            .expect("the seat's header")
+    };
+    let first = header(&mut a);
+    assert!(first.ends_with("this pane reads it:"), "{first}");
+    a.seat_boards_at_ms = a.seat_boards_at_ms.map(|at| at - 5 * 60_000 - 1_000);
+    let later = header(&mut a);
+    assert!(
+        later.ends_with("this pane reads it, read 5m ago:"),
+        "{later}"
+    );
+}

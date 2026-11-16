@@ -374,6 +374,14 @@ impl App {
     /// the seat in another process writes this board and nothing here can act on a row of it.
     pub(crate) fn seat_board_lines(&self) -> Vec<Line> {
         let mut out: Vec<Line> = Vec::new();
+        // Only a `Todos` reply refreshes these, so a board read a while ago says so.
+        let read = self
+            .seat_boards_at_ms
+            .and_then(|at| {
+                crate::app::model_card::ago(at, crate::app::model_card::now_ms(), 60_000)
+            })
+            .map(|a| format!(", read {a}"))
+            .unwrap_or_default();
         for (i, board) in self.seat_boards.iter().enumerate() {
             let (open, postponed) = todo_counts(&board.todos);
             let also = match postponed {
@@ -385,7 +393,7 @@ impl App {
             }
             out.push(pane::faint(format!(
                 "  {} — a Claude Code seat's board, {open} open{also} — the seat writes it, this \
-                 pane reads it:",
+                 pane reads it{read}:",
                 clean_line(&board.seat)
             )));
             if board.todos.is_empty() {

@@ -144,13 +144,10 @@ impl App {
             Some(i) if r.value.ends_with(" ago)") => &r.value[..i],
             _ => r.value.as_str(),
         };
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |d| d.as_millis() as u64);
-        Some((
-            door.as_str(),
-            label.to_string() + &age(at_ms, now, every_ms),
-        ))
+        let age = ago(at_ms, now_ms(), every_ms)
+            .map(|a| format!(" ({a})"))
+            .unwrap_or_default();
+        Some((door.as_str(), label.to_string() + &age))
     }
 
     /// How the usage figure is painted: faint under its window's first threshold, a warning past
@@ -725,15 +722,22 @@ pub(crate) fn price_range(p: &Provider) -> String {
     }
 }
 
-/// ` (4m ago)` for a reading taken at `at_ms` older than `every_ms`, else nothing: the daemon's
+/// The wall clock, Unix millis: what a read time on a pulled or polled copy is measured against.
+pub(crate) fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
+}
+
+/// `4m ago` for a reading taken at `at_ms` older than `every_ms`, else `None`: the daemon's
 /// `usage_poll::age`, redrawn here because the head's clock moves between publishes.
-fn age(at_ms: u64, now_ms: u64, every_ms: u64) -> String {
+pub(crate) fn ago(at_ms: u64, now_ms: u64, every_ms: u64) -> Option<String> {
     let old = now_ms.saturating_sub(at_ms);
     if old <= every_ms {
-        return String::new();
+        return None;
     }
-    match old / 60_000 {
-        m if m < 60 => format!(" ({m}m ago)"),
-        m => format!(" ({}h ago)", m / 60),
-    }
+    Some(match old / 60_000 {
+        m if m < 60 => format!("{m}m ago"),
+        m => format!("{}h ago", m / 60),
+    })
 }
