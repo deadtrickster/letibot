@@ -686,6 +686,11 @@ impl SkillRegistry {
             ),
             // How to look at a UI change with the `screen` tool.
             ("screen", include_str!("../../../../skills/screen/SKILL.md")),
+            // Where `[mcp.NAME]` lives, the `.mcp.json` pin, and `/mcp reload`.
+            (
+                "mcp-servers",
+                include_str!("../../../../skills/mcp-servers/SKILL.md"),
+            ),
         ]
         .into_iter()
         .filter_map(|(what, text)| {
@@ -1661,6 +1666,29 @@ mod tests {
             "the live read has it, so the offer's body does too"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The `mcp-servers` skill is carried and teaches the config, the pin, the check and the reload.
+    #[test]
+    fn the_mcp_servers_skill_is_carried_and_names_its_steps() {
+        let built = SkillRegistry::built_in();
+        let skill = built
+            .iter()
+            .find(|s| s.name == "mcp-servers")
+            .expect("the mcp-servers skill");
+        for word in [
+            "[mcp.",
+            "[mcp_projects.pinned]",
+            "sha256",
+            "mcp_search",
+            "mcp_call",
+            "/mcp reload",
+            "/mcp restart NAME",
+            "headers",
+            "approve",
+        ] {
+            assert!(skill.body.contains(word), "the skill never names `{word}`");
+        }
     }
 
     /// The `plugin-hooks` skill teaches every hook kind the host asks, one example each: a kind it
