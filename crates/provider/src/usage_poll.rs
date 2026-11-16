@@ -12,7 +12,7 @@ use crate::keys::Credentials;
 use crate::presets::Preset;
 
 /// Minutes, not seconds: the reading is a glance, and the endpoint is the plan's, not ours.
-pub const EVERY: Duration = Duration::from_secs(300);
+pub const EVERY: Duration = Duration::from_secs(120);
 
 /// One window of a plan as its endpoint reports it.
 #[derive(Debug, Clone, PartialEq)]
@@ -169,6 +169,21 @@ pub fn label(w: &Window, now_ms: u64, offset_s: i64) -> String {
     format!("{} {pct}% · resets {when}", w.name)
 }
 
+/// ` (4m ago)` for a reading taken at `at_ms` that is older than `every`, else nothing: a figure
+/// the poll could not refresh says so instead of passing for the current one.
+pub fn age(at_ms: u64, now_ms: u64, every: Duration) -> String {
+    let old = now_ms.saturating_sub(at_ms);
+    if old <= every.as_millis() as u64 {
+        return String::new();
+    }
+    let m = old / 60_000;
+    if m < 60 {
+        format!(" ({m}m ago)")
+    } else {
+        format!(" ({}h ago)", m / 60)
+    }
+}
+
 /// Days since 1970-01-01 as `(year, month, day)` (Howard Hinnant's `civil_from_days`).
 fn civil(z: i64) -> (i64, i64, i64) {
     let z = z + 719_468;
@@ -211,8 +226,8 @@ fn fetch_body(url: &str, creds: &Credentials) -> Option<Value> {
         .ok()
 }
 
-/// What a watcher is handed each reading.
-pub type Tell = Box<dyn Fn(&[Window]) + Send>;
+/// What a watcher is handed each round: the newest reading and when it was taken, Unix millis.
+pub type Tell = Box<dyn Fn(&[Window], u64) + Send>;
 
 /// A session watching an endpoint: `still` says it is on the preset yet, `tell` hands it a reading.
 pub struct Watcher {
@@ -226,6 +241,7 @@ struct Reading {
     windows: Vec<Window>,
     spent_reset_ms: Option<u64>,
     at: Instant,
+    at_ms: u64,
 }
 
 #[derive(Default)]
@@ -233,6 +249,28 @@ struct Poll {
     reading: Option<Reading>,
     watchers: BTreeMap<String, Watcher>,
     running: bool,
+    /// The key of the latest `watch`, so a key changed since the poll started is the one sent.
+    creds: Option<Credentials>,
+}
+
+/// Clears `running` when the poll thread panics, so the next `watch` starts another. A clean end
+/// clears it under the same lock that saw no watcher, so no `watch` slips between the two.
+struct Stopped(String);
+
+impl Drop for Stopped {
+    fn drop(&mut self) {
+        if std::thread::panicking()
+            && let Some(p) = polls().get_mut(&self.0)
+        {
+            p.running = false;
+        }
+    }
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64)
 }
 
 static POLLS: Mutex<BTreeMap<String, Poll>> = Mutex::new(BTreeMap::new());
@@ -244,15 +282,16 @@ fn polls() -> std::sync::MutexGuard<'static, BTreeMap<String, Poll>> {
     POLLS.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Watch `preset`'s endpoint as `who`, polled every `every`, and the last reading if there is one.
-/// A preset with no `usage_url` is no poll: `who` stops watching anything and `None` comes back.
+/// Watch `preset`'s endpoint as `who`, polled every `every`, and the last reading with when it was
+/// taken, if there is one. A preset with no `usage_url` is no poll: `who` stops watching anything
+/// and `None` comes back.
 pub fn watch(
     preset: &Preset,
     creds: &Credentials,
     who: &str,
     every: Duration,
     watcher: Watcher,
-) -> Option<Vec<Window>> {
+) -> Option<(Vec<Window>, u64)> {
     let Some(url) = crate::usage::url(preset, creds) else {
         unwatch(who);
         return None;
@@ -265,12 +304,12 @@ pub fn watch(
     }
     let poll = g.entry(url.clone()).or_default();
     poll.watchers.insert(who.to_string(), watcher);
+    poll.creds = Some(creds.clone());
     if !poll.running {
         poll.running = true;
-        let creds = creds.clone();
-        std::thread::spawn(move || run(url, creds, every));
+        std::thread::spawn(move || run(url, every));
     }
-    poll.reading.as_ref().map(|r| r.windows.clone())
+    poll.reading.as_ref().map(|r| (r.windows.clone(), r.at_ms))
 }
 
 /// `who` is on no endpoint any more.
@@ -280,12 +319,12 @@ pub fn unwatch(who: &str) {
     }
 }
 
-/// The last reading of `url`, without watching it.
-pub fn reading(url: &str) -> Option<Vec<Window>> {
+/// The last reading of `url` and when it was taken, without watching it.
+pub fn reading(url: &str) -> Option<(Vec<Window>, u64)> {
     polls()
         .get(url)
         .and_then(|p| p.reading.as_ref())
-        .map(|r| r.windows.clone())
+        .map(|r| (r.windows.clone(), r.at_ms))
 }
 
 /// The latest reset among the spent windows of a reading of `url`: the poll's own when it is
@@ -314,6 +353,7 @@ fn read(url: &str, creds: &Credentials, fresh: Duration, spent: bool) -> Option<
         windows: windows(&body),
         spent_reset_ms: crate::usage::reset_of(&body),
         at: Instant::now(),
+        at_ms: now_ms(),
     };
     if r.windows.is_empty() {
         return Some(r);
@@ -321,17 +361,32 @@ fn read(url: &str, creds: &Credentials, fresh: Duration, spent: bool) -> Option<
     let mut g = polls();
     let p = g.entry(url.to_string()).or_default();
     for watcher in p.watchers.values() {
-        (watcher.tell)(&r.windows);
+        (watcher.tell)(&r.windows, r.at_ms);
     }
     p.reading = Some(r.clone());
     Some(r)
 }
 
-fn run(url: String, creds: Credentials, every: Duration) {
+fn run(url: String, every: Duration) {
+    let _stopped = Stopped(url.clone());
     // The first request needs no check: `watch` was the proof someone is on the preset.
     loop {
-        // A reading somebody else took since the last one serves this round.
-        read(&url, &creds, every, false);
+        let Some(creds) = polls().get(&url).and_then(|p| p.creds.clone()) else {
+            return;
+        };
+        // A reading somebody else took since the last one serves this round, and told them.
+        let fresh = read(&url, &creds, every, false).is_some_and(|r| !r.windows.is_empty());
+        if !fresh {
+            // The request failed: the kept reading is told again so its age shows.
+            let g = polls();
+            if let Some(p) = g.get(&url)
+                && let Some(r) = &p.reading
+            {
+                for watcher in p.watchers.values() {
+                    (watcher.tell)(&r.windows, r.at_ms);
+                }
+            }
+        }
         std::thread::sleep(every);
         let mut g = polls();
         let Some(p) = g.get_mut(&url) else { return };

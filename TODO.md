@@ -70,6 +70,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R230 | One slow store open blocks every open in the process, and unladdered writes sleep 30 s holding the connection | Code work | open half fixed on `r230-store` (per-file slots). left: the raw-connection write half, which J17 (`j17-retry`) cuts to 5 s, plus its handler-budget test |
 | R231 | A room protocol bump refused every older client | Code work | fixed for 11 by `OLDEST_CLIENT = 11` (fc69dcb2); left: a rule that each bump states whether older clients are served, and a test per bump |
 | R232 | Kimi's usage endpoint is asked only on a refusal | Code work | built: a background poll of the preset's `usage_url` every 5 min (`crates/provider/src/usage_poll.rs`), one per endpoint, ending once no session is on the preset; the `models.usage` row, drawn in the status row and on the model card's provider row (`5h 44% · resets 07:07`); threshold warnings (`crates/provider/src/usage_warn.rs`): one `[usage]` notice per crossing, once per window, the figure coloured by level, `[provider.usage_warn]` and `[provider.NAME.usage_warn]`; z.ai is polled on the GLM coding doors (glm-limit is on main); left: a live check against a real Kimi and z.ai key |
+| R310 | The head's usage figure went stale with no sign of it | Code work | built (branch `usage-pct`): polled every 2 min, every round told to the row, a failed round re-told with its age (`5h 57% · resets 04:07 (4m ago)`), the poll restarted after a panic, the latest key used; left: `usages` ratio and `limits[]` counts disagreeing on one window |
 | R233 | Rate-limit decisions as config values or a fuel-capped wasm call | Needs the operator | not started; left: the operator's shape for the hook record (which decisions, value or plugin, what the call is given and answers) |
 | R232 | Kimi's usage endpoint is asked only on a refusal | Code work | left: a background poll of the preset's `usage_url`, cached like `listed_models`, and the model card / status row showing it (`5h 44% · resets 07:07`) |
 | R233 | Rate-limit decisions as config values or a fuel-capped wasm call | Needs the operator | built on branch `r233-hook`: a `limit_decide` layer decides every rate/quota refusal after the ladder (`wait`/`switch`/`new_session`/`ask_user`/`call`/`stop`), its state kept per episode in `<logs>/<session>/limit-hook.json` and destroyed on the first success, a failure, fuel or malformed answer falling back to the fixed rules with a `limit_hook_fallback` row; `new_session` forks the conversation and continues the turn there (operator's ruling 2026-11-15), on the `/fork` store fork (J15); left: `usage` from R232's poll, and `when` on anything but `wait` |
@@ -2022,6 +2023,24 @@ Operator, in rano's session: "suppose i click in [N tool calls] where N is yello
 **Fix.** `run_carries_live_now` (`crates/tui/src/app/runclick.rs`) takes the stretch that contains the head, whichever row of it the head is, and asks the walk's own question: is it the newest unseen run (`newest_unseen_run`), and does it carry the live work (`run_carries_live`).
 
 **Done when:** `cargo test -p letibot-tui runningrow`. Two finished calls and one running, with and without narration. Collapsed, the marker reads `[3 tool calls]` and no card is drawn. Expanded, three cards, the last `◐ Running`. When the call finishes, the last card is `Ran (c2)` with its result and there are still three.
+
+## R310 - The head's usage figure went stale with no sign of it
+
+**Status:** built on branch `usage-pct`, 2026-11-16.
+
+Seen live on rano, kimi-code-global/k3.1-pro: the status row showed `5h 47% · resets 04:07` while the Kimi console said 57%. After rano restarted the head showed 60%, matching the console, so the reading was stale, not misparsed.
+
+Cause: the row could keep an old figure and look current. A failed request (`fetch_body` answers `None` on any HTTP or JSON error) left the last reading in place and told nobody, so the row kept it with no age. The poll captured the first watcher's key at spawn, so a key changed later was never sent. A poll thread that panicked left `running` set, and no later `watch` started another. A reopen (the restart) republishes from the poll's cache, which is why it showed the fresh figure. The head itself redraws on every reading: `tell` puts the row on each reading, crossing or not, and the TUI replaces its settings on every `Settings` frame.
+
+**Change:**
+- `usage_poll::EVERY` is 120 s (was 300 s).
+- `Tell` takes the reading's wall-clock time. A round whose request failed tells the kept reading again with that time, and `usage_setting` appends `usage_poll::age`: ` (4m ago)` once the reading is older than the period.
+- `watch` stores the caller's key on the poll, and each round sends the latest one.
+- A drop guard clears `running` when the poll thread panics.
+
+**Tests:** `usage_poll::tests::a_failed_round_tells_the_kept_reading_with_its_time`, `a_reading_older_than_the_period_says_its_age`, `harness::usage::tests::each_reading_redraws_the_row_without_a_crossing`.
+
+**Left:** Kimi's body carries the 5h window twice, `usages.limit_5h.used_ratio` and `limits[].detail.used/limit`, and `windows()` reads `limits[]` only when `usages` is absent. CodexBar's Kimi notes say the two can disagree and take the more exhausted one when duration and reset match within 2 s. Not seen here. To decide it, compare `usages.limit_5h.used_ratio` with `limits[0].detail.used`, `.limit` and `.remaining` from one live body against the console.
 
 ## R301 - A row waiting on a job that ended is freed and noted
 

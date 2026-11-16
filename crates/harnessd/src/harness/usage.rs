@@ -75,9 +75,9 @@ impl Harness {
     pub(super) fn usage_row(&self) -> Option<letibot_sessionlog::protocol::SettingRow> {
         let (preset, creds) = self.usage_door()?;
         let url = letibot_provider::usage::url(preset, &creds)?;
-        let w = letibot_provider::usage_poll::reading(&url)?;
+        let (w, at_ms) = letibot_provider::usage_poll::reading(&url)?;
         let th = self.cfg.leticode.usage_warn(preset.name);
-        usage_setting(preset.name, &w, &th, now_ms())
+        usage_setting(preset.name, &w, &th, now_ms(), at_ms)
     }
 
     /// Write the threshold notices the poll left for this session, one row each. Called at a
@@ -114,32 +114,37 @@ impl Harness {
             let (reg, sid) = (reg.clone(), sid.clone());
             move || on_door(&reg.settings(&sid), door)
         };
-        let hear = {
-            let (said, th) = (said.clone(), th.clone());
-            move |w: &[usage_poll::Window]| {
-                said.lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .hear(door, w, &th, now_ms());
-            }
-        };
-        let tell = {
-            let (sid, hear) = (sid.clone(), hear.clone());
-            move |w: &[usage_poll::Window]| {
-                if let Some(row) = usage_setting(door, w, &th, now_ms()) {
-                    reg.put_setting(&sid, row);
-                }
-                hear(w);
-            }
-        };
         let watcher = usage_poll::Watcher {
             still: Box::new(still),
-            tell: Box::new(tell),
+            tell: teller(reg, sid.clone(), door, th.clone(), said.clone()),
         };
-        // A session joining a running poll hears its cached reading now, not five minutes on.
-        if let Some(w) = usage_poll::watch(preset, &creds, &sid, usage_poll::EVERY, watcher) {
-            hear(&w);
+        // A session joining a running poll hears its cached reading now, not a period on.
+        if let Some((w, _)) = usage_poll::watch(preset, &creds, &sid, usage_poll::EVERY, watcher) {
+            said.lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .hear(door, &w, &th, now_ms());
         }
     }
+}
+
+/// What the poll hands this session each round: the row is replaced on every reading, crossing or
+/// not, and only a crossing queues a notice.
+fn teller(
+    reg: std::sync::Arc<letibot_sessionlog::registry::Registry>,
+    sid: String,
+    door: &'static str,
+    th: letibot_provider::usage_warn::Thresholds,
+    said: std::sync::Arc<std::sync::Mutex<UsageSaid>>,
+) -> letibot_provider::usage_poll::Tell {
+    Box::new(move |w, at_ms| {
+        let now = now_ms();
+        if let Some(row) = usage_setting(door, w, &th, now, at_ms) {
+            reg.put_setting(&sid, row);
+        }
+        said.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .hear(door, w, &th, now);
+    })
 }
 
 /// The thresholds one session has been told of, per door, and the notices not yet written.
@@ -177,19 +182,23 @@ fn on_door(rows: &[letibot_sessionlog::protocol::SettingRow], door: &str) -> boo
         .is_some_and(|rest| rest.starts_with('/'))
 }
 
-/// The row for one reading: the window past most thresholds, else the busiest, its reset in this
-/// box's zone. `choices[1]` is how many of its thresholds it has reached, which the head colours by.
+/// The row for one reading taken at `at_ms`: the window past most thresholds, else the busiest, its
+/// reset in this box's zone, and its age once older than the poll period. `choices[1]` is how many
+/// of its thresholds it has reached, which the head colours by.
 pub(crate) fn usage_setting(
     door: &str,
     windows: &[letibot_provider::usage_poll::Window],
     th: &letibot_provider::usage_warn::Thresholds,
     now_ms: u64,
+    at_ms: u64,
 ) -> Option<letibot_sessionlog::protocol::SettingRow> {
+    use letibot_provider::usage_poll;
     let (w, level) = letibot_provider::usage_warn::shown(windows, th)?;
     let offset = local_offset_s(w.reset_ms.unwrap_or(now_ms));
     Some(letibot_sessionlog::protocol::SettingRow {
         key: letibot_sessionlog::protocol::MODEL_USAGE_KEY.into(),
-        value: letibot_provider::usage_poll::label(w, now_ms, offset),
+        value: usage_poll::label(w, now_ms, offset)
+            + &usage_poll::age(at_ms, now_ms, usage_poll::EVERY),
         source: format!("{door} usage endpoint, polled every few minutes"),
         editable: String::new(),
         choices: vec![door.to_string(), level.to_string()],
@@ -256,11 +265,12 @@ mod tests {
             },
         ];
         let th = letibot_provider::usage_warn::Thresholds::default();
-        let r = usage_setting("kimi-code", &w, &th, 1_000_000_000_000 - 3_600_000).unwrap();
+        let now = 1_000_000_000_000 - 3_600_000;
+        let r = usage_setting("kimi-code", &w, &th, now, now).unwrap();
         assert_eq!(r.key, letibot_sessionlog::protocol::MODEL_USAGE_KEY);
         assert!(r.value.starts_with("5h 44% · resets "), "{}", r.value);
         assert_eq!(r.choices, ["kimi-code", "0"]);
-        assert!(usage_setting("kimi-code", &[], &th, 0).is_none());
+        assert!(usage_setting("kimi-code", &[], &th, 0, 0).is_none());
     }
 
     fn five_h(used: f64, reset_ms: u64) -> Vec<letibot_provider::usage_poll::Window> {
@@ -295,10 +305,42 @@ mod tests {
         assert!(heard(0.99, r1).is_empty());
         assert!(heard(0.02, r2).is_empty(), "a reset alone says nothing");
         assert_eq!(heard(0.81, r2).len(), 1, "the new window says 80% again");
-        let level = |used| usage_setting("kimi-code", &five_h(used, r1), &th, now).unwrap();
+        let level = |used| usage_setting("kimi-code", &five_h(used, r1), &th, now, now).unwrap();
         assert_eq!(level(0.5).choices[1], "0");
         assert_eq!(level(0.82).choices[1], "1");
         assert_eq!(level(0.96).choices[1], "2");
+    }
+
+    /// Every reading replaces the head's row, with no threshold crossed; one the poll could not
+    /// refresh carries its age.
+    #[test]
+    fn each_reading_redraws_the_row_without_a_crossing() {
+        let reg = letibot_sessionlog::registry::Registry::new();
+        reg.create("s-1", "", Default::default()).unwrap();
+        reg.set_settings("s-1", vec![row("model", "kimi-code/k3")]);
+        let said = std::sync::Arc::new(std::sync::Mutex::new(UsageSaid::default()));
+        let th = letibot_provider::usage_warn::Thresholds::default();
+        let tell = teller(reg.clone(), "s-1".into(), "kimi-code", th, said.clone());
+        let shown = || {
+            reg.settings("s-1")
+                .into_iter()
+                .find(|r| r.key == letibot_sessionlog::protocol::MODEL_USAGE_KEY)
+                .map(|r| r.value)
+                .unwrap_or_default()
+        };
+        let now = now_ms();
+        let reset = now + 3_600_000;
+        tell(&five_h(0.47, reset), now);
+        assert!(shown().starts_with("5h 47% · resets "), "{}", shown());
+        tell(&five_h(0.57, reset), now);
+        assert!(shown().starts_with("5h 57% · resets "), "{}", shown());
+        assert!(!shown().contains("ago"), "{}", shown());
+        assert!(
+            said.lock().unwrap().pending.is_empty(),
+            "no threshold was crossed"
+        );
+        tell(&five_h(0.57, reset), now - 4 * 60_000);
+        assert!(shown().ends_with(" (4m ago)"), "{}", shown());
     }
 
     /// A per-preset list replaces the default for that preset only.

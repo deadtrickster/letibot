@@ -21,6 +21,11 @@ fn creds() -> Credentials {
 
 /// A usage endpoint on loopback that answers `body` and counts the requests.
 fn fake(body: &'static str) -> (String, Arc<AtomicUsize>) {
+    fake_for(body, usize::MAX)
+}
+
+/// The same, a 500 after the first `good` requests.
+fn fake_for(body: &'static str, good: usize) -> (String, Arc<AtomicUsize>) {
     let l = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let url = format!("http://{}/coding/v1/usages", l.local_addr().unwrap());
     let hits = Arc::new(AtomicUsize::new(0));
@@ -32,7 +37,13 @@ fn fake(body: &'static str) -> (String, Arc<AtomicUsize>) {
             while r.read_line(&mut line).is_ok_and(|k| k > 2) {
                 line.clear();
             }
-            n.fetch_add(1, Ordering::SeqCst);
+            if n.fetch_add(1, Ordering::SeqCst) >= good {
+                let _ = write!(
+                    &s,
+                    "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                );
+                continue;
+            }
             let _ = write!(
                 &s,
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
@@ -133,7 +144,7 @@ fn one_poll_serves_every_watcher_and_stops_when_none_is_on_the_preset() {
         let (on, told) = (on.clone(), told.clone());
         Watcher {
             still: Box::new(move || on.load(Ordering::SeqCst)),
-            tell: Box::new(move |w| {
+            tell: Box::new(move |w, _| {
                 assert_eq!(w[0].name, "5h");
                 told.fetch_add(1, Ordering::SeqCst);
             }),
@@ -147,8 +158,8 @@ fn one_poll_serves_every_watcher_and_stops_when_none_is_on_the_preset() {
     until(|| told.load(Ordering::SeqCst) >= 1);
     // A second session gets the cached reading at once and starts no second poller.
     let cached = watch(&preset, &creds(), "s-b", every, watcher(&on, &told));
-    assert_eq!(cached.unwrap()[0].used, 0.44);
-    assert_eq!(reading(&url).unwrap().len(), 2);
+    assert_eq!(cached.unwrap().0[0].used, 0.44);
+    assert_eq!(reading(&url).unwrap().0.len(), 2);
     until(|| hits.load(Ordering::SeqCst) >= 3);
     assert!(
         told.load(Ordering::SeqCst) >= hits.load(Ordering::SeqCst),
@@ -168,7 +179,7 @@ fn a_preset_without_a_usage_url_is_never_polled() {
     let t = told.clone();
     let w = Watcher {
         still: Box::new(|| true),
-        tell: Box::new(move |_| t.store(true, Ordering::SeqCst)),
+        tell: Box::new(move |_, _| t.store(true, Ordering::SeqCst)),
     };
     let got = watch(
         &crate::presets::DEEPSEEK,
@@ -181,4 +192,45 @@ fn a_preset_without_a_usage_url_is_never_polled() {
     assert!(polls().values().all(|p| !p.watchers.contains_key("s-none")));
     std::thread::sleep(Duration::from_millis(50));
     assert!(!told.load(Ordering::SeqCst));
+}
+
+#[test]
+fn a_reading_older_than_the_period_says_its_age() {
+    let every = Duration::from_secs(120);
+    let at = 1_000_000_000_000;
+    assert_eq!(age(at, at + 60_000, every), "");
+    assert_eq!(age(at, at + 120_000, every), "");
+    assert_eq!(age(at, at + 4 * 60_000 + 5_000, every), " (4m ago)");
+    assert_eq!(age(at, at + 3 * 3_600_000, every), " (3h ago)");
+    assert_eq!(
+        age(at + 5, at, every),
+        "",
+        "a clock behind the reading is no age"
+    );
+}
+
+/// Every round tells the watcher, a failed request included: the kept reading comes again with
+/// the time it was taken, so the row can say how old it is.
+#[test]
+fn a_failed_round_tells_the_kept_reading_with_its_time() {
+    let (url, hits) = fake_for(KIMI, 1);
+    let preset = preset_at(&url);
+    let told: Arc<Mutex<Vec<u64>>> = Arc::default();
+    let t = told.clone();
+    let w = Watcher {
+        still: Box::new(|| true),
+        tell: Box::new(move |w, at| {
+            assert_eq!(w[0].used, 0.44);
+            t.lock().unwrap().push(at);
+        }),
+    };
+    watch(&preset, &creds(), "s-stale", Duration::from_millis(30), w);
+    until(|| told.lock().unwrap().len() >= 3);
+    assert!(hits.load(Ordering::SeqCst) >= 2, "the poll kept asking");
+    let at = told.lock().unwrap().clone();
+    assert!(
+        at.iter().all(|a| *a == at[0]),
+        "one reading, told again: {at:?}"
+    );
+    unwatch("s-stale");
 }
