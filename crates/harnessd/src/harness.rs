@@ -515,6 +515,8 @@ pub struct Harness {
     /// Early re-tries of a parked request: how many were refused in this run of parks, and the
     /// park the one in flight was taken from. See [`limit::Probing`].
     limit_probing: limit::Probing,
+    /// The limit state as last written to the session row, so an unchanged state is not rewritten.
+    limit_saved: Option<String>,
     /// The status row's limit words, shared with the activity source: `paused until 21:02:27 UTC`,
     /// or `glm limited until 21:02:27 UTC, on deepseek`.
     limit_row: Arc<std::sync::Mutex<Option<String>>>,

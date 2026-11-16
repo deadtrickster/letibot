@@ -91,6 +91,7 @@ pub const READER_ARMS: &[(i64, Arm)] = &[
     (53, Arm::Additive), // queued_prompt.from_who/delivery: defaulted columns
     (54, Arm::Additive), // owner.live_since_ms: a NULLed column
     (55, Arm::Additive), // queued_prompt.skill: a defaulted column
+    (56, Arm::Additive), // session.limit_state: a NULLed column
 ];
 
 /// The floor a store at `version` carries: the newest arm at or below it that [`Arm::Breaks`],

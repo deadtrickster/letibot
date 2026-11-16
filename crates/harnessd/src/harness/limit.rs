@@ -11,7 +11,7 @@ use super::*;
 pub(crate) const PARK_JITTER_MS: u64 = 2_000;
 
 /// One park: when the turn is owed again, which model refused, and what it said.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct LimitPark {
     /// The instant the turn is owed again, on the clock a park is measured by.
     pub until_ms: u64,
@@ -33,7 +33,7 @@ impl LimitPark {
 }
 
 /// A switch back to the model a limit moved this session off, and when it may be made.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub(crate) struct LimitReturn {
     /// The model that was limited, in `/models` spelling.
     pub model: String,
@@ -42,12 +42,27 @@ pub(crate) struct LimitReturn {
 
 /// Early re-tries of a park ([`crate::config::Config::limit_probe`]): a park comes due at the next
 /// step rather than the reset, and the first answer lifts it.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct Probing {
     /// Re-tries refused since the last answer: the index of the next step.
     refused: usize,
     /// The park the re-try in flight was lifted from: its model and its reset.
     asked: Option<(String, u64)>,
+}
+
+/// Everything a session knows about its limits, as the session row keeps it. One record, so a
+/// restart cannot bring back half of it: a park without its re-try step, or a way back without
+/// the limit that earned it.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct LimitState {
+    #[serde(default)]
+    park: Option<LimitPark>,
+    #[serde(default)]
+    probing: Probing,
+    #[serde(default, rename = "return")]
+    way_back: Option<LimitReturn>,
+    #[serde(default)]
+    limited: Limited,
 }
 
 /// What the limit rule says to do with a failure whose ladder is spent.
@@ -123,11 +138,15 @@ impl Harness {
     /// A round answered. If it was a park's early re-try, the limit cleared before its reset: the
     /// model is no longer limited, and the session's log says when.
     pub(crate) fn a_round_answered(&mut self) {
-        self.limit_probing.refused = 0;
+        let was_refused = std::mem::take(&mut self.limit_probing.refused) > 0;
         let Some((model, reset_ms)) = self.limit_probing.asked.take() else {
+            if was_refused {
+                self.save_limit_state();
+            }
             return;
         };
         self.limited.remove(&model);
+        self.save_limit_state();
         let now = self.limit_now_ms();
         self.hub.warn(
             "limit_cleared_early",
@@ -150,6 +169,7 @@ impl Harness {
         self.set_limit_row(None);
         let now = self.limit_now_ms();
         self.limited.retain(|_, at| *at > now);
+        self.save_limit_state();
         Some(park)
     }
 
@@ -158,10 +178,12 @@ impl Harness {
     pub fn interrupt_a_park(&mut self, reason: &str) -> Option<String> {
         let park = self.lift_the_park()?;
         self.limit_probing = Probing::default();
+        self.save_limit_state();
         let now = self.limit_now_ms();
         let said = format!(
-            "[limit] the operator interrupted this turn while it was parked on {}'s usage limit \
-             (reset {}){}. The turn ends here and nothing more was sent; what it did is kept.",
+            "{} while it was parked on {}'s usage limit (reset {}){}. The turn ends here and \
+             nothing more was sent; what it did is kept.",
+            crate::restart::PARK_INTERRUPTED,
             park.model,
             clock_words_from(now, park.reset_ms),
             if reason.is_empty() {
@@ -203,6 +225,7 @@ impl Harness {
         let now = self.limit_now_ms();
         self.limited.retain(|_, at| *at > now);
         self.limited.insert(model.to_string(), until_ms);
+        self.save_limit_state();
     }
 
     /// What the policy says about one failure, asked once the ladder is spent. The reset is the
@@ -254,6 +277,7 @@ impl Harness {
             model: model.clone(),
             said: said.clone(),
         });
+        self.save_limit_state();
         self.write_limit_row(Some(parked_row(&model, now, until_ms, reset_ms)));
         self.seat.limited(Some((until_ms, words.clone())));
         self.hub.warn(
@@ -280,6 +304,7 @@ impl Harness {
         let early = park.until_ms < park.reset_ms;
         if early {
             self.limit_probing.asked = Some((park.model.clone(), park.reset_ms));
+            self.save_limit_state();
         }
         self.hub.warn(
             "limit_resumed",
@@ -327,6 +352,7 @@ impl Harness {
         }
         let park = self.lift_the_park()?;
         self.limit_probing = Probing::default();
+        self.save_limit_state();
         // The switch was the operator's, not the limit rule's: no way back is owed, so no row
         // says the session is on the new model until a reset.
         self.write_limit_row(None);
@@ -355,8 +381,9 @@ impl Harness {
     pub fn resume_after_limit(&mut self, notice: String) -> Result<Reply, HarnessError> {
         let mut text = notice;
         let riding = self.batch_riding_in();
+        let mut batch = String::new();
         if let Some(now) = &riding {
-            let batch = now.text();
+            batch = now.text();
             if !batch.is_empty() {
                 text.push_str("\n\n");
                 text.push_str(&batch);
@@ -365,19 +392,30 @@ impl Harness {
         // The wall is checked BEFORE the send, like every other door: a resumed turn is not more
         // likely to fit, and a first round refused for LENGTH would read as a limit again.
         self.compact_if_at_the_wall();
+        // A re-try whose last one was refused finds that notice as the last row and sends it again:
+        // rows are append-only, and one notice per refusal grows the conversation for ever.
+        let notice_stands = batch.is_empty()
+            && self.limit_probing.asked.is_some()
+            && self
+                .items()
+                .iter()
+                .rev()
+                .find(|i| !crate::restart::display_only(i))
+                .is_some_and(crate::restart::a_parks_resume);
         self.trail.begin_turn();
-        self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
-        let mut opened = false;
-        let out = self.submit_items_then(
-            vec![TranscriptItem::User {
+        let mut items = Vec::new();
+        if !notice_stands {
+            self.trail.say(Speaker::Agent, &text, Some(Instant::now()));
+            items.push(TranscriptItem::User {
                 speaker: letibot_transcript::Speaker::Agent,
                 parts: vec![UserPart::Text { text }],
-            }],
-            |h| {
-                opened = true;
-                h.the_batch_stored(riding.as_ref());
-            },
-        );
+            });
+        }
+        let mut opened = false;
+        let out = self.submit_items_then(items, |h| {
+            opened = true;
+            h.the_batch_stored(riding.as_ref());
+        });
         self.the_batch_arrived(riding, opened);
         out
     }
@@ -390,6 +428,7 @@ impl Harness {
             model: model.to_string(),
             at_ms,
         });
+        self.save_limit_state();
     }
 
     /// The switch back, owed once and made here: `/models`' own door, so a session that moved for a
@@ -400,6 +439,7 @@ impl Harness {
             return None;
         }
         self.limit_return = None;
+        self.save_limit_state();
         if self.model_name() == back.model {
             // Already home: an operator who moved the session back by hand owes nobody a notice.
             self.set_limit_row(None);
@@ -428,6 +468,7 @@ impl Harness {
             Ok(line) => {
                 self.set_limit_row(None);
                 self.limited.remove(&back.model);
+                self.save_limit_state();
                 if let Err(why) = self.persist_provider_choice() {
                     self.hub.warn("model_switch_applied", why);
                 }
@@ -442,6 +483,113 @@ impl Harness {
                 self.model_name()
             )),
         }
+    }
+
+    /// Write the limit state to the session row when it changed. A failed write is said and the
+    /// state holds in memory: the park is still right for this daemon.
+    pub(crate) fn save_limit_state(&mut self) {
+        let Some(store) = &self.store else {
+            return;
+        };
+        let state = LimitState {
+            park: self.limit_park.clone(),
+            probing: Probing {
+                refused: self.limit_probing.refused,
+                asked: self.limit_probing.asked.clone(),
+            },
+            way_back: self.limit_return.clone(),
+            limited: self.limited.clone(),
+        };
+        let empty = state.park.is_none()
+            && state.way_back.is_none()
+            && state.limited.is_empty()
+            && state.probing.refused == 0
+            && state.probing.asked.is_none();
+        let json = if empty {
+            None
+        } else {
+            match serde_json::to_string(&state) {
+                Ok(j) => Some(j),
+                Err(e) => {
+                    self.hub.warn(
+                        "limit_state_unsaved",
+                        format!("the limit state could not be encoded: {e}"),
+                    );
+                    return;
+                }
+            }
+        };
+        if json == self.limit_saved {
+            return;
+        }
+        match store.set_limit_state(&self.cfg.session_id, json.as_deref()) {
+            Ok(()) => self.limit_saved = json,
+            Err(e) => {
+                self.hub.warn(
+                    "limit_state_unsaved",
+                    format!(
+                        "the limit state was not written to the session row: {e}. It holds until \
+                         this daemon stops"
+                    ),
+                );
+            }
+        }
+    }
+
+    /// Bring back the limit state the session row holds: the park and its re-try step, the way
+    /// back and the limited models. Called after the provider choice is restored, because a park
+    /// on another model than the session's is a park a switch already lifted.
+    pub fn restore_limit_state(&mut self) {
+        let Some(json) = self
+            .store
+            .as_ref()
+            .and_then(|s| s.limit_state(&self.cfg.session_id).ok())
+            .flatten()
+        else {
+            return;
+        };
+        let state: LimitState = match serde_json::from_str(&json) {
+            Ok(s) => s,
+            Err(e) => {
+                self.hub.warn(
+                    "limit_state_unread",
+                    format!(
+                        "the session row's limit state could not be read ({e}), so it is dropped"
+                    ),
+                );
+                return;
+            }
+        };
+        self.limit_saved = Some(json);
+        let now = self.limit_now_ms();
+        self.limited = state.limited;
+        self.limited.retain(|_, at| *at > now);
+        self.limit_return = state.way_back;
+        self.limit_probing = state.probing;
+        self.limit_park = state.park;
+        match self.limit_park.clone() {
+            Some(park) => {
+                let words = park_words(now, park.until_ms, park.reset_ms);
+                self.write_limit_row(Some(parked_row(
+                    &park.model,
+                    now,
+                    park.until_ms,
+                    park.reset_ms,
+                )));
+                self.seat.limited(Some((park.until_ms, words)));
+                self.hub.warn(
+                    "limit_park_restored",
+                    format!(
+                        "this session was parked on {}'s limit when the daemon stopped, so the \
+                         parked turn is owed again at {}. The daemon opens it by itself then.",
+                        park.model,
+                        clock_words_from(now, park.until_ms)
+                    ),
+                );
+            }
+            None => self.set_limit_row(None),
+        }
+        self.save_limit_state();
     }
 
     /// The status row's own words for a limit, or `None` when nothing is limited: `paused until

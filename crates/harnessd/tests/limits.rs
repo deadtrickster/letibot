@@ -1424,6 +1424,14 @@ fn a_park_re_tries_on_its_steps_and_the_first_answer_lifts_it() {
         .expect("refused twice, still parked")
         .clone();
     assert_eq!(park.until_ms, now + min(15).as_millis() as u64 + 2_000);
+    let notices = items(&hub)
+        .iter()
+        .filter(|i| letibot_harnessd::restart::a_parks_resume(i))
+        .count();
+    assert_eq!(
+        notices, 1,
+        "a refused re-try sends its notice again, not a new one"
+    );
     assert!(said(&hub, "limit_cleared_early").is_empty());
     handle.store(park.until_ms, Ordering::SeqCst);
     assert_eq!(sessions.resume_due_limits(), 1);
@@ -1441,6 +1449,124 @@ fn a_park_re_tries_on_its_steps_and_the_first_answer_lifts_it() {
         cleared[0].starts_with("limit cleared early at 21:42:06 UTC"),
         "{}",
         cleared[0]
+    );
+}
+
+/// A park that met a refused re-try survives the daemon: the next daemon comes back parked on the
+/// same instant and the same step, and the turn the park owes is answered at it.
+#[test]
+fn a_restart_after_a_refused_probe_still_owes_the_turn() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("restart-probe");
+    let glm = model(&[
+        Act::RefuseWith(GLM_1308_FAR),
+        Act::RefuseWith(GLM_1308_FAR),
+        Act::RefuseWith(GLM_1308_FAR),
+        Act::Answer,
+    ]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let min = |n: u64| Duration::from_secs(n * 60);
+    let config_at = |at: u64| {
+        let mut cfg = config(
+            &scratch,
+            &gguf,
+            "restart-probe",
+            ("glm", "glm-5.3"),
+            Vec::new(),
+        );
+        cfg.limit_probe = vec![min(2), min(5), min(15)];
+        let (clock, handle) = letibot_harnessd::config::LimitClock::fixed(at);
+        cfg.limit_clock = clock;
+        (cfg, handle)
+    };
+    let (cfg, handle) = config_at(T0);
+    let store_path = cfg.store.clone().expect("a store");
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, _hub, id) = open(&parts, cfg);
+    sessions.submit_operator(&id, PROMPT).expect_err("parked");
+    let first = sessions
+        .harness_of(&id)
+        .expect("open")
+        .limit_park()
+        .expect("parked")
+        .clone();
+    handle.store(first.until_ms, Ordering::SeqCst);
+    sessions.resume_due_limits();
+    assert_eq!(glm.count(), 2, "the re-try was asked and refused");
+    let h = sessions.harness_of(&id).expect("open");
+    let before = h.limit_park().expect("parked again").clone();
+    assert_eq!(
+        before.until_ms,
+        first.until_ms + min(5).as_millis() as u64 + 2_000
+    );
+    assert!(
+        letibot_harnessd::restart::mid_turn(h.items()),
+        "the re-try's `[limit]` notice is the harness's own row, and the turn is still owed"
+    );
+    drop(sessions);
+
+    // The daemon stops and another one opens the same store later.
+    {
+        let store = letibot_tokencore::store::Store::open(&store_path).expect("the store");
+        let now = letibot_sessionlog::event::now_ms();
+        store
+            .life_started("d-the-earlier-one", now - 3_600_000)
+            .expect("began");
+        store
+            .life_stopped("d-the-earlier-one", now - 60_000)
+            .expect("stopped");
+        store
+            .connection()
+            .execute(
+                "UPDATE session SET created_at = ?2 WHERE id = ?1",
+                (&id, (now - 3_600_000) as i64),
+            )
+            .expect("the session is older than the next daemon");
+    }
+    let (cfg, handle) = config_at(before.until_ms - 1);
+    let (mut sessions, hub, id) = open(&parts, cfg);
+    let h = sessions.harness_of(&id).expect("open");
+    let after = h
+        .limit_park()
+        .expect("the park came back with the session")
+        .clone();
+    assert_eq!(
+        (after.until_ms, after.reset_ms, after.model.as_str()),
+        (before.until_ms, before.reset_ms, before.model.as_str()),
+        "the same park"
+    );
+    assert_eq!(h.nag_hold(), NagHold::Parked);
+    assert_eq!(glm.count(), 2, "nothing is sent before the park's instant");
+
+    // The schedule came back too: the next refusal moves the re-try to the third step.
+    handle.store(before.until_ms, Ordering::SeqCst);
+    sessions.resume_due_limits();
+    assert_eq!(glm.count(), 3);
+    let park = sessions
+        .harness_of(&id)
+        .expect("open")
+        .limit_park()
+        .expect("refused again")
+        .clone();
+    assert_eq!(
+        park.until_ms,
+        before.until_ms + min(15).as_millis() as u64 + 2_000
+    );
+    handle.store(park.until_ms, Ordering::SeqCst);
+    assert_eq!(sessions.resume_due_limits(), 1);
+    assert_eq!(glm.count(), 4);
+    assert!(answered(&hub), "the owed turn was answered");
+    assert!(
+        sessions
+            .harness_of(&id)
+            .expect("open")
+            .limit_park()
+            .is_none()
     );
 }
 
