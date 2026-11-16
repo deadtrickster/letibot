@@ -513,20 +513,190 @@ pub fn write_or_exec_flag(seg: &str) -> Option<ShellWord> {
             let (verb, rest) = args.split_first()?;
             match verb.text.as_str() {
                 "grep" => short_or_long(rest, "O", "efABCm", &[("open-files-in-pager", 2)]),
-                "diff" | "log" | "show" => short_or_long(rest, "", "", &[("output", 3)]),
-                _ => None,
+                "branch" => git_branch_write(rest),
+                // `git remote -v add` is `git remote add`.
+                "remote" => rest
+                    .iter()
+                    .find(|w| !w.text.starts_with('-'))
+                    .filter(|w| !matches!(w.text.as_str(), "show" | "get-url")),
+                // Every verb that parses revision or diff options takes `--output`: `log`,
+                // `show`, `shortlog`, `rev-list`, `blame`, `stash show`, `reflog show`.
+                _ => short_or_long(rest, "", "", &[("output", 3)]),
             }
         }
-        "tree" => args
-            .iter()
-            .take_while(|w| w.text != "--")
-            .find(|w| w.text.starts_with("-o") || w.text.starts_with("--o")),
+        // `-R` re-runs tree with `-o 00Tree.html` in every directory.
+        "tree" => args.iter().take_while(|w| w.text != "--").find(|w| {
+            w.text.starts_with("-o")
+                || w.text.starts_with("--o")
+                || (w.text.starts_with('-') && !w.text.starts_with("--") && w.text.contains('R'))
+        }),
+        "date" => short_or_long(args, "s", "dfrI", &[("set", 2)]),
         "xxd" => args
             .iter()
-            .find(|w| w.text.starts_with('-') && w.text.trim_start_matches('-').starts_with('r')),
+            .find(|w| w.text.starts_with('-') && w.text.trim_start_matches('-').starts_with('r'))
+            .or_else(|| xxd_outfile(args)),
+        "rg" => short_or_long(
+            args,
+            "",
+            "",
+            &[("pre", 3), ("pre-glob", 8), ("hostname-bin", 12)],
+        ),
+        "ugrep" => short_or_long(
+            args,
+            "",
+            "",
+            &[
+                ("filter", 6),
+                ("save-config", 11),
+                ("pager", 5),
+                ("view", 4),
+            ],
+        ),
+        // A lesskey file can set LESSOPEN, which runs a command, and `+` is an initial command.
+        "less" => args
+            .iter()
+            .take_while(|w| w.text != "--")
+            .find(|w| w.text.starts_with('+'))
+            .or_else(|| {
+                short_or_long(
+                    args,
+                    "oOk",
+                    "bhjpPtTxyzD#",
+                    &[
+                        ("log-file", 3),
+                        ("LOG-FILE", 3),
+                        ("lesskey-file", 9),
+                        ("lesskey-src", 9),
+                        ("lesskey-content", 9),
+                    ],
+                )
+            }),
+        "file" => short_or_long(args, "C", "efFmP", &[("compile", 3)]),
+        "uniq" => second_operand(
+            args,
+            "fsw",
+            &[("skip-fields", 6), ("skip-chars", 6), ("check-chars", 2)],
+        ),
         _ => None,
     };
     found.cloned()
+}
+
+/// `git branch` creates, deletes, moves, copies and retracks; only listing is a read. A name
+/// without `--list` creates a branch, so any operand outside list mode is a write.
+fn git_branch_write(args: &[ShellWord]) -> Option<&ShellWord> {
+    const VALUE: &[&str] = &[
+        "contains",
+        "no-contains",
+        "merged",
+        "no-merged",
+        "points-at",
+        "sort",
+        "format",
+    ];
+    if let Some(w) = short_or_long(
+        args,
+        "dDmMcCfut",
+        "",
+        &[
+            ("delete", 3),
+            ("move", 2),
+            ("copy", 3),
+            ("force", 2),
+            ("set-upstream-to", 5),
+            ("unset-upstream", 3),
+            ("track", 2),
+            ("edit-description", 2),
+            ("create-reflog", 3),
+            ("recurse-submodules", 3),
+        ],
+    ) {
+        return Some(w);
+    }
+    let listing = args.iter().any(|w| {
+        w.text == "--list"
+            || (w.text.starts_with('-') && !w.text.starts_with("--") && w.text.contains('l'))
+    });
+    let mut skip_next = false;
+    for w in args {
+        if std::mem::take(&mut skip_next) {
+            continue;
+        }
+        if let Some(name) = w.text.strip_prefix("--") {
+            skip_next = !name.contains('=') && VALUE.contains(&name);
+            continue;
+        }
+        if w.text.starts_with('-') {
+            continue;
+        }
+        if !listing {
+            return Some(w);
+        }
+    }
+    None
+}
+
+/// The second operand of a getopt program whose operands are `[INPUT [OUTPUT]]`: that one is
+/// written. `takes_arg` and `long` name the options whose value is the next word.
+fn second_operand<'a>(
+    args: &'a [ShellWord],
+    takes_arg: &str,
+    long: &[(&str, usize)],
+) -> Option<&'a ShellWord> {
+    let mut operands = 0;
+    let mut skip_next = false;
+    let mut options_done = false;
+    for w in args {
+        if std::mem::take(&mut skip_next) {
+            continue;
+        }
+        let t = w.text.as_str();
+        if options_done || !t.starts_with('-') || t == "-" {
+            operands += 1;
+            if operands == 2 {
+                return Some(w);
+            }
+            continue;
+        }
+        if t == "--" {
+            options_done = true;
+        } else if let Some(name) = t.strip_prefix("--") {
+            skip_next = !name.contains('=')
+                && long
+                    .iter()
+                    .any(|(full, min)| name.len() >= *min && full.starts_with(name));
+        } else {
+            let group = &t[1..];
+            if let Some(i) = group.find(|c| takes_arg.contains(c)) {
+                skip_next = i + 1 == group.len();
+            }
+        }
+    }
+    None
+}
+
+/// `xxd [options] [infile [outfile]]`. Its options are single-dash words, `-c 8`, `-c8` or
+/// `-cols 8`: a value is the next word only when the option carries no digits of its own.
+fn xxd_outfile(args: &[ShellWord]) -> Option<&ShellWord> {
+    let mut operands = 0;
+    let mut skip_next = false;
+    for w in args {
+        if std::mem::take(&mut skip_next) {
+            continue;
+        }
+        let t = w.text.as_str();
+        if !t.starts_with('-') || t == "-" {
+            operands += 1;
+            if operands == 2 {
+                return Some(w);
+            }
+            continue;
+        }
+        let name = t.trim_start_matches('-');
+        skip_next = name.starts_with(['c', 'g', 'l', 'o', 's', 'n', 'R'])
+            && name.chars().all(|c| c.is_ascii_alphabetic());
+    }
+    None
 }
 
 /// The first word that is a short option in `bad`, or a long option abbreviating one of `long`
@@ -989,7 +1159,8 @@ mod tests {
     }
 
     /// The seed's prefix rules admit their programs' reads and never the flag or script that
-    /// writes a file or runs a command.
+    /// writes a file or runs a command. Every seed row has a fixture here, so a new row fails
+    /// until somebody says which of its spellings write or run.
     #[test]
     fn the_seed_admits_no_write_or_exec_flag() {
         let d = seed();
@@ -1008,39 +1179,300 @@ mod tests {
             "git grep -e Ordering -- crates",
             "git diff --stat",
             "git log --oneline -5",
+            "git branch -v",
+            "git branch -a --contains HEAD",
+            "git branch --list 'ik/*'",
+            "git branch -vl 'ik/*'",
+            "git remote -v",
+            "git remote show origin",
+            "rg -n pat src",
+            "ugrep -n pat src",
+            "uniq -c in",
+            "uniq -f 2 in",
+            "xxd in",
+            "xxd -c 8 in",
+            "xxd -c8 -l 16 in",
+            "less -N src/main.rs",
+            "less -P prompt x",
+            "file -b x",
+            "file -m magic x",
+            "tree -L 2",
+            "date -Iseconds",
+            "date -d @0",
         ] {
             assert_eq!(evaluate_bash(ok, rs), Action::Allow, "{ok}");
         }
-        for ask in [
-            "sed -n -i s/a/b/ x",
-            "sed -ni s/a/b/ x",
-            "sed -n --in-place s/a/b/ x",
-            "sed -n -e 'w /tmp/out' x",
-            "sed -n '1w /tmp/out' x",
-            "sed -n 's/a/b/w /tmp/out' x",
-            "sed -n '1e rm -rf x' x",
-            "sed -n 's/a/b/e' x",
-            "sed -n -f script.sed x",
-            "sort -o out x",
-            "sort -uo out x",
-            "sort -oout x",
-            "sort --output=out x",
-            "sort --out=out x",
-            "sort --compress-program=sh x",
-            "sort --comp=sh x",
-            "git grep -O foo",
-            "git grep -Oless foo",
-            "git grep -iO foo",
-            "git grep --open-files-in-pager=vim foo",
-            "git grep --open foo",
-            "git diff --output=/tmp/x",
-            "git log --output /tmp/x",
-            "git show --output=/tmp/x HEAD",
-            "tree -o out",
-            "xxd -r in out",
-            "sortx -o out",
-        ] {
-            assert_eq!(evaluate_bash(ask, rs), Action::Ask, "{ask}");
+        // Runners, formatters and toolchain rows run or write by design. Running project code
+        // is judged by `project_code`, and a formatter's write stays inside the checkout.
+        const BY_DESIGN: &[&str] = &[];
+        let fixtures: &[(&str, &[&str])] = &[
+            ("git status*", BY_DESIGN),
+            (
+                "git log*",
+                &["git log --output /tmp/x", "git log --out=/tmp/x"],
+            ),
+            ("git diff*", &["git diff --output=/tmp/x"]),
+            ("git show*", &["git show --output=/tmp/x HEAD"]),
+            ("git blame*", &["git blame --output=/tmp/x f"]),
+            (
+                "git grep*",
+                &[
+                    "git grep -O foo",
+                    "git grep -Oless foo",
+                    "git grep -iO foo",
+                    "git grep --open-files-in-pager=vim foo",
+                    "git grep --open foo",
+                ],
+            ),
+            ("git ls-files*", BY_DESIGN),
+            ("git ls-tree*", BY_DESIGN),
+            ("git rev-parse*", BY_DESIGN),
+            ("git rev-list*", &["git rev-list --output=/tmp/x HEAD"]),
+            ("git describe*", BY_DESIGN),
+            ("git branch", BY_DESIGN),
+            ("git branch --list*", &["git branch --list -D foo"]),
+            ("git branch -a*", &["git branch -a -d foo"]),
+            ("git branch -r*", &["git branch -r -D origin/foo"]),
+            (
+                "git branch -v*",
+                &[
+                    "git branch -v -D foo",
+                    "git branch -v newbranch",
+                    "git branch -v -m a b",
+                    "git branch -v --set-upstream-to=o/x",
+                    "git branch -v --edit-description",
+                ],
+            ),
+            (
+                "git branch --show-current*",
+                &["git branch --show-current -D foo"],
+            ),
+            ("git tag", BY_DESIGN),
+            ("git tag -l*", BY_DESIGN),
+            ("git tag --list*", BY_DESIGN),
+            ("git remote", BY_DESIGN),
+            (
+                "git remote -v*",
+                &["git remote -v add o https://x", "git remote -v set-url o x"],
+            ),
+            ("git remote show*", BY_DESIGN),
+            ("git remote get-url*", BY_DESIGN),
+            ("git stash list*", &["git stash list --output=/tmp/x"]),
+            ("git stash show*", &["git stash show --output=/tmp/x"]),
+            ("git worktree list*", BY_DESIGN),
+            ("git config --get*", BY_DESIGN),
+            ("git config --list*", BY_DESIGN),
+            ("git config -l*", BY_DESIGN),
+            ("git cat-file*", BY_DESIGN),
+            ("git shortlog*", &["git shortlog --output=/tmp/x HEAD"]),
+            ("git count-objects*", BY_DESIGN),
+            ("git name-rev*", BY_DESIGN),
+            ("git merge-base*", BY_DESIGN),
+            ("git reflog", BY_DESIGN),
+            ("git reflog show*", &["git reflog show --output=/tmp/x"]),
+            ("git --version*", BY_DESIGN),
+            ("gh pr view*", BY_DESIGN),
+            ("gh pr list*", BY_DESIGN),
+            ("gh pr status*", BY_DESIGN),
+            ("gh pr checks*", BY_DESIGN),
+            ("gh pr diff*", BY_DESIGN),
+            ("gh issue view*", BY_DESIGN),
+            ("gh issue list*", BY_DESIGN),
+            ("gh issue status*", BY_DESIGN),
+            ("gh run list*", BY_DESIGN),
+            ("gh run view*", BY_DESIGN),
+            ("gh workflow list*", BY_DESIGN),
+            ("gh workflow view*", BY_DESIGN),
+            ("gh release list*", BY_DESIGN),
+            ("gh release view*", BY_DESIGN),
+            ("gh repo view*", BY_DESIGN),
+            ("gh search*", BY_DESIGN),
+            ("gh auth status*", BY_DESIGN),
+            ("gh --version*", BY_DESIGN),
+            ("cargo build*", BY_DESIGN),
+            ("cargo check*", BY_DESIGN),
+            ("cargo test*", BY_DESIGN),
+            ("cargo clippy*", BY_DESIGN),
+            ("cargo fmt*", BY_DESIGN),
+            ("cargo doc*", BY_DESIGN),
+            ("cargo tree*", BY_DESIGN),
+            ("cargo metadata*", BY_DESIGN),
+            ("cargo bench*", BY_DESIGN),
+            ("cargo --version*", BY_DESIGN),
+            ("rustc --version*", BY_DESIGN),
+            ("rustfmt --check*", BY_DESIGN),
+            ("rustfmt --edition*", BY_DESIGN),
+            ("rustup show*", BY_DESIGN),
+            ("go build*", BY_DESIGN),
+            ("go test*", BY_DESIGN),
+            ("go vet*", BY_DESIGN),
+            ("go fmt*", BY_DESIGN),
+            ("go list*", BY_DESIGN),
+            ("go mod tidy*", BY_DESIGN),
+            ("go mod download*", BY_DESIGN),
+            ("go version*", BY_DESIGN),
+            ("gofmt *", BY_DESIGN),
+            ("pytest *", BY_DESIGN),
+            ("python3 -m pytest*", BY_DESIGN),
+            ("python -m pytest*", BY_DESIGN),
+            ("npm test*", BY_DESIGN),
+            ("npm run test*", BY_DESIGN),
+            ("npm run build*", BY_DESIGN),
+            ("npm run lint*", BY_DESIGN),
+            ("npx vitest*", BY_DESIGN),
+            ("npx jest*", BY_DESIGN),
+            ("pnpm test*", BY_DESIGN),
+            ("yarn test*", BY_DESIGN),
+            ("make test*", BY_DESIGN),
+            ("make check*", BY_DESIGN),
+            ("ctest *", BY_DESIGN),
+            ("ls *", &[]),
+            ("cat *", &[]),
+            ("head *", &[]),
+            ("tail *", &[]),
+            ("wc *", &[]),
+            ("grep *", &[]),
+            (
+                "rg *",
+                &[
+                    "rg --pre ./x.sh pat .",
+                    "rg --pre=./x.sh pat .",
+                    "rg --hostname-bin ./x pat",
+                    "rg --pre-glob '*.pdf' pat",
+                ],
+            ),
+            (
+                "ugrep *",
+                &[
+                    "ugrep --filter='*:./x.sh' pat .",
+                    "ugrep --save-config=x",
+                    "ugrep --pager=./x pat",
+                    "ugrep --view=./x -Q",
+                ],
+            ),
+            ("pwd", &[]),
+            ("which *", &[]),
+            ("type *", &[]),
+            ("echo *", &[]),
+            ("printf *", &[]),
+            ("stat *", &[]),
+            (
+                "file *",
+                &["file -C -m x", "file -bC -m x", "file --compile -m x"],
+            ),
+            ("du *", &[]),
+            ("df *", &[]),
+            ("date *", &["date -s 2020-01-01", "date --set=2020-01-01"]),
+            ("uname *", &[]),
+            ("nproc", &[]),
+            ("hostname", &[]),
+            ("id", &[]),
+            ("id -*", &[]),
+            ("sha256sum *", &[]),
+            ("md5sum *", &[]),
+            ("diff *", &[]),
+            (
+                "sort *",
+                &[
+                    "sort -o out x",
+                    "sort -uo out x",
+                    "sort -oout x",
+                    "sort --output=out x",
+                    "sort --out=out x",
+                    "sort --compress-program=sh x",
+                    "sort --comp=sh x",
+                    "sortx -o out",
+                ],
+            ),
+            (
+                "uniq *",
+                &[
+                    "uniq payload ~/.config/autostart/x.desktop",
+                    "uniq -c in out",
+                    "uniq -f 2 in out",
+                    "uniq -- in out",
+                ],
+            ),
+            ("tr *", &[]),
+            ("cut *", &[]),
+            (
+                "sed -n*",
+                &[
+                    "sed -n -i s/a/b/ x",
+                    "sed -ni s/a/b/ x",
+                    "sed -n --in-place s/a/b/ x",
+                    "sed -n -e 'w /tmp/out' x",
+                    "sed -n '1w /tmp/out' x",
+                    "sed -n 's/a/b/w /tmp/out' x",
+                    "sed -n '1e rm -rf x' x",
+                    "sed -n 's/a/b/e' x",
+                    "sed -n -f script.sed x",
+                ],
+            ),
+            ("jq *", &[]),
+            (
+                "xxd *",
+                &[
+                    "xxd -r in out",
+                    "xxd IN OUT",
+                    "xxd -c 8 IN OUT",
+                    "xxd -c8 IN OUT",
+                ],
+            ),
+            ("hexdump *", &[]),
+            ("strings *", &[]),
+            ("readlink *", &[]),
+            ("realpath *", &[]),
+            ("basename *", &[]),
+            ("dirname *", &[]),
+            ("true", &[]),
+            ("false", &[]),
+            ("test *", &[]),
+            ("[ *", &[]),
+            ("tree *", &["tree -o out", "tree -R -H . -L 1"]),
+            ("nl *", &[]),
+            ("column *", &[]),
+            ("fold *", &[]),
+            (
+                "less *",
+                &[
+                    "less -o F x",
+                    "less -OF x",
+                    "less --log-file=F x",
+                    "less -k evil x",
+                    "less --lesskey-src=evil x",
+                    "less '+!id' x",
+                    "lesskey -o out in",
+                ],
+            ),
+            ("tac *", &[]),
+        ];
+        let rows: Vec<&str> = d
+            .iter()
+            .filter(|r| r.permission == "bash" && r.action == Action::Allow)
+            .map(|r| r.pattern.as_str())
+            .collect();
+        for row in &rows {
+            assert!(
+                fixtures.iter().any(|(r, _)| r == row),
+                "seed row `{row}` has no write/exec fixture"
+            );
+        }
+        for (row, asks) in fixtures {
+            assert!(
+                rows.contains(row),
+                "fixture for `{row}`, which the seed lacks"
+            );
+            for ask in *asks {
+                assert_eq!(evaluate_bash(ask, rs), Action::Ask, "{row}: {ask}");
+            }
+            // A one-word program row is that program, not every name it begins.
+            if let Some(program) = row.strip_suffix(" *")
+                && !program.contains(' ')
+            {
+                let longer = format!("{program}zz x");
+                assert_eq!(evaluate_bash(&longer, rs), Action::Ask, "{row}: {longer}");
+            }
         }
         // The operator's own literal text is honoured: the flag is spelled out in the rule.
         let mine = vec![Rule::new("bash", "sort -o*", Action::Allow)];
