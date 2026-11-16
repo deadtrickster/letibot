@@ -1,4 +1,4 @@
-//! R257: the shadow as a running conversation. Stub models only; nothing reads the operator's
+//! The shadow as a running conversation. Stub models only; nothing reads the operator's
 //! providers.toml or store.
 
 use std::sync::atomic::AtomicU64;

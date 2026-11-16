@@ -1,10 +1,6 @@
-//! The plugin layers a session has, and the panes they answer: the daemon's half of the
-//! plugin stack - which session holds which `Stack`, when a look runs, and what reaches a
-//! head. The answer protocol, the precedence and the gate belong to `letibot_plugins`.
-//!
-//! Three submodules, by the role each plays: [`install`] builds the stack and reloads it,
-//! [`hook`] asks it and reads the answers, [`pane`] draws what a head sees. What they share -
-//! the host, its lock, and the helpers that would otherwise be a third copy - is here.
+//! The daemon's half of the plugin stack: which session holds which `Stack`, when a look runs,
+//! and what reaches a head. [`install`] builds and reloads the stack, [`hook`] asks it, [`pane`]
+//! draws what a head sees; protocol, precedence and gate belong to `letibot_plugins`.
 
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
@@ -143,10 +139,9 @@ impl Inherited {
 }
 
 struct Inner {
-    /// The layers in force, behind an `Arc` because a hook call runs OUTSIDE this lock: a caller
-    /// takes a reference to the layers here, releases the session, calls the module, and retakes
-    /// the lock to apply the answer. `Arc::make_mut` is what makes that safe - a change copies the
-    /// stack rather than landing under a call that is reading the layers it started with.
+    /// The layers in force, behind an `Arc` because a hook call runs outside this lock: the caller
+    /// clones the reference, releases the session, calls, and retakes the lock to apply the answer.
+    /// `Arc::make_mut` copies the stack on change, so a running call keeps the layers it started with.
     stack: Arc<Stack>,
     rec: Recorder,
     /// The panes a head has opened, by id, with what the pane returned and when it wants asking
@@ -181,10 +176,9 @@ impl Inner {
         Arc::make_mut(&mut self.stack)
     }
 
-    /// What a call is being answered FROM: the layers and the bytes they run. An answer that comes
-    /// back to a different footprint came from a stack that is no longer in force, and is dropped
-    /// the way any late answer is. A poll that found nothing changed leaves this alone, which is
-    /// what a hash of the layers buys over a version counter.
+    /// What a call is being answered from: the layers and the bytes they run. An answer that comes
+    /// back to a different footprint is dropped like any late answer. A hash, not a version counter,
+    /// so a poll that found nothing changed leaves it alone.
     fn footprint(&self) -> Footprint {
         let mut hasher = DefaultHasher::new();
         for layer in self.stack.layers() {
@@ -214,7 +208,7 @@ struct Open {
     spec: Option<LookSpec>,
     /// The layer that answered, whose capabilities a look is checked against.
     by: String,
-    /// 0 is never; C3's floor is `sessionlog::pane::MIN_EVERY_S`.
+    /// 0 is never; the floor is `sessionlog::pane::MIN_EVERY_S`.
     every_s: u64,
     next_at: Option<Instant>,
 }
@@ -450,7 +444,7 @@ fn input_value(
     })
 }
 
-/// C3's input, once, for a caller that has none of its own: the first frame of any pane - nothing
+/// The pane input, once, for a caller that has none of its own: the first frame of any pane - nothing
 /// looked at, nothing pressed, no state.
 fn synthetic_pane_input(feeds: &BTreeMap<String, Value>) -> Value {
     input_value(&None, &Req::fresh(), (SIZE_W, SIZE_H), feeds)

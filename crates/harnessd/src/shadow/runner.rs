@@ -223,7 +223,7 @@ impl JobRunner {
         )
     }
 
-    /// [`JobRunner::start`] as a running conversation fed from `persist.log` (R257).
+    /// [`JobRunner::start`] as a running conversation fed from `persist.log`.
     #[allow(clippy::too_many_arguments)] // each is a separate seam the tests replace
     pub fn start_persistent(
         job: Job,

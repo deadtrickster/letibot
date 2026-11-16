@@ -74,12 +74,12 @@ impl ShadowConfig {
         self.enabled.contains(&job)
     }
 
-    /// Each job a running conversation (R257), unless `mode = "stateless"`.
+    /// Each job a running conversation, unless `mode = "stateless"`.
     pub fn persistent(&self) -> bool {
         !self.stateless
     }
 
-    /// Whether the permission job answers a relayed read-only view ask for the operator (R317).
+    /// Whether the permission job answers a relayed read-only view ask for the operator.
     /// On whenever the permission job is, unless `answer_reads = false`.
     pub fn answers_reads(&self) -> bool {
         self.is_on(Job::Permission) && !self.answer_reads_off

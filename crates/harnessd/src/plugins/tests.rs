@@ -241,8 +241,7 @@ fn a_read_look_inside_the_workspace_answers_the_text_and_a_missing_file_is_exit_
 }
 
 /// A pane in a worktree reads the project's files: a relative `read` resolves against the session's
-/// checkout first, so `.letibot/status.json` is the one the checkout holds - the wall was
-/// `look exit 1` on every dashboard a worktree session opened (R151).
+/// checkout first, so `.letibot/status.json` is the one the checkout holds.
 #[test]
 fn a_relative_read_in_a_worktree_resolves_against_the_checkout() {
     let root = tempdir("worktree-read");
@@ -325,8 +324,7 @@ fn a_relative_read_in_a_worktree_resolves_against_the_checkout() {
 }
 
 /// A rebuild of a pinned layer keeps the operator's pin while its `plugin.toml` asks for the same
-/// powers, and loses it the moment it asks for a new one - the wall was a `/plugin trust` after
-/// every rebuild (R151).
+/// powers, and loses it the moment it asks for a new one.
 #[test]
 fn a_rebuild_keeps_a_pin_until_the_manifest_asks_for_a_new_capability() {
     let root = tempdir("repin");
@@ -1098,9 +1096,8 @@ fn a_session_that_declared_no_tool_installs_no_builtin_layer() {
     );
 }
 
-/// Every built-in pane is on a head's list and opens by its name with no tool declared: the wall was
-/// that a built-in was installed only when a session declared a tool from it, so `irc` and `github`
-/// answered a pane nothing could reach (R151).
+/// Every built-in pane is on a head's list and opens by its name with no tool declared, not only
+/// when a session declared a tool from it.
 #[test]
 fn every_builtin_pane_is_listed_and_opens_with_no_tool_declared() {
     let workspace = tempdir("builtin-panes");
@@ -1214,7 +1211,7 @@ fn a_list_look_answers_names_sizes_and_mtimes_and_a_file_is_not_a_directory() {
 
 #[test]
 fn a_view_the_host_cannot_validate_becomes_one_panel_saying_why() {
-    // `q` is one of the host's own keys (C3), so `View::validate` refuses this view.
+    // `q` is one of the host's own keys, so `View::validate` refuses this view.
     let bad = r#"{"title":"bad","panels":[{"id":"plan","key":"q","title":"plan"}]}"#;
     let (root, hub) = project("refused", bad);
     let host = host(&root);
@@ -1476,7 +1473,7 @@ fn the_rectangle_a_head_sends_is_the_one_the_pane_is_asked_at() {
 fn a_closed_pane_is_not_refreshed_again() {
     let (root, hub) = project("close", A_VIEW);
     let layer = root.join(".letibot/plugins/plan-dashboard");
-    // On the clock: `every_s` 5 is C3's floor.
+    // On the clock: `every_s` 5 is the floor.
     std::fs::write(
         layer.join("answer.json"),
         r#"{"title":"one","panels":[{"id":"plan","key":"t","title":"plan"}],
@@ -2867,7 +2864,7 @@ fn a_child_inherits_a_pinned_session_layer_and_not_an_unpinned_one() {
 }
 
 /// A reviewer child runs the gatekeeper's layers: the `review_verdict` call a reviewer hands its
-/// verdict in through is guarded by the session that spawned it, which is what K5 needs to build on.
+/// verdict in through is guarded by the session that spawned it.
 #[test]
 fn a_reviewer_child_runs_the_gatekeepers_layers() {
     let root = tempdir("child-reviewer");
@@ -2914,7 +2911,7 @@ fn a_reviewer_child_runs_the_gatekeepers_layers() {
     );
 }
 
-// ===== K5: the reviewer's brief and the verdict's floor (`review_`), and a child's brief (`brief_`)
+// ===== The reviewer's brief and the verdict's floor (`review_`), and a child's brief (`brief_`)
 
 /// A review is somebody else's judgement of a branch, so the layer of the session whose branch it is
 /// answers neither the brief nor the floor: the queue's stack never discovers that session's plugin
@@ -4445,7 +4442,7 @@ fn a_room_linked_after_the_host_was_built_gets_its_pane() {
     let host = PluginHost::production("s-late-pane", &workspace);
     let hub = Hub::new("s-late-pane");
     // A built-in pane is the binary's, so it is here before any room is: the screen says which half
-    // is missing instead of the pane not existing at all (R151).
+    // is missing instead of the pane not existing at all.
     host.open("s-late-pane", &hub, "room/room", (100, 30));
     assert!(
         host.panes().iter().any(|p| p == "room/room"),
@@ -4555,7 +4552,7 @@ fn the_builtin_room_layer_answers_its_pane_with_a_real_room_behind_it() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-// ------------------------------------------------------- X23 and X21: command_ and lifecycle_
+// ------------------------------------------------------- command_ and lifecycle_
 
 /// A project with one layer that exports `hooks` and answers every one of them with `answer.json` -
 /// and none when the file is not there, which is a layer that traps.
@@ -4595,8 +4592,8 @@ fn unknown_verb(host: &PluginHost, hub: &Arc<Hub>, verb: &str, line: &str) -> St
 }
 
 /// A `/` verb the daemon has not got is offered to `command_<verb>`, and the act the daemon can
-/// perform - a sentence - is the answer (X23). A verb nothing answers is still the sentence it has
-/// always been.
+/// perform - a sentence - is the answer. A verb nothing answers is still the harness's
+/// own sentence.
 #[test]
 fn a_command_layer_answers_an_unknown_verb() {
     let (root, hub) = layer_project(
@@ -4762,7 +4759,7 @@ fn every_daemon_verb_is_one_a_layer_cannot_take() {
     }
 }
 
-// K8: the reserved prefixes get their callers.
+// The reserved prefixes get their callers.
 
 /// A project with one layer that answers one hook, for the kinds that carry no pane.
 fn hook_project(tag: &str, hook: &str, answer: &str) -> (PathBuf, Arc<Hub>) {
@@ -4997,7 +4994,7 @@ fn a_pinned_tool_layer_runs_an_exec_look_through_admit_unasked() {
 
 /// A read look answers what the session's view holds and not the daemon's disk: the file is inside
 /// the session's own root and on the host, the store is on every seat's never-grant list, and the
-/// look is refused in the fence's own words (R121 item 8's family, X26).
+/// look is refused in the fence's own words.
 #[test]
 fn a_tool_read_look_in_a_confined_session_reads_the_view_not_the_host() {
     // The letibot store, inside this session's workspace so that a plain `read` of the file works:
@@ -5087,7 +5084,7 @@ fn a_tool_read_look_in_a_confined_session_reads_the_view_not_the_host() {
 
 /// A read look of a path outside the session's root is refused the way the file tools refuse it: a
 /// confined seat cannot read past its root, and the daemon's own view of the disk is not the
-/// session's (the bug X26 names).
+/// session's.
 #[test]
 fn a_tool_read_look_outside_the_sessions_root_is_refused() {
     let elsewhere = tempdir("tool-view-outside");
@@ -5300,7 +5297,7 @@ fn quiet_is_overridden_at_the_repeat_cap() {
     );
 }
 
-/// R127 - one nag per free head instead of one row - closes as a layer: an answer naming every
+/// One nag per free head instead of one row, as a layer: an answer naming every
 /// eligible row is honoured, and the default (nothing answering) is still the harness's one row.
 #[test]
 fn a_layer_naming_every_free_head_is_r127() {

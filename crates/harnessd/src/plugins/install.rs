@@ -284,10 +284,8 @@ impl PluginHost {
     }
 
     /// The one loop behind every door above: walk the built-in table, take what `wanted` names, and
-    /// put it under the stack's own layers.
-    ///
-    /// `wanted` answers what makes a built-in already answered, and `None` for *not this door's*: one
-    /// rule, so a sixth door cannot forget the guard, the answered check or the failure line.
+    /// put it under the stack's own layers. `wanted` returns `None` for not this door's, so every door
+    /// shares the guard, the answered check and the failure line.
     fn install_where(
         &self,
         hub: Option<&Arc<Hub>>,
@@ -1115,10 +1113,9 @@ impl PluginHost {
         Ok(out)
     }
 
-    /// The stack `test` asks, and the source it had to build to ask it. A name the live stack does
-    /// not hold is looked for in this session's plugin directory: a built module there is a layer
-    /// the loop has not loaded yet, and asking it on a copy is what makes `test` a step that comes
-    /// before `load` rather than after it. A directory with no module is refused for `plugin build`.
+    /// The stack `test` asks, and the source it built to ask it. A name the live stack lacks is
+    /// looked for in the session's plugin directory, so `test` can come before `load`; a directory
+    /// with no built module is refused for `plugin build`.
     fn asking_stack(
         &self,
         stack: &Stack,
@@ -1166,7 +1163,7 @@ impl PluginHost {
     ) -> Result<(String, Option<String>, String), Refused> {
         let panes = pane_names(stack);
         match what.map(str::trim).filter(|w| !w.is_empty()) {
-            // A pane id is `<plugin>/<hook name without its kind>` (C4).
+            // A pane id is `<plugin>/<hook name without its kind>`.
             Some(pane) if pane.contains('/') => {
                 let (_, name) = pane.split_once('/').unwrap_or((pane, ""));
                 if name.is_empty() {

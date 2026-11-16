@@ -1,4 +1,4 @@
-//! Shadow sessions (R243): a second model, on any provider, judging a session off the critical
+//! Shadow sessions: a second model, on any provider, judging a session off the critical
 //! path. One seat, `shadow`, with three jobs grouped by trigger. Every exchange is recorded in the
 //! shadow's own stored session, and the guardrails here are code a prompt cannot override.
 

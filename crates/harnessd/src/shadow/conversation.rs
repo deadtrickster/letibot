@@ -1,8 +1,6 @@
-//! A persistent shadow job (R257): one running conversation, fed the watched rows once, in order,
-//! fenced and with their authors, and asked one question at each trigger. Each request is the
-//! last one plus its answer plus the new rows and the question, so the prefix stays cacheable.
-//! Compaction is mechanical: the history is rebuilt from the fed rows behind a marker, never
-//! summarised by a model.
+//! A persistent shadow job: one conversation, fed the watched rows once, in order, fenced and
+//! with their authors, and asked one question per trigger. Each request extends the last, so the
+//! prefix stays cacheable; compaction rebuilds history from the fed rows, with no model.
 
 use super::Job;
 use super::feed::{Log, Row};

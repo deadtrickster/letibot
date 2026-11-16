@@ -226,7 +226,7 @@ pub fn hook_name(kind: &str, name: &str) -> String {
     }
 }
 
-/// The pane id this plugin's hook is drawn under (C4): `<manifest name>/<hook without its kind>`.
+/// The pane id this plugin's hook is drawn under: `<manifest name>/<hook without its kind>`.
 /// Empty for the kinds a head does not draw.
 pub fn pane_id(kind: &str, name: &str) -> String {
     if kind != "pane" {
@@ -713,7 +713,7 @@ mod tests {{
     )
 }
 
-/// **`pane`'s template** — slice 1's, unchanged: a pure `view` over the C3 document.
+/// `pane`'s template: a pure `view` over the pane input document.
 fn pane_lib_rs(name: &str, purpose: &str, hook: &str, kind: &str) -> String {
     format!(
         r#"//! **{name}** — {purpose}
@@ -1085,7 +1085,7 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// The two kinds R175 added a template for. Their export names are the HOST's - one channel, and
+    /// The push and card templates. Their export names are the HOST's - one channel, and
     /// a row asked about once - so a plugin's own name is not in the hook, unlike a pane's or a nag's.
     #[test]
     fn the_push_and_card_templates_export_the_hooks_the_host_asks() {

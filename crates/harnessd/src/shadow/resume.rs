@@ -1,7 +1,6 @@
-//! A persistent shadow conversation resumed after a restart from its own record. Each kept turn's
-//! exchange row ends with one `--- kept turn {json}` line: the tail as sent, the reply, the
-//! authored spans and the fed row it reached. Replayed in order, the requests are the same bytes
-//! as before the restart, so a provider's cached prefix still matches.
+//! A persistent shadow conversation resumed from its own record after a restart. Each kept turn's
+//! row ends with a `--- kept turn {json}` line (tail sent, reply, authored spans, fed row reached),
+//! so the replayed requests are the same bytes and a provider's cached prefix still matches.
 
 use super::Job;
 use super::feed::Log;
