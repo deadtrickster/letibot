@@ -116,3 +116,35 @@ fn a_failed_or_missing_job_says_so() {
          result is unavailable"
     );
 }
+
+#[test]
+fn a_child_pid_or_monitor_that_ended_comes_off_and_row_edges_stay() {
+    let row = TodoItem {
+        needs: vec![
+            TodoNeed::Child { id: "s-c1".into() },
+            TodoNeed::Pid { pid: 7, start: 9 },
+            TodoNeed::Monitor { name: "m".into() },
+            TodoNeed::Row {
+                content: "prep".into(),
+            },
+        ],
+        ..item("after", TodoStatus::Pending)
+    };
+    let board = TodoBoard::new(vec![item("prep", TodoStatus::Pending), row]);
+    let resolved = board.resolve_waits(|need| match need {
+        TodoNeed::Child { id } => Some(format!("child {id} ended (done)")),
+        TodoNeed::Monitor { .. } => None,
+        _ => Some("gone".into()),
+    });
+    let handles: Vec<&str> = resolved.iter().map(|r| r.handle.as_str()).collect();
+    assert_eq!(handles, vec!["s-c1", "pid 7:9"]);
+    assert_eq!(
+        board.snapshot()[1].needs,
+        vec![
+            TodoNeed::Monitor { name: "m".into() },
+            TodoNeed::Row {
+                content: "prep".into()
+            },
+        ]
+    );
+}

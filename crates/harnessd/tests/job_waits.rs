@@ -282,3 +282,64 @@ fn the_nag_tick_resolves_a_wait_no_job_end_reached() {
         "{said:?}"
     );
 }
+
+/// A monitor or pid wait the last daemon left on the board is over once nothing watches or runs
+/// it here. Open takes it off with a note, as for a job, so the pane does not draw it as a wait.
+#[test]
+fn a_monitor_wait_is_resolved_at_open_after_restart() {
+    let Some(_) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let waiting = |content: &str, need: TodoNeed| TodoItem {
+        needs: vec![
+            need,
+            TodoNeed::Row {
+                content: "prep".into(),
+            },
+        ],
+        ..row(content, &[])
+    };
+    let (path, id) = seeded(
+        "monitor",
+        &[
+            row("prep", &[]),
+            waiting(
+                "after the watch",
+                TodoNeed::Monitor {
+                    name: "ci-watch".into(),
+                },
+            ),
+            // pid 1 runs, but never with this start time: the process waited on is gone.
+            waiting("after the build", TodoNeed::Pid { pid: 1, start: 1 }),
+        ],
+        &[],
+    );
+    let parts = Parts::load(&config(&path, &id)).expect("the vocabulary must load");
+    let (sessions, _registry) = opened(&parts, &path, &id);
+
+    for (content, needs) in job_needs(&sessions, &id) {
+        assert!(
+            needs.iter().all(|n| matches!(n, TodoNeed::Row { .. })),
+            "`{content}` still waits on {needs:?}"
+        );
+    }
+    let said = notes(&sessions, &id);
+    assert!(
+        said.contains(
+            "[todo] monitor ci-watch is no longer watching (it fired, expired or was retired) - \
+             no longer a wait of `after the watch`."
+        ),
+        "{said}"
+    );
+    assert!(
+        said.contains("[todo] pid 1 is no longer running - no longer a wait of `after the build`."),
+        "{said}"
+    );
+    let stored = Store::open(&path).unwrap().todos(&id).unwrap();
+    assert!(
+        stored
+            .iter()
+            .all(|t| t.needs.iter().all(|n| matches!(n, TodoNeed::Row { .. }))),
+        "{stored:?}"
+    );
+}

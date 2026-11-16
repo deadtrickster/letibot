@@ -12,11 +12,11 @@ struct TheNag {
     next: Option<Duration>,
 }
 
-/// What the job-wait sweep freed: how many jobs' waits, and whether a freed row can start now, so
+/// What the wait sweep freed: how many waited-on things, and whether a freed row can start now, so
 /// the note rides a turn and the caller must ring for one.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FreedWaits {
-    pub(crate) jobs: usize,
+    pub(crate) waits: usize,
     pub(crate) wake: bool,
 }
 
@@ -132,6 +132,14 @@ impl Harness {
         )
     }
 
+    /// Whether this session's monitor `name` is still watching: the one reading the nag's silence
+    /// and the wait sweep share.
+    fn monitor_watching(&self, name: &str) -> bool {
+        self.monitors
+            .as_ref()
+            .is_some_and(|m| m.get(name).is_some())
+    }
+
     /// The jobs this session is running, as the plan-check reads them: a row waiting on one is not work the check may
     /// speak about, and the moment it ends the row is. Asked per handle through `job_fate`, the same lookup the due
     /// firing reads, so the two cannot disagree and a handle never heard of answers `Unknown`. Taken per ask.
@@ -145,12 +153,15 @@ impl Harness {
                 // A monitor still watching is the job's sibling: the row waits on it, and the
                 // check is quiet about it, until it ends.
                 if let letibot_tokencore::store::TodoNeed::Monitor { name } = need {
-                    if self
-                        .monitors
-                        .as_ref()
-                        .is_some_and(|m| m.get(name).is_some())
-                    {
+                    if self.monitor_watching(name) {
                         jobs = jobs.watching(name.clone());
+                    }
+                    continue;
+                }
+                // A process named by pid is read off this host's process table, as the seat does.
+                if let letibot_tokencore::store::TodoNeed::Pid { pid, start } = need {
+                    if pid_alive(*pid, *start) {
+                        jobs = jobs.pid(*pid, *start);
                     }
                     continue;
                 }
@@ -200,10 +211,11 @@ impl Harness {
         jobs
     }
 
-    /// Take every job wait off the open rows whose job no longer runs - ended, killed, or gone from
-    /// the table after a restart - and leave the model one note saying how each ended. A delivered
-    /// settlement freed its rows already, so this is the backstop for one that never arrived.
-    pub(crate) fn resolve_ended_job_waits(&mut self) -> FreedWaits {
+    /// Take every job, child, pid and monitor wait off the open rows whose thing no longer runs -
+    /// ended, killed, or gone after a restart - and leave the model one note saying how each
+    /// ended. A delivered settlement freed its job rows already; this is the backstop for the rest.
+    pub(crate) fn resolve_ended_waits(&mut self) -> FreedWaits {
+        use letibot_tokencore::store::TodoNeed;
         let board = self.todos.clone();
         let graced = |handle: &str| {
             self.job_watch.as_ref().is_some_and(|w| {
@@ -215,24 +227,42 @@ impl Harness {
                 .is_some()
             })
         };
-        let resolved = board.resolve_job_waits(|handle| {
-            let state = match self.job_fate(handle) {
-                JobFate::Running => return None,
-                _ if graced(handle) => return None,
-                // A row that still says `running` with nothing live behind it died with its daemon.
-                JobFate::Ended { state } if state != "running" => Some(state),
-                JobFate::Ended { .. } | JobFate::Unknown => None,
-            };
-            let at = state.as_ref().and_then(|_| {
-                let store = self.store.as_ref()?;
-                let ms = store.job_updated_ms(&self.cfg.session_id, handle).ok()??;
-                Some(super::open::seated_at(ms as i64))
-            });
-            Some(letibot_tools::builtins::todo::job_ended_words(
-                handle,
-                state.as_deref(),
-                at.as_deref(),
-            ))
+        let children = self.tasks.snapshot();
+        let resolved = board.resolve_waits(|need| match need {
+            TodoNeed::Job { handle } => {
+                let state = match self.job_fate(handle) {
+                    JobFate::Running => return None,
+                    _ if graced(handle) => return None,
+                    // A row that still says `running` with nothing live behind it died with its daemon.
+                    JobFate::Ended { state } if state != "running" => Some(state),
+                    JobFate::Ended { .. } | JobFate::Unknown => None,
+                };
+                let at = state.as_ref().and_then(|_| {
+                    let store = self.store.as_ref()?;
+                    let ms = store.job_updated_ms(&self.cfg.session_id, handle).ok()??;
+                    Some(super::open::seated_at(ms as i64))
+                });
+                Some(letibot_tools::builtins::todo::job_ended_words(
+                    handle,
+                    state.as_deref(),
+                    at.as_deref(),
+                ))
+            }
+            // Only the journal's own ending: a child it does not list may be placed elsewhere.
+            TodoNeed::Child { id } => {
+                let entry = children.iter().find(|e| &e.name == id)?;
+                if !matches!(entry.state.as_str(), "done" | "failed") || graced(id) {
+                    return None;
+                }
+                Some(format!("child {id} ended ({})", entry.state))
+            }
+            TodoNeed::Pid { pid, start } => {
+                (!pid_alive(*pid, *start)).then(|| format!("pid {pid} is no longer running"))
+            }
+            TodoNeed::Monitor { name } => (!self.monitor_watching(name)).then(|| {
+                format!("monitor {name} is no longer watching (it fired, expired or was retired)")
+            }),
+            _ => None,
         });
         if resolved.is_empty() {
             return FreedWaits::default();
@@ -252,13 +282,13 @@ impl Harness {
             self.board_notices.push(note);
         } else if let Err(e) = self.say_without_a_turn(&Facts::Todo { rows }, &note) {
             eprintln!(
-                "  {} · todos: the resolved job waits were not noted ({e})",
+                "  {} · todos: the resolved waits were not noted ({e})",
                 self.cfg.session_id
             );
         }
-        self.flush_todos_or_say("a resolved job wait");
+        self.flush_todos_or_say("a resolved wait");
         FreedWaits {
-            jobs: resolved.len(),
+            waits: resolved.len(),
             wake,
         }
     }
@@ -681,5 +711,15 @@ impl Harness {
             detail.push_str(&format!(". {why}"));
         }
         self.hub.warn("nags_resumed", detail);
+    }
+}
+
+/// Whether the process a `pid` wait names is still there. A start of zero is matched on the pid
+/// alone, as `RunningJobs::is_running_pid` reads it.
+fn pid_alive(pid: u32, start: u64) -> bool {
+    use letibot_tools::exec::procs;
+    match start {
+        0 => procs::read(pid).is_some_and(|p| p.state != 'Z'),
+        start => procs::alive(pid, start),
     }
 }
