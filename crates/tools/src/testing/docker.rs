@@ -1,10 +1,6 @@
-//! A stub Docker engine on a unix socket: the fixture every docker test runs against, because the
-//! guest has no engine and a test may never reach a real one.
-//!
-//! It records every request it is sent and answers in the Engine API's own shapes - the fields the
-//! proxy and the reaper read (`Id`, `Labels`, `Names`, `State`, `Volumes`, `UsageData`, `Images`,
-//! `ImagesDeleted`) - so a test asserts on what went over the wire and on what the engine would
-//! have done with it, which is as far as a box without docker can honestly go.
+//! A stub Docker engine on a unix socket: the guest has no engine and a test may never reach one.
+//! It records every request and answers in the Engine API's own shapes, the fields the proxy and
+//! the reaper read, so a test asserts on the wire and on what the engine would have done.
 
 use std::collections::BTreeMap;
 use std::io::BufReader;

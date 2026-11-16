@@ -162,8 +162,7 @@ mod tests {
         ])
     }
 
-    /// The rano session: the operator asked about scrolling and colours in a terminal pane and
-    /// the session edited its editor; no fuzzing word anywhere.
+    /// A session about scrolling and colours in a terminal pane, with no fuzzing word anywhere.
     #[test]
     fn a_session_that_never_named_fuzzing_has_no_evidence_for_it() {
         let seen = Seen::of_texts([
@@ -239,8 +238,8 @@ mod tests {
         )
     }
 
-    /// The measured failure: a 26-skill registry made `work`, `caller` and `protocol` rare, so
-    /// every unrelated skill whose description used one was found. A distinctive word still is.
+    /// A small registry makes `work`, `caller` and `protocol` rare; the common list keeps them from
+    /// naming every skill whose description uses one. A distinctive word still names its skill.
     #[test]
     fn a_description_word_is_evidence_only_when_it_is_not_common_english() {
         let common = fixture_list();
