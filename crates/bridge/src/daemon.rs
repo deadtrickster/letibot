@@ -628,6 +628,11 @@ pub fn ensure_here_with(
         START_PATIENCE,
         std::time::Duration::from_millis(500),
     );
+    if came == Came::Up && serving_pid(&d.socket).is_some_and(|p| p != pid) {
+        // Two starts raced past `is_up`: this call's daemon lost the folder claim and the
+        // socket is the winner's. Joining it lets the caller open its own session there.
+        return join_winner(d, placement);
+    }
     if came == Came::Up {
         d.started = true;
         // The record the launcher's own verbs read: `--ls`,
@@ -663,6 +668,30 @@ pub fn ensure_here_with(
         d.log.display(),
         tail(&d.log, 15)
     ))
+}
+
+/// The pid serving `socket`, from the kernel at connect. `None` when it will not say.
+fn serving_pid(socket: &Path) -> Option<u32> {
+    let s = std::os::unix::net::UnixStream::connect(socket).ok()?;
+    letibot_sessionlog::peer::peer_pid(&s).map(|p| p as u32)
+}
+
+/// Another start's daemon, joined as one already up. Its placement record is written just
+/// after its bind, so it gets a short wait; still none is refused, as for any unplaced daemon.
+fn join_winner(mut d: Daemon, placement: &Placement) -> Result<Daemon, String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        d.placement =
+            letibot_sessionlog::placement::read(&d.socket).and_then(|s| Placement::parse(&s).ok());
+        if d.placement.is_some() || std::time::Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    if d.placement.as_ref() == Some(placement) {
+        return Ok(d);
+    }
+    Err(placed_elsewhere(&d, placement))
 }
 
 /// The refusal for a daemon that is already up and placed somewhere else. It says three

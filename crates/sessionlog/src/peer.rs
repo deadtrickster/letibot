@@ -140,7 +140,7 @@ pub fn request_of(frame: &ClientFrame) -> (String, u64) {
 
 /// The pid the kernel recorded for this connection at `connect`. `None` when it will not say.
 #[cfg(target_os = "macos")]
-fn peer_pid(stream: &UnixStream) -> Option<i32> {
+pub fn peer_pid(stream: &UnixStream) -> Option<i32> {
     use std::os::unix::io::AsRawFd;
     let mut pid: libc::pid_t = 0;
     let mut len = std::mem::size_of::<libc::pid_t>() as libc::socklen_t;
@@ -160,7 +160,7 @@ fn peer_pid(stream: &UnixStream) -> Option<i32> {
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
-fn peer_pid(stream: &UnixStream) -> Option<i32> {
+pub fn peer_pid(stream: &UnixStream) -> Option<i32> {
     use std::os::unix::io::AsRawFd;
     // SAFETY: `ucred` is plain data, zero is a valid value.
     let mut cred: libc::ucred = unsafe { std::mem::zeroed() };
