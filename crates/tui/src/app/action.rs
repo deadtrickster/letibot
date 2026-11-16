@@ -228,6 +228,9 @@ pub enum Action {
     },
     /// Ask the daemon for the settings this session runs under (`/config`).
     Settings,
+    /// The model picker opened: the daemon polls the doors it holds no fresh reading of. Sent only
+    /// to a daemon that echoed `usage_poll_v1`.
+    PollUsage,
     /// Bring a session that is in the store but not in this daemon back to life.
     /// The head switches to it on the same `Sessions` reply a `NewSession` produces.
     ResumeSession(String),

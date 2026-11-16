@@ -769,6 +769,9 @@ impl Link {
                     Action::Settings => {
                         self.client.settings()?;
                     }
+                    Action::PollUsage => {
+                        self.client.poll_usage()?;
+                    }
                     // A read, not a move: the answer arrives as a `Peeked` frame and the pane is built from it,
                     // so nothing changes which session this connection is in and nothing is read until the
                     // person asked. A child is a session, so its pane is drawn by the rows renderer.

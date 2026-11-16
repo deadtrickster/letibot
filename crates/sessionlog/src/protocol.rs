@@ -12,7 +12,7 @@ use crate::view::Snapshot;
 /// Bumped when a frame's meaning changes in a way the other side cannot parse: a new variant is a
 /// deserialisation fault in the middle of a turn. The daemon accepts a differing head and says so,
 /// translates for an older one (`compat::SINCE`), and refuses by name only below `OLDEST_HEAD`.
-pub const PROTOCOL_VERSION: u32 = 79;
+pub const PROTOCOL_VERSION: u32 = 80;
 
 /// The first version whose heads read [`crate::SessionEvent::TurnEnded`]. An older head is sent
 /// none, and gets the prompt's end as a `TurnFinished` with `ends_turn` instead.
@@ -30,6 +30,10 @@ pub const DRIVER_TODOS_SINCE: u32 = 77;
 /// arrived under 76 without a bump, so a head asks for [`FEATURE_QUEUE_PROMPT`] and queues only
 /// when the daemon echoed it in [`ServerFrame::Features`].
 pub const QUEUE_PROMPT_SINCE: u32 = 79;
+
+/// The first version whose daemons read [`ClientFrame::PollUsage`]. A head sends it only to a
+/// daemon that echoed [`FEATURE_USAGE_POLL`].
+pub const USAGE_POLL_SINCE: u32 = 80;
 
 /// The names an operator may run through the head-run door: read-only and bounded, which admits
 /// `web_fetch` and not a tool that writes.
@@ -332,9 +336,13 @@ pub const FEATURE_QUESTION_ANSWERS: &str = "question_answers_v1";
 /// echo it in [`ServerFrame::Features`] steers every prompt, so the head must not promise a queue.
 pub const FEATURE_QUEUE_PROMPT: &str = "queue_prompt_v1";
 
+/// A `Caps.features` string: this head sends [`ClientFrame::PollUsage`] when its model picker
+/// opens. A daemon that did not echo it has no such frame.
+pub const FEATURE_USAGE_POLL: &str = "usage_poll_v1";
+
 /// The features this build's daemon understands, and therefore the only ones it echoes. A feature
 /// is a name two builds agree on, which is why the list is here and not read from a head.
-pub const DAEMON_FEATURES: [&str; 1] = [FEATURE_QUEUE_PROMPT];
+pub const DAEMON_FEATURES: [&str; 2] = [FEATURE_QUEUE_PROMPT, FEATURE_USAGE_POLL];
 
 /// The subset of a head's declared features this daemon accepted.
 pub fn accepted_features(asked: &[String]) -> Vec<String> {
@@ -376,7 +384,10 @@ impl Caps {
     pub fn drawing_rows() -> Caps {
         Caps {
             row_bodies: true,
-            features: vec![FEATURE_QUEUE_PROMPT.to_string()],
+            features: vec![
+                FEATURE_QUEUE_PROMPT.to_string(),
+                FEATURE_USAGE_POLL.to_string(),
+            ],
             ..Caps::default()
         }
     }
@@ -1086,6 +1097,9 @@ pub enum ClientFrame {
     /// List the settings this session runs under. Answered with
     /// [`ServerFrame::Settings`]; never moves the connection.
     Settings,
+    /// The model picker opened: poll each keyed door's usage endpoint that holds no fresh
+    /// reading, debounced per door, and push the settings when the readings land. No answer.
+    PollUsage,
     /// Ask for a window of one background job's output, for a head's jobs pane. A command, so it
     /// reaches the worker that owns the exec host.
     ReadJobOutput {

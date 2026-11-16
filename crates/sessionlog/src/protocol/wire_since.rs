@@ -42,6 +42,7 @@ const CLIENT: &[(&str, u32)] = &[
     ("pane_close", 0),
     ("pane_open", 0),
     ("peek", 0),
+    ("poll_usage", USAGE_POLL_SINCE),
     ("promote", 0),
     ("prompt", 0),
     ("prompt_answer", 0),

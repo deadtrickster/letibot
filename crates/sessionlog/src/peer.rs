@@ -104,6 +104,7 @@ pub fn door(frame: &ClientFrame) -> Option<&'static str> {
         ClientFrame::SuggestShell { .. } => "a ! completion",
         ClientFrame::FetchDiagnostic { .. } => "a decision's evidence",
         ClientFrame::Settings => "the settings rows",
+        ClientFrame::PollUsage => "a usage poll",
         ClientFrame::ReadJobOutput { .. } => "a job's output",
         ClientFrame::TermOpen { .. } => "!term opening a pane",
         ClientFrame::TermInput { .. } => "!term keys",

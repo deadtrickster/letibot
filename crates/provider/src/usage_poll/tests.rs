@@ -258,3 +258,21 @@ fn a_door_reading_is_listed_and_readable_inside_a_tell() {
     watch(&p, &creds(), "s-listed", Duration::from_millis(20), w);
     until(|| seen.load(Ordering::SeqCst));
 }
+
+/// A picker's poll reads a door once, and a second ask inside the period sends nothing.
+#[test]
+fn a_pickers_poll_is_debounced_per_door() {
+    let (url, hits) = fake(KIMI);
+    let p = Preset {
+        name: "picker-door",
+        ..preset_at(&url)
+    };
+    assert!(poll_once(&p, &creds()));
+    assert!(
+        door_readings()
+            .iter()
+            .any(|(d, w, _)| d == "picker-door" && w[0].name == "5h")
+    );
+    assert!(!poll_once(&p, &creds()), "asked inside the period");
+    assert_eq!(hits.load(Ordering::SeqCst), 1);
+}

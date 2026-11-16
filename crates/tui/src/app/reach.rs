@@ -177,6 +177,10 @@ impl App {
             return false;
         }
         self.pick = Some(Pick::Model);
+        // A daemon that did not echo the feature has no such frame, and would drop the socket.
+        if self.accepts(letibot_sessionlog::FEATURE_USAGE_POLL) {
+            self.queued.push(Action::PollUsage);
+        }
         // A card the reader left on a provider, or with a query in it, opens at the top again: what
         // it was showing belonged to the switch they were making, and this is another one.
         self.model_query.clear();

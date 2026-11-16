@@ -1211,6 +1211,7 @@ impl Harness {
         });
         rows.extend(self.usage_row());
         self.install_limits_source();
+        self.install_usage_poll();
         // The list row's model follows the seat: a resume reseats before any turn.
         self.session_registry
             .set_model(&self.cfg.session_id, &self.cfg.prompt_model_name());
