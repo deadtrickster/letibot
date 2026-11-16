@@ -2846,7 +2846,11 @@ impl AdjudicatedGate {
         self.view_by = (d.by.clone(), d.basis.clone());
         self.view_answered_by = Some(d.by.clone());
         match &d.outcome {
-            DecisionOutcome::Selected { option_id } if option_id == "grant_ro" => {
+            // An oracle answers in the call vocabulary: its `allow_once` is the read-only rung,
+            // never the write one, which only a person picks.
+            DecisionOutcome::Selected { option_id }
+                if option_id == "grant_ro" || option_id == "allow_once" =>
+            {
                 ViewGrant::Granted { writable: false }
             }
             DecisionOutcome::Selected { option_id } if option_id == "grant_rw" => {

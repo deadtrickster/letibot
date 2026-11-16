@@ -412,3 +412,40 @@ fn view_ask_for_credential_path_is_always_ask() {
     assert_eq!(seen[1].0, Tier::MayApprove);
     assert!(seen.iter().all(|(_, trail)| *trail), "{seen:?}");
 }
+
+/// An oracle answers `allow_once`, the call vocabulary. On a view ask that is the read-only rung,
+/// never a refusal and never read-write.
+#[test]
+fn an_oracle_allow_on_a_view_request_is_granted_read_only() {
+    use crate::authorise::{ModelAdjudicator, OracleAnswer, OracleScope, ScriptedOracle, Widening};
+    let oracle = ScriptedOracle::new("allows", |b: &mut crate::authorise::ModelBrief| {
+        let w = b
+            .adjudicable()
+            .expect("a may-approve view ask has a witness");
+        OracleAnswer::Authorised(Widening::new(w, b.request_id.clone(), vec![0], "asked"))
+    })
+    .with_scope(OracleScope::earned(
+        [
+            crate::intent::Intent::ReadFile,
+            crate::intent::Intent::WriteFile,
+        ]
+        .into_iter()
+        .collect(),
+        EffectScope::HostOther,
+        "test: reads and writes",
+    ));
+    let adj = ModelAdjudicator::new(Box::new(oracle), |_| unreachable!("the reading travels"));
+    let mut g = AdjudicatedGate::new(Box::new(adj))
+        .with_identity("s-test", "agent")
+        .with_trail_source(|_| operator_trail());
+    for (path, access) in [
+        ("/build/letibot-r1", ViewAccess::Read),
+        ("/build/letibot-r2", ViewAccess::Write),
+    ] {
+        assert_eq!(
+            g.grant_view(Path::new(path), "bash", access),
+            ViewGrant::Granted { writable: false },
+            "{access:?}"
+        );
+    }
+}
