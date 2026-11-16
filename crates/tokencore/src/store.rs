@@ -2994,9 +2994,15 @@ impl Store {
             owner: src.owner.clone(),
             approvers: self.approvers_of(source)?,
             role: src.role.clone(),
-            parent_session_id: None,
+            // A fork continues the conversation, so it is what the source was: a child of the same
+            // parent, opening under that parent's ceiling, rather than a root at the project row.
+            parent_session_id: src.parent_session_id.clone(),
         })?;
-        self.set_session_origin(new_id, "operator")?;
+        // The origin too: a fork of a session a person opened is not a re-derivation of it.
+        let origin = self
+            .session_origin(source)?
+            .unwrap_or_else(|| "operator".into());
+        self.set_session_origin(new_id, &origin)?;
         if let Some(fp) = &src.prefix_fingerprint {
             self.set_prefix_fingerprint(new_id, fp)?;
         }
@@ -3764,6 +3770,20 @@ impl Store {
             params![id, origin],
         )?;
         Ok(())
+    }
+
+    /// What a session's row says its origin is, for the two readers that must not re-derive it: a
+    /// fork, which inherits it, and a listing that says where a session came from.
+    pub fn session_origin(&self, id: &str) -> Result<Option<String>> {
+        Ok(self
+            .at("session")
+            .query_row(
+                "SELECT origin FROM session WHERE id = ?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten())
     }
 
     /// Record the last turn's context on the session row, so a head that attaches after a restart
