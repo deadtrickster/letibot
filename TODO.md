@@ -66,7 +66,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R337 | the shadow as the real `AuthorisationOracle`: the view-read trail, `allow_once` on a view, hygiene, one grant model | Code work | built on `r337-oracle`, not landed; left: revoke reaching running commands (I16), I17 (f) replay numbers, queue seats' trails hold no operator words |
 | R338 | role per connection and the masked operator socket | Code work | I6; M; after B1 (R320) |
 | R339 | gate ladder after "once means once" | Code work | I29, I30, I31, I32, I33, I34, I35, I36; M; after B4 (R324), B6 (R326) |
-| R340 | confinement remainder: tight egress, job-capture-only masking, env-only credential fence | Code work | I39, I40, I41; M; after B5 (R325) |
+| R340 | confinement remainder: tight egress, job-capture-only masking, env-only credential fence | Code work | built on `remote/28651092`: I39 and I40 one commit each with their proving tests, I41 disproved by its own test, no production change; left: one full gate, and the residue in the entry's Status |
 | R341 | rows, the journal and warnings: head before store, jobs marked delivered first, operator-only rows in the model transcript, warnings, the room store | Code work | I48, I49, I50, I51, I52; M; after B7 (R327) |
 | R342 | migrations and the split schema | Code work | I54, I55, I56; M; after B12 (R332) |
 | R343 | liveness predicates, `closed_ms`, the lifecycle invariants | Code work | I62, I63, I64; M; after B9 (R329) |
@@ -1434,15 +1434,22 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R340 - confinement remainder: tight egress, job-capture-only masking, env-only credential fence
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I39, I40, I41. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built 2026-11-16 on `remote/28651092`. Three findings: I39 and I40 are closed, I41 is disproved by its own adversarial test. Every proving test is green in `cargo test -p letibot-tools`, `-p leticode-config` and `-p letibot-config-ref`, and `cargo clippy -p <each> --tests -- -D warnings` is clean. Filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I39, I40, I41. Record: `docs/review/2026-11-16/INTEGRATION.md`. Store schema untouched (main is at 55).
 
 **Scope.** Decision 7: tight egress Denied by default, granted per seat (C10). Wide stays Host by ruling.
 
-**Proving tests.** the tests named in each entry. Each fails on the snapshot.
+**Proving tests.** the tests named in each entry. Each fails on the snapshot, except I41's, whose finding's own rule is to fix only if the leak shows.
 
 **Size.** M. **After:** B5 (R325).
 
 **Done when:** every proving test above is green on main through one full gate, and each finding below is closed or moved to a named row.
+
+**Built.**
+- I39, `56c88e06`. `network_rule` takes the level: a tight seat is `Egress::Denied` whatever the mode seats, and the wide seat keeps the host's network by ruling. The operator's way out is `network = ["why"]` in `[boundary]` or `[perimeter.<name>]`, refused in a project file, applied by `boundary::apply`. The ssh placement passes the session's level, so a child placed on a remote host is denied too. Tests: `a_tight_seat_denies_the_network_whatever_the_mode_seats`, `the_wide_seat_keeps_the_hosts_network`, `a_granted_seat_may_reach_the_network`, `a_project_file_may_not_grant_the_network`, `a_production_tight_seat_can_enclose` (all in `crates/tools/tests/tight_egress.rs`) and `the_free_admit_fires_on_a_production_tight_boundary`, which takes its egress from `seat_view` so a regression cannot pass the way the hand-built fixtures do. `a_tight_seat_command_cannot_reach_loopback` is the end-to-end half and skips on a box with no user namespace, which this one is (see residue). Residue: the grant does not travel to a remote placement, so a child on another host can be denied egress and cannot be granted it.
+- I40, `0b8617dd`. `ToolRuntime::new` asks its backend for the session's secrets once and masks a result's payload after the digest hook and before the spill, so the model, the store and a spill file all get the masked bytes; a plugin layer's `answer` is masked too. `ExecBackend::secret_env` is the seam, answered by `HostBackend` from the process host (or from its own field when it has none). The comment and the test both say it is a redaction rather than a boundary. Tests: `a_tool_result_carrying_a_secret_keeps_no_token_in_its_row` and its control `without_the_secret_the_same_read_shows_the_token`, both in `crates/tools/tests/tool_secret_mask.rs`; the row is `ToolRuntime::transcript_item`, the bytes `append_item` stores. Residue: the ssh placement's backend answers no secrets, so a remote session's results are not masked (the same gap as I39's), and a grant made after open is not picked up until the session is reopened.
+- I41, `e67c26d6`. Disproved, no production change. The `GIT_CONFIG_*` reset is a command-line-scope `credential.helper = ""`, which empties the helper list AFTER every lower scope has been read, so the granted gitconfig, the repository's own `.git/config` and the system config are all covered by precedence rather than by absence. Tests: the three guards in `crates/tools/tests/git_fence.rs`, one per scope, plus `the_fixture_helper_answers_without_the_seats_reset`, which proves the fixture can leak when the reset is removed; removing the reset from `seat_view` turns the other three red, which is the fail-first.
+
+**What is not proven on this box.** This seat has no `/sys`, so there is no cgroup v2 and no unprivileged user namespace: every test that must enter a boundary skips loudly through `apparatus::absent`, `LETIBOT_REQUIRE_APPARATUS=1` turns that into a failure, and `a_tight_seat_command_cannot_reach_loopback` is the one entry in this row that has never run for real. The rule it would measure is proved by the other four tests, which read the egress and the admit rather than a socket.
 
 **Findings, verbatim from the record.**
 
