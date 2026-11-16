@@ -1579,7 +1579,9 @@ fn a_limit_hook_waits_then_asks_then_switches_and_its_state_is_carried_and_destr
     let (clock, handle) = letibot_harnessd::config::LimitClock::fixed(T0);
     cfg.limit_clock = clock;
     let workspace = cfg.workspace.clone();
-    let state_file = cfg.daemon_logs().join("limit-hook.json");
+    // Keyed by session: the fixture has no logs root, so the file lives under the
+    // workspace in this session's own directory.
+    let state_file = cfg.logs_for(&cfg.session_id).join("limit-hook.json");
     let parts = Parts::load(&cfg).expect("the vocabulary loads");
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     let (mut sessions, hub, id) = open(&parts, cfg);

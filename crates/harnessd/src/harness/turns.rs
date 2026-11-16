@@ -2991,6 +2991,15 @@ impl Harness {
 
     /// One round as the provider took it, plus the retry ladder. Endpoint failures retry here, not in `rounds`, since a retry produced nothing and must not spend a round.
     /// `key_asks` is the turn's refused-key budget, handed back.
+    /// The ladder every round starts on, rebuilt by the arms that start a round over - one
+    /// spelling, so a rebuilt ladder never loses the offline budget the first one had.
+    fn the_ladder(&self) -> letibot_http::retry::Ladder {
+        letibot_http::retry::Ladder::new(
+            letibot_http::retry::Policy::new(self.cfg.http_retries)
+                .offline_for(self.cfg.http_offline_budget),
+        )
+    }
+
     fn take_the_round(
         &mut self,
         sink: &mut CapturingSink,
@@ -3023,10 +3032,7 @@ impl Harness {
         // The ladder this turn walks, and the only thing that decides whether a round is taken again. It is
         // also what the turn's ending is said from, since the count and the waiting are nobody else's to
         // report and a failure with no count is the report this was written for.
-        let mut ladder = letibot_http::retry::Ladder::new(
-            letibot_http::retry::Policy::new(self.cfg.http_retries)
-                .offline_for(self.cfg.http_offline_budget),
-        );
+        let mut ladder = self.the_ladder();
         // How many of the LONG waits this round has taken - a rate limit that named no instant is
         // worth a few five-minute beats and not an afternoon. Bounded by `limit_retry_rounds`.
         let mut limit_retries = 0u32;
@@ -3163,9 +3169,7 @@ impl Harness {
                     }
                     limit::AfterTheLadder::Again => {
                         self.publish_trouble(&e, None);
-                        ladder = letibot_http::retry::Ladder::new(
-                            letibot_http::retry::Policy::new(self.cfg.http_retries),
-                        );
+                        ladder = self.the_ladder();
                         continue;
                     }
                     limit::AfterTheLadder::Stopped { said } => {
@@ -3191,10 +3195,7 @@ impl Harness {
                         );
                         match self.sleep_unless_closed(self.cfg.limit_retry_wait) {
                             Waited::Out => {
-                                ladder = letibot_http::retry::Ladder::new(
-                                    letibot_http::retry::Policy::new(self.cfg.http_retries)
-                                        .offline_for(self.cfg.http_offline_budget),
-                                );
+                                ladder = self.the_ladder();
                                 continue;
                             }
                             Waited::Closed => break Err(TurnFailure::Http(e)),

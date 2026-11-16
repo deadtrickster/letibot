@@ -1584,6 +1584,9 @@ impl Config {
     /// The pre-emptive door's question, for a session that may be metered.
     /// [`Config::should_compact`], except that a metered session with no measured scale is never at the
     /// wall: its count is LEDGER bytes against a provider's window, which folded a real session.
+    /// A carried pair is an estimate, and an estimate may refuse a round but never order a fold -
+    /// the pre-emptive door stands down for it, the refused door compacts on the provider's own
+    /// answer (harness/tests/context.rs pins this).
     pub fn pre_emptive_compact(&self, resident_tokens: u64, metered: bool) -> bool {
         if metered && self.ledger_scale.is_none() {
             return false;

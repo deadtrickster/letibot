@@ -34,7 +34,7 @@ pub(crate) type Episodes = BTreeMap<String, Episode>;
 /// The episodes a previous daemon left for this session. A file that does not parse is dropped:
 /// the state is the layer's, and an unreadable one starts the episode fresh.
 pub(crate) fn load(cfg: &Config) -> Episodes {
-    std::fs::read(cfg.daemon_logs().join(STATE_FILE))
+    std::fs::read(cfg.logs_for(&cfg.session_id).join(STATE_FILE))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default()
@@ -52,7 +52,7 @@ impl Harness {
     }
 
     fn save_limit_episodes(&self) {
-        let path = self.cfg.daemon_logs().join(STATE_FILE);
+        let path = self.cfg.logs_for(&self.cfg.session_id).join(STATE_FILE);
         let out = if self.limit_episodes.is_empty() {
             match std::fs::remove_file(&path) {
                 Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
@@ -430,5 +430,43 @@ mod tests {
         );
         assert_eq!(window_of("Rate limit reached"), None);
         assert_eq!(window_of("waiting for the server, again"), None);
+    }
+
+    /// Episodes are keyed by session: with no logs root the state file lives under the
+    /// workspace, and two sessions sharing one workspace must not share one episode -
+    /// the layer's state is this session's conversation with its limit.
+    #[test]
+    fn the_episode_file_is_keyed_by_session() {
+        let d = std::env::temp_dir().join(format!(
+            "letibot-episodes-{}-{:?}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&d).expect("scratch");
+        let base = crate::config::Config::for_this_box(&d);
+        let mut a = base.clone();
+        a.session_id = "sess-a".into();
+        let mut b = base.clone();
+        b.session_id = "sess-b".into();
+        let file = a.logs_for(&a.session_id).join(STATE_FILE);
+        std::fs::create_dir_all(file.parent().unwrap()).expect("the session's dir");
+        std::fs::write(
+            &file,
+            serde_json::to_vec(&Episodes::from([(
+                "glm-5.3".to_string(),
+                Episode {
+                    attempt: 2,
+                    ..Default::default()
+                },
+            )]))
+            .expect("one episode"),
+        )
+        .expect("the state");
+        assert_eq!(load(&a).len(), 1, "a's own episode is found");
+        assert_eq!(load(&b).len(), 0, "b never sees a's episode");
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
