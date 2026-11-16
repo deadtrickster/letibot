@@ -125,14 +125,32 @@ impl App {
             .unwrap_or_default()
     }
 
-    /// The plan's usage the daemon last read for this session's door: `(door, 5h 44% · resets 07:07)`.
-    pub(crate) fn plan_usage(&self) -> Option<(&str, &str)> {
+    /// The plan's usage the daemon last read for this session's door: `(door, 5h 44% · resets 07:07)`,
+    /// with ` (4m ago)` once the reading is older than the poll period, drawn from its read time.
+    pub(crate) fn plan_usage(&self) -> Option<(&str, String)> {
         let r = self
             .settings
             .iter()
             .find(|r| r.key == letibot_sessionlog::protocol::MODEL_USAGE_KEY)?;
         let door = r.choices.first()?;
-        (!r.value.is_empty()).then_some((door.as_str(), r.value.as_str()))
+        if r.value.is_empty() {
+            return None;
+        }
+        let read = |i: usize| r.choices.get(i).and_then(|v| v.parse::<u64>().ok());
+        let (Some(at_ms), Some(every_ms)) = (read(2), read(3)) else {
+            return Some((door.as_str(), r.value.clone()));
+        };
+        let label = match r.value.rfind(" (") {
+            Some(i) if r.value.ends_with(" ago)") => &r.value[..i],
+            _ => r.value.as_str(),
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_millis() as u64);
+        Some((
+            door.as_str(),
+            label.to_string() + &age(at_ms, now, every_ms),
+        ))
     }
 
     /// How the usage figure is painted: faint under its window's first threshold, a warning past
@@ -232,8 +250,9 @@ impl App {
         for p in &mut providers {
             p.usage_role = usage_role;
             p.usage = usage
+                .as_ref()
                 .filter(|(d, _)| p.doors.iter().any(|x| x == d))
-                .map(|(_, u)| u.to_string());
+                .map(|(_, u)| u.clone());
             p.keyless = p.doors.is_empty() && keyless.iter().any(|k| k == &p.label);
             p.ready = if p.doors.is_empty() {
                 self.choice_ready(&p.label)
@@ -703,5 +722,18 @@ pub(crate) fn price_range(p: &Provider) -> String {
         (Some(lo), Some(hi)) => format!("{}–{} /M", lo.1, hi.1),
         _ if listed => "price unlisted".to_string(),
         _ => "no meter".to_string(),
+    }
+}
+
+/// ` (4m ago)` for a reading taken at `at_ms` older than `every_ms`, else nothing: the daemon's
+/// `usage_poll::age`, redrawn here because the head's clock moves between publishes.
+fn age(at_ms: u64, now_ms: u64, every_ms: u64) -> String {
+    let old = now_ms.saturating_sub(at_ms);
+    if old <= every_ms {
+        return String::new();
+    }
+    match old / 60_000 {
+        m if m < 60 => format!(" ({m}m ago)"),
+        m => format!(" ({}h ago)", m / 60),
     }
 }

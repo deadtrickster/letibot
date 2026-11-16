@@ -819,3 +819,44 @@ fn the_usage_figure_changes_colour_at_its_thresholds() {
         assert_eq!(role_of("2", turn), Role::Failure);
     }
 }
+
+/// The usage row carries its read time, so the head draws the age as it grows between publishes:
+/// a reading published fresh reads its age ten minutes on, and a fresh one reads none.
+#[test]
+fn the_usage_age_is_drawn_from_its_read_time() {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64;
+    let shown = |value: &str, at_ms: u64| {
+        let mut a = card(&Wire::default());
+        let ServerFrame::Settings { mut rows } = Wire::default().frame() else {
+            unreachable!()
+        };
+        rows.push(letibot_sessionlog::protocol::SettingRow {
+            key: letibot_sessionlog::protocol::MODEL_USAGE_KEY.into(),
+            value: value.into(),
+            source: String::new(),
+            editable: String::new(),
+            choices: vec![
+                "deepseek".into(),
+                "0".into(),
+                at_ms.to_string(),
+                "120000".into(),
+            ],
+            tools: Vec::new(),
+        });
+        a.apply(ServerFrame::Settings { rows });
+        a.turn_status(120)
+    };
+    assert_eq!(
+        shown("5h 83% · resets 23:15", now - 10 * 60_000 - 5_000),
+        "5h 83% · resets 23:15 (10m ago)"
+    );
+    // The age baked in at the publish is replaced, not repeated.
+    assert_eq!(
+        shown("5h 83% · resets 23:15 (4m ago)", now - 3 * 3_600_000),
+        "5h 83% · resets 23:15 (3h ago)"
+    );
+    assert_eq!(shown("5h 83% · resets 23:15", now), "5h 83% · resets 23:15");
+}
