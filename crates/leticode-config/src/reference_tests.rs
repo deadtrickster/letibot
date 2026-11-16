@@ -94,6 +94,12 @@ fn hand_read_keys_are_listed() {
         "project",
         "mcp.<name>",
         "mcp_projects",
+        "subagents",
+        "keys",
+        "fallback",
+        "provider.<name>",
+        "provider.usage_warn",
+        "provider.<name>.usage_warn",
     ] {
         let t = LETICODE.table(path).unwrap();
         unlisted.extend(probe::unlisted_accepted(
