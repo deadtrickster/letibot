@@ -109,6 +109,7 @@ impl Harness {
         let door = preset.name;
         let th = self.cfg.leticode.usage_warn(door);
         let said = self.usage_said.clone();
+        self.seed_usage_said(door, &th);
         let reg = self.session_registry.clone();
         let still = {
             let (reg, sid) = (reg.clone(), sid.clone());
@@ -124,6 +125,75 @@ impl Harness {
                 .unwrap_or_else(|e| e.into_inner())
                 .hear(door, &w, &th, now_ms());
         }
+    }
+}
+
+impl Harness {
+    /// Once per door in this harness: what the transcript already said is said.
+    pub(super) fn seed_usage_said(
+        &self,
+        door: &str,
+        th: &letibot_provider::usage_warn::Thresholds,
+    ) {
+        if self.usage_lock().said.contains_key(door) {
+            return;
+        }
+        let stored = self.stored_usage_notices(door);
+        self.usage_lock().seed(door, &stored, th);
+    }
+
+    fn usage_lock(&self) -> std::sync::MutexGuard<'_, UsageSaid> {
+        self.usage_said.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// The newest `[usage]` row per window of `door` in this transcript, oldest first, with the
+    /// time each was stored: what a previous daemon already said.
+    fn stored_usage_notices(&self, door: &str) -> Vec<(String, u64)> {
+        use letibot_transcript::Speaker;
+        let Some(store) = self.store.as_ref() else {
+            return Vec::new();
+        };
+        let prefix = format!("[usage] {door} ");
+        let mut seen = std::collections::BTreeSet::new();
+        let mut out = Vec::new();
+        for (seq, item) in self.session.items.iter().enumerate().rev() {
+            let TranscriptItem::User {
+                speaker: Speaker::Agent,
+                parts,
+            } = item
+            else {
+                continue;
+            };
+            let Some(UserPart::Text { text }) = parts.first() else {
+                continue;
+            };
+            let Some(window) = text
+                .strip_prefix(&prefix)
+                .and_then(|r| r.split_once(" at "))
+                .map(|(w, _)| w)
+            else {
+                continue;
+            };
+            if !seen.insert(window.to_string()) {
+                continue;
+            }
+            let Ok(seq) = u32::try_from(seq) else {
+                continue;
+            };
+            // The row's own time is what its reset is read against.
+            let Some((_, _, _, json, at)) = store
+                .rows_json_from(&self.transcript_id, seq, 1)
+                .ok()
+                .and_then(|r| r.into_iter().next())
+            else {
+                continue;
+            };
+            if json.contains(&serde_json::to_string(text).unwrap_or_default()) {
+                out.push((text.clone(), at));
+            }
+        }
+        out.reverse();
+        out
     }
 }
 
@@ -155,6 +225,29 @@ pub(crate) struct UsageSaid {
 }
 
 impl UsageSaid {
+    /// Take what `door`'s stored notices said, oldest first, as said. A restart then repeats no
+    /// crossing the transcript already holds, and still says a new window or a higher level.
+    pub(crate) fn seed(
+        &mut self,
+        door: &str,
+        stored: &[(String, u64)],
+        th: &letibot_provider::usage_warn::Thresholds,
+    ) {
+        use letibot_provider::usage_warn::read_notice;
+        let said = self.said.entry(door.to_string()).or_default();
+        for (text, at) in stored {
+            let Some(body) = text.strip_prefix("[usage] ") else {
+                continue;
+            };
+            let Some((d, w, slack)) = read_notice(body, *at, local_offset_s(*at)) else {
+                continue;
+            };
+            if d == door {
+                said.seed(&w, th.level(&w), slack);
+            }
+        }
+    }
+
     /// Queue one notice per threshold this reading crossed that was not yet said for its window.
     pub(crate) fn hear(
         &mut self,

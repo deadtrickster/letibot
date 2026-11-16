@@ -103,20 +103,29 @@ pub fn shown<'a>(windows: &'a [Window], th: &Thresholds) -> Option<(&'a Window, 
 #[derive(Debug, Default)]
 pub struct Said {
     by_window: BTreeMap<String, (Option<u64>, usize)>,
+    /// How far a reset read back from a stored notice can be off, until a reading replaces it.
+    slack: BTreeMap<String, u64>,
 }
 
 /// Providers report a window's reset with a few seconds of jitter between polls; only a reset
 /// that moved by more than that starts a new window.
 const RESET_JITTER_MS: u64 = 10 * 60 * 1000;
 
-fn same_reset(a: Option<u64>, b: Option<u64>) -> bool {
+fn same_reset(a: Option<u64>, b: Option<u64>, slack: u64) -> bool {
     match (a, b) {
-        (Some(a), Some(b)) => a.abs_diff(b) <= RESET_JITTER_MS,
+        (Some(a), Some(b)) => a.abs_diff(b) <= RESET_JITTER_MS + slack,
         (a, b) => a == b,
     }
 }
 
 impl Said {
+    /// What a stored notice already said for `w`'s window, so a reopened session does not say it
+    /// again. `slack_ms` is how far `w`'s reset, read back from prose, can be from the true one.
+    pub fn seed(&mut self, w: &Window, level: usize, slack_ms: u64) {
+        self.by_window.insert(w.name.clone(), (w.reset_ms, level));
+        self.slack.insert(w.name.clone(), slack_ms);
+    }
+
     /// The windows of this reading that passed a threshold not yet said for them. A window whose
     /// reset moved is a new window, said from zero. A jump past two thresholds is one notice.
     pub fn crossings<'a>(&mut self, windows: &'a [Window], th: &Thresholds) -> Vec<&'a Window> {
@@ -127,8 +136,12 @@ impl Said {
                 .by_window
                 .entry(w.name.clone())
                 .or_insert((w.reset_ms, 0));
+            let slack = self.slack.remove(&w.name).unwrap_or(0);
+            if slack > 0 && same_reset(e.0, w.reset_ms, slack) {
+                e.0 = w.reset_ms;
+            }
             // A plan that names no reset is known to have reset only by its use falling.
-            if !same_reset(e.0, w.reset_ms) || (w.reset_ms.is_none() && level < e.1) {
+            if !same_reset(e.0, w.reset_ms, 0) || (w.reset_ms.is_none() && level < e.1) {
                 *e = (w.reset_ms, 0);
             }
             if level > e.1 {
@@ -145,6 +158,31 @@ pub fn notice(door: &str, w: &Window, now_ms: u64, offset_s: i64) -> String {
     let label = crate::usage_poll::label(w, now_ms, offset_s);
     let rest = label.strip_prefix(&w.name).unwrap_or(&label).trim_start();
     format!("{door} {} at {rest}", w.name)
+}
+
+/// A [`notice`] read back: its door, and its window as said. The reset is read at `written_ms`,
+/// when the row was stored, and comes with how far it can be off ([`crate::usage_poll::reset_of`]).
+pub fn read_notice(text: &str, written_ms: u64, offset_s: i64) -> Option<(&str, Window, u64)> {
+    let (door, rest) = text.split_once(' ')?;
+    let (name, rest) = rest.split_once(" at ")?;
+    let (pct, when) = match rest.split_once(" · resets ") {
+        Some((p, w)) => (p, Some(w)),
+        None => (rest, None),
+    };
+    let pct: f64 = pct.strip_suffix('%')?.parse().ok()?;
+    let (reset_ms, slack) = match when {
+        Some(w) => {
+            let (r, s) = crate::usage_poll::reset_of(w, written_ms, offset_s)?;
+            (Some(r), s)
+        }
+        None => (None, 0),
+    };
+    let w = Window {
+        name: name.into(),
+        used: pct / 100.0,
+        reset_ms,
+    };
+    Some((door, w, slack))
 }
 
 #[cfg(test)]
@@ -166,6 +204,43 @@ mod tests {
         let next = t + 5 * 3_600_000;
         assert!(said.crossings(&[w("5h", 0.2, Some(next))], &th).is_empty());
         assert_eq!(said.crossings(&[w("5h", 0.85, Some(next))], &th).len(), 1);
+    }
+
+    /// rano's 19:05: the old daemon said 5h at 100% for a reset; the new one reads that row back
+    /// and a reading of the same window, seconds off, says nothing. The next window still does.
+    #[test]
+    fn a_stored_notice_is_not_said_again_for_its_window() {
+        let th = Thresholds::default();
+        let t = 1_794_834_429_000;
+        let written = t - 53 * 60_000;
+        for offset in [0, 3 * 3600, -5 * 3600] {
+            let text = notice("kimi-code-global", &w("5h", 1.0, Some(t)), written, offset);
+            let (door, seen, slack) = read_notice(&text, written, offset).unwrap();
+            assert_eq!(door, "kimi-code-global");
+            assert!(seen.reset_ms.unwrap().abs_diff(t) <= slack, "{text}");
+            let mut said = Said::default();
+            said.seed(&seen, th.level(&seen), slack);
+            assert!(
+                said.crossings(&[w("5h", 1.0, Some(t + 2000))], &th)
+                    .is_empty()
+            );
+            let next = t + 5 * 3_600_000;
+            assert_eq!(said.crossings(&[w("5h", 0.85, Some(next))], &th).len(), 1);
+        }
+    }
+
+    #[test]
+    fn a_reset_reads_back_from_each_form_of_its_label() {
+        let now = 1_794_834_429_000;
+        for ahead in [5 * 60_000, 4 * 3_600_000, 3 * 86_400_000, 20 * 86_400_000] {
+            let at = now + ahead;
+            let text = notice("d", &w("7d", 0.7, Some(at)), now, 3600);
+            let (_, seen, slack) = read_notice(&text, now + 60_000, 3600).unwrap();
+            assert!(seen.reset_ms.unwrap().abs_diff(at) <= slack, "{text}");
+        }
+        let (_, seen, _) = read_notice("d 5h at 82%", now, 0).unwrap();
+        assert_eq!((seen.name.as_str(), seen.reset_ms), ("5h", None));
+        assert!(read_notice("d 5h at lots", now, 0).is_none());
     }
 
     fn w(name: &str, used: f64, reset_ms: Option<u64>) -> Window {
