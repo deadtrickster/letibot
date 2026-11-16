@@ -4190,3 +4190,383 @@ mod interrupted_arms {
         }
     }
 }
+
+/// A store migrated from an older version must hold what a fresh one holds, in the file the
+/// assignment gives it. The two lists this tree keeps - the arms of `migrate_from` and the batches
+/// of `schema_sql` - are only in step if that is true, and nothing compared them before.
+mod migrated_schema {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// A project key, shaped like the folder hash `scripts/letibot` computes.
+    const KEY: &str = "42ce9f1aae08";
+
+    /// A directory of this test's own.
+    fn temp(name: &str) -> std::path::PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("store-migrated-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("a temp directory");
+        dir
+    }
+
+    /// The module whose text holds a batch an arm calls by name.
+    fn module(name: &str) -> Option<&'static str> {
+        Some(match name {
+            "citations" => include_str!("citations.rs"),
+            "grants" => include_str!("grants.rs"),
+            "leases" => include_str!("leases.rs"),
+            "marks" => include_str!("marks.rs"),
+            "modes" => include_str!("modes.rs"),
+            "owners" => include_str!("owners.rs"),
+            "procs" => include_str!("procs.rs"),
+            "prompts" => include_str!("prompts.rs"),
+            "queues" => include_str!("queues.rs"),
+            "recall" => include_str!("recall.rs"),
+            "seat" => include_str!("seat.rs"),
+            "subagents" => include_str!("subagents.rs"),
+            "told" => include_str!("told.rs"),
+            "writers" => include_str!("writers.rs"),
+            _ => return None,
+        })
+    }
+
+    /// The arms of `migrate_from`: the version each is gated on, and its own source text.
+    fn arms() -> Vec<(i64, String)> {
+        let src = include_str!("../store.rs");
+        let from = src.find("fn migrate_from(").expect("the migration's arms");
+        let body = &src[from..];
+        let end = body
+            .find("/// Insert a stable prefix")
+            .unwrap_or(body.len());
+        let body = &body[..end];
+        let mut starts: Vec<(usize, i64)> = Vec::new();
+        for (at, _) in body.match_indices("if from < ") {
+            let rest = &body[at + "if from < ".len()..];
+            let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
+            if let Ok(version) = digits.parse() {
+                starts.push((at, version));
+            }
+        }
+        starts
+            .iter()
+            .enumerate()
+            .map(|(i, (at, version))| {
+                let end = starts.get(i + 1).map_or(body.len(), |next| next.0);
+                (*version, body[*at..end].to_string())
+            })
+            .collect()
+    }
+
+    /// The literal of `const NAME` in `src`.
+    fn const_sql(src: &str, name: &str) -> Option<String> {
+        let head = format!("const {name}:");
+        let at = src.find(&head)?;
+        let rest = &src[at + head.len()..];
+        let quote = rest.find('"')?;
+        let rest = &rest[quote..];
+        if let Some(after) = rest.strip_prefix("r#\"") {
+            let end = after.find("\"#")?;
+            return Some(after[..end].to_string());
+        }
+        let end = rest[1..].find('"')?;
+        Some(rest[1..1 + end].to_string())
+    }
+
+    /// The SQL an arm runs: its own literals, and the batch of every `module::CONST` it names.
+    fn sql_of(arm: &str) -> String {
+        let mut text = String::new();
+        let mut rest = arm;
+        while let Some(at) = rest.find('"') {
+            let after = &rest[at + 1..];
+            let Some(end) = after.find('"') else { break };
+            text.push_str(&after[..end]);
+            text.push('\n');
+            rest = &after[end + 1..];
+        }
+        for (at, _) in arm.match_indices("::") {
+            let module_name: String = arm[..at]
+                .chars()
+                .rev()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect::<Vec<_>>()
+                .into_iter()
+                .rev()
+                .collect();
+            let const_name: String = arm[at + 2..]
+                .chars()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                .collect();
+            let (Some(src), false) = (module(&module_name), const_name.is_empty()) else {
+                continue;
+            };
+            if let Some(sql) = const_sql(src, &const_name) {
+                text.push_str(&sql);
+                text.push('\n');
+            }
+        }
+        text
+    }
+
+    /// What one piece of DDL created: the drops that undo it, objects first and columns after.
+    fn undone_by(sql: &str) -> (Vec<String>, Vec<String>) {
+        let words: Vec<&str> = sql
+            .split(|c: char| c.is_whitespace() || c == '(' || c == ';')
+            .filter(|word| !word.is_empty())
+            .map(|word| word.trim_matches(','))
+            .collect();
+        let at = |n: usize| words.get(n).copied().unwrap_or("");
+        let mut objects = Vec::new();
+        let mut columns = Vec::new();
+        let mut i = 0;
+        while i < words.len() {
+            if at(i).eq_ignore_ascii_case("CREATE") {
+                let mut j = i + 1;
+                if at(j).eq_ignore_ascii_case("UNIQUE") {
+                    j += 1;
+                }
+                let kind = at(j);
+                if !["TABLE", "INDEX", "TRIGGER"]
+                    .iter()
+                    .any(|k| kind.eq_ignore_ascii_case(k))
+                {
+                    i += 1;
+                    continue;
+                }
+                j += 1;
+                if at(j).eq_ignore_ascii_case("IF") {
+                    j += 3; // IF NOT EXISTS
+                }
+                let name = at(j).trim_matches('"');
+                if !name.is_empty() {
+                    objects.push(format!("{} {name}", kind.to_ascii_uppercase()));
+                }
+                i = j + 1;
+                continue;
+            }
+            if at(i).eq_ignore_ascii_case("ALTER") && at(i + 1).eq_ignore_ascii_case("TABLE") {
+                if at(i + 3).eq_ignore_ascii_case("ADD") && at(i + 4).eq_ignore_ascii_case("COLUMN")
+                {
+                    columns.push(format!("{} {}", at(i + 2).trim_matches('"'), at(i + 5)));
+                }
+                i += 5;
+                continue;
+            }
+            i += 1;
+        }
+        (objects, columns)
+    }
+
+    /// Undo the arms above `version`, latest first - but only what no arm at or below it creates
+    /// too, because a table two arms name (`merge_queue` at 16 and again at 22) belongs to the older
+    /// one. A drop SQLite refuses is skipped: what decides the store is right is the comparison.
+    fn rewind(conn: &Connection, version: i64) {
+        let arms = arms();
+        let mut kept: BTreeSet<String> = BTreeSet::new();
+        for (arm, body) in &arms {
+            if *arm > version {
+                continue;
+            }
+            let (objects, columns) = undone_by(&sql_of(body));
+            kept.extend(objects);
+            kept.extend(columns.into_iter().map(|column| format!("COLUMN {column}")));
+        }
+        let mut drops: Vec<String> = Vec::new();
+        for (arm, body) in arms.into_iter().rev() {
+            if arm <= version {
+                continue;
+            }
+            let (objects, columns) = undone_by(&sql_of(&body));
+            drops.extend(objects.into_iter().filter(|key| !kept.contains(key)));
+            drops.extend(
+                columns
+                    .into_iter()
+                    .map(|column| format!("COLUMN {column}"))
+                    .filter(|key| !kept.contains(key)),
+            );
+        }
+        for key in drops {
+            let sql = match key.strip_prefix("COLUMN ") {
+                Some(column) => {
+                    let (table, column) = column.split_once(' ').unwrap_or((column, ""));
+                    format!("ALTER TABLE {table} DROP COLUMN {column}")
+                }
+                None => format!("DROP {key}"),
+            };
+            let _ = conn.execute_batch(&sql);
+        }
+        let _ = conn.execute("UPDATE schema_version SET version = ?1", [version]);
+    }
+
+    /// Every object a file holds. A table is its COLUMNS, sorted - SQLite rewrites a table's stored
+    /// text on `ALTER TABLE ... ADD COLUMN`, so the text differs for the same table and the column
+    /// list does not; an index or a trigger is its name.
+    fn objects(path: &std::path::Path) -> BTreeSet<String> {
+        let conn = Connection::open(path).expect("a connection to the file");
+        let mut st = conn
+            .prepare(
+                "SELECT type, name FROM sqlite_master \
+                  WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+            )
+            .expect("a statement");
+        let listed: Vec<(String, String)> = st
+            .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+            .expect("the object list")
+            .filter_map(std::result::Result::ok)
+            .collect();
+        let mut out = BTreeSet::new();
+        for (kind, name) in listed {
+            out.insert(format!("{kind} {name}"));
+            if kind != "table" {
+                continue;
+            }
+            let mut columns = conn
+                .prepare(
+                    "SELECT name, type, \"notnull\", COALESCE(dflt_value, '') \
+                      FROM pragma_table_info(?1)",
+                )
+                .expect("a statement");
+            let described: Vec<String> = columns
+                .query_map([&name], |r| {
+                    Ok(format!(
+                        "column {name}.{} {} {}{}",
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, String>(3)?
+                    ))
+                })
+                .expect("the columns")
+                .filter_map(std::result::Result::ok)
+                .collect();
+            out.extend(described);
+        }
+        out
+    }
+
+    /// What the transition itself leaves behind, which is the tree's history and not drift: the
+    /// `merge_review` table (made by the v18 arm and by no fresh schema) and the v24 archive of the
+    /// pre-v24 pair under `_v23` names.
+    fn tolerated(object: &str) -> bool {
+        object.starts_with("table merge_review ")
+            || object.contains("merge_review_v23")
+            || object.contains("merge_queue_v23")
+    }
+
+    /// A store migrated from each version the tree records holds what a fresh one holds, in the file
+    /// the assignment gives it. A set's two files are compared as they are; a store from before the
+    /// split is one file, which holds every table - and there only a missing object is drift, because
+    /// the transition's own leftovers are not.
+    #[test]
+    fn migrating_from_each_recorded_version_equals_a_fresh_set() {
+        let fresh_file = temp("fresh-one");
+        Store::open(&fresh_file.join("one.db")).expect("a fresh single file");
+        let want_one = objects(&fresh_file.join("one.db"));
+
+        let fresh_set = temp("fresh-set");
+        split::StoreSet::open(&fresh_set, KEY).expect("a fresh set");
+        let want_set = [
+            objects(&fresh_set.join("shared.db")),
+            objects(&fresh_set.join("projects").join(format!("{KEY}.db"))),
+        ];
+
+        for (version, _) in READER_ARMS {
+            if *version >= SCHEMA_VERSION {
+                continue;
+            }
+            let version = *version;
+            if version < 44 {
+                // Before the split there was one file, holding every table.
+                let dir = temp(&format!("one-{version}"));
+                let path = dir.join("one.db");
+                Store::open(&path).expect("a store to rewind");
+                rewind(&Connection::open(&path).expect("a connection"), version);
+                Store::open(&path)
+                    .unwrap_or_else(|e| panic!("a store from version {version} migrates: {e}"));
+                let got = objects(&path);
+                let missing: Vec<&String> = want_one.difference(&got).collect();
+                assert!(
+                    missing.is_empty(),
+                    "a store migrated from version {version} lost what a fresh one has: {missing:#?}"
+                );
+                continue;
+            }
+
+            let dir = temp(&format!("set-{version}"));
+            split::StoreSet::open(&dir, KEY).expect("a set to rewind");
+            let paths = [
+                dir.join("shared.db"),
+                dir.join("projects").join(format!("{KEY}.db")),
+            ];
+            for path in &paths {
+                rewind(&Connection::open(path).expect("a connection"), version);
+            }
+            split::open_handle(&dir, KEY, true)
+                .unwrap_or_else(|e| panic!("a set from version {version} migrates: {e}"));
+            for (index, path) in paths.iter().enumerate() {
+                let got = objects(path);
+                let missing: Vec<&String> = want_set[index].difference(&got).collect();
+                let extra: Vec<&String> = got
+                    .difference(&want_set[index])
+                    .filter(|object| !tolerated(object))
+                    .collect();
+                assert!(
+                    missing.is_empty(),
+                    "a set migrated from version {version} is missing from {}: {missing:#?}",
+                    path.display()
+                );
+                assert!(
+                    extra.is_empty(),
+                    "a set migrated from version {version} holds in {} what a fresh one does \
+                     not - a table an arm put in the wrong file: {extra:#?}",
+                    path.display()
+                );
+            }
+        }
+    }
+
+    /// The parse the comparison rides on: a version's arms are read off the source, and each one's
+    /// batch is resolved from the module it names - so a new arm or a new batch is covered by
+    /// `migrating_from_each_recorded_version_equals_a_fresh_set` the day it is written.
+    #[test]
+    fn every_arm_names_the_batches_this_parse_can_read() {
+        let arms = arms();
+        assert_eq!(
+            arms.len(),
+            READER_ARMS.len(),
+            "the parse found {} arms and the tree records {}",
+            arms.len(),
+            READER_ARMS.len()
+        );
+        for (version, body) in &arms {
+            for (at, _) in body.match_indices("::") {
+                let module_name: String = body[..at]
+                    .chars()
+                    .rev()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
+                let const_name: String = body[at + 2..]
+                    .chars()
+                    .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+                    .collect();
+                // Only a `module::CONST` is a batch: a doc comment naming `harnessd::modes` is not.
+                if const_name.is_empty()
+                    || !const_name
+                        .chars()
+                        .all(|c| c.is_ascii_uppercase() || c == '_' || c.is_ascii_digit())
+                {
+                    continue;
+                }
+                assert!(
+                    module(&module_name).is_some(),
+                    "arm {version} names `{module_name}::{const_name}`, which this test cannot \
+                     read a batch out of - add it to `module` or the rewind leaves its tables \
+                     behind"
+                );
+            }
+        }
+    }
+}

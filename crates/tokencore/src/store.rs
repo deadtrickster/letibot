@@ -2006,6 +2006,27 @@ impl Store {
         Ok(added)
     }
 
+    /// One arm's DDL, statement by statement, on the file that holds each statement's table: a
+    /// set's `shared.db` must never gain a project table, and a project file must not gain the
+    /// index's. A single file holds every table and runs the batch whole, as it always has.
+    fn batch_for(&self, file: Option<split::StoreFile>, ddl: &str) -> Result<()> {
+        let Some(file) = file else {
+            return Ok(self.conn().execute_batch(ddl)?);
+        };
+        for statement in split::statements(ddl) {
+            let Some(table) = split::table_of(statement) else {
+                return Err(StoreError::Refused(format!(
+                    "a migration batch holds a statement this build cannot give a file to: {}",
+                    statement.trim()
+                )));
+            };
+            if split::holds(file, &table) {
+                self.conn().execute_batch(statement)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Apply the steps from `from` up to [`SCHEMA_VERSION`]: one arm per version, each idempotent on
     /// its own, so a store two versions behind is carried forward by running both. An arm that
     /// breaks an older READER declares itself in [`READER_ARMS`].
@@ -2025,7 +2046,8 @@ impl Store {
             // v3: the session todo list. A migrated store never runs `SCHEMA_SQL`
             // - `migrate` returns early - so the table is created here, and
             // `IF NOT EXISTS` keeps a store that somehow already has one honest.
-            self.conn().execute_batch(
+            self.batch_for(
+                file,
                 "CREATE TABLE IF NOT EXISTS todo (
                      session_id  TEXT PRIMARY KEY REFERENCES session(id) ON DELETE CASCADE,
                      todos_json  TEXT NOT NULL,
@@ -2047,7 +2069,8 @@ impl Store {
         if from < 5 {
             // v5: the adjudication corpus. Created here for a migrated store,
             // which never runs SCHEMA_SQL.
-            self.conn().execute_batch(
+            self.batch_for(
+                file,
                 "CREATE TABLE IF NOT EXISTS adjudication (
     request_id     TEXT PRIMARY KEY,
     session_id     TEXT NOT NULL,
@@ -2205,7 +2228,8 @@ impl Store {
         if from < 15 {
             // v15: the job history, a table because a session has many jobs and each is its own
             // row: one JSON blob per session would make a single handle's fate a whole-list read.
-            self.conn().execute_batch(
+            self.batch_for(
+                file,
                 "CREATE TABLE IF NOT EXISTS job (
                      session_id  TEXT NOT NULL REFERENCES session(id) ON DELETE CASCADE,
                      handle      TEXT NOT NULL,
@@ -2223,7 +2247,8 @@ impl Store {
         if from < 16 {
             // v16: the merge queue, a table for v15's reason: the daemon has many entries, and the
             // reader that wants one entry's fate is not reading all of them.
-            self.conn().execute_batch(
+            self.batch_for(
+                file,
                 "CREATE TABLE IF NOT EXISTS merge_queue (
                      id          TEXT PRIMARY KEY,
                      session_id  TEXT NOT NULL,
@@ -2254,7 +2279,8 @@ impl Store {
         if from < 18 {
             // v18: the reviewer's verdict, a table for v16's reason: the queue and the review have
             // different writers and different readers.
-            self.conn().execute_batch(
+            self.batch_for(
+                file,
                 "CREATE TABLE IF NOT EXISTS merge_review (
                      entry_id       TEXT PRIMARY KEY,
                      session_id     TEXT NOT NULL,
@@ -2272,15 +2298,9 @@ impl Store {
         if from < 21 {
             // v21: the frozen prefix's fingerprint, written where a session's transcript row is
             // written, so a later build can detect a prompt it would compose differently.
-            let has: bool = self
-                .conn()
-                .prepare(
-                    "SELECT 1 FROM pragma_table_info('session') \
-                     WHERE name = 'prefix_fingerprint'",
-                )
-                .and_then(|mut st| st.exists([]))
-                .unwrap_or(false);
-            if !has {
+            if !self.probe(
+                "SELECT 1 FROM pragma_table_info('session') WHERE name = 'prefix_fingerprint'",
+            )? {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN prefix_fingerprint TEXT")?;
             }
@@ -2288,7 +2308,8 @@ impl Store {
         if from < 20 {
             // v20: the failed attempt, which is not a verdict. Three columns because they answer
             // three questions: may the queue ask again, when did it fail, and what did it say.
-            self.conn().execute_batch(
+            self.batch_for(
+                file,
                 "CREATE TABLE IF NOT EXISTS merge_review (
                      entry_id       TEXT PRIMARY KEY,
                      session_id     TEXT NOT NULL,
@@ -2332,7 +2353,8 @@ impl Store {
         if from < 22 {
             // v22: the landing half's own rows, so a landing can be DRAWN and not merely judged.
             // `'[]'` on every existing row is the true state of one that ran no gate.
-            self.conn().execute_batch(
+            self.batch_for(
+                file,
                 "CREATE TABLE IF NOT EXISTS merge_queue (
                       id          TEXT PRIMARY KEY,
                       session_id  TEXT NOT NULL,
@@ -2377,7 +2399,10 @@ impl Store {
         if from < 24 {
             // v24: review and merge are two queues: the v23 pair archived under `_v23` names, the
             // new tables created, and the waiting rows re-enqueued for review. Nothing is deleted.
-            self.migrate_queues_to_v24()?;
+            // Both queues belong to the index, so a set's project file is not given them.
+            if split::holds_for(file, "review_queue") {
+                self.migrate_queues_to_v24()?;
+            }
         }
         if from < 25 {
             // v25: the operator's pause of the idle plan-check. NULL in every existing row, because
@@ -2392,13 +2417,13 @@ impl Store {
         if from < 26 {
             // v26: a session's subagents as rows that outlive the daemon. A new table and an index,
             // both `IF NOT EXISTS`; nothing existing is read or rewritten.
-            self.conn().execute_batch(subagents::SUBAGENTS_SQL)?;
+            self.batch_for(file, subagents::SUBAGENTS_SQL)?;
         }
         if from < 27 {
             // v27: the permission modes, as rows - see [`modes`]. Two new tables, both
             // `IF NOT EXISTS`; nothing existing is read or rewritten. The rows `modes.tsv` held
             // are imported by the daemon (`harnessd::modes`), which is the one that knows the file.
-            self.conn().execute_batch(modes::MODES_SQL)?;
+            self.batch_for(file, modes::MODES_SQL)?;
         }
         if from < 28 {
             // v28: whether a job's ending reached the model. Every existing row is stamped
@@ -2409,21 +2434,25 @@ impl Store {
             let column =
                 self.probe("SELECT 1 FROM pragma_table_info('job') WHERE name = 'delivered'")?;
             if table && !column {
+                // The default is the fresh schema's - a job this store writes tomorrow was not
+                // delivered - and the rows that already exist are stamped after: a default of 1
+                // said both, and the second one was wrong.
                 self.conn().execute_batch(
-                    "ALTER TABLE job ADD COLUMN delivered INTEGER NOT NULL DEFAULT 1",
+                    "ALTER TABLE job ADD COLUMN delivered INTEGER NOT NULL DEFAULT 0",
                 )?;
+                self.conn().execute("UPDATE job SET delivered = 1", [])?;
             }
         }
         if from < 29 {
             // v29: what the queues have said, as rows. One new table; a store from before it may
             // say each standing alert once more, and then never again across restarts.
-            self.conn().execute_batch(told::TOLD_SQL)?;
+            self.batch_for(file, told::TOLD_SQL)?;
         }
         if from < 30 {
             // v30: the lines a reply cited - see [`citations`]. One new table, `IF NOT
             // EXISTS`; a reply from before it has no snapshot, and one is taken the first time
             // it is shown.
-            self.conn().execute_batch(citations::CITATIONS_SQL)?;
+            self.batch_for(file, citations::CITATIONS_SQL)?;
         }
         if from < 31 {
             // v31: a session can live somewhere else. Two additive columns, NULL in every existing
@@ -2440,7 +2469,7 @@ impl Store {
         if from < 32 {
             // v32: one writer per session, as a row. A migrated store never runs `SCHEMA_SQL`, so
             // the table is created here.
-            self.conn().execute_batch(writers::WRITERS_SQL)?;
+            self.batch_for(file, writers::WRITERS_SQL)?;
         }
         if from < 33 {
             // v33: who a session is for. `NULL` in every existing row is the honest value, and a
@@ -2453,12 +2482,12 @@ impl Store {
         if from < 34 {
             // v34: every process the daemon supervises, as a row. One new table; a store from before
             // it has no record of a process, which is the honest state.
-            self.conn().execute_batch(procs::PROCS_SQL)?;
+            self.batch_for(file, procs::PROCS_SQL)?;
         }
         if from < 35 {
             // v35: a block of a shared host's ports, held by one session. One new table; a store from
             // before it has no lease.
-            self.conn().execute_batch(leases::LEASES_SQL)?;
+            self.batch_for(file, leases::LEASES_SQL)?;
         }
         if from < 36 {
             // v36: the answer of a turn the child ran AFTER the one that settled it - a settlement
@@ -2477,7 +2506,7 @@ impl Store {
         }
         if from < 38 {
             // v38: accepted prompts the hub has not started - one new table, `IF NOT EXISTS`.
-            self.conn().execute_batch(prompts::PROMPTS_SQL)?;
+            self.batch_for(file, prompts::PROMPTS_SQL)?;
         }
         if from < 39 {
             // v39: two indexes so a session's transcripts and a parent's children are lookups, not scans.
@@ -2489,7 +2518,7 @@ impl Store {
             )?;
             if has_transcripts {
                 let began = std::time::Instant::now();
-                self.conn().execute_batch(SESSION_INDEXES_SQL)?;
+                self.batch_for(file, SESSION_INDEXES_SQL)?;
                 // Said after the fact: the build is one pass over two small tables, and a
                 // store large enough to make it noticeable should not look hung.
                 if began.elapsed() > std::time::Duration::from_millis(300) {
@@ -2504,12 +2533,12 @@ impl Store {
             // v40: what a session's requests have learned about pictures. One new table,
             // `IF NOT EXISTS`; a store from before it re-earns each refusal once, which is the
             // honest state of a session nobody had taught yet.
-            self.conn().execute_batch(marks::MARKS_SQL)?;
+            self.batch_for(file, marks::MARKS_SQL)?;
         }
         if from < 41 {
             // v41: a Claude Code seat's todo board - `todo` keyed by the seat's handle instead of a
             // session id, because a seat is not a session and its table carries no foreign key.
-            self.conn().execute_batch(seat::SEAT_TODO_SQL)?;
+            self.batch_for(file, seat::SEAT_TODO_SQL)?;
         }
         if from < 42 {
             // v42: the corpus counts are read at every open, and without this index they scan the
@@ -2521,7 +2550,7 @@ impl Store {
             )?;
             if has_corpus {
                 let began = std::time::Instant::now();
-                self.conn().execute_batch(CORPUS_INDEXES_SQL)?;
+                self.batch_for(file, CORPUS_INDEXES_SQL)?;
                 if began.elapsed() > std::time::Duration::from_millis(300) {
                     eprintln!(
                         "letibot: indexed the decision corpus for its counts ({} ms, one time)",
@@ -2533,12 +2562,12 @@ impl Store {
         if from < 43 {
             // v43: a seat's own background jobs - `job` keyed by the seat's handle, for v41's
             // reason one table over, with the pid's start time beside it.
-            self.conn().execute_batch(seat::SEAT_JOB_SQL)?;
+            self.batch_for(file, seat::SEAT_JOB_SQL)?;
         }
         if from < 44 {
             // v44: a Claude Code reviewer's conversation and its run. `QUEUES_SQL` is idempotent
             // throughout, so the one new table arrives with every other left as it was.
-            self.conn().execute_batch(queues::QUEUES_SQL)?;
+            self.batch_for(file, queues::QUEUES_SQL)?;
         }
         if from < 45 {
             // v45: a session can be put out of sight and kept. Two additive columns, NULL in every
@@ -2582,8 +2611,9 @@ impl Store {
         if from < 47 {
             // v47: the recall index - a project's past conversation as units, with the tier's
             // vector for each. Additive: a store never searched for its own history has an empty
-            // table, which is exactly what it had before.
-            self.conn().execute_batch(recall::RECALL_SQL)?;
+            // table, which is exactly what it had before. The units are a folder's own history,
+            // so a set's shared file is never given them.
+            self.batch_for(file, recall::RECALL_SQL)?;
         }
         if from < 48 {
             // v48: the owner, holding and reap_event tables (`docs/lifecycle.md` d.2) - box-wide,
@@ -2594,7 +2624,7 @@ impl Store {
                     "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'",
                 )?
             {
-                self.conn().execute_batch(owners::OWNERS_SQL)?;
+                self.batch_for(file, owners::OWNERS_SQL)?;
             }
         }
         if from < 49 {
@@ -2611,8 +2641,9 @@ impl Store {
         }
         if from < 50 {
             // v50: the operator's session and queue grants, kept so a restart re-applies them.
-            // Additive: a new table, empty, which is true - nothing was ever kept.
-            self.conn().execute_batch(grants::GRANTS_SQL)?;
+            // Additive: a new table, empty, which is true - nothing was ever kept. A grant is a
+            // session's, so a set's shared file is never given the table.
+            self.batch_for(file, grants::GRANTS_SQL)?;
         }
         if from < 51 {
             // v51: when a plan-check pause was made, and by whom. NULL everywhere, which reads as
@@ -2649,7 +2680,7 @@ impl Store {
         if from < 52 {
             // v52: the shadow's breaker, kept beside its grants. Additive: a new table, empty,
             // which reads as armed with no disagreement - what every earlier daemon started at.
-            self.conn().execute_batch(grants::BREAKER_SQL)?;
+            self.batch_for(file, grants::BREAKER_SQL)?;
         }
         if from < 53 {
             // v53: a journaled prompt's sender and lane. Defaulted, so an older row reads as the
