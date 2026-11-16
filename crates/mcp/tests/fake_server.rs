@@ -68,7 +68,7 @@ fn tools_are_listed_searched_and_called() {
     assert_eq!(
         tools,
         [
-            "echo", "big", "fail", "crash", "grow", "pwd", "env", "spawn"
+            "echo", "big", "fail", "crash", "grow", "pwd", "slow", "env", "spawn"
         ]
     );
     let mut h = harness(Arc::new(cat), allow_all_mcp());
@@ -303,4 +303,61 @@ fn an_mcp_server_endless_line_is_dropped() {
         failures[0].why.contains("bytes with no newline"),
         "{failures:?}"
     );
+}
+
+/// A call whose answer does not come back is cancelled in the protocol's own words, and told to the
+/// model as *may have run*: the call is out, so repeating it is a second run and not a retry.
+#[test]
+fn a_timed_out_mcp_call_is_cancelled_not_retried_blind() {
+    let dir = std::env::temp_dir().join(format!("letibot-mcp-cancel-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let log = dir.join("cancelled");
+    let _ = std::fs::remove_file(&log);
+    let mut spec = fake("slowpoke", &["--cancel-log", log.to_str().unwrap()]);
+    spec.timeout = Duration::from_millis(300);
+    let cat = Catalog::start(&[spec]);
+    assert!(cat.failures().is_empty(), "{:?}", cat.failures());
+    let why = match cat.call("slowpoke", "slow", &serde_json::json!({"ms": 900})) {
+        Err(letibot_tools::builtins::external::mcp::McpError::MayHaveRun { why }) => why,
+        other => panic!("not a may-have-run: {other:?}"),
+    };
+    // The server answers at 900 ms and reads the note after, so the id arrives a moment behind the
+    // timeout; the pairing is that the id in the log is the one the error names.
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let mut logged = String::new();
+    while std::time::Instant::now() < deadline {
+        logged = std::fs::read_to_string(&log).unwrap_or_default();
+        if !logged.trim().is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let id = logged.trim();
+    assert!(!id.is_empty(), "no cancellation reached the server: {why}");
+    assert!(
+        why.contains(&format!("request {id} ")),
+        "the cancelled id `{id}` is the request the error names: {why}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What the model is told: the tool may have run. `did not run` is the sentence a timeout may never
+/// produce here, because the answer is what never came back and the call went out.
+#[test]
+fn a_timed_out_call_reaches_the_model_as_may_have_run() {
+    let mut spec = fake("fake", &[]);
+    spec.timeout = Duration::from_millis(300);
+    let mut h = harness(Arc::new(Catalog::start(&[spec])), allow_all_mcp());
+    let r = h.call(
+        "mcp_call",
+        r#"{"tool":"fake__slow","arguments":{"ms":900}}"#,
+    );
+    assert!(
+        matches!(r.outcome, ToolOutcome::Failed { .. }),
+        "{:?}",
+        r.outcome
+    );
+    let said = r.render();
+    assert!(said.contains("may have run"), "{said}");
+    assert!(!said.contains("did not run"), "{said}");
 }
