@@ -556,11 +556,21 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R325 - B5 fence and secrets: the file tools' fence renders the seat from a different source than the shell view
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Batch B5 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I19, I37, I38. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built on branch `b5-fence`, 2026-11-16, on main `bf72aa1d9`, one commit per finding (I19 `One secret table for the fence, the gate, the seat and the shadow`, I37 `A tight view's file tools read the store only where a root holds it`, I38 `write and edit cannot reach the paths the shell view binds read-only`). Filed from the review at `9e9312b06`. Batch B5 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I19, I37, I38. Record: `docs/review/2026-11-16/INTEGRATION.md`. left: the full gate and the landing; the residue below.
 
 **Scope.** `tools/src/exec/fence.rs`, `secrets.rs`, `exec/seat.rs` protected set. One secret table with a per-entry seat scope (C9), feeding the fence, `secret_hit`, `read_passes` and the own-config rule. Shares `intent.rs` with B4 (the secret table only).
 
 **Proving tests.** `a_wide_seat_file_read_refuses_flow_rule_secrets`, `tight_view_file_tools_must_not_read_store_data`, `write_cannot_reach_protected_git_paths`. Each fails on the snapshot.
+
+**Built.** `secrets::STORES` is the one table, each entry scoped `Both`, `TightOnly` (`gh`, `hub`), `Unmasked` (the flow rule's read-side extras: `.docker`, `.config/flowy`, the `/etc` paths) or `Review` (the shadow's old `OWN_CONFIG` and `DEVICE`: `.config/letibot`, the store, `.claude`, `.codex`, `.config/claude`, `bin/fleet`, `/proc`, `/sys`, `/dev`). `stores()` feeds the gate's never-write list, `seat_denied()` the view masks and the macOS profile, `read_secrets()` plus `SECRET_FILE_NAMES`/`SECRET_EXTENSIONS` the flow rule's `secret_hit` and the file fence, `review_denied()` the shadow's `read_passes`. Added stores: `.pgpass`, `.my.cnf`, `.s3cfg`, `.vault-token`, `.config/rclone`, `.config/sops`, `.config/hub` (tight), `.claude/.credentials.json`, `.codex/auth.json`; added name `.credentials.json`. `FileFence::refusal` refuses a read `secret_store_of` names (I19), admits store data in a tight view only where a root holds it (I37), and refuses writes under `view.protected`, which `ViewSpec::of_seat` now fills the way `confined_over` does (I38). The gate's never-write step also judges each path argument's resolved target (`never_hit_resolved`).
+
+**Tests.** The three proving tests in `crates/tools/tests/file_fence.rs`, each run red on `bf72aa1d9` with the test alone and green on the branch; `write_cannot_reach_protected_git_paths` also red with only the source changes stashed. Equality test `the_fence_refuses_every_read_the_flow_rule_calls_secret` (`exec/fence.rs`); `every_store_is_denied_by_the_gate_the_flow_rule_and_the_seat` (`secrets.rs`) checks every scope. `cargo test -p letibot-tools` and `cargo test -p letibot-harnessd --no-fail-fast` green (135 binaries). The timing test `shadow::tests::a_slow_median_pauses_the_job_too` failed once under load 20 and passed alone 3 of 3 and in the full rerun. Each commit's `file_fence` run green at that commit.
+
+**Residue.**
+- Masking the new stores in the wide seat means `rclone`, `sops`, `psql` with `.pgpass`, `vault`, `s3cmd`, and `claude`/`codex` run from a letibot `bash` lose their credentials. The operator rules per entry; a store that must stay usable moves to `Unmasked` or `TightOnly`.
+- A file tool's read of a secret is refused, not asked: the file tools have no card. Reading one with `bash` is the asked route.
+- A bare `repo.git` common dir is held by the fence's protected set, not by `never_hit`, whose rule is still the `.git` segment.
+- The shadow keeps its `keys` and `credentials` component heuristics outside the table.
 
 **Size.** M. **After:** B4 (R324).
 
