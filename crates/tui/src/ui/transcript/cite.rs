@@ -1,14 +1,12 @@
 //! A reply's citations, put into the fences that name them - the head's half of
 //! `letibot_harnessd::citations`.
 //!
-//! The model wrote an empty fence labelled `path:start-end`; the daemon read those lines when the
-//! reply landed and sent them as [`Citation`]s. Here they go into the fence before the markdown
-//! is lexed, so rano draws the block as a citation - numbered as the file numbers it - and the
-//! label grows a note when there is something to say: the daemon could not read the lines, or
-//! the file on this machine no longer says what it said.
+//! The model wrote an empty fence labelled `path:start-end` and the daemon sent the lines as [`Citation`]s. They go into the fence
+//! before lexing, so rano draws a citation numbered as the file is, with a note when the lines could not be read or the file has
+//! changed.
 //!
-//! Which fences those are is [`letibot_transcript::citation`]'s rule, not a second copy. The daemon scans the same text with the same
-//! function, so a citation it recognised is one this fills - including the one-liner (` ```a/b.go:2-3``` `).
+//! Which fences is [`letibot_transcript::citation`]'s rule, the same function the daemon scans with, including the one-liner (`
+//! ```a/b.go:2-3``` `).
 
 use std::borrow::Cow;
 use std::path::Path;

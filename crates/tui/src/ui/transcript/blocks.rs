@@ -420,20 +420,11 @@ pub(crate) fn fold_cells(text: &str) -> Option<String> {
 ///   ▌ queued · also bump the retry budget
 /// ```
 ///
-/// The block sits at the tail of the body, where its row will land at the step boundary, so a message typed mid-turn never leaves the
-/// screen. Dim text rather than the raised block, which says "this is in the conversation"; the tag says what is true, in [`Role::Pending`].
-/// The mark on an echo: `queued` only while nothing is drawing it.
+/// At the tail of the body, where its row will land, so a message typed mid-turn never leaves the screen. Three states: `queued` (nothing
+/// has it), `unconfirmed` (a row is announced, the body is coming), unmarked (it landed).
 ///
-/// The operator's own order: *"my message | your line | and only then unqueued."* The reply streams while the prompt's row is announced
-/// in a frame with no text, so a surface that waits for the body to stop saying `queued` answers a question it has not drawn yet.
-///
-/// `unconfirmed` is the honest word for that window, not a weakening: the words are on the screen and the head still owes the BODY.
-/// Three states stay three: `queued` (nothing has it), `unconfirmed` (a row has it, the body is coming), unmarked (it landed).
-///
-/// One function because the tail asked `claimed_by.is_some() || unconfirmed` while the WALK drew every bound row as `QUEUED`, so fixing
-/// one left the other drawing the stale mark (see `a_prompt_stops_claiming_to_be_queued_when_its_row_is_announced`). `drawn` is *is
-/// something on this screen drawing these words*: true for the walk, and `claimed_by.is_some()` for the tail. Free-standing, as the tail
-/// computes it inside the frame's borrow.
+/// One function so the tail and the walk cannot disagree about the mark. `drawn` is whether something on this screen draws these words:
+/// true for the walk, `claimed_by.is_some()` for the tail.
 pub(crate) fn echo_mark(unconfirmed: &[String], text: &str, drawn: bool) -> &'static str {
     // The snapshot's doubt outranks everything: the head cannot tell *still coming* from
     // *replaced*, so it keeps saying so.

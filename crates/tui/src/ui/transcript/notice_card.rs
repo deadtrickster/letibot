@@ -1,10 +1,8 @@
 //! Every notice is ONE line with the whole of it one click away: the two lines that are not a
 //! notice - a system row and a hub warning - and the frame the session row's notices are drawn in.
 //!
-//! The notices themselves are `letibot_plugin::card::readers`' now: one copy of the readers, which
-//! the built-in `cards` layer is compiled from as well, so a card drawn by the layer and a card drawn
-//! by this head are the same card (X22). What stays here is what is the head's: where a row splits
-//! into notices, and the shapes only a head has the figures for:
+//! The notices are `letibot_plugin::card::readers`', the same readers the built-in `cards` layer is compiled
+//! from. Here is the head's part: where a row splits into notices, and the shapes only a head has figures for:
 //!
 //! ```text
 //! system · compacted summary (18.7k chars) · click for details
@@ -12,8 +10,8 @@
 //! compacted · 958k → ≈ 100k deepseek tokens · kept a 13.5k-char summary · nothing dropped · click for details
 //! ```
 //!
-//! A shape nothing has been taught falls back to a lead, the first clause and `click for details`.
-//! The popup is the text verbatim.
+//! An untaught shape falls back to a lead, the first clause and `click for details`; the popup is the text
+//! verbatim.
 
 use rano::style::Role;
 

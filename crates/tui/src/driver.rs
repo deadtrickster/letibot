@@ -1,21 +1,16 @@
 //! The loop: frames in, screen out, ack after the screen is out.
 //!
-//! Small, because the order of three operations is the whole of it:
-//!
 //! ```text
 //!   1. drain every frame that has arrived, classifying each
 //!   2. draw
 //!   3. ack `batch.last_seq()` with (rendered, filtered)
 //! ```
 //!
-//! Step 3 comes after step 2, always (*"a crash then costs a duplicate, never a silence"*). The seq acked is the last one
-//! read in step 1, not the last drawn: a head at `Terse` renders almost nothing and must still advance.
+//! Step 3 always follows step 2, so a crash costs a duplicate, never a silence. The seq acked is the last read, not the last
+//! drawn: a head at `Terse` renders almost nothing and must still advance.
 //!
-//! # The socket is not the session
-//!
-//! A daemon goes away for ordinary reasons (restart, `--stop`), and a head that treats that as the end of the program loses the
-//! operator's view of a conversation still on disk. So [`Link`] owns the socket, the channel and the reader thread, and marks the
-//! link down rather than returning an error:
+//! A daemon goes away for ordinary reasons (restart, `--stop`), so [`Link`] owns the socket, the channel and the reader thread,
+//! and marks the link down rather than ending the program:
 //!
 //! ```text
 //!   a write fails        -> Link::tick tells the head; the head draws the line
@@ -23,8 +18,8 @@
 //!   Link::reconnect      -> a new socket, ATTACH with the seq we had
 //! ```
 //!
-//! The `since_seq` is the whole of the recovery: the daemon answers a resume with the gap as events, or a `Resync` when the gap is
-//! larger than it still holds.
+//! The `since_seq` is the whole recovery: the daemon answers a resume with the gap as events, or a `Resync` when the gap is larger
+//! than it holds.
 
 use std::os::unix::net::UnixStream;
 use std::sync::mpsc::{Receiver, TryRecvError};
@@ -187,8 +182,8 @@ fn stat_ppid(stat: &str) -> Option<i32> {
     fields.next()?.parse().ok()
 }
 
-/// The state char out of one `/proc/<pid>/stat` line - `R` running, `S` sleeping, **`Z` a
-/// zombie**, `X` dead.
+/// The state char out of one `/proc/<pid>/stat` line - `R` running, `S` sleeping, `Z` a
+/// zombie, `X` dead.
 #[cfg(any(not(target_os = "macos"), test))]
 fn stat_state(stat: &str) -> Option<char> {
     let after = &stat[stat.rfind(')')? + 1..];

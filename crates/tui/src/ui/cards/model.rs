@@ -150,10 +150,9 @@ impl App {
         rano::render::text::truncate(&RLine::new(spans), w)
     }
 
-    /// What a model's row says its name is. Under an open provider the heading already names the
-    /// door, so the row is the model alone; the switch name it is taken by keeps its door. One rule
-    /// for the drawing and the column widths, or the name's column would be sized for a name that is
-    /// not on the screen.
+    /// What a model's row says its name is: under an open provider the heading names the door, so
+    /// the row is the model alone, and a switch name keeps its door. One rule for drawing and column
+    /// widths, so the column fits the name on screen.
     fn shown_model<'a>(&self, name: &'a str, at: &[usize]) -> &'a str {
         match self.model_open.is_some() && at.is_empty() {
             true => name.rsplit('/').next().unwrap_or(name),
@@ -245,10 +244,9 @@ fn column_labels(w: Widths) -> RLine {
     ))
 }
 
-/// One provider: what it is called, whether this box can take it, how many models are under it and
-/// what they cost - the four facts a choice between providers is made on. `keys` is whether the
-/// daemon published the row that says which providers it holds a key for: without it the state is
-/// not "not connected" but unknown, because the head has nothing to judge by.
+/// One provider: its name, whether this box can take it, how many models it has and what they cost.
+/// `keys` is whether the daemon published which providers it holds a key for; without it the state
+/// is unknown, not "not connected".
 fn provider_row(p: Option<&Provider>, cursor: bool, w: Widths, keys: bool) -> RLine {
     let Some(p) = p else {
         return RLine::default();

@@ -1,46 +1,16 @@
 //! A review's outcome, drawn as ONE line - and the whole of what the daemon said one click
 //! away, in the popup the job card opens.
 //!
-//! A session notice drew as dozens of lines; the ask was one line plus a popup, as for the red target.
-//!
-//! # The line
-//!
 //! ```text
 //! review · agent/panic-groupingsets-join · could not decide · BUT the ask's acceptance cannot be met on this base… · click for details
 //! ```
 //!
-//! The branch, the verdict's word, and the first clause of the decisive reason ([`decisive`]: the sentence opening with `BUT`, else the first),
-//! cut to the width. The verdict takes the role the queue pane gives the row's state (`panes::queue::mark_of`): refusal and could-not-decide
-//! in the attention register, blocked or cannot-run in the failure register.
+//! The branch, the verdict's word, and the first clause of the decisive reason ([`decisive`]), cut to the width, in the role the queue pane
+//! gives the state (`panes::queue::mark_of`).
 //!
-//! # The shapes
-//!
-//! Every text a review's outcome reaches a session or a hub in (`mergequeue::notices`, each pinned by `harnessd`'s `the_tuis_review_card_fixtures_are_what_the_queue_writes`):
-//!
-//! | text | where | verdict |
-//! |---|---|---|
-//! | `parked`, a branch whose reviewer could not decide | the branch's root session | could not decide |
-//! | `parked`, a branch whose review is blocked | the branch's root session | blocked |
-//! | `parked`, the red tip's reviewer could not decide | the repository's root sessions | could not decide |
-//! | `parked`, the red tip's review is blocked | the repository's root sessions | blocked |
-//! | `refused`, the refusal | the child that wrote the branch, as a parent's message | refused |
-//! | `refused_to_root`, the refusal a child could not be told | its root, as a parent's message | refused |
-//! | `vetoed`, the operator's veto | the child, as a parent's message | vetoed |
-//! | `handed_over`, a review handed to the project | the project's main session | handed to you |
-//! | `queue_needs_human` | every hub | could not decide |
-//! | `queue_blocked`, attempts spent | every hub | blocked |
-//! | `queue_blocked`, a reviewer that could not start | every hub | reviewer could not start |
-//! | `queue_blocked`, a review that cannot run | every hub | cannot run |
-//! | `refusal_undelivered` | every hub | refused, told nobody |
-//! | `queue_waiting_for_vm`, no free VM slot for the reviewer | every hub | waiting for a VM slot |
-//! | `queue_vm_slots_exhausted`, that wait past 30 minutes | every hub | VM slots exhausted |
-//!
-//! `queue_needs_human` and `queue_blocked` (attempts spent) have two shapes each: the daemon's current one and the older one an older
-//! daemon still writes. An APPROVED, superseded or withdrawn review is a `QueueMoved` event, which the conversation does not draw. The red tip's
-//! reviewer finding the target broken is a `target_red` warning, and `red_card`'s.
-//!
-//! The reader keys on the opening, the backticked branch and the words that carry the verdict; anything else is `None` and the row
-//! is drawn as before. The reason is a summary, and the popup is the text verbatim.
+//! Reads every outcome text `mergequeue::notices` writes, older daemons' shapes included, pinned by `harnessd`'s
+//! `the_tuis_review_card_fixtures_are_what_the_queue_writes`. Approved, superseded or withdrawn is a `QueueMoved` event, not drawn; a
+//! broken target is `red_card`'s. Anything else is `None`.
 
 use rano::style::Role;
 

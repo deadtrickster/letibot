@@ -72,9 +72,8 @@ pub enum GitRole {
 /// ? src/untracked.rs
 /// ```
 ///
-/// Every `1 XY`/`2 XY` line is one changed path: X is index-vs-HEAD and Y is workdir-vs-index, so `.` in X with `M` in Y is unstaged
-/// work and the reverse is staged (`%+` against `%!`). `u` lines are unmerged, `?` untracked. `branch.ab` and `branch.upstream` are
-/// absent on a branch with no upstream, which is not an error. `# stash N` needs `--show-stash`.
+/// `1 XY`/`2 XY` lines are changed paths: X is index-vs-HEAD, Y workdir-vs-index (`%+` staged, `%!` unstaged); `u` is unmerged, `?`
+/// untracked. `branch.ab` and `branch.upstream` are absent with no upstream, which is not an error.
 ///
 /// `None` when the text names no branch at all: an empty reading or git's own complaint means *not a repository I can read*.
 pub fn git_parts(porcelain: &str, action: Option<&'static str>) -> Option<GitState> {

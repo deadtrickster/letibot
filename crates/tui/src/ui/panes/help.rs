@@ -21,10 +21,9 @@ pub(crate) fn help_lines_with(
     keys: &crate::app::KeyOverrides,
     commands: &[(String, String)],
 ) -> Vec<String> {
-    // The panes' rows are generated from their key tables: how each is opened, what it is, and
-    // every key it takes, read from `Surface::bindings`, the table its keys are dispatched from -
-    // so help cannot name a key the pane does not take, nor miss one it does. `keys` is
-    // `leticode.toml`'s `[keys]`: a rebound key is the one in force, so it is the one named.
+    // The panes' rows are generated from `Surface::bindings`, the table their keys are dispatched
+    // from, so help cannot name a key a pane does not take or miss one it does. `keys` is
+    // `leticode.toml`'s `[keys]`, so a rebound key is the one named.
     let panes: Vec<(String, String)> = crate::app::Surface::ALL
         .into_iter()
         .filter_map(|s| crate::app::surface_help_keys(s, keys))

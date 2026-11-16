@@ -1,18 +1,13 @@
 //! A stale prompt's note, drawn as ONE line - what changed, and the daemon's whole sentence
 //! one click away.
 //!
-//! The `prefix_stale` note drew as three wrapped rows and a `… +1 lines · /notes` seam; the ask was the usual one-liner.
-//!
 //! ```text
 //! prompt stale · seated 09-20 17:51 · new: task_resume · click for details
 //! prompt stale · seated 09-20 17:51 · instructions changed · new: task_resume, pkill · gone: job_wait · changed: todo_write · click for details
 //! ```
 //!
-//! The line is a pointer, not the decision: the reseat card (`app::reseat`) is where the operator chooses (`alt-r` reseats, `alt-p` shows
-//! the card). The note says what changed and where to decide; a click opens the sentence whole.
-//!
-//! The sentence is `harness::stale_prefix_sentence` in harnessd; the parser keys on its opening and the three tool lists' lead-ins.
-//! Anything else is `None` and the note is drawn as before.
+//! A pointer, not the decision: the reseat card (`app::reseat`) is where the operator chooses. The parser keys on
+//! `harness::stale_prefix_sentence`'s opening and the three tool lists' lead-ins; anything else is `None`.
 
 use rano::style::Role;
 

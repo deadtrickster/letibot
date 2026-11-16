@@ -42,9 +42,7 @@ pub(crate) fn display_outcome(o: &letibot_transcript::ToolOutcome) -> Outcome {
     }
 }
 
-/// How a call ended, in one word - and there is no longer a second spelling of this in the
-/// head. See [`Outcome::word`] for the two that agreed on nothing but the word `failed`, and
-/// for why the card is the side that moved.
+/// How a call ended, in one word, the head's only spelling of it. See [`Outcome::word`].
 pub(crate) fn outcome_word(o: &letibot_transcript::ToolOutcome) -> &'static str {
     display_outcome(o).word()
 }
@@ -165,14 +163,9 @@ pub(crate) struct DiffRows<'a> {
 pub(crate) const DETECTED_PROVENANCE: &str =
     "  detected afterwards — the command changed {these}; not made by `edit`";
 
-/// The rows a change DETECTED after a command draws: rano draws an [`EditDiff`] only for an
-/// edit verb, which is right for the header and wrong for the body. Drawn even while folded,
-/// because a diff behind a fold the reader did not know about is no diff.
-///
-/// A call can change several files (R161), so the first is drawn in full - eight rows folded, all
-/// of them open - and the rest are one line each while folded: a sweep that rewrote twenty files
-/// must not bury the command it belongs to. `under_a_panel` is the edit verb's case, where rano
-/// already drew the first file and every excerpt here is an extra.
+/// The rows a change detected after a command draws: rano draws an [`EditDiff`] only for an edit
+/// verb. Drawn even while folded. The first file is drawn in full and the rest one line each while
+/// folded; `under_a_panel` is the edit verb's case, where rano drew the first file.
 pub(crate) fn detected_diff_rows(
     edits: &[letibot_transcript::ToolEditExcerpt],
     d: DiffRows<'_>,
@@ -240,11 +233,9 @@ pub(crate) fn detected_diff_rows(
             ));
         }
     }
-    // Folded, the row says how the diff was obtained itself: the tool's sentence is a `[note]`
-    // in the payload, a folded row shows the payload's FIRST line only, and any note ahead of
-    // it hides the provenance. Nothing is said when nothing was drawn - an edit verb's single file
-    // is the panel rano drew, so a line about how it was obtained would describe a diff this did not
-    // draw.
+    // Folded, a row shows only the payload's first line, so the row says itself how the diff was
+    // obtained; a `[note]` ahead of it would hide that. Nothing is said for an edit verb's single
+    // file, which is rano's panel and not a diff drawn here.
     if !fold.is_open() && (!under_a_panel || edits.len() > 1) {
         let these = if edits.len() > 1 {
             "these files"

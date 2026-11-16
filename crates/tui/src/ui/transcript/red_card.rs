@@ -1,33 +1,20 @@
 //! A red merge target, drawn as ONE line - and the whole of what the daemon said one click
 //! away, in the popup the job card opens.
 //!
-//! A `target_red` warning wrapped into a paragraph with the gate's output, then the session's `EMERGENCY - ` notice repeated that output: two
-//! big blocks for one event; the ask was a one-line card like the job's, with a popup.
-//!
-//! # The lines
-//!
 //! ```text
 //! ‼ main RED at 60bf819c · firecode · bin/firecode test failed · click for details
 //! ‼ main RED at 60bf819c · firecode · bin/firecode test failed (step 1/1) · review red-main-60bf819c3342 · click for details
 //! ```
 //!
-//! The first is the hub warning (`target_red`, from the queue's `target_went_red`); the second is the notice the project's root session reads
-//! (`mergequeue::notices::health`), which also numbers the failing step and names the red tip's review. Both are cut to the width and drawn
-//! in the failure register. The gate TIMED OUT and CANNOT JUDGE siblings, and the reviewer's `target_red` warnings, get the same line with
-//! their own word; a step KILLED before it judged (memory cap or signal) is unjudged, not red, and gets its own line, also from `gate_killed`:
+//! The hub warning (`target_red`) and the root session's notice (`mergequeue::notices::health`), cut to the width in the failure register.
+//! TIMED OUT and CANNOT JUDGE take the same line with their own word; a step KILLED before it judged is unjudged, not red:
 //!
 //! ```text
 //! ‼ main UNJUDGED at 9562d70c · letibot · gate killed at its memory cap · click for details
 //! ```
 //!
-//! The daemon raises nothing when the target turns green again, so there is no recovery line to pair with these.
-//!
-//! # Only what this head can read is folded
-//!
-//! The card mechanism is `line_cards`'; this module is the red target's reader in its registry ([`SESSION`], [`WARNING`]). The head of the text
-//! must be exactly one of the daemon's openings, with a target, a sha and a repository; anything else is `None`. The parser keys on the
-//! stable parts only and tolerates sentences after them, so a new daemon sentence does not cost the operator the line. The record is
-//! untouched: the model reads the daemon's words.
+//! There is no recovery line: the daemon raises nothing when the target turns green. The parser keys on the stable opening, target, sha and
+//! repository and tolerates sentences after them; anything else is `None`.
 
 use rano::style::Role;
 

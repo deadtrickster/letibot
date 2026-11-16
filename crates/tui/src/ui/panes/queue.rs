@@ -501,10 +501,9 @@ pub(crate) fn stuck_why(state: &str, branch: &str, evidence: &str) -> String {
     }
 }
 
-/// The standings of the rows `keep` admits, as of `now` - the snapshot's clock carried forward,
-/// because `landed` asks about a window and `at_ms` is a moment. The snapshot holds every row the
-/// store ever had, so a terminal row inflates no live column: `stuck` is [`review_stuck`] and
-/// [`merge_stuck`], nothing else.
+/// The standings of the rows `keep` admits, as of `now`: the snapshot's clock carried forward,
+/// because `landed` asks about a window and `at_ms` is a moment. The snapshot holds every row ever
+/// stored, so `stuck` is [`review_stuck`] and [`merge_stuck`] only.
 pub(crate) fn standings_where(
     q: &QueueSnapshot,
     now: u64,

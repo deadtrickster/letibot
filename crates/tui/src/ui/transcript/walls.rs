@@ -1,9 +1,8 @@
 //! How many screen rows the session's notices take, measured on real rows.
 //!
-//! Not a test of behaviour - a measurement, run by hand: rows exported read-only from a `sessions.db` to JSONL
-//! (`{"kind":"agent"|"system","origin":…,"ts":…,"text":…}`) are drawn through [`session_row_lines`] and [`system_row_lines`] at 100
-//! columns. A row is a WALL when it draws more screen rows than it has notices; one line a notice is the rule (`line_cards`),
-//! with the job card's two lines a job the one exception.
+//! A measurement run by hand, not a behaviour test: rows exported from a `sessions.db` to JSONL go through [`session_row_lines`]
+//! and [`system_row_lines`] at 100 columns. A row is a WALL when it draws more screen rows than it has notices (a job card's two
+//! lines excepted).
 //!
 //! ```text
 //! LETIBOT_WALL_ROWS=rows.jsonl cargo test -p letibot-tui walls -- --ignored --nocapture

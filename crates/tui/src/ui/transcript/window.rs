@@ -138,10 +138,9 @@ impl App {
             .as_ref()
             .map(|t| t.turn_rows.iter().cloned().collect())
             .unwrap_or_default();
-        // The last frame's join is taken back before the walk, so the walk never meets it - and ONLY while there
-        // is live work to re-join: after hand-over the counts are 0 and the line IS the folded run's marker.
-        // Matched by the whole joined line: once the row re-renders the join is gone, and a suffix match took an
-        // earlier row's line with the same marker and wrote the newest row's text over it.
+        // The last frame's join is taken back before the walk, and ONLY while there is live work to re-join:
+        // after hand-over the counts are 0 and the line IS the folded run's marker. Matched by the whole joined
+        // line, because a suffix match can hit an earlier row with the same marker.
         if let Some((original, joined)) = self.live_join.take()
             && live.work() > 0
             && let Some(at) = self.hist_lines.iter().rposition(|l| *l == joined)
@@ -161,12 +160,9 @@ impl App {
         // The budget `release_below` set is spent by the walk that used it, and no other frame's.
         self.walk_ahead = usize::MAX;
 
-        // A marker with no row joins the sentence above it, and the joining happens here: the pane pushes the
-        // marker while `hist_lines` is lent to the frame, so the mutation of that buffer's last line is decided
-        // one statement before the borrow. The row above must be the model's prose.
-        // Has the walk already carried the in-flight counts? It folds them into the run the current turn is
-        // working in, and if it has, a marker here would be a second one for one turn's work.
-        // The runs, once: the walk built its own while it held the fields (R123.3).
+        // A marker with no row joins the model's prose above it, decided here because the pane pushes it while
+        // `hist_lines` is lent to the frame. `walk_carried_live`: the walk already folded the in-flight counts
+        // into this turn's run, so a marker here would be a second one.
         let runs = RunIndex::of(
             &self.items,
             self.visibility,
@@ -787,8 +783,7 @@ impl App {
         let cards_host = sessions_host.borrow();
         let cards_host = cards_host.as_ref();
         // The runs and the ids, once per frame: the questions below are per row, and
-        // re-deriving them from `items` per row is what made a long hidden run
-        // quadratic (R123.3).
+        // re-deriving them from `items` per row makes a long hidden run quadratic.
         let runs = RunIndex::of(items, *visibility, bound_prompts, think);
         // The run `ctrl-v` opens, computed once per frame: the seam names the chord only on the run it acts on,
         // and asking per row would be a scan of the transcript for every row drawn.

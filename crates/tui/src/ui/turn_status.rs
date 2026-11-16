@@ -74,19 +74,11 @@ impl App {
 
     /// What this session is waiting on, one muted line - `waiting on: job j8032 · monitor ci`.
     ///
-    /// The daemon's own list (`PROTOCOL_VERSION` 52), drawn where a turn's state is drawn. It exists for the case no transcript row can say:
-    /// a session whose turn has ended but which will act again on its own, because a job the plan depends on is still running.
+    /// The daemon's own list, for a session whose turn ended but which will act again on its own because a job it depends on still runs.
+    /// Only when no turn is running, since the turn's row owns the slot. Empty for a quiet session or a daemon older than protocol 52.
     ///
-    /// Only when no turn is running: a running turn's own row owns the slot, and listing what is running beside `Responding · 2m30s · …`
-    /// says the same thing twice. Empty for a quiet session and for a daemon older than 52, which keeps it invisible to a head talking to one.
-    ///
-    /// The daemon's [`letibot_sessionlog::activity::Activity::line`] read, on the operator's screen:
-    /// ```text
-    /// waiting on: monitor letibot-gate-after-wired · child s-1793010881933039000-sub-1793225939092557000 · child s-1793010881933039000-sub-1793225939285082000 · child s-1793010881933039000-sub-1793225939482158000
-    /// ```
-    ///
-    /// A session id is not a name a person can use, and three of them push the monitor off a narrow screen.
-    /// [`App::waiting_words`] names a child the way the subagents pane does and counts a kind that repeats.
+    /// Session ids are not names a person can use, and three push the monitor off a narrow screen, so [`App::waiting_words`] names a child
+    /// as the subagents pane does and counts a kind that repeats.
     fn activity_line(&self, w: usize) -> Line {
         let mut text = self.waiting_words();
         // A switch waiting for a turn reads here too, for the one idle case: a head that

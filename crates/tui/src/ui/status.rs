@@ -221,22 +221,9 @@ impl App {
         )
     }
 
-    /// The alarm line for the unboxed composer, the short-screen path with no border to pin a triangle to. The boxed path says it with
-    /// a `⚠` in the bottom edge's corner and leaves the numbers to `/status`; here the triangle alone would be unreadable.
-    ///
-    /// Not all of them: no sequence numbers, verbosity,
-    /// twenty-one-character session id or head id, on every frame:
-    ///
-    /// ```text
-    /// ╰─ seq 907 · rendered 900 · filtered 1 (normal) · dropped 0 · scrubbed 0 ·
-    ///    resync 0 · s-1789023464202470853 h3 ─╯
-    /// ```
-    ///
-    /// Each was added because something was measured going wrong, which does not argue for keeping them resident. The rule is that
-    /// *an absent field and a zero field must not look the same when the field is the disclosure* is about when the field is read:
-    /// `/status` reads it, says `dropped 0` explicitly and says what the counter means. What stays here is a counter that has moved,
-    /// in [`Role::Attention`], not the border's grey: a second colour inside a border reads as damage and this is damage. The
-    /// disclosure line is ordered by how likely it is to matter and truncated from the right, with anything nonzero promoted to the front.
+    /// The alarm line for the unboxed composer, the short-screen path with no border corner for a `⚠`. Only counters that
+    /// have moved, in [`Role::Attention`]; every counter and its meaning is `/status`'s. Ordered by how likely it is to
+    /// matter and truncated from the right.
     pub(crate) fn status_line(&self, w: usize) -> String {
         if !self.alarmed() {
             return String::new();

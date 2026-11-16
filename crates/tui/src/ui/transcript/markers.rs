@@ -92,14 +92,14 @@ pub(crate) fn row_drawn_at(
 }
 
 /// The stretches of rows the rung hides and where every row is, precomputed and handed to the
-/// walks, so a per-row question is one lookup instead of a rescan of the run around it (R123.3:
-/// one long hidden run made every walk over it quadratic this way).
+/// walks, so a per-row question is one lookup instead of a rescan of the run around it, which
+/// makes a walk over a long hidden run quadratic.
 pub(crate) struct RunIndex<'a> {
     /// Per row, the stretch of undrawn rows it sits in, or [`NO_STRETCH`]. Rows are bounded by
     /// the bytes a head holds, far below 2^32, so `u32` is the whole index.
     of_row: Vec<u32>,
     /// The stretches as `[start, end)`, ascending, each with whether it hides a row: the three
-    /// facts [`unseen_run_at`] used to derive by walking, and nothing else.
+    /// facts [`unseen_run_at`] asks for, and nothing else.
     stretches: Vec<(usize, usize, bool)>,
     /// Row by id, first occurrence: [`run_open_at`] scanned the transcript per row.
     by_id: std::collections::HashMap<&'a str, usize>,
@@ -111,13 +111,9 @@ pub(crate) struct RunIndex<'a> {
 const NO_STRETCH: u32 = u32::MAX;
 
 impl<'a> RunIndex<'a> {
-    /// One pass over the rows, asking the same predicates the per-row walks asked: a stretch is
-    /// a maximal run of rows [`row_drawn_at`] refuses, and `hidden` is folded while it grows.
-    ///
-    /// `think` is the thinking fold, and it is the second thing that hides a row: a folded thought
-    /// draws NOTHING - no header, no stub - so one of its rows is hidden at every rung, and a run of
-    /// them must leave its marker. The rung alone cannot say so, and reading only the rung made a
-    /// landed thought vanish from the screen with nothing standing for it.
+    /// One pass over the rows with the per-row walks' predicates: a stretch is a maximal run of rows
+    /// [`row_drawn_at`] refuses. `think` is the thinking fold, which hides a folded thought's row at
+    /// every rung, so a run of them still leaves its marker.
     pub(crate) fn of(
         items: &'a [SnapshotItem],
         vis: Visibility,

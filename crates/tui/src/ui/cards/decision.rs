@@ -38,10 +38,9 @@ pub(crate) enum Words {
     None,
 }
 
-/// How long a permission card ignores the key that answers it: `MODE_ARM_MS`'s window one card over.
-/// Since a typed line now means something to the marked rung, an Enter meant for the composer would
-/// deny a call with the operator's own words as its reason. Digits and arrows only mark, so they are
-/// not held.
+/// How long a permission card ignores the key that answers it, `MODE_ARM_MS`'s window one card over:
+/// a typed line means something to the marked rung, so an Enter meant for the composer would deny
+/// with the operator's words as reason. Digits and arrows only mark, so they are not held.
 pub(crate) const DEC_ARM_MS: u64 = 500;
 
 /// What a card that has just appeared says when it refuses the key that would answer it.
@@ -114,10 +113,9 @@ fn words_for_kind(kind: letibot_sessionlog::event::OptionKind) -> Words {
     }
 }
 
-/// The sentence a permission card owes about its two standing rungs, drawn in the content half:
-/// what a session grant lasts, and where a durable rule is written. In the gate's words it was a
-/// paragraph inside the Deny button, which is a choice that explains itself instead of being one.
-/// The mode is named when this head knows it, since the rungs it narrows are the mode's.
+/// What a permission card says about its two standing rungs, in the content half: what a session
+/// grant lasts and where a durable rule is written, not inside the Deny button. The mode is named
+/// when this head knows it, since the rungs narrow the mode's.
 fn grant_sentence(d: &OpenDecision, mode: &str) -> Option<String> {
     use letibot_sessionlog::event::OptionKind as K;
     let mut said: Vec<&str> = Vec::new();
@@ -355,13 +353,9 @@ impl App {
         }
     }
 
-    /// The card, split where the split is: `content` is the question, what it is about and the
-    /// evidence, a viewport that shrinks and scrolls; `choices` is the ladder and what pressing it
-    /// means, never trimmed and never scrolled, because that half is the answer.
-    ///
-    /// The answer half is this head's, whole: rano's rungs are replaced where the head has its own
-    /// words for them, and everything rano draws under the ladder - the id to type, the `<why>`
-    /// suffix, a glob hint with a run of spaces in it - described a card that no longer exists.
+    /// The card split in two: `content` is the question and its evidence, a viewport that shrinks
+    /// and scrolls; `choices` is the ladder, never trimmed or scrolled, because it is the answer.
+    /// The answer half is wholly this head's, so rano's rungs take its words.
     pub(crate) fn decision_card(&self, d: &OpenDecision, w: usize) -> (Vec<String>, Vec<String>) {
         let view = self.decision_view(d);
         let (mut content, rano) = view.split(w);

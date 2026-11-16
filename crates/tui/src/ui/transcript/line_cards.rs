@@ -172,10 +172,9 @@ pub(crate) fn session_card(text: &str) -> Option<Card> {
     (kind.read)(notice)
 }
 
-/// The card a hub warning is drawn as, or `None` for a code or a detail no card reads (the
-/// note is then drawn as it always was). Its role is its code's class, not the reader's own: a
-/// reader that hard-coded one is a second answer to the question the log already answered - save
-/// the kinds whose register is per notice, which keep what they read.
+/// The card a hub warning is drawn as, or `None` for a code or detail no card reads. Its role is
+/// its code's class, since the log already answered that, except for kinds whose register is per
+/// notice, which keep what they read.
 pub(crate) fn warning_card(code: &str, detail: &str) -> Option<Card> {
     let (mut card, from_code) = WARNING_KINDS
         .iter()

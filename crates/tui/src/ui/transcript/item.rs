@@ -192,10 +192,9 @@ pub(crate) fn item_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>) -> (RowClass, Vec
                 queued_lines(text, cfg, echo_mark, ctx.tools.is_open()),
             );
         }
-        // No echo and no body yet. One line where the row's word for itself is known - a tool result
-        // past the announcement bound, which is how every payload over 8 KiB arrives - and nothing
-        // at all otherwise: a fork publishes every announcement before any body follows, and a
-        // placeholder per row was a wall of them.
+        // No echo and no body yet: one line when the row's word is known (a tool result past the
+        // announcement bound, as every payload over 8 KiB arrives), else nothing, since a fork
+        // publishes every announcement before any body and a placeholder per row is a wall.
         return match pending_lines(it, ctx, ind) {
             Some(lines) => (RowClass::Activity, lines),
             None => (RowClass::Other, Vec::new()),
@@ -290,7 +289,7 @@ fn pending_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>, ind: usize) -> Option<Vec
 }
 
 /// The files a completion says changed while its job ran, drawn under the notice: the daemon took a
-/// snapshot of the tree at the spawn and read it back at the settlement (R161), so these are measured
+/// snapshot of the tree at the spawn and read it back at the settlement, so these are measured
 /// rather than attributed - a job's row says WHEN, and the provenance line says so.
 pub(crate) fn job_change_rows(item: &TranscriptItem, ctx: &ItemCtx<'_>, ind: usize) -> Vec<String> {
     let TranscriptItem::User { parts, .. } = item else {

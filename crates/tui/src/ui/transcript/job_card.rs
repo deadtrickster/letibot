@@ -1,24 +1,16 @@
 //! A background job's completion notice, drawn as two lines a job - and its whole card one
 //! click away.
 //!
-//! The row is the daemon's `completion_notice` (`crates/harnessd/src/harness.rs`), a `[job] …` user row, and the model's text is untouched.
-//! This renders it as [`folded_notice`] does, beside that fold because a multi-line command and the `memory:` line are text the fold
-//! does not recognise, so it handed the whole row back raw.
-//!
-//! # The two lines
+//! The row is the daemon's `completion_notice`, a `[job] …` user row, and the model's text is untouched.
 //!
 //! ```text
 //! j1042 · build-and-test-null · exited 0 2m54s · bash -c 'cd /home/dead/Projects/dbtest/pg-n…
 //!   ⎿ test result: ok. 12 passed; 0 failed
 //! ```
 //!
-//! The first line is the job: id, name, how it ended, how long, and the command flattened and cut to the width. The second is the last line
-//! the job wrote, since a build says how it went at its end. The head reads the job's tail like the jobs pane (`ReadJobOutput`), once per
-//! job and only for a notice on screen; until it lands, or when the output is unreadable, the line says what the notice knows.
-//!
-//! [`folded_notice`]'s rule, kept: every line of the notice is accounted for - the heading is one of the four `completion_notice` writes, the
-//! bullet count matches, every bullet parses, and the closing is one of the daemon's two. Anything else is `None` and the row is drawn as
-//! before. The parser is pinned against the daemon's own output (`app/tests/fixtures/job_notice_*.txt`, compared byte for byte).
+//! The job line, then the last line the job wrote, since a build says how it went at its end; the tail is read once per job and only for a
+//! notice on screen. Every line of the notice must be accounted for, or it is `None` and drawn as before; the parser is pinned against
+//! `app/tests/fixtures/job_notice_*.txt`.
 
 use std::collections::HashMap;
 
@@ -85,7 +77,7 @@ pub(crate) struct EndedJob {
     /// that drew only `killed by …` would read as a finish.
     pub(crate) partial: bool,
     /// The files that changed in the job's tree while it ran, as the daemon's line names them - its
-    /// own line, because a job says WHEN and not WHO (R161).
+    /// own line, because a job says WHEN and not WHO.
     pub(crate) changed: Option<String>,
 }
 
@@ -152,7 +144,7 @@ pub(crate) fn ended_jobs(group: &str) -> Option<(bool, Vec<EndedJob>)> {
                 }
                 job.memory = Some(m.to_string());
             } else if let Some(m) = note.strip_prefix(CHANGED) {
-                // What the job's tree looked like when it ended (R161): its own line, never the
+                // What the job's tree looked like when it ended: its own line, never the
                 // command's continuation - a diff card would otherwise be the last half of a shell
                 // line nobody ran.
                 if job.changed.is_some() {
@@ -408,7 +400,7 @@ pub(crate) fn job_lines(j: &EndedJob, mine: bool, tail: Option<&JobTail>) -> [St
         }
     };
     // What changed in the job's tree while it ran, on the line that carries the other facts: the
-    // daemon measured it (R161), and the row is where its diff is drawn.
+    // daemon measured it, and the row is where its diff is drawn.
     let second = match &j.changed {
         Some(c) => format!("{second} · changed while it ran: {c}"),
         None => second,

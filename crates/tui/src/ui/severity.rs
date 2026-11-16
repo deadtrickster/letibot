@@ -1,12 +1,8 @@
 //! The one mapping from a meaning to the colour a state is drawn in.
 //!
-//! The words are the pane wire's (`letibot_plugin::pane::Role`, re-exported as
-//! `letibot_sessionlog::pane::Role`) and the looks are rano's; this table is the only place the
-//! two meet. There were three such tables - the sessions pane's, a plugin pane's and the chat's -
-//! and a `working` that was green in one and yellow in another is what that cost.
-//!
-//! The five severities mean one thing each, and a caller that wants a colour for "is happening"
-//! asks for [`Meaning::Pending`] whatever pane it is drawing:
+//! The words are the pane wire's (`letibot_plugin::pane::Role`) and the looks are rano's; this
+//! table is the only place the two meet, so `working` is one colour in every pane. A caller that
+//! wants a colour for "is happening" asks for [`Meaning::Pending`]:
 //!
 //! ```text
 //! Info       something happened and nothing is asked of the reader
@@ -91,7 +87,7 @@ mod tests {
                 assert_ne!(a, b, "two severities share a role");
             }
         }
-        // The one word every pane used to spell differently.
+        // One word for every pane.
         assert_eq!(role(Some(Meaning::Working)), Role::Pending);
         assert_eq!(role(Some(Meaning::Pending)), Role::Pending);
     }

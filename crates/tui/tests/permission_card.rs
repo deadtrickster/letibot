@@ -1,11 +1,6 @@
-//! The answer half of a permission card, end to end: a real `letibot-tui` on a pty, a real daemon
-//! socket, and the gate's own ask (`harnessd::answers::HeadAdjudicator`) between them. Nothing here
-//! is a fixture of the card - the card the head draws is the one the gate posted, and the answer the
-//! gate acts on is the one a person pressed.
-//!
-//! Three answers, and each is one of the item's bars: a digit answers, a typed refusal reaches the
-//! model as its reason, and an always-allow shows the rule it is about to write and then writes it
-//! to `permission.json`. A fourth call proves the written rule admits without asking.
+//! A permission card's answer half over a real `letibot-tui` on a pty, a real daemon socket and the
+//! gate's `HeadAdjudicator`: a digit answers, a typed refusal reaches the model as its reason, and
+//! an always-allow writes a rule that admits a later call unasked.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -396,9 +391,8 @@ fn a_digit_a_typed_reason_and_an_always_allow_answer_a_real_ask() {
     );
 
     // ── 4. And the rule the file holds is what admits the next call ─────────────────────────
-    // A second gate over the saved file alone, with an adjudicator that refuses anything that
-    // asks: `mv -f …` is a call the rule was not typed for and the same rule covers, so admitting
-    // it here is the rule's doing and nobody's answer.
+    // A second gate over the saved file alone, refusing anything that asks: the rule was not typed
+    // for `mv -f …` but covers it, so admitting it is the rule's doing.
     let loaded = letibot_tools::permission::load_file(&permission_file).expect("the saved ruleset");
     let mut fresh = AdjudicatedGate::new(Box::new(letibot_tools::adjudicate::AskAdjudicator::new(
         "human",

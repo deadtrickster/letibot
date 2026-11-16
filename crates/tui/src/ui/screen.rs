@@ -68,11 +68,9 @@ impl App {
         out
     }
 
-    /// The links on a finished frame, drawn and recorded (OSC 8), in three passes that are each rano's own
-    /// decision about what a link is: the URLs, then `path:line`, then the words rano recognises. A word the
-    /// session's own references do not know is offered to the `link_` layers - ONE call per frame for all of
-    /// them, cached by word (`docs/plugins-plan.md` §4.6) - and the frame is read back afterwards for the
-    /// pairs it carries, since a link is a target only where it was drawn.
+    /// The links on a finished frame, drawn and recorded (OSC 8): URLs, then `path:line`, then the words
+    /// rano recognises. Unknown words go to the `link_` layers in ONE call per frame, cached by word, and
+    /// the frame is read back after, since a link is a target only where drawn.
     fn draw_links(&mut self, out: &mut [String]) {
         if !self.features.links {
             self.link_targets.clear();
@@ -335,10 +333,9 @@ impl App {
         let row_clicks = click.is_some();
         self.status_click = click;
         let mut notice_at: Option<usize> = None;
-        // Live slash-command matches, one dim row above the composer: a typing aid, not a message. It is a SLOT
-        // and not an appearance, because a row that comes and goes takes its line from the transcript and hands
-        // it back, and the reader's page moves. An editor chip shares this edge for the same reason: a
-        // chip that appeared as a row would move the page under the person who just pressed `alt-s`.
+        // Live slash-command matches, one dim row above the composer. A SLOT and not an appearance, because a
+        // row that came and went would take a line from the transcript and move the reader's page. An editor
+        // chip shares this edge for the same reason.
         let completions = self.completions_legend(w).or_else(|| self.context_legend());
 
         let Fit {
@@ -358,7 +355,7 @@ impl App {
             // Never a row of its own - the notice is drawn in the status row, which is
             // reserved whether or not anything is in it (see `let status`).
             notice: false,
-            // No stuck sentence any more: a slow turn is the Responding row in yellow.
+            // No stuck sentence: a slow turn is the Responding row in yellow.
             stuck: false,
             pane: pane.is_some(),
             // The completions live in the box's edge now; they never take a row.
@@ -616,10 +613,9 @@ impl App {
                 stops: vec![(row, 0)],
             });
         }
-        // The corner's repository, as a target: the span the header drew for the workspace path, on row 0,
-        // since that is where the header is inserted. The gutter is added here because `out`'s rows have none
-        // yet and a click's `x` is in terminal cells.
-        // No target when the row names a folder of repositories: the queue door would open empty.
+        // The corner's repository as a target: the header's workspace-path span on row 0. The gutter is added
+        // because `out`'s rows have none yet and a click's `x` is in terminal cells. No target when the row
+        // names a folder of repositories: the queue door would open empty.
         if let Some((col, cols)) = header_path
             && crate::gitfield::repo_of(&self.header_workspace()).is_some()
         {
@@ -993,9 +989,8 @@ impl App {
             Drawn::Surface(Surface::Listing) => {
                 let (echo, lines) = self.slash_out.clone().unwrap_or_default();
                 let p = self.cfg.palette();
-                // Not sanitised, and the regression is why: the rows in `slash_out` are this head's own composed
-                // lines, already painted, so the sanitising guard stripped the head's own colour and left an escape's
-                // body on the screen as text.
+                // Not sanitised: the rows in `slash_out` are this head's own composed lines, already painted, and
+                // the guard would strip the head's colour and leave an escape's body on the screen as text.
                 let mut rows = vec![
                     row(&rano::agent::text::one(echo, Role::Strong), p),
                     String::new(),

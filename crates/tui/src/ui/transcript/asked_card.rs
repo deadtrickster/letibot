@@ -1,21 +1,15 @@
 //! A question the model asked a person, drawn as ONE line - and named on the person's
 //! answer, so the reply says what it replies to.
 //!
-//! The reply must say what it replies to, and the question row must not flood the screen: the tool card, the `[note]` lines and the
-//! `session · asked:` row with its options were too much when the selector had already been seen.
-//!
-//! # The lines
-//!
 //! ```text
 //! session · asked · Row 4: DuckDB's generated slt_good_* family is 605 files under test/random and test/index… · 4 options · click for details
 //! ▌ A — in scope, via a DuckDB dialect frontend
 //! ▌ re: "Row 4: DuckDB's generated slt_good_* family is 605 files under test/random and test/index…"
 //! ```
 //!
-//! The question row (`Harness::question_row_text`) is a card in `line_cards`' registry: its summary is the first clause of the first
-//! sentence ([`summary`]), and a click opens the question whole. The answer row is the operator's verbatim words
-//! (`Harness::operator_answer_text`), so it is not touched: the head pairs it with the question row written just before it
-//! (`asked_rows`) and draws a faint `re:` line under it.
+//! The question row is a card in `line_cards`' registry, summarised by its first clause ([`summary`]). The answer row is the operator's
+//! verbatim words, so it is untouched: the head pairs it with the question just before it (`asked_rows`) and draws a faint `re:` line under
+//! it.
 
 use rano::style::Role;
 
@@ -162,8 +156,6 @@ const CHOSEN: &str = "✓ ";
 /// The question whole, its options one per line, the operator's choice marked - the popup a
 /// click on the one-line card opens.
 ///
-/// The options render vertically with the chosen one marked, not on one `options offered: A | B | C | D` line:
-///
 /// ```text
 /// asked: The klick-tick benchmark lives in a scratch copy. Where do you want it — …
 ///
@@ -174,8 +166,8 @@ const CHOSEN: &str = "✓ ";
 ///   4. Only send me the numbers; don't touch the repo
 /// ```
 ///
-/// Each option wraps under its own text (a hanging indent). A note on the chosen option is drawn faint under it; a typed answer is
-/// `your answer: "…"` after the list with no option marked; an abstention is `you abstained`. `None` when `question_row` is no question.
+/// Each option hangs under its own text, and a note on the chosen one is drawn faint under it. A typed answer is `your answer: "…"` with
+/// no option marked, an abstention `you abstained`. `None` when `question_row` is no question.
 pub(crate) fn full_lines(
     question_row: &str,
     answer: Option<&str>,

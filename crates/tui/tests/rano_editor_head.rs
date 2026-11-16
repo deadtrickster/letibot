@@ -1,8 +1,6 @@
 //! The editor head, driven by rano's own client against a real daemon: `docs/socket.md`'s subset.
-//!
-//! rano cannot link this crate, so its frames are a SECOND spelling of these types and a renamed
-//! field reads as empty in its panel rather than as an error — which is why every assertion below
-//! is a field's VALUE. It lives here because a head already links both, so no manifest moved.
+//! rano's frames are a second spelling of these types, and a renamed field reads as empty there
+//! rather than as an error, so every assertion is on a field's value.
 
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};

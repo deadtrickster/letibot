@@ -52,10 +52,9 @@ impl App {
             .join(" · ")
     }
 
-    /// The open decision's half of the bar - this head's, not rano's `Deciding`
-    /// tail, which says *"a row number answers"*: a row number marks the row, and Enter answers.
-    /// The ladder's own sentence comes from the card, so the bar and the card cannot spell the keys
-    /// two ways, and a permission's says what a typed line becomes on the marked rung.
+    /// The open decision's half of the bar - this head's, not rano's `Deciding` tail: a row number
+    /// marks the row and Enter answers. The ladder's sentence comes from the card, so the bar and
+    /// the card cannot spell the keys two ways.
     pub(crate) fn deciding_tail(&self) -> String {
         use crate::ui::cards::decision::PUT_AWAY_HINT;
         match self.open.first() {
@@ -162,11 +161,9 @@ impl App {
                 p,
             );
         } else if self.editor_focused() {
-            // rano's own sentence for this focus is a hand-written list, and a hand-written list is
-            // what drifts: the table both programs bind from is the one that cannot. The composer's
-            // half stays, since the pair's "esc again to interrupt" lives there. rano's live keys
-            // follow the shared ones - the bar keeps its head, so a narrow row loses the pane's own
-            // keys before it loses the four both programs promise.
+            // From the table both programs bind, not rano's hand-written sentence, which drifts.
+            // The composer's half stays for "esc again to interrupt". The shared keys come first,
+            // so a narrow row drops the pane's own keys before the four both promise.
             let shared = crate::app::shared_keys::pane_tail();
             let own = self.editor_key_words();
             let tail = match own.is_empty() {

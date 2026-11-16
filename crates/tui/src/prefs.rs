@@ -147,12 +147,9 @@ impl Default for HeadPrefs {
     }
 }
 
-/// The `leticode.toml` levels as THIS process reads them: the user's file, then the nearest
-/// project file at or above the session's workspace over it, key by key. `[warnings]`, `[keys]`
-/// and `[verbosity.<name>]` are a head's own vocabulary, so they are read here and resolved in
-/// `app` - which is where a word this build does not know is refused, with the line it came from.
-/// A file that will not parse is a problem and the level below, never a head that will not start:
-/// `head.toml`'s own rule for a value it cannot read.
+/// The `leticode.toml` levels this process reads: the user's file, then the nearest project file
+/// over it, key by key. `[warnings]`, `[keys]` and `[verbosity.<name>]` are resolved in `app`. A
+/// file that will not parse is a problem, never a head that will not start.
 pub fn leticode(workspace: &str) -> (leticode_config::LeticodeConfig, Vec<String>) {
     let mut problems = Vec::new();
     let user = match leticode_config::load_user() {
@@ -185,10 +182,9 @@ pub fn leticode(workspace: &str) -> (leticode_config::LeticodeConfig, Vec<String
     (user.overridden_by(&project), problems)
 }
 
-/// `$XDG_CONFIG_HOME/letibot/head.toml`, or `~/.config/letibot/head.toml`.
-/// `None` when neither variable is set, which is a head with nowhere to write
-/// and says so rather than writing into the working directory. The directory is
-/// `letibot_plugins::paths`', so `XDG_CONFIG_HOME=` is unset here too.
+/// `$XDG_CONFIG_HOME/letibot/head.toml`, or `~/.config/letibot/head.toml`. `None` when neither is
+/// set, so the head says it has nowhere to write rather than writing into the working directory.
+/// The directory is `letibot_plugins::paths`', so `XDG_CONFIG_HOME=` is unset here too.
 pub fn path() -> Option<PathBuf> {
     letibot_plugins::paths::config_dir().map(|d| d.join("head.toml"))
 }

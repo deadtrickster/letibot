@@ -53,8 +53,7 @@ struct Args {
     /// Print the version and exit: an installer has to be able to prove the binary it just copied runs, and the
     /// cheapest proof is a question answered without a socket, a model or a store.
     version: bool,
-    /// `-h`/`--help`: print the usage and exit 0. It used to be answered as an error, so a
-    /// help request left with a typo's status and a wrapper could not tell the two apart.
+    /// `-h`/`--help`: print the usage and exit 0, so a wrapper can tell a help request from a typo.
     help: bool,
     /// What the interrupt is recorded as (`--reason`): the command that sent it, so a plain
     /// `letibot --stop` is not written into the transcript as a forced one.
@@ -92,7 +91,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
     let mut it = args.iter().cloned();
     while let Some(arg) = it.next() {
         let mut next = || it.next().ok_or_else(|| format!("{arg} needs a value"));
-        // **THE TABLE IS THE PARSER'S LIST**: a removed flag is refused by name with its
+        // The table is the parser's list: a removed flag is refused by name with its
         // replacement, and one this head never read is not read now either.
         if let Some((name, why)) = REMOVED.iter().find(|(n, _)| *n == arg) {
             return Err(format!("{name} is not a flag any more: {why}"));
@@ -139,8 +138,8 @@ struct Flag {
     about: &'static str,
 }
 
-/// **Every flag this head parses, in one table, and the help is generated from it** — so the help
-/// cannot offer a flag the parser refuses, or omit one it reads.
+/// Every flag this head parses, in one table the help is generated from, so the help cannot
+/// offer a flag the parser refuses, or omit one it reads.
 const FLAGS: &[Flag] = &[
     Flag {
         names: &["--socket"],
@@ -219,7 +218,7 @@ const FLAGS: &[Flag] = &[
     },
 ];
 
-/// **What `--help` no longer offers, and what replaced it.** A removed flag is refused by NAME: a
+/// Flags `--help` no longer offers, and what replaced them. A removed flag is refused by NAME: a
 /// flag read as a prompt is a turn answering something nobody asked.
 const REMOVED: &[(&str, &str)] = &[
     ("--identity", "the head draws as $USER"),
@@ -1017,7 +1016,7 @@ fn live(
         return Err(ClientError::Refused(reason.clone()).into());
     }
     // A daemon holding no live session answers the bare attach with a control connection named no
-    // session (R178): there is nothing to draw, so the head says what gives it one rather than
+    // session: there is nothing to draw, so the head says what gives it one rather than
     // sitting in a session that is not there.
     if matches!(&hello, ServerFrame::Hello { session_id, .. } if session_id.is_empty()) {
         return Err(
@@ -1440,9 +1439,8 @@ fn read_routed(term: &Terminal, app: &mut App) -> (Vec<crate::app::Key>, Vec<u8>
 mod flag_tests {
     use super::*;
 
-    /// **Every row the table holds is one this parser reads, and the help prints it.** The help
-    /// and the `match` were two hand-kept lists; the table is now the only one, and these are the
-    /// tests that say so in either direction.
+    /// Every row the table holds is one this parser reads, and the help prints it, checked in
+    /// both directions.
     #[test]
     fn the_help_lists_every_flag_the_table_holds() {
         let help = usage();

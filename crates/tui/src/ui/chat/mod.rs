@@ -1,9 +1,6 @@
-//! A message as a BLOCK rather than a line: header, body, quote, pictures, dividers. It draws the
-//! pane language's `stream` block and knows nothing about rooms or `Msg` - what a message means is
-//! [`crate::app::chat_adapter`]'s to say, which is the half a plugin replaces.
-//!
-//! Two vocabularies meet here: the pane language's `Role` names what a cell MEANS and `Paint` is
-//! what the head draws it with. The renderer never takes an RGB from a layer.
+//! A message as a BLOCK: header, body, quote, pictures, dividers. Knows nothing about rooms or
+//! `Msg`: meaning is [`crate::app::chat_adapter`]'s, the half a plugin replaces. `Role` names what
+//! a cell means and `Paint` how it is drawn, so no RGB comes from a layer.
 
 mod block;
 mod body;

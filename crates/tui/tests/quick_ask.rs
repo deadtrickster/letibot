@@ -139,7 +139,7 @@ fn until_the_file_is_up(link: &mut Link, a: &mut App) {
     );
 }
 
-/// **`alt-k r` in the pane, and the daemon receives the ask.** The frame that leaves carries the
+/// `alt-k r` in the pane, and the daemon receives the ask. The frame that leaves carries the
 /// preset, the answer mode the daemon teaches that fence by, and the paragraph as an editor place -
 /// there is no composer round trip anywhere in it.
 #[test]

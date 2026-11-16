@@ -13,8 +13,8 @@ impl App {
     /// ```
     ///
     /// `cached` is cached over THIS prompt (`f_sim`, never `f_keep`); the last three fields are the last turn's rate, wall time and
-    /// output, and this is their only home. It degrades by deletion: the tail is built in priority order and the path is shortened
-    /// from its left first, because a path is recognisable from its end.
+    /// output. It degrades by deletion: the tail goes in priority order and the path is shortened from its left, since a path is
+    /// recognised by its end.
     // A test's door: `cfg(test)` says so, its only readers are two assertions in `app/tests/session.rs`. Drawing goes through
     // `header_row`, which reads the click target off what was drawn.
     #[cfg(test)]

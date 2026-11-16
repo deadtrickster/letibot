@@ -1,10 +1,6 @@
-//! The picker as it opens, in a real terminal: ONE line saying the session list is being built,
-//! and then the list. What a person must not see is a list that is drawn and then replaced by a
-//! second drawing of the same list - the swap this pane was, and the reason it had two renderers.
-//!
-//! `--demo` replays a recorded log with no daemon, so the list the layer answers is the empty one:
-//! what is under test is which line is on the screen while the head's stack is being built, and in
-//! what order.
+//! The picker as it opens in a real terminal: ONE line saying the list is being built, then the
+//! list, never a list drawn and then drawn again. `--demo` has no daemon, so the list is empty:
+//! what is under test is which line is on screen while the stack builds.
 
 use letibot_tools::builtins::screen::ScreenTool;
 use letibot_tools::testing::runner_harness;

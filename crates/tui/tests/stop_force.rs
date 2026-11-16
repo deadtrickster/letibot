@@ -327,9 +327,8 @@ fn an_orderly_stop_is_not_forced() {
         s.forced.is_none(),
         "a daemon that stopped is never forced: {s:?}"
     );
-    // No clock here: the old assertion measured a span that began before the fixture attached
-    // against the app's own deadline, so a loaded box failed it. What it wanted is the assertion
-    // above.
+    // No clock here: a span that began before the fixture attached, held to the app's deadline,
+    // fails on a loaded box. The assertion above is the one wanted.
     assert_eq!(a.stop_farewell(), None, "it went; nothing to report");
     let _ = child.wait();
     let _ = std::fs::remove_dir_all(&dir);

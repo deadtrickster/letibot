@@ -401,10 +401,9 @@ impl App {
         out
     }
 
-    /// One seat's row, in the shape rano draws a session's: the same margin, the same mark, the
-    /// author and the wait. rano's `TodoLine` has no fifth state and no author but `you`/`model`, and
-    /// a row of a seat is neither numbered nor the cursor's, so the line is built here from the same
-    /// pieces rather than through rano's stop record.
+    /// One seat's row in the shape rano draws a session's: the same margin, mark, author and wait.
+    /// Built here from rano's pieces because `TodoLine` has no fifth state, no author but
+    /// `you`/`model`, and a seat's row is neither numbered nor the cursor's.
     fn seat_row(&self, t: &TodoEntry) -> Line {
         let mark = match t.status {
             TodoStatus::Pending => TodoMark::Open,
@@ -668,10 +667,9 @@ fn splice_rows(content: &mut rano::agent::pane::PaneLines, at: usize, rows: Vec<
     }
 }
 
-/// The line the seats' boards are spliced ABOVE in the pane rano drew: the repo's file comes after
-/// the session's plan and the seats' boards, so the block reads as one more list of plans rather
-/// than as a tail under the file's own note. rano's own words, and a pane that says them otherwise
-/// puts the block at the end instead of dropping it.
+/// The line the seats' boards are spliced ABOVE in rano's pane, so they read as one more list of
+/// plans between the session's plan and the repo's file. rano's own words: if the pane says them
+/// otherwise, the block goes at the end instead of being dropped.
 const SEAT_BEFORE: &str = "the repo's TODO.md";
 
 /// The repo's `TODO.md` as a section map with its items under each heading: a parent is DONE when
@@ -688,8 +686,7 @@ const SEAT_BEFORE: &str = "the repo's TODO.md";
 ///       [ ] S3 the mode card
 /// ```
 ///
-/// A heading with no items at all is not "done": an empty section is a section nobody has filled in,
-/// and org does not mark it either. It carries no cookie and no box.
+/// A heading with no items is not done and carries no cookie or box, as in org.
 pub(crate) fn repo_todos_map(workspace: &str) -> Vec<TodoRow> {
     // The list's own resolution, not the repository's: `gitfield::todos_path` prefers the workspace's
     // `TODO.md` and falls back to the project's, so a session in `Projects/x` whose repository is

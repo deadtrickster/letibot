@@ -1096,7 +1096,7 @@ pub(crate) fn content_with(
                 ]),
                 // A markdown item is drawn by the transcript's own renderer, not by a wrap: a
                 // fence, a list and an inline style are what a dashboard's prose is written in,
-                // and the plain wrap showed them as punctuation (`X2`).
+                // and a plain wrap shows them as punctuation.
                 Item::Markdown { text, .. } => {
                     let cols = w.saturating_sub(LEAD);
                     let opts =
@@ -1215,17 +1215,14 @@ pub(crate) fn content_with(
     }
 }
 
-/// The rows a dashboard's panel occupies, whatever its data does this tick - the constant shape a
-/// dashboard is read by: a frame that changes height when a job ends has to be re-read from the top.
-/// A panel shorter than this is padded; a longer one spends the last row on rano's counted seam, and
-/// the detail it had to leave out belongs behind its key, in its own screen.
+/// The rows a dashboard's panel occupies whatever its data does this tick, since a frame that
+/// changes height has to be re-read from the top. A shorter panel is padded; a longer one spends its
+/// last row on rano's counted seam, and the rest belongs behind its key.
 pub(crate) const PANEL_ROWS: usize = 8;
 
-/// Close one overview panel at `rows`, through rano's window: it pads a short panel and spends the
-/// last row of a long one on the count of what is out of view, so the seam and the pads are drawn by
-/// the crate that owns the sentence. The records move with the rows - a stop, a legend label or a
-/// panel title the window did not draw leaves the record, which is what makes a click on the seam
-/// select nothing. The seam's row comes back for the caller to record.
+/// Close one overview panel at `rows` through rano's window, which pads a short panel and puts the
+/// out-of-view count on a long one's last row. Records the window did not draw are dropped, so a
+/// click on the seam selects nothing. Returns the seam's row.
 fn close_panel(
     out: &mut PaneLines,
     stopped: &mut Vec<Stop>,
@@ -1286,10 +1283,9 @@ fn legend_rows(view: &pv::View, w: usize, out: &mut PaneLines) {
     }
 }
 
-/// One stop read whole - what Enter opens: the row's own words, and for a finding the numbers behind
-/// it, what to do, and how to check it. `screen` is the screen the stop was selected on: a detail is
-/// a surface of its own, and the row it reads is the one under it. The stop is passed as the frame
-/// recorded it, because a panel cut to its budget means an index into the walk is not the row.
+/// One stop read whole, what Enter opens: the row's words, and for a finding its numbers, what to do
+/// and how to check it. `screen` is the screen it was selected on. The stop is passed as the frame
+/// recorded it, because once a panel is cut an index into the walk is not the row.
 pub(crate) fn detail(view: &pv::View, screen: Screen, stop: Option<Stop>, w: usize) -> PaneLines {
     let mut out = PaneLines::new();
     let target = stop.and_then(|s| target_of_stop(view, screen, s));
