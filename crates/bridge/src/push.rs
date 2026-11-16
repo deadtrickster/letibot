@@ -300,7 +300,7 @@ pub fn room_push(rules: &Rules, m: &Value, names_you: bool) -> Decision {
         session: &me,
         room: m["room"].as_str(),
         to: m["to"].as_str(),
-        text: &crate::rooms::delivered(m, &me),
+        text: &crate::rooms::delivered(m, names_you),
         native: crate::rooms::Attention::ToMe.passes(m, names_you),
     })
 }
@@ -997,6 +997,41 @@ mod rules_tests {
                 m["text"]
             );
         }
+    }
+
+    /// A note that names the seat is addressed, not passing. The bridge had its own `reach` and said
+    /// every `fyi` was `passing`, so the push rule here - *only an addressed line is pushed* -
+    /// dropped a note that named this very seat. The room crate's `Message::reach` is the one rule:
+    /// `Fyi` is passing only when it names nobody.
+    #[test]
+    fn a_named_fyi_reaches_a_push_layer_as_addressed() {
+        let me = crate::rooms::handle();
+        let note = |text: &str| {
+            json!({"seq": 1, "ts": 0, "room": "host", "kind": "session", "author": "s-a",
+                   "to": null, "text": text, "refs": [{"kind": "say", "id": "fyi"}]})
+        };
+        let mine = note(&format!("@{me} the deploy moves to friday"));
+        let other = note("the deploy moves to friday");
+
+        // The word the layer decides on.
+        assert_eq!(crate::rooms::reach(&mine, true), "addressed");
+        assert_eq!(crate::rooms::reach(&other, false), "passing");
+
+        let rules = Rules::with(builtin_push());
+        let pushed = room_push(&rules, &mine, true);
+        assert!(
+            pushed.push,
+            "a named fyi reaches a push layer as addressed, and the layer pushes it"
+        );
+        assert!(
+            pushed.text.contains("the deploy moves to friday"),
+            "{}",
+            pushed.text
+        );
+        assert!(
+            !room_push(&rules, &other, false).push,
+            "an fyi that names nobody still passes by"
+        );
     }
 }
 
