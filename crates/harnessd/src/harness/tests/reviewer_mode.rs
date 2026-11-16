@@ -90,8 +90,19 @@ fn a_reviewer_at_the_operators_allow_all_probes_its_clone_unasked_and_asks_beyon
     // No head is attached, so anything that asks fails closed instead of admitting.
     assert_eq!(admit("clippy-driver --version"), GateDecision::Admit);
     assert_eq!(
-        admit("python3 -c \"open('/tmp/mc.rs','w').write('fn main() {}')\""),
-        GateDecision::Admit
+        admit(&format!(
+            "python3 -c \"open('{at}/mc.rs','w').write('fn main() {{}}')\""
+        )),
+        GateDecision::Admit,
+        "a write inside the clone is the probe's own"
+    );
+    // The shared /tmp is every process's, so writing there is not a probe.
+    assert!(
+        matches!(
+            admit("python3 -c \"open('/tmp/mc.rs','w').write('fn main() {}')\""),
+            GateDecision::Refuse { .. }
+        ),
+        "a write into /tmp asks"
     );
     assert!(
         matches!(
