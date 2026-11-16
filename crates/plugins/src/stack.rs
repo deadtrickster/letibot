@@ -49,7 +49,8 @@ pub struct Layer {
     pub disabled: bool,
     /// Whether this layer may run freely: true for a built-in, and for a layer whose module and
     /// manifest match a recorded pin. Where a file sits proves nothing, so the fact is the hash.
-    /// An untrusted layer still answers, but every call it makes is adjudicated without a card.
+    /// An untrusted layer still answers, but every call it makes is adjudicated without a card,
+    /// and it never answers a hook that [`decides`].
     pub trusted: bool,
     /// The pin nearest to this layer: the one its bytes match, or - with `trusted` false - the one
     /// they have broken. `None` for a layer nothing was ever pinned for, and for a built-in.
@@ -57,6 +58,11 @@ pub struct Layer {
 }
 
 impl Layer {
+    /// Whether this layer is asked `hook` at all: enabled, and pinned when the hook decides.
+    pub fn may_answer(&self, hook: &str) -> bool {
+        !self.disabled && (self.trusted || !decides(hook))
+    }
+
     /// What a refusal of this layer says - the layer by name, and both hashes when there is a
     /// pin to compare against ([`crate::Standing::sentence`]).
     pub fn untrusted_sentence(&self) -> String {
@@ -142,6 +148,20 @@ const NOT_A_SESSIONS: &[&str] = &[
     letibot_plugin::review::BRIEF,
     letibot_plugin::review::VERDICT,
 ];
+
+/// Hook prefixes whose answer steers the session itself: a limit's switch or park, a turn's
+/// continuation, the compaction record. Only a pinned layer or a built-in may answer them, so a
+/// cloned repo's layer falls through to the built-in ladder.
+const DECIDES: &[&str] = &[
+    letibot_plugin::limit::PREFIX,
+    letibot_plugin::steer::PREFIX,
+    letibot_plugin::compact::PREFIX,
+];
+
+/// Whether `hook` is one only a trusted layer answers ([`DECIDES`]).
+pub fn decides(hook: &str) -> bool {
+    DECIDES.iter().any(|p| hook.starts_with(p))
+}
 
 /// A layer's module changed on disk and is waiting for the gate.
 /// The gate fills in the module it loaded and `Stack::apply` swaps in exactly that one: a second
@@ -1056,7 +1076,7 @@ impl Stack {
                 return walk.step_after_failure();
             }
             let layer = &self.layers[i];
-            if layer.disabled {
+            if !layer.may_answer(walk.hook) {
                 continue;
             }
             // Reviewed policy is nobody's own layer: a session that could answer this hook could

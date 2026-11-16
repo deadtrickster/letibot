@@ -36,7 +36,7 @@ impl PluginHost {
         let (stack, was) = {
             let mut inner = self.lock();
             let answering = inner.stack.layers().iter().any(|l| {
-                !l.disabled
+                l.may_answer(hook)
                     && l.manifest.contract == letibot_plugins::CONTRACT
                     && l.manifest.hooks.iter().any(|h| h == hook)
             });
@@ -384,8 +384,8 @@ impl PluginHost {
         std::mem::take(&mut self.lock().notices)
     }
 
-    /// The layer that answers `hook`: the topmost enabled one that exports it, which is the one the
-    /// stack asks first. A look a lower layer declared runs only when the upper one asked below
+    /// The layer that answers `hook`: the topmost one that exports it and [`letibot_plugins::Layer::may_answer`] it,
+    /// which is the one the stack asks first. A look a lower layer declared runs only when the upper one asked below
     /// and the upper one's capabilities are still the ones in force for the answer that came back.
     pub fn answering(&self, hook: &str) -> Option<Answering> {
         let inner = self.lock();
@@ -393,7 +393,7 @@ impl PluginHost {
             .stack
             .layers()
             .iter()
-            .find(|l| !l.disabled && l.manifest.hooks.iter().any(|h| h == hook))
+            .find(|l| l.may_answer(hook) && l.manifest.hooks.iter().any(|h| h == hook))
             .map(|l| Answering {
                 id: l.id.clone(),
                 name: l.manifest.name.clone(),

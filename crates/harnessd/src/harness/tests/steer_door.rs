@@ -84,6 +84,10 @@ fn steering_host(
         Arc::new(RuleLoader(rule)),
         Arc::new(NoBuild),
     );
+    // Only a pinned layer decides a turn's end.
+    let trust = letibot_plugins::Trust::in_memory();
+    trust.pin("turn-end", &layer).expect("a pin");
+    let host = host.with_trust(trust);
     (Scratch(dir), Arc::new(host))
 }
 

@@ -5353,3 +5353,68 @@ fn a_trapping_nag_layer_falls_to_the_native_nag() {
         .any(|e| matches!(&e.event, SessionEvent::Warning { code, .. } if code == "plugin_layer"));
     assert!(warned, "and the trap is said on the session's log");
 }
+
+/// A cloned repo's layer that nobody pinned does not decide a limit, a turn's end or a compaction.
+/// The host answers as if no layer were there, and the same layer pinned is asked.
+#[test]
+fn an_unpinned_layers_limit_decide_answer_is_ignored() {
+    let root = tempdir("unpinned-decides");
+    let table = Table::new();
+    let dir = table.layer(
+        &root,
+        "decider",
+        &[
+            ("limit_decide", says(json!({"do": "stop"}))),
+            ("steer_turn", says(json!({"do": "stop"}))),
+            ("compact_summary", says(json!({"sections": []}))),
+        ],
+    );
+    let hub = Hub::new("s-plugins");
+    let input = letibot_plugin::limit::Input::synthetic();
+
+    let unpinned = table_host(&root, &table);
+    for hook in ["limit_decide", "steer_turn", "compact_summary"] {
+        assert!(
+            !unpinned.answers(hook),
+            "an unpinned layer answers `{hook}`"
+        );
+    }
+    assert!(
+        unpinned.limit(&hub, &input).is_none(),
+        "the fixed ladder decides"
+    );
+
+    let pinned = pinned_table_host(&root, &table, &dir);
+    let decided = pinned
+        .limit(&hub, &input)
+        .expect("a pinned layer answers")
+        .expect("a decision");
+    assert_eq!(decided.out.act, letibot_plugin::limit::Do::Stop);
+    std::fs::remove_dir_all(&root).ok();
+}
+
+/// Two `limit_` functions that `call` each other end at the chain bound, not in a loop.
+#[test]
+fn a_limit_call_cycle_ends_at_the_chain_bound() {
+    let root = tempdir("limit-cycle");
+    let table = Table::new();
+    let dir = table.layer(
+        &root,
+        "cycle",
+        &[
+            ("limit_decide", says(json!({"do": "call", "function": "a"}))),
+            ("limit_a", says(json!({"do": "call", "function": "decide"}))),
+        ],
+    );
+    let hub = Hub::new("s-plugins");
+    let host = pinned_table_host(&root, &table, &dir);
+    let why = host
+        .limit(&hub, &letibot_plugin::limit::Input::synthetic())
+        .expect("the layer answers")
+        .expect_err("a cycle is refused");
+    assert!(
+        why.contains(&format!("{} calls long", super::hook::LIMIT_CHAIN_CALLS)),
+        "{why}"
+    );
+    std::fs::remove_dir_all(&root).ok();
+}

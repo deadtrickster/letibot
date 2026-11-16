@@ -167,6 +167,18 @@ impl Harness {
                 if name == here {
                     return self.limit_hook_fell_back(&here, "`switch` named the refusing model");
                 }
+                // The configured fallbacks are the operator's list; any other metered model is a
+                // spend nobody chose.
+                if !input
+                    .candidates
+                    .iter()
+                    .any(|c| format!("{}/{}", c.provider, c.model) == name)
+                {
+                    return self.limit_hook_fell_back(
+                        &here,
+                        &format!("`switch` named `{name}`, which is not one of the candidates"),
+                    );
+                }
                 match self.switch_on_a_refusal(&name, e) {
                     Ok(next) => Some(AfterTheLadder::Moved {
                         why: format!(

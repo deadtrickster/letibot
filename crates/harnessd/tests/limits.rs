@@ -1546,6 +1546,10 @@ fn with_limit_hook(
         }),
         Arc::new(NoBuild),
     );
+    // Only a pinned layer decides a limit.
+    let trust = letibot_plugins::Trust::in_memory();
+    trust.pin("limit-policy", &layer).expect("a pin");
+    let host = host.with_trust(trust);
     let h = sessions.harness_of(id).expect("open");
     *h.plugin_slot().lock().unwrap() = Some(Arc::new(host));
     *h.question_slot().lock().unwrap() = Some(Arc::new(FirstOption));
@@ -1707,6 +1711,54 @@ fn a_limit_hook_out_of_fuel_falls_back_to_the_fixed_rules() {
             .limit_hook_state("glm/glm-5.3"),
         None
     );
+}
+
+/// A `switch` to a model the operator did not list as a fallback is refused, and the fixed rules
+/// decide the episode.
+#[test]
+fn a_limit_hook_switch_outside_the_candidates_falls_back() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("hook-off-list");
+    let glm = model(&[Act::Refuse(300), Act::Answer]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let mut cfg = config(
+        &scratch,
+        &gguf,
+        "hook-off-list",
+        ("glm", "glm-5.3"),
+        Vec::new(),
+    );
+    let (clock, _handle) = letibot_harnessd::config::LimitClock::fixed(T0);
+    cfg.limit_clock = clock;
+    let workspace = cfg.workspace.clone();
+    let parts = Parts::load(&cfg).expect("the vocabulary loads");
+    *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+    let (mut sessions, hub, id) = open(&parts, cfg);
+    with_limit_hook(
+        &sessions,
+        &id,
+        &workspace,
+        Arc::new(|_| {
+            Ok(
+                serde_json::json!({"do": "switch", "provider": "deepseek", "model": "deepseek-flash"}),
+            )
+        }),
+    );
+
+    let out = sessions.submit_operator(&id, PROMPT).expect_err("parked");
+    assert!(out.to_string().contains("paused until"), "{out}");
+    assert_eq!(
+        deepseek.count(),
+        0,
+        "no request went to a model nobody listed"
+    );
+    let rows = said(&hub, "limit_hook_fallback");
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains("not one of the candidates"), "{rows:?}");
 }
 
 /// `new_session` mid-turn: the conversation is forked into a new session, the

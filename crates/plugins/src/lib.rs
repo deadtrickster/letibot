@@ -25,7 +25,7 @@ pub use manifest::{Capability, Manifest, Scope, ToolDecl};
 pub use recorder::Recorder;
 pub use refusals::{KEEP as REFUSALS_KEEP, Refusal, Refusals};
 pub use stack::{
-    BrokenPin, Candidate, DeclaredTool, Failure, Layer, PreparedBuiltin, Resolved, Stack,
+    BrokenPin, Candidate, DeclaredTool, Failure, Layer, PreparedBuiltin, Resolved, Stack, decides,
 };
 pub use trust::{Pin, Rebuilt, Standing, Trust, Written};
 
