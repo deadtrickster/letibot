@@ -62,7 +62,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R333 | B13 rooms: gap replay drops rows below a live push and acks over them | Code work | built on `b13-rooms`: seen-set above `acked`, paged gap replay (`inbox.after`), no ack before the gap is replayed; left: a full gate, the redial race has no test, I101 (lead 13) is R349 |
 | R334 | B14 plugins and MCP: unpinned layers decide, MCP servers inherit the env, `.mcp.json` trusted by prefix | Code work | B14: I93, I94, I95; M; after - |
 | R335 | B15 header facts: header ctx survives a clear, a reseat and a re-ingest | Code work | B15: I72; M; after B1 (R320), B6 (R326) |
-| R336 | B16 workflow stability: the orchestration layer fails silently | Code work | B16: I28, I81, I100, leads 27-33, 37; M |
+| R336 | B16 workflow stability: the orchestration layer fails silently | Code work | built on branch `b16-workflow` (I28, I81, I100/L28, I61/L29, I71/L30, each with its proving test, failing on main); left: one full gate and the landing, lead 37, `restart_keeps_model_and_provider`, then the residue in the entry's Status |
 | R337 | the shadow as the real `AuthorisationOracle`: the view-read trail, `allow_once` on a view, hygiene, one grant model | Code work | built on `r337-oracle`, not landed; left: revoke reaching running commands (I16), I17 (f) replay numbers, queue seats' trails hold no operator words |
 | R338 | role per connection and the masked operator socket | Code work | I6; M; after B1 (R320) |
 | R339 | gate ladder after "once means once" | Code work | I29, I30, I31, I32, I33, I34, I35, I36; M; after B4 (R324), B6 (R326) |
@@ -1061,7 +1061,25 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R336 - B16 workflow stability: the orchestration layer fails silently
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Batch B16 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I28, I81, I100. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built on branch `b16-workflow`, 2026-11-16, one commit per finding (I28 `leticode_start refuses an unknown mode before anything starts`, L28 `A start that loses the folder race joins the winner's daemon`, L29 `Sessions leticode_start opened close when their caller goes`, L30 `A bridge whose binary was replaced refuses start and attach`, I81 `A one-shot's --model applies to that run or refuses`). Each proving test fails on main a605c510d and passes on the branch: checked by putting the base's source files back under the new test and running it. No store schema change. Filed from the review at `9e9312b06`. Batch B16 of `docs/review/2026-11-16-letibot.md` section 7. Record: `docs/review/2026-11-16/INTEGRATION.md`. left: the full gate and the landing; lead 37; the residue below.
+
+**What was built.**
+- I28 / L27: `Bridge::start` parses the mode with `Mode::parse` before any daemon or session exists, and refuses listing this build's modes. A `set_mode` failure holds the session and refuses, as the model branch does. On main `set_mode` is a fire-and-forget frame, so "read-edits" came back Ok with `mode: "read-edits"` and the brief ran.
+- I100 / L28: reproduced. Two starts both see nothing listening and both spawn. The loser exits on harnessd's folder claim, but its start wait sees the winner's socket answer, so it marked the daemon `started`, wrote `<key>.json` with its own dead pid, and handed its caller the winner's first session, which the next brief then shared. `ensure_here_with` now reads the serving pid with `SO_PEERCRED` (`letibot_sessionlog::peer::peer_pid`, made pub). Another pid joins it as a daemon already up, after a 5s wait for its placement record, or refuses by placement.
+- I61 / L29: `Bridge::start` records every session it opens. `release_leases` closes those still held when the MCP input ends (`mcp::serve`) or the server gets SIGTERM or SIGHUP (a `sigwait` thread in `main.rs`). Closed, not deleted, so `leticode_attach` reopens one. Attached-only sessions are not closed. SIGINT keeps its default.
+- I71 / L30: the bridge stamps its executable's dev and inode at `Bridge::new` (`bridge/src/exe_stamp.rs`, harnessd's rule). `leticode_start` and `leticode_attach` refuse once another file stands at that path, naming it and the new build's time, and say to restart the MCP server. No re-exec: it would drop the client's MCP handshake state.
+- I81 / L33: the launcher's one-shot, with no `--provider`, turns `--model PROVIDER/MODEL` into `--provider P --model M`, `--model NAME` with a `[NAME]` table in providers.toml into `--provider NAME`, and a bare model under `[default] provider` into that provider and model. A local model under a default provider refuses naming the key. Daemon starts are unchanged, since the restart and skew checks read `--model` back from their argv.
+
+**Where the tests are.** `start_with_unknown_mode_refuses_and_sends_no_brief` (bridge/tests/start_unknown_mode.rs), `two_starts_in_one_folder_both_survive_or_the_second_refuses` (bridge/tests/two_starts.rs, a stub daemon that loses the race to a python winner), `stopping_the_caller_closes_its_sessions` (bridge/tests/caller_lease.rs), `a_stale_bridge_binary_says_so_at_attach` (bridge/tests/stale_binary.rs, which moves its own executable aside and puts it back on drop), `a_one_shot_with_model_runs_that_model_or_refuses` (tests/launcher.sh, six checks). The two start tests share a real in-process daemon fixture, `bridge/tests/support/world.rs`.
+
+**Residue.**
+- Lead 37 is not built: a fan-out budgeting each provider's share against its live window needs the fan-out primitive of lead 32, which is after the phase. Its test `a_fan_out_over_a_providers_live_window_refuses_or_splits` is not written.
+- `restart_keeps_model_and_provider` (I81, P7-F13, HYP) is not written: `--restart` was not changed.
+- harnessd still prints "--model is a config setting now" for a `--model` it applies. The wording reads as "ignored".
+- A local model named by a one-shot under a `[default] provider` refuses rather than runs: harnessd has no flag for "the command line chose a local model", and a `main_model` in leticode.toml is not seen by the launcher at all.
+- A SIGKILLed bridge, or a workflow whose subagents share one bridge, still leaves sessions open: the lease is the bridge process. A daemon-side lease keyed on the head's peer pid is the follow-up.
+- The bridge's protocol skew against a daemon (I71's other half) and the stale daemon notice are R344.
+- Leads 31 and 32 are recorded below as plan items, no code (decision 20, C19).
 
 **Scope.** `bridge/src/tools.rs` start, `harnessd/src/cli.rs` flag handling, the bridge plugin restart after install, a caller lease for leticode sessions. The review was run by the layer it reviewed and that layer failed five ways (leads 27-30, 33). Rule: a flag or field that is accepted applies or refuses; warn-and-continue is not an outcome.
 
