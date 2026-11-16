@@ -54,8 +54,8 @@ fn a_daemon(cfg: &Config) -> std::sync::Arc<Registry> {
 }
 
 /// A second `Sessions` on one store file is REFUSED, by name, before a row is written.
-/// Two daemons both appended to `#t0`, the store
-/// refused the second's rows, and the transcript kept a hole no restart could repair.
+/// Otherwise the store refuses the second's rows and the transcript keeps a hole no restart can
+/// repair.
 #[test]
 fn a_second_session_cannot_write_one_transcript() {
     let Some(_) = crate::vocab_gguf() else {

@@ -13,8 +13,7 @@ use crate::harness::Parts;
 use crate::sessions::{Sessions, StoreSessions};
 
 /// The review-queue session of the fixture's workspace - `s-gatekeeper-<workspace key>`. One
-/// per daemon, so a test derives it from its own config: comparing against the old constant would
-/// be asserting the defect.
+/// per daemon, so a test derives it from its own config.
 fn queue_of(cfg: &Config) -> String {
     super::session(&cfg.workspace)
 }
@@ -227,8 +226,8 @@ fn a_verdict_reached_elsewhere_takes_the_row_off() {
     assert!(queue_rows(&store, &me()).is_empty());
 }
 
-/// A repository whose lease another daemon holds is not on this board - defect 9
-/// every daemon served the one global review session, and two would each spawn a reviewer.
+/// A repository whose lease another daemon holds is not on this board, or two daemons would each
+/// spawn a reviewer for it.
 #[test]
 fn another_daemons_repository_is_not_on_this_board() {
     let (_dir, store, ws) = store_with("served");
@@ -385,9 +384,9 @@ impl Fixture {
     }
 }
 
-/// The session is TOLD what its board is - the operator's *"it managed via its prompt and so
-/// on"*, the one place a session is managed with nobody at the keyboard. Four facts are asserted
-/// rather than the whole text: whose rows they are, the child, its handle, and what takes a row off.
+/// The session is told what its board is, since it is managed with nobody at the keyboard. Four
+/// facts are asserted rather than the whole text: whose rows they are, the child, its handle, and
+/// what takes a row off.
 #[test]
 fn the_session_is_told_what_its_board_is() {
     let Some(f) = Fixture::new("prompt") else {
@@ -638,7 +637,7 @@ fn the_session_is_started_once_and_not_twice() {
 }
 
 /// A claimed review is a `task` child of THIS session, bound to the head the claim read
-/// (decision 6), and the row says which child is on it; a second pass starts no second child
+///, and the row says which child is on it; a second pass starts no second child
 /// the verdict takes the row off.
 #[test]
 fn a_claimed_review_is_this_sessions_child_and_its_row_says_so() {
@@ -941,7 +940,7 @@ fn the_gatekeepers_room_context_never_claims_claude_codes_name() {
 
 /// A `review_brief` layer's paragraph reaches the queue's own prompt, and nothing else does: the
 /// host's protocol stays whole, because the row mechanics and the operator's verbs are not a
-/// project's words to replace (`docs/plugin-extension-points-wide.md` X18).
+/// project's words to replace.
 #[test]
 fn the_queue_prompt_takes_a_layers_added_words_and_keeps_the_hosts_own() {
     let placement = ReviewerPlacement::Host;

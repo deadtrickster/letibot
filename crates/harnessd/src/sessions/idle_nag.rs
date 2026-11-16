@@ -334,8 +334,8 @@ fn an_unchanged_plan_is_not_a_new_notice() {
 }
 
 /// A change to the QUESTION is a new thing to say - the named row started, or another row named.
-/// A free row added is another row named (R127), so it is a new check; the notice still carries no
-/// *"(N more open)"*, so only the rows it names move it.
+/// A free row added is another row named, so it is a new check; the notice still carries no
+/// "(N more open)", so only the rows it names move it.
 #[test]
 fn a_plan_that_moved_is_armed_again() {
     let plan = [row("open", TodoStatus::Pending)];
@@ -523,9 +523,8 @@ fn the_clock_arms_at_the_window_and_stands_down_when_nothing_is_askable() {
     );
 }
 
-/// The operator's ruling, through the clock: *"hmm, yes obviously it should be a repeated
-/// nag."* A delivered check comes back at an interval that doubles per delivery, and a plan that
-/// MOVED is a new thing to say, one base window from the re-arm.
+/// The nag repeats: a delivered check comes back at an interval that doubles per delivery, and a
+/// plan that moved is a new thing to say, one base window from the re-arm.
 #[test]
 fn a_said_check_repeats_and_a_moved_plan_starts_the_ladder_over() {
     use std::time::{Duration, Instant};
@@ -1013,8 +1012,8 @@ fn deliver(clock: &mut super::TodoNagClock, at: std::time::Instant) {
 }
 
 /// Two bad rows, three passes inside one interval, ONE notice - and the second one a whole
-/// `STUCK_REPEAT` later, not at the plan-check's base window. FAILS before this change: there was
-/// no census deadline at all, so a project with an empty board heard nothing about its stuck queue.
+/// `STUCK_REPEAT` later, not at the plan-check's base window - even for a project with an empty
+/// board.
 #[test]
 fn a_stuck_queue_is_one_notice_per_interval_and_not_one_per_pass() {
     use std::time::{Duration, Instant};
@@ -1056,7 +1055,7 @@ fn a_stuck_queue_is_one_notice_per_interval_and_not_one_per_pass() {
 }
 
 /// And a row that recovers stops it in both directions - no further notice, and nothing armed
-/// for the next interval. FAILS before this change: there was no census clock to stand down.
+/// for the next interval.
 #[test]
 fn a_queue_that_goes_clean_stands_the_clock_down() {
     use std::time::{Duration, Instant};

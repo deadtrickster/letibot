@@ -283,7 +283,7 @@ fn a_claimed_review_is_spawned_as_the_queue_sessions_own_child() {
     assert_eq!(row.reviewer.as_deref(), Some("sub-1"));
 }
 
-/// A row another daemon claimed is not this daemon's to serve (defect 9).
+/// A row another daemon claimed is not this daemon's to serve.
 #[test]
 fn a_review_another_daemon_claimed_is_left_alone() {
     let Some(f) = Fixture::new("theirs") else {
@@ -299,7 +299,7 @@ fn a_review_another_daemon_claimed_is_left_alone() {
 }
 
 /// A verdict handed in approves the head the claim read, and the branch is in the merge queue
-/// in the same transaction (decision 6); the review is judged once.
+/// in the same transaction; the review is judged once.
 #[test]
 fn a_submitted_verdict_approves_the_bound_head_and_queues_the_landing() {
     use letibot_tools::gatekeeper::{Decision, LookedAt, Submission};
@@ -435,7 +435,7 @@ fn an_answer_with_no_submission_is_a_counted_attempt() {
     );
 }
 
-/// A reviewer that vanished is a counted attempt too (defect 10) - the v23 queue wrote
+/// A reviewer that vanished is a counted attempt too - the v23 queue wrote
 /// nothing for it and spawned another, for ever.
 #[test]
 fn a_child_that_vanishes_is_a_counted_attempt() {

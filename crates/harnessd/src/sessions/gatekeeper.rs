@@ -129,9 +129,8 @@ pub fn reviewer_placement(
     }
 }
 
-/// What the review queue's own session is TOLD, in its own system prompt - the operator's
-/// *"it managed via its prompt and so on"*, read as an instruction. Appended to the
-/// composed prompt at open and frozen with the prefix
+/// What the review queue's own session is told in its own system prompt, which is how it is
+/// managed. Appended to the composed prompt at open and frozen with the prefix.
 pub const PROMPT: &str = "\
 \n\
 You are the review queue. This session is the merge queue's own: the rows on your board marked \
@@ -207,7 +206,7 @@ pub fn room_handle(workspace: &std::path::Path) -> String {
 }
 
 /// [`prompt_as`] with a `review_brief` layer's answer for the queue's OWN prompt - the entry absent,
-/// because this is the session that runs the reviews (X18). Only `brief_add` is used: this prompt is
+/// because this is the session that runs the reviews. Only `brief_add` is used: this prompt is
 /// the protocol (the rows, the child, the operator's verbs) and is not a project's to replace.
 pub fn prompt_with(
     placement: &ReviewerPlacement,
