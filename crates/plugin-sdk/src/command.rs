@@ -133,6 +133,8 @@ pub const HOST_VERBS: &[&str] = &[
     "nag",
     "nags",
     "note",
+    "permissions",
+    "grants",
     "prune",
     "supervise",
     "supervised",

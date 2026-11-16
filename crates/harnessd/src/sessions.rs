@@ -1638,6 +1638,15 @@ impl<'a> Sessions<'a> {
                     ok: false,
                 },
             },
+            Slash::Permissions { revoke } => {
+                let Some(store) = self.base.store_at().and_then(|a| a.open().ok()) else {
+                    return SlashReply::refused(vec![
+                        "no store, so no grant outlives the daemon and none is kept".into(),
+                    ]);
+                };
+                let gatekeeper = self.base.serve_queues.then_some(self.gatekeeper.as_str());
+                crate::grants::permissions(&store, session_id, gatekeeper, revoke)
+            }
             Slash::Note { accept, row } => match self.open.get_mut(session_id) {
                 Some(h) => h.answer_note_proposal(accept, row),
                 None => SlashReply {

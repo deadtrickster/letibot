@@ -62,6 +62,7 @@ pub mod exe_stamp;
 pub mod facts;
 pub mod footprint;
 pub mod github;
+pub mod grants;
 pub mod harness;
 pub mod httphead;
 pub mod instruments;

@@ -20,6 +20,14 @@ impl SlashReply {
         SlashReply { lines, ok: true }
     }
 
+    pub fn listing(lines: Vec<String>) -> Self {
+        SlashReply { lines, ok: true }
+    }
+
+    pub fn refused(lines: Vec<String>) -> Self {
+        SlashReply { lines, ok: false }
+    }
+
     /// The warning this reply is published as: its kind as the code (`slash_listing`, `slash`,
     /// `slash_refused`) and the echoed line first with any secret masked, so a key never lands
     /// in the log.
@@ -57,6 +65,7 @@ pub const VERBS: &[&str] = &[
     "monitor",
     "nag",
     "note",
+    "permissions",
     "prune",
     "queue",
     "supervise",
@@ -113,6 +122,11 @@ pub enum Slash {
     },
     /// What this session's commands get: paths, network, env, hidden. See [`crate::perimeter`].
     Boundary,
+    /// `/permissions` lists the grants kept for this session and its review queue;
+    /// `/permissions revoke ID` removes one. See [`crate::grants`].
+    Permissions {
+        revoke: Option<i64>,
+    },
     /// What this conversation can call, and what it only looks like it can.
     Tools,
     Models,
@@ -244,6 +258,7 @@ impl Slash {
             self,
             Slash::Tools
                 | Slash::Boundary
+                | Slash::Permissions { revoke: None }
                 | Slash::Models
                 | Slash::Job { .. }
                 | Slash::Gate(GateVerb::Recent { .. } | GateVerb::Counts)
@@ -326,6 +341,18 @@ impl Slash {
             Some("listen") => Slash::Listen(words[1..].iter().map(|w| w.to_string()).collect()),
             Some("tools") => Slash::Tools,
             Some("boundary") => Slash::Boundary,
+            Some("permissions") | Some("grants") => match (words.get(1).copied(), words.get(2)) {
+                (None, _) | (Some("list"), _) => Slash::Permissions { revoke: None },
+                (Some("revoke"), Some(id)) => match id.parse::<i64>() {
+                    Ok(id) => Slash::Permissions { revoke: Some(id) },
+                    Err(_) => Slash::Help(format!(
+                        "/permissions revoke ID - `{id}` is not a grant id; `/permissions` lists them"
+                    )),
+                },
+                _ => Slash::Help(
+                    "/permissions [revoke ID] - lists this session's kept grants, or revokes one".into(),
+                ),
+            },
             // `off` and `on` are kept as the same verbs, because they are what somebody reaches
             // for first; the replies use `pause` and `resume`.
             Some("nag") | Some("nags") => match crate::nag_pause::parse(&words[1..]) {

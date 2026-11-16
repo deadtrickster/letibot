@@ -48,6 +48,7 @@ pub mod fleet;
 pub mod gatekeeper;
 pub mod git;
 pub mod grant;
+pub mod grant_ledger;
 pub mod head_run;
 pub mod heredoc;
 pub mod intent;

@@ -33,6 +33,7 @@ pub use modes::ProjectMode;
 mod subagents;
 pub use subagents::*;
 mod citations;
+mod grants;
 mod leases;
 mod marks;
 mod owners;
@@ -42,6 +43,7 @@ mod recall;
 mod seat;
 pub mod split;
 mod told;
+pub use grants::{GRANTS_SQL, GrantRow, NewGrant};
 pub use leases::{Ask, FIRST_PORT, LEASES_SQL, Lease};
 pub use owners::{
     HoldingClass, HoldingRow, HoldingState, OWNERS_SQL, OwnerKind, OwnerRow, OwnerState, ReapAct,
@@ -202,7 +204,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 49;
+pub const SCHEMA_VERSION: i64 = 50;
 
 /// What this row's columns mean. Stamped on every corpus row, because a column can keep its
 /// name and its type while changing what it records, and a trainer that pools two meanings
@@ -1892,6 +1894,7 @@ impl Store {
         self.conn().execute_batch(prompts::PROMPTS_SQL)?;
         self.conn().execute_batch(recall::RECALL_SQL)?;
         self.conn().execute_batch(owners::OWNERS_SQL)?;
+        self.conn().execute_batch(grants::GRANTS_SQL)?;
         self.conn().execute("DELETE FROM schema_version", [])?;
         self.conn().execute(
             "INSERT INTO schema_version (version) VALUES (?1)",
@@ -2598,6 +2601,11 @@ impl Store {
                 self.conn()
                     .execute_batch("ALTER TABLE process ADD COLUMN cgroup TEXT")?;
             }
+        }
+        if from < 50 {
+            // v50: the operator's session and queue grants, kept so a restart re-applies them.
+            // Additive: a new table, empty, which is true - nothing was ever kept.
+            self.conn().execute_batch(grants::GRANTS_SQL)?;
         }
         Ok(())
     }
@@ -3930,6 +3938,7 @@ impl Store {
             tx.execute("DELETE FROM transcript WHERE session_id = ?1", params![id])?;
             Ok(())
         })?;
+        self.forget_session_grants(id)?;
         self.write_tx_at("session", |tx| {
             tx.execute("DELETE FROM session WHERE id = ?1", params![id])?;
             Ok(())

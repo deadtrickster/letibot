@@ -19,8 +19,8 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use super::{
     CORPUS_INDEXES_SQL, READER_FLOOR_SQL, RECALL_SQL, Result, SCHEMA_SQL, SCHEMA_VERSION,
-    SESSION_INDEXES_SQL, Store, StoreError, citations, leases, marks, modes, owners, pragmas,
-    procs, prompts, queues, seat, subagents, told, writers,
+    SESSION_INDEXES_SQL, Store, StoreError, citations, grants, leases, marks, modes, owners,
+    pragmas, procs, prompts, queues, seat, subagents, told, writers,
 };
 
 /// The shared file, beside the directory project files are in (§ The shape).
@@ -87,6 +87,8 @@ pub const PROJECT_TABLES: &[&str] = &[
     // the project's own past conversation, indexed for recall: the folder's history, so the
     // folder's file, and no key to filter because every row in it is this project's
     "recall_unit",
+    // what the operator granted a session from a card, and the queue grants under its gatekeeper
+    "session_grant",
 ];
 
 /// Shared file - what is read across folders or arbitrated between daemons. The doc's list plus the
@@ -164,7 +166,7 @@ pub fn tables_in(file: StoreFile) -> impl Iterator<Item = &'static str> {
 
 /// The batches `Store::migrate` builds a fresh file from, in its own order, plus the reader-floor
 /// table its `ensure_reader_floor` runs. One list, so a batch added there is routed or refused here.
-pub(super) fn batches() -> [&'static str; 18] {
+pub(super) fn batches() -> [&'static str; 19] {
     [
         SCHEMA_SQL,
         SESSION_INDEXES_SQL,
@@ -183,6 +185,7 @@ pub(super) fn batches() -> [&'static str; 18] {
         prompts::PROMPTS_SQL,
         RECALL_SQL,
         owners::OWNERS_SQL,
+        grants::GRANTS_SQL,
         READER_FLOOR_SQL,
     ]
 }

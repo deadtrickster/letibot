@@ -92,6 +92,7 @@ pub const READER_ARMS: &[(i64, Arm)] = &[
     (47, Arm::Additive), // recall_unit: a new table, which an older reader never names
     (48, Arm::Additive), // owner/holding/reap_event: new tables, which an older reader never names
     (49, Arm::Additive), // process.cgroup: a NULLed column
+    (50, Arm::Additive), // session_grant: a new table, which an older reader never names
 ];
 
 /// The floor a store at `version` carries: the newest arm at or below it that [`Arm::Breaks`],

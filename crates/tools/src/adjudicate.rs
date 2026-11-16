@@ -985,6 +985,21 @@ pub trait Adjudicator: Send + Sync {
     fn last_pattern(&self) -> Option<String> {
         None
     }
+
+    /// Whether the last answer came from a card relayed to the daemon's main session, which is
+    /// what puts a queue session's grant at the queue's scope.
+    fn last_relayed(&self) -> bool {
+        false
+    }
+}
+
+/// The wider of two memory grants: uncapped beats any cap, a larger cap a smaller one.
+fn widest_memory(a: Option<Option<u64>>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(None), _) | (_, None) => None,
+        (Some(Some(x)), Some(y)) => Some(x.max(y)),
+        (None, Some(y)) => Some(y),
+    }
 }
 
 /// The default, and it refuses. Not "deny": nobody decided, so it answers `Unavailable`,
@@ -1457,6 +1472,21 @@ pub struct AdjudicatedGate {
     /// Whose call a view ask is, when this session is a subagent's: a card that named only the
     /// path would leave the operator deciding for a child they cannot see.
     asker: Option<String>,
+    /// Where this session's grants are kept so a restart re-applies them. `None` keeps them in
+    /// this process only.
+    ledger: Option<std::sync::Arc<dyn crate::grant_ledger::GrantLedger>>,
+    /// The review queue's gatekeeper, for a queue session: a grant answered on a relayed card
+    /// is kept for the whole queue.
+    queue: Option<String>,
+    /// The ledger generation the copy below was read at.
+    loaded_at: u64,
+    /// Grants answered here that the ledger refused, so a reload does not drop them.
+    unkept: Vec<crate::grant::Grant>,
+    unkept_memory: Option<Option<u64>>,
+    /// View paths last read from the ledger, so a revoked one leaves the record.
+    view_loaded: Vec<(std::path::PathBuf, bool)>,
+    /// Whether the last view card was answered on a relayed card.
+    view_relayed: bool,
 }
 
 /// A call the gate admitted without asking anybody, and why. Deliberately not a denial with a
@@ -1579,6 +1609,147 @@ impl AdjudicatedGate {
             admissions: None,
             view: None,
             asker: None,
+            ledger: None,
+            queue: None,
+            loaded_at: 0,
+            unkept: Vec::new(),
+            unkept_memory: None,
+            view_loaded: Vec::new(),
+            view_relayed: false,
+        }
+    }
+
+    /// Keep this session's grants in `ledger`, and read the ones it already holds. `queue` is the
+    /// review queue's gatekeeper when this session is one of the queue's.
+    pub fn with_grant_ledger(
+        mut self,
+        ledger: std::sync::Arc<dyn crate::grant_ledger::GrantLedger>,
+        queue: Option<String>,
+    ) -> Self {
+        self.ledger = Some(ledger);
+        self.queue = queue;
+        self.loaded_at = 0;
+        self.refresh_grants();
+        self
+    }
+
+    /// The scopes this session reads its grants from: its own, and its queue's.
+    fn grant_scopes(&self) -> Vec<crate::grant_ledger::Scope> {
+        use crate::grant_ledger::Scope;
+        let mut out = vec![Scope::Session(self.session_id.clone())];
+        if let Some(q) = &self.queue {
+            out.push(Scope::Queue(q.clone()));
+        }
+        out
+    }
+
+    /// Read the ledger again when anything in this process kept or revoked a grant. A ledger that
+    /// cannot be read leaves the copy as it was.
+    fn refresh_grants(&mut self) {
+        use crate::grant_ledger::Kept;
+        let Some(ledger) = self.ledger.clone() else {
+            return;
+        };
+        let at = crate::grant_ledger::generation();
+        if at == self.loaded_at {
+            return;
+        }
+        let mut rows = Vec::new();
+        for scope in self.grant_scopes() {
+            match ledger.load(&scope) {
+                Ok(r) => rows.extend(r),
+                Err(_) => return,
+            }
+        }
+        self.loaded_at = at;
+        let mut grants = Vec::new();
+        let mut memory: Option<Option<u64>> = None;
+        let mut views: Vec<(std::path::PathBuf, bool)> = Vec::new();
+        for row in rows {
+            match row.kept {
+                Kept::Allow(g) => grants.push(g),
+                Kept::Memory(m) => memory = Some(widest_memory(memory, m)),
+                Kept::View { path, writable } => views.push((path, writable)),
+            }
+        }
+        for g in self.unkept.iter() {
+            if !grants.contains(g) {
+                grants.push(g.clone());
+            }
+        }
+        if let Some(m) = self.unkept_memory {
+            memory = Some(match memory {
+                Some(had) => widest_memory(Some(had), m),
+                None => m,
+            });
+        }
+        self.grants = grants;
+        self.memory_session = memory;
+        if let Some(view) = &self.view {
+            for (path, writable) in &self.view_loaded {
+                if !views.contains(&(path.clone(), *writable)) {
+                    view.forget(path, *writable);
+                }
+            }
+            for (path, writable) in &views {
+                view.record(path, *writable);
+            }
+        }
+        self.view_loaded = views;
+    }
+
+    /// A view grant the operator just answered, kept.
+    fn keep_view(&mut self, path: &std::path::Path, answer: &crate::runtime::ViewGrant) {
+        if let crate::runtime::ViewGrant::Granted { writable } = answer {
+            let relayed = self.view_relayed;
+            self.keep_grant(
+                crate::grant_ledger::Kept::View {
+                    path: crate::view::key(path),
+                    writable: *writable,
+                },
+                relayed,
+                "granted into the view by an answer to a card",
+            );
+        }
+    }
+
+    /// Write a grant this session was just given down in the ledger: at the queue's scope when
+    /// it was answered on a card relayed from a queue session, else at this session's.
+    fn keep_grant(&mut self, kept: crate::grant_ledger::Kept, relayed: bool, why: &str) {
+        use crate::grant_ledger::{Kept, Scope};
+        let Some(ledger) = self.ledger.clone() else {
+            return;
+        };
+        let scope = match (&self.queue, relayed) {
+            (Some(q), true) => Scope::Queue(q.clone()),
+            _ => Scope::Session(self.session_id.clone()),
+        };
+        match ledger.keep(&scope, &kept, why) {
+            Ok(()) => {
+                // Read from the ledger from now on, so a revoke takes it out of the record.
+                if let Kept::View { path, writable } = &kept {
+                    self.view_loaded.retain(|(p, _)| p != path);
+                    self.view_loaded.push((path.clone(), *writable));
+                }
+                crate::grant_ledger::bump();
+            }
+            Err(e) => {
+                eprintln!(
+                    "letibot: the grant `{}` was not kept for {} ({e}); it holds until the daemon stops",
+                    kept.describe(),
+                    scope.describe()
+                );
+                match kept {
+                    Kept::Allow(g) => self.unkept.push(g),
+                    Kept::Memory(m) => {
+                        self.unkept_memory = Some(match self.unkept_memory {
+                            Some(had) => widest_memory(Some(had), m),
+                            None => m,
+                        })
+                    }
+                    Kept::View { .. } => {}
+                }
+            }
         }
     }
 
@@ -2603,6 +2774,7 @@ impl AdjudicatedGate {
             trail: crate::authorise::AuthorisationTrail::default(),
         };
         let d = self.adjudicator.decide(&req);
+        self.view_relayed = self.adjudicator.last_relayed();
         match &d.outcome {
             DecisionOutcome::Selected { option_id } if option_id == "grant_ro" => {
                 ViewGrant::Granted { writable: false }
@@ -2656,8 +2828,11 @@ impl Gate for AdjudicatedGate {
     ) -> crate::runtime::ViewGrant {
         use crate::runtime::ViewGrant;
         use crate::view::{Answer, Claim};
+        self.refresh_grants();
         let Some(view) = self.view.clone() else {
-            return self.ask_to_see(path, tool, access);
+            let answer = self.ask_to_see(path, tool, access);
+            self.keep_view(path, &answer);
+            return answer;
         };
         match view.claim(path, access) {
             Claim::Covered { writable } => ViewGrant::Covered { writable },
@@ -2681,6 +2856,7 @@ impl Gate for AdjudicatedGate {
                         _ => Answer::Nobody,
                     },
                 );
+                self.keep_view(path, &answer);
                 answer
             }
         }
@@ -2694,6 +2870,7 @@ impl Gate for AdjudicatedGate {
         ask: &crate::exec::memory::MemoryAsk,
     ) -> crate::exec::memory::MemoryGrant {
         use crate::exec::memory::MemoryGrant;
+        self.refresh_grants();
         // A session grant covers an ask no larger than it and no larger than what is free.
         // Uncapped is covered only by an uncapped grant, and an uncapped ask has no size to hold
         // against what is free, so the grant itself is the operator's word on it. A machine whose
@@ -2784,6 +2961,14 @@ impl Gate for AdjudicatedGate {
                     (Some(Some(was)), Some(b)) => Some(was.max(b)),
                     (None, Some(b)) => Some(b),
                 });
+                let relayed = self.adjudicator.last_relayed();
+                if let Some(m) = self.memory_session {
+                    self.keep_grant(
+                        crate::grant_ledger::Kept::Memory(m),
+                        relayed,
+                        &format!("granted by an answer to {}", req.id),
+                    );
+                }
                 MemoryGrant::Granted
             }
             DecisionOutcome::Selected { .. } => MemoryGrant::Refused(d.basis.clone()),
@@ -2888,6 +3073,15 @@ impl Gate for AdjudicatedGate {
         let dropped = self.grants.len();
         self.grants.clear();
         self.memory_session = None;
+        self.unkept.clear();
+        self.unkept_memory = None;
+        // The session's own kept grants go with it; a queue's stay until revoked.
+        if let Some(ledger) = self.ledger.clone() {
+            let mine = crate::grant_ledger::Scope::Session(self.session_id.clone());
+            let _ = ledger.clear(&mine, "allow");
+            let _ = ledger.clear(&mine, "memory");
+            crate::grant_ledger::bump();
+        }
         self.mode = mode;
         Ok(dropped)
     }
@@ -2959,6 +3153,7 @@ impl Gate for AdjudicatedGate {
     fn admit(&mut self, call: &GateCall<'_>) -> GateDecision {
         use crate::authorise::{BreakerState, TaskDirection};
         use crate::intent::BaselineVerdict;
+        self.refresh_grants();
 
         // Layer A's reading, with the `adjudicate_` floor merged into it. One call, here, and the
         // same reading the card is built from: a layer may raise this tier before anything else
@@ -3360,6 +3555,7 @@ impl Gate for AdjudicatedGate {
         let decision = self.adjudicator.decide(&req);
         self.file_exchange();
         let typed_pattern = self.adjudicator.last_pattern();
+        let relayed = self.adjudicator.last_relayed();
 
         match &decision.outcome {
             DecisionOutcome::Selected { option_id } => {
@@ -3427,7 +3623,13 @@ impl Gate for AdjudicatedGate {
                             if let Ok(grant) =
                                 Self::session_grant(&baseline, req.class, &program, why)
                             {
-                                self.grants.push(grant);
+                                self.grants.push(grant.clone());
+                                let why = grant.why.clone();
+                                self.keep_grant(
+                                    crate::grant_ledger::Kept::Allow(grant),
+                                    relayed,
+                                    &why,
+                                );
                             }
                         }
                         // The loop closed, so the error signal is gone.

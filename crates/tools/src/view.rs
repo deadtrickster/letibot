@@ -229,6 +229,13 @@ impl ViewGrants {
         }
     }
 
+    /// Take `path` out of the record: its grant was revoked. A bind already made stays in the
+    /// running session's namespace until it reopens.
+    pub fn forget(&self, path: &Path, _writable: bool) {
+        let key = key(path);
+        self.lock().granted.retain(|e| e.path != key);
+    }
+
     /// Claim the one card for this path, or take the answer somebody else already has.
     pub fn claim(&self, path: &Path, access: ViewAccess) -> Claim {
         let key = key(path);

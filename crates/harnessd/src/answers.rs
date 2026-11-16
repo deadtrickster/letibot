@@ -44,6 +44,9 @@ pub struct Answers {
     /// [`HeadAdjudicator::last_pattern`] can pick it up after `ask` returns. Keyed by request
     /// so a pattern can only be applied to the call it was typed against.
     pattern: Mutex<Option<(String, String)>>,
+    /// Requests answered on a card relayed to the main session, taken by
+    /// [`Answers::take_relayed`].
+    relayed: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Default for Answers {
@@ -58,7 +61,16 @@ impl Answers {
             slots: Mutex::new(HashMap::new()),
             cv: Condvar::new(),
             pattern: Mutex::new(None),
+            relayed: Mutex::new(Default::default()),
         }
+    }
+
+    /// Whether `req_id` was answered on a relayed card, taken so it cannot be read twice.
+    pub fn take_relayed(&self, req_id: &str) -> bool {
+        self.relayed
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(req_id)
     }
 
     /// The glob that came with the answer to `req_id`, taken so it cannot be read twice. `None`
@@ -139,6 +151,10 @@ impl Answers {
             let mut card = pose(req, deadline_ms, subagent);
             if route.is_some() {
                 card = without_durable(card);
+                let asker = subagent.map_or_else(|| hub.session_id(), |s| s.handle.clone());
+                if letibot_tools::grant_ledger::queue_of(&asker).is_some() {
+                    card = queue_scoped(card);
+                }
             }
             hub.publish(card.clone());
             if let Some(set) = &route
@@ -180,6 +196,12 @@ impl Answers {
                 )
             }
             Waited::Answered { reply, by } => {
+                if route.is_some() {
+                    self.relayed
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(req.id.clone());
+                }
                 if let Reply::Permission {
                     pattern: Some(p), ..
                 } = &reply
@@ -406,6 +428,41 @@ fn without_durable(mut card: SessionEvent) -> SessionEvent {
         };
     }
     card
+}
+
+/// A relayed queue session's card: its session rungs are kept at the queue's scope, so the card
+/// says so on every one of them.
+fn queue_scoped(mut card: SessionEvent) -> SessionEvent {
+    use letibot_tools::grant_ledger::QUEUE_SCOPE_NOTE;
+    if let SessionEvent::DecisionRequested {
+        options,
+        options_note,
+        ..
+    } = &mut card
+        && options.iter().any(|o| o.kind == OptionKind::AllowSession)
+    {
+        for o in options
+            .iter_mut()
+            .filter(|o| o.kind == OptionKind::AllowSession)
+        {
+            o.label = queue_label(&o.label);
+        }
+        let note = format!("a session answer here {QUEUE_SCOPE_NOTE}");
+        *options_note = match options_note.trim() {
+            "" => note,
+            had => format!("{had} · {note}"),
+        };
+    }
+    card
+}
+
+/// A session rung's label, said of the queue.
+fn queue_label(label: &str) -> String {
+    let base = label
+        .replace(" (for the rest of the session)", "")
+        .replace("Let this session", "Let this project's review queue")
+        .replace("this session", "this project's review queue");
+    format!("{base} - {}", letibot_tools::grant_ledger::QUEUE_SCOPE_NOTE)
 }
 
 /// Whether `reply` picks a durable rung of `req`, which a relayed card never offers.
@@ -1026,6 +1083,8 @@ pub struct HeadAdjudicator {
     /// The glob the operator typed with the last answer, for [`Adjudicator::last_pattern`].
     /// `None` when they typed none, which means *use the pattern derived from the call*.
     pattern: Mutex<Option<String>>,
+    /// Whether the last answer came on a relayed card.
+    relayed: Mutex<bool>,
 }
 
 impl HeadAdjudicator {
@@ -1036,6 +1095,7 @@ impl HeadAdjudicator {
             budget: ANSWER_BUDGET,
             shown: Mutex::new(None),
             pattern: Mutex::new(None),
+            relayed: Mutex::new(false),
         }
     }
 
@@ -1059,6 +1119,8 @@ impl HeadAdjudicator {
         let d = self.answers.ask(&self.hub, req, self.budget, subagent);
         *self.pattern.lock().unwrap_or_else(|e| e.into_inner()) =
             self.answers.take_pattern(&req.id);
+        *self.relayed.lock().unwrap_or_else(|e| e.into_inner()) =
+            self.answers.take_relayed(&req.id);
         d
     }
 }
@@ -1095,6 +1157,10 @@ impl Adjudicator for HeadAdjudicator {
 
     fn last_brief(&self) -> Option<String> {
         self.shown.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn last_relayed(&self) -> bool {
+        *self.relayed.lock().unwrap_or_else(|e| e.into_inner())
     }
 }
 
@@ -1141,6 +1207,10 @@ impl Adjudicator for SubagentAdjudicator {
         }
     }
 
+    fn last_relayed(&self) -> bool {
+        self.head.as_ref().is_some_and(|h| h.last_relayed())
+    }
+
     /// Never starts with `none`: that prefix is the harness's own signal for *nobody reachable
     /// refuse to open a gated session*, and a subagent does have a decider - the ruleset it
     /// inherited. What reaches this adjudicator is only what that ruleset left as `ask`.
@@ -1166,20 +1236,28 @@ impl Adjudicator for SubagentAdjudicator {
 pub struct EscalateOnTimeout {
     inner: Arc<dyn Adjudicator>,
     human: Arc<dyn Adjudicator>,
+    /// Whether the last decision was the person's, on a relayed card.
+    relayed: Mutex<bool>,
 }
 
 impl EscalateOnTimeout {
     pub fn new(inner: Arc<dyn Adjudicator>, human: Arc<dyn Adjudicator>) -> Self {
-        EscalateOnTimeout { inner, human }
+        EscalateOnTimeout {
+            inner,
+            human,
+            relayed: Mutex::new(false),
+        }
     }
 }
 
 impl Adjudicator for EscalateOnTimeout {
     fn decide(&self, req: &AdjudicationRequest) -> AdjudicationDecision {
+        *self.relayed.lock().unwrap_or_else(|e| e.into_inner()) = false;
         let d = self.inner.decide(req);
         match d.outcome {
             DecisionOutcome::Timeout | DecisionOutcome::Unavailable => {
                 let mut h = self.human.decide(req);
+                *self.relayed.lock().unwrap_or_else(|e| e.into_inner()) = self.human.last_relayed();
                 // The record keeps both facts: the person decided, and they were asked because
                 // the guard did not answer. Only the first would read as a person overruling a
                 // model that never spoke.
@@ -1207,6 +1285,10 @@ impl Adjudicator for EscalateOnTimeout {
 
     fn last_brief(&self) -> Option<String> {
         self.human.last_brief().or_else(|| self.inner.last_brief())
+    }
+
+    fn last_relayed(&self) -> bool {
+        *self.relayed.lock().unwrap_or_else(|e| e.into_inner())
     }
 
     /// The model's bytes, not the person's: the corpus column is the input an ORACLE was given

@@ -517,6 +517,9 @@ pub struct Config {
     /// SHARED with every child: a grant on a directory covers what is under it, and one grant
     /// answering for a whole tree is one card instead of one per subagent.
     pub view_grants: Option<std::sync::Arc<letibot_tools::view::ViewGrants>>,
+    /// The view grants kept in the store for this session and its review queue, read at open:
+    /// `(path, writable, why)`, bound into the view before the first command runs.
+    pub kept_views: Vec<(PathBuf, bool, String)>,
     /// Which search provider is behind `web_search`, by name (`brave`), or `None` for the tool
     /// that refuses. The key is deliberately not here: it is resolved at attach, so a secret
     /// never rides in a struct that derives `Debug`.
@@ -1794,6 +1797,7 @@ impl Config {
             downgrade: letibot_tools::schema::Downgrade::none(),
             perimeter: None,
             view_grants: None,
+            kept_views: Vec::new(),
             web_search: default_web_search(),
             web_fetch: false,
             context_window: None,

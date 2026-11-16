@@ -932,6 +932,11 @@ impl Harness {
         if cfg.view_grants.is_none() {
             cfg.view_grants = Some(Arc::new(letibot_tools::view::ViewGrants::new()));
         }
+        if let Some(record) = &cfg.view_grants {
+            for (path, writable, _) in &cfg.kept_views {
+                record.record(path, *writable);
+            }
+        }
         let may_exec = !cfg.downgrade.denies(Cls::Exec);
         let may_write = !cfg.downgrade.denies(Cls::Write);
         // Set by the arms that hand the session the whole host, so the prompt and the head both
@@ -2032,6 +2037,12 @@ impl Harness {
             ));
         }
 
+        // What the operator granted this session, or its review queue, before a restart.
+        cfg.kept_views = match &store {
+            Some(s) => crate::grants::kept_views(s, &cfg),
+            None => Vec::new(),
+        };
+
         let mut mode_source = Self::resolve_the_point(
             parts,
             &mut cfg,
@@ -3061,6 +3072,14 @@ impl Harness {
                     // guard attached and never consulted is the banner-says-one-thing state.
                     Some(a) => g.with_advisor(a).start_supervised(
                         cfg.supervise || cfg.mode.decider == letibot_tools::mode::Decider::Model,
+                    ),
+                    None => g,
+                };
+                // Session and queue grants, kept so a restart re-applies them.
+                let g = match cfg.store_at() {
+                    Some(at) => g.with_grant_ledger(
+                        Arc::new(crate::grants::StoreLedger::new(at)),
+                        crate::grants::queue_for(&cfg),
                     ),
                     None => g,
                 };
@@ -4961,6 +4980,22 @@ pub fn confined_grants(
         if !out.iter().any(|h| h.path() == g.path()) {
             out.push(g);
         }
+    }
+    for (path, writable, why) in &cfg.kept_views {
+        out.retain(|g| g.path() != path.as_path() || !*writable);
+        if out.iter().any(|g| g.path() == path.as_path()) {
+            continue;
+        }
+        out.push(match writable {
+            true => Grant::ReadWrite {
+                path: path.clone(),
+                why: why.clone(),
+            },
+            false => Grant::ReadOnly {
+                path: path.clone(),
+                why: why.clone(),
+            },
+        });
     }
     out
 }

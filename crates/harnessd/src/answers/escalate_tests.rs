@@ -608,3 +608,197 @@ fn a_relayed_card_shows_no_line_and_no_wait_when_the_shadow_times_out() {
         "{d:?}"
     );
 }
+
+// ------------------------------------------------- queue-scoped grants
+
+/// A fresh store file for one test.
+fn grant_store(tag: &str) -> crate::config::StoreAt {
+    let dir = std::env::temp_dir().join(format!("letibot-grants-{tag}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a store dir");
+    crate::config::StoreAt::File(dir.join("store.db"))
+}
+
+/// A reviewer's gate as a daemon builds it: relayed through the gatekeeper, its grants kept in
+/// `at` at the queue's scope.
+fn queue_reviewer(
+    w: &World,
+    id: &str,
+    at: &crate::config::StoreAt,
+) -> letibot_tools::AdjudicatedGate {
+    let ask = SubagentAsk {
+        handle: id.into(),
+        ..reviewer_ask()
+    };
+    let adj = SubagentAdjudicator::new(
+        ask,
+        Some(
+            HeadAdjudicator::new(w.gatekeeper.clone(), w.answers.clone())
+                .with_budget(Duration::from_secs(10)),
+        ),
+    );
+    letibot_tools::AdjudicatedGate::new(Box::new(adj))
+        .with_identity(id, "agent")
+        .with_mode(letibot_tools::mode::Mode::WRITES_ALLOWED)
+        .with_grant_ledger(
+            Arc::new(crate::grants::StoreLedger::new(at.clone())),
+            letibot_tools::grant_ledger::queue_of(id).map(str::to_string),
+        )
+}
+
+/// Answer every card the main session shows with `allow_session`, counting them, and keep the
+/// last card's note.
+fn allow_for_session(
+    w: &World,
+    stop: Arc<AtomicBool>,
+) -> (
+    Arc<std::sync::atomic::AtomicUsize>,
+    Arc<std::sync::Mutex<Vec<String>>>,
+    std::thread::JoinHandle<()>,
+) {
+    let cards = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let notes = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let (main, head, seen, said) = (w.main.clone(), w.head.clone(), cards.clone(), notes.clone());
+    let t = std::thread::spawn(move || {
+        let mut answered = std::collections::HashSet::new();
+        while !stop.load(Ordering::SeqCst) {
+            if let Some(d) = open_of(&main).first()
+                && answered.insert(d.req_id.clone())
+            {
+                seen.fetch_add(1, Ordering::SeqCst);
+                said.lock().unwrap().push(format!(
+                    "{} | {}",
+                    d.options_note,
+                    d.options
+                        .iter()
+                        .map(|o| o.label.clone())
+                        .collect::<Vec<_>>()
+                        .join(" / ")
+                ));
+                main.submit(
+                    &head,
+                    "c1",
+                    0,
+                    CommandKind::Answer {
+                        req_id: d.req_id.clone(),
+                        reply: Reply::Permission {
+                            option_id: "allow_session".into(),
+                            pattern: None,
+                            note: None,
+                        },
+                    },
+                );
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    });
+    (cards, notes, t)
+}
+
+fn search_call<'a>(args: &'a serde_json::Value, id: &'a str) -> letibot_tools::GateCall<'a> {
+    letibot_tools::GateCall {
+        name: "web_search",
+        access: letibot_tools::schema::Access::Network,
+        args,
+        turn_id: "t1",
+        call_id: id,
+        workspace: CLONE,
+        target_exists: None,
+        scripts: &[],
+        preview: &[],
+    }
+}
+
+/// "Allow for the session" on one reviewer's relayed card covers the queue: the next reviewer's
+/// same call asks nobody, before and after a restart, the card said so, the main session is not
+/// widened, and a revoke takes it away again.
+#[test]
+fn a_session_answer_on_a_relayed_reviewer_card_covers_the_queue_until_revoked() {
+    use letibot_tools::{Gate as _, GateDecision};
+    let w = world();
+    name_reviewer(&w.set);
+    let at = grant_store("queue");
+    let args = serde_json::json!({"query": "x"});
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let (cards, notes, answerer) = allow_for_session(&w, stop.clone());
+    let mut first = queue_reviewer(&w, REVIEWER, &at);
+    assert!(matches!(
+        first.admit(&search_call(&args, "c1")),
+        GateDecision::Admit
+    ));
+    assert_eq!(cards.load(Ordering::SeqCst), 1);
+    let said = notes.lock().unwrap().join("\n");
+    assert!(
+        said.contains(letibot_tools::grant_ledger::QUEUE_SCOPE_NOTE),
+        "the card says how far the answer goes: {said}"
+    );
+
+    // The next review is a new sub-session.
+    let mut next = queue_reviewer(&w, "s-gatekeeper-k-sub-2", &at);
+    assert!(matches!(
+        next.admit(&search_call(&args, "c2")),
+        GateDecision::Admit
+    ));
+    assert_eq!(
+        cards.load(Ordering::SeqCst),
+        1,
+        "the next reviewer's same call was covered by the queue's grant"
+    );
+
+    // A restart: nothing in memory, only the store.
+    drop((first, next));
+    let mut after = queue_reviewer(&w, "s-gatekeeper-k-sub-3", &at);
+    assert!(matches!(
+        after.admit(&search_call(&args, "c3")),
+        GateDecision::Admit
+    ));
+    assert_eq!(cards.load(Ordering::SeqCst), 1, "and after a restart");
+
+    // The main session reads its own scope only.
+    let store = at.open().expect("the store");
+    assert!(
+        crate::grants::load(
+            &store,
+            &letibot_tools::grant_ledger::Scope::Session(MAIN.into())
+        )
+        .unwrap()
+        .is_empty()
+    );
+    let main_gate = letibot_tools::AdjudicatedGate::new(Box::new(letibot_tools::NoAdjudicator))
+        .with_identity(MAIN, "agent")
+        .with_mode(letibot_tools::mode::Mode::WRITES_ALLOWED)
+        .with_grant_ledger(Arc::new(crate::grants::StoreLedger::new(at.clone())), None);
+    assert!(main_gate.grants().is_empty(), "{:?}", main_gate.grants());
+
+    // Listed, and revoked.
+    let listed = crate::grants::permissions(&store, REVIEWER, Some(GATEKEEPER), None);
+    assert!(listed.ok, "{:?}", listed.lines);
+    let row = crate::grants::load(
+        &store,
+        &letibot_tools::grant_ledger::Scope::Queue(GATEKEEPER.into()),
+    )
+    .unwrap();
+    assert_eq!(row.len(), 1, "{row:?}");
+    assert!(
+        listed
+            .lines
+            .iter()
+            .any(|l| l.contains(&row[0].id.to_string())),
+        "{:?}",
+        listed.lines
+    );
+    let revoked = crate::grants::permissions(&store, REVIEWER, Some(GATEKEEPER), Some(row[0].id));
+    assert!(revoked.ok, "{:?}", revoked.lines);
+    assert!(matches!(
+        after.admit(&search_call(&args, "c4")),
+        GateDecision::Admit
+    ));
+    stop.store(true, Ordering::SeqCst);
+    answerer.join().unwrap();
+    assert_eq!(
+        cards.load(Ordering::SeqCst),
+        2,
+        "a revoked grant asks again, in a session that was already running"
+    );
+}
