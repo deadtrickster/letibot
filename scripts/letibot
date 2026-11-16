@@ -227,12 +227,14 @@ probe_bounded() {
 # the answer lands in `SCOPE_LATE` (`rc<TAB>seconds<TAB>last line`) and the daemon relays it.
 # One probe per launcher run; the directory is the lock.
 SCOPE_LATE=""
+# The late probe ends too, so its directory is answered and swept.
+SCOPE_PROBE_LATE_SECONDS=600
 scope_probe_start() {
   local dir="$RUNDIR/scope-probe-$$"
   SCOPE_LATE="$dir/answer"
   mkdir -p "$RUNDIR" 2>/dev/null || true
-  # Answered probes of earlier runs. One still unanswered is kept: a daemon waits on it.
-  find "$RUNDIR" -maxdepth 1 -name 'scope-probe-*' -mmin +60 -exec test -f '{}/answer' ';' \
+  # Every probe answers within SCOPE_PROBE_LATE_SECONDS, so an hour-old directory has no waiter.
+  find "$RUNDIR" -maxdepth 1 \( -name 'scope-probe-*' -o -name 'scope-join-*' \) -mmin +60 \
     -exec rm -rf '{}' + 2>/dev/null || true
   mkdir "$dir" 2>/dev/null || return 0
   # Twice forked, so the probe is nobody's child here and outlives an `exec`.
@@ -240,8 +242,11 @@ scope_probe_start() {
     (
       started=$(date +%s)
       rc=0
-      out="$(systemd-run --user --scope --quiet --collect --expand-environment=no true 2>&1)" || rc=$?
+      bound=()
+      if command -v timeout >/dev/null 2>&1; then bound=(timeout -k 5 "$SCOPE_PROBE_LATE_SECONDS"); fi
+      out="$(${bound[@]+"${bound[@]}"} systemd-run --user --scope --quiet --collect --expand-environment=no true 2>&1)" || rc=$?
       line="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1 || true)"
+      case "$rc" in 124 | 137) [ "${#bound[@]}" -eq 0 ] || line="no answer in ${SCOPE_PROBE_LATE_SECONDS}s" ;; esac
       printf '%s\t%s\t%s\n' "$rc" "$(($(date +%s) - started))" "$line" >"$SCOPE_LATE.tmp" &&
         mv "$SCOPE_LATE.tmp" "$SCOPE_LATE"
     ) </dev/null >/dev/null 2>&1 &
@@ -334,6 +339,52 @@ scope_run() { # scope_run UNIT-STEM
     echo "letibot: ${SCOPE_WHY} - harnessd shares this terminal's cgroup, and its tool calls run uncapped" >&2
   fi
 }
+# A good probe says the manager answered once, not that it makes this scope now. The real join
+# is bounded too; past the bound the scope is given up and the command runs without one.
+SCOPE_JOIN_SECONDS=5
+SCOPE_PID=""
+# scope_join COMMAND [ARGS...] -- start COMMAND in the scope SCOPE_RUN names. 0 with SCOPE_PID
+# once it is in, 1 after the join was given up and killed. Whoever makes the gate directory
+# first decides a join that lands at the bound, so the command never runs twice.
+scope_join() {
+  local gate i=0
+  gate="$RUNDIR/scope-join-$$-$RANDOM"
+  # shellcheck disable=SC2016 # expanded by the child shell, inside the scope
+  "${SCOPE_RUN[@]}" "$BASH" -c 'mkdir "$0" 2>/dev/null || exit 125; exec "$@"' "$gate" "$@" <&0 &
+  SCOPE_PID=$!
+  while [ ! -d "$gate" ] && [ "$i" -lt $((SCOPE_JOIN_SECONDS * 10)) ] && kill -0 "$SCOPE_PID" 2>/dev/null; do
+    sleep 0.1
+    i=$((i + 1))
+  done
+  if mkdir "$gate" 2>/dev/null; then
+    kill -KILL "$SCOPE_PID" 2>/dev/null || true
+    wait "$SCOPE_PID" 2>/dev/null || true
+    rmdir "$gate" 2>/dev/null || true
+    SCOPE_PID=""
+    echo "letibot: the user manager made no scope in ${SCOPE_JOIN_SECONDS}s - harnessd runs without its own scope, and its tool calls run uncapped" >&2
+    return 1
+  fi
+  rmdir "$gate" 2>/dev/null || true
+  return 0
+}
+# scope_wait -- wait for the joined command, passing TERM and HUP on, and exit with its status.
+# INT is the terminal's and reaches the command's process group without help.
+scope_wait() {
+  local rc=0 again=0
+  trap 'kill -TERM "$SCOPE_PID" 2>/dev/null' TERM HUP
+  trap ':' INT
+  while :; do
+    rc=0
+    wait "$SCOPE_PID" || rc=$?
+    kill -0 "$SCOPE_PID" 2>/dev/null || break
+  done
+  # A wait cut short by a trap returns above 128; the reaped child's own status is asked again.
+  if [ "$rc" -gt 128 ]; then
+    wait "$SCOPE_PID" 2>/dev/null || again=$?
+    [ "$again" -eq 127 ] || rc=$again
+  fi
+  exit "$rc"
+}
 detach() { # detach UNIT-STEM COMMAND [ARGS...]
   # The caller names the scope: every call runs under `&`, in a subshell, so a counter kept here
   # never reaches the next call and the room and a daemon started by one launcher asked for one
@@ -341,11 +392,14 @@ detach() { # detach UNIT-STEM COMMAND [ARGS...]
   local stem=$1
   shift
   if [ "$HOST_OS" = Darwin ]; then
-    /usr/bin/perl -MPOSIX -e 'POSIX::setsid(); exec { $ARGV[0] } @ARGV or die "detach: $ARGV[0]: $!\n"' -- "$@"
-  else
-    scope_run "$stem"
-    ${SCOPE_RUN[@]+"${SCOPE_RUN[@]}"} setsid "$@"
+    exec /usr/bin/perl -MPOSIX -e 'POSIX::setsid(); exec { $ARGV[0] } @ARGV or die "detach: $ARGV[0]: $!\n"' -- "$@"
   fi
+  scope_run "$stem"
+  if [ "${#SCOPE_RUN[@]}" -gt 0 ] && scope_join setsid "$@"; then
+    scope_wait
+  fi
+  # Exec'd, so the caller's pid is the daemon's and a give-up can stop it.
+  exec setsid "$@"
 }
 
 # The runtime dir: `$XDG_RUNTIME_DIR/letibot`, else `/run/user/<uid>/letibot` on Linux and
@@ -3063,14 +3117,18 @@ if [ $# -gt 0 ]; then
   # In a scope of its own too, for `detach`'s reason: its tool calls are as able to eat the
   # box as a daemon's, and in the terminal's scope a cap cannot be set at all. A scope runs
   # the command in place, so the one-shot keeps this terminal.
+  ONESHOT=("${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"}
+    --socket "$ONESHOT_SOCK"
+    ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE"
+    --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"}
+    ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"}
+    ${EXEC_ARGS[@]+"${EXEC_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}
+    ${SESSION:+--session "$SESSION"} --prompt "$*")
   scope_run letibot-oneshot
-  exec ${SCOPE_RUN[@]+"${SCOPE_RUN[@]}"} "${NOGPU[@]}" "$BIN/harnessd" --dialect "$DIALECT" ${MODEL_ARGS[@]+"${MODEL_ARGS[@]}"} ${ENDPOINT_ARGS[@]+"${ENDPOINT_ARGS[@]}"} \
-    --socket "$ONESHOT_SOCK" \
-    ${VOCAB_ARGS[@]+"${VOCAB_ARGS[@]}"} --workspace "$WORKSPACE" --store "$STORE" \
-    --role "$ROLE" ${ADJ:+--adjudicator console} ${MODE:+--mode "$MODE"} \
-    ${SUPERVISE:+--supervise} ${ORACLE:+--oracle "$ORACLE"} ${ORACLE_BUDGET:+--oracle-budget-ms "$ORACLE_BUDGET"} \
-    ${EXEC_ARGS[@]+"${EXEC_ARGS[@]}"} ${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"} \
-    ${SESSION:+--session "$SESSION"} --prompt "$*"
+  if [ "${#SCOPE_RUN[@]}" -gt 0 ] && scope_join "${ONESHOT[@]}"; then
+    scope_wait
+  fi
+  exec "${ONESHOT[@]}"
 fi
 
 # A flag that shapes the session cannot apply to a daemon already running: role, model,
@@ -3171,6 +3229,8 @@ if ! live; then
     printf '\r\033[K' >&2
   fi
   live || {
+    # Stopped, so a daemon still starting does not come up later with nobody attached.
+    kill "$DPID" 2>/dev/null || true
     echo "letibot: daemon did not come up; last lines of $LOG:" >&2
     tail -15 "$LOG" >&2
     exit 1
