@@ -78,7 +78,12 @@ pub fn configured(tables: &Tables) -> bool {
 
 /// The specs the tables resolve to, disabled ones left out, and a failure for each entry that
 /// could not be read or names neither or both of `command` and `url`.
-pub fn specs(tables: &Tables) -> (Vec<letibot_mcp_client::ServerSpec>, Vec<letibot_mcp_client::Failure>) {
+pub fn specs(
+    tables: &Tables,
+) -> (
+    Vec<letibot_mcp_client::ServerSpec>,
+    Vec<letibot_mcp_client::Failure>,
+) {
     let mut specs = Vec::new();
     let mut bad = Vec::new();
     for (name, k) in tables {

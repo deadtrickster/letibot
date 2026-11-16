@@ -104,9 +104,9 @@ pub use protocol::{
     Ack, AnswerMode, Attachment, AttachmentKind, Caps, ClientFrame, ContextAsk, ContextPos,
     ContextRange, ContextRef, EditorContext, HEAD_RUN_KIND_PATH, HEAD_RUN_KIND_TEXT,
     HEAD_RUN_KIND_URL, HEAD_RUN_TOOLS, HEAD_RUN_TOOLS_KEY, HeadRunTool, MarkOutcome, NOTE_STOPPING,
-    OpenBuffer, PROTOCOL_VERSION, PaneBrief, PromptDelivery, ServerFrame, TURN_ENDED_SINCE, TermLine,
-    head_run_tool, head_run_verb, operator_line_refusal, operator_shell_command, protocol_skew,
-    send_line, term_command, term_line,
+    OpenBuffer, PROTOCOL_VERSION, PaneBrief, PromptDelivery, ServerFrame, TURN_ENDED_SINCE,
+    TermLine, head_run_tool, head_run_verb, operator_line_refusal, operator_shell_command,
+    protocol_skew, send_line, term_command, term_line,
 };
 pub use question::{AnswerDefect, QuestionAnswer};
 pub use registry::{
