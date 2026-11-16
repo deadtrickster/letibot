@@ -39,6 +39,17 @@ fn alone() -> std::sync::MutexGuard<'static, ()> {
     ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// A park's jitter is DRAWN per park, so how long a park is cannot be a number here: this is the
+/// mean each draw sits around, and every assertion is the range [`jittered`] gives.
+const JITTER_MEAN: u64 = 2_000;
+
+/// The instants a park on `base` may land between: the mean, [`letibot_http::retry::JITTER_PERCENT`]
+/// either way, which is the same spread a retry ladder's wait is drawn from.
+fn jittered(base: u64) -> std::ops::RangeInclusive<u64> {
+    let span = JITTER_MEAN * letibot_http::retry::JITTER_PERCENT / 100;
+    (base + JITTER_MEAN - span)..=(base + JITTER_MEAN + span)
+}
+
 /// What a stub does with one request.
 #[derive(Clone, Copy)]
 enum Act {
@@ -321,11 +332,11 @@ fn a_limit_with_a_reset_parks_the_session_and_the_same_turn_resumes_at_the_reset
         "a limit with a reset is not a failure of the turn"
     );
     let h = sessions.harness_of(&id).expect("the session is open");
-    let park = h.limit_park().expect("the session is parked").clone();
-    assert_eq!(
-        park.until_ms,
-        T0 + 300_000 + 2_000,
-        "the provider's own instant plus the jitter, on the injected clock"
+    let until = h.limit_park().expect("the session is parked").clone();
+    assert!(
+        jittered(T0 + 300_000).contains(&until.until_ms),
+        "the provider's own instant plus a drawn jitter, on the injected clock: {}",
+        until.until_ms
     );
     assert_eq!(
         h.nag_hold(),
@@ -371,6 +382,46 @@ fn a_limit_with_a_reset_parks_the_session_and_the_same_turn_resumes_at_the_reset
         sessions.harness_of(&id).expect("open").nag_hold(),
         NagHold::Parked,
         "a resumed session's plan-check is its own again"
+    );
+}
+
+/// A1-F10: what a park adds to the provider's own instant is DRAWN. Three sessions refused at the
+/// same instant cannot come back at three identical ones unless the jitter is the fixed number it
+/// used to be, which is what put a fleet of parks back in step.
+#[test]
+fn sessions_refused_together_do_not_park_on_the_same_instant() {
+    let _alone = alone();
+    let Some(gguf) = letibot_harnessd::vocab_gguf() else {
+        return;
+    };
+    let scratch = scratch_home("drawn");
+    let glm = model(&[Act::Refuse(300)]);
+    let deepseek = model(&[Act::Answer]);
+    providers(&scratch, glm.port, deepseek.port);
+    let mut untils: Vec<u64> = Vec::new();
+    for tag in ["drawn-a", "drawn-b", "drawn-c"] {
+        let mut cfg = config(&scratch, &gguf, tag, ("glm", "glm-5.3"), Vec::new());
+        let (clock, _handle) = letibot_harnessd::config::LimitClock::fixed(T0);
+        cfg.limit_clock = clock;
+        let parts = Parts::load(&cfg).expect("the vocabulary loads");
+        *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
+        let (mut sessions, _hub, id) = open(&parts, cfg);
+        sessions.submit_operator(&id, PROMPT).expect_err("parked");
+        let until = sessions
+            .harness_of(&id)
+            .expect("open")
+            .limit_park()
+            .expect("parked")
+            .until_ms;
+        assert!(
+            jittered(T0 + 300_000).contains(&until),
+            "{tag} is the reset plus a draw a fifth either way: {until}"
+        );
+        untils.push(until);
+    }
+    assert!(
+        untils.windows(2).any(|w| w[0] != w[1]),
+        "the jitter is drawn per session and not a constant: {untils:?}"
     );
 }
 
@@ -667,10 +718,10 @@ fn a_429_naming_a_wall_clock_and_a_window_parks_for_the_window() {
         .limit_park()
         .expect("parked on the prose")
         .clone();
-    assert_eq!(
-        park.until_ms,
-        T0 + 5 * 3_600_000 + 2_000,
-        "the window the provider named, not the wall clock beside it"
+    assert!(
+        jittered(T0 + 5 * 3_600_000).contains(&park.until_ms),
+        "the window the provider named, not the wall clock beside it: {}",
+        park.until_ms
     );
     handle.store(T0 + 6 * 3_600_000, Ordering::SeqCst);
     assert_eq!(sessions.resume_due_limits(), 1);
@@ -731,19 +782,22 @@ fn a_reset_under_wait_if_within_parks_even_with_a_fallback() {
     let out = sessions
         .submit_operator(&id, PROMPT)
         .expect_err("the session waits instead of moving");
-    let words = "waiting 5m for the reset at 21:25:02 UTC (under wait_if_within 45m)";
+    let words = "waiting 5m for the reset at 21:25:0";
     assert!(out.to_string().contains(words), "{out}");
-    assert_eq!(
-        limit_row(&hub).as_deref(),
-        Some(
-            "parked on glm/glm-5.3's limit until 21:25:02 UTC - esc ends the turn, /models \
-             switches"
-        )
+    let row = limit_row(&hub).expect("a park row");
+    assert!(
+        row.starts_with("parked on glm/glm-5.3's limit until 21:25:0")
+            && row.ends_with(" - esc ends the turn, /models switches"),
+        "the park's own minute, and not the bound's: {row}"
     );
     assert_eq!(deepseek.count(), 0, "the fallback was not asked");
     let h = sessions.harness_of(&id).expect("open");
     assert_eq!(h.model_name().to_string(), "glm/glm-5.3");
-    assert_eq!(h.limit_park().expect("parked").until_ms, T0 + 302_000);
+    let until = h.limit_park().expect("parked").until_ms;
+    assert!(
+        jittered(T0 + 300_000).contains(&until),
+        "the reset, and not the bound: {until}"
+    );
     assert_eq!(
         h.limit_return_at(),
         None,
@@ -786,21 +840,28 @@ fn a_reset_past_wait_if_within_switches_and_returns_at_the_real_reset() {
         .submit_operator(&id, PROMPT)
         .expect("the fallback answered");
     assert!(out.text.contains(ANSWER), "{}", out.text);
-    let words = "glm/glm-5.3 reset Tue 14:00:02 UTC is past wait_if_within 45m - on \
-                 deepseek/deepseek-flash until then";
+    let words = "glm/glm-5.3 reset Tue 14:00:0";
+    let tail = " UTC is past wait_if_within 45m - on deepseek/deepseek-flash until then";
     let moved = said(&hub, "model_fallback");
     assert!(
         moved
             .iter()
-            .any(|d| d.starts_with(&format!("[fallback] {words}."))),
+            .any(|d| d.starts_with(&format!("[fallback] {words}")) && d.contains(tail)),
         "{moved:?}"
     );
-    assert_eq!(limit_row(&hub).as_deref(), Some(words));
-    let back = WEEKLY_RESET + 2_000;
-    assert_eq!(
-        sessions.harness_of(&id).expect("open").limit_return_at(),
-        Some(back),
-        "the way back is the real reset"
+    let row = limit_row(&hub).expect("the row says where the session is");
+    assert!(
+        row.starts_with(words) && row.ends_with(tail),
+        "the row names the real reset, and not the bound: {row}"
+    );
+    let back = sessions
+        .harness_of(&id)
+        .expect("open")
+        .limit_return_at()
+        .expect("the way back is owed");
+    assert!(
+        jittered(WEEKLY_RESET).contains(&back),
+        "the way back is the real reset: {back}"
     );
     assert!(back > T0 + letibot_http::reset::LONGEST);
 
@@ -840,14 +901,14 @@ fn a_weekly_limit_with_no_fallback_parks_and_names_the_real_reset() {
     let (mut sessions, hub, id) = open(&parts, cfg);
 
     let out = sessions.submit_operator(&id, PROMPT).expect_err("parked");
-    let words = "limited until Tue 14:00:02 UTC, asking again at 03:20:02 UTC";
+    let words = "limited until Tue 14:00:0";
     assert!(out.to_string().contains(words), "{out}");
-    assert_eq!(
-        limit_row(&hub).as_deref(),
-        Some(
-            "parked on glm/glm-5.3's limit until Tue 14:00:02 UTC, asking again at 03:20:02 \
-             UTC - esc ends the turn, /models switches"
-        )
+    let row = limit_row(&hub).expect("a park row");
+    assert!(
+        row.starts_with("parked on glm/glm-5.3's limit until Tue 14:00:0")
+            && row.contains(", asking again at 03:20:0")
+            && row.ends_with(" - esc ends the turn, /models switches"),
+        "the real reset, and the bound it asks at, in one row: {row}"
     );
     let park = sessions
         .harness_of(&id)
@@ -855,8 +916,16 @@ fn a_weekly_limit_with_no_fallback_parks_and_names_the_real_reset() {
         .limit_park()
         .expect("parked")
         .clone();
-    assert_eq!(park.until_ms, T0 + letibot_http::reset::LONGEST + 2_000);
-    assert_eq!(park.reset_ms, WEEKLY_RESET + 2_000);
+    assert!(
+        jittered(T0 + letibot_http::reset::LONGEST).contains(&park.until_ms),
+        "the bound, plus its own draw: {}",
+        park.until_ms
+    );
+    assert!(
+        jittered(WEEKLY_RESET).contains(&park.reset_ms),
+        "the provider's reset, plus its own draw: {}",
+        park.reset_ms
+    );
 
     handle.store(park.until_ms, Ordering::SeqCst);
     assert_eq!(sessions.resume_due_limits(), 1, "the bound asks again");
@@ -1046,12 +1115,11 @@ fn a_kimi_limit_parks_on_the_reset_the_usage_endpoint_reports() {
     let Some((until, reset, seen)) = kimi_park("kimi-5h", Some(USAGES_5H)) else {
         return;
     };
-    assert_eq!(
-        until,
-        RESET_5H + 2_000,
-        "limit_5h's reset_time plus the jitter"
+    assert!(
+        jittered(RESET_5H).contains(&until),
+        "limit_5h's reset_time plus a drawn jitter: {until}"
     );
-    assert_eq!(reset, until);
+    assert_eq!(reset, until, "one park, one instant");
     let asked: Vec<_> = seen.iter().filter(|l| l.starts_with("GET ")).collect();
     assert_eq!(asked.len(), 1, "one usage request: {seen:?}");
     assert!(
@@ -1068,8 +1136,14 @@ fn a_kimi_limit_with_the_month_spent_parks_until_the_month_resets() {
     let Some((until, reset, _)) = kimi_park("kimi-month", Some(USAGES_MONTH)) else {
         return;
     };
-    assert_eq!(reset, RESET_MONTH + 2_000, "the month's reset_time");
-    assert_eq!(until, KIMI_NOW + letibot_http::reset::LONGEST + 2_000);
+    assert!(
+        jittered(RESET_MONTH).contains(&reset),
+        "the month's reset_time plus a drawn jitter: {reset}"
+    );
+    assert!(
+        jittered(KIMI_NOW + letibot_http::reset::LONGEST).contains(&until),
+        "the park's bound, plus a drawn jitter: {until}"
+    );
 }
 
 /// A usage endpoint that fails costs nothing: the window in the refusal is the reading.
@@ -1079,10 +1153,9 @@ fn a_failed_usage_request_falls_back_to_the_window() {
     let Some((until, _, seen)) = kimi_park("kimi-fail", None) else {
         return;
     };
-    assert_eq!(
-        until,
-        KIMI_NOW + 5 * 3_600_000 + 2_000,
-        "the 5-hour window: {seen:?}"
+    assert!(
+        jittered(KIMI_NOW + 5 * 3_600_000).contains(&until),
+        "the 5-hour window plus a drawn jitter: {until}; {seen:?}"
     );
 }
 
@@ -1130,13 +1203,11 @@ fn an_interrupt_ends_a_park_at_once_and_keeps_the_rows() {
     let (mut sessions, hub, id) = open(&parts, cfg);
 
     sessions.submit_operator(&id, PROMPT).expect_err("parked");
-    assert_eq!(
-        limit_row(&hub).as_deref(),
-        Some(
-            "parked on glm/glm-5.3's limit until 00:20:02 UTC - esc ends the turn, /models \
-             switches"
-        ),
-        "the session's facts carry the park, its reset and the two ways out"
+    let row = limit_row(&hub).expect("the session's facts carry the park");
+    assert!(
+        row.starts_with("parked on glm/glm-5.3's limit until 00:20:0")
+            && row.ends_with(" - esc ends the turn, /models switches"),
+        "the session's facts carry the park, its reset and the two ways out: {row}"
     );
     assert!(
         letibot_harnessd::restart::mid_turn(&items(&hub)),
@@ -1172,7 +1243,7 @@ fn an_interrupt_ends_a_park_at_once_and_keeps_the_rows() {
     };
     assert!(kept(PROMPT), "the parked turn's prompt is kept");
     assert!(
-        kept("parked on glm/glm-5.3's usage limit (reset 00:20:02 UTC): esc"),
+        kept("parked on glm/glm-5.3's usage limit (reset 00:20:0"),
         "the row names the limit and its reset"
     );
     assert!(
@@ -1346,17 +1417,18 @@ fn a_glm_window_parks_on_its_china_time_reset() {
     let (mut sessions, hub, id) = open(&parts, cfg);
 
     let out = sessions.submit_operator(&id, PROMPT).expect_err("parked");
-    assert!(
-        out.to_string().contains("paused until 21:23:02 UTC"),
-        "{out}"
-    );
+    assert!(out.to_string().contains("paused until 21:23:0"), "{out}");
     let park = sessions
         .harness_of(&id)
         .expect("open")
         .limit_park()
         .expect("parked")
         .clone();
-    assert_eq!(park.reset_ms, T0 + 180_000 + 2_000);
+    assert!(
+        jittered(T0 + 180_000).contains(&park.reset_ms),
+        "the reset its body named, plus a drawn jitter: {}",
+        park.reset_ms
+    );
     assert_eq!(park.until_ms, park.reset_ms);
     handle.store(park.until_ms, Ordering::SeqCst);
     assert_eq!(sessions.resume_due_limits(), 1);
@@ -1388,12 +1460,12 @@ fn a_park_re_tries_on_its_steps_and_the_first_answer_lifts_it() {
     let parts = Parts::load(&cfg).expect("the vocabulary loads");
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     let (mut sessions, hub, id) = open(&parts, cfg);
-    let reset = T0 + 4 * 3_600_000 + 2_000;
+    let mut reset: Option<u64> = None;
 
     let out = sessions.submit_operator(&id, PROMPT).expect_err("parked");
     assert!(
-        out.to_string()
-            .contains("limited until 01:20:02 UTC, asking again at 21:22:02 UTC"),
+        out.to_string().contains("limited until 01:20:0")
+            && out.to_string().contains(", asking again at 21:22:0"),
         "{out}"
     );
     let mut now = T0;
@@ -1404,8 +1476,22 @@ fn a_park_re_tries_on_its_steps_and_the_first_answer_lifts_it() {
             .limit_park()
             .expect("still parked")
             .clone();
-        assert_eq!(park.reset_ms, reset, "a re-try never moves the reset");
-        assert_eq!(park.until_ms, now + min(step).as_millis() as u64 + 2_000);
+        match reset {
+            None => {
+                assert!(
+                    jittered(T0 + 4 * 3_600_000).contains(&park.reset_ms),
+                    "the reset its body named, plus a drawn jitter: {}",
+                    park.reset_ms
+                );
+                reset = Some(park.reset_ms);
+            }
+            Some(at) => assert_eq!(park.reset_ms, at, "a re-try never moves the reset"),
+        }
+        assert!(
+            jittered(now + min(step).as_millis() as u64).contains(&park.until_ms),
+            "the step, plus its own draw: {}",
+            park.until_ms
+        );
         assert!(
             !sessions
                 .harness_of(&id)
@@ -1423,7 +1509,11 @@ fn a_park_re_tries_on_its_steps_and_the_first_answer_lifts_it() {
         .limit_park()
         .expect("refused twice, still parked")
         .clone();
-    assert_eq!(park.until_ms, now + min(15).as_millis() as u64 + 2_000);
+    assert!(
+        jittered(now + min(15).as_millis() as u64).contains(&park.until_ms),
+        "the third step, plus its own draw: {}",
+        park.until_ms
+    );
     assert!(said(&hub, "limit_cleared_early").is_empty());
     handle.store(park.until_ms, Ordering::SeqCst);
     assert_eq!(sessions.resume_due_limits(), 1);
@@ -1438,7 +1528,7 @@ fn a_park_re_tries_on_its_steps_and_the_first_answer_lifts_it() {
     let cleared = said(&hub, "limit_cleared_early");
     assert_eq!(cleared.len(), 1, "{cleared:?}");
     assert!(
-        cleared[0].starts_with("limit cleared early at 21:42:06 UTC"),
+        cleared[0].starts_with("limit cleared early at 21:42:0"),
         "{}",
         cleared[0]
     );
@@ -1609,10 +1699,10 @@ fn a_limit_hook_waits_then_asks_then_switches_and_its_state_is_carried_and_destr
         .expect_err("parked by the hook");
     assert!(out.to_string().contains("paused until"), "{out}");
     let h = sessions.harness_of(&id).expect("open");
-    assert_eq!(
-        h.limit_park().expect("parked").until_ms,
-        T0 + 60_000 + 2_000,
-        "the hook's `when`, not the provider's 300 s"
+    let until = h.limit_park().expect("parked").until_ms;
+    assert!(
+        jittered(T0 + 60_000).contains(&until),
+        "the hook's `when`, not the provider's 300 s, plus its own draw: {until}"
     );
     assert_eq!(
         h.limit_hook_state("glm/glm-5.3"),
@@ -1685,15 +1775,15 @@ fn a_limit_hook_out_of_fuel_falls_back_to_the_fixed_rules() {
 
     let out = sessions.submit_operator(&id, PROMPT).expect_err("parked");
     assert!(out.to_string().contains("paused until"), "{out}");
-    assert_eq!(
-        sessions
-            .harness_of(&id)
-            .expect("open")
-            .limit_park()
-            .expect("the fixed rule parked it")
-            .until_ms,
-        T0 + 300_000 + 2_000,
-        "the provider's own reset: the fixed rule decided"
+    let until = sessions
+        .harness_of(&id)
+        .expect("open")
+        .limit_park()
+        .expect("the fixed rule parked it")
+        .until_ms;
+    assert!(
+        jittered(T0 + 300_000).contains(&until),
+        "the provider's own reset plus a drawn jitter, so the fixed rule decided: {until}"
     );
     let rows = said(&hub, "limit_hook_fallback");
     assert_eq!(rows.len(), 1, "{rows:?}");

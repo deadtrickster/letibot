@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 use letibot_plugin::limit;
 use serde_json::Value;
 
-use super::limit::{AfterTheLadder, PARK_JITTER_MS};
+use super::limit::AfterTheLadder;
 use super::*;
 
 /// The episodes' file, in the session's logs directory.
@@ -124,7 +124,8 @@ impl Harness {
         let now = self.limit_now_ms();
         let reset_ms = Policy::reset_unbounded_ms(e, now);
         if let Some(at) = reset_ms {
-            self.note_limited(&here, at.saturating_add(PARK_JITTER_MS));
+            let jitter = self.limit_probing.jitter_ms();
+            self.note_limited(&here, at.saturating_add(jitter));
         }
         let ep = self.limit_episodes.entry(here.clone()).or_default();
         ep.attempt += 1;

@@ -476,12 +476,7 @@ impl Ladder {
 
     /// `base` moved by up to [`JITTER_PERCENT`] either way.
     fn spread(&mut self, base: Duration) -> Duration {
-        let span = base.as_millis() as u64 * JITTER_PERCENT / 100;
-        if span == 0 {
-            return base;
-        }
-        let r = splitmix(&mut self.rng) % (2 * span + 1);
-        (base + Duration::from_millis(r)).saturating_sub(Duration::from_millis(span))
+        spread(base, &mut self.rng)
     }
 
     /// Is the turn out of network rather than out of retries? `true` once the no-network
@@ -541,8 +536,19 @@ impl Ladder {
     }
 }
 
-/// A seed no two ladders share: the clock, the process and a counter.
-fn fresh_seed() -> u64 {
+/// `base` moved by up to [`JITTER_PERCENT`] either way, off `rng`'s own state. One rule for
+/// every caller that must not act in step: a retry ladder's wait, and a park's re-try instant.
+pub fn spread(base: Duration, rng: &mut u64) -> Duration {
+    let span = base.as_millis() as u64 * JITTER_PERCENT / 100;
+    if span == 0 {
+        return base;
+    }
+    let r = splitmix(rng) % (2 * span + 1);
+    (base + Duration::from_millis(r)).saturating_sub(Duration::from_millis(span))
+}
+
+/// A seed no two callers share: the clock, the process and a counter.
+pub fn fresh_seed() -> u64 {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
