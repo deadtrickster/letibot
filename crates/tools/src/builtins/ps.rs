@@ -92,29 +92,14 @@ impl Tool for Ps {
                     ));
                 }
             },
-            (None, None, Some(parent), _) => {
-                let mut kids = procs::all(&[]);
-                kids.retain(|p| p.ppid == parent);
-                (format!("children of pid {parent}"), kids)
-            }
-            (None, None, None, Some(by)) => {
-                let mut all = procs::all(&[]);
-                match by {
-                    "cpu" => all.sort_by(|a, b| {
-                        b.cpu_percent()
-                            .partial_cmp(&a.cpu_percent())
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    }),
-                    "mem" => all.sort_by_key(|r| std::cmp::Reverse(r.rss_kb)),
-                    other => {
-                        return Invocation::failed(
-                            format!("ps: `top` is `cpu` or `mem`, not `{other}`"),
-                            String::new(),
-                        );
-                    }
-                }
-                (format!("this user's processes by {by}, busiest first"), all)
-            }
+            (None, None, Some(parent), _) => (
+                format!("children of pid {parent}"),
+                children(procs::all(&[]), parent),
+            ),
+            (None, None, None, Some(by)) => match busiest(procs::all(&[]), by) {
+                Ok(all) => (format!("this user's processes by {by}, busiest first"), all),
+                Err(e) => return Invocation::failed(e, String::new()),
+            },
             (None, None, None, None) => {
                 return Invocation::failed(
                     "ps needs a question",
@@ -134,6 +119,26 @@ impl Tool for Ps {
         rows.truncate(limit);
         Invocation::ok(table(&title, &rows, total, &protected, &jobs))
     }
+}
+
+/// The rows of `all` whose parent is `parent`.
+fn children(mut all: Vec<ProcInfo>, parent: u32) -> Vec<ProcInfo> {
+    all.retain(|p| p.ppid == parent);
+    all
+}
+
+/// `all` by `cpu` or `mem`, busiest first.
+fn busiest(mut all: Vec<ProcInfo>, by: &str) -> Result<Vec<ProcInfo>, String> {
+    match by {
+        "cpu" => all.sort_by(|a, b| {
+            b.cpu_percent()
+                .partial_cmp(&a.cpu_percent())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        }),
+        "mem" => all.sort_by_key(|r| std::cmp::Reverse(r.rss_kb)),
+        other => return Err(format!("ps: `top` is `cpu` or `mem`, not `{other}`")),
+    }
+    Ok(all)
 }
 
 fn table(
@@ -273,13 +278,82 @@ mod tests {
             "{}",
             me.payload
         );
-        let top = run(serde_json::json!({"top": "mem", "limit": 3}));
-        assert!(top.payload.contains("busiest first"), "{}", top.payload);
-        assert!(top.payload.lines().count() <= 5, "{}", top.payload);
         child.kill().ok();
         child.wait().ok();
         let gone = run(serde_json::json!({"pid": child.id()}));
         assert!(gone.payload.contains("not running"), "{}", gone.payload);
+    }
+
+    fn row(pid: u32, ppid: u32, cmd: &str, secs: u64, ticks: u64, rss_kb: u64) -> ProcInfo {
+        ProcInfo {
+            pid,
+            ppid,
+            start: 0,
+            comm: cmd.split_whitespace().next().unwrap_or("").to_string(),
+            cmdline: cmd.to_string(),
+            age: std::time::Duration::from_secs(secs),
+            state: 'S',
+            cpu_ticks: ticks,
+            rss_kb,
+        }
+    }
+
+    /// The box's table is a fixture: what another process on the box is doing never decides the
+    /// answer.
+    fn fixture() -> Vec<ProcInfo> {
+        vec![
+            row(10, 1, "small idle", 100, 1, 1_000),
+            row(11, 10, "leticode \"a\nb\" --prompt x", 100, 50_000, 900_000),
+            row(12, 10, "busy cpu", 10, 900_000, 2_000),
+            row(13, 2, "", 100, 0, 3_000_000),
+        ]
+    }
+
+    #[test]
+    fn top_sorts_a_fixture_table_and_each_row_is_one_line() {
+        let by_mem = busiest(fixture(), "mem").unwrap();
+        assert_eq!(
+            by_mem.iter().map(|p| p.pid).collect::<Vec<_>>(),
+            [13, 11, 12, 10]
+        );
+        let by_cpu = busiest(fixture(), "cpu").unwrap();
+        assert_eq!(by_cpu[0].pid, 12, "{by_cpu:?}");
+        assert!(
+            busiest(fixture(), "disk")
+                .unwrap_err()
+                .contains("`cpu` or `mem`")
+        );
+        let shown = &by_mem[..3];
+        let t = table(
+            "this user's processes by mem, busiest first",
+            shown,
+            4,
+            &[(13, "pid 1's".into())],
+            &[(11, "j-1".into())],
+        );
+        assert!(
+            t.starts_with(
+                "4 this user's processes by mem, busiest first (first 3 shown; raise `limit`):"
+            ),
+            "{t}"
+        );
+        assert_eq!(
+            t.lines().count(),
+            2 + 3,
+            "a header, the columns and one line a row: {t}"
+        );
+        assert!(t.contains("   PROTECTED — pid 1's"), "{t}");
+        assert!(
+            t.contains("leticode \"a b\" --prompt x   job `j-1` of this session"),
+            "{t}"
+        );
+        assert!(t.contains("2.9G"), "{t}");
+    }
+
+    #[test]
+    fn children_are_read_from_the_table() {
+        let kids = children(fixture(), 10);
+        assert_eq!(kids.iter().map(|p| p.pid).collect::<Vec<_>>(), [11, 12]);
     }
 
     #[test]
