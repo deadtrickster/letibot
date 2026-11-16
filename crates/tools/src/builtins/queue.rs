@@ -111,7 +111,8 @@ deadline); a landing claim guards the one gate.\n\
 \n\
 WHO MOVES WHAT. The queue's clock moves rows on its own. You: `enqueue` a pushed branch (needs \
 `branch` and `why`, optional `target`), `regate` a target once a red cause is gone, `restart` a \
-parked row, `withdraw` a stale one, `propose_target`. Only the operator approves over a reviewer \
+parked row of your own (not one the operator parked, nor a withdrawn row), `withdraw` a \
+stale one, `propose_target`. Only the operator approves over a reviewer \
 (`/queue approve`), vetoes, or changes the target. A reviewer's verdict is the reviewer's alone. \
 Nothing you write edits a row's state.";
 
@@ -134,8 +135,8 @@ impl Tool for QueueTool {
              on the box; `repository: \"<path, path's tail or directory name>\"` prints one \
              repository in full. Every answer's first line says which scope it printed. Then the \
              verbs: gate the target's tip again once the cause of a red or timed-out gate is gone \
-             (`regate`); put a parked review or landing back in line (`restart`); take a stale row \
-             out (`withdraw`, history kept, the branch stays); and propose the branch the project \
+             (`regate`); put a parked review or landing of your own back in line (`restart`); \
+             take a stale row out (`withdraw`, history kept, the branch stays); and propose the branch the project \
              lands on (`propose_target`) — which is the operator's decision: it is put to them \
              and no config is written.",
             serde_json::json!({

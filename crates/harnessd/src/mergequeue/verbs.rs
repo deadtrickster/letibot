@@ -143,18 +143,23 @@ fn actor(who: &str) -> &str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Verb {
     Approve,
+    Restart,
 }
 
-/// What the table reads about a row: who wrote it.
+/// What the table reads about a row: who wrote it, who put it where it is, and whether it is out.
 pub(crate) struct Facts<'a> {
     /// The session that enqueued it: `bridge:<handle>` for the bridge, a session id for an agent.
     pub author: &'a str,
+    /// Who moved it into its current state, from its last transition.
+    pub parked_by: &'a str,
+    pub withdrawn: bool,
 }
 
 /// The one verb x actor x state rule. The operator may do anything; a bridge may not approve
-/// what a bridge enqueued.
+/// what a bridge enqueued; an agent may restart only its own rows; nobody but the operator undoes
+/// the operator's park or any withdrawal.
 pub(crate) fn may(verb: Verb, who: &str, row: &Facts) -> Result<(), String> {
-    let (kind, _) = who.split_once(':').unwrap_or((who, ""));
+    let (kind, name) = who.split_once(':').unwrap_or((who, ""));
     if kind == "operator" {
         return Ok(());
     }
@@ -168,7 +173,29 @@ pub(crate) fn may(verb: Verb, who: &str, row: &Facts) -> Result<(), String> {
         Verb::Approve => Err(format!(
             "only the operator approves over a reviewer, not `{who}`"
         )),
+        Verb::Restart if row.parked_by.starts_with("operator:") => Err(format!(
+            "the operator parked it (`{}`), so only the operator restarts it",
+            row.parked_by
+        )),
+        Verb::Restart if row.withdrawn => Err(format!(
+            "a withdrawn row is restarted by the operator, not by `{who}`"
+        )),
+        Verb::Restart if kind == "agent" && row.author != name => Err(format!(
+            "`{who}` may restart only its own rows; this one is `{}`'s",
+            row.author
+        )),
+        Verb::Restart => Ok(()),
     }
+}
+
+/// The last mover of a row into `state`, from its history.
+fn parked_by(store: &Store, queue: &str, id: &str, state: &str) -> String {
+    store
+        .transitions(queue, id)
+        .ok()
+        .and_then(|t| t.into_iter().rev().find(|t| t.to_state == state))
+        .map(|t| t.by)
+        .unwrap_or_default()
 }
 
 /// Approve over the reviewer: a review row that is waiting, under review, rejected, undecided or
@@ -223,6 +250,8 @@ pub fn approve_by(
         who,
         &Facts {
             author: &r.session_id,
+            parked_by: "",
+            withdrawn: false,
         },
     )?;
     let head = git::branch_head(Path::new(&r.repository), &r.branch).ok_or_else(|| {
@@ -297,6 +326,15 @@ pub fn restart_by(
             ) {
                 return Err(format!("`{}` is `{}`, not parked", r.id, r.state.as_str()));
             }
+            may(
+                Verb::Restart,
+                &who,
+                &Facts {
+                    author: &r.session_id,
+                    parked_by: &parked_by(store, "review", &r.id, r.state.as_str()),
+                    withdrawn: r.state == ReviewState::Withdrawn,
+                },
+            )?;
             let why = format!("restarted by the {actor} (was `{}`)", r.state.as_str());
             let ok = store
                 .move_review(
@@ -331,6 +369,21 @@ pub fn restart_by(
             ) {
                 return Err(format!("`{}` is `{}`, not parked", m.id, m.state.as_str()));
             }
+            let author = store
+                .review_row(&m.review_id)
+                .ok()
+                .flatten()
+                .map(|r| r.session_id)
+                .unwrap_or_default();
+            may(
+                Verb::Restart,
+                &who,
+                &Facts {
+                    author: &author,
+                    parked_by: &parked_by(store, "merge", &m.id, m.state.as_str()),
+                    withdrawn: m.state == MergeState::Withdrawn,
+                },
+            )?;
             let why = format!("restarted by the {actor} (was `{}`)", m.state.as_str());
             let ok = store
                 .move_merge(
@@ -906,18 +959,127 @@ mod tests {
         );
     }
 
-    /// Every verb x actor pair the table rules on.
+    /// A merge row of `s-x`'s review, approved by a reviewer.
+    fn landing(store: &Store, id: &str) -> String {
+        parked_review(store, id, "/r");
+        assert!(
+            store
+                .move_review(
+                    id,
+                    ReviewState::Rejected,
+                    ReviewState::Reviewing,
+                    &Move::new("test", "back"),
+                    3,
+                )
+                .unwrap()
+        );
+        let merge_id = format!("m-{id}");
+        assert!(
+            store
+                .approve_review(
+                    id,
+                    &Approval {
+                        expect: ReviewState::Reviewing,
+                        expect_owner: None,
+                        reviewed_sha: "abc".into(),
+                        by: "reviewer:r1".into(),
+                        reasons: vec![],
+                        files: vec![],
+                        commands: vec![],
+                        why: "fine".into(),
+                        merge_id: merge_id.clone(),
+                    },
+                    4,
+                )
+                .unwrap()
+        );
+        merge_id
+    }
+
+    fn merge_state(store: &Store, id: &str) -> MergeState {
+        store
+            .merge_rows(None)
+            .unwrap()
+            .into_iter()
+            .find(|m| m.id == id)
+            .unwrap()
+            .state
+    }
+
+    /// The operator's veto stands against the author's restart; only the operator undoes it.
+    #[test]
+    fn agent_restart_cannot_undo_operator_veto() {
+        let dir = TempDir::new("verbs-veto");
+        let store = Store::open(&dir.0.join("sessions.db")).unwrap();
+        let m = landing(&store, "r-v");
+        let no_line = |_: &str, _: &str| -> Result<String, String> { Ok(String::new()) };
+        veto(&store, &m, "not this", "s-op", &no_line, &|_| {}).unwrap();
+        assert_eq!(merge_state(&store, &m), MergeState::Withdrawn);
+        let e = restart_by(&store, &m, "agent:s-x", &|_| {}).expect_err("the author's restart");
+        assert!(e.contains("only the operator restarts it"), "{e}");
+        let e = restart_by(&store, &m, "bridge:cc", &|_| {}).expect_err("the bridge's restart");
+        assert!(e.contains("only the operator"), "{e}");
+        assert_eq!(merge_state(&store, &m), MergeState::Withdrawn);
+        restart(&store, &m, "s-op", &|_| {}).expect("the operator's own");
+        assert_eq!(merge_state(&store, &m), MergeState::Queued);
+
+        // A review the operator vetoed is the operator's to restart too.
+        parked_review(&store, "r-w", "/r");
+        assert!(
+            store
+                .move_review(
+                    "r-w",
+                    ReviewState::Rejected,
+                    ReviewState::Waiting,
+                    &Move::new("test", "back"),
+                    3,
+                )
+                .unwrap()
+        );
+        veto(&store, "r-w", "no", "s-op", &no_line, &|_| {}).unwrap();
+        assert!(restart_by(&store, "r-w", "agent:s-x", &|_| {}).is_err());
+        assert_eq!(state(&store, "r-w"), ReviewState::Rejected);
+    }
+
+    /// An agent restarts its own parked rows and nobody else's; a withdrawn row is the operator's.
+    #[test]
+    fn an_agent_restarts_only_its_own_rows() {
+        let dir = TempDir::new("verbs-own");
+        let store = Store::open(&dir.0.join("sessions.db")).unwrap();
+        parked_review(&store, "r-o", "/r");
+        let e = restart_by(&store, "r-o", "agent:s-other", &|_| {}).expect_err("not its row");
+        assert!(e.contains("only its own rows"), "{e}");
+        restart_by(&store, "r-o", "agent:s-x", &|_| {}).expect("its own row");
+        assert_eq!(state(&store, "r-o"), ReviewState::Waiting);
+        let m = landing(&store, "r-p");
+        withdraw_by(&store, &m, "agent:s-x", "stale", &|_| {}).unwrap();
+        let e = restart_by(&store, &m, "agent:s-x", &|_| {}).expect_err("withdrawn");
+        assert!(e.contains("a withdrawn row"), "{e}");
+    }
+
+    /// Every verb x actor pair the table rules on, against one row of each kind.
     #[test]
     fn the_verb_actor_state_table_is_exhaustive() {
-        let agents = Facts { author: "s-x" };
-        let bridges = Facts {
-            author: "bridge:cc",
+        let row = |author, parked_by, withdrawn| Facts {
+            author,
+            parked_by,
+            withdrawn,
         };
-        assert!(may(Verb::Approve, "operator:s", &agents).is_ok());
-        assert!(may(Verb::Approve, "operator:s", &bridges).is_ok());
+        let agents = row("s-x", "queue:d", false);
+        let bridges = row("bridge:cc", "queue:d", false);
+        for verb in [Verb::Approve, Verb::Restart] {
+            for r in [&agents, &bridges, &row("s-x", "operator:s", true)] {
+                assert!(may(verb, "operator:s", r).is_ok());
+            }
+        }
         assert!(may(Verb::Approve, "bridge:cc", &agents).is_ok());
         assert!(may(Verb::Approve, "bridge:cc", &bridges).is_err());
         assert!(may(Verb::Approve, "bridge:other", &bridges).is_err());
         assert!(may(Verb::Approve, "agent:s-x", &agents).is_err());
+        assert!(may(Verb::Restart, "agent:s-x", &agents).is_ok());
+        assert!(may(Verb::Restart, "agent:s-y", &agents).is_err());
+        assert!(may(Verb::Restart, "bridge:cc", &bridges).is_ok());
+        assert!(may(Verb::Restart, "bridge:cc", &row("s-x", "operator:s", false)).is_err());
+        assert!(may(Verb::Restart, "agent:s-x", &row("s-x", "agent:s-x", true)).is_err());
     }
 }
