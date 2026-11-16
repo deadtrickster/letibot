@@ -694,6 +694,9 @@ struct Inner {
     instance: Mutex<Option<u64>>,
     /// A welcome has named this bridge, so its name no longer changes.
     named: Mutex<bool>,
+    /// What the coordinator's welcome said it speaks, so a frame it cannot decode is refused here
+    /// rather than written and answered with a close.
+    protocol: Mutex<Option<u16>>,
     share: AtomicBool,
 }
 
@@ -739,6 +742,7 @@ impl RoomLink {
                 untaken: AtomicBool::new(false),
                 instance: Mutex::new(None),
                 named: Mutex::new(false),
+                protocol: Mutex::new(None),
                 share: AtomicBool::new(false),
             }),
         }
@@ -846,6 +850,12 @@ impl RoomLink {
         match first["type"].as_str() {
             Some("welcome") => {
                 *self.inner.named.lock().unwrap_or_else(|e| e.into_inner()) = true;
+                *self
+                    .inner
+                    .protocol
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) =
+                    first["protocol"].as_u64().map(|p| p as u16);
                 let now = first["instance"].as_u64().unwrap_or(0);
                 let mut seen = self
                     .inner
@@ -942,6 +952,18 @@ impl RoomLink {
     /// the coordinator's replay window makes safe for `say` and `dm`.
     pub fn request(&self, frame: &Value) -> Result<Value, String> {
         let _one = self.inner.call.lock().unwrap_or_else(|e| e.into_inner());
+        // A frame this coordinator cannot decode costs the connection, and a caller reads that as
+        // the room dying. Refused here, by name, while the socket stays up.
+        if let Some(theirs) = *self
+            .inner
+            .protocol
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            && let Some(why) =
+                letibot_room::wire::frame_refusal(theirs, frame["type"].as_str().unwrap_or(""))
+        {
+            return Err(why);
+        }
         let mut last = String::new();
         for _ in 0..2 {
             self.ensure_locked()?;

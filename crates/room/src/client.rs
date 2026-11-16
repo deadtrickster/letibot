@@ -38,6 +38,8 @@ impl std::error::Error for ClientError {}
 /// room said it is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Welcome {
+    /// What this coordinator speaks, so a frame it cannot decode is refused before it is written.
+    pub protocol: u16,
     pub lease_ms: u64,
     pub beat_every_ms: u64,
     pub threshold: u32,
@@ -56,6 +58,7 @@ pub struct Welcome {
 impl Default for Welcome {
     fn default() -> Self {
         Self {
+            protocol: crate::wire::ROOM_PROTOCOL_VERSION,
             lease_ms: crate::room::DEFAULT_LEASE_MS,
             beat_every_ms: crate::room::DEFAULT_BEAT_EVERY_MS,
             threshold: crate::room::ABANDON_THRESHOLD,
@@ -271,6 +274,9 @@ impl Client {
         if !self.connected() {
             self.open()?;
         }
+        if let Some(why) = crate::wire::frame_refusal(self.welcome().protocol, request.frame()) {
+            return Err(ClientError(why));
+        }
         let (tx, rx): (Sender<Response>, Receiver<Response>) = mpsc::channel();
         *self.inner.waiting.lock().expect("the waiting lock") = Some(tx);
         let mut written = self.write(request);
@@ -380,6 +386,7 @@ impl Client {
             })?;
         match first {
             Response::Welcome {
+                protocol,
                 lease_ms,
                 beat_every_ms,
                 threshold,
@@ -390,6 +397,7 @@ impl Client {
                 ..
             } => {
                 *self.inner.welcome.lock().expect("the welcome lock") = Welcome {
+                    protocol,
                     lease_ms,
                     beat_every_ms,
                     threshold,
