@@ -1464,7 +1464,28 @@ impl Hub {
         since_seq: u64,
     ) -> Attached {
         let kind = kind.into();
+        let role = crate::peer::Role::of(&kind);
+        self.attach_as(kind, identity, caps, since_seq, role)
+    }
+
+    /// The same, with the role the door decided rather than the kind's own: the socket a
+    /// connection came in on is the fact, and a frame may not talk its way out of it.
+    pub fn attach_as(
+        &self,
+        kind: impl Into<String>,
+        identity: impl Into<String>,
+        caps: Caps,
+        since_seq: u64,
+        role: crate::peer::Role,
+    ) -> Attached {
+        let kind = kind.into();
         let identity = identity.into();
+        // A card is answered by a person, and the role says whether this connection is one: a
+        // peer that declares it may decide is still a peer.
+        let caps = Caps {
+            can_decide: caps.can_decide && role.is_operator(),
+            ..caps
+        };
         let out = {
             let mut g = self.lock();
             g.next_head += 1;
