@@ -49,7 +49,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R320 | B1 wire and peer: an unbounded first frame, raw snapshots to older heads, inside judged by one daemon's cgroup | Code work | B1: I65, I66, I5; M; after - |
 | R321 | B1b skew measured: round-trip tests use the current types at both ends | Code work | B1b: I67; M; after B1 (R320) |
 | R322 | B2 shadow and grants: the acting rule is never matched to the path, the breaker resets while grants persist | Code work | B2: I8, I9, I10, I11, I7; M; after - |
-| R323 | B3 provenance: anything without a speaker label counts as the operator | Code work | B3: I1, I2, I3, I4; M; after - |
+| R323 | B3 provenance: anything without a speaker label counts as the operator | Code work | built on branch `b3-provenance` (I1-I4, each with its proving test, failing on main); left: one full gate and the landing, then the residue in the entry's Status |
 | R324 | B4 gate rules: approved shapes admit any body, seed rows admit write and exec flags, own-config by substring, Absent never refused | Code work | B4: I18, I20, I21, I22, I23; M; after - |
 | R325 | B5 fence and secrets: the file tools' fence renders the seat from a different source than the shell view | Code work | B5: I19, I37, I38; M; after B4 (R324) |
 | R326 | B6 modes: a reopened child is its own ceiling, the decider is unranked, two of five mode doors persist wrongly | Code work | B6: I24, I25, I26, I27; L; after B3 (R323) |
@@ -368,7 +368,22 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R323 - B3 provenance: anything without a speaker label counts as the operator
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Batch B3 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I1, I2, I3, I4. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built on branch `b3-provenance`, 2026-11-16, one commit per finding (I1 `submit names its speaker`, I2 `command files and skills are context rows`, I3 `a browser ask's page is a context row`, I4 `a bridge seat's card answer is an agent's`). Each proving test fails on main 89ad6311f and passes on the branch. Filed from the review at `9e9312b06`. Batch B3 of `docs/review/2026-11-16-letibot.md` section 7. Record: `docs/review/2026-11-16/INTEGRATION.md`. left: the full gate and the landing; the residue below.
+
+**What was built.**
+- I1: `Harness::submit` is removed. Every door names its speaker (`submit_operator`, `submit_voiced(&Voice, ..)`, `submit_with_context_from(.., &Voice, ..)`), and `Voice` has no default. A child's brief goes through `parents_message_turn` as Agent, with the worktree facts as a separate Agent row. `Trail::seed` reads a child's first row as its parent's, also for a row an older build stored as Operator.
+- I2: a command file's or a skill's body is an Agent row under a header naming the file; the typed line is the sender's row. `QueuedCommand::peer` reads every command kind, so a slash, a skill or a todo answer from a program identity (`is_agent_identity`: the bridge, `agent:<id>`, none) is a peer's line.
+- I3: the browser sends the question as the words and the page as `EditorContext.captured`. The daemon stores any editor context as an Agent row before the words, at both prompt doors (between turns and mid-turn).
+- I4: a program identity's permission answer is filed `agent:<identity>`, never `human:`. Decision 1: `Hub::submit` refuses it unless a package started the session's tree (`started_by_a_package`, set by the registry from the origin, inherited by children).
+
+**Where the tests are.** `a_childs_first_brief_is_not_an_operator_utterance` (harnessd/tests/child_completion_wakes.rs), `command_file_body_is_not_an_operator_row` (harnessd/tests/command_files.rs, not command_turn.rs, whose binary allows one test because it sets process env), `browser_ask_page_text_is_not_operator_authority` (bridge/tests/browser.rs, not harnessd's shadow tests: harnessd cannot depend on the bridge, so the test posts through `/ask` and drives the daemon's prompt door from there), `bridge_answer_is_not_recorded_as_human` and `a_bridge_seat_cannot_answer_a_card_of_a_session_it_did_not_start` (bridge/tests/bridge_answers.rs).
+
+**Residue.**
+- `can_decide` is still declared by the client, and the first head to attach to a daemon's eager session decides its origin (`Registry::note_attach`), so a bridge that attaches first makes that session a package's. Both are I6 (R338).
+- Decision 1 is held per package, not per seat: the store does not record which seat opened a session, so any bridge seat may answer a package's cards.
+- A reopened session takes its origin from the live registry entry (`Sessions::open`, the `origin_of` fallback), so a session the bridge created in an operator's daemon reads Operator after a restart and its seat's answers are refused. Fails closed.
+- `EditorContext.captured` is a defaulted field with no protocol bump: an older daemon drops the page instead of storing it as the operator's.
+- Rows stored before the speaker field still deserialize as Operator (I6). `httphead.rs` writes Operator rows into a scratch transcript that has no trail.
 
 **Scope.** `harnessd/src/harness/children.rs`, `turns.rs` (`submit` only), `sessions.rs` (command and Slash arms only), `bridge/src/browser/*`, `harnessd/src/answers.rs` `settle`. Automode prerequisite. Decision 1 applied: a bridge seat may answer a permission card only for a session it started; every other card refuses it. The attribution change (`agent:<handle>`, `can_decide` from the connection role) lands regardless (C18). Decision 10: a command-file body is an Agent context row under a harness header naming the file.
 
