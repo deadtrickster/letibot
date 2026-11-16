@@ -26,11 +26,6 @@ macro_rules! eprintln {
     }};
 }
 
-/// Held by every lib test that sets `HOME` or reads it as a value, so a reader never sees
-/// another test's fake home. One lock for the binary: a lock per test serialises nothing.
-#[cfg(test)]
-pub(crate) static HOME_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 pub mod activity;
 pub mod answers;
 pub mod attachments;

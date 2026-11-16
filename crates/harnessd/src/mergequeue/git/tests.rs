@@ -1031,12 +1031,12 @@ fn folder(name: &str, repos: &[&str]) -> PathBuf {
 /// does, and the `[project] repository = false` key turns that off.
 #[test]
 fn home_adopts_no_child_repository() {
-    let _g = crate::HOME_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let _g = letibot_testenv::EnvGuard::lock();
     let one = folder("home-one", &[".emacs.d"]);
     let many = folder("home-many", &[".emacs.d", "dots"]);
     let was = std::env::var_os("HOME");
     for home in [&one, &many] {
-        // SAFETY: serialised by `HOME_ENV` above; restored below.
+        // SAFETY: serialised by the env guard above; restored below.
         unsafe { std::env::set_var("HOME", home) };
         assert_eq!(repo_of_workspace(home), None);
         assert!(repos_of_workspace(home).is_empty());

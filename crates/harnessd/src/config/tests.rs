@@ -378,6 +378,26 @@ fn the_doors_row_pairs_every_preset_with_the_catalogue_it_serves() {
 /// daemon's own check would green exactly the rows that fail at the first turn.
 #[test]
 fn the_box_publishes_which_providers_it_holds_a_key_for() {
+    // The box's keys are a fixture: one key in a scratch providers.toml, none in the env, and no
+    // opencode auth.json, so the operator's own keys decide nothing here.
+    let mut env = letibot_testenv::EnvGuard::lock();
+    let scratch = std::env::temp_dir().join(format!("config-keyed-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&scratch);
+    std::fs::create_dir_all(scratch.join("config/letibot")).unwrap();
+    std::fs::write(
+        scratch.join("config/letibot/providers.toml"),
+        "[glm]\nkey = \"k\"\n",
+    )
+    .unwrap();
+    env.set("HOME", scratch.join("home"))
+        .set("XDG_CONFIG_HOME", scratch.join("config"))
+        .set("XDG_DATA_HOME", scratch.join("data"));
+    for p in letibot_provider::presets::ALL {
+        env.remove(p.key_env);
+        for a in p.alt_envs {
+            env.remove(a);
+        }
+    }
     let cfg = Config::for_this_box("/tmp");
     let rows = cfg.settings("default", false, &[]);
     let row = rows
@@ -414,6 +434,10 @@ fn the_box_publishes_which_providers_it_holds_a_key_for() {
     }
     // A plain value row: a head COLOURS with it, it does not choose from it.
     assert!(row.choices.is_empty(), "{row:?}");
+    // `[glm]`'s key serves the presets that read that section, and nothing of the box's shows.
+    assert!(named.contains(&"glm"), "{named:?}");
+    assert!(named.iter().all(|n| n.starts_with("glm")), "{named:?}");
+    let _ = std::fs::remove_dir_all(&scratch);
 }
 
 /// The consented point describes itself, not the one that was asked for. `Mode::ALLOW_ALL`'s
