@@ -719,6 +719,19 @@ impl TodoBoard {
         &self,
         mut ended: impl FnMut(&str) -> Option<String>,
     ) -> Vec<ResolvedWait> {
+        self.resolve_waits(|need| match need {
+            TodoNeed::Job { handle } => ended(handle),
+            _ => None,
+        })
+    }
+
+    /// Take every job, child, pid and monitor need `ended` says is over off the open rows, on all
+    /// four halves. `ended` returns the note's words, or `None` for a need still live or not
+    /// judged. Each waited-on thing is asked once.
+    pub fn resolve_waits(
+        &self,
+        mut ended: impl FnMut(&TodoNeed) -> Option<String>,
+    ) -> Vec<ResolvedWait> {
         let mut asked: BTreeMap<String, Option<String>> = BTreeMap::new();
         let mut out: Vec<ResolvedWait> = Vec::new();
         for half in [&self.queue, &self.todos, &self.parent, &self.operator] {
@@ -729,20 +742,20 @@ impl TodoBoard {
                 }
                 let content = row.content.clone();
                 row.needs.retain(|need| {
-                    let TodoNeed::Job { handle } = need else {
+                    let Some(handle) = need_key(need) else {
                         return true;
                     };
                     let said = asked
                         .entry(handle.clone())
-                        .or_insert_with(|| ended(handle))
+                        .or_insert_with(|| ended(need))
                         .clone();
                     let Some(said) = said else {
                         return true;
                     };
-                    match out.iter_mut().find(|r| &r.handle == handle) {
+                    match out.iter_mut().find(|r| r.handle == handle) {
                         Some(r) => r.rows.push(content.clone()),
                         None => out.push(ResolvedWait {
-                            handle: handle.clone(),
+                            handle,
                             said,
                             rows: vec![content.clone()],
                         }),
@@ -997,13 +1010,25 @@ impl TodoBoard {
     }
 }
 
-/// A job wait [`TodoBoard::resolve_job_waits`] took off the board: the handle, how it ended in
+/// A wait [`TodoBoard::resolve_waits`] took off the board: what was waited on, how it ended in
 /// the note's words, and the rows that waited on it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedWait {
     pub handle: String,
     pub said: String,
     pub rows: Vec<String>,
+}
+
+/// The name a liveness wait is resolved and noted under, one per waited-on thing. Row, room,
+/// operator and outside edges are not liveness waits and have none.
+fn need_key(need: &TodoNeed) -> Option<String> {
+    match need {
+        TodoNeed::Job { handle } => Some(handle.clone()),
+        TodoNeed::Child { id } => Some(id.clone()),
+        TodoNeed::Pid { pid, start } => Some(format!("pid {pid}:{start}")),
+        TodoNeed::Monitor { name } => Some(format!("monitor {name}")),
+        _ => None,
+    }
 }
 
 /// How a job a row waited on ended, as the note says it. `state` is the job table's word
