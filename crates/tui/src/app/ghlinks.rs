@@ -186,10 +186,8 @@ impl App {
         }
     }
 
-    /// What this session's `link_` layers say about a frame's words - the words the head's own
-    /// references did not know, asked once for the whole frame and cached by word. A head with no
-    /// such layer answers nothing and builds no plugin stack: the manifests are read, not the
-    /// modules, so the cost of the feature is paid only where it exists.
+    /// What this session's `link_` layers say about the frame's unknown words, asked once per frame
+    /// and cached by word. With no such layer no plugin stack is built: only manifests are read.
     pub(crate) fn link_answers(
         &mut self,
         words: &[String],

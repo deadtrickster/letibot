@@ -1,12 +1,6 @@
-//! The pictures a message carries: fetching a blob once and keeping it, drawing one at the row a
-//! message says, and the chip a pasted file becomes on its way out as a `put_blob`.
-//!
-//! The bytes never come from a layer and never leave this head: a stream entry names a blob id
-//! (`StreamEntry::pictures`), the head holds or fetches the bytes, and the terminal is handed an
-//! image id. That is why a plugin's stream can draw pictures without a plugin ever seeing a byte.
-//!
-//! The cache is bounded - [`PICTURES`] pictures or [`PICTURE_BYTES`] - and drops the one drawn
-//! longest ago, because a chat scrolled through a morning is more pictures than a terminal wants.
+//! The pictures a message carries: fetching and caching blobs, drawing them, and the outgoing chip.
+//! A layer names blob ids only; the bytes stay in this head. The cache is bounded by [`PICTURES`]
+//! and [`PICTURE_BYTES`] and drops the one drawn longest ago.
 
 #![allow(dead_code)] // The upload and the chip lookup are P3's readers; the drawing is P2's.
 
@@ -54,7 +48,7 @@ struct Half {
     px: (Option<u32>, Option<u32>),
 }
 
-/// What P4 keeps between two frames: the pictures held, the blobs asked for, the parts of an
+/// What chat media keeps between two frames: the pictures held, the blobs asked for, the parts of an
 /// answer half in, and the uploads on their way out.
 #[derive(Default)]
 pub(crate) struct Media {
@@ -169,10 +163,8 @@ impl App {
         chip
     }
 
-    /// The chip text in a line swapped for the reference the message carries, and the blob ids the
-    /// `say` names. A chip whose upload has not been answered yet keeps its words and names no
-    /// blob: sending a reference to an id the coordinator does not hold is a refusal, and losing the
-    /// words to it would be worse than the picture arriving late.
+    /// Chip text swapped for the message's references, and the blob ids the `say` names. A chip
+    /// whose upload is unanswered keeps its words: referencing an unknown blob is a refusal.
     pub(crate) fn room_outgoing_chips(&self, text: &str) -> (String, Vec<String>) {
         let mut out = text.to_string();
         let mut ids = Vec::new();

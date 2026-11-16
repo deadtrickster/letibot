@@ -77,7 +77,7 @@ impl App {
 
     /// The transcript's hidden runs and ids as they stand, built fresh by every door that needs
     /// one. Derived state that cannot go stale is cheaper than an invalidation hook every
-    /// mutation site would have to remember (R123.3).
+    /// mutation site would have to remember.
     pub(crate) fn runs_index(&self) -> RunIndex<'_> {
         RunIndex::of(
             &self.items,
@@ -221,7 +221,7 @@ impl App {
         let newest_payload = self.newest_payload_row();
         // The runs and the ids, once for the whole walk: the questions below are asked per
         // row, and re-deriving them from `items` per row is what made one long hidden run
-        // quadratic (R123.3).
+        // quadratic.
         let runs = RunIndex::of(
             &self.items,
             self.visibility,
@@ -647,10 +647,9 @@ impl App {
         (line < sp.at + sp.lines).then_some(line)
     }
 
-    /// Put the row `id` on the screen: hold the viewport at its first line, which is what a key that opens
-    /// a row owes the reader when the row is above the last frame's window. A row already in that window
-    /// is left where it is, and so is one nothing has been drawn for - the frame that follows follows the
-    /// stream, and holding on a guess would park a reader who never scrolled.
+    /// Put the row `id` on the screen by holding the viewport at its first line. A row already in
+    /// the window is left alone, and so is one never drawn: holding on a guess parks a reader who
+    /// never scrolled.
     pub(crate) fn reveal_row(&mut self, id: &str) {
         let Some(ordinal) = self.items.iter().position(|it| it.item_id == id) else {
             return;

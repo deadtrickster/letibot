@@ -198,10 +198,8 @@ impl App {
         None
     }
 
-    /// The one writer of the two folds - so a switch moved by a chord, by `/t`, by the
-    /// config pane or by a profile all land in the same field, and none of them can move the
-    /// other's. An echo's headline is one of the long rows `/t` owns, so it reads this fold
-    /// rather than keeping a switch of its own that only some of the writers knew to move.
+    /// The one writer of the two folds, so a chord, `/t`, the config pane and a profile all move
+    /// the same field. An echo's headline reads this fold rather than keeping a switch of its own.
     pub(crate) fn set_fold(&mut self, show: Show, fold: Fold) {
         match show {
             Show::Tools => self.tools = fold,
@@ -813,7 +811,7 @@ impl App {
                     self.say("not attached to a session yet");
                     return None;
                 }
-                // X23: a line this head has not got is offered to `command_<verb>` before it is the daemon's. A layer
+                // A line this head has not got is offered to `command_<verb>` before it is the daemon's. A layer
                 // that answered it owns it; one that passed leaves the line exactly as it was, and the head keeps no list
                 // of the daemon's verbs. The layer is handed the REST of the line, the shape `/todo`'s layer has.
                 let rest = other
@@ -1184,11 +1182,9 @@ impl App {
         Some(Action::SetOperatorTodos { items: mine, moved })
     }
 
-    /// X23: one `/` line the head has not got, offered to `command_<verb>` before the daemon. The outer
-    /// `Option` is *was the line TAKEN* - a layer that answered owns the verb, and the line does not also go
-    /// to the daemon; the inner is what to do about it, `None` when the head said why it would not. A layer
-    /// that passed (`-1`), trapped, or does not exist is `None`, which is the shape every `/unknown` had
-    /// before there was a command hook.
+    /// One `/` line the head has not got, offered to `command_<verb>` before the daemon. The outer
+    /// `Option` is whether the layer took the line; the inner is what to do, `None` when the head
+    /// said why not. A layer that passed, trapped or does not exist gives `None`.
     fn command_layer(&mut self, verb: &str, line: &str) -> Option<Option<Action>> {
         let input = serde_json::json!({
             "v": letibot_plugin::V,
@@ -1237,8 +1233,7 @@ impl App {
         Some(None)
     }
 
-    /// What a `command_` layer is handed beside the line - the `feeds` object of
-    /// `docs/plugins-plan.md` Feeds section, in the head's own reading of it.
+    /// What a `command_` layer is handed beside the line: the `feeds` object, as the head reads it.
     ///
     /// A feed is a fact the head ALREADY HOLDS and shows; handing it over adjudicates and grants nothing, so it is a field on the
     /// input. Each shape is written by hand, not `serde_json::to_value` of the head's struct, so a new field is not silently contract:

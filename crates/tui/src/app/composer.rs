@@ -97,17 +97,16 @@ impl App {
             return self.pick(text.trim());
         }
         // In the rooms view a line is a message to the selected channel - or, when a chat layer
-        // owns the input surface, whatever that layer answers `command_chat` with (`X5`).
+        // owns the input surface, whatever that layer answers `command_chat` with.
         if self.focused_surface() == Some(Surface::Rooms) {
             if self.chat_owns_input() {
                 return self.chat_command(&text);
             }
             return self.rooms_say(&text);
         }
-        // The setting card takes the line while it is the card in the slot: a row number or a
-        // name on the mode card. Guarded on the card being DRAWN, because a decision in front owns
-        // Enter - a line typed there is the decision's. The model card owns its own search field and
-        // never reads the composer, so it is not in this arm.
+        // The setting card takes the line while it is drawn in the slot. Guarded on DRAWN, because
+        // a decision in front owns Enter. The model card has its own search field, so it is not
+        // here.
         if self.pick_card_up() && self.pick == Some(Pick::Mode) {
             return self.pick_mode(text.trim());
         }
@@ -234,10 +233,8 @@ impl App {
         } else {
             self.pending_prompts.push(text.clone());
         }
-        // The chips went with it. The composer is empty again - the editor took its buffer -
-        // so a chip left in this list would be a chip with no words to be found in, and the next
-        // message would carry it a second time. A decision goes the same way: the session has been
-        // told, and repeating it is the same sentence twice.
+        // The chips went with the buffer to the editor; a leftover chip would be sent a second
+        // time. A decision goes the same way: the session has been told.
         self.chips.clear();
         self.contexts.clear();
         self.outcomes.clear();

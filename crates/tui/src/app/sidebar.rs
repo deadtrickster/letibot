@@ -1,7 +1,6 @@
-//! The rooms sidebar: the Rooms and Sessions list kept beside the transcript. Off by default
-//! (`[ui] rooms_sidebar`), toggled with alt-l or `/rooms sidebar on|off`, entered with alt-j and
-//! left with Esc. Below `MAIN_MIN` columns for the transcript it collapses to one strip row that
-//! says so.
+//! The rooms sidebar beside the transcript. Off by default (`[ui] rooms_sidebar`), toggled with
+//! alt-l or `/rooms sidebar on|off`, entered with alt-j. Below `MAIN_MIN` columns it collapses to a
+//! strip.
 
 use std::ops::ControlFlow;
 
@@ -62,10 +61,8 @@ impl App {
         Fit::Wide(want.clamp(SIDE_MIN, term_w - MAIN_MIN - 1))
     }
 
-    /// The frame: the editor's column on the left when it shares the terminal, then the
-    /// conversation's, then the sidebar beside that. The editor takes its columns first, because
-    /// it is the one of the three that cannot collapse - a pane too narrow is zoomed instead
-    /// ([`EditorFit`]).
+    /// The frame: editor column on the left when shared, then the conversation, then the sidebar.
+    /// The editor takes its columns first because it cannot collapse ([`EditorFit`]).
     pub(crate) fn compose_framed(&mut self, term_w: usize, h: usize) -> Vec<String> {
         self.editor_term_w = term_w;
         let edw = self.editor_fit(term_w).columns();

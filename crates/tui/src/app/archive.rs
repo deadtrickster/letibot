@@ -1,7 +1,5 @@
-//! Putting a session out of sight and taking it back. The row is the DAEMON's - an archive is a
-//! store write - so this module only ever asks, and the list it draws is what came back: `del` twice
-//! archives, `ctrl-z` brings the last one back, and the archived rows ride the daemon's list as a
-//! group of their own. Nothing here deletes anything, and `/forget` says so.
+//! Putting a session out of sight and taking it back. An archive is a daemon store write, so this
+//! module only asks and draws what came back. Nothing here deletes anything.
 
 use super::*;
 
@@ -267,10 +265,8 @@ impl App {
         ));
     }
 
-    /// Which session a typed word names: its id, an id's unique prefix, or the word inside one
-    /// title. Read over both halves of the list, because `/archive` and `/close` take a row either
-    /// side of the fold. A miss and an ambiguous prefix are said by name: acting on the wrong
-    /// conversation is not a keystroke to take back.
+    /// Which session a typed word names: its id, a unique id prefix, or a word in one title, over
+    /// both halves of the list. A miss or an ambiguous prefix is said by name, never guessed.
     fn named(&self, typed: &str) -> Result<String, String> {
         let typed = typed.trim();
         if typed.is_empty() {

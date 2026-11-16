@@ -78,10 +78,9 @@ impl App {
         }
     }
 
-    /// The context a prompt carries, or `None` when there is nothing to say about the editor. `open`
-    /// is read HERE and only while the pane is open: it is a snapshot of one moment, not a watch.
-    /// What the operator decided about earlier marks rides along, because the next prompt is the
-    /// only door the session learns it by.
+    /// The context a prompt carries, or `None` when there is nothing to say about the editor.
+    /// `open` is a snapshot read only while the pane is open. Decisions on earlier marks ride
+    /// along, because the next prompt is the only way the session learns them.
     pub(crate) fn contexts_to_send(&self) -> Option<EditorContext> {
         if self.contexts.is_empty() && self.outcomes.is_empty() {
             return None;

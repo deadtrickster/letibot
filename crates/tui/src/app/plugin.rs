@@ -15,7 +15,7 @@ use letibot_sessionlog::pane as pv;
 pub(crate) struct PluginState {
     pub(crate) held: Option<pv::View>,
     pub(crate) why: Option<String>,
-    /// `X8`'s cursor mode: a pane that owns the composer has its own keys live only after Tab put
+    /// Cursor mode: a pane that owns the composer has its own keys live only after Tab put
     /// the reader into the view, because otherwise every letter is the line being typed.
     pub(crate) cursor: bool,
 }
@@ -85,7 +85,7 @@ impl App {
         self.plugin_panes.get(name)?.why.as_deref()
     }
 
-    /// Whether the pane on the screen is in cursor mode (`X8`).
+    /// Whether the pane on the screen is in cursor mode.
     pub(crate) fn plugin_cursor(&self) -> bool {
         let Some(name) = self.plugin_open.as_deref() else {
             return false;
@@ -104,7 +104,7 @@ impl App {
     }
 
     /// Whether the view's own keys are live: always on a pane with no input, and in cursor mode on
-    /// one that owns the composer (`X8`).
+    /// one that owns the composer.
     fn plugin_keys_live(&self) -> bool {
         self.plugin_view()
             .map(|v| v.input.is_none())
@@ -135,10 +135,8 @@ impl App {
         self.plugin_view()?.legend.get(&key).map(String::as_str)
     }
 
-    /// The stops of the screen on the screen - the list the arrows walk, Enter acts on, and a
-    /// click is measured against. The frame's own record when it has one, because a panel closed at
-    /// its budget drew fewer stops than the view has; the walk when it does not, which is a pane no
-    /// frame has drawn yet and the screen a key is pressed on.
+    /// The screen's stops: what the arrows walk, Enter acts on and a click is measured against. The
+    /// frame's record when there is one, since a panel cut at its budget drew fewer; else the walk.
     pub(crate) fn plugin_stops(&self) -> Vec<view::Stop> {
         match (self.plugin_view(), self.drawn_stops()) {
             (Some(v), None) => view::stops(v, self.plugin_screen),
@@ -248,7 +246,7 @@ impl App {
     /// that swallowed every one would be a pane you cannot type under.
     pub(crate) fn plugin_key(&mut self, k: &Key) -> std::ops::ControlFlow<Option<Action>> {
         use std::ops::ControlFlow;
-        // Tab on a pane that owns an input enters its cursor mode (`X8`); without an input there
+        // Tab on a pane that owns an input enters its cursor mode; without an input there
         // is no mode to enter, and the view's keys are live all the time.
         if matches!(k, Key::Tab)
             && self.plugin_view().is_some_and(|v| v.input.is_some())

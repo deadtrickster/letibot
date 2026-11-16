@@ -551,10 +551,9 @@ pub struct App {
     /// resync. A note is a disclosure and not a record, so retired is not deleted: it is hidden,
     /// counted and findable. The keys live in `head.toml` because a restart is how the wall came back.
     pub(crate) dismissed: Vec<String>,
-    /// The warning KINDS `leticode.toml`'s `[warnings] mute` names, and whether a burst of one
-    /// kind is one counted row: filed and counted, and never drawn. One line for a kind rather
-    /// than a `retired` key per copy - the 127 dismissals of `model_slow_first_byte` a head can
-    /// carry are this one entry. See [`crate::prefs::leticode`].
+    /// The warning kinds `[warnings] mute` names: a burst of one kind is filed and counted, never
+    /// drawn. One entry per kind rather than a `retired` key per copy. See
+    /// [`crate::prefs::leticode`].
     pub(crate) quiet: Quiet,
     /// The rooms sidebar: on or off, focused, and the rows it drew.
     pub(crate) sidebar: sidebar::Sidebar,
@@ -1012,16 +1011,13 @@ pub struct App {
     /// The session repository's GitHub references, its `owner/repo`, branches and commits, so the
     /// words on the screen that name them become links (`app::ghlinks`).
     pub(crate) gh_refs: Option<std::sync::Arc<ghlinks::GitRefs>>,
-    /// Whether a `link_` layer is on disk at all, and when it was last asked: read from manifests
-    /// alone, so a session with none never compiles a plugin stack for links
-    /// (`Host::any_link_layer`), and read again every minute so a layer written in this session
-    /// starts answering without a restart.
+    /// Whether a `link_` layer is on disk, and when it was last asked. Read from manifests only, so
+    /// a session with none never compiles a stack, and re-read every minute so a new layer is
+    /// picked up.
     pub(crate) link_layers: Option<bool>,
     pub(crate) link_layers_at: u64,
-    /// Whether a `card_` layer is on disk at all, and when it was last asked: the same rule as the
-    /// links' - manifests alone, so a session whose cards are the head's own never compiles a
-    /// plugin stack for them (`Host::any_card_layer`), asked again every minute so a layer written
-    /// in this session starts drawing without a restart.
+    /// Whether a `card_` layer is on disk, and when it was last asked: the same rule as the links'
+    /// (`Host::any_card_layer`).
     pub(crate) card_layers: Option<bool>,
     pub(crate) card_layers_at: u64,
     /// The background read of them, and which repository it is for.
@@ -1053,19 +1049,16 @@ pub struct App {
     /// row. Absent for a row this head did not watch run, and the card then shows no duration
     /// rather than a fabricated one.
     pub(crate) call_ms: std::collections::HashMap<String, u64>,
-    /// Both sides of every file a settled `edit`/`write`/`bash` row changed, by item id: what puts
-    /// a diff on the screen at all, since the transcript takes a call over the moment its result row
-    /// lands. A list because one call can change several files (R161). Absent for rows older than
-    /// the turn it carries, which then show the tool's own text.
+    /// Both sides of every file a settled `edit`/`write`/`bash` row changed, by item id. A list
+    /// because one call can change several files. Absent for older rows, which show the tool's own
+    /// text.
     pub(crate) call_edits:
         std::collections::HashMap<String, Vec<letibot_sessionlog::event::ToolEdit>>,
     /// The marks the conversation set on a file, by path and by the reply or call that set them:
     /// rano holds a mark only while its buffer is open, so the rest wait here. See [`marks`].
     pub(crate) file_marks: marks::FileMarks,
-    /// The files a settled JOB changed while it ran, by handle: the daemon snapshots the tree at the
-    /// spawn and reads it back here, and the completion's row is where they are drawn (R161).
-    /// A `BTreeMap` so the oldest can be dropped when a session settles more jobs than a reader will
-    /// scroll back through.
+    /// The files a settled job changed while it ran, by handle, drawn on its completion row. A
+    /// `BTreeMap` so the oldest can be dropped.
     pub(crate) job_edits:
         std::collections::BTreeMap<String, Vec<letibot_sessionlog::event::ToolEdit>>,
     /// The settled decision a `tool_result` row's call was gated by, by item id: the call id is
@@ -1158,13 +1151,13 @@ pub struct App {
     pub(crate) stopping: Option<Stopping>,
     /// The `/rooms` view: channels, messages read, what was shown.
     pub(crate) rooms: rooms::RoomsView,
-    /// P4's navigation: the message cursor, the open search, the switcher, and how far the reader
+    /// Chat navigation: the message cursor, the open search, the switcher, and how far the reader
     /// had read at the tail.
     pub(crate) nav: chat_nav::Nav,
-    /// P4's pictures: the blobs this head holds, the ones it asked for, and the uploads on their
+    /// Chat pictures: the blobs this head holds, the ones it asked for, and the uploads on their
     /// way out.
     pub(crate) media: chat_media::Media,
-    /// P5's chat layer: the feed generation it last answered and the view it answered with, held
+    /// The chat layer: the feed generation it last answered and the view it answered with, held
     /// here so a frame costs no call and a push re-asks once.
     pub(crate) chat_pane: chat_plugin::ChatPane,
     /// A bulk announcement the daemon has not filled yet, recorded only when a snapshot is
@@ -1657,9 +1650,8 @@ impl App {
             todo_answered: Vec::new(),
             model_pending: None,
             retry_series: 0,
-            // The done group starts folded, matching `HeadPrefs::default` - this is the
-            // builder's value, and `apply_prefs` puts the file's answer over it at startup. The
-            // operator's ruling: *"i want done collapsed by default"*.
+            // The done group starts folded, matching `HeadPrefs::default`; `apply_prefs` puts
+            // the file's answer over it at startup.
             todos_fold_done: true,
             todos_follow: false,
             layer_failure: None,
@@ -1849,7 +1841,7 @@ pub(crate) use hits::*;
 pub use keys::*;
 // The two `[keys]` values the bar and the help screen read, named here because `keys` is a private
 // module of `app` and `ui` is its sibling: a help screen that named the key a rebinding replaced
-// would be the advertisement W8 forbids.
+// would advertise a key that does nothing.
 pub(crate) use keys::bindings::{KeyOverrides, surface_help_keys};
 pub(crate) use links::{link_path_lines, osc8_spans};
 pub(crate) use model_card::*;

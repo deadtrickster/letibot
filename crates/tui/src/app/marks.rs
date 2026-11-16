@@ -1,8 +1,5 @@
-//! What the conversation marks beside the text: the lines a reply cited, and the lines a finished
-//! call changed, as rano's marks.
-//!
-//! Rano holds marks on a buffer, and a head opens a file long after the reply that marked it - so
-//! the remembering is the head's, and a file that is not open is marked when it opens.
+//! What the conversation marks beside the text: lines a reply cited and lines a call changed, as
+//! rano marks. The head remembers them, because a file is often opened long after the reply.
 
 use super::*;
 use letibot_sessionlog::CitationKind;

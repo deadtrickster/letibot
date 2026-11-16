@@ -740,10 +740,8 @@ impl App {
             self.say("already here");
             return None;
         }
-        // A session on disk and not in this daemon has to be brought in before it can be switched to: two frames,
-        // the second sent when the daemon answers the first. `want_new_session` is reused because going to a session
-        // the daemon just named is one behaviour. An ARCHIVED row is the same case: it is a stored session, and the
-        // daemon takes it back into the list as it opens it - which is what `enter` on its row means.
+        // A session on disk but not in this daemon is brought in first: two frames, the second sent
+        // on the answer. An archived row is the same case; the daemon unarchives it as it opens it.
         if self.sessions.iter().any(|b| b.session_id == id && !b.live) || self.archived_here(&id) {
             self.want_new_session = true;
             self.say(&format!(
@@ -1148,8 +1146,7 @@ fn named(key: &str) -> Project {
     }
 }
 
-/// What a project is called: the folder's name, which is what the operator asked for - *"shown
-/// by its name, not its full path"*.
+/// What a project is called: the folder's name, not its full path.
 fn project_name(key: &str) -> String {
     if key.is_empty() {
         return NO_WORKSPACE.to_string();

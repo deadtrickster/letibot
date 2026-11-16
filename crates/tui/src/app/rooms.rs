@@ -744,11 +744,8 @@ impl App {
             .extend(ops.into_iter().map(|op| Action::RoomChat { op, id: None }));
     }
 
-    /// The daemon's answer to a chat request. `id` is the request the answer belongs to: a
-    /// send's answer is told from a poll's by it, and no poll may clear a send's record.
-    /// `/invite NAME [ROOM]` and `/leave NAME [ROOM]`: a session in or out of a project room that is
-    /// not its own. ROOM is `project/<key>` or a label, and defaults to the project room selected in
-    /// `/rooms`.
+    /// `/invite NAME [ROOM]` and `/leave NAME [ROOM]`: a session in or out of another project room.
+    /// ROOM is `project/<key>` or a label, defaulting to the room selected in `/rooms`.
     pub(crate) fn room_guest(&mut self, verb: &str, args: &str) -> Option<Action> {
         let mut words = args.split_whitespace();
         let (Some(who), room) = (words.next(), words.next()) else {

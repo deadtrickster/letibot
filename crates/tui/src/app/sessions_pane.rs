@@ -1,10 +1,6 @@
-//! The session list, drawn from a plugin: the built-in `sessions` layer decides the groups, names,
-//! counts and keys, and the head draws its answer through rano's one tree. The head runs the layer
-//! in process, because the list is how a person gets out of a broken session.
-//!
-//! There is ONE drawing. While the head's stack is being built the pane says so in one line
-//! ([`letibot_plugin::sessions::BUILDING`]) rather than drawing a list of its own that then changes
-//! shape under the reader; the words both sides say live in `letibot_plugin::sessions`.
+//! The session list, drawn from the built-in `sessions` layer through rano's tree. The layer runs
+//! in process, because the list is the way out of a broken session. While the stack builds, the
+//! pane shows one line ([`letibot_plugin::sessions::BUILDING`]) rather than a list of its own.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -90,13 +86,11 @@ pub(crate) struct Host {
     state: Mutex<std::collections::BTreeMap<String, Value>>,
     /// Which word links where, as the `link_` layers last answered: `None` is a word they were
     /// asked about and did not know, which is cached too - a frame asks once per word, not once
-    /// per frame (`docs/plugins-plan.md` \u{00a7}4.6).
+    /// per frame.
     links: Mutex<std::collections::BTreeMap<String, Option<String>>>,
-    /// The `card_` answer for each row, by `hook`, row id and the hash of what the layer was asked
-    /// about: a card is asked for ONCE and drawn on every frame after it, so a layer sees a row once
-    /// per head rather than once per frame (X22) - and an edited row, which is the same id with other
-    /// words, is asked about again. Bounded, and evicted least-recently-used: [`CardCache`].
-    /// A `None` is a row the layer drew nothing for, which is also not worth asking twice.
+    /// The `card_` answer per hook, row id and input hash, asked once and drawn every frame after;
+    /// an edited row is asked again. A `None` is a row the layer drew nothing for. See
+    /// [`CardCache`].
     cards: Mutex<CardCache>,
     /// How many asks reached the layer: a miss is one call, so this is what *asked once per row*
     /// means, and a test reads it rather than believing the cache.
@@ -106,7 +100,7 @@ pub(crate) struct Host {
     #[cfg(test)]
     list_asked: std::sync::atomic::AtomicUsize,
     /// What a layer owes the person, said once each: a failure, a trap, or an answer this head will
-    /// not draw. Fail down LOUDLY (`docs/plugins-plan.md`): the list the person sees may be the
+    /// not draw. Fail down loudly: the list the person sees may be the
     /// built-in's or the head's own, and either way the reason their layer is not drawing it is news.
     refusals: Refusals,
     /// The folder this host was built for; a head that moves to another one gets another stack.
@@ -123,10 +117,8 @@ const POLL_MS: u64 = 2_000;
 
 #[derive(Default)]
 struct Cached {
-    /// `"<hook>\n<the input's JSON>"` - the hook is part of the key because one host answers two
-    /// panes, and two panes' inputs can be byte-identical while their answers are not. Nothing that
-    /// moves on its own belongs in it: the clock left it with the age buckets (see
-    /// `App::sessions_feed`), so an idle frame asks once and not once per frame.
+    /// `"<hook>\n<the input's JSON>"`: the hook is in the key because two panes can send identical
+    /// inputs. Nothing that moves on its own belongs in it, so an idle frame asks once.
     key: String,
     answer: Option<Value>,
     /// The size the last ask was made for, so a test can prove the pane is asked about the height
@@ -182,10 +174,9 @@ impl Host {
         self.refusals.peek()
     }
 
-    /// One `link_` question for a frame: the words no layer has answered yet, asked of each
-    /// `link_` hook in stack order with the still-unknown words only, and cached by word. The
-    /// answer is what a head may draw - a layer that traps or answers a shape the contract refuses
-    /// is said once and leaves the words as text, which is what they were before it existed.
+    /// One `link_` question per frame: only still-unknown words, asked of each `link_` hook in
+    /// stack order and cached by word. A trap or a refused shape is said once and the words stay
+    /// text.
     pub(crate) fn links(
         &self,
         words: &[String],
@@ -345,11 +336,9 @@ impl Host {
         }
     }
 
-    /// A host for this session's folder, with the binary's own layers at the bottom. One door for
-    /// the head, and crate-visible because a test stands the real build in for a folder it cannot
-    /// create. Admission is `letibot_plugins::admit`'s - the daemon's and the bridge's path too -
-    /// and the trust book's pin is the head's to TAKE: the daemon's stack reads the same file at
-    /// its next poll, so one answer is in force in both processes.
+    /// A host for this session's folder, the binary's own layers at the bottom. Crate-visible so a
+    /// test can stand it in. Admission is `letibot_plugins::admit`'s, and a trust pin taken here is
+    /// read by the daemon's stack at its next poll.
     pub(crate) fn build(session: &str, workspace: &Path) -> Host {
         let session_dir = session_plugins_dir(session);
         let admitted = letibot_plugins::admit(
@@ -597,13 +586,8 @@ impl Host {
         }
     }
 
-    /// The `card_` answer for one row, asked at most once per thing it was asked about: the key is
-    /// the hook, the row's id and the hash of `input`, so a row drawn again the same way costs one
-    /// call however many frames draw it (X22), and a row that was edited - the same id with other
-    /// words - is asked about again rather than drawn from a card about what it no longer is.
-    ///
-    /// The cache is bounded and evicts the least recently used ([`CardCache`]): a long session holds
-    /// more rows than a map should, and asking for one again is one call per row.
+    /// The `card_` answer for one row, cached by hook, row id and input hash so a redrawn row costs
+    /// one call and an edited row is asked again. Bounded LRU: [`CardCache`].
     pub(crate) fn card_answer(&self, hook: &str, id: &str, input: Value) -> Option<Value> {
         let key = CardCache::key(hook, id, &input);
         if let Some(known) = self.cards.lock().ok().and_then(|mut c| c.get(&key)) {
@@ -690,10 +674,9 @@ fn install_builtins(stack: &mut Stack) -> Option<String> {
     ))
 }
 
-/// The layers that never got as far as a call, in one sentence. A manifest this host refuses
-/// at load has no call to fail in, so the host that built the stack is the only one that can say
-/// it. A built-in is left out: [`install_builtins`] already said that one. `admit` says this for
-/// the host the head builds; this is the door a test's hand-made stack comes through.
+/// The layers that never reached a call, in one sentence: only the host that built the stack can
+/// say it. Built-ins are left out, [`install_builtins`] said those. This is the path for a test's
+/// stack.
 #[cfg(test)]
 fn would_not_load(stack: &Stack) -> Option<String> {
     let said: Vec<String> = stack
@@ -718,10 +701,8 @@ fn user_config_dir() -> Option<PathBuf> {
     letibot_plugins::paths::config_dir()
 }
 
-/// A stack being built on a thread of its own. Discovery reads three directories and the binary's
-/// own thirteen built-ins compile, which is seconds on the drawing thread and a freeze on the first
-/// picture; the frame that asks for a host draws the head's own list and a later frame draws the
-/// layer's, when this has something on it.
+/// A stack being built on its own thread: discovery and compiling the built-ins take seconds, which
+/// would freeze the first frame. Frames draw the building line until it is done.
 pub(crate) struct HostBuild {
     /// The folder the build is for. A head that has moved on since discards the answer.
     pub(crate) workspace: PathBuf,
@@ -729,13 +710,8 @@ pub(crate) struct HostBuild {
 }
 
 impl App {
-    /// The head's plugin stack, for this session's folder - one door, so the picker and a slash
-    /// command ask the SAME stack, and a layer installed is a layer asked. A head that moves to
-    /// another folder gets another stack: layers belong to a project.
-    ///
-    /// A stack the head has not got yet is built OFF the drawing thread: the answer is `None` for
-    /// the frames it takes, which is the head's own list, and the layer's answer arrives with the
-    /// next frame after the thread is done. See [`HostBuild`].
+    /// The head's plugin stack for this session's folder, so the picker and slash commands ask the
+    /// same one. Built off the drawing thread: `None` until it is ready. See [`HostBuild`].
     pub(crate) fn plugin_host(&self) -> std::cell::Ref<'_, Option<Host>> {
         self.collect_host_build();
         let workspace = self.workspace_path();
@@ -800,10 +776,8 @@ impl App {
         }
     }
 
-    /// Take the stack a thread finished, if it has: one whose folder is still this head's becomes
-    /// the host, and one built for a folder the head has left is dropped. A thread that died
-    /// without answering lets the build go, so the next frame asks again rather than leaving the
-    /// pane on the head's list for the rest of the session.
+    /// Take a finished stack: kept if its folder is still this head's, dropped otherwise. A thread
+    /// that died lets the build go, so the next frame asks again.
     fn collect_host_build(&self) {
         let seen = {
             let held = self.host_build.borrow();
@@ -1003,13 +977,9 @@ impl App {
         }
     }
 
-    /// The daemon's session list as the feed spells it, one object per session. `project` and
-    /// `system` are computed HERE: they are facts about the whole list, and a guest that
-    /// recomputed them would be a second opinion about where a row goes. The layer says what.
-    ///
-    /// **No clock.** An age is bucketed here (`sdk::age_word`) and the bucket is what a row gets.
-    /// A raw `now` made every frame a different input, so the one-slot cache never hit and the
-    /// guest was re-run on every idle frame.
+    /// The daemon's session list as the feed spells it. `project` and `system` are computed here
+    /// because they are facts about the whole list. Ages are bucketed (`sdk::age_word`), never a
+    /// raw `now`, so the one-slot cache hits on idle frames.
     pub(crate) fn sessions_feed(&self) -> Value {
         let place = self.placements();
         let projects = self.projects(&place);
@@ -1251,10 +1221,8 @@ impl App {
             .rows
     }
 
-    /// The list being drawn - ONE drawing, and one door, because the drawing, the keys, the click
-    /// map and `/switch N` must all be reading the same list. The size is recorded here, because
-    /// the keys ask about the pane the picture was drawn in: a key that asked about another height
-    /// would miss the guest's cache and re-run it on every press.
+    /// The list being drawn: the drawing, keys, click map and `/switch N` all read this one. The
+    /// size is recorded so keys ask the guest about the drawn pane and hit its cache.
     pub(crate) fn picker_list(&self, w: usize, h: usize) -> List {
         self.picker_size.set((w, h));
         match self.sessions_list(w, h) {
@@ -1381,10 +1349,8 @@ fn fleet_under(f: &letibot_sessionlog::FleetRow, home: &str) -> String {
     format!("{}  {ws}", f.id)
 }
 
-/// The tree block a sessions view answers with, and its empty sentence. A row's faint detail line is
-/// its identity - the id, the path, the model - and it is drawn for the row under the cursor and
-/// for no other: an identity line under every session doubled the list for facts a person reads one
-/// row at a time.
+/// The tree block a sessions view answers with, and its empty sentence. A row's faint identity line
+/// is drawn only under the cursor's row.
 fn tree_of(
     view: &pv::View,
     folds: &BTreeMap<String, bool>,
@@ -1633,9 +1599,8 @@ mod tests {
 
     use super::*;
 
-    /// The head's own reading of `XDG_CONFIG_HOME=`, which used to be its own answer: the variable
-    /// set but empty joined `letibot/` onto nothing, so the head read a stack relative to its cwd
-    /// while the daemon read `~/.config/letibot`. Both scopes now come from `letibot_plugins::paths`.
+    /// An empty `XDG_CONFIG_HOME=` must resolve as the daemon does, to `~/.config/letibot`, not to a
+    /// path relative to the cwd. Both scopes come from `letibot_plugins::paths`.
     #[test]
     fn an_empty_xdg_config_home_is_the_users_plugin_dir() {
         static ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -1681,9 +1646,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&home);
     }
 
-    /// The built-in layer answers through rano's engine, in this process - the head's half of
-    /// `docs/plugins-plan.md`: the same module the daemon carries, loaded by the same
-    /// engine, asked by the head that draws it.
+    /// The built-in layer answers through rano's engine in this process: the same module the
+    /// daemon carries, loaded by the same engine, asked by the head that draws it.
     #[test]
     fn the_builtin_sessions_layer_loads_and_answers_in_the_head() {
         let tmp =

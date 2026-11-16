@@ -1,7 +1,6 @@
-//! Quick asks: `alt-k` in the pane. rano owns the prefix, the presets and the target rule - the
-//! selection, else the paragraph or line under the cursor - so the head's half is what an ask
-//! becomes: a prompt now, the asked range tinted while its answer is on the way, and what the
-//! operator decided about a returned hunk on the prompt after.
+//! Quick asks: `alt-k` in the pane. rano owns the prefix, presets and target; the head turns an ask
+//! into a prompt, tints the range while waiting, and reports decisions on a hunk on the next
+//! prompt.
 
 use letibot_sessionlog::protocol::{
     AnswerMode, ContextAsk, ContextRef, EditorContext, MarkOutcome,

@@ -45,11 +45,8 @@ pub(crate) fn bar_tail() -> String {
         .join(" · ")
 }
 
-/// The head of the row while the editor pane has the keys: the four shared chords that act on the
-/// pair rather than on the text, with the two-word names `docs/rano-integration.md` §7.1 gives them.
-/// The CHORD is read from the table, so a rebound key cannot lie here; only the abbreviation is the
-/// head's, because the table's sentences are written for a help page and this row has to leave room
-/// for the pane's own keys after them. `/help` still lists every row.
+/// The row's head while the editor pane has the keys: the four shared chords that act on the pair.
+/// The chord comes from the table, so a rebinding cannot lie; only the short name is the head's.
 const PANE: &[(&str, &str)] = &[
     ("deactivate-mark", "back"),
     ("host-focus", "chat"),

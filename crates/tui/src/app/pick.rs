@@ -228,10 +228,8 @@ impl App {
                 .iter()
                 .map(|p| (p.name.to_string(), p.why.to_string()))
                 .collect();
-            // And the profiles `leticode.toml` defines, after the head's five: a profile a file adds
-            // is a profile the card must offer, or the only way to it is the file again. Its `why`
-            // is the list itself, because that IS the profile - spelled as the switches the head
-            // draws, so a reader can see what they are choosing.
+            // Then the profiles `leticode.toml` defines, after the head's five, or the file is the
+            // only way to reach them. Its `why` is the profile's switch list.
             rows.extend(self.profiles.named().iter().map(|(name, vis)| {
                 let shows: Vec<String> = Show::ALL
                     .iter()
@@ -408,10 +406,9 @@ impl App {
         }
     }
 
-    /// Put the open picker's cursor on the row that answers now, and remember that nothing has
-    /// touched it yet - see [`App::pick_unseeded`]. One function for the five cards, because
-    /// `pick_current` reads a row's value through `named_choice`, so they all seed identically. The
-    /// model card counts its own rows, so it is seeded from the rows it draws.
+    /// Put the open picker's cursor on the current row and mark it unseeded (see
+    /// [`App::pick_unseeded`]). One function for the five cards; the model card seeds from its own
+    /// rows.
     pub(crate) fn seed_pick(&mut self) {
         let now = self.pick_current();
         self.mode_sel = match self.pick {
@@ -482,9 +479,8 @@ pub enum Pick {
     Verbosity,
     /// How a diff is laid out.
     Diff,
-    /// Which repository the header follows, in a workspace of several - the operator: *"I
-    /// guess we can make git thing clickable with a popup"*. Opened by a click on the git field
-    /// or `/repo`; this head's own setting, and not kept across a restart.
+    /// Which repository the header follows, in a workspace of several. Opened by a click on the
+    /// git field or `/repo`; this head's own setting, and not kept across a restart.
     Repo,
 }
 

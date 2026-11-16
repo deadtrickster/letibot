@@ -15,11 +15,8 @@ use std::hash::{Hash, Hasher};
 /// more rows than this re-asks for the ones it draws again - one call per row, once.
 pub(crate) const MAX_CARDS: usize = 4096;
 
-/// The answers a `card_` layer gave, evicted least-recently-used.
-///
-/// A row's id alone is not a key: an edited row is the same id with different words, and a card
-/// cached under the id would draw the old sentence for the rest of the session. The key carries a
-/// hash of the input the layer was asked with, so an edit is a miss and a redrawn frame is not.
+/// The answers a `card_` layer gave, evicted least-recently-used. The key carries a hash of the
+/// input, because an edited row keeps its id and must not draw the old card.
 #[derive(Default)]
 pub(crate) struct CardCache {
     /// The answer's place in [`CardCache::by_age`], by [`CardCache::key`].

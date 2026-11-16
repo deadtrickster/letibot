@@ -83,10 +83,9 @@ impl App {
         }
     }
 
-    /// Take a note out of the list altogether - the model's live line, when the daemon withdraws it:
-    /// a recovered retry leaves nothing behind and a spent ladder has a row of its own. Unlike
-    /// [`App::retire`] this leaves nothing in `/notes` either, so the walk is rebuilt rather than
-    /// patched: a mark holds an index into this list, and the list has just got shorter.
+    /// Remove a note entirely, when the daemon withdraws the model's live line. Unlike
+    /// [`App::retire`] nothing stays in `/notes`, and the walk is rebuilt because marks hold
+    /// indices into this list.
     pub(crate) fn drop_note(&mut self, i: usize) {
         if i >= self.notes.len() {
             return;
@@ -175,11 +174,8 @@ impl App {
             .count()
     }
 
-    /// How many notes this head holds and is not drawing: they are older than the conversation it shows, or they were
-    /// filed beside it on purpose. The number `/status` shows beside the count, and the three are different reasons
-    /// for a line being absent: one the reader chose, one the window decided, one the placement decided.
-    ///
-    /// A seam below `hist_floor` counts too: the tail walk steps over it just as it does `Before`.
+    /// How many notes this head holds and is not drawing: older than the shown conversation, or
+    /// filed beside it on purpose. `/status` shows it. A seam below `hist_floor` counts too.
     pub(crate) fn notes_before(&self) -> usize {
         self.notes
             .iter()

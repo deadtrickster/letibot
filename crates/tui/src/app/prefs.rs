@@ -224,10 +224,9 @@ impl App {
     }
 
     pub fn load_prefs(&mut self) {
-        // The head's three `leticode.toml` tables first, because the verbosity below is read
-        // against the profiles they define - and a `[keys]` line decides what a key does from the
-        // first press. They are independent of `head.toml`, so they are read before its absence
-        // can stop this function.
+        // The three `leticode.toml` tables first: verbosity below reads their profiles, and
+        // `[keys]` must hold from the first press. They do not depend on `head.toml`, so they are
+        // read before its absence can return.
         self.load_rules();
         self.prefs_path = self.prefs_path.clone().or_else(crate::prefs::path);
         let Some(path) = self.prefs_path.clone() else {
@@ -320,11 +319,9 @@ impl App {
         self.visibility.as_str_with(&self.profiles)
     }
 
-    /// Take the `leticode.toml` levels as this head reads them: `[warnings]`' mute list and
-    /// `coalesce`, `[keys]`' rebindings and `[verbosity.<name>]`' profiles. Each word is the head's
-    /// vocabulary, so the resolution lives in the module that owns it and every refusal names the
-    /// file and the line it was written on - and is SAID, not obeyed, which is `head.toml`'s rule
-    /// for a value this build cannot read.
+    /// Take the `leticode.toml` levels: `[warnings]` mute and `coalesce`, `[keys]` and
+    /// `[verbosity.<name>]`. Each owning module resolves its words; a refusal names the file and
+    /// line and is said, not obeyed.
     pub(crate) fn load_rules(&mut self) {
         let (cfg, said) = crate::prefs::leticode(&self.wiring.workspace);
         let mut problems = said;
@@ -574,8 +571,7 @@ impl App {
                         self.flip_thinking();
                     }
                     HeadSetting::Tools => {
-                        // The one writer, so the pane's row and `/t` cannot disagree - the second field an
-                        // echo's headline used to keep was exactly what let them.
+                        // The one writer, so the pane's row and `/t` cannot disagree.
                         self.set_fold(Show::Tools, self.tools.flip());
                         self.invalidate_history();
                     }

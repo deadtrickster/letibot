@@ -224,10 +224,7 @@ impl App {
         let hit = self.hit_at(x, y)?;
         let row = usize::from(y);
         match hit.target {
-            // A label on either edge is a button, and its hover is exactly the span the frame drew:
-            // the count labels, the queue tab, the git field, the corner's repository, the queue's
-            // standings. The rectangle is the drawn one, so a click one cell outside the words is
-            // nobody's.
+            // A label on either edge is a button, hovered over exactly the span the frame drew.
             Target::CountLabel(_)
             | Target::GitField
             | Target::HeaderRepo
@@ -543,10 +540,8 @@ impl App {
         self.pointer_hand.take()
     }
 
-    /// The hover mark and the selection, painted onto the finished frame - the last thing a
-    /// frame does, so no renderer has to know about the pointer.
-    /// The columns of the surface the pointer's `x` is in: the whole frame, or with the sidebar
-    /// beside the transcript, whichever side of its border `x` is. A mark stays inside them.
+    /// The columns of the surface `x` is in: the whole frame, or one side of the sidebar's border.
+    /// A mark stays inside them.
     fn surface_columns(&self, x: usize) -> (usize, usize) {
         if !self.sidebar.drawn {
             return (0, usize::MAX);

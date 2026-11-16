@@ -310,10 +310,8 @@ pub struct Profiles {
 }
 
 impl Profiles {
-    /// Resolve `[verbosity.<name>] show = [..]` against the head's own switch names: an entry is
-    /// `SWITCH` (shown `open`) or `SWITCH=LEVEL`. A word this build does not know, or a level the
-    /// switch does not hold, is refused with the line it was written on; that profile is dropped
-    /// and the file's others stand, because one bad word is not three good ones.
+    /// Resolve `[verbosity.<name>] show = [..]`: an entry is `SWITCH` (open) or `SWITCH=LEVEL`. An
+    /// unknown word or level is refused with its line, and only that profile is dropped.
     pub fn resolve(keys: &leticode_config::VerbosityKeys) -> (Profiles, Vec<String>) {
         let mut named = Vec::new();
         let mut problems = Vec::new();
@@ -504,10 +502,8 @@ impl Visibility {
         Profile::of(self)
     }
 
-    /// The name of this state, for the status row, `/status` and `head.toml`: the profile's name when
-    /// the set is one, and `custom` with the switches that differ from the head's start when it is
-    /// not. It round-trips through `parse`, which is what makes it a name and not a caption. The
-    /// head's five first, then the file's - see [`Visibility::as_str_with`].
+    /// The name of this state: the profile's name when it is one, else `custom` with the differing
+    /// switches. It round-trips through `parse`. See [`Visibility::as_str_with`].
     pub fn as_str(self) -> String {
         self.as_str_with(&Profiles::default())
     }

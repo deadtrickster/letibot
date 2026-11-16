@@ -1,9 +1,6 @@
-//! The chat as a LAYER: the `chat` feed (`X1`), the memo that asks it once per generation rather
-//! than once per frame, the two hooks its input surface answers (`command_chat`, `complete_chat`),
-//! and the acts an answer may ask the host to perform (`X7`).
-//!
-//! Nothing here draws. What a layer answers is a `Stream`, which is P2's renderer's input, and the
-//! native adapter stays the drawing a broken layer falls to in the same frame.
+//! The chat as a layer: the `chat` feed, the memo that asks it once per generation, the input hooks
+//! (`command_chat`, `complete_chat`) and the acts an answer may ask for. Nothing here draws; the
+//! native adapter is what a broken layer falls back to in the same frame.
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -21,7 +18,7 @@ pub(crate) const HOOK: &str = "pane_chat";
 const COMMAND: &str = "command_chat";
 const COMPLETE: &str = "complete_chat";
 
-/// `X1`'s window: at most this many messages, and this many bytes of JSON. The byte cap is what
+/// The feed's window: at most this many messages, and this many bytes of JSON. The byte cap is what
 /// keeps a window of long messages under the guest's own 1 MiB input arena, and well under
 /// `MAX_HOOK_BYTES`.
 pub(crate) const WINDOW_MESSAGES: usize = 200;
@@ -63,7 +60,7 @@ impl ChatPane {
 
 impl App {
     /// The selected channel as the stream the view draws: the layer's when a chat layer answers,
-    /// and P2's adapter otherwise. ONE call per feed generation - see [`App::chat_view`].
+    /// and the native adapter's otherwise. One call per feed generation - see [`App::chat_view`].
     pub(crate) fn chat_stream(&self, c: &Chan, names: &BTreeMap<String, String>) -> pv::Stream {
         if let Some(s) = self.chat_layer_stream() {
             return s;
@@ -80,12 +77,8 @@ impl App {
         }
     }
 
-    /// The layer's own stream, if it answered one: the first `stream` block of its view, in the
-    /// order the panels are drawn. A layer that answers no stream block is a layer with nothing to
-    /// draw here, and the adapter draws.
-    ///
-    /// [`App::chat_note`] above is its other half: the drawing has a screen, and the reason a
-    /// fallback happened is only worth keeping if somebody says it.
+    /// The layer's own stream: the first `stream` block of its view, in panel order. No stream
+    /// block means the adapter draws. [`App::chat_note`] keeps the reason a fallback happened.
     fn chat_layer_stream(&self) -> Option<pv::Stream> {
         let view = self.chat_view()?;
         view.panels
@@ -105,7 +98,7 @@ impl App {
     }
 
     /// Whether a chat layer owns the composer: a view that declares an `input` surface is the
-    /// pane's, and the head's own line handling steps aside for it (`X5`).
+    /// pane's, and the head's own line handling steps aside for it.
     pub(crate) fn chat_owns_input(&self) -> bool {
         self.chat_view().is_some_and(|v| v.input.is_some())
     }
@@ -195,10 +188,8 @@ impl App {
         &self.chat_pane.memo
     }
 
-    /// The feed a chat layer is handed (`X1`): the channels with their unread counts and labels,
-    /// the roster, the selected channel, the two reading marks, the sends that have not landed, and
-    /// a WINDOW of the selected channel's messages - the viewport plus a page each way, bounded by
-    /// [`WINDOW_MESSAGES`] and [`WINDOW_BYTES`].
+    /// The feed a chat layer is handed: channels, roster, selection, reading marks, unlanded sends,
+    /// and a window of messages bounded by [`WINDOW_MESSAGES`] and [`WINDOW_BYTES`].
     pub(crate) fn chat_feed(&self) -> pp::Chat {
         let mut feed = pp::Chat::default();
         let selected = self.rooms.selected();
@@ -271,10 +262,8 @@ impl App {
         feed
     }
 
-    /// Enter on the chat layer's input: the line goes to `command_chat` with the key, the reply
-    /// target, the chips and the feed, and the acts it answers with are performed as the operator.
-    /// `None` is *the layer had the line and nothing is to be sent*, which is not a fallback: the
-    /// head does not send a line the layer took.
+    /// Enter on the chat layer's input: the line goes to `command_chat` and its acts run as the
+    /// operator. `None` means the layer took the line and nothing is sent; it is not a fallback.
     pub(crate) fn chat_command(&mut self, text: &str) -> Option<Action> {
         let view = self.chat_view()?;
         let input = view.input.clone()?;
@@ -391,7 +380,7 @@ impl App {
         true
     }
 
-    /// The acts an answer carries (`X7`): each one declared in the layer's manifest and each one
+    /// The acts an answer carries: each one declared in the layer's manifest and each one
     /// performed by the host. An undeclared name is SAID and not performed - the allowlist a
     /// reviewer reads is the list of words that can be done.
     fn chat_acts(&mut self, answer: &Value) -> Option<Option<Action>> {
@@ -522,7 +511,7 @@ impl App {
                 None
             }
             // The host's picker is the session list's and the settings cards': a layer-filled one
-            // is P6's switcher, and a sentence beats a key that does nothing.
+            // is the switcher, and a sentence beats a key that does nothing.
             "pick" => {
                 self.say(
                     "the chat layer asked for the host's picker, which this head has not got for a \
