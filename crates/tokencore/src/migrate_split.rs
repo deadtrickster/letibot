@@ -6,7 +6,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use rusqlite::types::ValueRef;
-use rusqlite::{Connection, OptionalExtension, params, params_from_iter};
+use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params, params_from_iter};
 use sha2::{Digest, Sha256};
 
 use crate::ledger::{TokenLedger, hex};
@@ -79,7 +79,10 @@ pub struct Claim {
 
 /// The claims a store holds, whoever took them: the lease this pass must not run under.
 pub fn writer_claims(store: &Store) -> Result<Vec<Claim>> {
-    let conn = store.connection();
+    claims_of(&store.connection())
+}
+
+fn claims_of(conn: &Connection) -> Result<Vec<Claim>> {
     let mut st = conn.prepare(
         "SELECT session_id, owner, host, pid FROM session_writer ORDER BY session_id, owner",
     )?;
@@ -179,6 +182,19 @@ pub fn carve(
     host: &str,
     alive: impl Fn(u32) -> bool + Copy,
 ) -> Result<Carved> {
+    carve_with(store, data_dir, key, host, alive, || {})
+}
+
+/// [`carve`] with `after_copy` run between the copy and the delete: the window a test writes into.
+#[doc(hidden)]
+pub fn carve_with(
+    store: &Path,
+    data_dir: &Path,
+    key: &str,
+    host: &str,
+    alive: impl Fn(u32) -> bool + Copy,
+    after_copy: impl FnOnce(),
+) -> Result<Carved> {
     if data_dir.join(split::SHARED_FILE).is_file() {
         return Err(StoreError::Refused(format!(
             "{} is already split: {} is there, so there is nothing left to carve out of {}. \
@@ -224,23 +240,28 @@ pub fn carve(
             path.display()
         )));
     }
-    let claims = writer_claims(&old)?;
-    let blocked = blocking_claims(&plan.key_of, key, &claims, host, alive);
-    if let Some(first) = blocked.first() {
-        let more = match blocked.len() - 1 {
-            0 => String::new(),
-            n => format!(", and {n} more session(s) of this project"),
-        };
-        return Err(StoreError::Refused(format!(
-            "a daemon is writing this project: session {} is claimed by {} (pid {} on {}){more}. \
-             Stop that project's daemon - `letibot --stop` in its folder - and carve it again. \
-             Other projects' daemons are not a reason to stop, and nothing was written",
-            first.session, first.owner, first.pid, first.host
-        )));
-    }
+    refuse_blocked(&blocking_claims(
+        &plan.key_of,
+        key,
+        &writer_claims(&old)?,
+        host,
+        alive,
+    ))?;
     let from = Connection::open(store)?;
-    let file = write_project(&from, data_dir, key, sessions)?;
-    match carve_into(&from, &old, &file, key) {
+    pragmas(&from)?;
+    // One write lock from staging to the delete's commit: a daemon's claim or append waits for the
+    // carve, so no row commits between the copy and the delete that removes it.
+    let tx = rusqlite::Transaction::new_unchecked(&from, TransactionBehavior::Immediate)?;
+    refuse_blocked(&blocking_claims(
+        &plan.key_of,
+        key,
+        &claims_of(&tx)?,
+        host,
+        alive,
+    ))?;
+    let file = write_project(&tx, data_dir, key, sessions)?;
+    after_copy();
+    match carve_into(tx, &old, &file, key) {
         Ok(unreplayed) => {
             let carved = split::carved_keys(&old)?.unwrap_or_default();
             Ok(Carved {
@@ -264,14 +285,14 @@ pub fn carve(
 /// the delete - in the order the doc states: no row leaves `sessions.db` before the copy it is
 /// leaving for has been verified and recorded as carved.
 fn carve_into(
-    from: &Connection,
+    tx: rusqlite::Transaction<'_>,
     old: &Store,
     file: &ProjectFile,
     key: &str,
 ) -> Result<Vec<String>> {
     let unreplayed = verify_chains(&file.path, Some(old))?;
-    refuse_cross_key_forks(from)?;
-    let tx = from.unchecked_transaction()?;
+    refuse_cross_key_forks(&tx)?;
+    refuse_moved_seqs(&tx, &file.path, key)?;
     // The delete names rows across the project tables, so the keys between them are checked at
     // COMMIT rather than per statement.
     tx.execute_batch("PRAGMA defer_foreign_keys = ON")?;
@@ -305,6 +326,46 @@ fn carve_into(
         ))
     })?;
     Ok(unreplayed)
+}
+
+/// A live claim on the key's sessions, refused by name before anything is written.
+fn refuse_blocked(blocked: &[Claim]) -> Result<()> {
+    let Some(first) = blocked.first() else {
+        return Ok(());
+    };
+    let more = match blocked.len() - 1 {
+        0 => String::new(),
+        n => format!(", and {n} more session(s) of this project"),
+    };
+    Err(StoreError::Refused(format!(
+        "a daemon is writing this project: session {} is claimed by {} (pid {} on {}){more}. \
+         Stop that project's daemon - `letibot --stop` in its folder - and carve it again. \
+         Other projects' daemons are not a reason to stop, and nothing was written",
+        first.session, first.owner, first.pid, first.host
+    )))
+}
+
+/// The delete filters by transcript id, not by copied seq, so the key's transcripts must still be
+/// exactly what the copy holds: same ids, same row counts, same last seq.
+fn refuse_moved_seqs(from: &Connection, copy: &Path, key: &str) -> Result<()> {
+    const SEQS: &str = "SELECT t.id, COUNT(i.seq), COALESCE(MAX(i.seq), -1) FROM transcript t \
+         LEFT JOIN transcript_item i ON i.transcript_id = t.id";
+    let read = |conn: &Connection, filter: &str| -> Result<Vec<(String, i64, i64)>> {
+        let mut st = conn.prepare(&format!("{SEQS}{filter} GROUP BY t.id ORDER BY t.id"))?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    };
+    let here = read(from, " WHERE t.session_id IN (SELECT id FROM temp.mine)")?;
+    let copied = read(&Connection::open(copy)?, "")?;
+    if here == copied {
+        return Ok(());
+    }
+    Err(StoreError::Refused(format!(
+        "project {key}'s transcripts in {} moved after they were copied to {}. Nothing was \
+         deleted, and the file this pass wrote was taken back",
+        split::LEGACY_FILE,
+        copy.display()
+    )))
 }
 
 /// One key's rows of every project table, out of the shared file. The `transcript_item` triggers

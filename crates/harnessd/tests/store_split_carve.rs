@@ -593,3 +593,71 @@ fn the_listing_sees_a_carved_project_and_an_uncarved_one() {
         );
     }
 }
+
+/// A daemon that resumes A while its carve is copying: the append and the claim either wait for
+/// the carve or are refused, and a row that did commit is never deleted without a copy. A daemon
+/// opening A mid-carve is refused rather than handed a `sessions.db`-only store.
+#[test]
+fn rows_appended_after_the_claim_check_are_not_deleted_uncopied() {
+    let fixture = Fixture::new("window");
+    seed(&fixture.store());
+    // B first, so A's daemon opens the transition's door and not the unsplit refusal.
+    carve(&fixture, ROOT_B).expect("B is carved");
+    let mut appended = false;
+    let mut opened = None;
+    let result = migrate_split::carve_with(
+        &fixture.store(),
+        &fixture.data,
+        &twelve_hex(ROOT_A),
+        "box",
+        this_pid,
+        || {
+            let daemon = Connection::open(fixture.store()).expect("a daemon's connection");
+            daemon
+                .busy_timeout(std::time::Duration::ZERO)
+                .expect("no busy wait");
+            let resumed = daemon.execute_batch(&format!(
+                "BEGIN IMMEDIATE;
+                 INSERT INTO session_writer (session_id, owner, pid, host, heartbeat_ms, claimed_ms)
+                 VALUES ('{S_A}', 'box/2/1', {}, 'box', 1, 1);
+                 INSERT INTO transcript_item
+                 SELECT transcript_id, seq + 1, item_id || '+', kind, item_json,
+                        tok_offset + tok_len, tok_len, h_k, tokens, created_at
+                   FROM transcript_item WHERE transcript_id = 'a#t0' AND seq = 1;
+                 COMMIT;",
+                std::process::id()
+            ));
+            appended = resumed.is_ok();
+            opened = Some(
+                fixture
+                    .config(ROOT_A)
+                    .store_at()
+                    .expect("a store")
+                    .open()
+                    .map(|_| ())
+                    .map_err(|e| e.to_string()),
+            );
+        },
+    );
+    let opened = opened.expect("the hook ran");
+    assert!(
+        opened.is_err(),
+        "a daemon opening A mid-carve is refused, not given sessions.db alone: {opened:?}"
+    );
+    let rows_of = |file: &Path| -> i64 {
+        Connection::open(file)
+            .expect("a file")
+            .query_row(
+                "SELECT COUNT(*) FROM transcript_item WHERE transcript_id = 'a#t0'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(0)
+    };
+    let kept = rows_of(&fixture.store()) + rows_of(&fixture.project(ROOT_A));
+    let expected = if appended { 3 } else { 2 };
+    assert_eq!(
+        kept, expected,
+        "every committed row of a#t0 is in one file (appended: {appended}, carve: {result:?})"
+    );
+}

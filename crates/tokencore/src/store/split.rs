@@ -585,6 +585,17 @@ fn open_transition(dir: &Path, key: &str) -> Result<Store> {
     };
     let project_path = dir.join(PROJECTS_DIR).join(format!("{key}.db"));
     if !carved.contains(key) {
+        // A project file with no carved row is a carve running now or one that stopped: rows
+        // written to `sessions.db` here would be deleted by its commit or hidden by a retry.
+        if project_path.exists() {
+            return Err(StoreError::Refused(format!(
+                "{} is there and {} does not record project {key} as carved: a carve of this \
+                 key is running or stopped after writing it. Wait for the carve, or check and \
+                 delete the file - this daemon writes nothing until then.",
+                project_path.display(),
+                legacy.display()
+            )));
+        }
         return Ok(Store::of_set(shared.shared.clone(), None));
     }
     if !project_path.is_file() {
