@@ -144,7 +144,7 @@ impl App {
             Some(i) if r.value.ends_with(" ago)") => &r.value[..i],
             _ => r.value.as_str(),
         };
-        let age = ago(at_ms, now_ms(), every_ms)
+        let age = ago(at_ms, self.now_ms, every_ms)
             .map(|a| format!(" ({a})"))
             .unwrap_or_default();
         Some((door.as_str(), label.to_string() + &age))
@@ -720,13 +720,6 @@ pub(crate) fn price_range(p: &Provider) -> String {
         _ if listed => "price unlisted".to_string(),
         _ => "no meter".to_string(),
     }
-}
-
-/// The wall clock, Unix millis: what a read time on a pulled or polled copy is measured against.
-pub(crate) fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_millis() as u64)
 }
 
 /// `4m ago` for a reading taken at `at_ms` older than `every_ms`, else `None`: the daemon's

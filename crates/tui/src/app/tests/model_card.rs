@@ -824,10 +824,7 @@ fn the_usage_figure_changes_colour_at_its_thresholds() {
 /// a reading published fresh reads its age ten minutes on, and a fresh one reads none.
 #[test]
 fn the_usage_age_is_drawn_from_its_read_time() {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_millis() as u64;
+    let now: u64 = 1_794_000_000_000;
     let shown = |value: &str, at_ms: u64| {
         let mut a = card(&Wire::default());
         let ServerFrame::Settings { mut rows } = Wire::default().frame() else {
@@ -847,6 +844,7 @@ fn the_usage_age_is_drawn_from_its_read_time() {
             tools: Vec::new(),
         });
         a.apply(ServerFrame::Settings { rows });
+        a.clock(now);
         a.turn_status(120)
     };
     assert_eq!(

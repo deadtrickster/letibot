@@ -255,8 +255,10 @@ fn every_seat_in_the_store_is_drawn() {
 /// old the copy it draws is once it is older than a minute.
 #[test]
 fn a_seat_board_says_when_it_was_read() {
+    const T: u64 = 1_794_000_000_000;
     let mut a = app();
     a.session_id = "s1".into();
+    a.clock(T);
     board(
         &mut a,
         Vec::new(),
@@ -274,7 +276,7 @@ fn a_seat_board_says_when_it_was_read() {
     };
     let first = header(&mut a);
     assert!(first.ends_with("this pane reads it:"), "{first}");
-    a.seat_boards_at_ms = a.seat_boards_at_ms.map(|at| at - 5 * 60_000 - 1_000);
+    a.clock(T + 5 * 60_000 + 1_000);
     let later = header(&mut a);
     assert!(
         later.ends_with("this pane reads it, read 5m ago:"),
