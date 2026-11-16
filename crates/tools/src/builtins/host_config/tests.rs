@@ -853,7 +853,7 @@ fn a_root_setting_with_the_helper_runs_sudo_dash_a() {
     );
 }
 
-/// A helper is not a channel - the reviewer's finding, pinned. `letibot-askpass` on this box
+/// A helper is not a channel. `letibot-askpass` on this box
 /// with no session to ask on is a helper that would print *not inside a letibot session*, so the
 /// decision is a refusal naming what is missing, and the platform's own command never runs.
 #[test]
@@ -1032,7 +1032,7 @@ fn a_write_the_box_did_not_take_is_recorded_as_the_box_reads() {
 }
 
 /// A read-back that fails is recorded as `unread`, never as the value that was asked for. The
-/// reviewer's finding: the field's whole job is *what the machine says now*, so a `set` that could
+/// field's whole job is what the machine says now, so a `set` that could
 /// not measure it says so rather than promoting the ask into a measurement.
 #[test]
 fn a_read_back_that_fails_is_recorded_as_unread() {

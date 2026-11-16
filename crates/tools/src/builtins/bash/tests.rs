@@ -113,8 +113,8 @@ fn a_python_inline_program_that_rewrites_a_tracked_file_draws_its_diff() {
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// The operator's arango shape, with the count it really had: one `python3 -c` that rewrites two
-/// tracked files is two diffs on one row, not a name and an apology (R161).
+/// One `python3 -c` that rewrites two tracked files is two diffs on one row, not a name and an
+/// apology.
 #[test]
 fn a_python_inline_program_that_rewrites_two_files_draws_both_diffs() {
     let root = repo("python-two");
@@ -662,7 +662,7 @@ fn settled(
 }
 
 /// A call that ended nowhere near its cap says nothing about memory: a peak on every result is
-/// a number to size work by, which the model is not given (R93.F1).
+/// a number to size work by, which the model is not given.
 #[test]
 fn a_finished_call_says_nothing_about_its_peak() {
     use crate::exec::MemoryCap;
@@ -762,7 +762,7 @@ fn the_description_declares_exec_and_says_how_to_use_the_tool() {
 
 const GIB: u64 = 1 << 30;
 
-/// The machine R155 was reported on: 123 GiB, 15 GiB free when the ask was made.
+/// A 123 GiB machine with 15 GiB free when the ask is made.
 fn on_lubuntu3(free_gib: u64) -> Machine {
     Machine::There {
         host: "lubuntu3".into(),
@@ -781,7 +781,7 @@ fn on_a_silent_lubuntu3() -> Machine {
     }
 }
 
-/// `cargo clippy` asking for 12 GiB, the call in R155's report.
+/// `cargo clippy` asking for 12 GiB.
 fn clippy_12g() -> Value {
     serde_json::json!({"command": "cargo clippy --workspace", "memory": "12G"})
 }
@@ -807,7 +807,7 @@ fn decided(
 }
 
 /// A placement's cap is decided from the host's numbers and the card says which host they are:
-/// R155's whole report is a card quoting the daemon's box for a command that ran elsewhere.
+/// never the daemon's box for a command that ran elsewhere.
 #[test]
 fn a_placements_ask_is_decided_from_its_host_and_the_card_names_it() {
     let (got, cards) = decided(&on_lubuntu3(15), &clippy_12g(), MemoryGrant::Granted);

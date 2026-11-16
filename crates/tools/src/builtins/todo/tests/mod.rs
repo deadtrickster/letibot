@@ -81,7 +81,7 @@ fn waiting_on_a_child(content: &str, id: &str) -> TodoItem {
     }
 }
 
-/// A row that waits on a JOB - the case this feature was asked for: work that cannot start
+/// A row that waits on a JOB: work that cannot start
 /// until something the daemon is running has ended.
 fn waiting_on_a_job(content: &str, handle: &str) -> TodoItem {
     TodoItem {

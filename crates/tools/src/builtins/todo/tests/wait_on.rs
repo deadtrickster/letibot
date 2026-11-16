@@ -352,7 +352,7 @@ fn the_check_offers_wait_on_when_a_job_or_a_subagent_is_running() {
 
 /// A job a PACKAGE runs is the package's and not the board's: the check names it as that package's
 /// and offers that package's TURN, because a wait on a handle this board does not run would never
-/// end here (`docs/seat-todo.md`).
+/// end here.
 #[test]
 fn a_packages_job_is_named_as_the_packages_and_never_offered_as_a_wait_here() {
     let plan = vec![item("collect K1's build", TodoStatus::InProgress)];

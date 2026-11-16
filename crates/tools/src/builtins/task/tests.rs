@@ -124,9 +124,8 @@ fn a_message_reaches_the_runner_and_a_refusal_is_not_an_ok() {
         )]
     );
 
-    // A child that has already answered is a failure, not a quiet success. This is
-    // the defect class the kill already paid for: a tool reporting a state change that
-    // nothing made.
+    // A child that has already answered is a failure, not a quiet success: a tool must
+    // not report a state change that nothing made.
     let missed = call(
         &mut rt,
         &mut sink,
@@ -2282,10 +2281,9 @@ fn a_task_that_names_skills_carries_them_and_refuses_an_unknown_one() {
     );
 }
 
-/// A seat seated [`TaskReach::OwnChildren`] - the review queue's - reads and corrects the children
-/// it was handed and no other session. The daemon's runner is what makes this worth a test: its
-/// `send` reaches any live id and its `look` describes one, so a tool that trusted the handle alone
-/// would let this seat address a peer.
+/// A seat seated [`TaskReach::OwnChildren`] reads and corrects only the children it was handed.
+/// The daemon's runner reaches any live id, so a tool that trusted the handle alone would let
+/// this seat address a peer.
 #[test]
 fn a_seat_that_may_reach_only_its_children_refuses_every_other_session() {
     use crate::runtime::{Registry, ToolRuntime};
@@ -2652,7 +2650,7 @@ fn an_ordinary_seat_still_reaches_a_peer_by_its_id() {
 
 /// A child whose turn ended with a job killed under it is not a finish: `task_result` answers with
 /// an abstention carrying the child's own words and what died, so nothing a parent reads can take
-/// it for the work being done (R173).
+/// it for the work being done.
 #[test]
 fn a_child_finished_over_a_killed_job_is_not_answered_as_a_finish() {
     /// A runner whose child settled as `Killed`.

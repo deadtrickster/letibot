@@ -1,4 +1,4 @@
-//! R127: the check names every free head of the plan, so independent rows can run in parallel.
+//! The check names every free head of the plan, so independent rows can run in parallel.
 //! A row held by another row, or by a wait, is not a free head.
 
 use super::*;
@@ -60,7 +60,7 @@ fn one_free_row_keeps_the_single_row_check() {
     ];
     let (text, named) = naming(&plan, &no_jobs()).expect("open work");
     assert_eq!(named, ["port the parser"]);
-    // Byte for byte the single-row check from before R127.
+    // Byte for byte the single-row check.
     assert_eq!(
         text,
         "[todo check] Not done:\n  - port the parser — yours\nDo it, or mark it done with \

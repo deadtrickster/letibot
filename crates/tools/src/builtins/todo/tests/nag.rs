@@ -234,7 +234,7 @@ fn an_open_plan_names_one_item_and_what_to_do_about_it() {
         Some("wire the check — yours (in progress)"),
         "the in-progress item is named first, AND whose it is: {msg}"
     );
-    // and the other free row after it: nothing holds it, so it can run beside the first (R127)
+    // and the other free row after it: nothing holds it, so it can run beside the first
     assert!(msg.contains("\n  - test it — yours"), "{msg}");
     assert!(
         !msg.contains("write it up"),
@@ -458,9 +458,8 @@ fn a_seat_is_asked_again_for_its_plan_moving_and_not_for_the_jobs_running_beside
     );
 }
 
-/// A child's wait belongs to the row that names it. The seat's R162 row waited on its own package
-/// and the check offered it the R161 package's turn - a different row's child - in the same breath
-/// as saying it waited on nothing.
+/// A child's wait belongs to the row that names it: the check never offers a row another row's
+/// package's turn.
 #[test]
 fn the_offer_names_the_rows_own_child_and_never_another_rows_package() {
     let mine = "s-1794160942473352900";
@@ -479,7 +478,8 @@ fn the_offer_names_the_rows_own_child_and_never_another_rows_package() {
             ..item("R162 package the nags", TodoStatus::InProgress)
         },
     ];
-    // R161's package is working, so the check is silent about R161's row and only R162's is left.
+    // The first package is working, so the check is silent about its row and only the second's is
+    // left.
     let children = ChildSessions::none().running(theirs, child(60, Some(1), true));
     let jobs = RunningJobs::none()
         .running("j85811")
