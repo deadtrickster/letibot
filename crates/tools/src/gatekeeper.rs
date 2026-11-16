@@ -274,7 +274,7 @@ pub fn review_prompt(req: &ReviewRequest) -> String {
 }
 
 /// [`review_prompt`] for a reviewer that answers through `door` and with a `review_brief` layer's
-/// answer (X18). The facts - the ask, the branch, the head, the base, the tree - are the host's: a
+/// answer. The facts - the ask, the branch, the head, the base, the tree - are the host's: a
 /// layer says what the reviewer is told, never what it is told about. `shape.brief` replaces the
 /// policy body (the host's own being the fallback a silent or trapping layer falls to),
 /// `brief_add` is appended, and `require` becomes its rules.
@@ -344,7 +344,7 @@ pub fn review_prompt_with(
 }
 
 /// The policy body the host itself says: what a reviewer is for, the one-command rule, and the
-/// references rule. The text a `plugins/builtin/review` layer says today, kept here as the fallback
+/// references rule. The text a `plugins/builtin/review` layer says, kept here as the fallback
 /// a layer that traps or stays silent falls to.
 pub fn native_policy(req: &ReviewRequest, door: Door) -> String {
     let head = if req.head_sha.trim().is_empty() {
@@ -395,8 +395,8 @@ pub fn native_policy(req: &ReviewRequest, door: Door) -> String {
 }
 
 /// `review_brief`'s seam: the layer that says what a reviewer is told of one entry, as the queue's
-/// session holds it (X18). A slot like [`crate::adjudicate::FloorHook`]'s, because the queue is built
-/// before the daemon opens its layers - and a queue nobody served composes exactly as it did.
+/// session holds it. A slot like [`crate::adjudicate::FloorHook`]'s, because the queue is built
+/// before the daemon opens its layers, and a queue no layer serves composes the host's own prompt.
 pub trait BriefHook: Send + Sync {
     /// The layer's answer, or `None` when no layer here answers `review_brief`.
     fn brief(&self, req: &ReviewRequest) -> Option<letibot_plugin::review::Brief>;
@@ -542,9 +542,8 @@ mod tests {
             p.contains("has judged nothing"),
             "and what a reply that never made the call means:\n{p}"
         );
-        // The block is gone, because a second spelling of the answer is a second answer: a
-        // reviewer that wrote the old block instead of calling the tool would have judged
-        // nothing, and a prompt that still asked for it would be asking for that.
+        // No answer block: a second spelling of the answer is a second answer, and a reviewer
+        // that wrote a block instead of calling the tool would have judged nothing.
         for gone in ["verdict:", "reasons:", "files:", "commands:"] {
             assert!(
                 !p.contains(gone),

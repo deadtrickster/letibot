@@ -123,8 +123,7 @@ mod tests {
 
     #[test]
     fn it_never_claims_the_thing_is_not_out_there() {
-        // The whole reason this is `NotRun` and not `Abstained`: a refusal that
-        // reads as a finding is the failure with a different mask on.
+        // Why this is `NotRun` and not `Abstained`: a refusal must not read as a finding.
         let body = sample().body().to_lowercase();
         for claim in [
             "not found",

@@ -57,8 +57,7 @@ fn modified_secs(meta: &std::fs::Metadata) -> Option<u64> {
 #[derive(Debug)]
 pub enum BackendError {
     /// The path does not exist. Distinguished from every other failure because
-    /// clause 1's whole behaviour hangs off it: a miss is where the tool has to
-    /// help, and "does not exist" is the miss.
+    /// a miss is where the tool has to help, and "does not exist" is the miss.
     NotFound(String),
     /// The path resolves outside the backend's root.
     Outside(String),
@@ -67,7 +66,7 @@ pub enum BackendError {
     Fenced(String),
     NotADirectory(String),
     IsADirectory(String),
-    /// Named, so the M2 swap is visible rather than mysterious.
+    /// Named, so a substrate that lacks an operation says which one.
     Unsupported(&'static str),
     Io(String),
 }
@@ -88,7 +87,7 @@ impl std::fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
-/// The seam. Host today, firecode in M2, with nothing above it changing.
+/// The seam: host or firecode, with nothing above it changing.
 pub trait ExecBackend: Send + Sync {
     /// `run(cmd, cwd, env) -> (stdout, stderr, exit)`.
     fn run(&self, cmd: &Command) -> Result<Output, BackendError>;
@@ -200,9 +199,8 @@ pub trait ExecBackend: Send + Sync {
     }
 
     /// The memory of the machine these tools run on, and its name when it is not this one. A
-    /// backend whose files are here answers this box; a placement reads its own host's
-    /// `/proc/meminfo`, and a host that does not answer is `None` rather than the figures of the
-    /// box the daemon runs on — a cap sized from the wrong machine is the whole of R155.
+    /// placement reads its own host's `/proc/meminfo`, and a host that does not answer is `None`
+    /// rather than the daemon box's figures: a cap sized from the wrong machine is wrong.
     fn machine_memory(&self) -> crate::exec::memory::Machine {
         crate::exec::memory::Machine::here()
     }
@@ -334,7 +332,7 @@ pub struct HostBackend {
     /// This session's `/tmp`, when its commands run inside a boundary, so that closing the
     /// session can remove what its commands left behind.
     session_tmp: Option<PathBuf>,
-    /// The paths this session's boundary denies, applied to the file tools too (R121 item 8).
+    /// The paths this session's boundary denies, applied to the file tools too.
     /// Empty where the session has no boundary: with no view there is nothing to refuse.
     fence: Option<crate::exec::fence::FileFence>,
 }
@@ -399,9 +397,9 @@ impl HostBackend {
         self
     }
 
-    /// Throttle this session's owner at `bytes` (`memory.high` on its session cgroup): the share
-    /// `docs/lifecycle.md` G5 gives the owner, not a cap - a job's cap is `memory.max` and it is
-    /// that job's alone. Ignored on a backend with no processes of its own, which runs nothing.
+    /// Throttle this session's owner at `bytes` (`memory.high` on its session cgroup): the owner's
+    /// share, not a cap - a job's cap is `memory.max` and it is that job's alone. Ignored on a
+    /// backend with no processes of its own, which runs nothing.
     pub fn with_owner_memory_high(self, bytes: Option<u64>) -> Self {
         if let Some(host) = &self.processes {
             host.set_owner_memory_high(bytes);
@@ -420,9 +418,9 @@ impl HostBackend {
         self
     }
 
-    /// Give this session a `/tmp` that outlives one command, by binding `dir` there: a confined
-    /// session's `/tmp` was a fresh tmpfs per command, so a file one call wrote was gone in the
-    /// next. A new view and a new probe, because the argv is built once.
+    /// Give this session a `/tmp` that outlives one command, by binding `dir` there: otherwise a
+    /// confined session's `/tmp` is a fresh tmpfs per command. A new view and a new probe, because
+    /// the argv is built once.
     pub fn with_session_tmp(self, dir: impl AsRef<Path>) -> Result<Self, BackendError> {
         self.with_session_dirs(dir, &[], None)
     }
@@ -717,7 +715,7 @@ impl HostBackend {
 
     /// The path a tool should show back to the model: relative to the root, `/`
     /// separated. Absolute host paths in a tool result are the same staleness
-    /// clause 6 refuses in a description.
+    /// the description lint refuses.
     pub fn display(&self, p: &Path) -> String {
         // Under the workspace, relative to it; elsewhere under a `/` root, the
         // absolute path - `home/dead/x` with the slash stripped is a path that
@@ -827,7 +825,7 @@ impl ExecBackend for HostBackend {
         }
         // A FIFO, a socket or a device has no end to read to: `read` blocks until a writer appears,
         // which is forever for a named pipe nobody opened. No deadline inside this process can end
-        // that, so the file kind is the bound (R194: a search must never be the thing that waits).
+        // that, so the file kind is the bound: a search must never be the thing that waits.
         if let Ok(meta) = std::fs::metadata(&p)
             && !meta.is_file()
         {
@@ -1174,8 +1172,7 @@ fn resolve_under(root: &Path, rel: &Path) -> Option<PathBuf> {
         }
         let target = std::fs::read_link(&cand).ok()?;
         // Prepend the target's components so they are resolved in turn. An absolute target
-        // restarts the walk at the root and must lie inside it, which is the check the old code
-        // did once, at the end, and therefore not at all for a path that did not exist.
+        // restarts the walk at the root and must lie inside it, checked at every step.
         let mut front: VecDeque<OsString> = VecDeque::new();
         if target.is_absolute() {
             let inside = relative_to_root(&target, root)?;
@@ -1289,10 +1286,9 @@ fn on_named_chain(path: &str, named: &[String]) -> bool {
         .any(|n| n == path || (n.starts_with(path) && n.as_bytes().get(path.len()) == Some(&b'/')))
 }
 
-/// [`walk`] with `.gitignore` honoured, as ripgrep honours it: hidden files are still listed,
-/// and the paths in `named` (and their ancestors) bypass both the rules and [`default_skip`].
-/// The rules are applied after the walk, with every `.gitignore` read in one `read_many`,
-/// because a backend over ssh walks in one round trip and would pay one per directory otherwise.
+/// [`walk`] with `.gitignore` honoured, as ripgrep honours it: hidden files are still listed, and
+/// `named` paths (and their ancestors) bypass the rules and [`default_skip`]. Every `.gitignore` is
+/// read in one `read_many` after the walk, so a backend over ssh pays one round trip, not one per dir.
 pub fn walk_ignoring(
     backend: &dyn ExecBackend,
     root: &str,
@@ -1444,9 +1440,8 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
-    /// A backend whose files are here answers THIS box's memory, which is what every local session
-    /// has always been decided on: the seam exists for the placement, and its default must not
-    /// change a session that was never placed.
+    /// A backend whose files are here answers this box's memory: the seam exists for the
+    /// placement, and its default must not change a session that was never placed.
     #[test]
     fn a_local_backend_answers_this_box() {
         let d = tempdir::TempDir::new();
@@ -2031,9 +2026,8 @@ mod tests {
     }
 
     /// A named pipe in a tree is not a file a search may open: a `read` of it blocks until a writer
-    /// appears, and nothing else in this process can end that. The refusal is the bound, so the
-    /// read answers rather than waiting - the assertion is a timeout, because the failure this
-    /// guards against IS a hang and a test that merely returned late would not see it.
+    /// appears. The refusal is the bound, and the assertion is a timeout because the failure this
+    /// guards against is a hang.
     #[test]
     fn a_named_pipe_in_the_tree_is_refused_and_not_read_forever() {
         let d = tempdir::TempDir::new();

@@ -399,7 +399,7 @@ mod tests {
             ),
             Err(NotCovered::AlwaysAsk)
         );
-        // Blocked: you can shoot your foot, you cannot shoot your head.
+        // Blocked: nothing reaches this, at any mode.
         assert_eq!(
             g.covers(
                 &Tier::Blocked {
@@ -436,8 +436,7 @@ mod tests {
         }
     }
 
-    /// The difference from a bare glob: it is accepted, and it arrives with its own
-    /// muzzle direction printed on it.
+    /// The difference from a bare glob: it is accepted, and its disclosure says it is a glob.
     #[test]
     fn a_glob_states_what_it_includes_before_anybody_accepts_it() {
         let g = Grant {
@@ -477,8 +476,7 @@ mod tests {
     }
 
     /// An unclassified program is counted and named as unclassified: a disclosure that
-    /// omitted the unknown half would be treating absence as permission, which is the
-    /// defect this whole file is written against.
+    /// omitted the unknown half would be treating absence as permission.
     #[test]
     fn an_unclassified_program_is_reported_rather_than_omitted() {
         let g = Grant {

@@ -1,9 +1,6 @@
-//! What a command changed on disk, so a change made by a shell command or a `git merge` still
-//! draws a diff. The old bytes of an already-dirty file must be read before the command runs;
-//! one whose bytes were never read is not reported, because a wrong diff is worse than none.
-//!
-//! The tree is found from the directory the command runs in, not from the session's workspace: a
-//! `cd <other-checkout> && …` writes into a repository the workspace may not be the root of.
+//! What a command changed on disk, so a shell command or a `git merge` still draws a diff. An
+//! already-dirty file's old bytes are read before the command runs; one never read is not reported,
+//! because a wrong diff is worse than none. The tree is found from the command's own directory.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -52,10 +49,9 @@ pub fn tree(dir: &Path) -> Option<PathBuf> {
 /// hidden.
 pub const MAX_DRAWN_DIFFS: usize = 12;
 
-/// A tree snapshotted before something ran, and read after it: the two halves of "what changed", in
-/// one value because neither is any use alone. A background job's snapshot is taken at the spawn and
-/// read at the settlement, so this crosses from the tool that spawned it to the watcher that sees it
-/// end - which is why it is here and not inside `bash`'s own file.
+/// A tree snapshotted before something ran, and read after it. A background job's snapshot crosses
+/// from the tool that spawned it to the watcher that sees it end, which is why it lives here and not
+/// in `bash`'s own file.
 #[derive(Debug, Clone)]
 pub struct Sweep {
     /// The work tree root the paths are relative to.

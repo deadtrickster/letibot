@@ -1,11 +1,8 @@
 //! Git, as the queues and the reaper use it: every command is one `git -C <dir> …` with git's
 //! own words on failure.
 //!
-//! These are the primitives that decide whether a tree or a ref may be removed - the three-valued
-//! [`Proof`] and the worktree rail under `git worktree remove` - so they live in one crate that
-//! both the merge queue (`letibot-harnessd`) and the lifecycle reaper reach. Two copies of a
-//! safety rail is one copy too many: a queue that removes a tree on a weaker check than the
-//! reaper's is the same defect wearing a different commit.
+//! The primitives that decide whether a tree or a ref may be removed ([`Proof`], the worktree
+//! rail) live here so the merge queue and the lifecycle reaper share one copy of the check.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -81,9 +78,8 @@ pub fn head_of(wt: &Path) -> Result<String, String> {
     Ok(sha)
 }
 
-/// What a ref is: there, not there, or unreadable. [`rev_parse`] folds all three into one `Option`
-/// and the sweep read its `None` as *gone* - a repository git could not read then took a worktree
-/// down with it.
+/// What a ref is: there, not there, or unreadable. [`rev_parse`] folds all three into one `Option`,
+/// and an unreadable repository must never read as *gone*.
 enum RefState {
     Sha(String),
     /// Git said, in so many words, that there is no such ref (exit 1 from `show-ref --verify`).
@@ -322,8 +318,7 @@ pub fn is_worktree_of(path: &Path, repo: &Path) -> bool {
 }
 
 /// Remove one worktree of `repo` and everything inside it - the tree, and the cache a
-/// package keeps in its own tree (a private `target/`, which is what makes a review's tree
-/// weigh tens of GB).
+/// package keeps in its own tree (a private `target/`).
 pub fn remove_worktree(repo: &Path, wt: &Path, branch: &str) -> Result<(), String> {
     if !wt.exists() {
         // The tree is gone; git's bookkeeping for it may not be.
