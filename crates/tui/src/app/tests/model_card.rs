@@ -944,3 +944,19 @@ fn a_stale_reading_shows_its_age() {
         "{deepseek}"
     );
 }
+
+/// Opening the card asks the daemon to poll only when it echoed the feature: an older daemon has
+/// no such frame.
+#[test]
+fn the_picker_asks_for_a_poll_only_from_a_daemon_that_echoed_it() {
+    let a = card(&Wire::default());
+    assert!(!a.queued.contains(&Action::PollUsage), "{:?}", a.queued);
+    let mut a = app();
+    a.session_id = "s1".into();
+    a.apply(Wire::default().frame());
+    a.apply(ServerFrame::Features {
+        accepted: vec![letibot_sessionlog::FEATURE_USAGE_POLL.into()],
+    });
+    assert_eq!(a.command("models"), Some(Action::Settings));
+    assert!(a.queued.contains(&Action::PollUsage), "{:?}", a.queued);
+}

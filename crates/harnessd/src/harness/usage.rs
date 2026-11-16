@@ -196,6 +196,27 @@ impl Harness {
         out
     }
 
+    /// Install what a picker opening does: one poll, off the caller's thread, of each keyed door
+    /// with an endpoint, debounced per door by the poll, then the rows pushed if one landed.
+    pub(super) fn install_usage_poll(&self) {
+        let file = self.cfg.providers_file.clone();
+        let reg = std::sync::Arc::downgrade(&self.session_registry);
+        let sid = self.cfg.session_id.clone();
+        self.session_registry.set_usage_poll_source(
+            &self.cfg.session_id,
+            std::sync::Arc::new(move || {
+                let (file, reg, sid) = (file.clone(), reg.clone(), sid.clone());
+                std::thread::spawn(move || {
+                    if poll_keyed_doors(file.as_deref())
+                        && let Some(reg) = reg.upgrade()
+                    {
+                        reg.push_settings(&sid);
+                    }
+                });
+            }),
+        );
+    }
+
     /// Install the `models.limits` row, built at each read so a picker's `Settings` gets every
     /// door's newest reading.
     pub(super) fn install_limits_source(&self) {
@@ -215,6 +236,21 @@ impl Harness {
             }),
         );
     }
+}
+
+/// One picker poll of each door this box holds a key for that declares a usage endpoint; `true`
+/// when any reading was taken.
+fn poll_keyed_doors(file: Option<&std::path::Path>) -> bool {
+    let mut took = false;
+    for p in letibot_provider::registry::all(file) {
+        if p.usage_url.is_none() {
+            continue;
+        }
+        if let Ok(creds) = letibot_provider::keys::resolve(p, None, file) {
+            took |= letibot_provider::usage_poll::poll_once(p, &creds);
+        }
+    }
+    took
 }
 
 /// What the poll hands this session each round: the row is replaced on every reading, crossing or

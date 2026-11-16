@@ -1783,6 +1783,9 @@ pub fn serve_conn_on(
                 let hub = &seat.hub;
                 answer_settings(&writer, || registry.settings(&hub.session_id()))?;
             }
+            Ok(ClientFrame::PollUsage) => {
+                registry.poll_usage(&seat.hub.session_id());
+            }
             Ok(ClientFrame::Peek { session_id, shape }) => {
                 // A read, not a move: the seat, its acks and its live events are untouched, and the
                 // answer is the session's scrollback.

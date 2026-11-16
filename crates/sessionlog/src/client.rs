@@ -974,6 +974,12 @@ impl HeadClient {
         Ok(())
     }
 
+    /// The model picker opened. No answer: the readings arrive as a pushed `Settings`.
+    pub fn poll_usage(&mut self) -> Result<(), ClientError> {
+        self.writer.write(&ClientFrame::PollUsage)?;
+        Ok(())
+    }
+
     /// Take the head id from a `Hello` the caller pumped off the socket. Not folded into `switch`,
     /// because the caller is the one that read the frame.
     pub fn seated(&mut self, head_id: &str) {

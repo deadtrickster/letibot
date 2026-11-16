@@ -1177,7 +1177,17 @@ fn live_rows_are_built_at_each_read() {
     };
     assert_eq!(limits(r.settings("s-1")), ["0"]);
     assert_eq!(limits(r.settings("s-1")), ["1"]);
+    assert!(!r.poll_usage("s-1"), "no harness installed a poll");
+    let polled = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let p = polled.clone();
+    r.set_usage_poll_source(
+        "s-1",
+        Arc::new(move || p.store(true, std::sync::atomic::Ordering::SeqCst)),
+    );
+    assert!(r.poll_usage("s-1"));
+    assert!(polled.load(std::sync::atomic::Ordering::SeqCst));
     r.remove("s-1");
+    assert!(!r.poll_usage("s-1"), "the poll goes with the session");
     assert!(limits(r.settings("s-1")).is_empty());
 }
 

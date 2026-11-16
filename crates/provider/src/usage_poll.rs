@@ -413,6 +413,30 @@ pub fn door_readings() -> Vec<(String, Vec<Window>, u64)> {
         .collect()
 }
 
+/// When each door was last polled on a picker's asking.
+static ASKED: Mutex<BTreeMap<String, Instant>> = Mutex::new(BTreeMap::new());
+
+/// One reading of `preset`'s endpoint for a picker that opened, unless this door was asked within
+/// [`EVERY`] or holds a reading younger than that. Blocks for the request; `true` when a reading
+/// was taken.
+pub fn poll_once(preset: &Preset, creds: &Credentials) -> bool {
+    let Some(url) = crate::usage::url(preset, creds) else {
+        return false;
+    };
+    {
+        let mut asked = ASKED.lock().unwrap_or_else(|e| e.into_inner());
+        if asked
+            .get(preset.name)
+            .is_some_and(|at| at.elapsed() < EVERY)
+        {
+            return false;
+        }
+        asked.insert(preset.name.to_string(), Instant::now());
+    }
+    note_door(preset.name, &url);
+    read(&url, creds, EVERY, false).is_some_and(|r| !r.windows.is_empty())
+}
+
 /// The latest reset among the spent windows of a reading of `url`: the poll's own when it is
 /// younger than `fresh` and shows one, else one request made now, which every watcher is told.
 pub fn spent_reset_ms(url: &str, creds: &Credentials, fresh: Duration) -> Option<u64> {

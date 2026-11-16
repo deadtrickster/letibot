@@ -884,6 +884,10 @@ pub type BroadcastObserver = Arc<dyn Fn(&crate::event::SessionEvent) + Send + Sy
 /// the session doing anything, like another door's usage. Called with no registry lock held.
 pub type LiveRowsSource = Arc<dyn Fn() -> Vec<crate::protocol::SettingRow> + Send + Sync>;
 
+/// What a session's harness does when a head's model picker opens: poll the usage endpoints that
+/// hold no fresh reading. Must return at once; the polling is its own thread's.
+pub type UsagePollSource = Arc<dyn Fn() + Send + Sync>;
+
 pub type JobOutputSource = Arc<dyn Fn(&str, u64) -> Option<crate::SessionEvent> + Send + Sync>;
 
 /// A session's job table read at the moment a head asks. The mailbox trails the job events, and a
@@ -922,6 +926,8 @@ pub struct Registry {
     job_output: Mutex<std::collections::HashMap<String, JobOutputSource>>,
     /// Removed with the session, like `job_output`. See [`LiveRowsSource`].
     live_rows: Mutex<std::collections::HashMap<String, LiveRowsSource>>,
+    /// Removed with the session, like `job_output`. See [`UsagePollSource`].
+    usage_poll: Mutex<std::collections::HashMap<String, UsagePollSource>>,
     /// Removed with the session, like `job_output`. See [`JobListSource`].
     job_list: Mutex<std::collections::HashMap<String, JobListSource>>,
     room_chat: Mutex<Option<RoomChatSeat>>,
@@ -1116,6 +1122,7 @@ impl Registry {
             skills: Mutex::new(std::collections::HashMap::new()),
             job_output: Mutex::new(std::collections::HashMap::new()),
             live_rows: Mutex::new(std::collections::HashMap::new()),
+            usage_poll: Mutex::new(std::collections::HashMap::new()),
             job_list: Mutex::new(std::collections::HashMap::new()),
             room_chat: Mutex::new(None),
             chatting: Mutex::new(std::collections::BTreeMap::new()),
@@ -1918,6 +1925,11 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(session_id);
+        let usage_poll = self
+            .usage_poll
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(session_id);
         // Dropped outside every lock: a closure's captures can run arbitrary `Drop`s (a
         // `HostProcesses` ends its deadline thread), and none of them may run under a registry
         // mutex another thread is waiting on.
@@ -1932,6 +1944,7 @@ impl Registry {
             pane_driver,
             job_list,
             live_rows,
+            usage_poll,
         ));
         Some(entry.hub)
     }
@@ -2170,6 +2183,40 @@ impl Registry {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .insert(session_id.to_string(), source);
+    }
+
+    /// Install what a picker opening asks this session's harness for. See [`UsagePollSource`].
+    pub fn set_usage_poll_source(&self, session_id: &str, source: UsagePollSource) {
+        self.usage_poll
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(session_id.to_string(), source);
+    }
+
+    /// A head's picker opened on this session. `false` when no harness installed a poll.
+    pub fn poll_usage(&self, session_id: &str) -> bool {
+        let source = self
+            .usage_poll
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(session_id)
+            .cloned();
+        source.map(|s| s()).is_some()
+    }
+
+    /// Push the session's rows to its heads as a read would answer them: for read-time rows that
+    /// moved with nothing published.
+    pub fn push_settings(&self, session_id: &str) -> bool {
+        let (hub, rows) = {
+            let g = self.lock();
+            let Some(e) = g.entry(session_id) else {
+                return false;
+            };
+            (e.hub.clone(), e.settings.clone())
+        };
+        let rows = self.with_live_rows(session_id, rows);
+        hub.push_frame(crate::protocol::ServerFrame::Settings { rows });
+        true
     }
 
     /// `rows` with the session's read-time rows in place of any stored under the same keys.

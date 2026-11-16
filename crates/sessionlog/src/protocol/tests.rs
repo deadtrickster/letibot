@@ -55,6 +55,7 @@ fn every_frame_is_accounted_for_at_this_version() {
             | ClientFrame::Secret { .. }
             | ClientFrame::SendLine { .. }
             | ClientFrame::Settings
+            | ClientFrame::PollUsage
             | ClientFrame::Slash { .. }
             | ClientFrame::SuggestShell { .. }
             | ClientFrame::Stop { .. }
@@ -160,8 +161,11 @@ fn every_frame_is_accounted_for_at_this_version() {
     let _ = event;
     let _ = server;
     assert_eq!(
-        PROTOCOL_VERSION, 79,
-        "the match above was last reconciled with the frame list at 79. 79 added \
+        PROTOCOL_VERSION, 80,
+        "the match above was last reconciled with the frame list at 80. 80 added \
+             `ClientFrame::PollUsage`: the model picker asks the daemon to poll the usage \
+             endpoints it holds no fresh reading of, sent only to a daemon that echoed \
+             `FEATURE_USAGE_POLL`. 79 added \
              `ServerFrame::Features` and counted the meaning changes that rode earlier numbers: \
              `Prompt.delivery` arrived under 76, and `Prompt.from` under 74, both defaulted, so a \
              daemon of either number parses the frame and drops the field - a queued prompt steers \
