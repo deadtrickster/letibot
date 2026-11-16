@@ -147,7 +147,7 @@ pub fn run(args: &[String]) -> i32 {
         let after_reasoning = reasoned_in_the_last_turn(harness.items());
         let started = std::time::Instant::now();
         let reply = match step {
-            Step::Ask(text) => harness.submit(text),
+            Step::Ask(text) => harness.submit_operator(text),
             Step::SystemUpdate(text) => harness.system_update(text),
         };
         match reply {

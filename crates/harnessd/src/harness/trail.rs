@@ -103,13 +103,16 @@ impl TrailMirror {
 
     /// Seed from a transcript rebuilt out of the store. The speaker comes off the row: calling
     /// every `User` row the operator's put the session's own settlements and notices into the
-    /// authorisation trail as citable utterances. A row older than the field reads as `Operator`.
-    pub(crate) fn seed(&self, items: &[TranscriptItem]) {
+    /// authorisation trail as citable utterances. A row older than the field reads as `Operator`,
+    /// except a child's first row: that is its parent's brief, whatever an older build stored.
+    pub(crate) fn seed(&self, items: &[TranscriptItem], child: bool) {
         let mut g = self.lock();
         g.items = items.len();
         g.said.clear();
+        let mut brief = child;
         for (i, item) in items.iter().enumerate() {
             if let TranscriptItem::User { parts, speaker } = item {
+                let the_brief = std::mem::take(&mut brief);
                 let text: String = parts
                     .iter()
                     .filter_map(|p| match p {
@@ -135,6 +138,7 @@ impl TrailMirror {
                     // behind a `From`, so the one place they touch is the one place a reader looks for
                     // the mapping.
                     speaker: match speaker {
+                        letibot_transcript::Speaker::Operator if the_brief => Speaker::Agent,
                         letibot_transcript::Speaker::Operator => Speaker::Operator,
                         // A peer's line is context, never an authorisation.
                         letibot_transcript::Speaker::Agent

@@ -194,49 +194,54 @@ enum RoundEnd {
 /// The output cap of a turn woken only by passing-by room talk: room for one short reply.
 pub(crate) const CHEAP_WAKE_TOKENS: u32 = 512;
 
+/// Whose words a prompt is, named at every door. There is no default: a door that cannot say the
+/// operator typed it is a peer or the harness, never the operator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Voice {
+    /// The operator typed it, at a head that is theirs.
+    Operator,
+    /// An agent or program sent it under this handle.
+    Peer(String),
+    /// The harness composed it.
+    Agent,
+}
+
+impl Voice {
+    /// A queued command's sender, read the one way every consumer reads it - see
+    /// [`letibot_sessionlog::hub::QueuedCommand::peer`].
+    pub fn of_command(cmd: &letibot_sessionlog::hub::QueuedCommand) -> Voice {
+        match cmd.peer() {
+            Some(from) => Voice::Peer(from),
+            None => Voice::Operator,
+        }
+    }
+
+    pub fn is_operator(&self) -> bool {
+        matches!(self, Voice::Operator)
+    }
+}
+
 impl Harness {
-    /// The loop: one user message in, one answer out, however many tool rounds that takes. This is
-    /// the one door the operator's own words come through, and the only place that records them as
-    /// the operator's: the speaker cannot be recovered from the transcript afterwards.
-    pub fn submit(&mut self, text: &str) -> Result<Reply, HarnessError> {
+    /// The loop for the operator's own typed words: one user message in, one answer out, however many
+    /// tool rounds that takes. Only a door whose connection is the operator's calls this, since the
+    /// speaker cannot be recovered from the transcript afterwards.
+    pub fn submit_operator(&mut self, text: &str) -> Result<Reply, HarnessError> {
         self.submit_spoken(Speaker::Operator, text)
     }
 
-    /// The operator's words with the chips they put beside them. The files are read HERE, since the daemon
-    /// writes the transcript and the row carries the `data:` URI rather than a path that may be gone. A file
-    /// that could not be read is said in the row and warned; an empty list is `submit`, byte for byte.
-    pub fn submit_attached(
-        &mut self,
-        text: &str,
-        attachments: &[letibot_sessionlog::protocol::Attachment],
-    ) -> Result<Reply, HarnessError> {
-        self.submit_with_context(text, attachments, None)
-    }
-
-    /// The same, with what the operator pointed at in an editor: one more part after the chips, written
-    /// by the DAEMON ([`crate::editor_context::part`]) so every head's prompt reads the same way.
-    pub fn submit_with_context(
-        &mut self,
-        text: &str,
-        attachments: &[letibot_sessionlog::protocol::Attachment],
-        context: Option<&letibot_sessionlog::protocol::EditorContext>,
-    ) -> Result<Reply, HarnessError> {
-        self.submit_with_context_from(text, attachments, context, None)
-    }
-
-    /// A prompt through a head, from the operator (`peer` is `None`) or from an agent that sent it
-    /// under its handle. The agent's line drives the turn the same way and is stored as its own, so
-    /// nothing downstream reads it as the operator's words.
+    /// A prompt through a head, with the chips and the editor's context beside it, from whoever
+    /// `voice` names. The files are read HERE, since the daemon writes the transcript and the row
+    /// carries the `data:` URI. `beside` are context rows of the harness's own, so they are never
+    /// stored as the speaker's words.
     pub fn submit_with_context_from(
         &mut self,
         text: &str,
         attachments: &[letibot_sessionlog::protocol::Attachment],
         context: Option<&letibot_sessionlog::protocol::EditorContext>,
-        peer: Option<&str>,
+        voice: &Voice,
+        beside: Vec<String>,
     ) -> Result<Reply, HarnessError> {
         let (mut extra, refused) = crate::attachments::parts(attachments);
-        // Only what an editor captured is worth a block: a context with no refs, no open buffers and no
-        // ask is a head sending a defaulted field, and a bare sentence about nothing would be noise.
         let workspace = self.cfg.workspace.to_string_lossy().into_owned();
         if let Some(c) = context {
             // The unsaved captures are this turn's anchor for a mark the reply makes: the file on
@@ -255,19 +260,44 @@ impl Harness {
         for said in &refused {
             self.warn("attachment_refused", said.clone());
         }
-        if let Some(from) = peer {
-            let said = letibot_transcript::Speaker::signed(from, text);
-            return self.submit_said(
-                Speaker::Agent,
-                letibot_transcript::Speaker::peer(from),
-                &said,
+        self.submit_voiced(voice, text, extra, beside)
+    }
+
+    /// One turn whose words are `voice`'s, with `beside` as context rows of the harness's own before
+    /// them: a command file's body, a skill, a page. Context never authorises, whoever's words follow.
+    pub(crate) fn submit_voiced(
+        &mut self,
+        voice: &Voice,
+        text: &str,
+        extra: Vec<UserPart>,
+        beside: Vec<String>,
+    ) -> Result<Reply, HarnessError> {
+        match voice {
+            Voice::Operator => self.submit_said(
+                Speaker::Operator,
+                letibot_transcript::Speaker::Operator,
+                text,
                 extra,
-            );
+                beside,
+            ),
+            Voice::Peer(from) => {
+                let said = letibot_transcript::Speaker::signed(from, text);
+                self.submit_said(
+                    Speaker::Agent,
+                    letibot_transcript::Speaker::peer(from.clone()),
+                    &said,
+                    extra,
+                    beside,
+                )
+            }
+            Voice::Agent => self.submit_said(
+                Speaker::Agent,
+                letibot_transcript::Speaker::Agent,
+                text,
+                extra,
+                beside,
+            ),
         }
-        if extra.is_empty() {
-            return self.submit(text);
-        }
-        self.submit_spoken_parts(Speaker::Operator, text, extra)
     }
 
     /// One turn, with the speaker given. The speaker is not decoration: [`Speaker::Agent`] never
@@ -278,33 +308,24 @@ impl Harness {
         speaker: Speaker,
         text: &str,
     ) -> Result<Reply, HarnessError> {
-        self.submit_spoken_parts(speaker, text, Vec::new())
-    }
-
-    /// The same, with the parts an attachment became - see [`Harness::submit_attached`].
-    fn submit_spoken_parts(
-        &mut self,
-        speaker: Speaker,
-        text: &str,
-        extra: Vec<UserPart>,
-    ) -> Result<Reply, HarnessError> {
         let row = match speaker {
             Speaker::Operator => letibot_transcript::Speaker::Operator,
             // A session talking to itself, a tool's row, a parent's message: none of
             // them is the operator's words, and none may be drawn as them.
             Speaker::Agent | Speaker::Tool => letibot_transcript::Speaker::Agent,
         };
-        self.submit_said(speaker, row, text, extra)
+        self.submit_said(speaker, row, text, Vec::new(), Vec::new())
     }
 
     /// One turn, with the trail's speaker and the row's given apart: a peer's row names its sender,
-    /// which the trail has no word for and records as context.
+    /// which the trail has no word for and records as context. `beside` are the harness's rows.
     fn submit_said(
         &mut self,
         speaker: Speaker,
         row: letibot_transcript::Speaker,
         text: &str,
         extra: Vec<UserPart>,
+        beside: Vec<String>,
     ) -> Result<Reply, HarnessError> {
         // New words start a new turn: a nudge held for the last one never goes out after them.
         self.shadow_held = None;
@@ -328,6 +349,15 @@ impl Harness {
         let board = std::mem::take(&mut self.board_notices);
         if !board.is_empty() {
             let said = board.join("\n\n");
+            self.trail.say(Speaker::Agent, &said, Some(Instant::now()));
+            items.push(TranscriptItem::User {
+                speaker: letibot_transcript::Speaker::Agent,
+                parts: vec![UserPart::Text { text: said }],
+            });
+        }
+        // Captured or composed text the words came with: an Agent row, so it can be read and cited
+        // as context and never as the speaker's consent. Before the words, which stay last.
+        for said in beside.into_iter().filter(|b| !b.trim().is_empty()) {
             self.trail.say(Speaker::Agent, &said, Some(Instant::now()));
             items.push(TranscriptItem::User {
                 speaker: letibot_transcript::Speaker::Agent,
@@ -1602,8 +1632,12 @@ impl Harness {
     /// A prompt through the seam every session has, which is the one a child was missing: the wall is detected
     /// in the harness, but what REACTS to it lived only in `Sessions`, which a child never reaches. One tail and
     /// not two: this is `run_turn` with no owner around it.
-    pub fn submit_as_a_normal_session(&mut self, prompt: &str) -> Result<Reply, HarnessError> {
-        self.submit_spoken_as_a_normal_session(Speaker::Operator, prompt)
+    pub fn submit_as_a_normal_session(
+        &mut self,
+        speaker: Speaker,
+        prompt: &str,
+    ) -> Result<Reply, HarnessError> {
+        self.submit_spoken_as_a_normal_session(speaker, prompt)
     }
 
     /// A parent's message to a child BETWEEN turns: the turn it makes, spoken as the parent's. Until it arrived,
@@ -1640,11 +1674,17 @@ impl Harness {
     /// A parent's or peer's message as a turn, bare - the words
     /// [`Harness::submit_a_parents_message`] speaks, without the tail around them, for a caller
     /// that runs the tail itself ([`crate::turn_tail::run_turn`]).
-    pub fn parents_message_turn(&mut self, from: &str, text: &str) -> Result<Reply, HarnessError> {
+    /// `beside` are harness rows that go before it, such as a child's worktree facts.
+    pub fn parents_message_turn(
+        &mut self,
+        from: &str,
+        text: &str,
+        beside: Vec<String>,
+    ) -> Result<Reply, HarnessError> {
         let said = message_from_a_session(from, text, self.cfg.parent_session_id.as_deref());
         let facts = Facts::Parent { from: from.into() };
         let said = self.say_kept(&facts, said);
-        self.submit_spoken(Speaker::Agent, &said)
+        self.submit_voiced(&Voice::Agent, &said, Vec::new(), beside)
     }
 
     /// Change the system prompt mid-session, in the form the dialect can render. Appended, never rewritten:

@@ -76,7 +76,7 @@ fn a_two_round_turn_ends_once_and_says_which_frame_ended_it() {
 
     let before = hub.retained().len();
     run_turn(&mut h, &mut Bare, Door::Prompt, |h| {
-        h.submit("read the plan and answer").map(Some)
+        h.submit_operator("read the plan and answer").map(Some)
     })
     .expect("a spoken turn always runs")
     .expect("the turn runs");

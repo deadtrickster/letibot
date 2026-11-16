@@ -185,7 +185,7 @@ fn the_shadows_pick_is_the_offer_and_similarity_says_nothing() {
         ),
         false,
     );
-    h.submit(PROMPT).expect("a turn runs");
+    h.submit_operator(PROMPT).expect("a turn runs");
     let tails = tails.lock().unwrap();
     assert!(
         !tails[0].contains("[skill offer"),
@@ -214,7 +214,7 @@ fn an_unsure_pick_is_no_offer_while_the_shadow_decides() {
         ),
         false,
     );
-    h.submit(PROMPT).expect("a turn runs");
+    h.submit_operator(PROMPT).expect("a turn runs");
     let tails = tails.lock().unwrap();
     assert!(offered(&tails).is_empty(), "{tails:?}");
 }
@@ -222,10 +222,10 @@ fn an_unsure_pick_is_no_offer_while_the_shadow_decides() {
 #[test]
 fn with_no_shadow_similarity_offers_and_a_child_is_offered_nothing() {
     let (mut h, tails, _) = a_session("plain", None, false);
-    h.submit(PROMPT).expect("a turn runs");
+    h.submit_operator(PROMPT).expect("a turn runs");
     let made = offered(&tails.lock().unwrap()).len();
     assert_eq!(made, 1, "{:?}", tails.lock().unwrap());
     let (mut h, tails, _) = a_session("child", None, true);
-    h.submit(PROMPT).expect("a turn runs");
+    h.submit_operator(PROMPT).expect("a turn runs");
     assert!(offered(&tails.lock().unwrap()).is_empty());
 }

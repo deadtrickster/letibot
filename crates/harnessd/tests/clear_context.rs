@@ -223,7 +223,7 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
     // A history worth clearing.
     parent
         .harness
-        .submit("start on the parser")
+        .submit_operator("start on the parser")
         .expect("the first turn runs");
     let old_id = parent.harness.transcript_id().to_string();
     let old_items = parent.harness.items().len();
@@ -372,7 +372,7 @@ fn a_cleared_session_keeps_its_board_its_job_and_its_child() {
         {
             parent
                 .harness
-                .submit("carry on")
+                .submit_operator("carry on")
                 .expect("the prompt's turn runs");
             prompted = true;
         }

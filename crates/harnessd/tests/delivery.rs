@@ -278,7 +278,8 @@ fn a_prompt_before_the_turn_end_wake_carries_the_batch_and_the_wake_runs_nothing
     w.hold(vec![settled(&cfg.session_id, "j21", "exited 0")]);
     w.turn_ended(TurnEnd::Done);
 
-    h.submit("what is next?").expect("the prompt's turn runs");
+    h.submit_operator("what is next?")
+        .expect("the prompt's turn runs");
     let rows = user_rows(&h);
     assert_eq!(rows.len(), 2, "{rows:?}");
     assert_eq!(

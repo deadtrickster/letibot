@@ -99,12 +99,18 @@ fn a_suggest_fence_is_published_with_its_kind_its_body_and_the_buffers_lines() {
     };
 
     let before = hub.retained().len();
-    // The door the daemon uses, not `submit_with_context` on its own: the turn tail is what brackets
+    // The door the daemon uses, not `submit_with_context_from` on its own: the turn tail is what brackets
     // the prompt's span, and the citations are published as the reply's row lands inside it.
     use letibot_harnessd::turn_tail::{Bare, Door, run_turn};
     run_turn(&mut h, &mut Bare, Door::Prompt, |h| {
-        h.submit_with_context("fill the gap please", &[], Some(&context))
-            .map(Some)
+        h.submit_with_context_from(
+            "fill the gap please",
+            &[],
+            Some(&context),
+            &letibot_harnessd::Voice::Operator,
+            Vec::new(),
+        )
+        .map(Some)
     })
     .expect("a spoken turn always runs")
     .expect("the turn runs");

@@ -1149,7 +1149,7 @@ pub(crate) fn serve_child_with(
         }
         // Anything else is activity, and the park clock starts over from it.
         park_at = park_after.map(|d| std::time::Instant::now() + d);
-        let (kind, identity) = match work {
+        let (kind, identity, voice) = match work {
             // The hub closed: the daemon is going away, or this session was reaped.
             OwnWork::Closed => return ChildExit::Closed,
             // A wake has no command behind it and needs none: its content is *something this session owns
@@ -1195,7 +1195,10 @@ pub(crate) fn serve_child_with(
                 }
                 continue;
             }
-            OwnWork::Command(cmd) => (cmd.kind, cmd.identity),
+            OwnWork::Command(cmd) => {
+                let voice = Voice::of_command(&cmd);
+                (cmd.kind, cmd.identity, voice)
+            }
         };
         match child_command(&kind) {
             // The same door the first prompt took: a child is a session, and a prompt to it is a turn
@@ -1212,7 +1215,9 @@ pub(crate) fn serve_child_with(
                 };
                 match sub.answer_operator_ask(content, question, answer) {
                     Ok(line) => {
-                        later_turn(sub, turns, Door::Prompt, |h| h.submit(&line).map(Some));
+                        later_turn(sub, turns, Door::Prompt, |h| {
+                            h.submit_operator(&line).map(Some)
+                        });
                     }
                     Err(why) => {
                         hub.warn(
@@ -1224,32 +1229,27 @@ pub(crate) fn serve_child_with(
                 }
             }
             ChildCommand::Answer => {
-                let (text, attachments, context, from) = match &kind {
+                let (text, attachments, context) = match &kind {
                     letibot_sessionlog::CommandKind::Prompt {
                         text,
                         attachments,
                         context,
-                        from,
                         ..
-                    } => (
-                        text.clone(),
-                        attachments.clone(),
-                        context.clone(),
-                        from.clone(),
-                    ),
+                    } => (text.clone(), attachments.clone(), context.clone()),
                     _ => unreachable!("`child_command` answers a Prompt and nothing else"),
                 };
-                let door = if from.is_some() {
-                    Door::Message
-                } else {
+                let door = if voice.is_operator() {
                     Door::Prompt
+                } else {
+                    Door::Message
                 };
                 later_turn(sub, turns, door, |h| {
                     h.submit_with_context_from(
                         &text,
                         &attachments,
                         context.as_ref(),
-                        from.as_deref(),
+                        &voice,
+                        Vec::new(),
                     )
                     .map(Some)
                 });
@@ -1265,7 +1265,7 @@ pub(crate) fn serve_child_with(
                     _ => unreachable!("`child_command` hears a Message and nothing else"),
                 };
                 later_turn(sub, turns, Door::Message, |h| {
-                    h.parents_message_turn(&from, &text).map(Some)
+                    h.parents_message_turn(&from, &text, Vec::new()).map(Some)
                 });
             }
             // The children first, then this session: stopping is a tree's downward edge, and this is where a
@@ -4189,17 +4189,18 @@ impl HarnessTaskRunner {
         // is dirty. Set for a RESUMED child too, since its placement comes back with it and an interrupted child
         // is the likeliest of all to hold uncommitted work.
         sub.set_deliverable(the_deliverable.clone());
-        let brief = match &the_deliverable {
-            Some(d) => format!(
-                "{prompt}\n\n{}",
+        // The task is the parent's words and the worktree facts the harness's, each its own row: the
+        // parent model's text is not the operator's, so it can never be cited as their consent.
+        let worktree: Vec<String> = the_deliverable
+            .iter()
+            .map(|d| {
                 letibot_tools::builtins::task::worktree_brief_with(
                     &d.path,
                     &d.branch,
                     shaped.as_ref().and_then(|s| s.brief_add.as_deref()),
                 )
-            ),
-            None => prompt.to_string(),
-        };
+            })
+            .collect();
         // A RESUMED child carries on; a fresh one is asked. `restart` is the notice a child brought back reads:
         // its session was reopened from the store under the same id, so the conversation it continues is its own.
         // A child whose daemon died before its first row has nothing to continue and is asked its task.
@@ -4220,7 +4221,7 @@ impl HarnessTaskRunner {
             crate::turn_tail::run_turn(&mut sub, &mut turns, crate::turn_tail::Door::Prompt, |h| {
                 match restart {
                     Some(notice) => h.continue_after_restart(notice).map(Some),
-                    None => h.submit(&brief).map(Some),
+                    None => h.parents_message_turn(&parent, prompt, worktree).map(Some),
                 }
             })
             .expect("a prompt always runs a turn");

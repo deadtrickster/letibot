@@ -89,7 +89,7 @@ fn a_nudged_round_and_a_loop_left_between_rounds_both_end_the_prompt_once() {
     // A round with no call, nudged into a second one: the first round does not end the prompt.
     let before = hub.retained().len();
     let reply = run_turn(&mut h, &mut Bare, Door::Prompt, |h| {
-        h.submit("port the rest of the emulator").map(Some)
+        h.submit_operator("port the rest of the emulator").map(Some)
     })
     .expect("a spoken turn always runs")
     .expect("the turn runs");

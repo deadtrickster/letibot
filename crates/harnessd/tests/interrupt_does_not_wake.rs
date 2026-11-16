@@ -96,7 +96,7 @@ fn a_stopped_or_failed_turn_does_not_wake_the_session_for_its_held_results() {
         None,
     );
     let out = run_turn(&mut answered, &mut Bare, Door::Prompt, |h| {
-        h.submit("answer me").map(Some)
+        h.submit_operator("answer me").map(Some)
     });
     landing.join().expect("the thread that held the result");
     assert!(
@@ -132,7 +132,7 @@ fn a_stopped_or_failed_turn_does_not_wake_the_session_for_its_held_results() {
         None,
     );
     let out = run_turn(&mut stopped, &mut Bare, Door::Prompt, |h| {
-        h.submit(LONG_STORY).map(Some)
+        h.submit_operator(LONG_STORY).map(Some)
     });
     landing.join().expect("the thread that stopped the turn");
     // The turn ran, and the tree reports a stopped one as a turn failure whose words are the
@@ -172,7 +172,7 @@ fn a_stopped_or_failed_turn_does_not_wake_the_session_for_its_held_results() {
         None,
     );
     let out = run_turn(&mut refused, &mut Bare, Door::Prompt, |h| {
-        h.submit(REFUSED).map(Some)
+        h.submit_operator(REFUSED).map(Some)
     });
     landing.join().expect("the thread that held the result");
     assert!(
@@ -210,7 +210,7 @@ fn a_stopped_or_failed_turn_does_not_wake_the_session_for_its_held_results() {
         Some(bell.clone()),
     );
     let out = run_turn(&mut rung_stopped, &mut Bare, Door::Prompt, |h| {
-        h.submit(LONG_STORY).map(Some)
+        h.submit_operator(LONG_STORY).map(Some)
     });
     landing.join().expect("the thread that stopped the turn");
     assert!(out.is_some(), "the turn ran");
@@ -254,7 +254,7 @@ fn a_stopped_or_failed_turn_does_not_wake_the_session_for_its_held_results() {
         Some(bell.clone()),
     );
     let out = run_turn(&mut rung_refused, &mut Bare, Door::Prompt, |h| {
-        h.submit(REFUSED).map(Some)
+        h.submit_operator(REFUSED).map(Some)
     });
     landing.join().expect("the thread that held the result");
     assert!(

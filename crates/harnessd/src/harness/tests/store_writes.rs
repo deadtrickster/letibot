@@ -365,7 +365,7 @@ fn a_batch_a_turn_said_and_then_failed_is_not_owed_again() {
     // The row goes in and the rounds then fail: this box has no model, so the round after the
     // appends answers with an error rather than with words.
     assert!(
-        h.submit("carry on").is_err(),
+        h.submit_operator("carry on").is_err(),
         "the premise: the turn opened and its rounds failed"
     );
     assert_eq!(

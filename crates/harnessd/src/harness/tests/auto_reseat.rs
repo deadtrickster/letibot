@@ -107,7 +107,7 @@ fn stale_session(dir: &Scratch, id: &str) -> Harness {
         id,
         Some("You are an assistant an older build described."),
     );
-    h.submit("first").expect("the first turn runs");
+    h.submit_operator("first").expect("the first turn runs");
     drop(h);
     open(dir, id, None)
 }
@@ -165,7 +165,7 @@ fn the_queue_session_on_a_stale_prompt_reseats_before_its_turn() {
         h.session_registry.stale_for_model(QUEUE).is_none(),
         "a session that reseats is not told the update is the person's"
     );
-    h.submit("review this").expect("the turn runs");
+    h.submit_operator("review this").expect("the turn runs");
     assert_eq!(reseat_rows(&h).len(), 1, "{:#?}", h.items());
     let said = warned(&h, "reseated");
     assert_eq!(said.len(), 1, "{said:?}");
@@ -190,7 +190,7 @@ fn the_queue_session_on_a_stale_prompt_reseats_before_its_turn() {
     // The first turn's row came across with the conversation.
     assert!(last_user.iter().any(|t| t == "first"), "{last_user:?}");
 
-    h.submit("again").expect("the next turn runs");
+    h.submit_operator("again").expect("the next turn runs");
     assert_eq!(
         reseat_rows(&h).len(),
         1,
@@ -208,7 +208,7 @@ fn an_operator_session_keeps_the_card_and_its_prompt() {
         h.session_registry.stale_prefix(id).is_some(),
         "the operator is shown the card"
     );
-    h.submit("carry on").expect("the turn runs");
+    h.submit_operator("carry on").expect("the turn runs");
     assert!(reseat_rows(&h).is_empty(), "{:#?}", h.items());
     assert!(warned(&h, "reseated").is_empty());
     assert!(h.session_registry.stale_prefix(id).is_some());
@@ -218,10 +218,10 @@ fn an_operator_session_keeps_the_card_and_its_prompt() {
 fn a_prompt_that_moves_while_the_session_runs_is_caught_at_the_next_turn() {
     let dir = Scratch::new("auto-reseat-live");
     let mut h = open(&dir, QUEUE, None);
-    h.submit("one").expect("the first turn runs");
+    h.submit_operator("one").expect("the first turn runs");
     assert!(reseat_rows(&h).is_empty(), "a fresh session is current");
     h.cfg.system = format!("{}\nA rule read live.", h.cfg.system);
-    h.submit("two").expect("the second turn runs");
+    h.submit_operator("two").expect("the second turn runs");
     assert_eq!(reseat_rows(&h).len(), 1, "{:#?}", h.items());
     assert!(h.prefix.system.contains("A rule read live."));
 }
@@ -233,7 +233,7 @@ fn the_switch_turns_the_reseat_back_into_the_card() {
     h.cfg.leticode.sessions.auto_reseat = Some(false);
     assert_eq!(h.config().on_stale(), crate::config::OnStale::Ask);
     h.cfg.system = format!("{}\nA rule read live.", h.cfg.system);
-    h.submit("one").expect("the turn runs");
+    h.submit_operator("one").expect("the turn runs");
     assert!(reseat_rows(&h).is_empty());
 }
 
@@ -241,7 +241,7 @@ fn the_switch_turns_the_reseat_back_into_the_card() {
 fn a_refused_reseat_runs_on_the_old_prompt_and_is_said_once() {
     let dir = Scratch::new("auto-reseat-refused");
     let mut h = open(&dir, QUEUE, None);
-    h.submit("one").expect("the first turn runs");
+    h.submit_operator("one").expect("the first turn runs");
     // The new prompt cannot be recorded: its table is moved away under the harness.
     let other = Store::open_private(&dir.0.join("sessions.db")).expect("a connection of its own");
     other
@@ -260,7 +260,8 @@ fn a_refused_reseat_runs_on_the_old_prompt_and_is_said_once() {
         .connection_of("stable_prefix")
         .execute_batch("ALTER TABLE stable_prefix_away RENAME TO stable_prefix")
         .expect("the table comes back");
-    h.submit("two").expect("the turn runs on the old prompt");
+    h.submit_operator("two")
+        .expect("the turn runs on the old prompt");
     assert!(reseat_rows(&h).is_empty());
     assert_eq!(h.prefix, old);
     assert_eq!(warned(&h, "auto_reseat_failed").len(), 1);
@@ -270,7 +271,7 @@ fn a_refused_reseat_runs_on_the_old_prompt_and_is_said_once() {
 /// section of the composed prompt moved.
 fn repinned(dir: &Scratch, id: &str) -> Harness {
     let mut h = open(dir, id, None);
-    h.submit("first").expect("the first turn runs");
+    h.submit_operator("first").expect("the first turn runs");
     drop(h);
     let h = open_pinned(dir, id, None, &["ghost-skill"]);
     assert!(
@@ -288,7 +289,7 @@ fn repinned(dir: &Scratch, id: &str) -> Harness {
 fn a_changed_skill_pin_reseats_an_automatic_session_at_its_next_turn() {
     let dir = Scratch::new("auto-reseat-pin");
     let mut h = repinned(&dir, QUEUE);
-    h.submit("review this").expect("the turn runs");
+    h.submit_operator("review this").expect("the turn runs");
     assert_eq!(reseat_rows(&h).len(), 1, "{:#?}", h.items());
     let said = warned(&h, "reseated");
     assert_eq!(said.len(), 1, "{said:?}");
@@ -297,7 +298,7 @@ fn a_changed_skill_pin_reseats_an_automatic_session_at_its_next_turn() {
         "only the notes moved: {said:?}"
     );
     assert!(h.prefix.system.contains("`ghost-skill`"));
-    h.submit("again").expect("the next turn runs");
+    h.submit_operator("again").expect("the next turn runs");
     assert_eq!(
         reseat_rows(&h).len(),
         1,
@@ -313,7 +314,7 @@ fn a_changed_skill_pin_gives_an_operator_session_the_card() {
     let card = h.session_registry.stale_prefix(id).expect("the card");
     assert!(card.contains("the skill pins"), "{card}");
     let old = h.prefix.clone();
-    h.submit("carry on").expect("the turn runs");
+    h.submit_operator("carry on").expect("the turn runs");
     assert!(reseat_rows(&h).is_empty(), "{:#?}", h.items());
     assert_eq!(h.prefix, old, "the operator's prompt is theirs to move");
 }
@@ -323,7 +324,7 @@ fn an_unchanged_reopen_has_no_card() {
     let dir = Scratch::new("auto-reseat-same");
     let id = "s-operator-same";
     let mut h = open(&dir, id, None);
-    h.submit("first").expect("the first turn runs");
+    h.submit_operator("first").expect("the first turn runs");
     drop(h);
     let h = open(&dir, id, None);
     assert_eq!(h.session_registry.stale_prefix(id), None);
@@ -335,7 +336,7 @@ fn a_changed_note_reseats_an_automatic_session_and_gives_an_operator_no_card() {
         let dir = Scratch::new("auto-reseat-note");
         std::fs::write(dir.0.join("AGENTS.md"), "note-one: the first generation\n").unwrap();
         let mut h = open(&dir, id, None);
-        h.submit("first").expect("the first turn runs");
+        h.submit_operator("first").expect("the first turn runs");
         drop(h);
         std::fs::write(dir.0.join("AGENTS.md"), "note-two: a later generation\n").unwrap();
         let mut h = open(&dir, id, None);
@@ -348,7 +349,7 @@ fn a_changed_note_reseats_an_automatic_session_and_gives_an_operator_no_card() {
             None,
             "a note is no card"
         );
-        h.submit("next").expect("the turn runs");
+        h.submit_operator("next").expect("the turn runs");
         assert_eq!(reseat_rows(&h).len(), usize::from(reseats), "{id}");
         assert_eq!(h.prefix.system.contains("note-two"), reseats, "{id}");
     }

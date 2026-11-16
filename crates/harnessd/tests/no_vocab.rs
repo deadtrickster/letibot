@@ -61,7 +61,7 @@ fn no_vocabulary_and_no_provider_opens_and_refuses_the_turn_by_name() {
     assert!(parts.vocab.is_bytes());
     let mut h =
         Harness::open_with(&parts, cfg, Hub::new("none"), None, None).expect("the session opens");
-    let e = match h.submit("hello") {
+    let e = match h.submit_operator("hello") {
         Ok(_) => panic!("a turn went to a model nobody chose"),
         Err(e) => e.to_string(),
     };

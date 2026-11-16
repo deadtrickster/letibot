@@ -318,7 +318,7 @@ fn a_stuck_session_is_released_by_a_measured_count_and_then_compacts_at_the_wall
         "the stood-down pair on the row restores as the controller's Stuck"
     );
 
-    let out = sessions.submit(session_id, "read big.txt and finish the task");
+    let out = sessions.submit_operator(session_id, "read big.txt and finish the task");
     assert!(
         out.is_ok(),
         "the prompt finishes on the summary, past the wall: {out:?}"
@@ -503,7 +503,7 @@ fn a_refusal_on_a_stuck_session_still_folds() {
         assert!(h.wall().is_stuck(), "restored stuck");
     }
 
-    let out = sessions.submit(session_id, "finish the task");
+    let out = sessions.submit_operator(session_id, "finish the task");
     assert!(
         out.is_ok(),
         "a refusal on a stuck session is folded and the prompt finishes: {out:?}"
@@ -587,7 +587,10 @@ fn a_refused_prompt_through_a_childs_seam_compacts_and_finishes() {
     let hub = Hub::new(session_id);
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the child opens");
 
-    let out = h.submit_as_a_normal_session("read big.txt and finish the task");
+    let out = h.submit_as_a_normal_session(
+        letibot_tools::authorise::Speaker::Operator,
+        "read big.txt and finish the task",
+    );
     assert!(
         out.is_ok(),
         "the child's task finishes past a refused round: {out:?}"
@@ -648,7 +651,7 @@ fn a_non_context_400_stays_a_backend_error() {
 
     let hub = Hub::new(session_id);
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session opens");
-    let out = h.submit("anything at all");
+    let out = h.submit_operator("anything at all");
     match out {
         Err(HarnessError::ContextWall { .. }) => panic!(
             "an invalid-tokens 400 is a backend error, not the wall — the matcher is too wide"
@@ -747,7 +750,7 @@ fn the_nag_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
 
     // The wedge: round-loop wall after the ten reads, nothing tidied (a bare
     // harness has no tail) - the state the door then meets.
-    let out = h.submit("read big.txt and fill the context");
+    let out = h.submit_operator("read big.txt and fill the context");
     assert!(matches!(out, Err(HarnessError::ContextWall { .. })));
 
     // The door: the plan is unfinished, so the nag has something to say - and
@@ -831,7 +834,7 @@ fn the_wake_door_compacts_before_sending_when_the_next_turn_would_not_fit() {
 
     // The wedge, then the door - same shape as the nag's.
 
-    let out = h.submit("read big.txt and fill the context");
+    let out = h.submit_operator("read big.txt and fill the context");
     assert!(matches!(out, Err(HarnessError::ContextWall { .. })));
 
     let out = h.wake().expect("the wake runs");
@@ -886,7 +889,7 @@ fn a_first_round_already_past_the_window_is_not_sent() {
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session opens");
 
     let paste = "the quick brown fox jumps over the lazy dog. ".repeat(4_000);
-    match h.submit(&paste) {
+    match h.submit_operator(&paste) {
         Err(e @ HarnessError::ContextWall { rounds: 0, .. }) => {
             let said = e.to_string();
             assert!(
@@ -944,7 +947,7 @@ fn a_manual_compact_reports_the_count_it_compacted_from() {
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
     let words = "a question with some length to it, so the fork is smaller. ".repeat(200);
     sessions
-        .submit(session_id, &words)
+        .submit_operator(session_id, &words)
         .expect("the prompt turn is answered");
 
     let cmd = QueuedCommand {
@@ -1035,7 +1038,7 @@ fn compact_self_is_pending_then_runs_first_and_the_next_request_is_smaller() {
         Sessions::open_first(&parts, cfg.clone(), registry.clone()).expect("the session opens");
     let words = "a question with some length to it, so the fork is smaller. ".repeat(200);
     sessions
-        .submit(session_id, &words)
+        .submit_operator(session_id, &words)
         .expect("the turn that asks for the compaction is answered");
     let before = *serv.request_sizes().last().expect("the turn sent requests");
 

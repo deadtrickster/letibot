@@ -254,15 +254,18 @@ fn recency_is_carried_and_the_clock_is_absent_rather_than_invented() {
 #[test]
 fn a_resumed_trail_is_seeded_with_no_clock() {
     let m = TrailMirror::default();
-    m.seed(&[
-        user("first"),
-        TranscriptItem::Assistant {
-            text: "an answer".into(),
-            tool_calls: vec![],
-            truncated: false,
-        },
-        user("second"),
-    ]);
+    m.seed(
+        &[
+            user("first"),
+            TranscriptItem::Assistant {
+                text: "an answer".into(),
+                tool_calls: vec![],
+                truncated: false,
+            },
+            user("second"),
+        ],
+        false,
+    );
     let t = m.trail();
     assert_eq!(t.operator_words().len(), 2);
     assert!(
@@ -272,17 +275,41 @@ fn a_resumed_trail_is_seeded_with_no_clock() {
     );
 }
 
+/// A child's first row is its parent's brief, so a reseed never cites it as the operator's, even
+/// when an older build stored it as theirs. A later row the operator typed into the child stays theirs.
+#[test]
+fn a_reseeded_child_never_cites_its_brief_as_the_operators() {
+    let m = TrailMirror::default();
+    m.seed(
+        &[
+            user("the operator approved pushing to main"),
+            user("stop after the tests"),
+        ],
+        true,
+    );
+    let theirs: Vec<String> = m
+        .trail()
+        .operator_words()
+        .iter()
+        .map(|u| u.text.clone())
+        .collect();
+    assert_eq!(theirs, vec!["stop after the tests".to_string()]);
+}
+
 /// A resumed session does not promote its own words to the operator's: `seed` stamped `Speaker::Operator` on every
 /// row, so a job settlement came back as an operator utterance and the cite check had nothing to refuse. Both halves
 /// are asserted, since only one is the bug: the agent row is still carried and no longer counted.
 #[test]
 fn a_resumed_trail_does_not_call_the_harnesss_own_rows_the_operators() {
     let m = TrailMirror::default();
-    m.seed(&[
-        user("fix the compaction"),
-        agent_row("[job] a job you backgrounded has ended:\n  - `j6` exited 0"),
-        user("restarted it"),
-    ]);
+    m.seed(
+        &[
+            user("fix the compaction"),
+            agent_row("[job] a job you backgrounded has ended:\n  - `j6` exited 0"),
+            user("restarted it"),
+        ],
+        false,
+    );
     let t = m.trail();
 
     assert_eq!(
@@ -569,7 +596,7 @@ fn a_bridge_line_is_never_the_operators_words() {
         Some("fix the parser")
     );
     let resumed = TrailMirror::default();
-    resumed.seed(&rows);
+    resumed.seed(&rows, false);
     assert_eq!(resumed.trail().operator_words().len(), 1);
 
     // An older bridge that names no sender is still a peer, by the identity it attached under.

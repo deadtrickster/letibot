@@ -128,7 +128,7 @@ fn a_tool_call_goes_out_runs_and_comes_back_as_an_answer() {
     let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
 
     let reply = h
-        .submit(
+        .submit_operator(
             "Read the file Cargo.toml at the workspace root and reply with the value of \
              `resolver`. Reply with just the value in quotes, nothing else.",
         )
@@ -189,7 +189,9 @@ fn an_inert_retrieval_tool_reports_not_run_and_says_so_structurally() {
     let mut h = Harness::open(&parts, cfg, hub).expect("the session opens");
 
     let reply = h
-        .submit("Use ask_corpus to look up our deployment policy, then tell me what it said.")
+        .submit_operator(
+            "Use ask_corpus to look up our deployment policy, then tell me what it said.",
+        )
         .expect("the loop must close");
     assert!(reply.tool_calls >= 1, "nothing was asked: {:?}", reply.text);
 
@@ -364,7 +366,7 @@ fn a_message_already_waiting_joins_this_round_rather_than_costing_another() {
     );
     let mut h = Harness::open(&parts, cfg, hub).expect("the session opens");
     let reply = h
-        .submit("Reply with exactly the word: one")
+        .submit_operator("Reply with exactly the word: one")
         .expect("the loop must close");
 
     // ONE round: the words were already there, so they went into this prompt rather than waiting
@@ -458,7 +460,9 @@ fn a_message_that_arrives_mid_turn_is_answered_in_the_next_round() {
     let mut h = Harness::open(&parts, cfg, hub).expect("the session opens");
     // Long enough that the thread's submit lands well inside the generation.
     let reply = h
-        .submit("Count slowly from 1 to 60, one number per line, and then say the word: one")
+        .submit_operator(
+            "Count slowly from 1 to 60, one number per line, and then say the word: one",
+        )
         .expect("the loop must close");
 
     let (saw_delta, accepted) = queued.join().expect("the submitting thread");

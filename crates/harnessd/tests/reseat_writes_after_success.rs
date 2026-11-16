@@ -236,7 +236,7 @@ fn a_fork_the_store_refused_is_not_what_a_restart_opens() {
     );
 
     // The next store write takes the rows up and seals the fork.
-    h.submit("carry on").expect("the turn runs");
+    h.submit_operator("carry on").expect("the turn runs");
     let new = h.transcript_id().to_string();
     assert_eq!(
         other

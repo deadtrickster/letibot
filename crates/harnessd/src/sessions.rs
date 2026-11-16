@@ -1208,7 +1208,14 @@ impl<'a> Sessions<'a> {
             h.set_turn_tools(rules);
         }
         said("command_file", note);
-        let out = self.run_prompt(session_id, &text, &[], None, None);
+        let out = self.run_prompt(
+            session_id,
+            &text,
+            &[],
+            None,
+            &crate::harness::Voice::Operator,
+            Vec::new(),
+        );
         if let Some(h) = self.open.get_mut(session_id) {
             h.set_turn_tools(None);
             if let Some(b) = back
@@ -2477,18 +2484,28 @@ impl<'a> Sessions<'a> {
 
     /// Submit one prompt to a session and wait for the answer - the scripted path (`--prompt …`)
     /// which has no head and no socket traffic. It goes through the same `harness` as the worker, so
-    /// a scripted run and a driven one open a session the same way.
-    pub fn submit(&mut self, session_id: &str, text: &str) -> Result<Reply, HarnessError> {
+    /// a scripted run and a driven one open a session the same way. The steps are the operator's
+    /// own command line, so they are the operator's words.
+    pub fn submit_operator(&mut self, session_id: &str, text: &str) -> Result<Reply, HarnessError> {
         // A session on its own thread answers there - `cli.rs`'s scripted steps are the caller
         // and they run before the worker loop starts, so this waits on a thread that is idle.
         if let Some(court) = self.court_serving(session_id) {
             let id = session_id.to_string();
             let text = text.to_string();
-            if let Some(out) = court.ask(move |s: &mut Sessions<'static>| s.submit(&id, &text)) {
+            if let Some(out) =
+                court.ask(move |s: &mut Sessions<'static>| s.submit_operator(&id, &text))
+            {
                 return out;
             }
         }
-        self.run_prompt(session_id, text, &[], None, None)
+        self.run_prompt(
+            session_id,
+            text,
+            &[],
+            None,
+            &crate::harness::Voice::Operator,
+            Vec::new(),
+        )
     }
 
     /// One turn, and everything that has to happen around one. Both ways a prompt reaches a
@@ -2500,7 +2517,8 @@ impl<'a> Sessions<'a> {
         text: &str,
         attachments: &[letibot_sessionlog::protocol::Attachment],
         context: Option<&letibot_sessionlog::protocol::EditorContext>,
-        peer: Option<&str>,
+        voice: &crate::harness::Voice,
+        beside: Vec<String>,
     ) -> Result<Reply, HarnessError> {
         // Opened first, lazily - the resume a head reaches (`/resume`, a switch from the
         // picker). A session that cannot be opened ran nothing, and says so on its own log.
@@ -2514,13 +2532,13 @@ impl<'a> Sessions<'a> {
         }
         // Everything around the turn is the shared tail's. An agent's line is a message for the
         // tail, not the operator's prompt.
-        let door = if peer.is_some() {
-            Door::Message
-        } else {
+        let door = if voice.is_operator() {
             Door::Prompt
+        } else {
+            Door::Message
         };
         self.turn(session_id, door, |h| {
-            h.submit_with_context_from(text, attachments, context, peer)
+            h.submit_with_context_from(text, attachments, context, voice, beside)
                 .map(Some)
         })
         .expect("a prompt always runs a turn")
@@ -2536,7 +2554,7 @@ impl<'a> Sessions<'a> {
         text: &str,
     ) -> Result<Reply, HarnessError> {
         self.turn(session_id, Door::Message, |h| {
-            h.parents_message_turn(from, text).map(Some)
+            h.parents_message_turn(from, text, Vec::new()).map(Some)
         })
         .expect("a message always runs a turn")
     }
@@ -3994,13 +4012,14 @@ impl<'a> Sessions<'a> {
                 // One line, because everything a turn needs around it - the title, the wake, the failure
                 // notice, the compaction at the wall - is in `run_prompt`, which the scripted path also
                 // calls. One copy, so the compaction is never missed.
-                let peer = cmd.peer();
+                let voice = crate::harness::Voice::of_command(cmd);
                 match self.run_prompt(
                     session_id,
                     text,
                     attachments,
                     context.as_ref(),
-                    peer.as_deref(),
+                    &voice,
+                    Vec::new(),
                 ) {
                     Ok(reply) => Outcome::Replied(Box::new(reply)),
                     Err(e) => Outcome::Failed(e.to_string()),
@@ -4437,7 +4456,9 @@ impl<'a> Sessions<'a> {
                 };
                 match settled {
                     Ok(line) => {
-                        match self.turn(session_id, Door::Prompt, |h| h.submit(&line).map(Some)) {
+                        match self.turn(session_id, Door::Prompt, |h| {
+                            h.submit_operator(&line).map(Some)
+                        }) {
                             None => Outcome::Ignored,
                             Some(Ok(reply)) => Outcome::Replied(Box::new(reply)),
                             Some(Err(e)) => Outcome::Failed(e.to_string()),

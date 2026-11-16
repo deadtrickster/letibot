@@ -97,7 +97,8 @@ fn a_stop_during_a_retry_wait_stops_the_children_first() {
 
     // A turn of its own first: the failure this file is about is the SECOND turn's, and a session
     // whose only turn was the failed one cannot show a turn id left behind.
-    h.submit(FIRST).expect("the stub answers the first turn");
+    h.submit_operator(FIRST)
+        .expect("the stub answers the first turn");
     let first_turn = last_turn_started(&hub);
     assert!(
         !first_turn.is_empty(),
@@ -134,7 +135,7 @@ fn a_stop_during_a_retry_wait_stops_the_children_first() {
             );
         })
     };
-    let out = h.submit(SECOND);
+    let out = h.submit_operator(SECOND);
     stopper.join().expect("the thread that stopped the turn");
 
     // The premise: the turn really ended in a wait, and the stop is what ended it.

@@ -82,10 +82,12 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
     // a previous request to carry. Deterministic sampling from the config: the
     // same prompts measure the same thing twice.
     let r1 = h
-        .submit("Remember these three numbers for later: 41, 427, 9001. Reply with just: ack")
+        .submit_operator(
+            "Remember these three numbers for later: 41, 427, 9001. Reply with just: ack",
+        )
         .expect("turn 1");
     let r2 = h
-        .submit("Without any tool, what is 41 + 427? Reply with just the number.")
+        .submit_operator("Without any tool, what is 41 + 427? Reply with just the number.")
         .expect("turn 2");
     eprintln!("  turn 1 -> {:?}", r1.text.trim());
     eprintln!("  turn 2 -> {:?}", r2.text.trim());
@@ -138,7 +140,7 @@ fn a_live_compaction_carries_the_prefix_and_the_summary_carries_the_facts() {
     // The facts survive the reduction. This is the check no token count catches
     // a base that answers from the summary, not from a lost history.
     let r3 = h
-        .submit("What three numbers did I ask you to remember? Just the three, in order.")
+        .submit_operator("What three numbers did I ask you to remember? Just the three, in order.")
         .expect("the first turn on the forked base");
     eprintln!("  post-fork -> {:?}", r3.text.trim());
     eprintln!(

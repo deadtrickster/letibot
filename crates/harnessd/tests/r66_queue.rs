@@ -569,7 +569,7 @@ fn turns_through_the_worker_leave_no_entry_behind() {
         Sessions::open_first(&parts, cfg, registry.clone()).expect("the daemon opens");
     // One warm-up turn, before the baseline: a session's first turn pays costs it never pays again.
     sessions
-        .submit(&id, "warm-up")
+        .submit_operator(&id, "warm-up")
         .expect("the warm-up answers");
 
     let (live0, _, _) = memwatch::heap();
@@ -577,7 +577,7 @@ fn turns_through_the_worker_leave_no_entry_behind() {
     let mut most = (0usize, 0usize, 0usize);
     for turn in 0..TURNS {
         sessions
-            .submit(&id, &format!("turn {turn} of the session"))
+            .submit_operator(&id, &format!("turn {turn} of the session"))
             .expect("every turn answers");
         per_turn.push(memwatch::heap().0);
         let held = sessions

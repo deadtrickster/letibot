@@ -127,7 +127,7 @@ pub use answers::{Answers, HeadAdjudicator};
 pub use config::{Config, SpillPolicy, SpillStorage};
 pub use daemon::Daemon;
 pub use dialect::{Dialect, Wiring};
-pub use harness::{Harness, HarnessError, HubSteering, Parts, Reply};
+pub use harness::{Harness, HarnessError, HubSteering, Parts, Reply, Voice};
 pub use modes::ModeStore;
 pub use sessions::{Outcome, OutcomeSaid, Sessions};
 pub use tasks::{TaskEntry, TaskJournal};

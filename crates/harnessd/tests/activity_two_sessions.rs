@@ -103,7 +103,7 @@ fn a_session_that_never_turned_is_never_busy_for_anothers_turn() {
 
     // --- a real turn, in the OTHER session ----------------------------------
     let reply = sessions
-        .submit(SECOND, "answer this, and only this")
+        .submit_operator(SECOND, "answer this, and only this")
         .expect("the provider answers one round");
     assert_eq!(reply.rounds, 1, "one round ran, in the second session");
     assert_eq!(fake.rounds(), 1, "and the model was asked once");

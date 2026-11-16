@@ -135,7 +135,7 @@ fn a_turn_emits_its_start_end_rounds_and_tool_call_keyed_by_one_turn_id() {
 
     let (out, got) = letibot_metrics::capture(|| {
         run_turn(&mut h, &mut Bare, Door::Prompt, |h| {
-            h.submit("how many lines in notes.txt?").map(Some)
+            h.submit_operator("how many lines in notes.txt?").map(Some)
         })
     });
     let reply = out.expect("a turn ran").expect("the turn ends");
@@ -214,7 +214,7 @@ fn a_context_claim_row_carries_the_real_window_and_its_sentence() {
     let mut h = Harness::open(&parts, cfg, Hub::new("metrics-claim")).expect("opens");
     let (_, got) = letibot_metrics::capture(|| {
         run_turn(&mut h, &mut Bare, Door::Prompt, |h| {
-            h.submit("go on").map(Some)
+            h.submit_operator("go on").map(Some)
         })
     });
     let claims = of(&got, kind::CONTEXT_CLAIM);

@@ -1538,7 +1538,7 @@ impl Harness {
     /// rest of the line goes on as their own prompt in the same turn.
     pub fn load_skill(&mut self, name: &str, then: &str) -> Result<Reply, HarnessError> {
         let skill = self.skills.load_any(name).map_err(HarnessError::Setup)?;
-        self.submit(&skill_message(&skill, then))
+        self.submit_operator(&skill_message(&skill, then))
     }
 
     /// Say what this session is waiting on, if it has changed. Almost every move is caught by the hub
@@ -1843,6 +1843,7 @@ mod refusal;
 mod room;
 mod trail;
 mod turns;
+pub use turns::Voice;
 mod usage;
 // `/prune`: the fork that carries every row with the oldest bodies stubbed - the one fork with
 // no model behind it. See the module's header for the rules it keeps.

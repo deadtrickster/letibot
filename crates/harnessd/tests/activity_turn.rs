@@ -99,7 +99,7 @@ fn a_two_round_turn_is_never_quiet_between_its_rounds() {
     // the half that reads quiet at a round boundary.
     use letibot_harnessd::turn_tail::{Bare, Door, run_turn};
     run_turn(&mut h, &mut Bare, Door::Prompt, |h| {
-        h.submit("read the plan and answer").map(Some)
+        h.submit_operator("read the plan and answer").map(Some)
     })
     .expect("a spoken turn always runs")
     .expect("the turn runs");

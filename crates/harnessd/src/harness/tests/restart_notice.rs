@@ -714,7 +714,7 @@ fn restarts_with_no_turn_between_them_leave_one_bare_row() {
         text: "noted",
         asked: Asked::default(),
     }));
-    h.submit("carry on").expect("a turn runs");
+    h.submit_operator("carry on").expect("a turn runs");
     let mut h = reopen(h);
     let next = h.restore_after_restart().expect("a restart after a turn");
     assert!(next.ends_with(". Nothing was running."), "{next}");

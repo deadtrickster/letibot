@@ -359,7 +359,7 @@ fn a_compaction_that_exhausts_the_salvage_still_publishes_auto_compact_failed() 
 
     // The prompt turn answers, and the automatic compaction fires after it -
     // and fails, loudly, after spending the budget.
-    let out = sessions.submit(session_id, "count the things");
+    let out = sessions.submit_operator(session_id, "count the things");
     assert!(out.is_ok(), "the prompt turn answered: {out:?}");
 
     let warnings: Vec<(String, String)> = hub
@@ -1067,7 +1067,7 @@ fn the_wall_is_checked_before_the_first_turn_after_a_resume() {
 
     // Nothing has run yet: the session has just been opened, which is the state
     // a resume leaves it in, and the prompt below is its first turn.
-    let out = sessions.submit(session_id, "count the things");
+    let out = sessions.submit_operator(session_id, "count the things");
     assert!(out.is_ok(), "the prompt turn still answers: {out:?}");
 
     let events: Vec<SessionEvent> = hub.retained().iter().map(|e| e.event.clone()).collect();
@@ -1200,7 +1200,10 @@ fn a_child_session_compacts_on_a_tool_result_overrun_and_finishes() {
     let hub = Hub::new(session_id);
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the child opens");
 
-    let out = h.submit_as_a_normal_session("read big.txt and finish the task");
+    let out = h.submit_as_a_normal_session(
+        letibot_tools::authorise::Speaker::Operator,
+        "read big.txt and finish the task",
+    );
     assert!(
         out.is_ok(),
         "the child's task finishes past the wall: {out:?}"
@@ -1448,7 +1451,7 @@ fn a_refused_summary_is_taken_back_so_the_retry_starts_where_it_did() {
 
     let hub = Hub::new(&cfg.session_id);
     let mut h = Harness::open(&parts, cfg.clone(), hub.clone()).expect("the session opens");
-    h.submit("count the things")
+    h.submit_operator("count the things")
         .expect("the prompt turn answers");
 
     let before = h.items().to_vec();

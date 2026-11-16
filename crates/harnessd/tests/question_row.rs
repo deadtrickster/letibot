@@ -206,7 +206,7 @@ fn one_exchange(tag: &str, reply: Reply) -> (Vec<TranscriptItem>, AuthorisationT
         false
     });
 
-    let out = h.submit("ask me which database");
+    let out = h.submit_operator("ask me which database");
     stop.store(true, std::sync::atomic::Ordering::SeqCst);
     assert!(
         answerer.join().unwrap(),

@@ -1892,7 +1892,7 @@ pub fn run(args: &[String]) -> Result<i32, String> {
                 }
                 Step::Prompt(p) => p,
             };
-            match sessions.submit(&session_id, p) {
+            match sessions.submit_operator(&session_id, p) {
                 Ok(reply) => {
                     println!("{}", reply.text);
                     let keeps = reply.f_keep();

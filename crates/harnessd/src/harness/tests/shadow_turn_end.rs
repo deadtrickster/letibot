@@ -143,7 +143,7 @@ fn an_owed_verdict_reminds_with_the_template_and_the_quote() {
         "owed",
         r#"{"verdict":"owed","promise":"I'll run the parser tests next"}"#,
     );
-    h.submit("fix the parser").expect("a turn runs");
+    h.submit_operator("fix the parser").expect("a turn runs");
     assert!(!said(&h, "[shadow]"), "the turn ends without waiting");
     rang.recv_timeout(Duration::from_secs(10))
         .expect("the verdict rings the wake");
@@ -174,7 +174,7 @@ fn a_none_verdict_replaces_the_regex_nudge_with_silence() {
         "none",
         r#"{"verdict":"none","evidence":"I'll run the parser tests next"}"#,
     );
-    h.submit("fix the parser").expect("a turn runs");
+    h.submit_operator("fix the parser").expect("a turn runs");
     let before = h.session.items.len();
     rang.recv_timeout(Duration::from_secs(10))
         .expect("the verdict rings the wake");
@@ -192,7 +192,7 @@ fn a_none_verdict_replaces_the_regex_nudge_with_silence() {
 #[test]
 fn an_unsure_verdict_falls_back_to_the_held_regex_nudge() {
     let (mut h, rang, rows) = a_session("unsure", r#"{"verdict":"unsure"}"#);
-    h.submit("fix the parser").expect("a turn runs");
+    h.submit_operator("fix the parser").expect("a turn runs");
     rang.recv_timeout(Duration::from_secs(10))
         .expect("the verdict rings the wake");
     assert!(

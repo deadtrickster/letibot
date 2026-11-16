@@ -161,8 +161,11 @@ fn park_a_child_with(
         .expect("the child is in the registry");
     // The task it was spawned for - a real turn against the canned server, on this
     // thread, exactly as `run_to_completion` runs it before parking.
-    sub.submit_as_a_normal_session("do the task, then stop and wait")
-        .expect("the first turn answers");
+    sub.submit_as_a_normal_session(
+        letibot_tools::authorise::Speaker::Operator,
+        "do the task, then stop and wait",
+    )
+    .expect("the first turn answers");
     before(
         &mut sub,
         &ParentTodos::new(

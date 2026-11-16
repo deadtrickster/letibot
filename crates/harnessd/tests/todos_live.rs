@@ -68,7 +68,7 @@ fn a_live_todo_write_reaches_the_store_and_the_log() {
     assert!(since > 0, "the pre-attach must have moved the log's head");
 
     let r = h
-        .submit(
+        .submit_operator(
             "Call todo_write now with exactly one entry: content \"write the report\", \
              status \"pending\". Then reply with just: done",
         )

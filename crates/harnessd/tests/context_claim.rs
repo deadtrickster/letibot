@@ -212,7 +212,7 @@ fn the_round_a_nudge_continues_does_not_end_the_turn_on_the_wire() {
     let hub = Hub::new("round-end");
     let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
     let reply = h
-        .submit("port the rest of the emulator")
+        .submit_operator("port the rest of the emulator")
         .expect("the turn runs");
     assert_eq!(
         reply.rounds, 2,
@@ -248,7 +248,7 @@ fn an_excuse_at_low_fill_is_answered_with_the_measured_fill_and_the_turn_continu
     let hub = Hub::new("context-claim-low");
     let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
     let reply = h
-        .submit("port the rest of the emulator")
+        .submit_operator("port the rest of the emulator")
         .expect("the turn runs");
 
     assert_eq!(reply.rounds, 2, "the line continued the turn: {reply:?}");
@@ -311,7 +311,7 @@ fn a_reasoning_claim_on_a_turn_that_ends_is_not_said() {
     let hub = Hub::new("reasoning-claim-end");
     let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
     let reply = h
-        .submit("port the rest of the emulator")
+        .submit_operator("port the rest of the emulator")
         .expect("the turn runs");
 
     assert_eq!(reply.rounds, 1, "nothing continued the turn: {reply:?}");
@@ -352,7 +352,7 @@ fn an_excuse_in_a_round_that_calls_a_tool_rides_the_step_boundary() {
     let hub = Hub::new("context-claim-tools");
     let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
     let reply = h
-        .submit("port the rest of the emulator")
+        .submit_operator("port the rest of the emulator")
         .expect("the turn runs");
 
     assert_eq!(
@@ -433,7 +433,7 @@ fn the_same_excuse_at_the_wall_is_left_alone() {
     let hub = Hub::new("context-claim-wall-2");
     let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
     let reply = h
-        .submit("port the rest of the emulator")
+        .submit_operator("port the rest of the emulator")
         .expect("the turn runs");
 
     assert_eq!(reply.rounds, 1, "nothing continued the turn: {reply:?}");
@@ -474,7 +474,7 @@ fn no_check_when_auto_compaction_is_off() {
     let hub = Hub::new("context-claim-off");
     let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
     let reply = h
-        .submit("port the rest of the emulator")
+        .submit_operator("port the rest of the emulator")
         .expect("the turn runs");
     assert_eq!(reply.rounds, 1, "nothing continued the turn: {reply:?}");
     assert!(context_checks(&h).is_empty(), "no line to the model");
@@ -513,7 +513,7 @@ fn an_excuse_repeated_after_the_line_is_a_warning_for_the_operator() {
     let hub = Hub::new("context-claim-again");
     let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
     let reply = h
-        .submit("port the rest of the emulator")
+        .submit_operator("port the rest of the emulator")
         .expect("the turn runs");
 
     assert_eq!(reply.rounds, 2, "told once, then the turn ends: {reply:?}");
@@ -566,7 +566,9 @@ fn an_accepted_compact_self_is_not_told_to_stop_sizing_by_context() {
 
     let hub = Hub::new("context-claim-compact");
     let mut h = Harness::open(&parts, cfg, hub.clone()).expect("the session opens");
-    let reply = h.submit("carry on with the board").expect("the turn runs");
+    let reply = h
+        .submit_operator("carry on with the board")
+        .expect("the turn runs");
 
     assert_eq!(reply.rounds, 2, "{reply:?}");
     let accepted = h.items().iter().any(|i| {

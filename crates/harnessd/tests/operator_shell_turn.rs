@@ -267,7 +267,9 @@ fn the_turn_after_an_operator_shell_reads_the_line_and_the_output() {
     // ---- The other call site, for the contrast --------------------------------- A prompt
     // goes through `submit_item`: the row is appended, and the turn that follows reads it as
     // its head.
-    sessions.submit(id, THE_PROMPT).expect("the prompt answers");
+    sessions
+        .submit_operator(id, THE_PROMPT)
+        .expect("the prompt answers");
 
     // ---- The call site this file exists for ------------------------------------ The
     // operator's run comes back as the command the worker dispatches - the same frame

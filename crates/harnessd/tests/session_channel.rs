@@ -804,7 +804,7 @@ fn a_peers_message_to_a_busy_worker_owned_session_lands_at_the_round_boundary() 
     // borrowed for the length of the turn and nothing else touches it.
     std::thread::scope(|scope| {
         scope.spawn(|| {
-            let _ = sessions.submit(main_id, "read the note, then answer");
+            let _ = sessions.submit_operator(main_id, "read the note, then answer");
         });
         assert!(
             stub.wait_for_requests(1),

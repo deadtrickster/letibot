@@ -3504,7 +3504,7 @@ impl Harness {
         // the same item. Seeding them as the operator's is the permissive direction for authorisation, so it is a note.
         let mut resume = resume;
         if resume.is_some() {
-            trail.seed(&session.items);
+            trail.seed(&session.items, cfg.parent_session_id.is_some());
             let user_rows = session
                 .items
                 .iter()

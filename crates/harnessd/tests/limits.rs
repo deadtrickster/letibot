@@ -291,7 +291,7 @@ fn a_limit_with_a_reset_parks_the_session_and_the_same_turn_resumes_at_the_reset
     let (mut sessions, hub, id) = open(&parts, cfg);
 
     let out = sessions
-        .submit(&id, PROMPT)
+        .submit_operator(&id, PROMPT)
         .expect_err("a limit is not an answer");
     let said_park = out.to_string();
     assert!(
@@ -341,7 +341,7 @@ fn a_limit_with_a_reset_parks_the_session_and_the_same_turn_resumes_at_the_reset
     // ending says what the prompt is waiting for. The row is already in the conversation, so the
     // turn the reset opens answers it.
     let queued = sessions
-        .submit(&id, "and one more thing")
+        .submit_operator(&id, "and one more thing")
         .expect_err("a parked session sends nothing");
     assert!(
         queued.to_string().contains("paused until"),
@@ -403,7 +403,7 @@ fn a_switch_moves_the_turn_to_the_fallback_and_back_after_the_reset() {
     let (mut sessions, hub, id) = open(&parts, cfg);
 
     let out = sessions
-        .submit(&id, PROMPT)
+        .submit_operator(&id, PROMPT)
         .expect("the turn went on, on another model");
     assert!(
         out.text.contains(ANSWER),
@@ -482,7 +482,7 @@ fn a_429_with_no_instant_waits_the_long_beat_and_then_fails_as_before() {
     let (mut sessions, hub, id) = open(&parts, cfg);
 
     let out = sessions
-        .submit(&id, PROMPT)
+        .submit_operator(&id, PROMPT)
         .expect_err("no instant, no instant");
     let text = out.to_string();
     assert!(
@@ -531,7 +531,7 @@ fn a_429_with_no_instant_that_lifts_is_a_turn_and_not_a_failure() {
     let (mut sessions, hub, id) = open(&parts, cfg);
 
     let out = sessions
-        .submit(&id, PROMPT)
+        .submit_operator(&id, PROMPT)
         .expect("the second attempt answered");
     assert!(out.text.contains(ANSWER), "{}", out.text);
     assert_eq!(glm.count(), 2, "one wait, one round, one answer");
@@ -574,7 +574,7 @@ fn a_fallback_that_is_limited_too_is_skipped() {
 
     // The first turn moves off the limited model, to the first name that is not limited.
     sessions
-        .submit(&id, PROMPT)
+        .submit_operator(&id, PROMPT)
         .expect("the fallback answered the first turn");
     assert_eq!(glm.count(), 1, "the limited model was asked once");
     assert_eq!(
@@ -586,7 +586,7 @@ fn a_fallback_that_is_limited_too_is_skipped() {
     // The second turn is limited on the model the session moved TO. The only other name in
     // `[fallback]` is the model it came from, whose own limit has not lifted.
     let out = sessions
-        .submit(&id, "and again")
+        .submit_operator(&id, "and again")
         .expect_err("nothing could take this turn");
     assert!(
         out.to_string().contains("paused until"),
@@ -658,7 +658,7 @@ fn a_429_naming_a_wall_clock_and_a_window_parks_for_the_window() {
     let (mut sessions, hub, id) = open(&parts, cfg);
 
     let out = sessions
-        .submit(&id, PROMPT)
+        .submit_operator(&id, PROMPT)
         .expect_err("a limit is not an answer");
     assert!(out.to_string().contains("paused until"), "{out}");
     let park = sessions
@@ -729,7 +729,7 @@ fn a_reset_under_wait_if_within_parks_even_with_a_fallback() {
     let (mut sessions, hub, id) = open(&parts, cfg);
 
     let out = sessions
-        .submit(&id, PROMPT)
+        .submit_operator(&id, PROMPT)
         .expect_err("the session waits instead of moving");
     let words = "waiting 5m for the reset at 21:25:02 UTC (under wait_if_within 45m)";
     assert!(out.to_string().contains(words), "{out}");
@@ -782,7 +782,9 @@ fn a_reset_past_wait_if_within_switches_and_returns_at_the_real_reset() {
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     let (mut sessions, hub, id) = open(&parts, cfg);
 
-    let out = sessions.submit(&id, PROMPT).expect("the fallback answered");
+    let out = sessions
+        .submit_operator(&id, PROMPT)
+        .expect("the fallback answered");
     assert!(out.text.contains(ANSWER), "{}", out.text);
     let words = "glm/glm-5.3 reset Tue 14:00:02 UTC is past wait_if_within 45m - on \
                  deepseek/deepseek-flash until then";
@@ -837,7 +839,7 @@ fn a_weekly_limit_with_no_fallback_parks_and_names_the_real_reset() {
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     let (mut sessions, hub, id) = open(&parts, cfg);
 
-    let out = sessions.submit(&id, PROMPT).expect_err("parked");
+    let out = sessions.submit_operator(&id, PROMPT).expect_err("parked");
     let words = "limited until Tue 14:00:02 UTC, asking again at 03:20:02 UTC";
     assert!(out.to_string().contains(words), "{out}");
     assert_eq!(
@@ -899,13 +901,15 @@ fn a_per_model_fallback_list_is_picked_by_the_limited_model_and_skips_limited_en
     let (mut sessions, hub, id) = open(&parts, cfg);
     let on = |s: &Sessions| s.harness_of(&id).expect("open").model_name().to_string();
 
-    sessions.submit(&id, PROMPT).expect("deepseek answered");
+    sessions
+        .submit_operator(&id, PROMPT)
+        .expect("deepseek answered");
     assert_eq!(on(&sessions), "deepseek/deepseek-flash", "`glm/*` beat `*`");
     assert_eq!(coding.count(), 0);
 
     // deepseek's own key lists glm first, which is limited, so glm-coding takes the turn.
     sessions
-        .submit(&id, "and again")
+        .submit_operator(&id, "and again")
         .expect("glm-coding answered");
     assert_eq!(on(&sessions), "glm-coding/glm-5.3");
     assert_eq!(glm.count(), 1, "the limited entry was not asked");
@@ -1017,7 +1021,7 @@ fn kimi_park(tag: &str, usages: Option<&'static str>) -> Option<(u64, u64, Vec<S
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     let (mut sessions, _hub, id) = open(&parts, cfg);
     let out = sessions
-        .submit(&id, PROMPT)
+        .submit_operator(&id, PROMPT)
         .expect_err("a limit is not an answer");
     let out = out.to_string();
     assert!(
@@ -1125,7 +1129,7 @@ fn an_interrupt_ends_a_park_at_once_and_keeps_the_rows() {
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     let (mut sessions, hub, id) = open(&parts, cfg);
 
-    sessions.submit(&id, PROMPT).expect_err("parked");
+    sessions.submit_operator(&id, PROMPT).expect_err("parked");
     assert_eq!(
         limit_row(&hub).as_deref(),
         Some(
@@ -1180,7 +1184,7 @@ fn an_interrupt_ends_a_park_at_once_and_keeps_the_rows() {
     assert_eq!(sessions.resume_due_limits(), 0, "nothing resumes later");
 
     sessions
-        .submit(&id, "carry on")
+        .submit_operator(&id, "carry on")
         .expect("the next prompt is a turn of its own");
     assert!(answered(&hub));
 }
@@ -1202,7 +1206,7 @@ fn a_switch_while_parked_retries_the_parked_turn_on_the_new_model() {
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     let (mut sessions, hub, id) = open(&parts, cfg);
 
-    sessions.submit(&id, PROMPT).expect_err("parked");
+    sessions.submit_operator(&id, PROMPT).expect_err("parked");
     let reply = sessions.slash(&id, "models deepseek/deepseek-flash");
     assert!(reply.ok, "{:?}", reply.lines);
     let h = sessions.harness_of(&id).expect("open");
@@ -1252,10 +1256,10 @@ fn a_prompt_after_a_switch_while_parked_is_sent_and_lifts_the_park() {
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     let (mut sessions, hub, id) = open(&parts, cfg);
 
-    sessions.submit(&id, PROMPT).expect_err("parked");
+    sessions.submit_operator(&id, PROMPT).expect_err("parked");
     assert!(sessions.slash(&id, "models deepseek/deepseek-flash").ok);
     sessions
-        .submit(&id, "and go on")
+        .submit_operator(&id, "and go on")
         .expect("the prompt is sent to the new model");
     assert_eq!(deepseek.count(), 1);
     assert!(answered(&hub));
@@ -1307,7 +1311,7 @@ fn a_glm_rate_limit_retries_and_never_parks() {
     let (mut sessions, hub, id) = open(&parts, cfg);
 
     let out = sessions
-        .submit(&id, PROMPT)
+        .submit_operator(&id, PROMPT)
         .expect("a rate limit that lifts is a turn");
     assert!(out.text.contains(ANSWER), "{}", out.text);
     assert_eq!(glm.count(), 2, "one refusal, one long wait, one answer");
@@ -1341,7 +1345,7 @@ fn a_glm_window_parks_on_its_china_time_reset() {
     *parts.mode_store.write().unwrap() = letibot_harnessd::modes::ModeStore::default();
     let (mut sessions, hub, id) = open(&parts, cfg);
 
-    let out = sessions.submit(&id, PROMPT).expect_err("parked");
+    let out = sessions.submit_operator(&id, PROMPT).expect_err("parked");
     assert!(
         out.to_string().contains("paused until 21:23:02 UTC"),
         "{out}"
@@ -1386,7 +1390,7 @@ fn a_park_re_tries_on_its_steps_and_the_first_answer_lifts_it() {
     let (mut sessions, hub, id) = open(&parts, cfg);
     let reset = T0 + 4 * 3_600_000 + 2_000;
 
-    let out = sessions.submit(&id, PROMPT).expect_err("parked");
+    let out = sessions.submit_operator(&id, PROMPT).expect_err("parked");
     assert!(
         out.to_string()
             .contains("limited until 01:20:02 UTC, asking again at 21:22:02 UTC"),
@@ -1597,7 +1601,7 @@ fn a_limit_hook_waits_then_asks_then_switches_and_its_state_is_carried_and_destr
     );
 
     let out = sessions
-        .submit(&id, PROMPT)
+        .submit_operator(&id, PROMPT)
         .expect_err("parked by the hook");
     assert!(out.to_string().contains("paused until"), "{out}");
     let h = sessions.harness_of(&id).expect("open");
@@ -1675,7 +1679,7 @@ fn a_limit_hook_out_of_fuel_falls_back_to_the_fixed_rules() {
         Arc::new(|_| Err("all fuel consumed by WebAssembly".into())),
     );
 
-    let out = sessions.submit(&id, PROMPT).expect_err("parked");
+    let out = sessions.submit_operator(&id, PROMPT).expect_err("parked");
     assert!(out.to_string().contains("paused until"), "{out}");
     assert_eq!(
         sessions
@@ -1732,7 +1736,7 @@ fn a_limit_hooks_new_session_forks_the_conversation_and_continues_the_turn_there
         }),
     );
 
-    let _ = sessions.submit(&id, PROMPT);
+    let _ = sessions.submit_operator(&id, PROMPT);
     assert_eq!(seen.lock().unwrap().len(), 1);
     assert_eq!(glm.count(), 1);
     assert!(
