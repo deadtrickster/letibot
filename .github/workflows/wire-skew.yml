@@ -5,10 +5,6 @@ name: Wire skew
 # `act -j wire-skew`, since hosted runs are rate limited.
 
 on:
-  push:
-    paths: ['crates/sessionlog/**', 'crates/transcript/**', 'scripts/wire-skew.sh']
-  pull_request:
-    paths: ['crates/sessionlog/**', 'crates/transcript/**', 'scripts/wire-skew.sh']
   workflow_dispatch:
 
 jobs:
