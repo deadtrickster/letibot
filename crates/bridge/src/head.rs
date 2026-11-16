@@ -1950,6 +1950,25 @@ impl Head {
         context: Option<letibot_sessionlog::protocol::EditorContext>,
     ) -> Result<String, String> {
         self.may_write()?;
+        // `Prompt.from` arrived under 74 with no bump, so a daemon below it parses the frame and
+        // keeps the field nowhere: this seat's words would be recorded as the operator's.
+        let theirs = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .daemon_protocol;
+        if self.speaks_as.is_some()
+            && theirs.is_some_and(|p| p < letibot_sessionlog::PROMPT_FROM_SINCE)
+        {
+            return Err(format!(
+                "this session's daemon speaks protocol {} and a prompt that names its author \
+                 arrived at {}: it would store this line as the operator's own. Nothing was sent. \
+                 Restart the daemon from the installed build (`letibot --stop`, then `letibot`).",
+                theirs.unwrap_or(0),
+                letibot_sessionlog::PROMPT_FROM_SINCE
+            ));
+        }
         let mut c = self.said_client()?;
         // `expected_seq = 0` is what the protocol reads as *I am not claiming a position*,
         // and `Hub::submit` accepts a prompt on a stale seq anyway. A bridge is a second
@@ -2255,6 +2274,23 @@ impl Head {
         patience: Duration,
     ) -> Result<Vec<TodoEntry>, String> {
         self.may_write()?;
+        // `DriverTodos` arrived at 77. A daemon below it answers the frame with `Bye`, which ends
+        // the connection this package's head is holding: refused here, by name, instead.
+        let theirs = self
+            .shared
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .daemon_protocol;
+        if theirs.is_some_and(|p| p < letibot_sessionlog::DRIVER_TODOS_SINCE) {
+            return Err(format!(
+                "this session's daemon speaks protocol {} and a board write arrived at {}: it \
+                 would fail the frame and close the connection, so nothing was sent and the head \
+                 is still attached. Restart the daemon from the installed build.",
+                theirs.unwrap_or(0),
+                letibot_sessionlog::DRIVER_TODOS_SINCE
+            ));
+        }
         let from = self.speaks_as.clone().unwrap_or_else(crate::rooms::handle);
         let by = letibot_sessionlog::event::TodoBy::Peer(from.clone());
         let refused_before = {
