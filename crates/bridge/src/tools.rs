@@ -118,6 +118,7 @@ impl Default for Bridge {
 
 impl Bridge {
     pub fn new() -> Bridge {
+        crate::exe_stamp::take();
         Bridge::default()
     }
 
@@ -376,6 +377,7 @@ impl Bridge {
         vm: bool,
         package: Option<&str>,
     ) -> Result<Value, String> {
+        crate::exe_stamp::refuse_if_replaced()?;
         if brief.trim().is_empty() {
             return Err("`brief` is empty: a session with no brief runs no turn".into());
         }
@@ -762,6 +764,7 @@ impl Bridge {
         watch_only: bool,
         placement: Option<&Placement>,
     ) -> Result<Value, String> {
+        crate::exe_stamp::refuse_if_replaced()?;
         // The daemon first, because the name `gatekeeper` resolves against ITS workspace key:
         // the review queue's session id is per folder, so a name resolved to a constant would
         // join whichever daemon spelled it rather than the one this call is about.

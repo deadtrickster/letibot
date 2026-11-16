@@ -189,7 +189,11 @@ fn write_record(d: &Daemon, pid: u32, model: Option<&str>) -> std::io::Result<Pa
 
 /// RFC3339 UTC to the second, with no `chrono`: this crate pulls nothing it does not need.
 fn rfc3339_utc_now() -> String {
-    let secs = std::time::SystemTime::now()
+    rfc3339_utc(std::time::SystemTime::now())
+}
+
+pub(crate) fn rfc3339_utc(at: std::time::SystemTime) -> String {
+    let secs = at
         .duration_since(std::time::SystemTime::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
