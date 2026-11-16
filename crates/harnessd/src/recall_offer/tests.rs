@@ -243,8 +243,153 @@ fn the_call_the_hint_named_is_the_take_up_and_it_is_logged() {
     let _ = std::fs::remove_dir_all(&logs);
 }
 
-/// An offer the round did not take is logged as untaken and is not made again: the second time is a
-/// nag, and the first was the line the model was told to act on.
+/// One shared word is not a subject: the score floor is passed by a prompt that happens to share
+/// a word with a short old turn, and the line would be keyword noise. Two shared terms earn it.
+#[test]
+fn one_shared_word_is_not_a_subject_and_two_are() {
+    let units = vec![
+        unit("s-a#t0#1", "s-a", 1_760_000_000_000, "etcd archives"),
+        unit(
+            "s-b#t0#1",
+            "s-b",
+            1_760_000_100_000,
+            "the sourdough starter wants equal weights of flour and water",
+        ),
+        unit(
+            "s-c#t0#1",
+            "s-c",
+            1_760_000_200_000,
+            "the model card filters as a line is typed",
+        ),
+    ];
+    // What the score alone says: this is what used to earn the line.
+    let docs: Vec<(std::path::PathBuf, String)> = units
+        .iter()
+        .map(|u| (PathBuf::from(&u.unit), u.text.clone()))
+        .collect();
+    let corpus = Corpus::of_texts(&docs);
+    let score = corpus
+        .ranked("etcd", 3)
+        .first()
+        .map(|(_, s)| *s)
+        .unwrap_or(0.0);
+    assert!(
+        score > OFFER_FLOOR,
+        "the score alone would have offered this: {score}"
+    );
+
+    let mut one = seated();
+    one.units(units.clone(), BTreeMap::new());
+    assert!(
+        !one.compose("etcd", "etcd"),
+        "one shared word is a coincidence, not a subject"
+    );
+    let mut two = seated();
+    two.units(units, BTreeMap::new());
+    assert!(
+        two.compose("etcd archives", "etcd archives"),
+        "two shared terms are"
+    );
+}
+
+/// A session is told a bounded number of times in all: past that the line is not a pointer, and the
+/// count is the session's own log read back, so it survives a restart.
+#[test]
+fn a_session_is_told_a_bounded_number_of_times() {
+    let words = "remember how we built the etcd archives?";
+    let near = rows(SESSION_MAX - 1);
+    let mut room = seated();
+    room.units(index(), BTreeMap::new());
+    room.recall(&near, "s-me");
+    assert!(
+        room.compose(words, words),
+        "under the cap, the offer is made"
+    );
+
+    let full = rows(SESSION_MAX);
+    let mut spent = seated();
+    spent.units(index(), BTreeMap::new());
+    spent.recall(&full, "s-me");
+    assert!(!spent.compose(words, words), "the session's cap is spent");
+    // Another session has its own.
+    let mut other = seated();
+    other.units(index(), BTreeMap::new());
+    other.recall(&full, "s-other");
+    assert!(other.compose(words, words));
+}
+
+/// Three units of one source passed over, and that conversation is left alone - the case a live
+/// session met: one old transcript, offered again and again, each line ignored.
+#[test]
+fn a_source_passed_over_three_times_is_left_alone() {
+    let words = "remember how we built the etcd archives?";
+    let quiet = log_of("s-etcd", SOURCE_DECLINES - 1);
+    let mut near = seated();
+    near.units(index(), BTreeMap::new());
+    near.recall(&quiet, "s-me");
+    assert!(near.compose(words, words), "under the count, it is offered");
+
+    let spent = log_of("s-etcd", SOURCE_DECLINES);
+    let mut left = seated();
+    left.units(index(), BTreeMap::new());
+    left.recall(&spent, "s-me");
+    assert!(
+        !left.compose(words, words),
+        "that source is passed over enough times to be left alone"
+    );
+    // Another source is still a subject: the rule is the conversation's, not the line's.
+    assert!(left.compose(
+        "the model card filters as a line is typed",
+        "the model card filters as a line is typed"
+    ));
+}
+
+/// A log directory holding `n` offers of this session, all taken: the cap counts offers, not misses.
+fn rows(n: usize) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "harnessd-recall-cap-{}-{n}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("a log directory");
+    let mut text = String::new();
+    for i in 0..n {
+        text.push_str(&format!(
+            "{{\"at\":0,\"session\":\"s-me\",\"unit\":\"s-a#{i}\",\"source\":\"s-a\",\
+             \"tool\":\"transcript\",\"match\":\"x\",\"score\":0.3,\"carried\":false,\
+             \"taken\":true}}\n"
+        ));
+    }
+    std::fs::write(dir.join(LOG), text).expect("the log");
+    dir
+}
+
+/// A log directory holding `n` offers of this session from `source`, none of them taken.
+fn log_of(source: &str, n: usize) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "harnessd-recall-source-{}-{n}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).expect("a log directory");
+    let mut text = String::new();
+    for i in 0..n {
+        text.push_str(&format!(
+            "{{\"at\":0,\"session\":\"s-me\",\"unit\":\"{source}#passed{i}\",\
+             \"source\":\"{source}\",\"tool\":\"transcript\",\"match\":\"x\",\
+             \"score\":0.3,\"carried\":false,\"taken\":false}}\n"
+        ));
+    }
+    std::fs::write(dir.join(LOG), text).expect("the log");
+    dir
+}
+
 #[test]
 fn an_untaken_offer_is_logged_and_is_not_made_twice() {
     let logs = std::env::temp_dir().join(format!("harnessd-recall-untaken-{}", std::process::id()));

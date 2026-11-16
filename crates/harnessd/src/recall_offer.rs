@@ -23,6 +23,20 @@ pub const OFFER_FLOOR: f64 = 0.22;
 /// so one shared term is enough - which is what keeps this working on a box with no embedder.
 pub const TRIGGER_FLOOR: f64 = 0.06;
 
+/// How many of the subject's terms a unit has to share when nothing referred back. The floor is a
+/// score, and a score over one word is a coincidence: `self`, `text`, `default` and the rest of
+/// the words two turns of any project have in common. Two shared terms is a subject.
+pub const TERMS_MIN: usize = 2;
+
+/// How many offers one session is told in all. The line is a pointer into the past; past a handful
+/// it is not a pointer any more, whatever the score says.
+pub const SESSION_MAX: usize = 8;
+
+/// How many of one source's units a session may pass over before that source is left alone. A
+/// source is a transcript, so three is three different turns of one old conversation, each offered
+/// and each ignored.
+pub const SOURCE_DECLINES: usize = 3;
+
 /// The phrases that refer back, out of the operator's own text and never a tool result. A closed set
 /// matched on word boundaries: these are the words that mean *we have been here before*.
 pub const REFER_BACK: &[&str] = &[
@@ -168,6 +182,10 @@ pub struct Offers {
     /// Whether `transcript` is seated: a hint naming a tool the seat has not got spends a round on
     /// a refusal, so an unseated seat hears nothing at all.
     seated: bool,
+    /// How many offers this session has already been told, from its own log.
+    told: usize,
+    /// The offers of one source this session passed over, by source transcript.
+    declined: BTreeMap<String, usize>,
 }
 
 impl Offers {
@@ -222,6 +240,17 @@ impl Offers {
             if row.get("session").and_then(|s| s.as_str()) != Some(session) {
                 continue;
             }
+            self.told += 1;
+            if row.get("taken").and_then(|t| t.as_bool()) == Some(true) {
+                continue;
+            }
+            // One source, one more pass: a session that keeps passing over the same old
+            // conversation stops hearing about it, which is the only way to stop the nag.
+            if let Some(source) = row.get("source").and_then(|s| s.as_str())
+                && !source.is_empty()
+            {
+                *self.declined.entry(source.to_string()).or_default() += 1;
+            }
             if let Some(unit) = row.get("unit").and_then(|u| u.as_str()) {
                 self.offered.insert(unit.to_string());
             }
@@ -275,6 +304,17 @@ impl Offers {
         if found.score < floor || self.offered.contains(&found.unit) {
             return false;
         }
+        // Beyond the score: one shared word is not a subject, and a session told about every word
+        // it has in common with an old turn learns to ignore the line.
+        if carried.is_none() && found.matched.len() < TERMS_MIN {
+            return false;
+        }
+        if self.told >= SESSION_MAX {
+            return false;
+        }
+        if self.source_left_alone(&found.session) {
+            return false;
+        }
         // One turn is a read; a term that is all over the project is a fold through a subagent, so
         // a match this wide reaches for `digest` instead. Counted over the units and not guessed.
         let first = found
@@ -323,6 +363,10 @@ impl Offers {
         let mut offer = self.open.take()?;
         offer.taken = taken(calls, &offer);
         self.offered.insert(offer.unit.clone());
+        self.told += 1;
+        if !offer.taken && !offer.session.is_empty() {
+            *self.declined.entry(offer.session.clone()).or_default() += 1;
+        }
         let line = format!(
             "{{\"at\":{},\"session\":{},\"unit\":{},\"source\":{},\"tool\":{},\"match\":{},\
              \"score\":{:.3},\"carried\":{},\"taken\":{}}}\n",
@@ -361,6 +405,11 @@ impl Offers {
     /// The offer the round just settled, for a caller that reports on it.
     pub fn last(&self) -> Option<&Offer> {
         self.last.as_ref()
+    }
+
+    /// Has this session passed over this source enough times to be left alone?
+    fn source_left_alone(&self, source: &str) -> bool {
+        !source.is_empty() && self.declined.get(source).copied().unwrap_or(0) >= SOURCE_DECLINES
     }
 
     /// The unit this subject is most like, with the score that earned it and the terms the hint
