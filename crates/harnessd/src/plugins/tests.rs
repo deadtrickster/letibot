@@ -662,7 +662,7 @@ fn tool_project(tag: &str, first: &str, second: &str, caps: &str) -> (PathBuf, V
 /// A base derived from the empty string was `letibot/` relative to the daemon's cwd.
 #[test]
 fn an_empty_xdg_config_home_is_where_the_daemon_reads_the_user_scope() {
-    let _held = crate::HOME_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let _held = letibot_testenv::EnvGuard::lock();
     let home = tempdir("user-scope-xdg");
     let workspace = tempdir("user-scope-xdg-work");
     let layer = home.join(".config/letibot/plugins/user-probe");

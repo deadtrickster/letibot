@@ -212,7 +212,7 @@ fn proxy_session(tag: &str, extra: &str) -> (Harness, Seen<serde_json::Value>, S
 #[test]
 fn a_config_door_answers_a_turn_with_the_key_from_its_named_variable() {
     // The key is `HOME`'s value, and two lib tests set a fake home while they run.
-    let _home = crate::HOME_ENV.lock().unwrap_or_else(|e| e.into_inner());
+    let _home = letibot_testenv::EnvGuard::lock();
     let (h, seen, auths) = proxy_session("config-door", "");
     one_turn(&h);
     let body = seen.lock().unwrap().last().cloned().expect("a request");
