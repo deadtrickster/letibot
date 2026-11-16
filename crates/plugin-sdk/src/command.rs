@@ -129,6 +129,7 @@ pub const HOST_VERBS: &[&str] = &[
     "job",
     "listen",
     "login",
+    "mcp",
     "model",
     "monitor",
     "nag",
