@@ -636,7 +636,17 @@ struct PushPlan {
 }
 
 fn push_plan(url: &str, target: &str, sha: &str, gh_logged_in: bool) -> PushPlan {
-    let refspec = format!("{sha}:refs/heads/{target}");
+    remote_plan(
+        url,
+        &["push"],
+        format!("{sha}:refs/heads/{target}"),
+        gh_logged_in,
+    )
+}
+
+/// [`push_plan`] for any verb that talks to `origin` (`push`, `fetch -q`).
+fn remote_plan(url: &str, verb: &[&str], refspec: String, gh_logged_in: bool) -> PushPlan {
+    let verb = verb.iter().map(|v| v.to_string());
     match github_https(url).filter(|_| gh_logged_in) {
         // The empty `helper=` first, or the named one is never asked: `credential.helper` is a list
         // and a configured helper earlier in it answers first. An empty value resets the list.
@@ -646,14 +656,15 @@ fn push_plan(url: &str, target: &str, sha: &str, gh_logged_in: bool) -> PushPlan
                 "credential.helper=".into(),
                 "-c".into(),
                 format!("credential.helper={GH_HELPER}"),
-                "push".into(),
-                https,
-                refspec,
-            ],
+            ]
+            .into_iter()
+            .chain(verb)
+            .chain([https, refspec])
+            .collect(),
             gh: true,
         },
         None => PushPlan {
-            args: vec!["push".into(), "origin".into(), refspec],
+            args: verb.chain(["origin".into(), refspec]).collect(),
             gh: false,
         },
     }
@@ -697,6 +708,51 @@ pub fn push(repo: &Path, target: &str, sha: &str) -> Pushed {
         Ok(_) => Pushed::Yes(pushed_said(sha, target, &plan)),
         Err(e) => Pushed::Failed(failed_said(&e, &plan)),
     }
+}
+
+/// Fetch `origin`'s `target` into `refs/remotes/origin/<target>` and say where it is. `Ok(None)`
+/// when there is no `origin`. On gh's credential for a GitHub remote, as [`push`] is.
+pub fn fetch_target(repo: &Path, target: &str) -> Result<Option<String>, String> {
+    let Ok(url) = git(repo, &["remote", "get-url", "origin"]) else {
+        return Ok(None);
+    };
+    let tracking = format!("refs/remotes/origin/{target}");
+    let refspec = format!("+refs/heads/{target}:{tracking}");
+    let plan = remote_plan(url.trim(), &["fetch", "-q"], refspec, gh_authenticated());
+    let args: Vec<&str> = plan.args.iter().map(String::as_str).collect();
+    git(repo, &args).map_err(|e| failed_said(&e, &plan))?;
+    git(repo, &["rev-parse", &tracking]).map(|s| Some(s.trim().to_string()))
+}
+
+/// Put `target` back from `landed` to `to`, and drop the landing from its reflog: the rebase reads
+/// every commit the reflog names as a base, and an undone landing is no branch's base.
+pub fn undo_landing(repo: &Path, target: &str, landed: &str, to: &str) -> Result<(), String> {
+    update_ref_cas(repo, target, to, landed)?;
+    let entry = format!("refs/heads/{target}@{{1}}");
+    if rev_parse(repo, &entry).as_deref() == Some(landed) {
+        let _ = git(repo, &["reflog", "delete", "--rewrite", &entry]);
+    }
+    Ok(())
+}
+
+/// Bring the local `target` up to `origin`'s when origin moved ahead of it, checkouts included.
+/// A local target that is ahead or diverged is left alone. `Ok(true)` when it moved.
+pub fn follow_origin(repo: &Path, target: &str) -> Result<bool, String> {
+    let Some(theirs) = fetch_target(repo, target)? else {
+        return Ok(false);
+    };
+    let Some(ours) = branch_head(repo, target) else {
+        return Ok(false);
+    };
+    if ours == theirs || !is_ancestor(repo, &ours, &theirs).unwrap_or(false) {
+        return Ok(false);
+    }
+    update_ref_cas(repo, target, &theirs, &ours)?;
+    if let Err(e) = follow_checkouts(repo, target, &ours, &theirs) {
+        let _ = update_ref_cas(repo, target, &ours, &theirs);
+        return Err(e);
+    }
+    Ok(true)
 }
 
 /// The https url of a GitHub remote, whatever spelling it arrived in - the form `gh`'s

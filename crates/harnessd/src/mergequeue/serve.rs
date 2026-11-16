@@ -250,7 +250,12 @@ pub struct RepoQueue {
     /// `alive` reads, since the gate's thread has no store of its own. The pass beats; a lost
     /// lease kills the gate within its next poll, as when the gate beat for itself.
     lease_ok: Arc<AtomicBool>,
+    /// When each target last fetched `origin`, so a waiting row does not fetch on every pass.
+    fetched: std::sync::Mutex<std::collections::HashMap<String, std::time::Instant>>,
 }
+
+/// How often a target with rows in line asks `origin` where it is. A refused push fetches at once.
+const FETCH_EVERY: Duration = Duration::from_secs(30);
 
 /// One terminal row's hold on a worktree and a branch - the facts the resource sweep needs. A
 /// review row and the merge row it was approved into name the same tree, which is examined once.
@@ -454,7 +459,76 @@ impl RepoQueue {
             settings_said: Default::default(),
             gate: Default::default(),
             lease_ok: Arc::new(AtomicBool::new(true)),
+            fetched: Default::default(),
         }
+    }
+
+    /// Follow `origin` when it moved ahead of the local target - another machine landed there - so
+    /// the next landing rebases onto it and its push is a fast-forward. Only with rows in line.
+    fn follow_origin(&self, target: &str) -> Result<bool, StoreError> {
+        let waiting = self
+            .store
+            .merge_rows(Some(&self.key))?
+            .iter()
+            .any(|m| m.state == MergeState::Queued && m.target == target);
+        if !waiting {
+            return Ok(false);
+        }
+        {
+            let mut at = self.fetched.lock().unwrap_or_else(|e| e.into_inner());
+            if at.get(target).is_some_and(|t| t.elapsed() < FETCH_EVERY) {
+                return Ok(false);
+            }
+            at.insert(target.to_string(), std::time::Instant::now());
+        }
+        match git::follow_origin(&self.repo, target) {
+            Ok(moved) => Ok(moved),
+            Err(e) => {
+                eprintln!("  merge queue: `{target}` could not follow origin: {e}");
+                Ok(false)
+            }
+        }
+    }
+
+    /// A push refused because origin moved: the local target goes back to origin's tip and the
+    /// rows go back in line, to be rebased onto it. `None` when origin did not move (or cannot be
+    /// read), and the landing stays local as before. The rows' commits live on their branches.
+    fn refused_push(
+        &self,
+        rows: &[&MergeRow],
+        target: &str,
+        landed: &str,
+        said: &str,
+        steps: &[letibot_tokencore::store::MergeGateStep],
+    ) -> Result<Option<()>, StoreError> {
+        let Ok(Some(theirs)) = git::fetch_target(&self.repo, target) else {
+            return Ok(None);
+        };
+        if git::is_ancestor(&self.repo, &theirs, landed).unwrap_or(true) {
+            return Ok(None);
+        }
+        if git::undo_landing(&self.repo, target, landed, &theirs).is_err() {
+            return Ok(None);
+        }
+        if let Err(e) = git::follow_checkouts(&self.repo, target, landed, &theirs) {
+            let _ = git::update_ref_cas(&self.repo, target, landed, &theirs);
+            eprintln!("  merge queue: `{target}` could not go back to origin's {theirs}: {e}");
+            return Ok(None);
+        }
+        let me = self.me().to_string();
+        let steps = serde_json::to_string(steps).unwrap_or_else(|_| "[]".into());
+        for row in rows {
+            let why = format!(
+                "{said}. `origin/{target}` moved to {theirs}, so `{target}` was put back there \
+                 and this branch goes back in line, to be rebased onto it and gated again"
+            );
+            self.gating_to(
+                row,
+                MergeState::Queued,
+                Move::new(&me, why).set("gate_steps_json", steps.clone()),
+            )?;
+        }
+        Ok(Some(()))
     }
 
     fn slot(&self) -> std::sync::MutexGuard<'_, Option<InFlight>> {
@@ -638,6 +712,7 @@ impl RepoQueue {
             if stop.load(Ordering::Relaxed) {
                 return Ok(Pass::Worked);
             }
+            worked |= self.follow_origin(&target)?;
             let h = match self.health(&target)? {
                 Health::Started => {
                     worked = true;
@@ -3026,6 +3101,13 @@ impl RepoQueue {
             git::Pushed::NoRemote => ("no `origin` to push to".to_string(), true),
             git::Pushed::Failed(e) => (format!("{PUSH_FAILED}: {e}"), false),
         };
+        if !may_install
+            && self
+                .refused_push(&[row], &target, &rebased, &pushed_text, &run.steps)?
+                .is_some()
+        {
+            return Ok(());
+        }
         let mut install_note = String::new();
         if !landing.install.is_empty() {
             if may_install {
@@ -3216,6 +3298,14 @@ impl RepoQueue {
             git::Pushed::NoRemote => ("no `origin` to push to".to_string(), true),
             git::Pushed::Failed(e) => (format!("{PUSH_FAILED}: {e}"), false),
         };
+        let cars: Vec<&MergeRow> = (0..n).map(|i| &train.cars[i].row).collect();
+        if !may_install
+            && self
+                .refused_push(&cars, &target, &prev, &pushed_text, &run.steps)?
+                .is_some()
+        {
+            return Ok(());
+        }
         if !train.install.is_empty() && may_install {
             let wt = train.wt.clone();
             let install = train.install.clone();

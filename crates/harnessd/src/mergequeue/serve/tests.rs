@@ -1197,6 +1197,99 @@ fn the_landing_pushes_then_installs_and_a_failed_push_installs_nothing() {
     );
 }
 
+/// Another machine pushes to origin's target. The queue fetches before it lands, and a refused
+/// push resets the local target to origin and requeues: both rows land and nothing is local only.
+#[test]
+fn landing_after_origin_moves_refetches_and_lands() {
+    let w = World::new("origin-moves");
+    let origin = w.dir.0.join("origin.git");
+    sh(
+        &w.dir.0,
+        &["init", "-q", "--bare", &origin.to_string_lossy()],
+    );
+    sh(
+        &w.repo,
+        &["remote", "add", "origin", &origin.to_string_lossy()],
+    );
+    sh(&w.repo, &["push", "-q", "origin", "main"]);
+    let (pwt, pbase, phead) = branch(&w.repo, "p", "p.txt");
+    let (qwt, qbase, qhead) = branch(&w.repo, "q", "q.txt");
+    w.enqueue("p", &pwt, &pbase, &phead);
+    w.enqueue("q", &qwt, &qbase, &qhead);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let mp = w.accept("p", "test/a");
+    let mq = w.accept("q", "test/a");
+
+    // The other machine's push, after the queue last read the target.
+    let mac = w.dir.0.join("mac");
+    sh(
+        &w.dir.0,
+        &[
+            "clone",
+            "-q",
+            "-b",
+            "main",
+            &origin.to_string_lossy(),
+            &mac.to_string_lossy(),
+        ],
+    );
+    letibot_tools::testing::repo_config(&mac);
+    commit(&mac, "mac.txt", "from the mac\n", "from the mac");
+    sh(&mac, &["push", "-q", "origin", "main"]);
+
+    let state = |m: &str| w.store().merge_row(m).unwrap().unwrap().state;
+    for _ in 0..40 {
+        if [state(&mp), state(&mq)].iter().all(|s| !s.is_open()) {
+            break;
+        }
+        run(&q, 1);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let rows = [
+        w.store().merge_row(&mp).unwrap().unwrap(),
+        w.store().merge_row(&mq).unwrap().unwrap(),
+    ];
+    for row in &rows {
+        assert_eq!(row.state, MergeState::Landed, "{row:#?}");
+    }
+    let tip = sh(&origin, &["rev-parse", "main"]);
+    assert_eq!(tip, w.tip(), "origin and the local target agree");
+    for file in ["mac.txt", "p.txt", "q.txt"] {
+        sh(&origin, &["cat-file", "-e", &format!("main:{file}")]);
+    }
+
+    // Origin moves again inside the fetch interval: the push is refused, the local target goes
+    // back to origin's tip and the row lands on the next try, not `landed_local`.
+    let (rwt, rbase, rhead) = branch(&w.repo, "r", "r.txt");
+    w.enqueue("r", &rwt, &rbase, &rhead);
+    run(&q, 1);
+    let mr = w.accept("r", "test/a");
+    sh(&mac, &["pull", "-q", "--ff-only", "origin", "main"]);
+    commit(&mac, "mac2.txt", "again\n", "from the mac again");
+    sh(&mac, &["push", "-q", "origin", "main"]);
+    let mut requeued = false;
+    for _ in 0..40 {
+        let row = w.store().merge_row(&mr).unwrap().unwrap();
+        requeued |= row.evidence.contains("was put back there");
+        if !row.state.is_open() {
+            break;
+        }
+        run(&q, 1);
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let row = w.store().merge_row(&mr).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::Landed, "{row:#?}");
+    let history = w.store().transitions("merge", &mr).unwrap();
+    assert!(
+        requeued || history.iter().any(|t| t.why.contains("was put back there")),
+        "the refused push requeued it: {history:#?}"
+    );
+    assert_eq!(sh(&origin, &["rev-parse", "main"]), w.tip());
+    sh(&origin, &["cat-file", "-e", "main:mac2.txt"]);
+    sh(&origin, &["cat-file", "-e", "main:r.txt"]);
+}
+
 /// A push that fails is said even when the project has no install step
 /// `).
 #[test]
