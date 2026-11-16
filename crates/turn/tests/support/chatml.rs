@@ -1,31 +1,6 @@
-//! A test fixture, not a dialect.
-//!
-//! # Read this before reusing anything in this file
-//!
-//! The box serves `qwen-3.8-flash-next` on 8080 and GLM is not running. We have a
-//! verified GLM renderer and no Qwen renderer, and the real one will be template-driven (the model's shipped jinja through minijinja) - building
-//! a second hand-written renderer is explicitly *not* this strand's work.
-//!
-//! So this is the smallest thing that makes the engine's own pipeline exercisable
-//! against a live model: enough ChatML to produce tokens Qwen recognises. It is
-//! not claimed to be byte-exact with Qwen's shipped template, it is not in the
-//! fidelity gate, and it must never be promoted out of `tests/`. It lives here
-//! rather than in the library precisely so that promoting it takes a deliberate
-//! move rather than an import.
-//!
-//! What it *is* good for: proving that render → tokenize → ledger → submit →
-//! stream → parse → commit closes against a real server, with real ids, real cache
-//! numbers and the real progress-frame behaviour. None of that depends on the
-//! renderer being the canonical one.
-//!
-//! The control tokens are the model's own, read out of the GGUF with
-//! `python3 tests/fidelity/extract_template.py --tokens <gguf>`:
-//!
-//! ```text
-//! 248045 '<|im_start|>' CONTROL      248068 '<think>'  USER_DEFINED
-//! 248046 '<|im_end|>'   CONTROL      248069 '</think>' USER_DEFINED
-//! 248058 '<tool_call>'  USER_DEFINED 248066 '<tool_response>'  USER_DEFINED
-//! ```
+//! A test fixture, not a dialect: enough ChatML to run the engine's pipeline against a live Qwen.
+//! Not byte-exact with Qwen's template and not in the fidelity gate; it must never leave `tests/`.
+//! Control tokens are the model's own: 248045 `<|im_start|>`, 248046 `<|im_end|>`, 248068 `<think>`.
 
 use std::borrow::Cow;
 

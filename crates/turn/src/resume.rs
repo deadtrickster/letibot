@@ -1,25 +1,6 @@
-//! Rebuilding a [`Session`] from what the store persisted.
-//!
-//! ```text
-//!   store ──load_transcript──> prefix tokens, h_init, [(row, tokens)], [items]
-//!                                              │
-//!                    TokenLedger::restore ─────┤  replays the spans, re-hashes each link
-//!                                              │
-//!                    verify_chain ─────────────┤  recomputes from the rebuilt region
-//!                                              │
-//!                                          Session
-//! ```
-//!
-//! The tokens come from `transcript_item.tokens`, never from a renderer: an
-//! assistant row's ids were cut from what the server streamed, and no renderer
-//! reproduces them. There is no `PromptRenderer` parameter here; that absence is
-//! the guarantee.
-//!
-//! [`TokenLedger::restore`] re-chains the persisted rows and
-//! [`TokenLedger::verify_chain`] recomputes from the region the session will
-//! submit. A restore whose rows and items disagree is refused, because downstream
-//! indexes both with one number. `turn_seq` starts at the restored item count: a
-//! watermark, so ids never repeat or go backwards across a restart.
+//! Rebuilding a [`Session`] from what the store persisted. Tokens come from `transcript_item.tokens`,
+//! never a renderer, which is why there is no `PromptRenderer` parameter. A restore whose rows and
+//! items disagree is refused; `turn_seq` starts at the item count so ids never repeat.
 
 use letibot_tokencore::TokenId;
 use letibot_tokencore::ledger::{LedgerError, LedgerRow, TokenLedger};

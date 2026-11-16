@@ -12,10 +12,9 @@ pub const MAX_FACTS: usize = 400;
 /// How many missing names a re-ask spells out before it says how many more there are.
 pub const SHOWN: usize = 12;
 
-/// The share of each level a record has to name, in per cent of that level's total. Files are
-/// exact strings the record either carries or does not; a plan row is prose and is compared by its
-/// words, so it is held to a lower bar. Commands are counted and not gated: a record is the state of
-/// the work, and gating them made every record a log of what ran.
+/// The share of each level a record has to name, in per cent. A plan row is prose compared by its
+/// words, so its bar is lower. Commands are counted, not gated, or every record becomes a log of
+/// what ran.
 pub const FILES_FLOOR: usize = 80;
 pub const COMMANDS_FLOOR: usize = 0;
 pub const DECISIONS_FLOOR: usize = 50;

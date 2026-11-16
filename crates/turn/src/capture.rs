@@ -1,19 +1,6 @@
-//! Keeping the raw frames when the stream stops accounting for itself.
-//!
-//! ```text
-//! a frame advanced tokens_predicted 2477 -> 2479 but carried 1 id(s)
-//! ```
-//!
-//! That line says a frame was wrong, not which one or what came before it - the
-//! questions that decide whether the guard or the server is at fault. A
-//! `FrameMismatch` is rare and not reproducible from a transcript, so the evidence
-//! exists only at the moment it fires.
-//!
-//! The offending frame is kept with the two before it and the next few: "the id
-//! arrives one frame late" and "the id never arrives" produce the same message and
-//! want opposite fixes. Frames are stored verbatim, as the payload bytes the server
-//! sent. Nothing here feeds the accumulator, and a failed write downgrades to a
-//! warning.
+//! Keeping the raw frames when the stream stops accounting for itself. A `FrameMismatch` is rare and
+//! not reproducible, so the offending frame, two before and a few after are kept verbatim. Nothing
+//! here feeds the accumulator, and a failed write is a warning.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};

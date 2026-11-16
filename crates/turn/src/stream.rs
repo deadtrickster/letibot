@@ -1,56 +1,6 @@
-//! Accumulating generated token ids out of a `/completion` stream.
-//!
-//! The final frame carries an empty `tokens` array in stream mode, so ids come from the partial
-//! frames. Re-tokenizing `content` instead reintroduces the detokenize/retokenize round trip the
-//! ledger exists to detect and silently diverges the cache:
-//!
-//! ```text
-//!  17 stop=0 tokens=[248046] predicted=17 content=''
-//!  18 stop=1 tokens=[]       predicted=17 content=''
-//! ```
-//!
-//! `return_progress: true` makes llama.cpp send progress frames carrying a fabricated token id 0,
-//! so accumulating `tokens` from every non-final frame corrupts the ledger on the first turn:
-//!
-//! ```text
-//!   1 stop=0 prog=True tokens=[0] predicted=0 content=''
-//!   2 stop=0 prog=True tokens=[0] predicted=0 content=''
-//!   3 stop=0 prog=False tokens=[3833] predicted=1 content='One'
-//! ```
-//!
-//! The rule: accept a frame's ids only when the server's `tokens_predicted` advanced, and take
-//! exactly that many. At the end the count must equal the final frame's, or the turn is refused.
-//!
-//! Unpatched llama.cpp emits no frame for a token ending in a partial UTF-8 character, and the
-//! counter advance shows up on the next frame, which carries only its own id:
-//!
-//! ```text
-//! bool incomplete = validate_utf8(slot.generated_text) < slot.generated_text.size();
-//! ```
-//!
-//! ```text
-//!   {"content":"😀",  "tokens":[141334],"tokens_predicted":1}
-//!   {"content":" 😂", "tokens":[224],   "tokens_predicted":3}   ← advance 2, ids 1
-//! ```
-//!
-//! Signature: `advance 2, ids 1` (or `3, 1`), content-dependent (emoji, not ASCII prose),
-//! not speculative decoding. The fix lives on a local patch branch of the server, so most
-//! servers lack it and this accumulator is the detector - do not delete it.
-//!
-//! Against an unpatched server [`IdAccumulator::push`] stops at the first frame that does not
-//! account for its advance, keeps the ids before it, and the turn aborts as
-//! [`AbortCause::FrameMismatch`] holding that partial (empty if the first frame disagrees).
-//! The frames are written out verbatim and announced as `frame_capture_written` (routine); a
-//! failed capture is `frame_capture_failed`. [`Mismatch`] gives the direction: `ids < advance`
-//! means the server withheld ids, `ids > advance` means it sent more than it counted.
-//! To check the server when the sentence says withheld:
-//!
-//! ```text
-//! cd ~/Projects/llama.cpp && git log -1 --format='%h %s' d10f94713
-//! git merge-base --is-ancestor d10f94713 HEAD && echo patched || echo UNPATCHED
-//! ```
-//!
-//! The guard is a function of what arrives, not of which server is running.
+//! Generated ids out of a `/completion` stream. The final frame's `tokens` is empty and progress
+//! frames carry a fake id 0, so ids are taken only when `tokens_predicted` advanced, that many, and
+//! must total the final count. Unpatched llama.cpp withholds ids on partial UTF-8: keep this detector.
 
 use letibot_tokencore::TokenId;
 
@@ -85,8 +35,8 @@ pub enum StreamError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mismatch {
     /// The server counted more tokens than it sent. This is what a token whose bytes end
-    /// mid-character does: `advance 2, ids 1`. See the module header for the mechanism and
-    /// for `d10f94713`, which is the fix - on a patch branch, so its absence is the default.
+    /// mid-character does: `advance 2, ids 1`. The server fix is on a patch branch, so most
+    /// servers lack it.
     Withheld,
     /// The server sent more ids than it counted. No withheld token explains this, so it is
     /// a different fault: the counter and the ids disagree in the direction that cannot come
@@ -390,7 +340,7 @@ mod tests {
         assert_eq!(out.ids.len(), 4, "two progress frames contributed no ids");
     }
 
-    /// The regression guard the brief asked for: an implementation that reads the
+    /// An implementation that reads the
     /// final frame alone must fail this, loudly.
     #[test]
     fn reading_only_the_final_frame_is_caught_rather_than_silently_falling_back() {

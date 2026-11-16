@@ -2,35 +2,9 @@
 //! instruction as a [`TranscriptItem`] asks for the summary over a prefix the server holds.
 //! [`CompactionOutcome`] carries the measured reuse.
 
-//! The log - the ledger and its items - is the record of what was said, and it is
-//! the truth. The KV cache is an optimisation a server process holds: per-slot,
-//! evictable, gone on a restart. Designing the log around the cache makes a scratch
-//! session look impossible; dismissing the cache because the log is fine is correct
-//! and unusable.
-//!
-//! A cold prompt costs something on both sides - DeepSeek prices cached input at a
-//! tenth of uncached, by prefix - and what differs is the currency:
-//!
-//! ```text
-//! local llama.cpp   a miss costs TIME    200-375 tok/s -> ~10 minutes
-//!                                    on a 240k prompt
-//! DeepSeek          a miss costs MONEY   0.28 vs 0.028 per Mtok ->
-//!                                    $0.067 against $0.0067
-//! ```
-//!
-//! Ten minutes before a word is generated disqualifies a strategy; six cents does
-//! not. A cloud provider takes MESSAGES rather than tokens
-//! (`letibot_provider::messages::convert`), so none of the prefix machinery applies
-//! to it at all.
-//!
-//! So the strategy branches on the BACKEND: a local server keeps the expensive half
-//! a true prefix of what it already holds (`summarise_overrun`), a cloud provider
-//! folds and continues with no overlap and no seam (`plan_fold` +
-//! `summarise_first_half`). `plan_overrun` chooses, `Harness::compact_inner` carries
-//! out the answer.
-//!
-//! Building the new base is deliberately not here: it reaches the store, the resume
-//! chain and the session registry, and this module has none of them.
+//! The log is the truth; the KV cache is a per-slot, evictable optimisation. A local miss costs
+//! minutes and a cloud miss cents, and a cloud provider takes messages, so `plan_overrun` branches on
+//! the backend. Building the new base is not here: it needs the store, which this module lacks.
 
 use letibot_dialect::StablePrefix;
 use letibot_transcript::{SystemOrigin, TranscriptItem, UserPart};
@@ -822,45 +796,14 @@ pub struct SummaryAsk<'a> {
     pub template: Option<&'a Template>,
 }
 
-/// Who answers a summary turn.
-///
-/// The engine holds one `endpoint` and one `model` and knows nothing about a
-/// provider, which only arrives as an argument to
-/// [`TurnEngine::run_turn_messages`] - so an unconditional `run_turn` sent a
-/// metered session's summary, whole history in front of it, to the daemon's own
-/// local model, which is why compaction could not rescue a session that had
-/// overrun:
-///
-/// ```text
-/// http 400: This model's maximum context length is 1048576 tokens.
-///           However, you requested 1048607 tokens          <- deepseek, the turn
-/// http 400: request (1504198 tokens) exceeds the available
-///           context size (262144 tokens)                   <- qwen, the SUMMARY
-/// ```
+/// Who answers a summary turn. The engine knows no provider unless given one, and a metered
+/// session's summary sent to the local model overflows its context.
 pub enum Answerer<'a> {
     /// The daemon's own endpoint, for a session that runs there anyway.
     Local,
-    /// The session's provider, with the prefix's system prompt and its tools.
-    ///
-    /// The tools look like dead weight, since a summary cannot call one, but they
-    /// are part of the prefix every other turn sends. A local server caches that
-    /// prefix, and a summary that dropped them would be the one call that reads the
-    /// whole history cold, on the largest conversation the session will ever have.
-    ///
-    /// Carrying them does not provoke a provider's demand for every previous turn's
-    /// `reasoning_content`; a compaction without tools was refused for that just the
-    /// same, and every combination answers 200:
-    ///
-    /// ```text
-    /// no tools, assistant without reasoning_content                 200
-    /// tools,    assistant without reasoning_content                 200
-    /// tools,    assistant with tool_calls, no reasoning_content     200
-    /// tools,    assistant with tool_calls, with reasoning_content   200
-    /// no tools, assistant with tool_calls, no reasoning_content     200
-    /// ```
-    ///
-    /// A compaction is the one call that must FIT, and sizing it for a span that
-    /// cannot all be held is `plan_overrun`'s job, not this variant's.
+    /// The session's provider, with the prefix's system prompt and its tools. The tools are part of
+    /// the cached prefix, so dropping them would read the whole history cold. They do not provoke a
+    /// `reasoning_content` demand. Sizing the span to fit is `plan_overrun`'s job.
     Provider {
         backend: &'a dyn letibot_backend::MessagesBackend,
         system: &'a str,
@@ -920,10 +863,9 @@ pub fn run_compaction(
     out
 }
 
-/// [`run_compaction`] with its stream carried out as the compaction's own progress line: a head
-/// draws a fold that is running, never the record being typed out as a turn of the conversation.
-/// Nothing of the summary turn reaches `sink` but [`TurnEvent::CompactionProgress`]. The second
-/// half of the answer is what its rounds cost, which the caller reports since no ending carries it.
+/// [`run_compaction`] with its stream shown as the compaction's progress line, never typed out as a
+/// turn: only [`TurnEvent::CompactionProgress`] reaches `sink`. Also returns what its rounds cost,
+/// which the caller reports since no ending carries it.
 pub fn run_compaction_as_progress(
     engine: &mut TurnEngine,
     session: &mut Session,

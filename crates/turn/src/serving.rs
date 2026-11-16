@@ -1,31 +1,6 @@
-//! What the server on the other end is actually serving, asked before a test
-//! blames the tokenizer.
-//!
-//! # The failure this exists to stop being opaque
-//!
-//! The live tests in this workspace tokenise locally, against a GGUF named in the
-//! config, and post token ids. Three model services on this box are singletons
-//! that evict each other and have shared a port, so the model behind `:8080` is
-//! whichever one was started last. Point qwen's vocabulary at GLM and the ids are
-//! simply out of range - qwen-3.8-flash-next has 248,320 tokens and GLM-5.3-Flash
-//! has 154,880 - and the server answers:
-//!
-//! ```text
-//! 400 {"error":{"message":"Prompt contains invalid tokens", ...}}
-//! ```
-//!
-//! Which is true and names nothing. A reader gets "the tokenizer is broken", and
-//! the fact is "this port is serving a different model than the one this test
-//! tokenised for". That is the same shape as a 404 that means *not visible to you*
-//! rather than *not there*, and this fleet has already paid for the difference
-//! once.
-//!
-//! # Why this is a refusal and not a skip
-//!
-//! Same discipline as the live tests themselves: a test that quietly passes when
-//! its model is absent reports the health of a `TcpStream::connect`. [`expect`]
-//! panics, and it panics with the served model, the expected model, and the one
-//! command that fixes it.
+//! What the server is actually serving, asked before a test blames the tokenizer: model services
+//! on this box share a port, and a wrong vocabulary only gets "Prompt contains invalid tokens".
+//! [`expect`] panics, not skips, naming the served model, the expected one, and the fix.
 
 use crate::http::{self, Endpoint};
 use letibot_transcript::text::clip_bytes;
@@ -126,15 +101,8 @@ pub fn served_ctx(endpoint: &Endpoint) -> Option<u64> {
     digits.parse().ok().filter(|n| *n > 0)
 }
 
-/// The token a multimodal prompt must place where its image goes, from `/props`:
-///
-/// ```text
-/// /props → media_marker: "<__media_d2QxA7RJNGYqiEAoAPVLPCHm6CPADiRe__>"
-/// ```
-///
-/// It is randomised per server instance and is not any of the model's own tokens, so a hardcoded
-/// one works against one process and fails against the next. `None` means no images on this
-/// endpoint, which the caller discloses rather than guessing at a marker.
+/// The token a multimodal prompt places where its image goes, from `/props` `media_marker`. It is
+/// randomised per server instance, so never hardcoded. `None` means no images on this endpoint.
 pub fn served_media_marker(endpoint: &Endpoint) -> Option<String> {
     let body = http::get(endpoint, "/props").ok()?.read_to_string().ok()?;
     field(&body, "\"media_marker\"").filter(|m| !m.is_empty())
@@ -361,7 +329,7 @@ mod tests {
     }
 
     /// A served chat template survives the JSON it arrives in, quotes and all. Reading it with
-    /// [`field`] would return the 705 bytes before the first escaped quote and call it the
+    /// [`field`] would return the bytes before the first escaped quote and call it the
     /// document, so every dialect comparison would fail against a template never served.
     #[test]
     fn a_served_chat_template_survives_the_json_it_arrives_in() {

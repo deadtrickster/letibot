@@ -1,19 +1,6 @@
-//! The turn engine: render → tokenize → append → submit → stream → parse → append.
-//!
-//! ```text
-//!   region after turn N        [ prefix | item | item | … | item ]
-//!   submitted for turn N+1     [ prefix | item | item | … | item | <|assistant|><think> ]
-//!                                                                  ^^^ uncommitted tail
-//!   region after turn N+1      [ prefix | item | … | item | <|assistant|><think>…generated… ]
-//! ```
-//!
-//! The generation prompt is submitted but not committed until the turn produces
-//! something, because it is not a transcript item: folding it into a render would
-//! break `render_incremental ≡ render`. A failed turn leaves the region unchanged.
-//!
-//! Ledger rows are cut from the id array the server streamed, never re-derived from
-//! text. `run_turn` returns `Result<TurnOk, TurnFailure>` and [`TurnOk`] has no
-//! constructor accepting a verdict `may_record_as_success()` rejects.
+//! The turn engine: render, tokenize, append, submit, stream, parse, append. The generation prompt
+//! is submitted but committed only once the turn produces something, so `render_incremental ≡
+//! render` holds. Ledger rows are cut from the streamed ids; a failed turn leaves the region unchanged.
 
 use std::sync::Arc;
 use std::time::Instant;
@@ -1464,10 +1451,8 @@ impl TurnEngine {
         }
         self.salvage.cleared();
 
-        // The items, in the order the local dialects produce them: the thinking
-        // first, then the answer with its calls. A provider that signs its thinking
-        // hands over the blocks themselves, so each row carries what replaying it needs;
-        // a plain-text provider keeps the one row its concatenated reasoning makes.
+        // Thinking first, then the answer with its calls, as the local dialects produce them. A
+        // signing provider's blocks each get a row for replay; a plain-text provider gets one row.
         let mut produced = Vec::new();
         if done.thoughts.is_empty() {
             if !done.reasoning.is_empty() {

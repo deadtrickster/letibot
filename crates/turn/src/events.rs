@@ -228,28 +228,9 @@ mod tests {
     }
 }
 
-/// A sink that forwards progress and swallows rows.
-///
-/// For a session that is real work but not part of the operator's conversation:
-/// the overrun summariser's scratchpads, which restage history a model has
-/// already seen so it can be read in one piece, then are thrown away.
-///
-/// Two things went wrong on the way to this, in opposite directions, and both
-/// were visible on the operator's screen. Passing the live sink announced every
-/// restaged row as `TranscriptAppended`, and a head shows a placeholder for an
-/// item id and waits for a body that never comes:
-///
-/// ```text
-/// [tool_result — waiting for the body of …#compact-batch-0.66]
-/// ```
-///
-/// Passing [`NullSink`] instead fixed that and broke the other half: a scratchpad
-/// is a large prompt and prefilling it takes minutes, during which the head had
-/// nothing to show - "tui doesnt show any prefill tho".
-///
-/// So `PromptProgress` goes through, because it is the only honest answer to
-/// "what is it doing", and everything else is dropped, because everything else is
-/// about a transcript nobody will read.
+/// A sink that forwards `PromptProgress` and swallows rows, for scratch sessions such as the overrun
+/// summariser's. Their rows announced live leave a head waiting on bodies that never come, and
+/// [`NullSink`] hides a prefill that takes minutes.
 pub struct ProgressOnly<'a>(pub &'a mut dyn EventSink);
 
 impl EventSink for ProgressOnly<'_> {

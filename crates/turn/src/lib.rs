@@ -1,25 +1,6 @@
-//! The turn engine: one turn, from a transcript to a transcript.
-//!
-//! This crate assembles what the others define - `transcript` says what a
-//! conversation is, `dialect` what a model's boundaries are, `tokencore` owns the
-//! vocabulary and the append-only region, `backend` what a backend may promise -
-//! and re-implements none of it.
-//!
-//! ```text
-//!   render (RenderSpan)  →  tokenize  →  ledger append  →  submit the region
-//!                                                              │
-//!            append rows ← parse (Parser) ← accumulate ids ← stream back
-//!                                │
-//!                                └→ LengthPolicy, guards, post-flight I1, metrics
-//! ```
-//!
-//! Two facts about the stream shape the code: in stream mode the final frame
-//! carries an empty `tokens` array, and `return_progress: true` makes llama.cpp
-//! emit progress frames carrying a fabricated token id 0 - so taking ids from
-//! either corrupts the ledger. See [`stream`].
-//!
-//! Rendering is behind [`renderer::PromptRenderer`] so a template-driven renderer
-//! can replace `GlmRenderer` without this crate changing.
+//! The turn engine: one turn, from a transcript to a transcript. It assembles `transcript`,
+//! `dialect`, `tokencore` and `backend` and re-implements none of them. Rendering is behind
+//! [`renderer::PromptRenderer`]; stream ids follow the rules in [`stream`].
 
 pub mod capture;
 pub mod compaction;

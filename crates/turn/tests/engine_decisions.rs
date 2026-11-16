@@ -231,9 +231,9 @@ fn a_reasoning_only_length_turn_fails_and_leaves_the_region_untouched() {
     );
 }
 
-/// The live finding replayed: the stream stops with `eos` - a NORMAL stop, which is the point -
+/// The stream stops with `eos` - a NORMAL stop, which is the point -
 /// while the reasoning block is still open and nothing but reasoning was produced. The length
-/// classifier has no opinion on a `stop`, so before this check the turn committed as empty.
+/// classifier has no opinion on a `stop`, so without this check the turn commits as empty.
 #[test]
 fn a_turn_that_stops_inside_its_own_reasoning_is_not_an_empty_success() {
     let _lock = serial();

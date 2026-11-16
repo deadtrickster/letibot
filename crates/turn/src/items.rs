@@ -379,9 +379,8 @@ mod tests {
         rows_cover_every_token(&p).unwrap();
     }
 
-    /// A tool call this dialect cannot name gets an id that no other turn holds. Two produces of
-    /// the same shape used to both say `call_0`, so a head or a store that keys a call by its id
-    /// saw one call where the session made two.
+    /// A tool call this dialect cannot name gets an id that no other turn holds, so a head or a
+    /// store keying calls by id sees two calls where the session made two.
     #[test]
     fn two_turns_with_tool_calls_mint_different_ids() {
         let one_call = [
@@ -437,9 +436,8 @@ mod tests {
         }
     }
 
-    /// A regression this cost a real debugging pass to find: ChatML's lead carries the literal
-    /// text `assistant\n`, so leaking it made "assistant" the visible content and turned a
-    /// `ReasoningOnly` failure into a `TruncatedText` success.
+    /// ChatML's lead carries the literal text `assistant\n`, so leaking it makes "assistant" the
+    /// visible content and turns a `ReasoningOnly` failure into a `TruncatedText` success.
     #[test]
     fn the_generation_prompts_own_text_is_never_parsed_as_model_output() {
         let d = decoder().with_text(20, "assistant\n");

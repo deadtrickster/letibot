@@ -58,21 +58,9 @@ pub struct TurnMetrics {
 }
 
 impl TurnMetrics {
-    /// `f_keep` - `lcp / cached_entry`: how much of the entry we left in the server's cache last
-    /// turn came back to us this turn.
-    ///
-    /// ```text
-    /// f_keep(N+1) = cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))
-    /// ```
-    ///
-    /// Its denominator is what was cached, so it is indifferent to how much the conversation
-    /// grew - the property [`Self::f_sim`] does not have. It reads that denominator from
-    /// [`PrefixCheck::Held`] rather than recomputing it, so the two readings cannot disagree.
-    /// `None` when there is no cached entry to measure against, which is neither 0.0 nor 1.0.
-    ///
-    /// It can exceed 1 and is deliberately not clamped: the denominator is our lower bound on
-    /// the entry the server kept, so a value above 1 says the bound is conservative, and
-    /// clamping would erase the only signal that says so.
+    /// `f_keep = cached_tokens(N+1) / (prompt_tokens(N) + committed_generated(N))`: how much of last
+    /// turn's cache entry came back, indifferent to growth. `None` with no entry. Not clamped: above 1
+    /// says the denominator, read from [`PrefixCheck::Held`], is a conservative bound.
     pub fn f_keep(&self) -> Option<f64> {
         match &self.prefix_check {
             PrefixCheck::Held {
@@ -221,8 +209,7 @@ mod tests {
     }
 
     /// The denominator is a lower bound on the entry the server kept, so `f_keep`
-    /// can exceed 1 and is reported unclamped. Measured at +2 tokens on most turns
-    /// and +745 after a turn that failed after prefilling.
+    /// can exceed 1 and is reported unclamped.
     #[test]
     fn f_keep_above_one_is_reported_rather_than_clamped() {
         let mut m = metrics(1_002, 1_002);

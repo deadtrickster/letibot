@@ -1,13 +1,5 @@
-//! The two sentences a refused frame produces, side by side.
-//!
-//! Frame accounting: one refusal, two faults, and the difference
-//! is the direction of the disagreement. This exists so the wording can be read without
-//! standing up a server - the frames themselves cannot be produced on demand, since the
-//! patched server does not emit them (see `stream.rs`'s module header).
-//!
-//! ```text
-//! cargo run --example show_mismatch -p letibot-turn
-//! ```
+//! The two sentences a refused frame produces, side by side, readable without a server, since a
+//! patched server cannot produce the frames. `cargo run --example show_mismatch -p letibot-turn`
 fn main() {
     for (name, e) in [
         (
