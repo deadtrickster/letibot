@@ -789,6 +789,39 @@ fn the_pushes_sentence_says_whose_credential_answered() {
     );
 }
 
+/// A push git rejected because origin moved says so in git's own words and names no credential:
+/// only an authentication failure is about the account gh is logged in as.
+#[test]
+fn a_rejected_push_is_classified_by_gits_words() {
+    let sha = "0123456789abcdef0123456789abcdef01234567";
+    let on_gh = push_plan("git@github.com:o/r.git", "main", sha, true);
+    for moved in [
+        " ! [rejected]        0123456 -> main (fetch first)\nerror: failed to push some refs",
+        " ! [rejected]        0123456 -> main (non-fast-forward)\nerror: failed to push some refs",
+    ] {
+        assert_eq!(push_refusal(moved), PushRefusal::OriginMoved, "{moved}");
+        let said = failed_said(moved, &on_gh);
+        assert!(said.contains(moved), "git's own words are kept: {said}");
+        assert!(said.contains("origin moved"), "{said}");
+        assert!(!said.contains("credential"), "{said}");
+    }
+    for denied in [
+        "remote: Permission to o/r.git denied to someone.\nfatal: unable to access: 403",
+        "remote: Invalid username or password.\nfatal: Authentication failed for 'https://github.com/o/r.git/'",
+        "fatal: could not read Username for 'https://github.com': terminal prompts disabled",
+    ] {
+        assert_eq!(push_refusal(denied), PushRefusal::Auth, "{denied}");
+        assert!(failed_said(denied, &on_gh).contains("gh's"), "{denied}");
+    }
+    let other = "fatal: unable to access 'https://github.com/o/r.git/': Could not resolve host";
+    assert_eq!(push_refusal(other), PushRefusal::Other);
+    assert_eq!(
+        failed_said(other, &on_gh),
+        other,
+        "neither moved nor denied: git's words"
+    );
+}
+
 /// The old push still runs: a remote that is not github goes to `origin` on git's own credential and
 /// the sentence says so - and a repository with no `origin` says that instead. A local bare
 /// repository, so nothing leaves the box.
