@@ -634,7 +634,23 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R327 - B7 durability: acks come before the journal and the store hold the work
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Batch B7 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I42, I43, I44, I45, I47. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built on branch `b7-durable`, 2026-11-16, one commit per finding (I47 `journal a queued prompt's sender and lane`, I42 `keep a taken prompt journaled until its row is stored`, I45 `keep a handed-back steer journaled across a restart`, I43 `wait for the journal before acking a prompt and at close`, I44 `an Esc during a busy-store wait is not a stored write`). Each proving test fails on main 0cdac576b and passes on the branch, rebased onto e5d8f7b91. Schema v53, above B2's v52. Filed from the review at `9e9312b06`. Batch B7 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I42, I43, I44, I45, I47. Record: `docs/review/2026-11-16/INTEGRATION.md`. Left: the full gate and the landing; the residue below.
+
+**What was built.**
+- I47: `JournaledPrompt` carries `from` and `delivery`; `queued_prompt` gains `from_who` and `delivery` (v53, defaulted, so an older row reads as the operator's steer).
+- I42: the hub keeps a taken prompt in `CommandQueue::taken`, journaled ahead of the queue, until `Harness::persist_rows` finishes a full write and calls `Hub::prompts_stored`. Restore drops duplicate request ids. A prompt taken before the journal attached is saved at attach.
+- I45: `SteeringMessage.prompts` names the request ids a message carries (merged on coalesce). `persist_rows` releases every taken prompt except those in `handed_back`. Not INTEGRATION's requeue to the hub's front: the worker would pop a requeued steer as a new turn, which a limit-parked session must not run.
+- I43: `Hub::submit` waits up to 1 s on `journal_settled` for a prompt; past that the `Accepted` note and a `prompt_not_saved` warning say it is not saved. `Hub::close` waits up to 2 s for the last save.
+- I44: `BusyWait::Leave` in `persist_rows` returns a Store error, takes the interrupt it spent and marks the turn stopped, so `opened` (`Deliveries::stored`, the room `ack_through`) never runs on unwritten rows. The rows stay in the ledger for the next persist.
+
+**Where the tests are.** `a_taken_prompt_survives_a_kill_before_persist` and `a_queued_prompt_keeps_its_lane_and_sender_across_restart` (harnessd/src/restart.rs `journal_tests`), `a_prompt_accepted_during_a_failing_save_is_not_lost_at_close` (sessionlog/src/hub.rs), `esc_during_busy_store_wait_does_not_mark_batch_stored` and `a_steer_taken_by_a_refused_round_survives_a_restart` (harnessd/src/harness/tests/store_writes.rs), plus `a_v51_store_gains_the_prompt_sender_and_lane_columns` (tokencore store tests).
+
+**Residue.**
+- At-least-once, not exactly-once: a kill after a row is stored and before the journal's release lands replays that prompt. Transcript rows carry no request id, so restore cannot dedupe against them.
+- The release is per persist, not per row: a persist between the worker's take and the prompt's append (an auto-reseat fork) releases it early. A steer still inside the engine's `Pending` at a persist is assumed absent; persist runs between rounds.
+- I44: no idle pass drives the owed rows. They wait for the next persist; a restart before it loses them, while their deliveries stay owed and are said again. The batch the stopped turn carried is handed back and said a second time by the next turn.
+- I44's test checks `watch.held_count()`, not the room `ack_through`; both run only inside `opened`.
+- I43: `Registry::close` closes hubs in turn, so N hubs on a locked store wait up to 2 s each, which can pass the daemon's exit grace. The submit wait blocks that head's connection thread for up to 1 s.
 
 **Scope.** `sessionlog/src/hub.rs` journal, `harnessd/src/harness/turns.rs` `persist` and `opened`, `hub_io.rs` give-back. Durability is the condition for every ack.
 
