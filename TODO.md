@@ -78,6 +78,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R349 | extensions and policy remainder: queue briefing, flowy cleartext, provider error classes, rano heredoc edits | Code work | I101, I102, I103, I105; M; after - |
 | R350 | design follow-ups after the stability phase: the facts frame, TUI structure | Code work | I76, I77; L; after the stability bar |
 | R351 | process rules from the review | Code work | I104; S; after - |
+| R353 | B15 theme: the status bar's queue counter is this session's tree, not the project's | Code work | built on branch `queue-own`: the edge counts reviews and landings whose `session_id` (a landing's through its review) is this session, a descendant on the list, or a `<id>-sub-` subagent; `done` for 1h or until `/queue` opens; the `N stuck` click lists only those rows; left: gate and land |
 | R218 | The TUI cannot archive or close a session | Code work | built: `del` twice archives through the daemon (the store's write, so the row outlives the head), `ctrl-z` / `del` on an archived row / `/archive ID` bring it back, `/close ID` lets go of a session without hiding it, the in-memory `removed` list is gone, the daemon sends the archived half of the list on the `Sessions` frame and the `sessions` layer draws it as a folded `archived (N)` group whose rows `enter` resumes, and `/forget` refuses and points at `/archive`; left: a head cannot archive the session it is standing in (the daemon closes what it archives), `/close` needs the session live in THIS daemon, and a `del` archive's reason is one fixed line rather than typed |
 | R208 | rano marks: what a reply cited and what a call changed are marks in the editor pane | Code work | built: `Citations` and a finished edit's excerpt are rano marks on the file they name, kept by the head for a file that is not open and handed to the pane when it opens, with `a`/`r`/`A`/`R` keeping or reverting a hunk and a decided hunk not offered again, and `note`/`suggest` fences drawn as their own kinds with the operator's decision sent on the next prompt (R219); left: a buffer the operator closes inside rano keeps its marks here until the session switches |
 | R209 | Expanding a tool row: the key, the marker, `/t` and the window disagree | Code work | built: one fold (`echo_open` deleted and `set_fold` the only writer, with `/t` and the config pane through it), `ctrl-v` opens the row whose seam offers it by the seam's own count (`ui::folded_rest`, frozen by a test) and holds the viewport on it, the clipboard picture moved to `cmd-v` (`Key::PasteImage`) so one press is one act, a click on a settled row toggles that row, the window comes down when a trim, a fork, a resync or a switch loses its row (`App::close_payload_window`), and an open fold's seam says `folds` rather than `unfolds`; left: the pointer's close is the row's header only (a seam on an open window still acts on nothing), `cmd-v` reaches the clipboard only from a terminal that reports super+v, and the open fold's word is rewritten in rano's drawn strings because the sentence is rano's |
@@ -971,6 +972,20 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 - Change: carry a shown-unit `context_after`, with its estimate flag, on every fork event (compact, clear, reseat, re-ingest). The daemon rewrites the view's turn usage at the fork. The head takes the value in both arms and deletes `compaction_after`.
 - Sources: STALE-F1, STALE-F2, STALE-F3, L10. STALE r1 fable, STALE r2 opus, STALE r2 sonnet, STALE r2 DeepSeek, STALE r1 Kimi, DeepSeek (supplementary).
 - Test: `a_snapshot_after_an_idle_compaction_shows_the_new_base_in_the_header` (12000, not 90000), and `a_clear_moves_the_header_ctx`. Both fail today.
+
+## R353 - B15 theme: the status bar's queue counter is this session's tree, not the project's
+
+**Status:** built on branch `queue-own`, waiting for the gate. left: land it.
+
+**Why.** Lead 40 of `docs/review/2026-11-16/LEADS-2026-11-16.md`: the edge said `queue: 19 done` for 24h of other sessions' landings. Operator decision: the status bar counts only this session's own tree. `done` shows for 1h or until `/queue` is opened. `/queue` keeps the project view and `/queue all` the global one.
+
+**What changed.**
+- `App::own_rows` (`tui/src/ui/panes/queue.rs`) names a review as this session's when its `session_id` is the session, a session on the daemon's list whose parent chain reaches it (`App::own_tree`), or a `<session>-sub-` id. A landing is the session's through its `review_id`.
+- `standings_where` takes the repository filter and the own rows. `landed` counts inside `DONE_MS` (1h) and after `queue_seen_ms`, which opening the Queue surface sets. The 24h `RECENT_MS` window is gone from the edge.
+- Red and unjudged targets stay the repository's: a red target stops this session's landings too.
+- R309 holds: a click on `N stuck` (`queue_stuck_own`) sets `queue_own_only`, and the feed's `stuck` field is the same predicate narrowed to the own rows, so the pane lists exactly what the edge counted. `/queue stuck` stays the repository's.
+
+**Tests.** `another_sessions_landings_are_not_on_this_sessions_edge`, `an_own_landing_is_done_for_an_hour`, `opening_the_queue_clears_done_from_the_edge`, `a_click_on_n_stuck_lists_only_this_sessions_stuck_rows`.
 
 ## R336 - B16 workflow stability: the orchestration layer fails silently
 

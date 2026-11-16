@@ -92,6 +92,15 @@ impl App {
                     .collect(),
             )
         };
+        // From the edge's `N stuck`, a row is stuck only if it is also this session's tree's, so the
+        // pane lists exactly what the edge counted.
+        let own = self.own_rows(q);
+        let review_stuck = |q: &letibot_sessionlog::event::QueueSnapshot, r: &QueueReview| {
+            review_stuck(q, r) && (!self.queue_own_only || own.review(r))
+        };
+        let merge_stuck = |q: &letibot_sessionlog::event::QueueSnapshot, m: &QueueMerge| {
+            merge_stuck(q, m) && (!self.queue_own_only || own.merge(m))
+        };
         let running = gates_running(q, now);
         // The entry being read whole travels whole; a finished row's long fields are cut,
         // because the store never deletes a row and the guest's input region is one mebibyte.
@@ -196,8 +205,10 @@ impl App {
         };
         // A stuck row travels with the live ones, outside the finished budget, so a long history
         // can never push a row the edge counts out of the feed.
-        let review_now = |r: &QueueReview| review_open(&r.state) || review_stuck(q, r);
-        let merge_now = |m: &QueueMerge| merge_open(&m.state) || merge_stuck(q, m);
+        let review_now =
+            |r: &QueueReview| review_open(&r.state) || crate::ui::panes::queue::review_stuck(q, r);
+        let merge_now =
+            |m: &QueueMerge| merge_open(&m.state) || crate::ui::panes::queue::merge_stuck(q, m);
         let mut reviews: Vec<Value> = q
             .reviews
             .iter()

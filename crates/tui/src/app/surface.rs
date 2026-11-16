@@ -375,7 +375,10 @@ impl App {
                 self.refresh_repo_todos();
                 Some(Action::ListTodos)
             }
-            Surface::Queue => Some(Action::ListMergeQueue),
+            Surface::Queue => {
+                self.queue_seen_ms = self.queue_seen_now();
+                Some(Action::ListMergeQueue)
+            }
             Surface::Standing => {
                 // The watch starts again from whatever the next answer says.
                 self.standing_corpus = None;

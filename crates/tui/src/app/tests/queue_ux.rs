@@ -298,6 +298,15 @@ fn the_queue_pane_reads_for_somebody_who_has_never_seen_it() {
 fn the_edge_says_which_queue_it_counts() {
     let mut a = layer(app());
     let mut snap = snapshot();
+    // The edge counts this session's rows, and a landing is the session's through its review.
+    for r in &mut snap.reviews {
+        r.session_id = "s1".into();
+    }
+    for m in snap.merges.clone() {
+        let mut r = review(&m.review_id, &m.branch, "approved", 1_000);
+        r.session_id = "s1".into();
+        snap.reviews.push(r);
+    }
     snap.here = Some(letibot_sessionlog::event::QueueHere {
         workspace: REPO.into(),
         repository: Some(REPO.into()),

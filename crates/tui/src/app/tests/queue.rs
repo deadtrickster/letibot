@@ -4,6 +4,31 @@
 
 use super::*;
 
+/// A head standing in session `s1`, the session the fixture rows were submitted from: the edge
+/// counts only this session's tree.
+fn app() -> App {
+    let mut a = super::app();
+    a.session_id = "s1".into();
+    a
+}
+
+/// [`super::queues`], with each landing's review present and approved, as the daemon sends it: a
+/// landing is the session's through its review.
+fn queues(
+    mut reviews: Vec<letibot_sessionlog::event::QueueReview>,
+    merges: Vec<letibot_sessionlog::event::QueueMerge>,
+) -> letibot_sessionlog::event::QueueSnapshot {
+    for m in &merges {
+        if !reviews.iter().any(|r| r.id == m.review_id) {
+            let mut r = queue_review_row(&m.review_id, "approved");
+            r.repository = m.repository.clone();
+            r.branch = m.branch.clone();
+            reviews.push(r);
+        }
+    }
+    super::queues(reviews, merges)
+}
+
 /// The head, with the real `queue` layer answering - the pane's one renderer, through the
 /// same host a production head builds for this session.
 fn layer(mut a: App) -> App {
@@ -390,7 +415,7 @@ fn a_queue_move_asks_for_the_snapshot_again_whether_or_not_the_pane_is_open() {
 #[test]
 fn an_attach_asks_for_the_queues_so_the_edge_has_a_standing() {
     let mut a = app();
-    a.apply(hello("s", Vec::new(), Hub::new("s").snapshot()));
+    a.apply(hello("s1", Vec::new(), Hub::new("s1").snapshot()));
     assert!(
         a.take_actions().contains(&Action::ListMergeQueue),
         "the attach asks for the queues"
@@ -695,8 +720,8 @@ fn a_landing_older_than_the_recent_window_is_not_counted() {
     let mut a = app();
     // A snapshot ten days old on its own clock, so that a landing CAN be outside the window.
     let mut snap = queues(Vec::new(), vec![queue_merge_row("m-old", "landed")]);
-    snap.at_ms = 10 * crate::ui::panes::queue::RECENT_MS;
-    snap.merges[0].state_ms = snap.at_ms - (crate::ui::panes::queue::RECENT_MS + 1_000);
+    snap.at_ms = 10 * crate::ui::panes::queue::DONE_MS;
+    snap.merges[0].state_ms = snap.at_ms - (crate::ui::panes::queue::DONE_MS + 1_000);
     a.apply(queue_frame(snap));
     let screen = a.screen(140, 24).join("\n");
     assert!(
@@ -706,8 +731,8 @@ fn a_landing_older_than_the_recent_window_is_not_counted() {
 
     // And one second inside it is - the boundary is the window's, not the fixture's.
     let mut snap = queues(Vec::new(), vec![queue_merge_row("m-new", "landed")]);
-    snap.at_ms = 10 * crate::ui::panes::queue::RECENT_MS;
-    snap.merges[0].state_ms = snap.at_ms - (crate::ui::panes::queue::RECENT_MS - 1_000);
+    snap.at_ms = 10 * crate::ui::panes::queue::DONE_MS;
+    snap.merges[0].state_ms = snap.at_ms - (crate::ui::panes::queue::DONE_MS - 1_000);
     a.apply(queue_frame(snap));
     let screen = a.screen(140, 24).join("\n");
     assert!(screen.contains("1 done"), "{screen}");
@@ -752,7 +777,7 @@ fn a_red_target_alone_reads_as_one_red_and_no_zeros() {
         ],
     );
     // The two landed rows are ten days old, so even `landed` has nothing to say today.
-    snap.at_ms = 10 * crate::ui::panes::queue::RECENT_MS;
+    snap.at_ms = 10 * crate::ui::panes::queue::DONE_MS;
     for m in &mut snap.merges {
         m.state_ms = 1_000;
     }
@@ -1576,4 +1601,148 @@ fn a_stuck_rows_evidence_line_is_one_short_sentence() {
         "timed out: the gate's step 2 ran past 30m"
     );
     assert_eq!(stuck_why("failed", "b", ""), "failed");
+}
+
+/// A review and its landing, submitted by `session`.
+fn landed_by(id: &str, session: &str, state: &str) -> letibot_sessionlog::event::QueueSnapshot {
+    let mut r = queue_review_row(id, "approved");
+    r.session_id = session.into();
+    let mut m = queue_merge_row(&format!("m-{id}"), state);
+    m.state_ms = 61_000;
+    queues(vec![r], vec![m])
+}
+
+/// The edge counts this session's tree only: another session's landing is not drawn, a child's is.
+#[test]
+fn another_sessions_landings_are_not_on_this_sessions_edge() {
+    let mut a = app();
+    let mut snap = landed_by("theirs", "s-other", "landed");
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap.clone()));
+    assert_eq!(a.queue_standings().landed, 0);
+    let rows = a.screen(140, 24);
+    assert!(
+        !edge_row(&rows).contains("queue:"),
+        "nothing of this session's: {:?}",
+        edge_row(&rows)
+    );
+
+    // A child on the daemon's list, and a subagent known only by its id, are this session's tree.
+    let mut child = brief("s-kid", "child", false);
+    child.parent_session_id = Some("s1".into());
+    a.sessions = vec![brief("s1", "me", false), child];
+    let mut kid = landed_by("kid", "s-kid", "landed");
+    let sub = landed_by("sub", "s1-sub-7", "landed");
+    kid.reviews.extend(sub.reviews);
+    kid.merges.extend(sub.merges);
+    kid.reviews.extend(snap.reviews);
+    kid.merges.extend(snap.merges);
+    kid.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(kid));
+    assert_eq!(a.queue_standings().landed, 2);
+}
+
+/// This session's landing is `1 done` for an hour, and gone once the hour is over.
+#[test]
+fn an_own_landing_is_done_for_an_hour() {
+    let mut a = app();
+    let mut snap = landed_by("mine", "s1", "landed");
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    let rows = a.screen(140, 24);
+    assert!(
+        edge_row(&rows).contains("queue: 1 done"),
+        "{:?}",
+        edge_row(&rows)
+    );
+
+    a.now_ms = a.queues_got_ms + crate::ui::panes::queue::DONE_MS;
+    let rows = a.screen(140, 24);
+    assert!(
+        !edge_row(&rows).contains("done"),
+        "an hour on: {:?}",
+        edge_row(&rows)
+    );
+}
+
+/// Opening `/queue` is the operator seeing the landing: the edge drops it, and a later one shows.
+#[test]
+fn opening_the_queue_clears_done_from_the_edge() {
+    let mut a = layer(app());
+    let mut snap = landed_by("mine", "s1", "landed");
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap.clone()));
+    assert_eq!(a.queue_standings().landed, 1);
+
+    a.command("queue");
+    a.command("queue");
+    assert!(!a.is_open(Surface::Queue));
+    let rows = a.screen(140, 24);
+    assert!(
+        !edge_row(&rows).contains("done"),
+        "seen in the pane: {:?}",
+        edge_row(&rows)
+    );
+
+    let mut later = landed_by("next", "s1", "landed");
+    later.merges[0].state_ms = 63_000;
+    later.at_ms = 64_000;
+    snap.reviews.extend(later.reviews);
+    snap.merges.extend(later.merges);
+    snap.at_ms = 64_000;
+    a.apply(queue_frame(snap));
+    assert_eq!(a.queue_standings().landed, 1, "only the one after the look");
+}
+
+/// The edge's `N stuck` is this session's, so its click lists exactly this session's stuck rows:
+/// another session's stuck landing in the same repository stays out.
+#[test]
+fn a_click_on_n_stuck_lists_only_this_sessions_stuck_rows() {
+    let mut a = layer(app());
+    a.now_ms = 62_500;
+    let mut snap = landed_by("mine", "s1", "conflict");
+    let theirs = landed_by("theirs", "s-other", "failed");
+    snap.reviews.extend(theirs.reviews);
+    snap.merges.extend(theirs.merges);
+    snap.here = Some(here_in(LETIBOT));
+    a.apply(queue_frame(snap));
+    a.queues_got_ms = 62_500;
+
+    let screen = a.screen(140, 30);
+    assert!(
+        edge_row(&screen).contains("1 stuck"),
+        "{:?}",
+        edge_row(&screen)
+    );
+    let stuck = a
+        .hits
+        .iter()
+        .find(|h| h.target == Target::QueueStuck)
+        .map(|h| h.rect)
+        .expect("`1 stuck` is a target");
+    a.key(Key::Click {
+        x: stuck.x as u16,
+        y: stuck.y as u16,
+    });
+    assert!(a.queue_stuck_only && a.queue_own_only);
+    let pane = a.screen(140, 30).join("\n");
+    let view = a.queue_held.as_ref().expect("the layer drew the pane");
+    let ids: Vec<String> = (0..a.queue_plugin_stops)
+        .filter_map(|i| {
+            match crate::ui::panes::plugin::target_of(
+                view,
+                crate::ui::panes::plugin::Screen::Overview,
+                i,
+            )? {
+                crate::ui::panes::plugin::Target::Row(r) => Some(r.id().to_string()),
+                _ => None,
+            }
+        })
+        .collect();
+    assert_eq!(ids, vec!["m-mine".to_string()], "{pane}");
+
+    // `/queue stuck` is the repository's, as before.
+    a.command("queue");
+    a.command("queue stuck");
+    assert!(!a.queue_own_only);
 }

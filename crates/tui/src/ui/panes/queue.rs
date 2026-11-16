@@ -15,8 +15,9 @@ pub(crate) const LEASE_STALE_MS: u64 = 90_000;
 /// How often an open pane asks for a fresh snapshot - the heartbeats move without an event.
 pub(crate) const REFRESH_MS: u64 = 5_000;
 
-/// How long a finished row counts as today's work - the window the edge's `landed` column reads.
-pub(crate) const RECENT_MS: u64 = 24 * 60 * 60 * 1000;
+/// How long the edge says one of this session's landings is `done`. Opening `/queue` ends it
+/// sooner: the operator has seen it.
+pub(crate) const DONE_MS: u64 = 60 * 60 * 1000;
 
 /// Is the review queue working on this row? The daemon's own rule, in one place: the feed a
 /// plugin reads carries the answer (`live`), so a layer never has to guess *in flight* from a state
@@ -34,6 +35,15 @@ impl App {
     fn queue_now(&self) -> u64 {
         let since = self.now_ms.saturating_sub(self.queues_got_ms);
         self.queues.at_ms.saturating_add(since)
+    }
+
+    /// The mark `/queue` leaves when it opens. `0` before any snapshot, which hides nothing.
+    pub(crate) fn queue_seen_now(&self) -> u64 {
+        if self.queues_got_ms == 0 {
+            0
+        } else {
+            self.queue_now()
+        }
     }
 
     /// Note when each running gate's tail last CHANGED, once per snapshot: whether a step is stuck is
@@ -73,12 +83,35 @@ impl App {
         self.gate_tails = fresh;
     }
 
-    /// The edge's standings: this session's repository only, whatever scope the pane is showing. A
-    /// session of no repository has none; a daemon too old to say which repository it is in gets
-    /// every repository's.
+    /// The edge's standings: this session's repository, whatever scope the pane is showing, and of
+    /// its rows only the ones this session's tree submitted. Targets are the repository's, because a
+    /// red target stops this session's landings too.
     pub(crate) fn queue_standings(&self) -> Standings {
         let f = self.queue_filter(&QueueScope::Here);
-        standings_where(&self.queues_all, self.queue_now(), |r| f.keeps(r))
+        let own = self.own_rows(&self.queues_all);
+        standings_where(
+            &self.queues_all,
+            self.queue_now(),
+            |r| f.keeps(r),
+            &own,
+            self.queue_seen_ms,
+        )
+    }
+
+    /// The rows of `q` this session or one of its descendants submitted.
+    pub(crate) fn own_rows(&self, q: &QueueSnapshot) -> Own {
+        let mut own = Own {
+            sub: format!("{}-sub-", self.session_id),
+            sessions: self.own_tree(),
+            reviews: Default::default(),
+        };
+        own.reviews = q
+            .reviews
+            .iter()
+            .filter(|r| own.session(&r.session_id))
+            .map(|r| r.id.clone())
+            .collect();
+        own
     }
 
     /// Ask for a fresh snapshot on the pane's own clock - the rows AND the detail, because a screen
@@ -251,6 +284,7 @@ impl App {
     /// fresh snapshot; switching an open pane's scope only re-cuts the one it has.
     pub(crate) fn queue_in(&mut self, scope: QueueScope) -> Option<Action> {
         self.queue_stuck_only = false;
+        self.queue_own_only = false;
         self.queue_scope = scope;
         self.queue_sel = 0;
         self.rescope_queues();
@@ -269,6 +303,39 @@ impl App {
         let out = self.queue_in(QueueScope::Here);
         self.queue_stuck_only = true;
         out
+    }
+
+    /// A click on the edge's `N stuck`: the edge counts this session's tree only, so the pane lists
+    /// only that tree's stuck rows.
+    pub(crate) fn queue_stuck_own(&mut self) -> Option<Action> {
+        let out = self.queue_stuck();
+        self.queue_own_only = true;
+        out
+    }
+}
+
+/// Which rows a session's tree submitted: a review by its `session_id`, a landing by its review.
+#[derive(Debug, Default)]
+pub(crate) struct Own {
+    /// `<session>-sub-`: a subagent's id is its root's with this suffix, on the list or not.
+    sub: String,
+    sessions: std::collections::HashSet<String>,
+    reviews: std::collections::HashSet<String>,
+}
+
+impl Own {
+    fn session(&self, id: &str) -> bool {
+        // `sub` is just `-sub-` for a head with no session, which owns nothing.
+        let rooted = self.sub.len() > "-sub-".len() && id.starts_with(&self.sub);
+        !id.is_empty() && (self.sessions.contains(id) || rooted)
+    }
+
+    pub(crate) fn review(&self, r: &QueueReview) -> bool {
+        self.reviews.contains(&r.id)
+    }
+
+    pub(crate) fn merge(&self, m: &QueueMerge) -> bool {
+        self.reviews.contains(&m.review_id)
     }
 }
 
@@ -347,14 +414,14 @@ pub(crate) fn gates_running(
 
 /// What the queue is DOING, in six words, drawn on the composer's bottom edge: the four columns and
 /// the two things a TARGET can be that no row can say - red, and unjudged. `stuck` is the column's
-/// word, not the store's; `landed` counts a day, the window the pane's done list uses.
+/// word, not the store's; `landed` counts [`DONE_MS`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(crate) struct Standings {
     pub(crate) review: usize,
     pub(crate) merging: usize,
     /// Open and stopped - the rows a person has to move (see [`standings_where`]).
     pub(crate) stuck: usize,
-    /// Landed inside the last day - not for ever.
+    /// Landed inside [`DONE_MS`] and since `/queue` was last opened.
     pub(crate) landed: usize,
     /// Target branches that are red - the emergency.
     pub(crate) red: usize,
@@ -501,17 +568,24 @@ pub(crate) fn stuck_why(state: &str, branch: &str, evidence: &str) -> String {
     }
 }
 
-/// The standings of the rows `keep` admits, as of `now`: the snapshot's clock carried forward,
-/// because `landed` asks about a window and `at_ms` is a moment. The snapshot holds every row ever
-/// stored, so `stuck` is [`review_stuck`] and [`merge_stuck`] only.
+/// The standings of the rows `keep` admits and `own` claims, as of `now`: the snapshot's clock
+/// carried forward, because `landed` asks about a window and `at_ms` is a moment. A landing counts
+/// as `done` inside [`DONE_MS`] and only if it landed after `seen_ms`. `stuck` is [`review_stuck`]
+/// and [`merge_stuck`] only.
 pub(crate) fn standings_where(
     q: &QueueSnapshot,
     now: u64,
     keep: impl Fn(&str) -> bool,
+    own: &Own,
+    seen_ms: u64,
 ) -> Standings {
-    let recent = |ms: u64| now.saturating_sub(ms) <= RECENT_MS;
+    let recent = |ms: u64| now.saturating_sub(ms) <= DONE_MS && ms > seen_ms;
     let mut s = Standings::default();
-    for r in q.reviews.iter().filter(|r| keep(&r.repository)) {
+    for r in q
+        .reviews
+        .iter()
+        .filter(|r| keep(&r.repository) && own.review(r))
+    {
         if review_stuck(q, r) {
             s.stuck += 1;
             continue;
@@ -523,7 +597,11 @@ pub(crate) fn standings_where(
             s.review += 1;
         }
     }
-    for m in q.merges.iter().filter(|m| keep(&m.repository)) {
+    for m in q
+        .merges
+        .iter()
+        .filter(|m| keep(&m.repository) && own.merge(m))
+    {
         if merge_stuck(q, m) {
             s.stuck += 1;
             continue;

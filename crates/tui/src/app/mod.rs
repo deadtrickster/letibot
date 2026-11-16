@@ -751,6 +751,12 @@ pub struct App {
     pub(crate) queue_scope: QueueScope,
     /// The pane lists only the stuck rows - opened from the edge's `N stuck` or `/queue stuck`.
     pub(crate) queue_stuck_only: bool,
+    /// The stuck filter keeps only this session's tree's rows - opened from the edge's `N stuck`,
+    /// which counts only those.
+    pub(crate) queue_own_only: bool,
+    /// When `/queue` was last opened, on the snapshot's clock: a landing before it is not `done`
+    /// on the edge any more.
+    pub(crate) queue_seen_ms: u64,
     /// When this head received `queues`, by its own clock: an age the pane draws is the
     /// snapshot's own plus how long ago it arrived. `0` until one has arrived.
     pub(crate) queues_got_ms: u64,
@@ -1526,6 +1532,8 @@ impl App {
             queues_all: Default::default(),
             queue_scope: QueueScope::default(),
             queue_stuck_only: false,
+            queue_own_only: false,
+            queue_seen_ms: 0,
             queues_got_ms: 0,
             queues_asked_ms: 0,
             gate_tails: Default::default(),

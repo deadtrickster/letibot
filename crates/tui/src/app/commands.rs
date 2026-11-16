@@ -637,6 +637,7 @@ impl App {
             "queue" => {
                 if !self.is_open(Surface::Queue) {
                     self.queue_stuck_only = false;
+                    self.queue_own_only = false;
                     if self.queue_scope != QueueScope::Here {
                         self.queue_scope = QueueScope::Here;
                         self.rescope_queues();

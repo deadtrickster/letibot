@@ -215,6 +215,31 @@ impl App {
             .and_then(|p| self.index_of(p))
     }
 
+    /// This session and every session on the list whose parent chain reaches it. Empty for a head
+    /// with no session.
+    pub(crate) fn own_tree(&self) -> std::collections::HashSet<String> {
+        let me = self.session_id.as_str();
+        let mut out = std::collections::HashSet::new();
+        if me.is_empty() {
+            return out;
+        }
+        out.insert(me.to_string());
+        for (i, s) in self.sessions.iter().enumerate() {
+            let mut at = i;
+            for _ in 0..MAX_CHAIN {
+                if self.sessions[at].parent_session_id.as_deref() == Some(me) {
+                    out.insert(s.session_id.clone());
+                    break;
+                }
+                match self.parent_on_list(at) {
+                    Some(p) => at = p,
+                    None => break,
+                }
+            }
+        }
+        out
+    }
+
     pub(crate) fn index_of(&self, id: &str) -> Option<usize> {
         self.sessions.iter().position(|s| s.session_id == id)
     }

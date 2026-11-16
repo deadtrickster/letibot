@@ -160,7 +160,7 @@ impl App {
             // `/queue` keeps: the pane opens on THIS session's repository, not on whatever scope
             // the last `/queue all` left - and a second click closes it, as the verb would.
             (Target::QueueStandings, _) => return ControlFlow::Break(self.command("queue")),
-            (Target::QueueStuck, _) => return ControlFlow::Break(self.command("queue stuck")),
+            (Target::QueueStuck, _) => return ControlFlow::Break(self.queue_stuck_own()),
             // A `file://` link opens in the editor pane at the line it names; anything else goes
             // to the platform's opener, the only process that can open a URL from here - this head
             // takes the mouse, so the terminal never gets the click to open it itself.
