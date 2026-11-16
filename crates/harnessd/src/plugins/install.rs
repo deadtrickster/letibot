@@ -55,6 +55,7 @@ impl PluginHost {
             sessions: None,
             room: Mutex::new(None),
             github: None,
+            view: None,
             install_builtin_panes: false,
             builtins_wanted: std::sync::atomic::AtomicBool::new(false),
             builtins_started: std::sync::atomic::AtomicBool::new(false),
@@ -80,6 +81,34 @@ impl PluginHost {
     pub fn with_github(mut self, source: Arc<dyn feed::GithubFeed>) -> PluginHost {
         self.github = Some(source);
         self
+    }
+
+    /// Hand this host the session's read door, so a pane's or a condition's look reads the tree the
+    /// session stands in rather than the daemon's own disk - the same backend its file tools use.
+    pub fn with_view(
+        mut self,
+        view: Arc<dyn crate::plugins::tool::Decides + Send + Sync>,
+    ) -> PluginHost {
+        self.view = Some(view);
+        self
+    }
+
+    /// What a look run on behalf of `layer` may reach: the capabilities it declared, the session's
+    /// view, and whether its bytes are pinned - the one thing that earns a `read:<path>` tree.
+    pub(super) fn reach<'a>(&'a self, layer: &str, caps: &'a [Capability]) -> look::Reach<'a> {
+        let trusted = self.lock().stack.layer(layer).is_some_and(|l| l.trusted);
+        look::Reach {
+            trees: self.look_trees(),
+            caps,
+            view: self.look_view(),
+            trusted,
+        }
+    }
+
+    /// The session's read door, or `None` where nothing handed this host one.
+    pub(super) fn look_view(&self) -> Option<&dyn crate::plugins::tool::Decides> {
+        let view: &dyn crate::plugins::tool::Decides = self.view.as_deref()?;
+        Some(view)
     }
 
     /// [`PluginHost::discover`] with the dirs this box's conventions give it: the session scope

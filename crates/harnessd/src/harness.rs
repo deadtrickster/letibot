@@ -645,6 +645,15 @@ impl Harness {
         &self.cfg.workspace
     }
 
+    /// The session's read door for the looks that run outside a tool call - a pane's, a
+    /// condition's. It is the backend the model's file tools read through, so a look reads the tree
+    /// the session stands in and not the daemon's own disk.
+    pub fn look_view(&self) -> Arc<dyn crate::plugins::tool::Decides + Send + Sync> {
+        Arc::new(crate::plugins::look::SessionView::new(
+            self.runtime.backend.clone(),
+        ))
+    }
+
     /// Turn the guard model on or off on the running session, and read whether it gets a turn now.
     /// The gate is reached rather than a setting persisted, which is the difference from `/mode`:
     /// supervision decides only whether the model gets a turn, so nothing seated depends on it.

@@ -126,6 +126,15 @@ fn host(root: &Path) -> PluginHost {
     )
 }
 
+/// A look's reach as a pinning layer has it: the capabilities it declared, no session view (a test
+/// has none) and the pin that is the only thing earning a `read:<path>` tree.
+fn pinned_reach<'a>(trees: look::Trees<'a>, caps: &'a [Capability]) -> look::Reach<'a> {
+    look::Reach {
+        trusted: true,
+        ..look::Reach::caps(trees, caps)
+    }
+}
+
 /// A view that validates: one panel, one key, no host key.
 const A_VIEW: &str = r#"{"title":"one","panels":[{"id":"plan","key":"t","title":"plan",
     "summary":[{"markdown":"a summary"}]}],"every_s":0}"#;
@@ -170,8 +179,7 @@ fn a_read_look_outside_the_workspace_is_refused() {
         &LookSpec::Read {
             read: secret.display().to_string(),
         },
-        look::Trees::one(&root),
-        &[Capability::Read],
+        pinned_reach(look::Trees::one(&root), &[Capability::Read]),
     );
     assert_eq!(result["exit"], json!(1), "{result}");
     assert!(
@@ -186,8 +194,7 @@ fn a_read_look_outside_the_workspace_is_refused() {
         &LookSpec::Read {
             read: "../plan.json".into(),
         },
-        look::Trees::one(&root),
-        &[Capability::Read],
+        pinned_reach(look::Trees::one(&root), &[Capability::Read]),
     );
     assert_eq!(climbing["exit"], json!(1), "{climbing}");
 }
@@ -200,8 +207,7 @@ fn a_read_look_without_the_read_capability_is_refused() {
         &LookSpec::Read {
             read: "plan.json".into(),
         },
-        look::Trees::one(&root),
-        &[],
+        pinned_reach(look::Trees::one(&root), &[]),
     );
     assert_eq!(result["exit"], json!(1), "{result}");
     assert!(
@@ -221,8 +227,7 @@ fn a_read_look_inside_the_workspace_answers_the_text_and_a_missing_file_is_exit_
         &LookSpec::Read {
             read: "plan.json".into(),
         },
-        look::Trees::one(&root),
-        &[Capability::Read],
+        pinned_reach(look::Trees::one(&root), &[Capability::Read]),
     );
     assert_eq!(result["exit"], json!(0), "{result}");
     assert_eq!(result["stdout"], json!("{\"release\":{\"name\":\"v1\"}}"));
@@ -233,8 +238,7 @@ fn a_read_look_inside_the_workspace_answers_the_text_and_a_missing_file_is_exit_
         &LookSpec::Read {
             read: ".letibot/status.json".into(),
         },
-        look::Trees::one(&root),
-        &[Capability::Read],
+        pinned_reach(look::Trees::one(&root), &[Capability::Read]),
     );
     assert_eq!(missing["exit"], json!(1), "{missing}");
     assert!(!missing["stderr"].as_str().unwrap().is_empty());
@@ -299,8 +303,7 @@ fn a_relative_read_in_a_worktree_resolves_against_the_checkout() {
         &LookSpec::Read {
             read: ".letibot/status.json".into(),
         },
-        trees,
-        &[Capability::Read],
+        pinned_reach(trees, &[Capability::Read]),
     );
     assert_eq!(read["exit"], json!(0), "{read}");
     assert!(
@@ -316,8 +319,7 @@ fn a_relative_read_in_a_worktree_resolves_against_the_checkout() {
         &LookSpec::Read {
             read: "own.json".into(),
         },
-        trees,
-        &[Capability::Read],
+        pinned_reach(trees, &[Capability::Read]),
     );
     assert_eq!(own["exit"], json!(0), "{own}");
     let _ = std::fs::remove_dir_all(&root);
@@ -397,8 +399,7 @@ fn a_read_look_that_is_not_there_names_the_path_it_tried() {
         &LookSpec::Read {
             read: ".letibot/status.json".into(),
         },
-        look::Trees::one(&root),
-        &[Capability::Read],
+        pinned_reach(look::Trees::one(&root), &[Capability::Read]),
     );
     assert_eq!(missing["exit"], json!(1), "{missing}");
     let said = missing["stderr"].as_str().unwrap_or_default();
@@ -416,8 +417,7 @@ fn an_exec_look_answers_126_and_runs_nothing() {
         &LookSpec::Exec {
             exec: vec!["rm".into(), "-rf".into(), "/".into()],
         },
-        look::Trees::one(&root),
-        &[Capability::Exec("rm".into())],
+        pinned_reach(look::Trees::one(&root), &[Capability::Exec("rm".into())]),
     );
     assert_eq!(result["exit"], json!(126), "{result}");
     assert_eq!(result["stderr"], json!(look::EXEC_REFUSED));
@@ -436,8 +436,7 @@ fn a_read_path_tree_is_readable_from_a_pane_look_and_nothing_else_is() {
         &LookSpec::Read {
             read: file.display().to_string(),
         },
-        look::Trees::one(&workspace),
-        &caps,
+        pinned_reach(look::Trees::one(&workspace), &caps),
     );
     assert_eq!(allowed["exit"], json!(0), "{allowed}");
 
@@ -450,8 +449,7 @@ fn a_read_path_tree_is_readable_from_a_pane_look_and_nothing_else_is() {
         &LookSpec::Read {
             read: outside.display().to_string(),
         },
-        look::Trees::one(&workspace),
-        &caps,
+        pinned_reach(look::Trees::one(&workspace), &caps),
     );
     assert_eq!(refused["exit"], json!(1), "{refused}");
     assert!(
@@ -460,6 +458,71 @@ fn a_read_path_tree_is_readable_from_a_pane_look_and_nothing_else_is() {
             .unwrap()
             .contains("outside every tree"),
         "{refused}"
+    );
+}
+
+/// A pane's look is fenced twice over: a `read:<path>` tree is a pinned layer's reach, and the file
+/// is read through the session's view rather than off the daemon's own disk. The tree the layer
+/// arrives with is the checkout, so an unpinned layer's declared reach is not the operator's.
+#[test]
+fn an_unpinned_pane_look_cannot_read_outside_the_view() {
+    /// A seat whose view masks everything: the read door a look meets, and the sentence it gets.
+    struct Masked;
+
+    impl crate::plugins::tool::Decides for Masked {
+        fn admit_unasked(&self, _n: &str, _a: Access, _v: &Value) -> Option<GateDecision> {
+            None
+        }
+
+        fn read(&self, path: &str) -> Result<Vec<u8>, String> {
+            Err(format!("{path} is masked for this seat"))
+        }
+    }
+
+    let root = tempdir("pane-fence");
+    let elsewhere = tempdir("pane-fence-tree");
+    let secret = elsewhere.join("id_key");
+    std::fs::write(&secret, "PRIVATE").expect("a file outside the workspace");
+    let table = Table::new();
+    let dir = table.layer_with_caps(
+        &root,
+        "snoop",
+        &[&format!("read:{}", elsewhere.display())],
+        &[("pane_snoop", says(json!({ "title": "one", "panels": [] })))],
+    );
+    let spec = LookSpec::Read {
+        read: secret.display().to_string(),
+    };
+
+    // Nobody pinned it: the tree is declared and not honoured, and the refusal names the pin.
+    let host = table_host(&root, &table);
+    let layer = host.layer("snoop").expect("the layer is admitted");
+    let caps = layer.manifest.capabilities.clone();
+    let got = look::run(&spec, host.reach(&layer.id, &caps));
+    assert_eq!(got["exit"], json!(1), "{got}");
+    let said = got["stderr"].as_str().unwrap_or_default();
+    assert!(
+        said.contains("unpinned layer's declared tree is not honoured")
+            && said.contains("pin the layer's bytes"),
+        "{said}"
+    );
+
+    // Pinned: the tree is the layer's, and the read is still the view's to allow - so a look never
+    // answers with bytes this session's own files tools could not have read.
+    let host = Arc::new(pinned_table_host(&root, &table, &dir).with_view(Arc::new(Masked)));
+    let layer = host.layer("snoop").expect("the layer is admitted");
+    assert!(
+        layer.trusted,
+        "the fixture's layer is pinned, so the second half is about the view"
+    );
+    let got = look::run(&spec, host.reach(&layer.id, &caps));
+    assert_eq!(got["exit"], json!(1), "{got}");
+    assert!(
+        got["stderr"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("masked for this seat"),
+        "{got}"
     );
 }
 

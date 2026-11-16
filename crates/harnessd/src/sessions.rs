@@ -2264,6 +2264,9 @@ impl<'a> Sessions<'a> {
         else {
             return;
         };
+        // A pane's and a condition's look read through the session's own view, the door its file
+        // tools use: the daemon's disk is not the tree a session in a VM or on another host sees.
+        let view = self.open.get(session_id).map(|h| h.look_view());
         // The daemon's session list, handed to the host - a pane on disk that declares the
         // `sessions` feed is drawn from it (`docs/plugins-plan.md`). The registry is the one
         // holder of *every* session, live and on disk, so it is the whole source.
@@ -2271,6 +2274,10 @@ impl<'a> Sessions<'a> {
             .with_sessions(Arc::new(crate::plugins::feed::RegistryFeed::new(
                 self.registry.clone(),
             )));
+        let host = match view {
+            Some(view) => host.with_view(view),
+            None => host,
+        };
         // And the session's own connection to the box's room, so a room pane is drawn from it and
         // its four controls have somewhere to go.
         let host = match self.open.get(session_id).and_then(|h| h.room_link()) {

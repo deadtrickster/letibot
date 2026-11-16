@@ -86,7 +86,7 @@ impl PluginHost {
             };
             let look = spec.map(|spec| {
                 let caps = self.caps_of(&by);
-                look::run(&spec, self.look_trees(), &caps)
+                look::run(&spec, self.reach(&by, &caps))
             });
             self.render(
                 hub,
@@ -311,7 +311,7 @@ impl PluginHost {
                 // A look reads the checkout, and a filesystem walk is not something this
                 // session's other panes and turns wait for.
                 drop(interior);
-                let result = look::run(&spec, self.look_trees(), &caps);
+                let result = look::run(&spec, self.reach(&by, &caps));
                 state = view.state.clone();
                 req = Req {
                     look: Some(result),
@@ -368,7 +368,7 @@ impl PaneDriver for PluginHost {
                 hub,
                 pane,
                 Req {
-                    look: spec.map(|spec| look::run(&spec, self.look_trees(), &caps)),
+                    look: spec.map(|spec| look::run(&spec, self.reach(&by, &caps))),
                     event: Some((item.to_string(), action.to_string())),
                     may_look: true,
                 },
