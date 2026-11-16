@@ -15,6 +15,18 @@ use crate::vocab::TokenId;
 /// number rather than an assumption, for the reason every version in this store is one.
 pub const TRANSFER_FORMAT: u32 = 1;
 
+/// The half-import marker. A set's two files commit one after the other - they are two databases
+/// in WAL, and no transaction spans them - so a crash between the commits leaves a session's
+/// project rows written and its index row not, or the other way round. The marker is written
+/// before the import and cleared after it, and a retry that finds one refuses rather than
+/// guessing which half it got.
+pub const IMPORT_PENDING_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS import_pending (
+    session_id TEXT PRIMARY KEY,
+    at_ms      INTEGER NOT NULL
+);
+"#;
+
 /// The tables a session's own rows are in, and the query that finds them: `(table, where,
 /// order)`, and the third entry is what makes a transcript's items insert in `seq` order.
 const TABLES: &[(&str, &str, &str)] = &[
@@ -238,6 +250,14 @@ impl Store {
                  Nothing was imported."
             )));
         }
+        if let Some(at) = self.import_pending(id)? {
+            return Err(StoreError::Refused(format!(
+                "{id}: an import of this session was started at {at} and never finished, so its \
+                 rows may be in one file of this set and not the other. Nothing was imported: \
+                 check the session (`letibot --sessions`, or its rows) and finish the move by \
+                 hand, then clear its row in `import_pending` and import again."
+            )));
+        }
         if let Some(existing) = self.session(id)? {
             // Two copies are only allowed when one of them is marked. The copy here is the one a
             // PREVIOUS move left behind, and its rows are a prefix of the file's.
@@ -250,7 +270,7 @@ impl Store {
                 )));
             }
             verify_chains(transfer)?;
-            let mut report = self.import_tx(|tx| catch_up(tx, transfer, into))?;
+            let mut report = self.marked_import(id, |tx| catch_up(tx, transfer, into))?;
             report.caught_up = true;
             return Ok(report);
         }
@@ -258,7 +278,7 @@ impl Store {
         // prefix's tokens, the rows in `seq` order, every link re-hashed.
         verify_chains(transfer)?;
 
-        let report = self.import_tx(|tx| {
+        let report = self.marked_import(id, |tx| {
             for table in &transfer.tables {
                 if table.rows.is_empty() {
                     continue;
@@ -304,6 +324,50 @@ impl Store {
             settle(tx, transfer, into)
         })?;
         Ok(report)
+    }
+
+    /// Is a half-finished import of this session owed a finish, and since when? A marker left by a
+    /// run that died between the two files' commits is what a retry refuses on.
+    pub fn import_pending(&self, session_id: &str) -> Result<Option<i64>> {
+        Ok(self
+            .at("import_pending")
+            .query_row(
+                "SELECT at_ms FROM import_pending WHERE session_id = ?1",
+                rusqlite::params![session_id],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Clear a marker, for the operator who has looked at what the dead run left and finished or
+    /// undone it by hand. `true` when there was one.
+    pub fn forget_import(&self, session_id: &str) -> Result<bool> {
+        Ok(self.exec(
+            "DELETE FROM import_pending WHERE session_id = ?1",
+            rusqlite::params![session_id],
+        )? > 0)
+    }
+
+    /// The import's two halves around a crash: the marker lands first, in its own commit, so a
+    /// retry can tell a finished import from a half-written one, and is cleared last.
+    fn marked_import<T>(
+        &self,
+        session_id: &str,
+        body: impl FnMut(&rusqlite::Transaction<'_>) -> Result<T>,
+    ) -> Result<T> {
+        self.exec(
+            "INSERT OR REPLACE INTO import_pending (session_id, at_ms) VALUES (?1, ?2)",
+            rusqlite::params![session_id, super::now_ms()],
+        )?;
+        let out = self.import_tx(body);
+        // Cleared on BOTH endings: a refused import rolled its transaction back, so nothing was
+        // half-written, and only a process that DIES between the two commits leaves the marker
+        // for the next run to find. The import's own refusal is the one worth reporting.
+        match (out, self.forget_import(session_id)) {
+            (Err(why), _) => Err(why),
+            (Ok(value), Ok(_)) => Ok(value),
+            (Ok(_), Err(why)) => Err(why),
+        }
     }
 
     /// The import's one transaction. On a split set it runs on the project file with `shared.db`
@@ -1370,5 +1434,60 @@ mod tests {
         let report = to.import_session(&transfer, &into()).unwrap();
         assert_eq!(report.transcripts, 1);
         assert_eq!(report.items, 0);
+    }
+
+    /// A set's two files commit one after the other - they are two databases, and no transaction
+    /// spans them - so an import can die between them. The marker is written before the import and
+    /// cleared after it, and a retry that finds one refuses rather than writing a second half over
+    /// the first.
+    #[test]
+    fn a_crash_after_the_project_commit_is_detected_on_retry() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-import-marker-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let from = Store::open_in_memory().unwrap();
+        seeded(&from);
+        let id = "sess-1".to_string();
+        let transfer = from.export_session(&id).unwrap();
+
+        let to = Store::open_set(&dir, "42ce9f1aae08").unwrap();
+        to.import_session(&transfer, &into())
+            .expect("the first import lands whole");
+        assert_eq!(
+            to.import_pending(&id).unwrap(),
+            None,
+            "an import that finished leaves no marker"
+        );
+
+        // What a run killed between the two commits leaves: the marker, and one half written.
+        to.exec(
+            "INSERT INTO import_pending (session_id, at_ms) VALUES (?1, ?2)",
+            rusqlite::params![id, 7],
+        )
+        .unwrap();
+        let why = to
+            .import_session(&transfer, &into())
+            .expect_err("a half-import is not written over");
+        assert!(why.to_string().contains("never finished"), "{why}");
+
+        // The operator's repair: look at what the dead run left, then clear the marker.
+        assert!(
+            to.forget_import(&id).unwrap(),
+            "there was a marker to clear"
+        );
+        to.set_lives_on(&id, Some("away")).unwrap();
+        let again = to
+            .import_session(&transfer, &into())
+            .expect("a cleared marker lets the import run");
+        assert!(again.caught_up, "the copy here is caught up, not rewritten");
+        assert_eq!(to.import_pending(&id).unwrap(), None);
+
+        drop(to);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

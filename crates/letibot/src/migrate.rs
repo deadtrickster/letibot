@@ -661,7 +661,7 @@ impl Move {
     /// The session's row, from whichever store it lives in.
     fn facts(&self, endpoint: &Endpoint) -> Result<Facts, String> {
         if endpoint.is_local() {
-            let store = Store::open(Path::new(&endpoint.store))
+            let store = open_store(Path::new(&endpoint.store), Some(&self.session))
                 .map_err(|e| format!("opening {}: {e}", endpoint.store))?;
             let row = store
                 .session(&self.session)
@@ -868,7 +868,7 @@ impl Move {
     /// Which local checkout a coming-home branch goes into. The source's row still names the
     /// folder this session was opened in, and that is where the branch belongs.
     fn local_checkout(&self) -> Result<String, String> {
-        let store = Store::open(Path::new(&self.to.store))
+        let store = open_store(Path::new(&self.to.store), Some(&self.session))
             .map_err(|e| format!("opening {}: {e}", self.to.store))?;
         match store
             .session_workspace(&self.session)
@@ -893,7 +893,7 @@ impl Move {
     /// that box's own binary exports it and the file comes back over the same ssh.
     fn export(&self, from: &Endpoint) -> Result<SessionTransfer, String> {
         if from.is_local() {
-            let store = Store::open(Path::new(&from.store))
+            let store = open_store(Path::new(&from.store), Some(&self.session))
                 .map_err(|e| format!("opening {}: {e}", from.store))?;
             return store
                 .export_session(&self.session)
@@ -910,7 +910,7 @@ impl Move {
     /// And into the destination's, through the same two doors.
     fn import(&self, transfer: &SessionTransfer, landed: &Landed) -> Result<(), String> {
         if self.to.is_local() {
-            let store = Store::open(Path::new(&self.to.store))
+            let store = open_store(Path::new(&self.to.store), Some(&self.session))
                 .map_err(|e| format!("opening {}: {e}", self.to.store))?;
             store
                 .import_session(
@@ -961,7 +961,7 @@ impl Move {
     /// there*. Written on both ends of every move, which is what makes the local row the index.
     fn mark(&self, endpoint: &Endpoint, on: Option<&str>) -> Result<(), String> {
         if endpoint.is_local() {
-            let store = Store::open(Path::new(&endpoint.store))
+            let store = open_store(Path::new(&endpoint.store), Some(&self.session))
                 .map_err(|e| format!("opening {}: {e}", endpoint.store))?;
             return store
                 .set_lives_on(&self.session, on)
@@ -1816,7 +1816,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
 
     // --- the far side's sub-verbs ---------------------------------------------------------
     if let Some(id) = export {
-        let store = Store::open(&store_path)
+        let store = open_store(&store_path, Some(&id))
             .map_err(|e| format!("opening {}: {e}", store_path.display()))?;
         let transfer = store.export_session(&id).map_err(|e| e.to_string())?;
         println!(
@@ -1840,7 +1840,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
             "--import-session needs --workspace: the checkout this session works in HERE"
                 .to_string()
         })?;
-        let store = Store::open(&store_path)
+        let store = open_store(&store_path, Some(&transfer.session_id))
             .map_err(|e| format!("opening {}: {e}", store_path.display()))?;
         let report = store
             .import_session(&transfer, &ImportInto { workspace })
@@ -1860,7 +1860,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
     if let Some(id) = mark {
-        let store = Store::open(&store_path)
+        let store = open_store(&store_path, Some(&id))
             .map_err(|e| format!("opening {}: {e}", store_path.display()))?;
         match (here, lives_on) {
             (true, None) => store.set_lives_on(&id, None).map_err(|e| e.to_string())?,
@@ -1873,7 +1873,7 @@ fn run_inner(args: &[String]) -> Result<(), String> {
         return Ok(());
     }
     if let Some(id) = describe {
-        let store = Store::open(&store_path)
+        let store = open_store(&store_path, Some(&id))
             .map_err(|e| format!("opening {}: {e}", store_path.display()))?;
         let row = store.session(&id).map_err(|e| e.to_string())?;
         let body = match row {
@@ -1909,8 +1909,8 @@ fn run_inner(args: &[String]) -> Result<(), String> {
 
     // Where the session lives NOW - the local row's marker, because the local store is the
     // index of record. This is what makes `--to lubuntu1` work for a session already on lab2x1.
-    let local_store =
-        Store::open(&store_path).map_err(|e| format!("opening {}: {e}", store_path.display()))?;
+    let local_store = open_store(&store_path, Some(session.as_str()))
+        .map_err(|e| format!("opening {}: {e}", store_path.display()))?;
     let here_row = local_store
         .session(&session)
         .map_err(|e| e.to_string())?
@@ -2023,6 +2023,39 @@ fn remote_endpoint(host: &Host) -> Result<Endpoint, String> {
     })
 }
 
+/// The store a verb opens. A data DIRECTORY - or a path whose parent holds a `shared.db` - is the
+/// split set of this store's own project file: `Store::open` on a `sessions.db` that is not there
+/// would CREATE a full-schema file beside the set, which no daemon reads and which hides every
+/// session in it from `--sessions`.
+fn open_store(path: &Path, session: Option<&str>) -> Result<Store, String> {
+    let dir = match path.is_dir() {
+        true => Some(path.to_path_buf()),
+        false => path.parent().map(Path::to_path_buf),
+    };
+    if let Some(dir) = dir.filter(|dir| dir.join("shared.db").is_file()) {
+        let key = session
+            .map(|id| project_key_of(&dir, id))
+            .unwrap_or_else(|| NO_PROJECT.to_string());
+        return Store::open_set_existing(&dir, &key).map_err(|e| e.to_string());
+    }
+    Store::open(path).map_err(|e| e.to_string())
+}
+
+/// The project file a session's rows are in, from the index's own row: the key is the hash of the
+/// folder it was opened in. A session the index does not hold answers the key a reaper's empty one
+/// does, and the set opens without that project file - which is what makes the refusal honest.
+fn project_key_of(dir: &Path, session: &str) -> String {
+    Store::open_reader(&dir.join("shared.db"))
+        .ok()
+        .and_then(|shared| shared.session_workspace(session).ok().flatten())
+        .map(|workspace| letibot_tokencore::migrate_split::project_key(&workspace))
+        .unwrap_or_else(|| NO_PROJECT.to_string())
+}
+
+/// The key a caller with no session names: the one `letibot gc` uses for an owner that has no
+/// repository, so an unplaceable question and an unplaceable act look at one file.
+const NO_PROJECT: &str = "000000000000";
+
 /// The checkout this binary was built from: walk up from the executable and take the first
 /// directory that looks like this tree.
 fn default_src() -> Option<PathBuf> {
@@ -2133,5 +2166,49 @@ mod tests {
     fn a_failure_tail_is_the_end_of_it() {
         assert_eq!(tail("a\nb\nc\nd\ne\nf\n"), "c · d · e · f");
         assert_eq!(tail("\n\n"), "");
+    }
+
+    /// A split box is not given a second `sessions.db`. The path a verb is handed beside a
+    /// `shared.db` is the set's, and what opens is the session's own project file - a `Store::open`
+    /// there would CREATE a full-schema file no daemon reads, and every session in the set would
+    /// vanish from `--sessions` behind it.
+    #[test]
+    fn a_split_box_is_not_given_a_stray_sessions_db() {
+        let dir = std::env::temp_dir().join(format!(
+            "letibot-migrate-split-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let workspace = "/w/here";
+        let key = letibot_tokencore::migrate_split::project_key(workspace);
+        let set = Store::open_set(&dir, &key).expect("a split set");
+        set.put_session(&letibot_tokencore::store::SessionRecord {
+            id: "s-1".into(),
+            title: Some("a conversation".into()),
+            model_id: "qwen".into(),
+            dialect_sha: "aa".repeat(32),
+            workspace_root: workspace.into(),
+            owner: "op".into(),
+            approvers: vec![],
+            role: None,
+            parent_session_id: None,
+        })
+        .unwrap();
+        let legacy = dir.join("sessions.db");
+        assert!(!legacy.exists());
+
+        let store = open_store(&legacy, Some("s-1")).expect("the set opens");
+        assert!(
+            !legacy.exists(),
+            "a full-schema sessions.db was created beside the set"
+        );
+        assert!(
+            store.session("s-1").unwrap().is_some(),
+            "the session is read through the set's own project file"
+        );
+        drop((set, store));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -204,7 +204,7 @@ pub struct ShapelessAdmit {
 /// The schema version: what the FILE holds. [`floor`] says what a reader must know, and the
 /// two are separate on purpose: a migration that only adds leaves the floor alone, and one
 /// that rewrites what an older reader reads declares itself in [`READER_ARMS`].
-pub const SCHEMA_VERSION: i64 = 56;
+pub const SCHEMA_VERSION: i64 = 57;
 
 /// A session's plan-check pause as its row holds it: `until` is `0` for until resumed, else the
 /// unix ms it ends at. `at_ms` and `by` are `None` on a row written before v51.
@@ -2727,18 +2727,21 @@ impl Store {
         if from < 56 {
             // v56: a session's limit state, so a restart keeps a park. NULL reads as nothing
             // limited, which is what every earlier daemon started at.
-            let has = |sql: &str| -> bool {
-                self.conn()
-                    .prepare(sql)
-                    .and_then(|mut st| st.exists([]))
-                    .unwrap_or(false)
-            };
-            if has("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'")
-                && !has("SELECT 1 FROM pragma_table_info('session') WHERE name = 'limit_state'")
+            if self
+                .probe("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session'")?
+                && !self.probe(
+                    "SELECT 1 FROM pragma_table_info('session') WHERE name = 'limit_state'",
+                )?
             {
                 self.conn()
                     .execute_batch("ALTER TABLE session ADD COLUMN limit_state TEXT")?;
             }
+        }
+        if from < 57 {
+            // v57: a half-import marker (`transfer`). Additive: a new table, empty, which is true -
+            // no import was ever left half-done with nothing to say so. A session's import is the
+            // project file's, so a set's shared file is not given the table.
+            self.batch_for(file, transfer::IMPORT_PENDING_SQL)?;
         }
         Ok(())
     }
