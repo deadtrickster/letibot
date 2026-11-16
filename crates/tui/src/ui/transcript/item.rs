@@ -290,7 +290,7 @@ fn pending_lines(it: &SnapshotItem, ctx: &ItemCtx<'_>, ind: usize) -> Option<Vec
 
 /// The files a completion says changed while its job ran, drawn under the notice: the daemon took a
 /// snapshot of the tree at the spawn and read it back at the settlement, so these are measured
-/// rather than attributed - a job's row says WHEN, and the provenance line says so.
+/// rather than attributed - the notice says WHEN, and never who.
 pub(crate) fn job_change_rows(item: &TranscriptItem, ctx: &ItemCtx<'_>, ind: usize) -> Vec<String> {
     let TranscriptItem::User { parts, .. } = item else {
         return Vec::new();
@@ -318,16 +318,11 @@ pub(crate) fn job_change_rows(item: &TranscriptItem, ctx: &ItemCtx<'_>, ind: usi
                 diff_split: ctx.diff_split,
                 fold: ctx.tools,
                 under_a_panel: false,
-                provenance: JOB_PROVENANCE,
             },
         ));
     }
     out
 }
-
-/// What a job's diff says about itself where it is folded: when, and never who.
-pub(crate) const JOB_PROVENANCE: &str =
-    "  changed while it ran — when, not who: another call may have written it too";
 
 /// A row the system wrote into the conversation, drawn as ONE line: `system`, what it says, and
 /// `click for details` with the text whole in the popup - drawn whole it ran to 190 screen rows.

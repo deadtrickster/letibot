@@ -1110,11 +1110,19 @@ fn a_jobs_completion_draws_the_files_it_changed() {
         "the completion names the file: {screen}"
     );
     assert!(
-        screen.contains("GAMMA"),
-        "the change itself is drawn under the notice:\n{screen}"
+        screen.contains("diff rows · /t unfolds it") && !screen.contains("GAMMA"),
+        "folded, the change is one line under the notice:\n{screen}"
     );
+    assert_eq!(
+        screen.matches("when, not who").count(),
+        1,
+        "the notice says whose change it is not, once:\n{screen}"
+    );
+    a.tools = Fold::Open;
+    a.refold();
+    let open = a.screen(120, 40).join("\n");
     assert!(
-        screen.contains("when, not who"),
-        "and it says whose change it is not:\n{screen}"
+        open.contains("GAMMA"),
+        "open, the change itself is drawn under the notice:\n{open}"
     );
 }

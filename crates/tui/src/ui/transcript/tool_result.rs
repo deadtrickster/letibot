@@ -112,7 +112,6 @@ pub(crate) fn tool_result_row_lines(
                 diff_split,
                 fold: tools,
                 under_a_panel: verb.is_an_edit(),
-                provenance: DETECTED_PROVENANCE,
             },
         )
     });
