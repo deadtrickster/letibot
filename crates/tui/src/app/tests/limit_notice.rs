@@ -74,6 +74,20 @@ fn the_switch_back_raises_its_own_notice() {
     assert!(!s.contains("limit lifted"), "{s}");
 }
 
+/// A return is said once, by the limit notice: the status line does not say it a second time.
+#[test]
+fn limit_returned_is_drawn_once() {
+    let (mut a, hub) = attached();
+    warn(&mut a, &hub, "limit_returned", BACK);
+    assert!(
+        a.notice.is_none(),
+        "the status line says the return too: {:?}",
+        a.notice
+    );
+    let s = a.screen(140, 30).join("\n");
+    assert_eq!(s.matches("limit lifted").count(), 1, "{s}");
+}
+
 /// One episode, one notice: each newer limit note replaces the one before in place, with no
 /// pile counted beside it.
 #[test]
