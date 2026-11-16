@@ -108,8 +108,10 @@ fn subcommand_that_runs_code(program: &str, argv: &[String]) -> Option<String> {
         "cargo" => {
             let verb = words.first().copied()?;
             // `+nightly` and `-Zflag` are consumed above; a toolchain override is a flag.
+            // `doc` and `rustdoc` compile too: build scripts and proc macros run before rustdoc.
             let runs = [
                 "test", "run", "build", "bench", "check", "clippy", "nextest", "miri", "doc-test",
+                "doc", "rustdoc", "rustc", "fix",
             ];
             // `cargo nextest run` - the verb is `nextest` and the runner is one word over.
             if verb == "nextest" {
@@ -119,9 +121,11 @@ fn subcommand_that_runs_code(program: &str, argv: &[String]) -> Option<String> {
         }
         // `pytest` is a runner whatever it is handed; `python -m pytest` is the same act
         // and is caught by the `-m` arm below.
-        "pytest" | "py.test" | "tox" | "nox" => Some(String::new()),
+        // `ctest` runs the binaries the project's CMake built; `npx` and `bunx` run a package
+        // binary, which loads the project's own config (`vitest.config.ts`, `jest.config.js`).
+        "pytest" | "py.test" | "tox" | "nox" | "ctest" | "npx" | "bunx" => Some(String::new()),
         "go" => match words.first().copied()? {
-            "test" => Some("test".to_string()),
+            v @ ("test" | "run" | "generate") => Some(v.to_string()),
             _ => None,
         },
         // `npm test`, `npm run <script>` and `yarn`/`pnpm`'s equivalents run a script the
@@ -129,6 +133,7 @@ fn subcommand_that_runs_code(program: &str, argv: &[String]) -> Option<String> {
         "npm" | "yarn" | "pnpm" | "bun" => match words.first().copied()? {
             "test" | "t" => Some("test".to_string()),
             "run" | "run-script" => Some("run".to_string()),
+            v @ ("exec" | "x" | "dlx") => Some(v.to_string()),
             _ => None,
         },
         // `make` runs the Makefile, a file in the checkout the agent can rewrite: a build
@@ -208,6 +213,70 @@ mod tests {
         ] {
             let got = runs_project_code(&baseline_of(cmd));
             assert_eq!(got.as_deref(), Some(want), "{cmd}");
+        }
+    }
+
+    /// `cargo doc` runs `build.rs` and proc macros, `ctest` the project's test binaries, and
+    /// `npx vitest` the project's config.
+    #[test]
+    fn cargo_doc_ctest_npx_run_project_code() {
+        for (cmd, want) in [
+            ("cargo doc --no-deps", "`cargo doc`"),
+            ("cargo rustdoc -p x", "`cargo rustdoc`"),
+            ("ctest --output-on-failure", "`ctest`"),
+            ("npx vitest run", "`npx`"),
+            ("npx jest", "`npx`"),
+            ("npm exec vitest", "`npm exec`"),
+            ("pnpm dlx vitest", "`pnpm dlx`"),
+            ("go generate ./...", "`go generate`"),
+            ("go run ./cmd/x", "`go run`"),
+        ] {
+            assert_eq!(
+                runs_project_code(&baseline_of(cmd)).as_deref(),
+                Some(want),
+                "{cmd}"
+            );
+        }
+    }
+
+    /// Every seeded runner row is judged by this table: a row that runs the project's code and
+    /// reads as no runner here is admitted by the seed on a host with no boundary.
+    #[test]
+    fn every_seeded_runner_row_is_judged() {
+        const RUNNERS: &[&str] = &[
+            "cargo", "go", "pytest", "python3", "python", "npm", "npx", "pnpm", "yarn", "make",
+            "ctest",
+        ];
+        // Rows that run no project code: they print, resolve, format or fetch.
+        const NOT: &[&str] = &[
+            "cargo fmt",
+            "cargo tree",
+            "cargo metadata",
+            "cargo --version",
+            "go build",
+            "go vet",
+            "go fmt",
+            "go list",
+            "go mod tidy",
+            "go mod download",
+            "go version",
+        ];
+        for rule in crate::permission::seed() {
+            let cmd = rule.pattern.trim_end_matches('*').trim();
+            let program = cmd.split(' ').next().unwrap_or("");
+            if rule.permission != "bash" || !RUNNERS.contains(&program) {
+                continue;
+            }
+            let got = runs_project_code(&baseline_of(cmd));
+            if NOT.contains(&cmd) {
+                assert_eq!(got, None, "{cmd}");
+            } else {
+                assert!(
+                    got.is_some(),
+                    "seed row `{}` runs project code unjudged",
+                    rule.pattern
+                );
+            }
         }
     }
 

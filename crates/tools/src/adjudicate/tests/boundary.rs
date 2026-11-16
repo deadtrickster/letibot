@@ -332,6 +332,22 @@ fn a_boundary_that_does_not_hold_still_asks() {
     }
 }
 
+/// With no boundary the seed's `cargo doc*` row does not settle `cargo doc`: it runs `build.rs`.
+#[test]
+fn no_boundary_cargo_doc_asks() {
+    for cmd in ["cargo doc --no-deps", "ctest", "npx vitest run"] {
+        let asked = Asked::default();
+        let mut g = gate_at(
+            Box::new(Asked(asked.0.clone())),
+            crate::mode::Mode::WRITES_ALLOWED,
+            None,
+        )
+        .with_permission(crate::permission::seed());
+        let _ = g.admit(&bash(&json!({ "command": cmd })));
+        assert_eq!(asked.count(), 1, "{cmd} was admitted with no boundary");
+    }
+}
+
 /// A boundary that shares the host's network is not enclosed either: what crosses it is what a
 /// card is still for.
 #[test]
