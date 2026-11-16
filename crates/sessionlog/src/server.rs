@@ -2301,11 +2301,14 @@ fn seat_in(
                 }
                 // What the head asked for and this daemon read, said once per attachment: a head
                 // that does not find its feature here must not use it. Below the frame's own
-                // version the head cannot decode it, so it is not sent.
-                if out.is_ok() && head_protocol >= crate::protocol::QUEUE_PROMPT_SINCE {
-                    out = w.write(&ServerFrame::Features {
-                        accepted: crate::protocol::accepted_features(&caps.features),
-                    });
+                // version the head cannot decode it, and an empty echo says nothing, so neither
+                // is sent: a head that asked for nothing keeps a stream of events alone.
+                let accepted = crate::protocol::accepted_features(&caps.features);
+                if out.is_ok()
+                    && head_protocol >= crate::protocol::QUEUE_PROMPT_SINCE
+                    && !accepted.is_empty()
+                {
+                    out = w.write(&ServerFrame::Features { accepted });
                 }
                 out
             });
