@@ -60,16 +60,27 @@ impl App {
                 Role::Faint,
             ));
         }
-        // Its own span: the figure takes its thresholds' colour.
-        if let Some((_, used)) = self.plan_usage() {
-            line.spans.push(Span::role(" · ", Role::Faint));
-            line.spans
-                .push(Span::role(used.to_string(), self.plan_usage_role()));
-        }
         if line.spans.len() > spans {
             line = rano::render::text::truncate_owned(line, w);
         }
-        line
+        self.usage_first(line, w)
+    }
+
+    /// The plan's usage at column 0, then `rest`: the figure stays put while the spinner and the
+    /// clock change width, and a narrow row cuts `rest` before it. Its own span, in its
+    /// thresholds' colour.
+    fn usage_first(&self, rest: Line, w: usize) -> Line {
+        let Some((_, used)) = self.plan_usage() else {
+            return rano::render::text::truncate_owned(rest, w);
+        };
+        let mut line = Line::new(vec![Span::role(used.to_string(), self.plan_usage_role())]);
+        let room = w.saturating_sub(line.width() + 3);
+        if rest.width() > 0 && room > 0 {
+            line.spans.push(Span::role(" · ", Role::Faint));
+            line.spans
+                .extend(rano::render::text::truncate_owned(rest, room).spans);
+        }
+        rano::render::text::truncate_owned(line, w)
     }
 
     /// What this session is waiting on, one muted line - `waiting on: job j8032 · monitor ci`.
@@ -91,22 +102,11 @@ impl App {
                 text = format!("{text} · {pending}");
             }
         }
-        // The plan's use last: a fact about the account, not about what this session waits on.
-        let used = self.plan_usage().map(|(_, u)| u.to_string());
-        if text.is_empty() && used.is_none() {
-            return Line::default();
-        }
         let mut line = Line::default();
-        let Some(used) = used else {
-            line.spans.push(Span::role(trim_to(&text, w), Role::Faint));
-            return line;
-        };
         if !text.is_empty() {
-            line.spans
-                .push(Span::role(format!("{text} · "), Role::Faint));
+            line.spans.push(Span::role(text, Role::Faint));
         }
-        line.spans.push(Span::role(used, self.plan_usage_role()));
-        rano::render::text::truncate_owned(line, w)
+        self.usage_first(line, w)
     }
 
     /// The daemon's list in a person's words: the whole of [`App::activity_line`]'s text and the

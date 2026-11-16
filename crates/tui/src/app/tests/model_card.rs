@@ -735,6 +735,51 @@ fn the_plans_usage_is_on_its_provider_row_and_the_status_row() {
     );
 }
 
+/// The usage reading leads the status row, so the spinner and the clock changing width never move
+/// it, and a narrow row cuts the activity before the reading.
+#[test]
+fn the_usage_reading_is_at_column_0_and_a_narrow_row_cuts_the_activity_first() {
+    let used = "5h 83% · resets 23:15 (4m ago)";
+    let mut a = card(&Wire::default());
+    let ServerFrame::Settings { mut rows } = Wire::default().frame() else {
+        unreachable!()
+    };
+    rows.push(letibot_sessionlog::protocol::SettingRow {
+        key: letibot_sessionlog::protocol::MODEL_USAGE_KEY.into(),
+        value: used.into(),
+        source: String::new(),
+        editable: String::new(),
+        choices: vec!["deepseek".into()],
+        tools: Vec::new(),
+    });
+    a.apply(ServerFrame::Settings { rows });
+    assert_eq!(a.turn_status(120), used, "idle: the reading alone");
+    a.apply(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    let wide = a.turn_status(120);
+    let activity = wide
+        .strip_prefix(&format!("{used} · "))
+        .unwrap_or_else(|| panic!("the reading leads a running turn's row: {wide:?}"));
+    assert!(
+        !activity.trim().is_empty(),
+        "the activity follows: {wide:?}"
+    );
+    let narrow_w = rano::width::text::width(used) + 6;
+    let narrow = a.turn_status(narrow_w);
+    assert!(
+        narrow.starts_with(used),
+        "the reading stays whole: {narrow:?}"
+    );
+    assert!(
+        rano::width::text::width(&narrow) <= narrow_w,
+        "fits {narrow_w}: {narrow:?}"
+    );
+    assert!(
+        !narrow.contains(activity),
+        "the activity is what is cut: {narrow:?}"
+    );
+    assert_eq!(a.turn_status(rano::width::text::width(used)), used);
+}
+
 fn rows_of(a: &App) -> Vec<String> {
     rows(a, 140)
 }
