@@ -9,7 +9,8 @@ use super::{
     ChildSessions, RunningJobs, queue_review_in_flight, unfinished_plan,
     waits_on_a_child_with_room_to_breathe, waits_on_a_running_job, waits_on_an_undigested_ending,
     waits_on_something_external, waits_on_the_room, when_a_queue_reviewer_goes_quiet,
-    when_a_young_child_grows_up, when_an_ending_is_digested, when_an_external_wait_lapses,
+    when_a_waited_process_is_read_again, when_a_young_child_grows_up, when_an_ending_is_digested,
+    when_an_external_wait_lapses,
 };
 
 /// How long a session sits IDLE before the unfinished-plan check is sent. The operator's scheduling
@@ -467,7 +468,11 @@ impl TodoNagClock {
             // notice outstanding, so the anchor is there. An external wait lapsing sooner changes
             // the plan, so it is due then.
             let ladder = self.nagged_at.map(|at| at + self.interval().max(floor));
-            let lapse = when_an_external_wait_lapses(todos, jobs).map(|left| now + left);
+            let lapse = when_an_external_wait_lapses(todos, jobs)
+                .into_iter()
+                .chain(when_a_waited_process_is_read_again(todos, jobs))
+                .min()
+                .map(|left| now + left);
             ladder.into_iter().chain(lapse).min()
         } else {
             // The young child's deadline, or the end of an ending's grace, whichever is first. A grace
@@ -478,6 +483,7 @@ impl TodoNagClock {
                 .chain(when_an_ending_is_digested(todos, jobs))
                 .chain(when_a_queue_reviewer_goes_quiet(todos, children))
                 .chain(when_an_external_wait_lapses(todos, jobs))
+                .chain(when_a_waited_process_is_read_again(todos, jobs))
                 .min()
                 .map(|left| now + left)
         };

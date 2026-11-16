@@ -201,3 +201,32 @@ fn a_truly_external_wait_stays_external() {
         assert!(r.payload.contains("stays `external`"), "{}", r.payload);
     }
 }
+
+/// A row waiting on a running process arms the clock for the next read of the process table:
+/// nothing reports its exit, so without the poll the wait never ends.
+#[test]
+fn a_wait_on_a_running_process_arms_the_clock_for_its_next_read() {
+    let board = vec![TodoItem {
+        needs: vec![TodoNeed::Pid {
+            pid: 4242,
+            start: 7,
+        }],
+        ..item(ROW, TodoStatus::InProgress)
+    }];
+    let none = ChildSessions::none();
+    let up = RunningJobs::none().pid(4242, 7);
+    assert!(
+        the_plan_as_checked(&board, &none, &up).is_empty(),
+        "quiet while it runs"
+    );
+    let mut clock = TodoNagClock::with_window(Duration::from_secs(600));
+    let t0 = Instant::now();
+    clock.rearm(&board, t0, &none, &up);
+    assert_eq!(clock.due_at(), Some(t0 + PID_POLL), "read again, not never");
+    let gone = RunningJobs::none();
+    assert_eq!(when_a_waited_process_is_read_again(&board, &gone), None);
+    assert!(
+        !the_plan_as_checked(&board, &none, &gone).is_empty(),
+        "and once it is gone the row is asked about"
+    );
+}

@@ -154,6 +154,13 @@ impl Harness {
                     }
                     continue;
                 }
+                // A process is read from the process table: nothing else reports its exit.
+                if let letibot_tokencore::store::TodoNeed::Pid { pid, start } = need {
+                    if letibot_tools::exec::procs::alive(*pid, *start) {
+                        jobs = jobs.pid(*pid, *start);
+                    }
+                    continue;
+                }
                 let letibot_tokencore::store::TodoNeed::Job { handle } = need else {
                     continue;
                 };
