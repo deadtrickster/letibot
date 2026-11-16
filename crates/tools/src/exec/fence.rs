@@ -101,10 +101,14 @@ impl FileFence {
             return None;
         }
         if let Some(store) = self.store.as_ref().filter(|s| path.starts_with(s)) {
-            // The store's data reads; its secrets, control files and every write do not.
+            // The store's data reads; its secrets, control files and every write do not. A tight
+            // seat's commands never mount the store, so its data reads only where a root holds it.
             let rel = path.strip_prefix(store).unwrap_or(path);
             if !write && super::store::is_readable(rel) {
-                return None;
+                match self.holder(path) {
+                    Some(_) => return None,
+                    None => return Some(self.outside_view(path)),
+                }
             }
             return Some(self.store_sentence(path));
         }
@@ -129,24 +133,13 @@ impl FileFence {
                 path.display()
             ));
         }
-        let roots = self.inside.as_ref()?;
+        self.inside.as_ref()?;
         if !write && self.children.as_ref().is_some_and(|c| c.holds(path)) {
             return None;
         }
         // A path a root has not got is outside the view; a root that has it decides writability.
-        let holder = roots
-            .iter()
-            .filter(|(r, _)| path.starts_with(r))
-            .max_by_key(|(r, _)| r.components().count());
-        match holder {
-            None => Some(format!(
-                "`{}` is not in this session's filesystem view: the file tools see what a \
-                 command sees, so a path a command cannot read is not one `read` shows either. \
-                 The operator's keys: `[boundary] grants_ro = [\"{}\"]` (`grants_rw` for a write) \
-                 in the user `~/.config/letibot/leticode.toml`, where a project cannot widen.",
-                path.display(),
-                path.display()
-            )),
+        match self.holder(path) {
+            None => Some(self.outside_view(path)),
             Some((root, false)) if write => Some(format!(
                 "`{}` is inside this session's view and the view holds `{}` read-only, so nothing \
                  was written. Making it writable is `[boundary] grants_rw = [\"{}\"]` in the \
@@ -157,6 +150,30 @@ impl FileFence {
             )),
             Some(_) => None,
         }
+    }
+
+    /// The root of the view that holds `path`, and whether it is writable. A wide view holds
+    /// everything, so its answer is the path itself, writable.
+    fn holder(&self, path: &Path) -> Option<(PathBuf, bool)> {
+        let Some(roots) = &self.inside else {
+            return Some((path.to_path_buf(), true));
+        };
+        roots
+            .iter()
+            .filter(|(r, _)| path.starts_with(r))
+            .max_by_key(|(r, _)| r.components().count())
+            .cloned()
+    }
+
+    fn outside_view(&self, path: &Path) -> String {
+        format!(
+            "`{}` is not in this session's filesystem view: the file tools see what a \
+             command sees, so a path a command cannot read is not one `read` shows either. \
+             The operator's keys: `[boundary] grants_ro = [\"{}\"]` (`grants_rw` for a write) \
+             in the user `~/.config/letibot/leticode.toml`, where a project cannot widen.",
+            path.display(),
+            path.display()
+        )
     }
 
     fn store_sentence(&self, path: &Path) -> String {

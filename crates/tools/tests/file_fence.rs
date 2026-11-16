@@ -419,3 +419,53 @@ fn a_wide_seat_file_read_refuses_flow_rule_secrets() {
     assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
     let _ = std::fs::remove_dir_all(f.root());
 }
+
+/// A tight seat's commands never mount the store, so its file tools may not read the store's data
+/// either: only the session's own folder, or a store path a view root holds.
+#[test]
+fn tight_view_file_tools_must_not_read_store_data() {
+    let f = Fixture::new("tightstore");
+    std::fs::create_dir_all(f.store().join("panes")).expect("panes");
+    std::fs::write(f.store().join("panes/p.log"), "a token in a pane\n").expect("a pane");
+    let view =
+        ViewSpec::project_only(f.project()).with_home(HomeView::Dir(f.root().join("throwaway")));
+    let seat = seat::seat_view(
+        &Mode::WRITES_ALLOWED,
+        "this machine",
+        &[] as &[&str],
+        &f.home(),
+    );
+    let backend = HostBackend::writable("/")
+        .expect("a whole-host backend")
+        .with_cwd(f.project())
+        .expect("the workspace")
+        .with_home(f.home())
+        .with_file_fence(FileFence::of(&seat, &view).owning(&f.store(), "s-1"));
+    let mut h = harness_over(Box::new(backend), f.project(), f.root().join("notes"));
+
+    for data in [
+        f.store().join("sessions.db"),
+        f.store().join("logs/a.jsonl"),
+    ] {
+        refused(&h.call("read", &format!(r#"{{"path":"{}"}}"#, data.display())));
+    }
+    let r = h.call(
+        "grep",
+        &format!(
+            r#"{{"pattern":"token","path":"{}"}}"#,
+            f.store().join("panes").display()
+        ),
+    );
+    assert!(!r.render().contains("a token in a pane"), "{}", r.render());
+    refused(&r);
+    // Its own folder is still its own.
+    let r = h.call(
+        "read",
+        &format!(
+            r#"{{"path":"{}"}}"#,
+            f.store().join("sessions/s-1/plugins/x.toml").display()
+        ),
+    );
+    assert_eq!(r.outcome, ToolOutcome::Ok, "{}", r.render());
+    let _ = std::fs::remove_dir_all(f.root());
+}
