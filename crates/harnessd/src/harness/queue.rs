@@ -412,6 +412,30 @@ impl Harness {
                 out.push(crate::mergequeue::notices::green_again(h, &h.repository));
             }
         }
+        // A landing of this tree that stopped is this session's news, muted or not: its own work.
+        for m in store.merge_rows(None).unwrap_or_default() {
+            if !crate::mergequeue::notices::wakes_owner(m.state) {
+                continue;
+            }
+            let ours = store
+                .review_row(&m.review_id)
+                .ok()
+                .flatten()
+                .is_some_and(|r| {
+                    !r.session_id.is_empty()
+                        && crate::mergequeue::root_session(store, &r.session_id) == me
+                });
+            if ours
+                && told_once(
+                    &mut self.gate_told,
+                    store,
+                    &me,
+                    format!("landing:{}:{}:{}", m.id, m.state.as_str(), m.state_ms),
+                )
+            {
+                out.push(crate::mergequeue::notices::landing_stuck(&m));
+            }
+        }
         if healths.is_empty() && parked.is_empty() {
             return out;
         }

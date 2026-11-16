@@ -763,6 +763,21 @@ impl RepoQueue {
                 who,
             ));
         }
+        // A landing that stopped wakes the tree that enqueued it, as a job's end wakes its session.
+        for m in self.store.merge_rows(Some(&self.key))? {
+            if !super::notices::wakes_owner(m.state) {
+                continue;
+            }
+            let who = self
+                .store
+                .review_row(&m.review_id)?
+                .map(|r| r.session_id)
+                .filter(|s| !s.is_empty());
+            due.push((
+                format!("merge:{}:{}:{}", m.id, m.state.as_str(), m.state_ms),
+                who,
+            ));
+        }
         for (key, session) in due {
             if !self.first_time(&format!("rung:{}:{key}", self.key))? {
                 continue;

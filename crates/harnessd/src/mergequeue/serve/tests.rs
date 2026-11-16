@@ -1312,6 +1312,30 @@ fn a_failed_push_with_no_install_step_is_said() {
     assert!(said[0].contains("FAILED"), "{}", said[0]);
 }
 
+/// A landing that stops wakes the tree that enqueued its branch, once per entry, as a job's end
+/// wakes its session: a push refused for good leaves the row `landed_local`, and its session is rung.
+#[test]
+fn a_landing_that_stops_rings_the_session_that_enqueued_it_once() {
+    let w = World::new("push-rings");
+    sh(
+        &w.repo,
+        &["remote", "add", "origin", "/nonexistent/origin.git"],
+    );
+    let (wt, base, head) = branch(&w.repo, "p", "p.txt");
+    w.enqueue("p", &wt, &base, &head);
+    let q = w.worker(Arc::new(LocalGate), "a");
+    run(&q, 1);
+    let m = w.accept("p", "test/a");
+    run(&q, 4);
+    let row = w.store().merge_row(&m).unwrap().unwrap();
+    assert_eq!(row.state, MergeState::LandedLocal, "{row:?}");
+    assert_eq!(
+        *w.door.projects.lock().unwrap(),
+        vec!["s-p".to_string()],
+        "the enqueuing session was rung, once"
+    );
+}
+
 // ===== Red target =====
 
 /// 's done-when, in one repository, under : a red target HALTS BOTH queues. A branch
