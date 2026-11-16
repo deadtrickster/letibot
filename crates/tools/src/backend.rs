@@ -577,8 +577,14 @@ impl HostBackend {
         }
         let confine = crate::exec::confine::probe(view, seat.egress)
             .map_err(|e| BackendError::Io(e.to_string()))?;
-        let host = crate::exec::HostProcesses::confined(base.root.clone(), confine)
+        // A boundary that spares the operator's own `!` line runs it on their real home, rc and
+        // all, so it gets the bash that rc is written for - not a stock Mac's `/bin/bash` 3.2.
+        let spares = confine.spares_operator();
+        let mut host = crate::exec::HostProcesses::confined(base.root.clone(), confine)
             .map_err(|e| BackendError::Io(e.to_string()))?;
+        if spares {
+            host = host.with_console_shell(crate::console_bash::shell());
+        }
         host.set_confined_env(seat.env);
         host.set_secret_env(seat.secret_env);
         Ok(HostBackend {
