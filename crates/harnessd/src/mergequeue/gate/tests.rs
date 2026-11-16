@@ -1545,3 +1545,71 @@ fn the_end_of_a_stream_that_names_nothing_is_within_the_cap() {
         ex.len()
     );
 }
+
+/// A step sees the gate's HOME, not the daemon's, and none of its doors or keys. The parent's env
+/// is set on a re-run of this test binary, so no other test sees the fake HOME.
+#[test]
+fn gate_step_env_is_isolated() {
+    const CHILD: &str = "LETIBOT_TEST_GATE_ENV_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let out = std::process::Command::new(std::env::current_exe().expect("this test binary"))
+            .args([
+                "mergequeue::gate::tests::gate_step_env_is_isolated",
+                "--exact",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("HOME", "/operator")
+            .env("LETIBOT_REQUIRE_APPARATUS", "1")
+            .env("LETIBOT_SOCKET", "/operator/live.sock")
+            .env("OPENAI_API_KEY", "sk-operator")
+            .env("SSH_AUTH_SOCK", "/operator/agent.sock")
+            .env("XDG_CONFIG_HOME", "/operator/.config")
+            .output()
+            .expect("the child run");
+        let said = String::from_utf8_lossy(&out.stdout);
+        assert!(
+            out.status.success() && said.contains("1 passed"),
+            "{said}{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        return;
+    }
+    let wt = std::env::temp_dir().join(format!("letibot-gate-env-{}", std::process::id()));
+    std::fs::create_dir_all(&wt).unwrap();
+    let stop = AtomicBool::new(false);
+    let alive = || true;
+    let ctl = GateControl {
+        deadline: Instant::now() + Duration::from_secs(60),
+        budget: Duration::from_secs(60),
+        stop: &stop,
+        alive: &alive,
+    };
+    let step = "echo \"home=$HOME|$LETIBOT_REQUIRE_APPARATUS|$LETIBOT_SOCKET|$OPENAI_API_KEY|\
+                $SSH_AUTH_SOCK|$XDG_CONFIG_HOME|tmp=$TMPDIR|data=$XDG_DATA_HOME\""
+        .to_string();
+    let run = run_with_memory(&wt, &[step], &ctl, Ask::Uncapped);
+    let _ = std::fs::remove_dir_all(&wt);
+    assert_eq!(run.verdict, GateVerdict::Passed, "{run:#?}");
+    let said = step_said(&run);
+    let home = said
+        .strip_prefix("home=")
+        .and_then(|r| r.split('|').next())
+        .unwrap_or_default()
+        .to_string();
+    assert!(!home.is_empty() && !home.starts_with("/operator"), "{said}");
+    for leak in ["/operator", "sk-operator", "|1|"] {
+        assert!(!said.contains(leak), "{leak} reached the step: {said}");
+    }
+    let tmp = said
+        .split("tmp=")
+        .nth(1)
+        .unwrap()
+        .split('|')
+        .next()
+        .unwrap();
+    assert!(
+        home.starts_with(tmp),
+        "HOME is under the run's scratch: {said}"
+    );
+}

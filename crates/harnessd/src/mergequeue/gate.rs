@@ -881,7 +881,7 @@ pub fn run_with_memory(
     ctl: &GateControl,
     memory: Ask,
 ) -> GateRun {
-    run_with_launcher(worktree, steps, ctl, memory, &|s| s.to_string())
+    run_steps(worktree, steps, ctl, memory, &|s| s.to_string(), true)
 }
 
 /// [`run_with_memory`] where `launch` turns a step into the command line the shell runs: the row,
@@ -893,6 +893,18 @@ pub fn run_with_launcher(
     ctl: &GateControl,
     memory: Ask,
     launch: &dyn Fn(&str) -> String,
+) -> GateRun {
+    // The launcher starts a VM, which needs the daemon's HOME; the VM is the step's boundary.
+    run_steps(worktree, steps, ctl, memory, launch, false)
+}
+
+fn run_steps(
+    worktree: &Path,
+    steps: &[String],
+    ctl: &GateControl,
+    memory: Ask,
+    launch: &dyn Fn(&str) -> String,
+    isolate: bool,
 ) -> GateRun {
     // The cap is resolved once and used twice: the cgroup the step joins is capped with it and the
     // build's parallelism is bounded by it ([`StepEnv`]), so a step is never judged by two numbers.
@@ -914,6 +926,7 @@ pub fn run_with_launcher(
         cap,
         ctl,
         place: &place,
+        isolate,
     };
     for (i, step) in steps.iter().enumerate() {
         let started = now_ms();
@@ -1162,7 +1175,16 @@ struct Bound<'a> {
     cap: Option<u64>,
     ctl: &'a GateControl<'a>,
     place: &'a Placement,
+    /// Run each step under [`GATE_ENV_SCRIPT`]. Off only for a launcher that is its own boundary.
+    isolate: bool,
 }
+
+/// `scripts/gate-env.sh`, the clean step environment `scripts/gate-at.sh` also uses: compiled in,
+/// so the queue's steps get the same HOME, XDG dirs and doors as the lead's gate.
+const GATE_ENV_SCRIPT: &str = include_str!("../../../../scripts/gate-env.sh");
+
+/// Where [`GATE_ENV_SCRIPT`] puts a run's HOME and XDG dirs, under the run's scratch.
+const GATE_ENV_DIR: &str = "env";
 
 /// One step: its end, what its memory did, and how many processes it left behind in its cgroup
 /// (killed with it). `at` is which step this is, 1-based, and `of` how many the gate has - the
@@ -1180,6 +1202,7 @@ fn run_step(
         cap,
         ctl,
         place,
+        isolate,
     } = *bound;
     let env = StepEnv::for_run(worktree, scratch, cap);
     let log = match tempfile_in(worktree) {
@@ -1216,6 +1239,12 @@ fn run_step(
     // The host-owned evidence that the join happened (`join_script`'s `$2`): a file the step's
     // own output cannot write.
     let joined = log.with_extension("joined");
+    let mut inner: Vec<std::ffi::OsString> = Vec::new();
+    if isolate {
+        inner.extend(["sh", "-c", GATE_ENV_SCRIPT, "letibot-gate-env"].map(Into::into));
+        inner.push(scratch.join(GATE_ENV_DIR).into());
+    }
+    inner.extend(["sh", "-c", command].map(Into::into));
     let mut cmd = Command::new("sh");
     match &scope {
         Some(s) => cmd
@@ -1224,8 +1253,8 @@ fn run_step(
             .arg("letibot-gate")
             .arg(s.procs_path())
             .arg(&joined)
-            .args(["sh", "-c", command]),
-        None => cmd.arg("-c").arg(command),
+            .args(&inner),
+        None => cmd.args(&inner[1..]),
     };
     env.apply(&mut cmd);
     no_core_dumps(&mut cmd);
