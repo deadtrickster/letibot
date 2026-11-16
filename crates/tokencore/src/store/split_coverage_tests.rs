@@ -255,6 +255,8 @@ const EXERCISED: &[&str] = &[
     "grant_generation",
     "breaker",
     "put_breaker",
+    "import_pending",
+    "forget_import",
     "recall_transcripts",
     "recall_rows",
     "item_created_at",
@@ -588,6 +590,10 @@ fn every_project_method_runs_on_a_split_set() {
             .map(|b| b.disagreements),
         Some(2)
     );
+
+    // The half-import marker: written by an import, read by a retry, cleared by the operator.
+    assert_eq!(s.import_pending("s1").unwrap(), None);
+    assert!(!s.forget_import("s1").unwrap(), "nothing was pending");
 
     // Out of this set and into another, which takes the rows into its own two files.
     let transfer = s.export_session("s1").unwrap();

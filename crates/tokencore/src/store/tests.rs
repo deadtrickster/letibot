@@ -4226,6 +4226,7 @@ mod migrated_schema {
             "seat" => include_str!("seat.rs"),
             "subagents" => include_str!("subagents.rs"),
             "told" => include_str!("told.rs"),
+            "transfer" => include_str!("transfer.rs"),
             "writers" => include_str!("writers.rs"),
             _ => return None,
         })
