@@ -2,7 +2,6 @@
 //! `letibot --migrate SESSION --to HOST` moves a session's whole daemon to a host and marks
 //! the copy it leaves behind (`session.lives_on`).
 
-
 use letibot_harnessd::Parts;
 use letibot_harnessd::config::{Config, ProviderConfig, Seat};
 use letibot_harnessd::harness::Harness;
