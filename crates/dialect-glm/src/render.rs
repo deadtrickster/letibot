@@ -223,6 +223,7 @@ fn render_item(item: &TranscriptItem, st: &mut State, out: &mut Vec<RenderSpan>)
     match item {
         // Zero-width by contract. Not even a state transition: a segment boundary
         // between two tool results must not split the observation block.
+        item if !item.reaches_model() => {}
         TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {}
 
         TranscriptItem::System { text: t, .. } => {
@@ -477,6 +478,7 @@ pub fn check_transcript(items: &[TranscriptItem]) -> Vec<Anomaly> {
 
     for (i, item) in items.iter().enumerate() {
         match item {
+            item if !item.reaches_model() => {}
             TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {}
             TranscriptItem::ToolResult { call_id, .. } => block_ids.push((i, call_id.clone())),
             TranscriptItem::Assistant { tool_calls, .. } => {

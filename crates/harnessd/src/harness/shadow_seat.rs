@@ -57,8 +57,16 @@ impl Harness {
                 title,
             })
             .collect();
-        if !rows.is_empty() {
-            let _ = self.append_offer_rows(&mut rows);
+        if !rows.is_empty()
+            && let Err(e) = self.append_offer_rows(&mut rows)
+        {
+            self.warn(
+                "offer_rows_not_stored",
+                format!(
+                    "the shadow's offer rows were appended but the store refused them: {e}. \
+                     They stay in the session's ledger; the next store write carries them."
+                ),
+            );
         }
     }
 
@@ -421,8 +429,16 @@ impl Harness {
                 rows.push(row);
             }
         }
-        if !rows.is_empty() {
-            let _ = self.append_offer_rows(&mut rows);
+        if !rows.is_empty()
+            && let Err(e) = self.append_offer_rows(&mut rows)
+        {
+            self.warn(
+                "offer_rows_not_stored",
+                format!(
+                    "the shadow's verdict rows were appended but the store refused them: {e}. \
+                     They stay in the session's ledger; the next store write carries them."
+                ),
+            );
         }
         self.publish_shadow();
         notices

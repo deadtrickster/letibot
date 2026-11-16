@@ -197,6 +197,7 @@ fn to_openai_messages(prefix: &StablePrefix, items: &[TranscriptItem]) -> Value 
 
     for item in items {
         match item {
+            item if !item.reaches_model() => {}
             TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {}
             TranscriptItem::System { text, .. } => {
                 flush(&mut turn, &mut msgs);

@@ -538,12 +538,11 @@ pub fn a_parks_resume(item: &TranscriptItem) -> bool {
     })
 }
 
-/// A row the model never reads, filed by the harness for the operator.
+/// A row the model never reads, filed by the harness for the operator. The one decision is
+/// [`TranscriptItem::reaches_model`]; this name stays because it reads as the question callers
+/// ask.
 pub fn display_only(item: &TranscriptItem) -> bool {
-    matches!(
-        item,
-        TranscriptItem::Offer { .. } | TranscriptItem::SegmentMark { .. }
-    )
+    !item.reaches_model()
 }
 
 /// How many of a board's rows one sentence names before it counts the rest.

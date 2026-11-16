@@ -833,6 +833,7 @@ fn contents(
             // A thought is not replayed: `generateContent` has no thought blocks, and the
             // signature that carries the reasoning forward travels on its own part.
             TranscriptItem::Reasoning { .. } => {}
+            item if !item.reaches_model() => {}
             TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {}
             TranscriptItem::Assistant {
                 text, tool_calls, ..

@@ -272,7 +272,8 @@ fn render_items(
 ) {
     for item in items {
         match item {
-            // Renders to nothing, by contract.
+            // Renders to nothing, by contract: the one decision is on the type.
+            item if !item.reaches_model() => {}
             TranscriptItem::SegmentMark { .. } | TranscriptItem::Offer { .. } => {}
 
             // Unrenderable on this template past position 0: it raises. The daemon is expected to use
