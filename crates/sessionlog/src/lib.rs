@@ -55,7 +55,7 @@ pub mod log;
 pub mod metrics_tap;
 /// Who a session is for - the rule every list of sessions is grouped by. See [`origin`].
 pub mod origin;
-// The pane contract's document (`docs/plugins-slice1.md`, C3): the shapes a `pane_<name>`
+// The pane contract's document (`docs/plugins-slice1.md`): the shapes a `pane_<name>`
 pub mod pane;
 pub mod pending_asks;
 // Which process connected, from the kernel: a head and a tool call run as the same user, so

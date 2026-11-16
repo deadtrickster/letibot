@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 // so a reader of the pane contract has one import for its whole vocabulary.
 pub use letibot_plugin::pane::{Act, Cell, Fold, Role};
 
-/// The keys the host owns on every pane, whatever a plugin says - C3's list. A view that
+/// The keys the host owns on every pane, whatever a plugin says. A view that
 /// binds one is refused (see [`View::validate`]): a plugin that could take `q` would own a key
 /// the operator expects to leave with.
 pub const HOST_KEYS: [char; 5] = ['q', 'j', 'k', 'f', 'l'];
@@ -76,15 +76,15 @@ pub struct View {
     /// What this pane returned last time, handed back to it on the next call.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub state: Option<Value>,
-    /// The pane's own text input (`X5`). While the pane is open the host's composer is the
+    /// The pane's own text input. While the pane is open the host's composer is the
     /// pane's: the host edits the text and keeps history and drafts, the layer is handed a line.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub input: Option<PaneInput>,
-    /// The keys the view binds itself (`X8`). With an input they are live only in cursor mode -
+    /// The keys the view binds itself. With an input they are live only in cursor mode -
     /// Tab on an empty input enters it, Esc leaves it - because letters belong to the text.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub keys: Vec<ViewKey>,
-    /// Where the host lays the pane out (`X10`). Absent is the screen it has always been.
+    /// Where the host lays the pane out. Absent is the screen it has always been.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dock: Option<Dock>,
     /// How many cells wide a docked pane asks for. The host owns the divider and the width keys,
@@ -93,7 +93,7 @@ pub struct View {
     pub width: Option<u32>,
 }
 
-/// The pane's own input surface (`X5`): one composer, keyed so two channels keep two drafts.
+/// The pane's own input surface: one composer, keyed so two channels keep two drafts.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct PaneInput {
     /// The history and draft key - the channel, so each room remembers its own line. Required,
@@ -109,7 +109,7 @@ pub struct PaneInput {
     pub footer: Option<String>,
 }
 
-/// One key the view binds itself (`X8`) - a shortcut on the pane, not on a stop.
+/// One key the view binds itself - a shortcut on the pane, not on a stop.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ViewKey {
     /// A letter of either case, or one of [`NAMED_KEYS`].
@@ -142,7 +142,7 @@ impl ViewKey {
     }
 }
 
-/// Where the host lays a pane out (`X10`).
+/// Where the host lays a pane out.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Dock {
@@ -225,7 +225,7 @@ pub enum Block {
     Markdown(String),
     /// `{"kv":{"rows":[["label","value"],…]}}` - rows that carry no id, so no stop either.
     Kv(Vec<(String, String)>),
-    /// `{"stream":{…}}` - messages anchored at the bottom, each entry a stop (`X2`). The host
+    /// `{"stream":{…}}` - messages anchored at the bottom, each entry a stop. The host
     /// draws a body through rano's markdown, sticks to the tail and pages older entries at the top.
     Stream(Stream),
     /// A kind this host does not draw, by the name the plugin gave it. Drawn as one muted
@@ -277,7 +277,7 @@ impl Block {
 
 impl Serialize for Block {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        /// `{"kv":{"rows":[[label, value], …]}}` - the shape C3 gives it, which is an array of
+        /// `{"kv":{"rows":[[label, value], …]}}` - an array of
         /// pairs rather than an object, because a label may repeat and is not a key.
         #[derive(Serialize)]
         struct KvRef<'a> {
@@ -484,8 +484,7 @@ pub struct Row {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cells: Vec<Cell>,
     /// The facts on the right, drawn faint and flush right - `generating · 412 rows · 2 heads`.
-    /// C3's first draft had none, and a list without a right column is a list whose numbers sit in
-    /// the name's way. A cell here may carry a role like any other.
+    /// Without a right column the numbers sit in the name's way. A cell here may carry a role.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub facts: Vec<Cell>,
     /// The faint line(s) UNDER the row - an id, a path, a legend sentence. Not `detail`: that
@@ -643,7 +642,7 @@ impl Action {
         }
     }
 
-    /// The act as the WIRE spells it - C4's `PaneAction.action`: the key's `event` word, the
+    /// The act as the WIRE spells it - `PaneAction.action`: the key's `event` word, the
     /// host's `verb` word, or `look`. `Say` is not a pane action (the line goes to the session's
     /// model), so it has none.
     pub fn word(&self) -> Option<&str> {
@@ -670,7 +669,7 @@ pub fn one_letter(s: &str) -> Option<char> {
     }
 }
 
-/// One letter of EITHER case, lowercased - what a view key (`X8`) may be: with an input the plain
+/// One letter of EITHER case, lowercased - what a view key may be: with an input the plain
 /// letters type and these are live only in cursor mode, so a capital is a key the layer can keep.
 fn letter_of_either_case(s: &str) -> Option<char> {
     let mut it = s.chars();
@@ -709,7 +708,7 @@ fn gate_verbs<'a>(
     Ok(())
 }
 
-/// An answer carrying acts (`X7`): what a `command_` hook answers when the line means something the
+/// An answer carrying acts: what a `command_` hook answers when the line means something the
 /// HOST performs - `{"acts":[{"verb":"room_say","args":{…}}]}`. The host performs them in order,
 /// and each verb is one the layer's `plugin.toml` declares.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -811,7 +810,7 @@ impl View {
         for p in &self.panels {
             if p.key.is_empty() && p.view.is_empty() {
                 // Nothing behind a key: `Panel::shown` answers the summary, so there is no view
-                // for a key to open and none is asked for (C3 keys open views).
+                // for a key to open and none is asked for.
                 continue;
             }
             let c = one_letter(&p.key).ok_or_else(|| {
@@ -834,7 +833,7 @@ impl View {
                 ));
             }
         }
-        // The view's own keys (`X8`): a letter of either case or one of the named chords, never a
+        // The view's own keys: a letter of either case or one of the named chords, never a
         // host chord, never twice, and one meaning each.
         let mut view_words: BTreeSet<String> = BTreeSet::new();
         let mut view_letters: BTreeSet<char> = BTreeSet::new();
@@ -1059,7 +1058,7 @@ mod tests {
         serde_json::from_str(json).expect("the fixture parses")
     }
 
-    /// The whole document, field for field - every piece of C3 in one view, parsed and
+    /// The whole document, field for field - every piece of the contract in one view, parsed and
     /// written back out to the same JSON. A round trip is the cheapest proof that the types
     /// carry what the contract says and nothing else.
     #[test]
@@ -1450,7 +1449,7 @@ mod tests {
         assert!(v.validate_for(&[]).is_ok(), "it performs nothing by itself");
     }
 
-    /// A view key (`X8`) is bound once: two keys spelled the same are one key the host matches and
+    /// A view key is bound once: two keys spelled the same are one key the host matches and
     /// one that never fires.
     #[test]
     fn a_key_bound_twice_is_refused() {
@@ -1508,7 +1507,7 @@ mod tests {
         assert!(panel.validate().unwrap_err().contains("panel `p`'s"));
     }
 
-    /// An answer carries acts (`X7`), and each is one the manifest declares - the same list a row's
+    /// An answer carries acts, and each is one the manifest declares - the same list a row's
     /// `enter` is gated by, because it is a second door to the same verbs.
     #[test]
     fn an_undeclared_act_in_an_answer_is_refused() {
@@ -1544,10 +1543,8 @@ mod tests {
         assert!(refusal.validate_for(&[]).is_ok());
     }
 
-    /// A document written before H0 is written back out BYTE for byte: the fields it had, in the
-    /// order it had them, and none of the new ones. That is the whole promise of an additive
-    /// package - every pane document, and every layer that wrote one, parses and re-serialises
-    /// unchanged.
+    /// A document without the newer fields is written back out BYTE for byte: the fields it had, in
+    /// the order it had them, and none of the new ones.
     #[test]
     fn an_old_pane_document_round_trips_byte_identical() {
         let doc = concat!(
@@ -1577,7 +1574,7 @@ mod tests {
         );
     }
 
-    /// One document using every field H0 added, accepted as a whole - and each of them refused
+    /// One document using every newer field, accepted as a whole - and each of them refused
     /// where the host cannot honour it.
     #[test]
     fn a_document_using_each_new_field_validates() {

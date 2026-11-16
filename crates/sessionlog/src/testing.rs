@@ -620,12 +620,10 @@ fn short_alias_at(temp: std::path::PathBuf, link: &str) -> std::path::PathBuf {
 }
 
 /// A scratch name under [`scratch_root`] that no other call in this process can mint:
-/// `<prefix>-<pid>-<clock ns>-<counter>`. The counter is the guarantee and the clock is only the
-/// record of when: this box's clock ticks in ~40 ns steps, so two tests released together do read
-/// the same nanosecond (measured at ~1 in 1000 pairings), and two fixtures handed one name share
-/// one session store - the second open then refuses a claim its own pid holds (R132). The pid is no
-/// guarantee either: a later run can reuse it, so a caller wanting an empty directory clears the
-/// name first. Nothing is created here, because a caller may want a socket or a file, not a dir.
+/// `<prefix>-<pid>-<clock ns>-<counter>`. The counter is the guarantee: two tests released
+/// together can read the same nanosecond, and two fixtures sharing a name share a session store.
+/// A later run can reuse the pid, so a caller wanting an empty directory clears the name first.
+/// Nothing is created here, because a caller may want a socket or a file, not a dir.
 pub fn scratch(prefix: &str) -> std::path::PathBuf {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

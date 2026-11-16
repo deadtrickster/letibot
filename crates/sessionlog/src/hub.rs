@@ -1098,9 +1098,7 @@ impl Hub {
 
     /// [`Hub::warn`] for a warning that carries what a compaction did: one construction of the
     /// variant in this crate, so the three fields cannot be filled in two orders by two callers.
-    ///
-    /// A developer's diagnostic leaves a line here as well: a head draws it once per session and
-    /// `/notes` lists it, and the numbers themselves belong where they were measured.
+    /// A developer's diagnostic is drawn once per session and listed in `/notes`.
     pub fn warn_with(
         &self,
         code: impl Into<String>,

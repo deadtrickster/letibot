@@ -420,7 +420,7 @@ fn mint_instance() -> String {
 
 /// A fresh session id in the shape every id here has: `s-<unix nanos>`. Minting one OUTSIDE the
 /// daemon is what lets a caller write an owner row, and the worktree and branch named by it, before
-/// the session exists - a package (`docs/lifecycle.md` G3). The daemon takes an id it is handed and
+/// the session exists - a package. The daemon takes an id it is handed and
 /// refuses one already in use, so uniqueness is still the registry's.
 pub fn new_id() -> String {
     let base = std::time::SystemTime::now()
@@ -644,7 +644,7 @@ pub trait ShellSuggester: Send + Sync {
     fn suggest(&self, hub: &Hub, workspace: &str, prefix: &str) -> Vec<String>;
 }
 
-/// The daemon's GitHub reviewer seat (R118), as the wire and the panes reach it. A trait for
+/// The daemon's GitHub reviewer seat, as the wire and the panes reach it. A trait for
 /// [`SessionSource`]'s reason: the seat is the harness's, and this crate holds only the door.
 pub trait GithubSeat: Send + Sync {
     /// One request - `{"verb": "attach", "scope": "stroppy-io"}` - answered with the snapshot the
@@ -900,7 +900,7 @@ pub struct Registry {
     /// Set once at startup by the daemon, beside [`Registry::suggester`]. See [`TerminalDriver`].
     /// `None` means a `TermOpen` answers with a pane that is over and the reason it is.
     terminal: Mutex<Option<Arc<dyn TerminalDriver>>>,
-    /// The GitHub reviewer seat (R118), set once at startup by the daemon. See [`GithubSeat`].
+    /// The GitHub reviewer seat, set once at startup by the daemon. See [`GithubSeat`].
     /// `None` means a `Github` frame is refused by name and the pane is handed no `github` feed.
     github: Mutex<Option<Arc<dyn GithubSeat>>>,
     /// Set once at startup by the daemon. See [`CloseSettler`]: a closed session's placement, which
@@ -1704,11 +1704,8 @@ impl Registry {
     }
 
     /// The role a session was seated as, as a row shows it: a profile's name, or its seat's own.
-    ///
-    /// Written by the daemon once the session is OPEN - a child is adopted after its own open, so
-    /// the door that knows the role is the one that comes after it. A live row reads it from here;
-    /// a session on disk reads the store's half, which the daemon fills from the child's own run
-    /// record.
+    /// Written by the daemon once the session is OPEN, since a child is adopted after its own open.
+    /// A session on disk reads the store's half, filled from the child's run record.
     pub fn set_role(&self, session_id: &str, role: &str) {
         let mut g = self.lock();
         if let Some(e) = g.entry_mut(session_id) {
@@ -2263,7 +2260,7 @@ impl Registry {
 
     /// The ids this daemon holds live, in creation order. What a refusal may name, and never
     /// the store's index: a head that asked for a session is owed this daemon's own answer, and
-    /// since the split that index is every project's.
+    /// that index is every project's.
     pub fn live_ids(&self) -> Vec<String> {
         let g = self.lock();
         g.entries.iter().map(|(id, _)| id.clone()).collect()

@@ -88,9 +88,8 @@ pub enum Action {
 }
 
 /// The split. One row per code; a code that is not here is drawn quiet (`Class::Routine`) and
-/// asks nothing (`Action::Nothing`). The order is the order it is read in - routine first, because
-/// that is the list whose absences caused the complaint - and each row carries the reason it is
-/// where it is, the register it is drawn in, and what the reader can do about it.
+/// asks nothing (`Action::Nothing`). Routine first; each row carries the reason it is where it is,
+/// the register it is drawn in, and what the reader can do about it.
 pub const TABLE: &[(&str, Class, Action)] = &[
     // ───────────────────────── routine ─────────────────────────
     //
@@ -1131,12 +1130,12 @@ pub const TABLE: &[(&str, Class, Action)] = &[
 /// The warning codes that restate an event the model was ALSO sent, each with the model-facing row
 /// that carries it.
 ///
-/// **The conversation is one record: one event, one row, that row the model's.** `Hub::warn`
+/// The conversation is one record: one event, one row, that row the model's. `Hub::warn`
 /// publishes to heads and to no engine, so a warning whose event the model already has is a second
 /// row for one event - and one the model never got. A code in this table is therefore filed BESIDE
 /// the conversation: `/notes` lists the sentence, `/status` counts it, a refusal or a failure is
 /// also said on the status line as it lands, and the MODEL's row is the one drawn. Every other code
-/// is a daemon fact with no model twin, and draws as it always did.
+/// is a daemon fact with no model twin, and draws normally.
 ///
 /// A code belongs here only with the row the model got, named:
 ///
@@ -1281,8 +1280,7 @@ pub fn destination(code: &str) -> Go {
 /// Which register a code is drawn in. See [`TABLE`].
 ///
 /// A code the table does not know is [`Class::Routine`]: an unclassified code is not evidence that
-/// something failed, and a table that answered red for every new code is exactly how a reader is
-/// taught to skim the red.
+/// something failed, and red for every new code teaches a reader to skim the red.
 pub fn class(code: &str) -> Class {
     let code = family(code);
     match TABLE.iter().find(|(c, _, _)| *c == code) {
@@ -1503,8 +1501,7 @@ mod tests {
 
     /// The conversation is one record: a code whose event the model was ALSO sent is filed beside the
     /// conversation, and the table names the model-facing row it twins. Every entry has to be a code
-    /// the table classifies, has to name its row, and the codes that drew a second row before this
-    /// rule are all here so a regression is a red test rather than a reread.
+    /// the table classifies and has to name its row.
     #[test]
     fn a_warning_the_model_also_got_is_never_drawn() {
         for (code, why) in TWIN {

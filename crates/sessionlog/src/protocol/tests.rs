@@ -933,10 +933,8 @@ fn a_todo_condition_is_tagged_on_the_wire_and_survives_the_round_trip() {
     );
 }
 
-/// **A `seats` field is what an older head drops.** A version-66 head's `Todos` frame has two
-/// fields; serde ignores one it has never heard of, so the pane draws the session's board and
-/// never learns a seat had one - which is the whole of what the bump records, and the reason the
-/// field could be added without a new variant.
+/// A `seats` field is what an older head drops: serde ignores a field it has never heard of, so a
+/// version-66 head draws the session's board and the field needs no new variant.
 #[test]
 fn an_old_heads_todos_frame_drops_the_seats_it_does_not_know() {
     /// The version-66 head's reading of the frame, spelled out because that build cannot be

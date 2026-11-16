@@ -884,7 +884,7 @@ pub enum ClientFrame {
         client_request_id: String,
         op: serde_json::Value,
     },
-    /// The daemon's GitHub reviewer seat (R118): `op` is one verb - `attach` with a scope, `pause`,
+    /// The daemon's GitHub reviewer seat: `op` is one verb - `attach` with a scope, `pause`,
     /// `resume`, `poll`, or `list` - and the answer is [`ServerFrame::Github`] carrying the snapshot
     /// the seat's pane would be drawn from. The seat is the DAEMON's, so `letibot attach github
     /// <scope>` asks here rather than polling in its own process.

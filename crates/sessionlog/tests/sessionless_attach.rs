@@ -1,7 +1,6 @@
-//! R178: a daemon whose last session closed keeps serving. The bare attach a head makes with no
-//! session in mind lands on nothing, so it is served as a control connection that holds no session
-//! and may only make one - and the refusal for an id this daemon does not hold names what it DOES
-//! hold live, never the store's index, which since the split is every project's.
+//! A daemon whose last session closed keeps serving. The bare attach a head makes with no session
+//! in mind is served as a control connection that may only make one, and the refusal for an id
+//! this daemon does not hold names what it holds live, never the store's every-project index.
 
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -62,8 +61,7 @@ fn a_daemon_whose_only_session_closed_still_takes_a_bare_attach_and_makes_one() 
     let socket = socket_in("only");
     let _server = serve_registry(registry.clone(), &socket).expect("bind");
 
-    // The operator closes the only session. The daemon stays up holding none - the state that
-    // made every later `leticode_start` fail (R178).
+    // The operator closes the only session. The daemon stays up holding none.
     {
         let (mut head, hello, mut reader) = attach(&socket, "s-only");
         assert!(
@@ -165,7 +163,7 @@ fn a_daemon_whose_only_session_closed_still_takes_a_bare_attach_and_makes_one() 
     );
 }
 
-/// What a store answers, without one: since the split its index is every project's sessions.
+/// What a store answers, without one: its index holds every project's sessions.
 struct OtherProjects(Vec<StoredBrief>);
 
 impl SessionSource for OtherProjects {

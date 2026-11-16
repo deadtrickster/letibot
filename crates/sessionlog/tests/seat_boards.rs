@@ -1,5 +1,5 @@
-//! A Claude Code seat's board reaches the head on the daemon's `Todos` read (R144,
-//! `docs/seat-todo.md`). A seat is not a session - the store keeps `seat_todo` apart for that
+//! A Claude Code seat's board reaches the head on the daemon's `Todos` read
+//! (`docs/seat-todo.md`). A seat is not a session - the store keeps `seat_todo` apart for that
 //! reason - so the frame carries the boards beside the session's own, and a head draws both.
 
 use std::sync::Arc;
@@ -90,7 +90,7 @@ fn row(content: &str, status: TodoStatus, needs: Vec<TodoNeed>) -> TodoEntry {
     }
 }
 
-/// **The daemon answers the pane's one read with the seats' boards**, and a row's wait on a
+/// The daemon answers the pane's one read with the seats' boards, and a row's wait on a
 /// package is the edge it was written with: the pane draws a seat's row as a session's, so the
 /// frame has to carry the same `TodoEntry` the session's half does.
 #[test]
@@ -145,7 +145,7 @@ fn the_todos_read_carries_the_seats_boards_with_their_edges() {
     drop(pumping);
 }
 
-/// **A daemon with no seat boards says so by saying nothing.** The frame is the one it always
+/// A daemon with no seat boards says so by saying nothing. The frame is the one it always
 /// sent, with an empty list: a folder whose seat never wrote a plan is not a pane that has to
 /// know about seats at all.
 #[test]

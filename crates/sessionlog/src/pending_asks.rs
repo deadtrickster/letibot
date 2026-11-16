@@ -1,7 +1,6 @@
 //! The daemon's pending asks: every card a session raised that its own heads cannot answer, kept
 //! once and shown on the daemon's main session. A head attaching to the main session is given each
-//! open one, and an ask settled anywhere is taken off every head. dsh's gateway does the same with
-//! its pending approvals and questions.
+//! open one, and an ask settled anywhere is taken off every head.
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};

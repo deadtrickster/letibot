@@ -224,8 +224,7 @@ impl Drop for ServerHandle {
 }
 
 /// `EMFILE` and `ENFILE`. Named here rather than pulled from `libc`, which this
-/// crate does not depend on and should not start depending on for two integers
-/// that have been fixed on Linux since before this program existed.
+/// crate does not depend on, for two integers that are stable on Linux.
 const EMFILE: i32 = 24;
 const ENFILE: i32 = 23;
 
@@ -258,7 +257,7 @@ fn no_password_sentence(heads: usize) -> String {
 const REFUSAL_NAMES: usize = 10;
 
 /// Why an attach landed on no session. Only what this daemon holds live is named: `list()` merges
-/// the store's index, which since the split is every project's, and the head asked this daemon.
+/// the store's index, which is every project's, and the head asked this daemon.
 fn refusal_for(session_id: &str, live: &[String]) -> String {
     if live.is_empty() {
         return format!("{REJECT_UNKNOWN_SESSION}: this daemon holds none live");
@@ -758,7 +757,7 @@ pub fn serve_conn_rooted(
 
     let Some(hub) = registry.resolve(&session_id) else {
         // A daemon that holds nothing live is still reachable, or it is one nothing can come back
-        // to: a session is made by `NewSession`, and that needs a connection (R178). The bare
+        // to: a session is made by `NewSession`, and that needs a connection. The bare
         // attach is served as a control seat, which holds no session and asks for none.
         if session_id.is_empty() && registry.is_empty() && !peer.inside {
             return control_seat(registry, reader, writer, kind, identity);

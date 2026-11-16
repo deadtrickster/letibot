@@ -1227,7 +1227,7 @@ pub enum SessionEvent {
         repairs: u32,
         /// Both sides of every file a file-editing call changed, bounded to the region that
         /// differs: the one payload an event can carry a diff in. A list because one `bash` call
-        /// can change several files, and each is drawn (R161).
+        /// can change several files, and each is drawn.
         #[serde(
             default,
             alias = "edit",
@@ -1524,7 +1524,7 @@ pub enum SessionEvent {
         elapsed_ms: u64,
         /// Both sides of every file that changed in the job's tree while it ran, bounded to what
         /// differs - the snapshot is taken at the spawn and read here, so a job's writes are drawn
-        /// on its card (R161). Empty for a job outside a git tree, and for a daemon older than this.
+        /// on its card. Empty for a job outside a git tree, and from an older daemon.
         #[serde(default)]
         edits: Vec<ToolEdit>,
     },
@@ -1621,7 +1621,7 @@ pub enum SessionEvent {
         /// the manifest's, so two layers cannot collide, and the hook's keeps one layer's two panes
         /// apart.
         pane: String,
-        /// The C3 `View`, as the plugin wrote it.
+        /// The pane `View`, as the plugin wrote it.
         view: serde_json::Value,
     },
     /// That pane is gone: its layer was disabled, removed or hot-reloaded into a failure, or the
@@ -2173,8 +2173,7 @@ mod tests {
             "the wire cut a command it had no reason to touch"
         );
         assert!(!t.ends_with('…'), "and it did not claim to: {t}");
-        // The whole tail survives, which is the complaint in one assertion: the end of a long command
-        // is what a short cut takes.
+        // The whole tail survives: the end of a long command is what a short cut takes.
         assert!(t.contains("--selftest"), "{t}");
     }
 
