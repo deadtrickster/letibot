@@ -52,7 +52,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R323 | B3 provenance: anything without a speaker label counts as the operator | Code work | built on branch `b3-provenance` (I1-I4, each with its proving test, failing on main); left: one full gate and the landing, then the residue in the entry's Status |
 | R324 | B4 gate rules: approved shapes admit any body, seed rows admit write and exec flags, own-config by substring, Absent never refused | Code work | B4: I18, I20, I21, I22, I23; M; after - |
 | R325 | B5 fence and secrets: the file tools' fence renders the seat from a different source than the shell view | Code work | B5: I19, I37, I38; M; after B4 (R324) |
-| R326 | B6 modes: a reopened child is its own ceiling, the decider is unranked, two of five mode doors persist wrongly | Code work | B6: I24, I25, I26, I27; L; after B3 (R323) |
+| R326 | B6 modes: a reopened child is its own ceiling, the decider is unranked, two of five mode doors persist wrongly | Code work | B6: I24, I25, I26, I27; L; after B3 (R323); built on `b6-modes`, awaiting gate |
 | R327 | B7 durability: acks come before the journal and the store hold the work | Code work | B7: I42, I43, I44, I45, I47; L; after B3 (R323) |
 | R328 | B8 limit state: a restart after a refused probe drops the owed turn | Code work | B8: I46; M; after B6 (R326) |
 | R329 | B9 lifecycle and stop: interrupt before SIGTERM, TTL from creation, a Closing sink, an unasked retire, no reaper without a daemon | Code work | B9: I57, I58, I59, I60, I61; L; after B7 (R327) |
@@ -584,7 +584,23 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R326 - B6 modes: a reopened child is its own ceiling, the decider is unranked, two of five mode doors persist wrongly
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Batch B6 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I24, I25, I26, I27. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built on branch `b6-modes`, 2026-11-16, one commit per finding (I24 `resolve a child's ceiling from its parent at every open`, I25 `rank the decider in no_wider_than`, I26 `move a point through one door, and write rows only after the move`, I27 `persist a point moved through the ask and consent doors`). Each proving test fails on main bf72aa1d9 and passes on the branch. No schema change, no wire bump. Filed from the review at `9e9312b06`. Batch B6 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I24, I25, I26, I27. Record: `docs/review/2026-11-16/INTEGRATION.md`. Left: the full gate and the landing; the residue below.
+
+**What was built.**
+- I24: `resolve_the_point` resolves the parent first (`parent_for`), then the parent's point: live from the tree table (`Tree::point`) when the parent is open in this daemon, else from its rows (`stored_point`: own row under its ancestors', else the root's project row, else the base). The child's own row is taken when no wider. The ceiling is a `trees::Ceiling` that reads the parent's live point on every look, so a child reopened while its parent was closed follows the parent's later narrowing once it opens.
+- I25: `Mode::no_wider_than` ranks the decider: Model is wider than Human. `/supervise` on a child under a human-decided parent is refused.
+- I26: `Harness::move_mode` checks, moves, then writes the session row, and the project row only for a root (C4). The idle and queued `/mode` doors call it. At open, a root whose stored row it cannot carry falls to the nearest point it can carry (`inherited_by`) with a note; a `--mode` flag point still refuses.
+- I27: `ask_mode_confirm`, `answer_mode_confirm` and `narrow_to_parent` call `move_mode` too, so every door writes the session row.
+
+**Where the tests are.** `crates/harnessd/src/harness/tests/child_mode.rs`: `a_reopened_child_keeps_its_narrowed_point_and_ceiling`, `a_reopened_child_follows_its_parent_once_the_parent_opens`, `child_cannot_move_human_to_model_decider`, `mode_refused_move_writes_no_project_row_and_next_open_succeeds` (the inverted `mode_refused_move_still_writes_project_row_and_next_open_fails`), `ask_mode_confirm_persists_session_row`, `every_mode_door_writes_the_session_row`. Plus `a_model_decider_is_wider_than_a_human_one` in `crates/tools/src/mode/tests.rs`.
+
+**Residue.**
+- I24: the spawn's composed perimeter is still not persisted. A reopened child gets the perimeter its config gives, not the one its spawn composed. Needs a store column for the perimeter; not built here.
+- I24: the ceiling is resolved inside `open_with_registry` for every session with a parent, not passed as a required argument (A4-F9). Every door passes through that open, and an argument would touch every test caller of `open_with`.
+- I24: `stored_point` walks ancestors through `Registry::parent_of` only. An ancestor the registry does not hold ends the chain there and is read as a root (its own row, else its project's row, else the base).
+- I24: following is per daemon. A parent open in another daemon is read from its rows at the child's open and not followed after; a closed parent's ceiling is the last point seen, and a row another daemon writes later is not re-read.
+- I26: a refused `/mode` no longer sets the point for later sessions in the project. `mode_set_next_session_only` is no longer raised; its entry in `sessionlog/src/warning.rs` is left.
+- I26: the open fallback applies to stored rows of a root. A child already clamps at open.
 
 **Scope.** `harnessd/src/harness.rs` mode doors, `sessions.rs` mode arms, `harness/open.rs` child ceiling, `tools/src/mode.rs` `no_wider_than`. One `Harness::move_mode`: check, move, write the session row always, the project row only for a root after success (C4). One `open_with` that requires the parent ceiling. Carries R306's remainder (I24).
 
