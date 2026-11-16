@@ -945,6 +945,14 @@ impl State {
                 self.close_acks.push(client_request_id);
             }
             ServerFrame::Settings { rows } => {
+                // The `model` row moves when a switch applies, before the next turn starts.
+                if let Some(m) = rows
+                    .iter()
+                    .find(|r| r.key == letibot_sessionlog::protocol::MODEL_KEY)
+                    .filter(|r| !r.value.is_empty())
+                {
+                    self.model = m.value.clone();
+                }
                 self.idle_exit = rows
                     .into_iter()
                     .find(|r| r.key == letibot_sessionlog::registry::IDLE_EXIT_KEY)

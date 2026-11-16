@@ -1294,3 +1294,27 @@ fn a_limit_park_switch_and_return_are_each_reported_once() {
         "the limit on glm/glm-5.3 lifted: back"
     );
 }
+
+/// A model switch is published as the `model` Settings row the moment it applies. The status
+/// answers from that row, not from the next turn's start.
+#[test]
+fn status_shows_the_model_right_after_leticode_model() {
+    use letibot_sessionlog::protocol::{MODEL_KEY, SettingRow};
+    let mut state = State::default();
+    state.fold(ServerFrame::Event(env(1, testing::turn_started("t1"))));
+    assert_eq!(state.model, "qwen3-next-80b");
+    state.fold(ServerFrame::Settings {
+        rows: vec![SettingRow {
+            key: MODEL_KEY.into(),
+            value: "deepseek/deepseek-flash".into(),
+            source: String::new(),
+            editable: "/models PROVIDER/MODEL".into(),
+            choices: vec![],
+            tools: vec![],
+        }],
+    });
+    assert_eq!(state.model, "deepseek/deepseek-flash");
+    // A Settings answer with no model row says nothing about the model.
+    state.fold(ServerFrame::Settings { rows: vec![] });
+    assert_eq!(state.model, "deepseek/deepseek-flash");
+}
