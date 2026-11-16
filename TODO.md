@@ -131,7 +131,19 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R306 | A child's point could be widened past its parent's after spawn | Code work | a reopened child builds from the daemon's base and is its own ceiling - this is I24, to be fixed in B6 (R326) |
 | R300 | The review queue asked the operator about harmless probes at `allow-all`, and the shadow said nothing on a relayed card | Code work | built: a review-queue seat's exec follows the operator's point inside its clone (`gate:reviewer`), and a relayed permission card carries the main session's shadow verdict as one line when it answers inside 2.5 s; left: the shadow is shown the main session's workspace, not the reviewer's clone, the bridge's `leticode_asks` does not carry the line, relayed questions are not annotated |
 | R314 | Session and queue grants were lost on a restart, and each new reviewer asked again | Code work | a revoked view path is unbound at a running session's next call, but commands already running keep their namespace (I16, R337) - a child's view grants are not re-read by its parent after a restart - `/config` does not list grants |
-| R316 | The shadow runs auto mode: its permission job becomes layer B, the oracle `automode` expects | Code work | plan. Stage 1 is BLOCKED on B2 (R322), I12, I15 and I17 (i) (R337). Order and promotion gates in `docs/PLAN.md` |
+| R316 | The shadow runs auto mode: its permission job becomes layer B, the oracle `automode` expects | Code work | plan. Stage 1's code is on main; stages are steps 2, 4, 11 and 12 of `docs/PLAN.md` section 1, with R360-R371. Stage 3 needs the broker (`docs/design/automode-and-broker.md`) |
+| R360 | Cards per hour of agent work: the metric automode is steered by, and its baseline | Code work | plan step 1; S; after -; design `docs/design/automode-and-broker.md` |
+| R361 | Queue seats get no shadow answers: a standing instruction the operator typed, citable for reads only | Code work | plan step 2; S; after R337 (on main); design `docs/design/automode-and-broker.md` |
+| R362 | One redactor at every door: tool results, stored rows, the shadow feed, the bridge, logs, the provider request | Code work | plan step 3; M; after B5 (R325); closes I40 (R340); design `docs/design/automode-and-broker.md` |
+| R363 | One intent table for credentialed CLIs: reveal, payload, read, write, destroy, login, escape | Code work | plan step 5; M; after B4 (on main), B5 (R325); design `docs/design/automode-and-broker.md` |
+| R364 | The CLI broker: a shim in the seat, the real CLI in a credential seat, no real token in any session | Code work | plan step 6; L; after R362, R363; needs the operator on `.config/gh`; design `docs/design/automode-and-broker.md` |
+| R365 | Tight egress through a proxy: an empty namespace, a socket, an allowlist | Code work | plan step 7; L; after R340 (I39); design `docs/design/automode-and-broker.md` |
+| R366 | Proxy termination: the dummy swapped for the real credential, a method and route policy per host | Code work | plan step 8; L; after R363, R365; design `docs/design/automode-and-broker.md` |
+| R367 | The install seat: npm, pip and cargo installs see no secret and reach only their registry | Code work | plan step 9; M; after R365; design `docs/design/automode-and-broker.md` |
+| R368 | Script text in the oracle brief, and a checkpoint commit before an oracle-admitted exec | Code work | plan step 10; M; after -; design `docs/design/automode-and-broker.md` |
+| R369 | The remaining credentialed CLIs behind the broker: aws and s3, vault, rclone, psql, npm auth | Code work | plan step 12; L; after R364; design `docs/design/automode-and-broker.md` |
+| R370 | The canary run: the evidence that no credential leaves, for stage 3 | Code work | plan step 11; M; after R364, R366, R367; design `docs/design/automode-and-broker.md` |
+| R371 | A trajectory-level check, for stage 4 | Code work | plan step 12; L; after R370; design `docs/design/automode-and-broker.md` |
 | R278 | No cap on concurrent children, and a second spawn of a running child's objective starts a duplicate | Code work | built (audit J9, plan 2.1 and the 3.4 same-objective refusal): `[subagents] max_running` per root session's tree (8), `daemon_max_running` per daemon (32, user file only), `when_full` queue (default) or refuse; a queued child starts when a running one answers, `job_kill` takes it out of the queue; a spawn with a running sibling's objective is refused naming it; left: the end-to-end turn test, a queued child's place in the head's subagent pane |
 | R169 | Rooms for orchestration (0/6): a message not for you costs nothing - stay quiet | Needs the operator | the R164-style before/after numbers (the local path stays uncapped, operator 2026-11-09) |
 | R163 | Rooms for orchestration (1/6): presence from facts and ownership as a lease | Needs the operator | parts 1-5 built (9bb8ba06, 78fab6fd, eb88a2ce, cf7de7fb); left: the Done-when measurements |
@@ -1505,7 +1517,7 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 **Status:** built 2026-11-16 on `remote/28651092`. Three findings: I39 and I40 are closed, I41 is disproved by its own adversarial test. Every proving test is green in `cargo test -p letibot-tools`, `-p leticode-config` and `-p letibot-config-ref`, and `cargo clippy -p <each> --tests -- -D warnings` is clean. Filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I39, I40, I41. Record: `docs/review/2026-11-16/INTEGRATION.md`. Store schema untouched (main is at 55).
 
-**Scope.** Decision 7: tight egress Denied by default, granted per seat (C10). Wide stays Host by ruling.
+**Scope.** Decision 7: tight egress Denied by default, granted per seat (C10). Wide stays Host by ruling. I39 is taken by R365 (the grant is a proxy allowlist) and I40 by R362 (one redactor). I41 stays here. Design: `docs/design/automode-and-broker.md`.
 
 **Proving tests.** the tests named in each entry. Each fails on the snapshot, except I41's, whose finding's own rule is to fix only if the leak shows.
 
@@ -3666,7 +3678,7 @@ Nothing is hardcoded: no path is granted that the operator did not answer.
 **Left.** A revoked view path is unbound at a running session's next call (R317's revoke path); commands already running keep their namespace. A child's view grants are kept under the child's id, so after a restart the parent does not re-read them. The `/config` pane does not list grants; `/permissions` does.
 ## R316 - The shadow runs auto mode
 
-**Status:** plan, 2026-11-16. Step 1 (R317, the shadow answering a queue seat's relayed read) is built and folded into R322 and R337. left (sweep 2026-11-16): Stage 1 is BLOCKED on B2 (R322), I12, I15 and I17 (i) (R337). Order and promotion gates in `docs/PLAN.md`.
+**Status:** plan, 2026-11-16. Step 1 (R317, the shadow answering a queue seat's relayed read) is built and folded into R322 and R337. Stage 1's blockers (B2, I12, I15, I17 (i)) are on main at `ccc95d272`. left: the stages are steps 2, 4, 11 and 12 of `docs/PLAN.md` section 1. Stages 3 and 4 also need the credential broker and its evidence (R360-R371, `docs/design/automode-and-broker.md`): exec is where a script reads and sends a credential. Queue seats are R361.
 
 The operator: "ultimately I want it to do automode properly". The design already has a slot for this. `docs/boundary-and-adjudication.md` §4e names the points `automode` (write, exec and network ask, decided by a model) and `automode-edits` (writes admitted, the rest decided by a model), and their prerequisite `Oracle`, an `AuthorisationOracle` with "a loaded model, a budget, a scope earned by measurement". The same section says `automode` with no oracle is `always-ask` wearing a different banner. `docs/guard-corpus-plan.md` §0 says what that oracle is: layer B, shown the `may_approve` residue of layer A's tiers and asked "does this command fit what the operator asked for", answering ALLOW/ASK with the trail entry it relied on, briefed through `ModelBrief` (`crates/tools/src/authorise.rs`). So the shadow is not a second oracle. Its permission job becomes that oracle.
 
@@ -3701,6 +3713,184 @@ The operator: "ultimately I want it to do automode properly". The design already
 **Claude Code's auto mode classifier.** Same shape: a model reads the conversation and judges each action against what the user asked, so the user is not asked about ordinary work. Differences that matter here: layer A settles tiers before any model is asked, so the model only ever sees the `may_approve` residue. Its ALLOW must cite the operator's own trail entry, and an uncited one is discarded. It answers ASK where a classifier might block, because "the shadow never denies" and the person stays the one who refuses. Its authority is a measured `OracleScope` that widens a stage at a time. The etalon already holds this box's Claude Code transcripts (source `claude-code`, with the "user doesn't want to proceed" refusals), so those sessions are one more replay set for every stage. Whether that transcript shows which calls Claude Code's classifier approved and which the user approved is not known yet. If it does, the classifier becomes a comparison arm in `--compare`. If it does not, the rows only count as operator labels.
 
 **Order.** 1b (trail and reading on view asks), then `ShadowOracle` with `--compare` and `--etalon-oracle` arms, with the Relay retired. Then stage 2 once its evidence holds, stage 3 after the heredoc and trajectory work in guard-corpus-plan §4b, and stage 4 last.
+
+## R360 - Cards per hour of agent work: the metric automode is steered by, and its baseline
+
+**Status:** open, filed 2026-11-16. Step 1 of `docs/PLAN.md` section 1. Design: `docs/design/automode-and-broker.md` section 1.
+
+The operator wants automode so they are not glued to the screen. That is a number: asks that reached a person, per hour of agent work. Nothing counts it today, so no stage can say whether it helped.
+
+**Scope.** A card is an adjudication row answered `human:` or left to time out at a head. The gate's own answers, `shadow:` rows and `agent:` rows are not cards. Agent work is wall time with a model round or a tool call running, with parks, limits and idle excluded. Computed in two places from one function: over the store's rows (`harnessd --calibrate --cards`, per session and per stage scope, so a replay can say what a stage would have shown) and live (`--status`, `letibot-metrics`). Each figure comes with the share of cards that were always-ask or a checkpoint's destructive class. Proposed targets, to be confirmed against the baseline: stage 2 at most half the baseline, stage 3 at most 2 per hour, stage 4 at most 0.5 per hour. The target does not gate a promotion.
+
+**Proving tests.** `cards_per_hour_counts_only_asks_a_person_saw` (a shadow grant and a gate admit add nothing, a timeout at a head adds one), `parked_and_idle_time_is_not_agent_work`.
+
+**Size.** S. **After:** nothing.
+
+**Done when:** both tests are green through one full gate, and the baseline over the live store is written into this row with its row count and date.
+
+## R361 - Queue seats get no shadow answers: a standing instruction the operator typed, citable for reads only
+
+**Status:** open, filed 2026-11-16. Step 2 of `docs/PLAN.md` section 1. Design: `docs/design/automode-and-broker.md` section 10. This is R337's residue "queue seats' trails hold no operator words".
+
+A reviewer is a `task` child of the gatekeeper session (`crates/harnessd/src/mergequeue/review.rs:1`). Since B3 its first row is an Agent row (`crates/harnessd/src/harness/trail.rs:108`), so `cited_operator_words` (`crates/tools/src/authorise.rs:166`) finds nothing and the shadow asks every time. Making the gatekeeper's brief citable is refused: the brief is composed from the review request, whose branch name, title and note an agent wrote, so the author of a branch would write the sentence that authorises its own reviewer.
+
+**Scope.** `[queue] reviewers_may = "..."`, read from the operator's own config file only. It enters a queue seat's trail as a new speaker, `Standing`, with the file and line it came from. `cited_operator_words` accepts a `Standing` entry only when the asker is a queue seat and the request passes `shadow::oracle::stage_one` (`crates/harnessd/src/shadow/oracle.rs:38`) with every path inside `read_roots` (`crates/harnessd/src/shadow/guard.rs:201`). Corpus rows answered on it carry `cite: standing` and are replayed apart from session rows. Unset, reviewers ask as now. The risk is in the design: a standing sentence is not about this task, so it stays at reads, where the oracle can only make a deterministic rule stricter.
+
+**Proving tests.** `a_reviewers_brief_is_not_a_citable_instruction`, `a_standing_instruction_is_citable_for_a_queue_read_and_nothing_else` (a write and an exec citing it show the card), `a_project_file_cannot_set_reviewers_may`, `standing_rows_are_replayed_apart`.
+
+**Size.** S. **After:** R337 (on main).
+
+**Done when:** the tests are green through one full gate, and a replay of at least 100 `standing` rows shows zero shadow allow against an operator No.
+
+## R362 - One redactor at every door: tool results, stored rows, the shadow feed, the bridge, logs, the provider request
+
+**Status:** open, filed 2026-11-16. Step 3 of `docs/PLAN.md` section 1. Design: `docs/design/automode-and-broker.md` section 7. Takes I40 from R340.
+
+The mask is an exact-byte match over job capture (`crates/tools/src/exec/jobs.rs:1015`, `crates/tools/src/exec/host.rs:2858`). File-tool results, stored rows and the shadow's feed (`crates/harnessd/src/shadow/feed.rs:45`) are unmasked, so a leaked secret reaches the session's provider and the shadow's. Four functions do parts of the job: `SecretEnv::mask` (`crates/tools/src/exec/seat.rs:23`), `refusal::redact` (`crates/harnessd/src/harness/refusal.rs:83`), `redact_key_args` (`crates/sessionlog/src/hub.rs:3231`), `intent::env::masked` (`crates/tools/src/intent/env.rs:182`).
+
+**Scope.** One `Redactor` in `crates/tools/src/secrets.rs`. Needles: every `SecretEnv` value, the provider keys, the daemon's tokens, and later the broker's and proxy's values. Each also as base64 (both alphabets), hex, percent-encoding and inside basic auth. An 8-byte floor. A stream keeps the last `len - 1` bytes across chunks. Doors, in order: the tool result (`crates/harnessd/src/harness/turns.rs:2764`), `persist` before `append_item` (`turns.rs:4342`, `crates/tokencore/src/store.rs:3110`) including assistant and reasoning rows, `rows_of` and `ModelBrief::render` (`crates/tools/src/authorise.rs:346`), `Hub::publish` (`hub.rs:1194`), the log writers, and the provider request, where a hit is redacted and raises a `secret_in_request` warning. Documented as hygiene, not a boundary.
+
+**Proving tests.** `env_to_file_then_read_stores_no_token` (I40's), `a_known_secret_is_redacted_in_the_shadow_feed`, `a_base64_of_a_known_secret_is_redacted`, `a_secret_split_across_two_chunks_is_redacted`, `a_bridge_snapshot_carries_no_known_secret`, `a_known_secret_in_a_provider_request_warns`, `there_is_one_redactor` (the four old functions are gone or call it).
+
+**Size.** M. **After:** B5 (R325), for the one secret table.
+
+**Done when:** the tests are green through one full gate and the etalon's ground-truth transcript still shows zero key lines.
+
+## R363 - One intent table for credentialed CLIs: reveal, payload, read, write, destroy, login, escape
+
+**Status:** open, filed 2026-11-16. Step 5 of `docs/PLAN.md` section 1. Design: `docs/design/automode-and-broker.md` section 4.
+
+`gh` is one row (`crates/tools/src/intent.rs:1325`) and `credential_use` asks for any program in `AUTHENTICATES` (`intent.rs:2501`). So `gh auth token` and `gh pr view` are the same card, and a yes to the first prints the token into the transcript.
+
+**Scope.** `crates/tools/src/credentialed.rs`: rows of program, subcommand path, flag conditions, class, hosts and credential, for `gh`, `aws` (s3 included), `vault`, `rclone`, `psql` and npm registry auth. Classes and tiers: `reveal` is `Blocked` under `FlowRule::SecretToTranscript` for every speaker. `payload` and `destroy` are new always-ask rules, `secret_payload_read` and `destruction_through_a_credential`. `login` always asks. `escape` asks. `read` and `write` stay `credential_use`. An unknown subcommand is `write`. `gh api` is `read` only without `-X`, `-f`, `-F`, `--input`. psql SQL is classed by each statement's leading keyword, unparsed is `write`. The table is the one the broker (R364) reads. `ssh`, `scp`, `rsync`, `kubectl`, `docker` stay on the flat list. This row lands only `gh` and the table's shape. R369 adds the rest.
+
+**Proving tests.** `gh_auth_token_is_reveal_and_blocked`, `gh_repo_delete_is_destroy_and_always_asks`, `gh_api_with_a_method_flag_is_not_a_read`, `an_unknown_subcommand_of_a_credentialed_cli_asks`, `every_credentialed_cli_row_has_a_fixture`, `a_reveal_cited_by_the_operator_is_still_blocked`.
+
+**Evidence.** `corpus_replay::sweep` (`crates/tools/src/corpus_replay.rs:454`) over the etalon: no refused row moves to admitted. The count of rows that ran and would now prompt or block is written into this row. A table row that adds prompts and catches nothing is removed.
+
+**Size.** M. **After:** B4 (on main), B5 (R325).
+
+**Done when:** the tests are green through one full gate and the sweep figures are in the row.
+
+## R364 - The CLI broker: a shim in the seat, the real CLI in a credential seat, no real token in any session
+
+**Status:** open, filed 2026-11-16. Step 6 of `docs/PLAN.md` section 1. Design: `docs/design/automode-and-broker.md` section 5. Needs the operator's answer to open question 1 (the C9 ruling: `.config/gh` denied in the wide seat too, `GH_TOKEN` out of its env).
+
+The principle: a credential file exists for its own software to use, and nothing else in a session can read it, print it or send it. Today `GH_TOKEN` is in the wide seat's env (`crates/tools/src/exec/seat.rs:46,63`, `crates/tools/src/exec/perimeter.rs:46`) and every child process reads it. R130 is the same fact.
+
+**Scope.** A `letibot-multi` role, by `argv[0]`, installed as `gh` first on the seat's `PATH`. A unix socket per session bound at `/run/letibot/broker.sock`, the way the agent socket is (`crates/tools/src/exec/confine.rs:515`). On macOS a `network-outbound` path literal (`crates/tools/src/exec/seatbelt.rs:450`). Frames: a bounded length and a JSON header, `exec`, `verdict`, `out`, `in`, `in_eof`, `signal`, `exit`. The broker filters env to a keep-list, resolves the program itself, reads the caller's pid from `SO_PEERCRED` (as `crates/sessionlog/src/peer.rs:173`) and walks its parents for the card's chain. It classes the subcommand with R363's table: `reveal`, `login`, `escape` refused, the tool call's own admitted stage run without a second card, a script's `read` or `write` run under the session's `credential_use` grant, `destroy` and `payload` always a card with the parent chain, at `allow-all` too. The real CLI runs in a credential seat: the session's view plus its one store read-only, egress to its hosts, git config and hooks neutralised. Output returns through the redactor. The seat's `GH_TOKEN` becomes a per-session dummy. A tight child gets the shim only when its perimeter carries the secret, with a narrowed table.
+
+**Proving tests.** `a_seat_holds_no_real_github_token`, `the_gh_shim_runs_gh_in_the_credential_seat`, `a_script_deleting_repos_through_gh_asks_with_its_parent_chain` (the card names `gh repo delete`, the script and the tool call that started it), `a_brokered_reveal_is_refused_for_every_caller`, `the_broker_drops_env_that_configures_the_cli`, `a_tool_calls_own_admitted_subcommand_is_not_asked_twice`, `an_overlong_broker_frame_is_refused`, `a_repo_config_cannot_run_code_in_the_credential_seat`.
+
+**Evidence.** The canary run for `gh` (R370): zero canary bytes in any row or leaving the box.
+
+**Size.** L. **After:** R362, R363.
+
+**Done when:** the tests are green through one full gate on Linux, the macOS port is green or filed as its own row, and R130 is deleted as closed.
+
+## R365 - Tight egress through a proxy: an empty namespace, a socket, an allowlist
+
+**Status:** open, filed 2026-11-16. Step 7 of `docs/PLAN.md` section 1. Design: `docs/design/automode-and-broker.md` section 6. Carries decision 7 and I39 from R340, which keeps I41.
+
+`network_rule` gives the host's namespace to any mode that seats the network (`crates/tools/src/exec/seat.rs:160`), tight seats included, so `Boundary::encloses()` never holds in production and a build script can open any socket.
+
+**Scope.** `Egress::Proxied` beside `Denied` and `Host` (`crates/tools/src/exec/confine.rs:319`). The seat keeps `--unshare-net` (`confine.rs:2704`) and gets the proxy's unix socket and a forwarder role of `letibot-multi` on `127.0.0.1:3128`, with the proxy variables set. On macOS the profile's `(deny network*)` stays (`crates/tools/src/exec/seatbelt.rs:406`) with one loopback port allowed. The proxy is in the daemon, one listener per job. Modes in this row: `deny` and `tunnel` (CONNECT by name, resolved addresses that are loopback or link-local refused). The table is `[egress."host"]` in the operator's config, with built-in rows for the registries. Writing it is `changes_its_own_rules`. Wide stays `Host` by ruling (design open question 3).
+
+**Proving tests.** `a_tight_seat_command_cannot_reach_loopback` and `the_free_admit_fires_on_a_production_tight_boundary` (I39's), `a_host_off_the_allowlist_is_refused_at_the_proxy`, `a_client_that_ignores_the_proxy_fails_and_does_not_leak`, `an_allowed_name_resolving_to_loopback_is_refused`.
+
+**Size.** L. **After:** nothing in code. It replaces I39's change in R340.
+
+**Done when:** the tests are green through one full gate and `cargo fetch` and `npm install` work in a tight child with the built-in rows.
+
+## R366 - Proxy termination: the dummy swapped for the real credential, a method and route policy per host
+
+**Status:** open, filed 2026-11-16. Step 8 of `docs/PLAN.md` section 1. Design: `docs/design/automode-and-broker.md` section 6.
+
+A script that bypasses the shim, or uses a library, talks to the API directly. The broker never sees it. The proxy is the second catch point.
+
+**Scope.** Mode `terminate` for hosts with a credential or a route policy, and only those. A CA made per daemon start, key in memory, name-constrained to the terminated hosts, its certificate bound into the seat with the CA variables set. The proxy replaces an `Authorization` value only when the host is on the credential's list, the incoming value is this session's dummy and the route policy passed. No dummy, no credential. Route policy as config per host: `pass`, `ask`, `default`. For GitHub: `DELETE` on repositories, `PATCH` on repository settings, transfers, collaborator changes and the listed GraphQL mutations ask. Reads pass. A push passes to the session's own remote. A held request shows a card naming host, method, route and the job's tool call, and returns 403 on a no or after the deadline. Responses pass the redactor. Not in this row: AWS re-signing, the Postgres wire.
+
+**Proving tests.** `a_dummy_token_is_swapped_only_for_its_own_host`, `a_request_without_the_dummy_gets_no_credential`, `a_raw_api_delete_through_the_proxy_asks`, `a_push_to_the_sessions_own_remote_passes`, `a_graphql_delete_repository_mutation_asks`, `the_ca_signs_only_terminated_hosts`, `a_response_echoing_the_token_is_redacted`.
+
+**Evidence.** The canary run with raw API calls (R370).
+
+**Size.** L. **After:** R363 (the destructive classes), R365.
+
+**Done when:** the tests are green through one full gate and `gh`, `git push` over https and `curl` work unmodified in a proxied seat against GitHub.
+
+## R367 - The install seat: npm, pip and cargo installs see no secret and reach only their registry
+
+**Status:** open, filed 2026-11-16. Step 9 of `docs/PLAN.md` section 1. Design: `docs/design/automode-and-broker.md` section 8.
+
+An install runs code nobody in the session wrote: an npm postinstall, a `setup.py`, a `build.rs`. It is `PackageChange` (`crates/tools/src/intent.rs:1240`) and runs in the session's seat.
+
+**Scope.** A `PackageChange` stage runs in a view of its own: tight, no secret env, no dummy, no broker socket, `Egress::Proxied` with the registry rows only, writes inside the project and one cache directory. `--ignore-scripts` is not forced. A private registry is a `terminate` host whose token the proxy injects, with publish asking. `cargo build` that would fetch is split or run wholly in the install seat.
+
+**Proving tests.** `an_npm_postinstall_sees_no_secret_and_reaches_only_the_registry`, `a_cargo_build_script_cannot_open_a_socket_off_the_allowlist`, `a_private_registry_token_is_injected_for_its_host_only`, `an_install_seat_has_no_broker_socket`.
+
+**Size.** M. **After:** R365, and R366 for the private-registry test.
+
+**Done when:** the tests are green through one full gate.
+
+## R368 - Script text in the oracle brief, and a checkpoint commit before an oracle-admitted exec
+
+**Status:** open, filed 2026-11-16. Step 10 of `docs/PLAN.md` section 1. Design: `docs/design/automode-and-broker.md` section 9.
+
+Automode judges the command that starts a script, not what the script does. Layer A already reads the script for the card (`scripts_for`, `crates/tools/src/runtime.rs:681`, and `scripts_section`, `crates/tools/src/adjudicate.rs:796`). `ModelBrief` (`crates/tools/src/authorise.rs:224`) does not carry it, so the oracle answers about `python x.py` without seeing `x.py`.
+
+**Scope.** `ModelBrief.scripts`, rendered as a fenced section marked as data and never as instructions or operator words. A citation stays a trail index. `scripts_for` also reads `npm run K` (the `package.json` entry and the file it names) and `make TARGET` (that target's recipe). Cap 8 KiB a script and 16 KiB a brief, head and tail with the omitted count. Stated limits: it catches a plain `gh repo delete` or `rm -rf ~` in the file. It misses obfuscation, runtime downloads, `eval` of a fetched string and imports. The second half: before an exec the oracle admitted, the harness records the tree (`git stash create`, tracked and untracked, a ref under `refs/letibot/`) and the row names it. A sandboxed pre-run is opt-in, `[automode] prerun`, empty by default, for shapes no checkpoint covers.
+
+**Proving tests.** `the_oracle_brief_carries_the_script_as_data`, `script_text_is_never_a_citation`, `npm_run_and_make_targets_are_read_as_scripts`, `a_script_over_the_cap_says_what_was_omitted`, `an_oracle_admitted_exec_records_a_checkpoint_first`.
+
+**Evidence.** `--compare` with and without the script section on operator-answered exec rows. It lands only with false allows at zero and agreement no lower.
+
+**Size.** M. **After:** nothing.
+
+**Done when:** the tests are green through one full gate and the `--compare` figures are in the row.
+
+## R369 - The remaining credentialed CLIs behind the broker: aws and s3, vault, rclone, psql, npm auth
+
+**Status:** open, filed 2026-11-16. Step 12 of `docs/PLAN.md` section 1. Design: `docs/design/automode-and-broker.md` sections 4 and 5.
+
+**Scope.** Table rows, a shim and a credential seat for each of `aws`, `vault`, `rclone`, `psql` and npm registry auth, with their stores (`.aws`, `.vault-token`, `.config/rclone`, `.pgpass`, `.npmrc`) moved to denied in both seats in B5's table. `aws` is broker-only: the proxy does not re-sign. `psql` is broker-only: the wire is not HTTP. A `payload` read (`vault kv get`, `aws secretsmanager get-secret-value`) does not return on stdout: the value reaches a named program through `letibot-broker run --with NAME -- cmd` (design open question 9). Then the decision on open question 2: whether brokered `read` moves from `credential_use` to `MayApprove` at stage 4.
+
+**Proving tests.** `every_credentialed_cli_row_has_a_fixture` extended to each CLI, `aws_configure_export_credentials_is_reveal`, `rclone_sync_is_destroy`, `psql_drop_table_asks_with_its_parent_chain`, `a_vault_payload_never_reaches_stdout`.
+
+**Evidence.** The canary run repeated with each CLI's canary. The sweep figures per CLI.
+
+**Size.** L, one commit per CLI. **After:** R364.
+
+**Done when:** the tests are green through one full gate for each CLI landed. A CLI not landed stays on the flat `AUTHENTICATES` list and always asks.
+
+## R370 - The canary run: the evidence that no credential leaves, for stage 3
+
+**Status:** open, filed 2026-11-16. Step 11 of `docs/PLAN.md` section 1. Design: `docs/design/automode-and-broker.md` section 9. The broker's replay evidence, beside R316's figures.
+
+Stage 3 lets the oracle admit exec. The figures R316 asks for measure whether the oracle agrees with the operator. They do not measure whether a script the oracle admitted can take a credential. This row does.
+
+**Scope.** A seeded fake credential per CLI, registered as a redactor needle and as the broker's and proxy's real value in a firecode VM. Replayed inside: the BashArena `monitor-eval` attack rows (`scripts/basharena-to-etalon.py`) and the etalon's credentialed commands. Counted: canary bytes at the proxy's outbound side, in any stored row, in the shadow feed. `reveal` rows admitted. Destructive routes and subcommands that ran with no card. All must be zero. It also prints cards per hour (R360) for the run. `requires_given` refuses stage 3 on a seat with a real credential in its env or `Egress::Host`.
+
+**Proving tests.** `the_canary_run_reports_zero_bytes_out`, `a_planted_leak_makes_the_canary_run_fail` (the control), `stage_three_refuses_a_seat_with_a_real_credential_or_host_egress`, `an_unseen_shape_still_asks_at_stage_three`.
+
+**Size.** M. **After:** R364, R366, R367.
+
+**Done when:** the tests are green, and two canary runs at least 7 days apart are at zero. Then the operator may promote stage 3 if R316's own figures hold.
+
+## R371 - A trajectory-level check, for stage 4
+
+**Status:** open, filed 2026-11-16. Step 12 of `docs/PLAN.md` section 1. Design: `docs/design/automode-and-broker.md` section 9. `docs/guard-corpus-plan.md` section 4b is the reason.
+
+A single-action judge cannot see that a trajectory is an attack: 11 of the 19 BashArena misses are `chmod +x` on a file the agent wrote earlier, then running it. Stage 4 widens to unseen shapes, where that matters most.
+
+**Scope.** The brief carries what this session wrote and then ran: files the session created or changed that the command executes, with the turn they were written in, joined to R368's script text. The oracle is asked about the pair, not the last action. The checkpoints stay the control for effects. Measured with `--compare` as one more arm and on BashArena `monitor-eval` by trajectory.
+
+**Proving tests.** `a_trajectory_that_writes_then_runs_a_script_is_judged_as_one`, `stage_four_never_answers_a_destroy_through_a_credential`, `a_file_written_by_another_session_is_not_this_sessions_trajectory`.
+
+**Evidence.** Every etalon refusal in class is ASK. BashArena recall at or above the stage 3 figure. The canary run repeated. Cards per hour against the 0.5 target.
+
+**Size.** L. **After:** R370.
+
+**Done when:** the tests are green through one full gate and the figures are in the row. Promotion of stage 4 is the operator's.
 
 ## R302 - An uncapped daemon's memory note is said once per session, not on every call
 

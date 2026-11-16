@@ -20,124 +20,157 @@ unless the operator asks for one. A live bug found meanwhile is fixed and also a
 finding list. It is not handled as a standalone feature.
 
 Automode is first. Since H3 / R300 the review queue shows the operator cards for reads, which is in
-effect a breaking change. The way out is the shadow answering them through the real oracle, and
-that needs the provenance, shadow and gate-rule fixes underneath it.
+effect a breaking change. The way out is the shadow answering them through the real oracle. From
+stage 3 on automode runs code, and code is where a credential is read and sent, so the credential
+broker is part of the same order.
 
 ## Order
 
-1. Automode prerequisites: B3, B2, B4, then the shadow as the real `AuthorisationOracle`.
-2. R316 stage 1, reads: queue seats, then every session.
-3. R316 stages 2, 3 and 4, each behind its own gate.
-4. The rest of the batches in dependency order: B1, B1b, B5, B6, B7, B8, B9, B10, B11, B12, B13,
+1. Automode and the credential broker: twelve steps, one section.
+2. The rest of the batches in dependency order: B1, B1b, B5, B6, B7, B8, B9, B10, B11, B12, B13,
    B14, B15, B16.
-5. Mediums and lows by theme (R338-R349), then the design follow-ups (R350) after the stability bar
+3. Mediums and lows by theme (R338-R349), then the design follow-ups (R350) after the stability bar
    is met.
 6. After the bar: the credential broker (R358), beside lead 32.
 
-Steps 2-3 run beside step 4. A stage waits on its replay evidence, not on code, so batches land
-while it collects. Stage 2 also needs B6 (I25 lets a child move to a model decider), so B6 is the
-first batch of step 4.
+Section 1 runs beside section 2. A stage waits on its replay evidence, not on code, so batches and
+broker steps land while it collects.
 
 Sizes: S under about 300 lines, M up to about 1000, L above that. Each batch lands with its proving
 tests, through one full gate. Every proving test fails on the snapshot.
 
-### 1. Automode prerequisites
+### 1. Automode and the credential broker
 
-**B3 - provenance (R323).** Anything without a speaker label counts as the operator, so a subagent
-brief, a command file, a browser page and a bridge seat's answer all become operator consent the
-oracle can cite. Fix the default once at `submit` and at the connection.
-- Scope: `harnessd/src/harness/children.rs`, `turns.rs` (`submit` only), `sessions.rs` command and
-  Slash arms, `bridge/src/browser/*`, `answers.rs` `settle`.
-- Findings: I1, I2, I3, I4.
-- Decision 1 applied: a bridge seat may answer a permission card only for a session it started. The
-  attribution change (`agent:<handle>`, `can_decide` from the connection role) lands regardless.
-  Decision 10 default: a command-file body is an Agent context row under a header naming the file.
-- Tests: `a_childs_first_brief_is_not_an_operator_utterance`,
-  `command_file_body_is_not_an_operator_row`, `browser_ask_page_text_is_not_operator_authority`,
-  `bridge_answer_is_not_recorded_as_human`,
-  `a_bridge_seat_cannot_answer_a_card_of_a_session_it_did_not_start`.
-- Size M. Depends on nothing.
+Design: `docs/design/automode-and-broker.md`. It holds the threat model, each layer, the protocol and
+the open questions. This section holds the order.
 
-**B2 - shadow and grants (R322).** The acting rule is any 8 bytes of any allow rule, never matched
-to the path. The breaker lives in memory while its grants are durable rows.
-- Scope: `harnessd/src/shadow/*`, `grants.rs`, the `tools/src/runtime.rs` note.
-- Findings: I8, I9, I10, I11, I7.
-- Decision 3 default: `answer_reads` is off until stage 1 is promoted. Turning it on is the
-  promotion act, recorded per session.
-- Decision 4 default: the breaker trip is persisted beside the grants and needs an explicit re-arm.
-  Queue grants get a TTL or are bound to the reviewer.
-- The acting rule is evaluated against the reviewer's own rulesets (C7). Read roots are derived from
-  the reviewer's repository at ask time, never a configured `/build` or `/data` (C8).
-- Tests: `acting_rule_must_cover_the_requested_path`, the default-off config test (inverting
-  `shadow/tests.rs:1459`), `read_passes_resolves_symlinks_and_refuses_agent_stores`,
-  `breaker_survives_reopen_while_grants_persist`, `a_shadow_grant_note_names_the_shadow`.
-- Size M. Depends on nothing. Lands after B3 when both are ready, since the shadow reads authored
-  spans B3 relabels.
+Two rules. A credential file exists for its own software to use, and nothing else in a session
+reads, prints or sends it. A stage is promoted by the operator on replay evidence, never
+automatically.
 
-**B4 - gate rules (R324).** Admitting rungs never check what they cover. One "Allow this one" for
-`python3 -c 'print(1)'` admits every later `python3 -c` body in the project, and survives
-`/mode always-ask`.
-- Scope: `tools/src/permission.rs`, `intent.rs` flag and git tables and the own-config rule,
-  `project_code.rs`, `adjudicate.rs` shapes and the Absent refusal.
-- Findings: I18, I20, I21, I22, I23, I33 (f).
-- Decision 2 applied: once means once. A shape is recorded only from AllowSession at a Session
-  point, never from a holed body, and cleared on any narrowing.
-- Tests: the extended `the_seed_admits_no_write_or_exec_flag`,
-  `cargo_doc_ctest_npx_run_project_code`, `cd_then_relative_write_to_own_config_asks`,
-  `an_inline_program_approval_admits_a_different_body`,
-  `set_mode_to_always_ask_forgets_approved_shapes`, `permission_allow_outlives_a_move_to_read_only`
-  inverted, a `git cherry` intent test.
-- Size M. Depends on nothing.
+On main at `ccc95d272`: B3 (R323), B2 (R322), B4 (R324), B6 (R326) and the shadow as the real
+`AuthorisationOracle` (R337). Their rows keep the residue. B5 (R325) is built on `b5-fence` and is a
+prerequisite of steps 3 and 5.
 
-**The shadow as the real oracle (R337).** The shadow is a second authorisation model today, with
-grants in four stores. It becomes layer B of `AuthorisationOracle`, and the Relay path goes.
-- Scope: `tools/src/adjudicate.rs` view asks (trail and reading), `tools/src/authorise.rs`,
-  `harnessd/src/shadow/*` (`ShadowOracle`), `answers.rs`, the grant stores.
-- Findings: I12 (a view read's tier is a literal and its trail is empty), I13 (the oracle move), I15
-  (oracle `allow_once` on a view maps to Refused), I17 (shadow hygiene, nine items, (i) first),
-  I14 and I16 (grant scope and revoke reach). R317's two leftovers are filed here.
-- Tests: `view_asks_are_recorded_and_shadow_rows_excluded_from_agreement` and one per item, as
-  named in the row.
-- Size L. Depends on B2 and B3.
+Promotion, for every stage: figures on operator-answered rows only (timeouts, the gate's own answers
+and `shadow:` rows excluded), holding on two replays at least 7 days apart, on rows from after the
+previous promotion. The operator promotes with `[shadow] scope`. Two disagreements put a stage back
+to observe-only until re-armed, and a demoted stage needs one fresh replay.
 
-### 2. R316 stage 1 - reads
+| # | step | row | needs | size |
+|---|---|---|---|---|
+| 1 | Cards per hour: the metric and its baseline | R360 | - | S |
+| 2 | Stage 1, reads: every session, then queue seats on a standing instruction | R316, R361 | - | S |
+| 3 | One redactor at every door | R362 | B5 | M |
+| 4 | Stage 2, writes inside the workspace | R316 | 3 | - |
+| 5 | The intent table for credentialed CLIs | R363 | B5 | M |
+| 6 | The CLI broker, `gh` first | R364 | 3, 5 | L |
+| 7 | Tight egress through a proxy: deny, tunnel, allowlist (takes I39 from R340) | R365 | - | L |
+| 8 | Proxy termination: dummy to real, method and route policy | R366 | 5, 7 | L |
+| 9 | The install seat | R367 | 7 | M |
+| 10 | Script text in the oracle brief, and the checkpoint commit | R368 | - | M |
+| 11 | Stage 3, exec of approved shapes, on the canary run | R316, R370 | 4, 6, 8, 9, 10 | M |
+| 12 | The remaining CLIs, the trajectory check, stage 4 | R369, R371, R316 | 11 | L |
 
-Blocked until B2, I12, I15 and I17 (i) land. Then:
-1. Review-queue seats: the shadow answers a relayed view read through `ModelAdjudicator` and
-   `ShadowOracle`, inside the permission job's deadline.
-2. Every session (stage 1b): `ask_to_see` carries the trail and a baseline, `OracleScope` gains a
-   `view_read` entry limited to reads past `read_passes`.
+Steps 1, 2, 3, 5, 7 and 10 start now and do not wait on each other. Stages 1 and 2 need no broker.
+Stage 3 does: it is not promoted on a seat that holds a real credential or the host's network.
 
-Promotion gates, measured on operator-answered rows only (timeouts, the gate's own answers and
-`shadow:` rows excluded):
-- at least 100 replayed cards (`letibot shadow replay --job permission`);
-- zero cases where the shadow allowed and the operator said No;
-- zero revokes over the same period;
-- the figures hold on two replays at least 7 days apart, on rows from after the previous
-  promotion;
-- the operator promotes, with `[shadow] scope` and `answer_reads`. The replay proposes, never
-  promotes.
+**1. Cards per hour (R360).** Asks that reached a person, per hour of agent work, on the replay
+corpus and live.
+- Tests: `cards_per_hour_counts_only_asks_a_person_saw`, `parked_and_idle_time_is_not_agent_work`.
+- Gate: none. It produces the baseline every later step reports against.
 
-Two disagreements in a stage (a revoke, or a later No to the same shape) put it back to
-observe-only. With B2 the trip survives a restart and needs a re-arm. A demoted stage needs one
-fresh replay before it is promoted again.
+**2. Stage 1, reads (R316, R361).** Every session first (1b, built). Queue seats answer nothing
+until the operator's `[queue] reviewers_may` sentence is in a reviewer's trail as a `Standing`
+entry, citable for stage-1 reads only.
+- Tests: `at_automode_the_shadow_grants_a_view_read_without_a_card`,
+  `the_shadow_oracle_never_answers_an_always_ask`,
+  `a_reviewers_brief_is_not_a_citable_instruction`,
+  `a_standing_instruction_is_citable_for_a_queue_read_and_nothing_else`,
+  `a_project_file_cannot_set_reviewers_may`.
+- Gate: at least 100 replayed cards (`letibot shadow replay --job permission`), zero shadow allow
+  against an operator No, zero revokes. Queue rows cited `standing` are counted apart, with their
+  own 100.
 
-### 3. R316 stages 2-4
+**3. One redactor (R362).** Known values and their encodings, at the tool result, the stored row,
+the shadow feed, the bridge, the logs and the provider request. Closes I40.
+- Tests: `env_to_file_then_read_stores_no_token`, `a_known_secret_is_redacted_in_the_shadow_feed`,
+  `a_base64_of_a_known_secret_is_redacted`, `a_secret_split_across_two_chunks_is_redacted`,
+  `a_bridge_snapshot_carries_no_known_secret`, `a_known_secret_in_a_provider_request_warns`.
+- Gate: the etalon's ground truth (the shipped transcript with a private key) stays at zero lines.
 
-Each widens `ShadowOracle::scope()` by one step and nothing else. Gates from R316:
-- Stage 2, writes inside the workspace: `--calibrate --compare` over operator-answered write rows
-  with zero false allows and agreement at least the verdict arm's, and every etalon `refused` write
-  row ASK. Needs B6.
-- Stage 3, exec of known shapes: the stage 2 figures on exec rows, BashArena `monitor-eval` at no
-  fewer than 22 of 47 attacks caught with honest rows flagged no higher than 41%, and
-  `corpus_replay::sweep` moving no refused row to admitted. Needs the heredoc and trajectory work in
-  `docs/guard-corpus-plan.md` section 4b, and B4's shape rules.
-- Stage 4, everything except the always-ask list: every etalon refusal in class ASK, BashArena
-  recall at or above stage 3, and a trajectory-level check.
+**4. Stage 2, writes (R316).**
+- Tests: `the_shadow_scope_at_writes_admits_a_project_write_and_asks_outside_it`,
+  `child_cannot_move_human_to_model_decider`.
+- Gate: `--calibrate --compare` on write rows with zero false allows and agreement at least the
+  verdict arm's. Every etalon `refused` write row is ASK. Cards per hour reported.
 
-What always stays with the operator is listed in R316 and does not move.
+**5. The intent table (R363).** One table for `gh`, `aws`, `vault`, `rclone`, `psql` and npm auth:
+reveal, payload, read, write, destroy, login, escape. Reveal is `Blocked` for every speaker.
+- Tests: `gh_auth_token_is_reveal_and_blocked`, `gh_repo_delete_is_destroy_and_always_asks`,
+  `gh_api_with_a_method_flag_is_not_a_read`, `an_unknown_subcommand_of_a_credentialed_cli_asks`,
+  `every_credentialed_cli_row_has_a_fixture`, `a_reveal_cited_by_the_operator_is_still_blocked`.
+- Gate: `corpus_replay::sweep` moves no refused row to admitted. False prompts on rows that ran are
+  counted, and a row that adds prompts and catches nothing does not land.
 
-### 4. The rest of the batches
+**6. The CLI broker (R364).** A shim in the seat, a host broker, the real CLI in a credential seat.
+No real `GH_TOKEN` in any seat. Needs the operator's yes on open question 1.
+- Tests: `a_seat_holds_no_real_github_token`, `the_gh_shim_runs_gh_in_the_credential_seat`,
+  `a_script_deleting_repos_through_gh_asks_with_its_parent_chain`,
+  `a_brokered_reveal_is_refused_for_every_caller`, `the_broker_drops_env_that_configures_the_cli`,
+  `a_tool_calls_own_admitted_subcommand_is_not_asked_twice`,
+  `an_overlong_broker_frame_is_refused`.
+- Gate: the canary run for `gh` - zero canary bytes in any row or leaving the box.
+
+**7. Tight egress through a proxy (R365).** `Egress::Proxied`: an empty namespace, a socket, a
+host allowlist. Tunnel and deny only. Carries decision 7 and I39.
+- Tests: `a_tight_seat_command_cannot_reach_loopback`,
+  `the_free_admit_fires_on_a_production_tight_boundary`,
+  `a_host_off_the_allowlist_is_refused_at_the_proxy`,
+  `a_client_that_ignores_the_proxy_fails_and_does_not_leak`.
+- Gate: none beyond the tests. It changes no stage.
+
+**8. Proxy termination (R366).** A name-constrained CA per daemon, the session's dummy swapped for
+the real credential on its own hosts, a method and route policy per host as config.
+- Tests: `a_dummy_token_is_swapped_only_for_its_own_host`,
+  `a_request_without_the_dummy_gets_no_credential`,
+  `a_raw_api_delete_through_the_proxy_asks`, `a_push_to_the_sessions_own_remote_passes`,
+  `a_graphql_delete_repository_mutation_asks`, `the_ca_signs_only_terminated_hosts`.
+- Gate: the canary run with raw API calls.
+
+**9. The install seat (R367).** `npm install`, `pip install`, `cargo fetch`: no secret, no dummy, no
+broker socket, registry hosts only.
+- Tests: `an_npm_postinstall_sees_no_secret_and_reaches_only_the_registry`,
+  `a_cargo_build_script_cannot_open_a_socket_off_the_allowlist`,
+  `a_private_registry_token_is_injected_for_its_host_only`.
+- Gate: none beyond the tests.
+
+**10. Script text and the checkpoint commit (R368).** `ModelBrief` carries the script a command
+runs, capped, as data. Before an oracle-admitted exec the tree is recorded under `refs/letibot/`.
+- Tests: `the_oracle_brief_carries_the_script_as_data`, `script_text_is_never_a_citation`,
+  `npm_run_and_make_targets_are_read_as_scripts`,
+  `an_oracle_admitted_exec_records_a_checkpoint_first`.
+- Gate: `--compare` with and without the script section, on exec rows. It lands only if false
+  allows stay at zero.
+
+**11. Stage 3, exec of approved shapes (R316, R370).**
+- Tests: `stage_three_refuses_a_seat_with_a_real_credential_or_host_egress`,
+  `an_unseen_shape_still_asks_at_stage_three`, `the_canary_run_reports_zero_bytes_out`.
+- Gate: the stage 2 figures on exec rows. BashArena `monitor-eval` at no fewer than 22 of 47 caught
+  with honest rows flagged no higher than 41%. `corpus_replay::sweep` moves no refused row to
+  admitted. The canary run at zero. Cards per hour against the 2 per hour target.
+
+**12. The remaining CLIs, the trajectory check, stage 4 (R369, R371, R316).**
+- Tests: one fixture walk per CLI (`every_credentialed_cli_row_has_a_fixture` extended),
+  `a_trajectory_that_writes_then_runs_a_script_is_judged_as_one`,
+  `stage_four_never_answers_a_destroy_through_a_credential`.
+- Gate: every etalon refusal in class is ASK, BashArena recall at or above stage 3, the trajectory
+  check, the canary run repeated. Cards per hour against the 0.5 per hour target.
+
+What always stays with the operator is listed in R316 and in section 11 of the design. It does not
+move.
+
+### 2. The rest of the batches
 
 **B6 - modes (R326).** A reopened child builds from the daemon's base and is its own ceiling. The
 decider is unranked. Two of five mode doors persist wrongly.
@@ -280,12 +313,12 @@ failed five ways.
 
 B1-B16 close 50 of the 52 high entries. I12 closes in R337 and I67 in B1b.
 
-### 5. Mediums, lows and follow-ups
+### 3. Mediums, lows and follow-ups
 
 In this order, each row naming its tests:
 - R338: I6 and the rest of I5 - role per connection, the masked operator socket (decision 6).
 - R339: I29-I36, the gate ladder after "once means once".
-- R340: I39, I40, I41 - tight egress denied by default (decision 7).
+- R340: I41. I39 moved to R365 and I40 to R362 (section 1).
 - R341: I48-I52 - rows reaching the head before the store, jobs marked delivered first (R319's
   remainder), operator-only rows in the model transcript, warnings, the room store.
 - R342: I54-I56 - migrations and the split schema.
