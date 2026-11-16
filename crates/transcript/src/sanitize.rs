@@ -180,8 +180,7 @@ mod tests {
         ] {
             assert!(safe.contains(kept), "{kept} was lost: {safe:?}");
         }
-        // …and not one byte of any sequence is, which is the whole assertion. A
-        // leftover `[31m` is the exact shape of the regression.
+        // …and not one byte of any sequence is, which is the whole assertion.
         for gone in [
             "\u{1b}", "[31m", "[0m", "[8m", "[2J", "[?1002h", "[?1006h", "[?1049h", "[?2004h",
             "[?2026h", "]0;", "title",

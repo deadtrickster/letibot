@@ -1,10 +1,6 @@
-//! opencode 2.x's layout: `session_v2`, `session_message` and `session_part`.
-//!
-//! A message is one row of `session_message` (its `type` column is the kind, its `data` the message
-//! without `id`/`type`), and an assistant message's content is either `session_part` rows keyed by
-//! `(message_id, ordinal)` or inline `data.content[]` - some rows carry both, which `withParts`
-//! merges parts-first. Everything here reads those two shapes into the same `TranscriptItem`s the v1
-//! reader produces, so a conversation reads the same before and after opencode's upgrade.
+//! opencode 2.x's layout: `session_v2`, `session_message` and `session_part`. An assistant's content
+//! is `session_part` rows, inline `data.content[]`, or both merged parts-first, read into the same
+//! `TranscriptItem`s as the v1 reader so a conversation reads the same across the upgrade.
 
 use std::collections::BTreeMap;
 
@@ -33,9 +29,8 @@ const PUNCTUATION: [&str; 4] = [
 ];
 
 /// The tool names opencode's v1->v2 migration renamed (`bash`->`shell`, `task`->`subagent`,
-/// `apply_patch`->`patch`, v1-migration.bun.ts:996-1048). Undone here, so one history reads the
-/// same rows whichever layout it is stored in and a replayed call keeps the name this head's own
-/// tools carry.
+/// `apply_patch`->`patch`), undone so both layouts read the same and a replayed call keeps the name
+/// this head's tools carry.
 fn tool_name(name: &str) -> String {
     match name {
         "shell" => "bash",
@@ -678,13 +673,9 @@ fn user(r: &mut Reader<'_>, msg: &Msg) {
     );
 }
 
-/// A completed compaction, as the row that says what it replaced.
-///
-/// The choice: the summary and the kept tail, not the whole history with a marker. Our rows are what
-/// this head's model is sent, so importing what opencode itself dropped would hand it a context
-/// opencode refused; the tail from `metadata.keepID` on is kept as its own rows, where opencode folds
-/// its text into the summary, because these rows still carry the tool calls and reasoning it held.
-/// Nothing is silently lost: one marker row counts what went and carries the summary word for word.
+/// A completed compaction: the summary and the kept tail from `metadata.keepID`, not the whole
+/// history, since importing what opencode dropped would send a context it refused. One marker row
+/// counts what went and carries the summary word for word.
 fn compaction(r: &mut Reader<'_>, msg: &Msg, window: &Window) {
     r.tag("compaction");
     let mine = window.marker.as_ref().filter(|m| m.seq == msg.seq);
@@ -841,13 +832,9 @@ fn tool(r: &mut Reader<'_>, conn: &Connection, session: &str, part_id: &str, ts:
     );
 }
 
-/// Which field this provider replays its reasoning into. opencode keeps the replay data in a part's
-/// `native`, keyed by the producing provider's metadata key, and names the field there
-/// (`reasoningField`, as Moonshot's `reasoning_content` and Z.AI's `reasoning` do). `reasoning_content`
-/// is GLM's separate field, which is what [`ReasoningField::ReasoningContent`] means; any other name a
-/// provider gives - `reasoning`, `reasoning_text`, `reasoning_details` - is replayed inside the turn,
-/// which is [`ReasoningField::Inline`]. A part with no `native` at all is what the v1 reader has
-/// always said, and saying anything else would change how a v1-lineage session replays.
+/// Which field this provider replays reasoning into, from the part's `native` `reasoningField`.
+/// `reasoning_content` is [`ReasoningField::ReasoningContent`]; any other name is
+/// [`ReasoningField::Inline`]. No `native` keeps the v1 reader's answer, so v1 sessions replay as before.
 fn reasoning_field(part: &Value) -> ReasoningField {
     let Some(native) = part.get("native").and_then(Value::as_object) else {
         return ReasoningField::ReasoningContent;
@@ -953,10 +940,9 @@ fn is_text_mime(mime: &str) -> bool {
         )
 }
 
-/// The renames `packages/schema/src/session-legacy.ts` applies to every row written before v2.1:
-/// `providerState` (and a text or reasoning part's `state`) became `native`, a tool's
-/// `providerResultState` folded into it, and a provider compaction's window moved from
-/// `providerContext` to `native.messages`. A row written then must read like a current one.
+/// The renames opencode applies to rows written before v2.1 (`providerState` and a part's `state`
+/// to `native`, `providerResultState` folded in, `providerContext` to `native.messages`), so an old
+/// row reads like a current one.
 fn upgrade_message(kind: &str, data: Value) -> Value {
     match kind {
         "assistant" => {
@@ -1317,8 +1303,7 @@ mod tests {
         );
     }
 
-    /// A fresh 2.x install has no v1 tables at all: before this reader, every call failed here with
-    /// "no such table: session".
+    /// A fresh 2.x install has no v1 tables at all, and is still read.
     #[test]
     fn a_fresh_v2_database_is_read_message_by_message() {
         let path = fixture("fresh");

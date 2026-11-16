@@ -1,32 +1,6 @@
-//! What a fence that cites code looks like - the one rule both halves of a citation read.
-//!
-//! A model is told: *"an empty code fence labelled with the path and the line range is filled
-//! with those lines, numbered as the file numbers them"*. Two spellings of that fence are in
-//! use, and both are citations - the empty block:
-//!
-//! ````text
-//! ```flow/connectors/postgres/pgdump_schema.go:242-248
-//! ```
-//! ````
-//!
-//! and the one-liner, its opening run and its closing run on one line:
-//!
-//! ````text
-//! ```flow/connectors/postgres/pgdump_schema.go:242-248```
-//! ````
-//!
-//! That fence can also MARK the lines: `note path:3-4` with a sentence inside it, or
-//! `suggest path:3-4` with the replacement inside it. Same label, same range rule, and the body is
-//! the block's own lines - which is why [`Fence::body`] exists here too, and why a mark is not a
-//! citation: a citation is an EMPTY fence, a mark has something in it.
-//!
-//! The daemon reads the lines and the head fills the fence, and neither can see the other  -
-//! this module is read by `harnessd::citations` and by `tui::ui::transcript::cite`.
-//! So the two spellings, the label, and where a block ends live here, once, rather than in two
-//! scanners that drift apart. A one-liner was once read as an *opening*
-//! fence whose label was the rest of the line with the closing run glued onto it, so a citation
-//! written that way was never recognised by the daemon and arrived on the operator's screen as
-//! an empty box with a path in it.
+//! What a fence that cites code looks like, the one rule `harnessd::citations` and
+//! `tui::ui::transcript::cite` both read. A citation is an empty fence labelled `path:A-B`, as a
+//! block or a one-liner; a `note`/`suggest` mark has a body, read with [`Fence::body`].
 
 /// The runs that fence a block. A line opens a fence when, trimmed, it starts with one.
 const RUNS: [&str; 2] = ["```", "~~~"];

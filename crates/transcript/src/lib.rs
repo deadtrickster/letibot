@@ -173,10 +173,9 @@ pub enum TranscriptItem {
         name: String,
         outcome: ToolOutcome,
         payload: String,
-        /// Both sides of every file this call changed, bounded to what differs: the raw material
-        /// of the two-panel diff, on the row because a head attaching after a restart is
-        /// handed rows rather than events. Display-only - the prompt builders read `payload`.
-        /// A list because one `bash` call can change several files (R161).
+        /// Both sides of every file this call changed, bounded to what differs, for the two-panel
+        /// diff. On the row because a head attaching after a restart gets rows, not events.
+        /// Display-only; a list because one `bash` call can change several files.
         #[serde(
             default,
             alias = "edit",
@@ -209,10 +208,9 @@ pub enum TranscriptItem {
         /// What sort of news, so a head draws it and a reader counts it.
         kind: NoticeKind,
         text: String,
-        /// What the sentence was composed from, as `letibot_plugin::notice::Facts` carries it: the
-        /// delivery keeps its facts so a head draws the card from THEM, and a `notice_` layer that
-        /// rewords the sentence cannot take the card with it (X22). Absent on a row a daemon built
-        /// before the field, and on one whose site had nothing to hand over.
+        /// The facts the sentence was composed from, so a head draws the card from them and a
+        /// `notice_` layer that rewords the sentence cannot take the card with it. Absent on older
+        /// rows and where the site had nothing to hand over.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         facts: Option<serde_json::Value>,
     },
@@ -377,14 +375,9 @@ pub enum SegmentEdge {
     Close,
 }
 
-/// Which wire field the model expects its own prior reasoning replayed into. Getting this
-/// wrong does not error: every prompt diverges from its cache entry at the first assistant
-/// turn, so the prefix cache never hits and the entry count grows without bound.
-///
-/// The two signed variants carry the provider's opaque bytes because a block it signed cannot
-/// be replayed without them: Anthropic answers 400 to a `thinking` block whose `signature` is
-/// missing or modified, and the signature is delivered with the block rather than derivable from
-/// its text. So the bytes live on the row, where a restart, a fork and a compaction keep them.
+/// Which wire field the model expects its prior reasoning replayed into. A wrong answer does not
+/// error, it misses the prefix cache at every assistant turn. The signed variants carry the
+/// provider's opaque bytes, since a signed block cannot be replayed without them.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningField {
@@ -409,12 +402,9 @@ pub struct ToolCall {
     pub arguments: String,
 }
 
-/// An id for a call the model did not name, which two things need and neither may spell its own
-/// way: GLM's text form carries none and a streamed reply may leave one out. Positional naming
-/// (`call_0`) repeats the same id in every turn, so a head or a store correlating rows by id sees
-/// one call per session; this is a per-process nonce and a counter instead, and the nonce is minted
-/// once per process so an id from a transcript this daemon wrote before a restart is never minted
-/// again. A model's own id is kept exactly as given - it is what the next request must echo.
+/// An id for a call the model did not name. Positional `call_0` repeats every turn, so this is a
+/// per-process nonce plus a counter, never reused across a restart. A model's own id is kept as
+/// given, since the next request must echo it.
 pub fn mint_call_id() -> String {
     use std::sync::OnceLock;
     use std::sync::atomic::{AtomicU64, Ordering};

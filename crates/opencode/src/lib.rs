@@ -1,23 +1,6 @@
-//! Reading an opencode conversation into this head's rows.
-//! Opens opencode's SQLite database read-only and turns its stored messages into `TranscriptItem`s. Rows say they
-//! are imported, the ledger never claims the spend, and an unknown tag becomes a counted scrap.
-//!
-//! # The two layouts
-//!
-//! opencode 1.x wrote `session`, `message` and `part` - `[v1]` below. Every 2.x writes `session_v2`,
-//! `session_message` and `session_part` - `[v2]` - and freezes the v1 rows at the upgrade while a background job
-//! migrates them across (`v1-migration.bun.ts`). So a fresh install has no v1 tables at all, an upgraded one has
-//! both with the v1 rows stopping at the moment it was upgraded, and the operator's own 1.18.31 has v1 only.
-//!
-//! A database is read as v2 when it has `session_v2` at all. Within such a database each session id is read from
-//! v2 where v2 has it and from the frozen v1 rows where it does not - a session the migration job has not reached
-//! yet, which is the one case where v1 rows are still the whole history. v1 rows are never preferred over v2 ones
-//! for the same id: they are frozen, so reading them would cut a continued session off at the upgrade point.
-//! A database with no `session_v2` is read exactly as it was before v2 existed: one query over `part`, ordered by
-//! `time_created`.
-//!
-//! The unit of a v2 read is the stored message (`session_message`), and a v1 read's is the `part` row; a tree's
-//! [`Tree::unit`] says which, so the progress line counts what it is actually walking.
+//! Reading an opencode conversation, read-only, into this head's rows. Rows say they are imported,
+//! the ledger never claims the spend, and an unknown tag becomes a counted scrap. A database with
+//! `session_v2` reads each session from v2, falling back to frozen v1 rows only where v2 lacks it.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -343,10 +326,9 @@ pub struct Source {
 }
 
 impl Source {
-    /// Open the database read-only, and not `immutable=1`: opencode's WAL is live, and an
-    /// immutable open ignores it and reads a torn snapshot, while read-only still sees it.
-    /// The open is proven here with the cheapest query, because SQLite opens lazily. Which layout
-    /// the file speaks is decided once, here, so every later read knows without asking again.
+    /// Open read-only, not `immutable=1`: opencode's WAL is live and an immutable open reads a torn
+    /// snapshot. The cheapest query proves the open, since SQLite opens lazily, and the layout is
+    /// decided once here.
     pub fn open(path: &Path) -> Result<Self> {
         let conn =
             Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
@@ -1000,15 +982,9 @@ pub fn default_db_path() -> Option<PathBuf> {
     db_path_from(|k| std::env::var_os(k).map(|v| v.to_string_lossy().into_owned()))
 }
 
-/// opencode's own rule (`packages/cli/src/database-path.ts`, `packages/util/src/global-roots.ts`):
-/// `$OPENCODE_DB` - resolved against the DATA directory and not the working one - else
-/// `opencode-<channel>.db` when a channel is named, else `opencode.db`. The data directory is
-/// `$XDG_DATA_HOME/opencode`, defaulting to `~/.local/share/opencode`.
-///
-/// opencode's channel is baked in at build time, so `$OPENCODE_CHANNEL` is the only way a person
-/// can name it here; a release channel and `$OPENCODE_DISABLE_CHANNEL_DB` both mean `opencode.db`,
-/// as they do there. Taking the lookup as an argument keeps this testable without touching the
-/// process environment, which every test in one binary shares.
+/// opencode's own rule: `$OPENCODE_DB` resolved against the data directory, else
+/// `opencode-<channel>.db` when `$OPENCODE_CHANNEL` names one, else `opencode.db`, under
+/// `$XDG_DATA_HOME/opencode`. The lookup is an argument so tests never touch the process env.
 fn db_path_from(env: impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
     let data = match env("XDG_DATA_HOME").filter(|d| !d.is_empty()) {
         Some(dir) => PathBuf::from(dir).join("opencode"),
@@ -1395,10 +1371,9 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// opencode's own rule for where the database is: `$OPENCODE_DB` resolved against the DATA
-    /// directory (not the working one, which is what this importer used to do), `$XDG_DATA_HOME`, and
-    /// the channel file when a channel is named. The lookup is handed in so no test touches the
-    /// process environment, which every test in one binary shares.
+    /// The database path follows opencode's rule: `$OPENCODE_DB` against the data directory, not
+    /// the working one, `$XDG_DATA_HOME`, and the channel file. The lookup is handed in so no test
+    /// touches the process environment.
     #[test]
     fn the_database_path_follows_opencodes_own_rule() {
         let env = |pairs: &'static [(&'static str, &'static str)]| {
