@@ -1232,3 +1232,54 @@ fn the_card_carries_the_diff_the_gate_was_handed() {
     };
     assert_eq!(edits, req.preview);
 }
+
+/// Every option kind and every timeout reaches the head as its own word. The card is drawn from the
+/// wire, so a kind that lands on another's word is a button that does something else, and a head
+/// that reads `Ask` for `Deny` waits for somebody nobody asked. Spelled out for every variant, so a
+/// kind added later cannot slip past on a wildcard.
+#[test]
+fn every_option_kind_and_timeout_has_its_own_wire_twin() {
+    use letibot_tools::adjudicate::{DecisionOption, OptionKind as ToolKind};
+    let mut seen = std::collections::BTreeSet::new();
+    for (i, kind) in [
+        ToolKind::AllowOnce,
+        ToolKind::AllowSession,
+        ToolKind::AllowAlways,
+        ToolKind::Deny,
+        ToolKind::DenyAndTell,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let wired = wire_option(&DecisionOption {
+            id: format!("k{i}"),
+            label: format!("label {i}"),
+            kind,
+        });
+        assert_eq!(wired.option_id, format!("k{i}"), "{kind:?}");
+        assert_eq!(wired.label, format!("label {i}"), "{kind:?}");
+        assert!(
+            seen.insert(format!("{:?}", wired.kind)),
+            "two option kinds share the wire word {:?}",
+            wired.kind
+        );
+    }
+    assert_eq!(seen.len(), 5, "every kind has one word of its own");
+
+    let timeouts = [
+        (
+            OnTimeout::Deny,
+            WireOnTimeout::Deny,
+            "a card that times out into Allow runs a call nobody answered for",
+        ),
+        (OnTimeout::Allow, WireOnTimeout::Allow, "allow is allow"),
+        (
+            OnTimeout::AgentDecides,
+            WireOnTimeout::Ask,
+            "the head's Ask is this build's AgentDecides",
+        ),
+    ];
+    for (timeout, wire, why) in timeouts {
+        assert_eq!(wire_timeout(timeout), wire, "{why}");
+    }
+}

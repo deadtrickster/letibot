@@ -1750,6 +1750,21 @@ fn git_cherry_is_inspect() {
     }
 }
 
+/// `gh` authenticates as the operator, so every call to it is on the always-ask list — a seed rule
+/// allowing `gh pr view` would be a line that can never fire, which is why the seed writes none.
+#[test]
+fn a_gh_call_is_always_ask_whatever_a_rule_says() {
+    for cmd in ["gh pr view 12", "gh --version", "gh issue list"] {
+        let base = b(cmd);
+        assert_eq!(base.authenticating.as_deref(), Some("gh"), "{cmd}");
+        assert!(
+            matches!(base.tier, Tier::AlwaysAsk { .. }),
+            "{cmd}: {:?}",
+            base.tier
+        );
+    }
+}
+
 /// A file-transfer client moves bytes over the wire, which is what the reviewer probe and the
 /// card both need to read off the table: `Unknown` says nobody knows what the program does, and
 /// that is a different answer from "it reaches a host".

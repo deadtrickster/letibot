@@ -347,6 +347,102 @@ fn at_always_ask_an_allow_session_answer_settles_only_that_call() {
     assert!(g.grants().is_empty(), "and no grant is recorded");
 }
 
+/// One predicate decides what an answer does, and every kind has its own word: the three allow
+/// shapes admit and the two refusals do not. Spelled out for every variant, so a kind added later
+/// cannot slip past on a wildcard.
+#[test]
+fn every_option_kind_says_whether_it_admits_and_has_its_own_word() {
+    let all = [
+        (OptionKind::AllowOnce, true, "allow_once"),
+        (OptionKind::AllowSession, true, "allow_session"),
+        (OptionKind::AllowAlways, true, "allow_always"),
+        (OptionKind::Deny, false, "deny"),
+        (OptionKind::DenyAndTell, false, "deny_and_tell"),
+    ];
+    let mut words = std::collections::BTreeSet::new();
+    for (kind, admits, word) in all {
+        assert_eq!(kind.admits(), admits, "{kind:?}");
+        assert_eq!(kind.as_str(), word, "{kind:?}");
+        assert!(words.insert(word), "two kinds spell one word: {word}");
+    }
+}
+
+/// A memory ceiling and a perimeter widening are asks like any other: whoever decided is on a row a
+/// replay can label, and the row says whether the call was granted or refused.
+#[test]
+fn a_memory_ask_is_a_row() {
+    use crate::exec::memory::{Machine, MemoryAsk};
+    use crate::runtime::Gate;
+
+    let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+        "human:test",
+        |req: &AdjudicationRequest| {
+            Some(AdjudicationDecision::selected(
+                req,
+                "grant_memory",
+                "human:test",
+                "that much is fine",
+            ))
+        },
+    )))
+    .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+    .with_surroundings(pinned());
+    // No numbers read off the box, so every amount is the operator's call and a card is owed.
+    let ask = MemoryAsk {
+        command: "cargo clippy --workspace".into(),
+        bytes: Some(12 << 30),
+        ceiling: Some(1 << 30),
+        machine: Machine::Here(None),
+    };
+    assert!(matches!(
+        g.grant_memory(&ask),
+        crate::exec::memory::MemoryGrant::Granted
+    ));
+    assert_eq!(g.log.len(), 1, "a memory ask is an audit row");
+    assert_eq!(g.log[0].effect, "admit");
+    assert!(
+        g.log[0].request.summary.contains("memory") || g.log[0].request.summary.contains("GiB"),
+        "the row says what it was about: {}",
+        g.log[0].request.summary
+    );
+}
+
+/// A widening asked for by a child is a card and a row: a decision nobody can label is one nobody
+/// can review afterwards.
+#[test]
+fn a_perimeter_widening_is_a_row() {
+    use crate::exec::perimeter::{PerimeterAsk, PerimeterGrant, WidenItem};
+    use crate::runtime::Gate;
+
+    let mut g = AdjudicatedGate::new(Box::new(AskAdjudicator::new(
+        "human:test",
+        |req: &AdjudicationRequest| {
+            Some(AdjudicationDecision::selected(
+                req,
+                "allow_once",
+                "human:test",
+                "it can have that path",
+            ))
+        },
+    )))
+    .with_mode(crate::mode::Mode::WRITES_ALLOWED)
+    .with_surroundings(pinned());
+    let ask = PerimeterAsk {
+        parent: "coding".into(),
+        child: "s-child".into(),
+        items: vec![WidenItem::of("/w/data".into(), false)],
+        because: Some("it reads the fixtures there".into()),
+    };
+    assert!(matches!(g.grant_perimeter(&ask), PerimeterGrant::Granted));
+    assert_eq!(g.log.len(), 1, "a widening is an audit row");
+    assert_eq!(g.log[0].effect, "admit");
+    assert!(
+        g.log[0].request.summary.contains("s-child"),
+        "the row names the child it lands on: {}",
+        g.log[0].request.summary
+    );
+}
+
 /// An admission nobody was consulted about is the kind that stops appearing in an audit, so the
 /// row has to survive a mode that admits on its own.
 #[test]

@@ -1125,34 +1125,46 @@ the hub both say so.
 
 ## 4l. The order the gate decides in
 
-`AdjudicatedGate::admit`, in order. Each arm is a rule, not an implementation detail:
+`AdjudicatedGate::admit`, in order. Each arm is a rule, not an implementation detail, and the
+numbers are the ones the arms carry in the code:
 
 0. **The breaker**, before anything else asks anything: three consecutive refusals in one task
    direction and the loop stops - `Escalate { to: human }`, `NotRun`, no adjudicator consulted.
-1. **Layer A's own refusals.** `BaselineVerdict::NotRun` first (an action nobody could read is not one
-   anybody can decide about), refused as `Unavailable` by `boundary:normaliser` - except at a point
-   that admits everything, where an unreadable command goes on and the row says it ran unread. Then
-   `Tier::Blocked`, refused as `deny_and_tell` by `boundary:flow`.
+1. **Layer A's refusals.** (1a) `BaselineVerdict::NotRun` first (an action nobody could read is not
+   one anybody can decide about), refused as `Unavailable` by `boundary:normaliser` - except at a
+   point that admits everything, where an unreadable command goes on and the row says it ran unread.
+   (1b) `Tier::Blocked`, refused as `deny_and_tell` by `boundary:flow`.
 2. **The never-write list** (§3), `boundary:host`. The oracle is still asked and its answer recorded:
    an oracle that would admit a call touching the operator's ssh material is a calibration fact,
    invisible unless this path records a verdict.
-3. **The `permission` config**, evaluated before the point: `deny` refuses, `allow` admits, `ask` falls
-   through. A `bash` command is tested segment by segment, and a compound the splitter cannot read is
-   asked, never allowed.
-4. **The measured boundary** (§6): at `writes-allowed`, a command that crosses nothing is admitted with
-   no card, by `gate:boundary`.
-5. **The point.** `Mode::admits_unasked` governs `Tier::MayApprove` and nothing else, so this arm
-   cannot widen what a point may not. Exec is excepted unless the mode follows it.
-6. **A standing answer**: an approved shape (the parse with its literals holed, so two greps are one
-   approval and `sed -n` is not `sed -i`) by `gate:shape`, then a session grant by
-   `gate:session-grant`. Both skip when the call runs project code on a host with no boundary (R98).
-7. **Nobody to ask.** A plugin layer's look is adjudicated and may not put up a card, so it stops here
-   as `NotRun` with the sentence saying so.
-8. **The decision.** At a point whose decider is a model, the model's admit *is* the decision, still
-   bounded by the always-ask list, the earned scope and `Blocked`. Otherwise the adjudicator is asked.
-   A selected option this request did not offer is refused as `NotRun` - it must not open the gate -
-   and `Unavailable`/`Timeout`/`Cancelled` route to `OnTimeout`, which `request_for` always sets to
-   `Deny`.
+3. **An access the point does not seat.** `Disposition::Absent` refuses by name before any rule is
+   read, so a tool kept across a move to `read-only` is admitted by nothing.
+4. **The `permission` config**, evaluated before the point: `deny` refuses, `allow` admits, `ask`
+   falls through. A `bash` command is tested segment by segment, a compound the splitter cannot read
+   is asked rather than allowed, and an `allow` never settles a call on the always-ask list.
+5. **The measured boundary** (§6): at `writes-allowed`, a command that crosses nothing is admitted
+   with no card, by `gate:boundary`, and the operator is told rather than only recorded. Never a
+   look, which has no card to raise.
+6. **The point.** `Mode::admits_unasked` governs `Tier::MayApprove` and nothing else, so this arm
+   cannot widen what a point may not. Exec is excepted unless the mode follows it, and a look that
+   may not ask reaches this arm only as a read.
+7. **A review-queue seat's probe** (§4k), by `gate:reviewer`: a point that admits exec, a call off the
+   always-ask list, every intent read (never `Unknown`), and nothing written outside the clone and
+   its own scratch. Never a look.
+8. **An approved shape**: the parse with its literals holed, so two greps are one approval and
+   `sed -n` is not `sed -i`. By `gate:shape`, and only at a point whose grants are per session.
+9. **A session grant**, by `gate:session-grant`, read against the normalisation rather than the text,
+   so a vehicle flag falls out of a grant taken over `git status`. 8 and 9 skip when the call runs
+   project code on a host with no boundary, and a look may use neither.
+10. **Nobody to ask.** A plugin layer's look is adjudicated and may not put up a card, so it stops
+    here as `NotRun` with the sentence saying so.
+11. **The decision.** At a point whose decider is a model, the model's admit *is* the decision, still
+    bounded by the always-ask list, the earned scope and `Blocked`. Otherwise the adjudicator is
+    asked. A selected option this request did not offer is refused as `NotRun` - it must not open the
+    gate - and `Unavailable`/`Timeout`/`Cancelled` route to `OnTimeout`, which `request_for` always
+    sets to `Deny`. The two rungs an answer can stand for are kept only where the ladder offered
+    them: `allow_always` writes a rule, `allow_session` records a grant at a point whose grants are
+    per session, and a rung that would record nothing says so in the row.
 
 Every settled arm records a row and tells the model, and a denial carries the adjudicator's basis
 unless the answer was a bare `Deny`, in which case the model is told the reasoning stayed in the audit

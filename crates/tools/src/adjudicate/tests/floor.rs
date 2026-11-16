@@ -57,7 +57,7 @@ fn gate(
         count.fetch_add(1, Ordering::Relaxed);
         req.options
             .iter()
-            .find(|o| o.kind.is_allow() == allow)
+            .find(|o| o.kind.admits() == allow)
             .map(|o| AdjudicationDecision::selected(req, &o.id, "fixed", "because"))
     });
     let g = AdjudicatedGate::new(Box::new(adj))
@@ -321,7 +321,7 @@ fn with_no_layer_the_gate_decides_as_it_did() {
             |req: &AdjudicationRequest| {
                 req.options
                     .iter()
-                    .find(|o| o.kind.is_allow())
+                    .find(|o| o.kind.admits())
                     .map(|o| AdjudicationDecision::selected(req, &o.id, "fixed", "because"))
             },
         )))
