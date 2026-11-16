@@ -113,8 +113,8 @@ impl App {
                 rows.push(k);
             }
         }
-        // Newest first, which is the operator's ask: the rows above are built in the daemon's list order, which is
-        // creation order, and the most recent agents have to be on top.
+        // Newest first: the rows above are in the daemon's creation order, and the most recent agents
+        // belong on top.
         rows.sort_by_key(|r| std::cmp::Reverse(r.spawned_ms));
         self.subagents = rows;
         // The child this head climbed up out of, by id, once the rebuild has happened: a stop index taken before it

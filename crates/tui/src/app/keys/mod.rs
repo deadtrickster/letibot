@@ -497,8 +497,7 @@ impl App {
 
     /// The marked row is the answer: a permission's row goes as `Action::Answer`, a question's as
     /// `Action::AnswerQuestion`. Composer words ride a rung that uses them (refusal reason,
-    /// always-allow glob); a rung with no use for them answers nothing, so typed words are never
-    /// dropped.
+    /// always-allow glob); a rung with no use for them answers nothing, never dropping the words.
     pub(crate) fn answer_marked(&mut self) -> Option<Action> {
         // A card in its first moments does not take the Enter: it may be the keystroke that sent
         // the line the operator was typing. See `DEC_ARM_MS`.
