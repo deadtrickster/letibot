@@ -169,7 +169,7 @@ fn table(
             if p.cmdline.is_empty() {
                 format!("[{}]", p.comm)
             } else {
-                p.cmdline.clone()
+                one_line(&p.cmdline)
             }
         ));
         if let Some((_, why)) = protected.iter().find(|(pp, _)| *pp == p.pid) {
@@ -180,6 +180,14 @@ fn table(
         s.push('\n');
     }
     s
+}
+
+/// A command line as one table row: an argument may hold newlines or other control bytes, and a
+/// row that spans lines breaks the table for whoever reads it.
+fn one_line(cmd: &str) -> String {
+    cmd.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect()
 }
 
 fn rss_word(kb: u64) -> String {
@@ -272,5 +280,10 @@ mod tests {
         child.wait().ok();
         let gone = run(serde_json::json!({"pid": child.id()}));
         assert!(gone.payload.contains("not running"), "{}", gone.payload);
+    }
+
+    #[test]
+    fn a_command_line_with_newlines_is_one_row() {
+        assert_eq!(one_line("leticode \"a\nb\tc\""), "leticode \"a b c\"");
     }
 }
