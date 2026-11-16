@@ -71,7 +71,8 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R342 | migrations and the split schema | Code work | I54, I55, I56; M; after B12 (R332) |
 | R343 | liveness predicates, `closed_ms`, the lifecycle invariants | Code work | I62, I63, I64; M; after B9 (R329) |
 | R344 | wire meaning and visible skew | Code work | I68, I69, I70, I71; M; after B1 (R320) |
-| R345 | facts with no read time: status lag, todo waits, undated polls, repeated usage rows, the triple park line | Code work | I73, I74, I75; M; after B15 (R335) |
+| R345 | facts with no read time: status lag, todo waits, undated polls, repeated usage rows, the triple park line | Code work | built on branch `r345-facts`: I73, I74, I75 (F8-F13, F15), lead 52, one commit each; L21 not reproduced on w4-base; F14 and R319's left moved to R345a; left: gate and land |
+| R345a | R345 remainder: ctrl-p holds only the body, a lost side frame resyncs, R319's freed-at-delivery grace | Code work | F14, F11's resync half, R319 left; S-M; after R345 |
 | R346 | launcher twins: unbounded scope join, socket hash, binary locations, dist checks | Code work | I82, I83; M; after B11 (R331) |
 | R347 | gate-at, queue doors, queue structure, tests reading live state | Code work | I89, I90, I91, I92; L; after B10 (R330) |
 | R348 | plugin looks, runtime bounds, the bridge as an untyped room client | Code work | I96, I97, I99; A8-F11/F13/F14 closed on `r349-leftovers`; M; after B13 (R333), B14 (R334) |
@@ -1855,7 +1856,27 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 
 ## R345 - facts with no read time: status lag, todo waits, undated polls, repeated usage rows, the triple park line
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I73, I74, I75. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built on branch `r345-facts`, 2026-11-16, on `w4-base` `ce6952213`, one commit per finding. Filed from the review at `9e9312b06`. Theme row of `docs/review/2026-11-16-letibot.md` section 7. Findings: I73, I74, I75. Record: `docs/review/2026-11-16/INTEGRATION.md`. No store schema, wire or room bump: every new fact rides an existing field (`SettingRow::choices`, the `Envelope` time) or stays in the head. left: the full gate and the landing; F14 and the residue moved to R345a.
+
+**What was built.** Each claim was checked against `w4-base` first. Each proving test fails on the base and passes on the branch: checked by putting the base's source files back under the new test (`git stash`/`git checkout` of the fixed files only) and running it, or, for a test that reads a new field, by the base not compiling it.
+- I73 (`157fe85f5`): the bridge's Settings arm reads the `model` row, so `leticode_status.model` moves when a switch applies. Test: `status_shows_the_model_right_after_leticode_model` (bridge `head/tests.rs`).
+- I74 (`d0eb9dc68`): `TodoBoard::resolve_waits` judges job, child, pid and monitor needs; the harness sweep (`resolve_ended_waits`, was `resolve_ended_job_waits`) frees a child the task journal says is `done`/`failed`, a pid not on this host, a monitor not watching, at open and at the nag tick, with the one-time note. The daemon's nag now reads pid waits off `/proc` (it never did: `RunningJobs::pid` was filled only by the bridge seat). Tests: `a_monitor_wait_is_resolved_at_open_after_restart` (harnessd `tests/job_waits.rs`, monitor and pid), `a_child_pid_or_monitor_that_ended_comes_off_and_row_edges_stay` (tools `todo/tests/job_ends.rs`).
+- I75 F9 (`a0a5a11c2`): Kimi's `usages` and `limits[]` are merged per window at the greater `used`. `usage::reset_of` already fell back per spent window and is unchanged. Test: `a_kimi_body_with_both_shapes_reports_the_greater_used` (provider `usage_poll/tests.rs`, the captured body).
+- I75 F10 and lead 52 (`465693a57`, `bd8415fbe`): the `models.usage` row carries its read time and the poll period in `choices[2]`/`[3]`, and `source` names the daemon (`read by this daemon (pid N) every 120s`); `App::plan_usage` replaces the baked age with one drawn on the head's clock. Each per-folder daemon still polls on its own (no box daemon), but every reading now says when and by whom. Tests: `the_usage_age_is_drawn_from_its_read_time` (tui `app/tests/model_card.rs`), `the_row_names_the_busiest_window_and_its_door` extended (harnessd `harness/usage.rs`).
+- I75 F8 (`f86ef7774`): a seat's board says `read 5m ago` past a minute (`App::seat_boards_at_ms`). Test: `a_seat_board_says_when_it_was_read` (tui `app/tests/seat_board.rs`).
+- I75 F11 (`41616ceb9`): `hub::side_push` keeps one queued `Settings` (the latest) and a full side queue drops its oldest `TermOutput`, never a fact or a card. Test: `a_flooding_pane_never_evicts_a_settings_frame` (sessionlog `hub/tests.rs`).
+- I75 F12 (`e01118548`): the waiting line ends `(for 12m)` past a minute, from the `ActivityChanged` envelope's time; none from a snapshot. Test: `the_waiting_line_says_how_long_it_has_held` (tui `app/tests/turn.rs`).
+- I75 F13 (`f7d4968f2`): a header model known only from attach wiring draws `glm-5.3?` until the row or a turn confirms it. Test: `the_header_marks_a_model_it_has_only_from_attach` (tui `app/tests/session.rs`).
+- I75 F15 (`3125f9fac`): the session list is asked again a minute after the last answer or ask (`App::refresh_sessions_on_the_clock`). Test: `the_session_list_is_asked_again_on_the_clock` (tui `app/tests/session.rs`).
+- Leads 35 and 36 were closed by B15 (R335) on `w4-base`, under the names `a_window_held_at_full_for_an_hour_of_polls_is_said_once` and `one_park_is_said_once_in_local_time`, with `usage-seed`'s `a_restart_does_not_say_a_stored_crossing_again`.
+- L21 does not hold on `w4-base`: `usage_poll::read` releases `POLLS` before the request. It holds only the per-endpoint gate across it, on purpose (`f562547fb`, one request per endpoint), bounded by `usage::TIMEOUT` (5 s). No change.
+
+**Tests run.** `cargo test -p letibot-tui` (all), `-p letibot-sessionlog` (all), `-p letibot-provider --lib usage`, `-p letibot-tools --lib todo`, `-p letibot-bridge --lib head::` plus `--test model_per_session --test provider_trouble`, `-p letibot-harnessd --lib` filtered `nag wait todo usage`, `--test job_waits --test limits`. fmt and `clippy --tests -D warnings` on tui, sessionlog, provider, tools, harnessd, bridge.
+
+**Residue.**
+- A child wait whose id the task journal does not list is left on the board: it may be placed elsewhere, and the nag already reads it as met.
+- The usage row now changes on every reading (its read time), so each poll pushes one `Settings` frame per attached head, every 2 min.
+- F14, F11's resync half and R319's left are in R345a.
 
 **Scope.** I74 is R319's remainder (STALE-F7, non-job waits). Leads 35 and 36 are filed here (below). Absorbs R310's left (`limits[]` read only when `usages` is empty, STALE-F9).
 
@@ -1914,6 +1935,14 @@ Carried from R339/I36: a `new_session` fork does not take the original session's
 - Change: apply I48 of the invariants by class. Polled and pull-only copies carry a read time and draw their age. Event-fed copies get a resync on a lost frame. Keep fact frames in latest-value slots. Merge `limits[]` and take the greater `used`, pinned with a captured Kimi body. Mark the header fallback as unconfirmed. Hold only the body under ctrl-p. Release the usage lock before HTTP.
 - Sources: STALE-F8 to STALE-F15, L21. STALE as listed, DeepSeek (supplementary).
 - Test: one per item. Start with `a_kimi_body_with_both_shapes_reports_the_greater_used`.
+
+## R345a - R345 remainder: ctrl-p holds only the body, a lost side frame resyncs, R319's freed-at-delivery grace
+
+**Status:** open, moved 2026-11-16 from `## R345`. Reasons below, per item.
+
+- STALE-F14: ctrl-p holds the header and the status rows too. `App::screen` returns the held frame byte for byte so a mouse selection survives. Holding only the body means splicing fresh header and status rows into the held frame, and the row indices of those depend on `compose_framed`'s editor column and sidebar. That is the TUI structure work of I77 (R350), and a splice that misplaces a row is worse than the stale header. Test: `ctrl_p_holds_the_body_and_the_header_follows`.
+- STALE-F11, second half: a `TermOutput` dropped from a full side queue leaves the pane wrong with no resync. R345 keeps facts and cards out of the eviction; the pane's own resync (a repaint asked of the driver after a drop) is not built. Test: `a_dropped_pane_frame_asks_for_a_repaint`.
+- R319's left: a row freed at delivery (`deliveries.rs` `resolve_job_waits`) loses its job need at once, so the digest grace in `graced_endings`, which reads needs, no longer covers it, and the plan check may ask about the row before the model has had a turn with the result. Fix shape: keep the need until the grace ends, or carry the grace on the row. Test: `a_row_freed_at_delivery_waits_out_the_digest_grace`.
 
 ## R346 - launcher twins: unbounded scope join, socket hash, binary locations, dist checks
 
