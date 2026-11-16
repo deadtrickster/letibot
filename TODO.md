@@ -307,7 +307,21 @@ Decisions 5-23 are open. Each batch builds on the recommendation in INTEGRATION 
 
 ## R322 - B2 shadow and grants: the acting rule is never matched to the path, the breaker resets while grants persist
 
-**Status:** open, filed 2026-11-16 from the review at `9e9312b06` (line numbers at the snapshot; none of the 5 commits on main since closes these). Batch B2 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I8, I9, I10, I11, I7. Record: `docs/review/2026-11-16/INTEGRATION.md`.
+**Status:** built on branch `b2-shadow`, 2026-11-16, on main `0cdac576b` (B3 landed), one commit per finding (I8 `the shadow acts only on the asker's rule`, I9 `answer_reads is off until the operator turns it on`, I10 `shadow reads are judged at the real path`, I11 `the shadow's breaker trip is kept beside its grants`, I7 `a shadow-granted read tells the model the shadow granted it`). Filed from the review at `9e9312b06`. Batch B2 of `docs/review/2026-11-16-letibot.md` section 7. Findings: I8, I9, I10, I11, I7. Record: `docs/review/2026-11-16/INTEGRATION.md`. left: the full gate and the landing; the residue below.
+
+**What was built.**
+- I8, C7: the relayed call carries the asker's own gate (`AskerGate`: its `cfg.permission` and its real workspace, set by `SubagentAdjudicator::with_gate` from the child's config and by the root's `HeadAdjudicator::with_gate`). `acting_rule` is `permission::evaluate("read", view::key(path))` over those rules: last match, Deny seen, only Allow acts. The model's quoted rule is a label. No gate, no acting.
+- I9, decision 3: `answer_reads` defaults off; `true` is the promotion act, shown per session by the shadow's `disclose` row. config-ref and `docs/config/providers.toml.md` updated.
+- I10, C8: `read_passes` checks the lexical path and `view::key`, and refuses /proc, /sys, /dev, `~/.claude`, `~/.codex`, all of `~/.local/share/letibot`, `~/bin/fleet`, any `*credentials*` name, and everything when no home is known. A shadow read must land inside the asker's workspace or a worktree `git worktree list` names for it at ask time. No configured roots.
+- I11, decision 4: store v52 `shadow_breaker`, one row per main session and job (additive, floor entry, project file beside `session_grant`, carved by `session_id`). `Answering::open` reads the count and trip and rebuilds granted shapes from the shadow's kept grants; an unwritable breaker trips. `/shadow arm` is the only re-arm. Queue grants get a TTL, `[queue] grant_ttl_hours`, default 24: a TTL, not a reviewer binding, because a queue grant exists to cover the next reviewer, a new session. A re-answer renews `granted_ms`.
+- I7: `Gate::view_answered_by`, and a `shadow:` grant's note names the shadow, not "your answer".
+
+**Where the tests are.** `acting_rule_must_cover_the_requested_path`, `the_permission_job_alone_never_answers_a_read`, `a_read_outside_the_askers_repository_shows_the_card` (harnessd `answers/escalate_tests.rs`); `answer_reads_is_off_until_turned_on` (inverting the old `shadow/tests.rs:1459`), `read_passes_resolves_symlinks_and_refuses_agent_stores`, `only_a_covering_rule_on_an_allow_verdict_acts` (`shadow/tests.rs`); `breaker_survives_reopen_while_grants_persist`, `a_queue_grant_expires_after_its_ttl` (`grants/tests.rs`); `a_shadow_grant_note_names_the_shadow` (tools `runtime/tests.rs`). I8, I9, I10 and I7's tests fail on `0cdac576b`; I11's uses `Answering::open`, which the base lacks (its `Answering::new` at reopen is armed with a zero count).
+
+**Residue.**
+- The shadow's denylist is still its own list; one secret table with a seat scope is I19 (C9).
+- The asker's rules are its `cfg.permission`, not the downgraded set its gate holds; a `read` rule is never a tool downgrade, so the two agree for view reads.
+- "the session-grant recording branch ignores `mode.grants`" is I29 (B4, R324 / R339), not B2.
 
 **Scope.** `harnessd/src/shadow/*`, `harnessd/src/grants.rs`, the `tools/src/runtime.rs` note. Automode prerequisite. Decision 3 applied: `answer_reads` defaults off until R316 stage 1 is promoted, and turning it on is the promotion act. Decision 4 applied: the breaker trip is persisted beside the grants and needs an explicit re-arm; queue grants get a TTL or are bound to the reviewer. Roots for shadow reads are derived from the reviewer's repository at ask time, no configured `/build` or `/data` (C8). `evaluate` runs against the reviewer's own rulesets (C7).
 
