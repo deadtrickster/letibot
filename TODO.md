@@ -193,6 +193,7 @@ One row per open entry. `left` is what is really left, checked against the tree.
 | R356 | A package session got a shadow when its daemon was not its own | Code work | built on `pkg-noshadow`; left: `Config::is_child` and `owner_kind` still read only `parent_seat`, so such a session is still offered skills and owned as a `Session` |
 | R357 | The two halves no door can see: rano's protocol, and a plugin binary left running | Code work | R344's residue: rano compares no protocol (a branch for `cc@rano`) - a running plugin's older `letibot-mcp` says no skew |
 | R358 | A credential belongs to its program, not to the session: the credential broker | Parked | design only, a feature - after the stability phase, beside automode (both need the gate judging subcommands); order: `gh` broker, egress proxy, known-value redaction |
+| R359 | A VCS command drew as nine hand edits | Code work | built on `vcs-fold`; left: `jj` global flags with a value (`-R repo`) hide the verb, and a background job's settlement gets the net change but no git line |
 | R196 | Built-in guests go stale in a target shared between worktrees | Code work | `trees/<key>` landed (de95bbc5d); left: the `[env]` fix, blocked while `.cargo/config.toml` is gitignored |
 | R200 | The package VM image lacks what the workspace needs | Code work | firecode's package image: the wasm32 target, a cargo cache warmed from the workspace's locks, shfmt and shellcheck - the guest's memory said in the brief (the overlay half is done, 99166493d) |
 | R201 | Nothing letibot starts is ever torn down | Code work | G6 unjoined (`docker::seat_env` has no caller, so no socket or `DOCKER_HOST` at open) - G5 (memory) not built - compute reservations not built - G3's `--adopt` run is the operator's - `--restore --worktree` makes one tree. Lifecycle findings are R329, R343 |
@@ -3724,6 +3725,23 @@ A credential file exists for its own software to use. That is its only purpose. 
 - Installs: `a_postinstall_script_sees_no_credential_and_no_open_egress`.
 
 **Size.** L. **After:** the stability bar; the broker after B4 (R324), whose gate rules judge the subcommand.
+
+## R359 - A VCS command drew as nine hand edits
+
+**Status:** built on `vcs-fold`, 2026-11-16. Severity: medium (misleading row).
+
+A bash call in an arangodb session ran `git stash; git checkout origin/devel; git apply --check ...; back on the branch`. The row drew a `[note]` listing nine paths inline with "a diff is drawn for each, and each one was detected afterwards, not made by `edit`", nine diffs, and a footer saying the same again. A VCS operation read as nine hand edits. The sweep also diffed a clean file against wherever `HEAD` stood after the command, not where it stood before.
+
+**Fix.**
+- `detect::Before` records `HEAD`, the `HEAD` reflog length and the stash entries. `changed_since` is the net change: content now against the before-state (the read dirty bytes, or the old `HEAD`'s blob). A checkout there and back reports nothing. A dirty file restored to `HEAD` (stash, reset) is a change.
+- `intent::vcs_verbs` (layer A, from `shell::normalise`) names git checkout, switch, stash (push, pop, apply), reset, rebase, merge, pull, restore, cherry-pick, revert, am, and jj edit, new, restore, rebase, undo, abandon, squash, next, prev.
+- For those the note is one line, `git: <verbs> · N files moved · net change: none|M files`, and the net change's paths on the next line. `detect::moved` counts files from the reflog steps, the stash entries made or dropped, and dirty files now clean. Net-change diffs are still attached.
+- Any other command: the note counts on its first line and lists on the next. It goes first, so a folded row shows it.
+- The head draws each detected diff as one line while folded (`path · +N diff rows · /t unfolds it`), whole when open, and no provenance footer. Job settlements too, since their notice already says "when, not who".
+
+**Tests.** `crates/tools/src/builtins/bash/tests.rs`: `a_checkout_there_and_back_is_one_line_with_no_net_change`, `a_sed_on_two_files_is_one_note_and_two_diffs`, `a_stash_that_leaves_the_tree_changed_says_the_git_line_and_draws_the_net_change`, `a_checkout_that_stays_diffs_against_the_commit_it_left`, `vcs_verbs_are_read_from_the_parse`. `crates/tui/src/app/tests/detected.rs`: `a_checkout_there_and_back_draws_one_line_and_no_diff`, `a_sed_on_two_files_draws_one_note_and_two_folded_diffs`, `a_stash_that_leaves_the_tree_changed_draws_the_git_line_and_folds_the_net_change`, `a_detected_diff_is_folded_to_one_line_until_t`.
+
+**Left.** `jj` global flags with a value (`jj -R repo edit`) hide the verb. A background job's settlement gets the net change but no git line.
 
 ## R212 - An ACP client cannot hold a letibot session
 
